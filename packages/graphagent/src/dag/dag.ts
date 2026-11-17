@@ -177,10 +177,11 @@ export interface NodeConfig {
    * split node. A node that carries it is never to be spawned as authored: at
    * admission the split node's plan replaces it with the expanded subtree and the
    * join node under its id, as `fan_out` does for a writer
-   * (`DagComposeExpansion`, in the loop's admission seam). The Workflow Authoring
-   * Check still refuses to submit a graph with a slot until the rest of the
-   * feature lands (`DagCompose.gate`). Written by the compiler (`DagCompose`),
-   * never by an author; no model-writable node schema has the field. */
+   * (`DagComposeExpansion`, in the loop's admission seam). Written by the
+   * compiler (`DagCompose`), never by an author; no model-writable node schema
+   * has the field. A recovery points it at the recovered split node, and a
+   * replan can neither change nor clear it
+   * (`ReplanDefinition.changedEngineOwnedFields`). */
   expand?: string
   /** #1158: what the join node of an expanded slot joins. Written at expansion,
    * in the same extend that replaces the slot, so the join's admission check and
@@ -188,12 +189,37 @@ export interface NodeConfig {
    * split node the plan came from, per item the child node that runs it, its agent
    * and whether the item's work is required (the child's own `required` also
    * depends on the block, so it is not that), and the reason when the plan was not
-   * expanded and one fallback worker took the whole task. Never authored. */
+   * expanded and one fallback worker took the whole task. Never authored. The ids
+   * in it are also the keys of the join node's `input_mapping` and the keys its
+   * prompt describes. A recovery points `plan` and every `node` at the attempts
+   * that now count, and the keys with them; a replan can neither change nor clear
+   * it, as with `expand`. An item the plan asked to split further is one of two
+   * things: `nested` when its node is the join node of a nested expansion (its
+   * `agent` is then the composer that joins it), or `unsplit` when it runs as one
+   * worker after all, with the reason the engine did not split it (the deepest
+   * level or no room left in the subtree). */
   join?: {
     plan: string
-    items: { id: string; node: string; agent: string; required: boolean }[]
+    items: { id: string; node: string; agent: string; required: boolean; nested?: true; unsplit?: string }[]
     degraded?: string
   }
+  /** #1158: the mark of a node a compose expansion generated, nested expansions
+   * included: its children, nested split nodes and slots, and fallback workers.
+   * The author's own nodes do not carry it: the block's split node, its slot and
+   * the join node that slot becomes. `root` is the id the top-level slot had when
+   * it was expanded and only groups one block's subtree: it is a key, not a
+   * reference, so a recovery that renames the slot leaves it alone. `depth` is the
+   * level of the plan the node takes part in: the plan a worker's item came from, or
+   * for a nested split node and slot the plan they make, one deeper than the plan
+   * that listed the item. The expansion reads both from the persisted graph alone
+   * (`DagCompose.positionOf`): the slot's own mark is its depth, and the marked
+   * nodes of the current graph are what `dag.compose.max_subtree_nodes` has been
+   * spent on. Planning the same persisted graph again, after a crash or a recovery,
+   * therefore writes the same ids and definitions, and siblings share the quota in
+   * the order they are expanded. Written by the expansion, never by an author; no
+   * model-writable node schema has the field. A replan can neither change nor
+   * clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+  compose_subtree?: { root: string; depth: number }
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow
@@ -1562,6 +1588,22 @@ export const layer = Layer.effect(
 
       const nodeStatusById = new Map(nodes.map((n) => [n.id, n.status]))
       const definitionErrors: string[] = []
+      // #1158: `expand` and `join` are the engine's marks on a compose node, and no definition a caller writes in can
+      // carry them, so restating such a node drops them. A pending node is replaced by its restatement and a running
+      // one is redefined by a restart, which is where a mark would be lost and the node would go on as an ordinary
+      // one (a slot spawned as authored, a join node no longer checked). A running or queued node that is neither is
+      // held by the admitted-field guard below, and a terminal one keeps its definition.
+      for (const next of normalizedFragment.nodes) {
+        const status = nodeStatusById.get(next.id)
+        if (next.cancel || !(status === NodeStatus.PENDING || (status === NodeStatus.RUNNING && next.restart))) continue
+        const current = cfgById.get(next.id)
+        if (!current) continue
+        const marks = ReplanDefinition.changedEngineOwnedFields(current, next)
+        if (marks.length === 0) continue
+        definitionErrors.push(
+          `Node "${next.id}" carries ${marks.join(", ")}, which belongs to the engine's compose expansion; a replan cannot change or clear it. Cancel the node (cancel: true) and add a replacement under a new id`,
+        )
+      }
       for (const next of normalizedFragment.nodes) {
         if (next.cancel || next.restart) continue
         const status = nodeStatusById.get(next.id)

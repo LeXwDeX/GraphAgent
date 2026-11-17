@@ -3,8 +3,8 @@
 
 // #1158 PR3a: the expansion marker lives in the persisted node definition, in the
 // workflow's config JSON like `fan_out` does, so no table changes for it. The
-// graph the authoring check compiles is also one `Dag.create` accepts: the gate
-// is a submission rule of the authoring check, not a structural one.
+// graph the authoring check compiles is also one `Dag.create` accepts: the
+// marker is no structural defect.
 import { describe, expect, it } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"

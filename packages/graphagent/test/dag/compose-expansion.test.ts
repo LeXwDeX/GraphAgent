@@ -393,15 +393,484 @@ describe("degrading to one worker", () => {
   })
 })
 
-describe("a recursive composer's items", () => {
-  it("runs a split item as a plain worker for now: no nested split node or slot", () => {
-    const nodes = expanded({
-      worker: "mapper",
-      output: plan([item("big", "explore", { split: true }), item("small", "explore")]),
+describe("a recursive composer's split items", () => {
+  const output = plan([item("big", "explore", { split: true, scope: ["src/"] }), item("small", "explore")])
+  const mapped = (options: Parameters<typeof planned>[0] = {}) => expanded({ worker: "mapper", output, ...options })
+
+  it("makes a split item a nested plan: its split node and a slot of its own, in the item's place", () => {
+    const nodes = mapped()
+    expect(nodes.map((node) => node.id)).toEqual(["survey--big--split", "survey--big", "survey--small", "survey"])
+    expect(find(nodes, "survey--big--split")).toMatchObject({
+      worker_type: "mapper",
+      // It waits for the plan above and sees nothing of it: the item is self-contained.
+      depends_on: ["survey--split"],
+      input_mapping: {},
+      // A failed plan degrades the nested slot; it never fails the workflow.
+      required: false,
+      report_to_parent: false,
+      workspace_writes: "deny",
+      generated_helper: "split",
+      output_schema: DagCompose.planSchema(composerOf("mapper"), limits),
     })
-    expect(nodes.map((node) => node.id)).toEqual(["survey--big", "survey--small", "survey"])
-    expect(find(nodes, "survey--big").expand).toBeUndefined()
-    expect(nodes.some((node) => node.generated_helper === "split")).toBe(false)
+    expect(find(nodes, "survey--big")).toMatchObject({
+      worker_type: "mapper",
+      depends_on: ["survey--big--split"],
+      input_mapping: {},
+      required: false,
+      report_to_parent: false,
+      workspace_writes: "deny",
+      expand: "survey--big--split",
+      output_schema: AgentArtifact.schema("project_map"),
+    })
+    expect(find(nodes, "survey--big").join).toBeUndefined()
+  })
+
+  it("asks the nested split node for the item's instruction as data, with the nested position", () => {
+    const split = find(mapped(), "survey--big--split")
+    expect(split.prompt_template.input).toEqual({ compose_instruction: "Look into big", compose_scope: "- src/" })
+    const text = split.prompt_template.inline ?? ""
+    expect(
+      text.startsWith(
+        "{{compose_instruction}}\n\nScope, so that this item does not overlap the others:\n{{compose_scope}}",
+      ),
+    ).toBe(true)
+    expect(text).not.toContain("Look into big")
+    // Depth 2 of 2. Two items cost 2, the nested plan costs 2 more: 40 - 2 - 2 leaves 36, and its own place makes it 37.
+    expect(text).toContain("Depth 2 of 2. The whole expansion may add at most 37 more nodes")
+    expect(
+      text.endsWith(DagCompose.splitContract(composerOf("mapper"), limits, { depth: 2, remainingNodes: 37 })),
+    ).toBe(true)
+  })
+
+  it("asks the nested slot for the same task, joined: the join contract after the item's instruction", () => {
+    const slot = find(mapped(), "survey--big")
+    expect(slot.prompt_template.input).toEqual({ compose_instruction: "Look into big", compose_scope: "- src/" })
+    expect(slot.prompt_template.inline).toContain("You join the results of an expansion.")
+    expect(slot.prompt_template.inline).toContain("project_map")
+    expect(DagCompose.taskPrompt(slot.prompt_template.inline ?? "")).toBe(
+      "{{compose_instruction}}\n\nScope, so that this item does not overlap the others:\n{{compose_scope}}",
+    )
+  })
+
+  it("keeps what the block gave its composer nodes on the nested pair, and what it gave its workers on the others", () => {
+    const slot: NodeConfig = {
+      ...slotOf(route({}, "mapper")),
+      workspace: "/work/tree",
+      worker_config: { timeout_ms: 120_000 },
+      model: { providerID: "p", modelID: "m" },
+    }
+    const result = DagCompose.planExpansion({
+      slot,
+      composer: composerOf("mapper"),
+      limits,
+      source: completed(output),
+      existingNodeIDs: new Set(),
+    })
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    for (const id of ["survey--big--split", "survey--big"])
+      expect(find(result.nodes, id), id).toMatchObject({
+        workspace: "/work/tree",
+        worker_config: { timeout_ms: 120_000 },
+        model: { providerID: "p", modelID: "m" },
+      })
+    const small = find(result.nodes, "survey--small")
+    expect(small).toMatchObject({ workspace: "/work/tree", worker_config: { timeout_ms: 120_000 } })
+    expect(small.model).toBeUndefined()
+  })
+
+  it("makes the nested slot the item's node in the join node: a dependency, a key and a record entry", () => {
+    const join = find(mapped(), "survey")
+    expect(join.depends_on).toEqual(["survey--big", "survey--small"])
+    expect(join.input_mapping).toEqual({
+      map: "map",
+      "survey--split": "survey--split",
+      "survey--big": "survey--big",
+      "survey--small": "survey--small",
+    })
+    // The nested slot's own split node is not something the join node waits for or reads.
+    expect(join.join).toEqual({
+      plan: "survey--split",
+      // The nested join is the composer's: it is the one that produces the node's result.
+      items: [
+        { id: "big", node: "survey--big", agent: "mapper", required: false, nested: true },
+        { id: "small", node: "survey--small", agent: "explore", required: false },
+      ],
+    })
+    expect(join.prompt_template.inline).toContain(
+      '"survey--big": item "big", split again and joined by mapper; may be skipped.',
+    )
+    expect(join.prompt_template.inline).toContain('"survey--small": item "small", by explore; may be skipped.')
+  })
+
+  it("marks every node it generates with the block's subtree, and none of the author's own", () => {
+    const nodes = mapped()
+    expect(nodes.filter((node) => node.compose_subtree === undefined).map((node) => node.id)).toEqual(["survey"])
+    // A worker belongs to the plan its item came from; the nested pair makes the plan one level down.
+    expect(find(nodes, "survey--small").compose_subtree).toEqual({ root: "survey", depth: 1 })
+    expect(find(nodes, "survey--big--split").compose_subtree).toEqual({ root: "survey", depth: 2 })
+    expect(find(nodes, "survey--big").compose_subtree).toEqual({ root: "survey", depth: 2 })
+    // The slot as the author wrote it, the split node it waits for and the join node it becomes are not generated.
+    expect(slotOf(route({}, "mapper")).compose_subtree).toBeUndefined()
+    expect(route({}, "mapper").find((node) => node.id === "survey--split")?.compose_subtree).toBeUndefined()
+  })
+
+  it("marks the fallback worker too, with the slot's own subtree", () => {
+    const fallback = find(degraded({ worker: "mapper", output: plan([]) }).nodes, "survey--fallback")
+    expect(fallback.compose_subtree).toEqual({ root: "survey", depth: 1 })
+  })
+
+  it("is the same on every planning of the same persisted state", () => {
+    expect(planned({ worker: "mapper", output })).toEqual(planned({ worker: "mapper", output }))
+    expect(planned({ worker: "mapper", output: JSON.stringify(output) })).toEqual(planned({ worker: "mapper", output }))
+  })
+
+  it("applies D9 to the nested slot as to a child: required when the block and the item are", () => {
+    const required = (survey: Partial<BlockInput>, itemRequired: boolean) => {
+      const nodes = mapped({
+        survey,
+        output: plan([item("big", "explore", { split: true, required: itemRequired }), item("small", "explore")]),
+      })
+      return [
+        find(nodes, "survey--big--split").required,
+        find(nodes, "survey--big").required,
+        find(nodes, "survey--small").required,
+      ]
+    }
+    // The split node never is: a failed plan degrades the nested slot, it does not take the workflow down.
+    expect(required({ required: true }, true)).toEqual([false, true, false])
+    expect(required({ required: true }, false)).toEqual([false, false, false])
+    expect(required({}, true)).toEqual([false, false, false])
+    // The join node still records that the item is required, which is what finds it missing in an optional block.
+    expect(
+      find(mapped({ output: plan([item("big", "explore", { split: true, required: true })]) }), "survey").join
+        ?.items[0],
+    ).toMatchObject({ id: "big", required: true, nested: true })
+  })
+
+  it("does not nest an item of a composer that does not split, whatever the plan says", () => {
+    // The plan schema has no `split` for it, so this plan is not one the engine expands.
+    const result = degraded({ output: plan([item("big", "explore", { split: true })]) })
+    expect(result.reason).toContain("the plan was rejected")
+  })
+
+  it("declines when a node id of the nested pair is taken, as for a child", () => {
+    expect(degraded({ worker: "mapper", output, existing: ["survey--big--split"] }).reason).toBe(
+      'node "survey--big--split" already exists',
+    )
+    // The item's own id is also a nested pair's: a second item cannot take it.
+    const clash = plan([item("big", "explore", { split: true }), item("big--split", "explore")])
+    expect(degraded({ worker: "mapper", output: clash }).reason).toContain('produces the node id "big--split"')
+  })
+})
+
+describe("how deep a plan may be split", () => {
+  const output = plan([item("big", "explore", { split: true }), item("small", "explore")])
+
+  it("runs a split item as one worker at the deepest level, and says why in the log, the prompt and the join input", () => {
+    const shallow = { ...limits, maxDepth: 1 }
+    const result = planned({ worker: "mapper", output, limits: shallow })
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    const reason = "the expansion is already as deep as dag.compose.max_depth 1 allows"
+    expect(result.declined).toEqual([{ item: "big", reason }])
+    expect(result.nodes.map((node) => node.id)).toEqual(["survey--big", "survey--small", "survey"])
+    const big = find(result.nodes, "survey--big")
+    expect(big.expand).toBeUndefined()
+    expect(big.prompt_template.inline).toContain(
+      `The plan asked to split this item further, but it runs as one worker: ${reason}.`,
+    )
+    expect(big.prompt_template.inline).toContain("not_examined")
+    // An item that did not ask to be split is told nothing of the kind.
+    expect(find(result.nodes, "survey--small").prompt_template.inline).not.toContain("split this item further")
+    const join = find(result.nodes, "survey")
+    expect(join.join?.items[0]).toEqual({
+      id: "big",
+      node: "survey--big",
+      agent: "explore",
+      required: false,
+      unsplit: reason,
+    })
+    expect(join.prompt_template.inline).toContain(
+      `"survey--big": item "big", by explore; may be skipped. The plan asked to split it further, but it ran as one worker: ${reason}.`,
+    )
+  })
+
+  it("reads the depth from the slot's own subtree: a nested slot at the deepest level does not nest again", () => {
+    const nested = find(expanded({ worker: "mapper", output }), "survey--big")
+    expect(nested.compose_subtree).toEqual({ root: "survey", depth: 2 })
+    const result = DagCompose.planExpansion({
+      slot: nested,
+      composer: composerOf("mapper"),
+      limits,
+      source: completed(plan([item("deep", "explore", { split: true }), item("flat", "explore")])),
+      existingNodeIDs: new Set(["survey--big--split"]),
+      position: DagCompose.positionOf(nested, [{ node: nested, status: "pending" }], limits),
+    })
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    expect(result.declined).toHaveLength(1)
+    expect(result.declined[0]?.reason).toContain("dag.compose.max_depth 2")
+    // Plain workers of the nested plan sit at its depth, in the same subtree.
+    expect(result.nodes.map((node) => [node.id, node.compose_subtree?.depth])).toEqual([
+      ["survey--big--deep", 2],
+      ["survey--big--flat", 2],
+      ["survey--big", 2],
+    ])
+    expect(
+      result.nodes.every((node) => node.compose_subtree === undefined || node.compose_subtree.root === "survey"),
+    ).toBe(true)
+    // The nested join is the slot, in place: same id and subtree, no marker, a record of its own.
+    const join = find(result.nodes, "survey--big")
+    expect(join.expand).toBeUndefined()
+    expect(join.join?.plan).toBe("survey--big--split")
+    expect(join.join?.items.map((entry) => entry.node)).toEqual(["survey--big--deep", "survey--big--flat"])
+  })
+
+  it("lets a deeper limit split once more, one level deeper each time", () => {
+    const deeper = { ...limits, maxDepth: 3 }
+    const first = find(expanded({ worker: "mapper", output, limits: deeper }), "survey--big")
+    const result = DagCompose.planExpansion({
+      slot: first,
+      composer: composerOf("mapper"),
+      limits: deeper,
+      source: completed(plan([item("mid", "explore", { split: true })])),
+      existingNodeIDs: new Set(["survey--big--split"]),
+      position: DagCompose.positionOf(first, [{ node: first, status: "pending" }], deeper),
+    })
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    expect(result.declined).toEqual([])
+    expect(result.nodes.map((node) => [node.id, node.compose_subtree?.depth])).toEqual([
+      ["survey--big--mid--split", 3],
+      ["survey--big--mid", 3],
+      ["survey--big", 2],
+    ])
+    expect(find(result.nodes, "survey--big--mid--split").prompt_template.inline).toContain("Depth 3 of 3.")
+  })
+})
+
+describe("how much room a plan has to be split in", () => {
+  const withRoom = (remainingNodes: number, items: unknown[]) =>
+    DagCompose.planExpansion({
+      slot: slotOf(route({}, "mapper")),
+      composer: composerOf("mapper"),
+      limits,
+      source: completed(plan(items)),
+      existingNodeIDs: new Set(),
+      position: { depth: 1, remainingNodes },
+    })
+
+  it("pays for a nested plan out of what the plan's own items leave, two nodes each", () => {
+    // Two items leave 2 of 4: the nested plan is just paid for. One node less and it is not.
+    const split = [item("big", "explore", { split: true }), item("small", "explore")]
+    const enough = withRoom(4, split)
+    if (enough.kind !== "expand") throw new Error("expected an expansion")
+    expect(enough.declined).toEqual([])
+    expect(enough.nodes.map((node) => node.id)).toContain("survey--big--split")
+    const short = withRoom(3, split)
+    if (short.kind !== "expand") throw new Error("expected an expansion")
+    expect(short.declined).toEqual([
+      {
+        item: "big",
+        reason: "the subtree has no room left for a nested plan under dag.compose.max_subtree_nodes 40",
+      },
+    ])
+    expect(short.nodes.map((node) => node.id)).toEqual(["survey--big", "survey--small", "survey"])
+  })
+
+  it("serves the items that ask in plan order: the first nests, the ones after it run as one worker", () => {
+    const result = withRoom(5, [
+      item("a", "explore", { split: true }),
+      item("b", "explore", { split: true }),
+      item("c", "explore", { split: true }),
+    ])
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    // Three items leave 2 of 5, which pays for one nested plan.
+    expect(result.nodes.map((node) => node.id)).toEqual([
+      "survey--a--split",
+      "survey--a",
+      "survey--b",
+      "survey--c",
+      "survey",
+    ])
+    expect(result.declined.map((entry) => entry.item)).toEqual(["b", "c"])
+    expect(
+      find(result.nodes, "survey").join?.items.map((entry) => [entry.id, entry.nested, entry.unsplit === undefined]),
+    ).toEqual([
+      ["a", true, true],
+      ["b", undefined, false],
+      ["c", undefined, false],
+    ])
+  })
+
+  it("tells the nested split node what is still free once the plan is written, and its own place", () => {
+    // Four items leave 6 of 10, one nested plan takes 2: 4 are free, and the slot's own place makes it 5.
+    const result = withRoom(10, [
+      item("a", "explore", { split: true }),
+      item("b", "explore"),
+      item("c", "explore"),
+      item("d", "explore"),
+    ])
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    expect(find(result.nodes, "survey--a--split").prompt_template.inline).toContain("at most 5 more nodes")
+  })
+
+  it("degrades the plan as a whole when its items alone do not fit, as before", () => {
+    const result = withRoom(1, [item("a", "explore"), item("b", "explore")])
+    expect(result.kind).toBe("fallback")
+  })
+})
+
+describe("where a plan sits in the persisted graph", () => {
+  const nested = (id: string, depth: number, extra: Partial<NodeConfig> = {}) => ({
+    ...baseNode(id),
+    compose_subtree: { root: "survey", depth },
+    ...extra,
+  })
+  function baseNode(id: string): NodeConfig {
+    return { id, name: id, worker_type: "explore", depends_on: [], prompt_template: { inline: "x" } }
+  }
+  const member = (node: NodeConfig, status = "completed") => ({ node, status })
+
+  it("puts an author's top-level slot at depth 1 with the whole quota, when nothing was generated yet", () => {
+    expect(DagCompose.positionOf(slotOf(route({}, "mapper")), [], limits)).toEqual({ depth: 1, remainingNodes: 40 })
+  })
+
+  it("reads a nested slot's depth from its own subtree", () => {
+    const slot = nested("survey--big", 2, { expand: "survey--big--split" })
+    expect(DagCompose.positionOf(slot, [member(slot, "pending")], limits).depth).toBe(2)
+  })
+
+  it("counts the generated nodes of the same subtree against max_subtree_nodes, the slot itself among them", () => {
+    const slot = nested("survey--big", 2, { expand: "survey--big--split" })
+    const others = [
+      nested("survey--small", 1),
+      nested("survey--big--split", 2),
+      { ...baseNode("survey--elsewhere"), compose_subtree: { root: "other", depth: 1 } },
+    ]
+    // Three nodes carry the root `survey` (the two above and the slot); the fourth belongs to another block.
+    expect(
+      DagCompose.positionOf(
+        slot,
+        [...others, slot].map((node) => member(node)),
+        limits,
+      ).remainingNodes,
+    ).toBe(37)
+  })
+
+  it("sets aside one node for each other nested slot that waits, and for none that has settled", () => {
+    const slot = nested("survey--a", 2, { expand: "survey--a--split" })
+    const waiting = nested("survey--b", 2, { expand: "survey--b--split" })
+    const failed = nested("survey--c", 2, { expand: "survey--c--split" })
+    const members = [member(slot, "pending"), member(waiting, "pending"), member(failed, "failed")]
+    // Three nodes are generated, and `b` keeps one more for itself; `c` failed and will not be expanded.
+    expect(DagCompose.positionOf(slot, members, limits).remainingNodes).toBe(40 - 3 - 1)
+  })
+
+  it("does not depend on the order the graph is listed in", () => {
+    const slot = nested("survey--a", 2, { expand: "survey--a--split" })
+    const members = [
+      member(nested("survey--b", 2, { expand: "survey--b--split" }), "pending"),
+      member(slot, "pending"),
+      member(nested("survey--x", 1)),
+      member(nested("survey--y", 1)),
+    ]
+    expect(DagCompose.positionOf(slot, members, limits)).toEqual(
+      DagCompose.positionOf(slot, [...members].reverse(), limits),
+    )
+  })
+
+  it("never has less than nothing", () => {
+    const slot = nested("survey--a", 2, { expand: "survey--a--split" })
+    const crowd = Array.from({ length: 50 }, (_, index) => member(nested(`survey--n${index}`, 1)))
+    expect(DagCompose.positionOf(slot, [member(slot, "pending"), ...crowd], limits).remainingNodes).toBe(0)
+  })
+})
+
+describe("the subtree of one block over a whole expansion", () => {
+  const hash = (text: string) => {
+    let total = 7
+    for (let index = 0; index < text.length; index++) total = (total * 31 + text.charCodeAt(index)) >>> 0
+    return total
+  }
+
+  /**
+   * Expands every nested slot, in graph order, until none waits. `items` says what each plan asks for. Every
+   * decision is the one the scheduler would make: the plan checked again, the position read from the graph.
+   */
+  function grow(limit: DagCompose.Limits, items: (slot: NodeConfig, limit: DagCompose.Limits) => unknown[]) {
+    const composer = composerOf("mapper")
+    const top = slotOf(route({}, "mapper"))
+    const graph = new Map<string, { node: NodeConfig; status: string }>([[top.id, { node: top, status: "pending" }]])
+    const fallbacks: string[] = []
+    for (let rounds = 0; ; rounds++) {
+      if (rounds > 400) throw new Error("the expansion does not end")
+      const waiting = [...graph.values()].find((entry) => entry.node.expand !== undefined && entry.status === "pending")
+      if (!waiting) break
+      const slot = waiting.node
+      const result = DagCompose.planExpansion({
+        slot,
+        composer,
+        limits: limit,
+        source: completed(plan(items(slot, limit))),
+        existingNodeIDs: new Set(graph.keys()),
+        position: DagCompose.positionOf(slot, graph.values(), limit),
+      })
+      if (result.kind === "fallback") fallbacks.push(slot.id)
+      for (const node of result.nodes) graph.set(node.id, { node, status: "pending" })
+    }
+    const generated = [...graph.values()].filter((entry) => entry.node.compose_subtree !== undefined)
+    return { graph, generated, fallbacks }
+  }
+
+  const everyone = (slot: NodeConfig, limit: DagCompose.Limits) =>
+    Array.from({ length: limit.maxChildren }, (_, index) => item(`i${index}`, "explore", { split: true }))
+  const varied = (slot: NodeConfig, limit: DagCompose.Limits) => {
+    const seed = hash(slot.id)
+    return Array.from({ length: 1 + (seed % limit.maxChildren) }, (_, index) =>
+      item(`i${index}`, "explore", { split: (seed >>> (index + 3)) % 3 !== 0 }),
+    )
+  }
+
+  const grid = [2, 6, 12].flatMap((maxChildren) =>
+    [1, 2, 3].flatMap((maxDepth) =>
+      [10, 17, 40, 80].map((maxSubtreeNodes) => ({ maxChildren, maxDepth, maxSubtreeNodes })),
+    ),
+  )
+
+  it("never grows past max_subtree_nodes or max_depth, fallbacks included, whatever the plans ask", () => {
+    let fallbacks = 0
+    let nested = 0
+    for (const limit of grid)
+      for (const items of [everyone, varied]) {
+        const { generated, fallbacks: degraded } = grow(limit, items)
+        const label = JSON.stringify(limit)
+        expect(generated.length, label).toBeLessThanOrEqual(limit.maxSubtreeNodes)
+        expect(
+          Math.max(0, ...generated.map((entry) => entry.node.compose_subtree?.depth ?? 0)),
+          label,
+        ).toBeLessThanOrEqual(limit.maxDepth)
+        fallbacks += degraded.length
+        nested += generated.filter((entry) => entry.node.generated_helper === "split").length
+      }
+    // The grid reaches both the nested plans and the degraded ones: the bound is tested where it is tight.
+    expect(nested).toBeGreaterThan(0)
+    expect(fallbacks).toBeGreaterThan(0)
+  })
+
+  it("counts exactly what was generated: nothing is charged twice and nothing escapes", () => {
+    const limit = { maxChildren: 3, maxDepth: 3, maxSubtreeNodes: 80 }
+    const { generated, graph } = grow(limit, everyone)
+    // 3 items at the top, each split with 3 items below, each split with 3 plain ones below that: 3 + 3 * 2 + ...
+    const ids = [...graph.keys()]
+    expect(new Set(ids).size).toBe(ids.length)
+    const split = generated.filter((entry) => entry.node.generated_helper === "split").length
+    // Every generated node is a worker, a nested slot or a nested split node; the top slot and its split are the author's.
+    expect(generated.length).toBe(graph.size - 1)
+    expect(split).toBe(generated.filter((entry) => entry.node.join !== undefined).length)
+  })
+
+  it("is the same whichever way the graph is listed", () => {
+    const limit = { maxChildren: 4, maxDepth: 3, maxSubtreeNodes: 20 }
+    const forward = grow(limit, varied)
+    expect([...forward.graph.keys()].sort()).toEqual([...grow(limit, varied).graph.keys()].sort())
   })
 })
 

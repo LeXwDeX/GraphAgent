@@ -261,10 +261,16 @@ export function make(options: Options = {}) {
           ? yield* options.loadEnvironment(input.environment ?? {})
           : undefined
       // #1158: a compose block, or a node whose worker is a composer, becomes its split node and expansion
-      // slot here, where the agent catalog is at hand. The runtime cannot expand a slot yet, so the same
-      // step refuses to submit one (DagCompose.gate).
+      // slot here, where the agent catalog is at hand; the scheduler expands the slot when its split node
+      // settles. A composer that cannot be used is reported now, not found out at run time.
       const composed = DagCompose.compileNodes(nodes, catalogs?.composers, DagCompose.limits(userDag))
-      const composeErrors = [...composed.problems, ...DagCompose.gate(composed.nodes)].map((problem) =>
+      // The environment profile starts workflows, so a compose block it had no catalog to compile is an error
+      // rather than a node that would run without expanding.
+      const uncompiled =
+        profile === "environment" && catalogs?.composers === undefined
+          ? DagCompose.uncompiledBlocks(composed.nodes)
+          : []
+      const composeErrors = [...composed.problems, ...uncompiled].map((problem) =>
         DagValidation.diagnostic({
           code: DagValidation.DIAGNOSTIC_CODES.dagInvalid,
           path: problem.path,

@@ -1,18 +1,15 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-// #1158 PR3a: what the Workflow Authoring Check does with a compose block and
-// with a node whose worker is a composer. The check compiles both with the agent
-// catalog at hand, reports a composer that cannot be used and why, and, until the
-// runtime can expand an expansion slot, refuses to submit the graph.
+// #1158: what the Workflow Authoring Check does with a compose block and with a node whose worker is a composer.
+// The check compiles both with the agent catalog at hand, reports a composer that cannot be used and why, and
+// submits the compiled graph as it is: the split node and the expansion slot the scheduler expands at run time.
 import { describe, expect, it } from "bun:test"
 import { Effect } from "effect"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagCompose } from "@/dag/compose"
 import type { DagValidation } from "@/dag/validation"
 import { agent, agents, writerRules } from "./compose-fixtures"
-
-const GATE = "compose 的运行时展开尚未启用（#1158 PR3b）"
 
 const environment = (list = agents()): DagValidation.EnvironmentCatalogs => ({
   worker_types: new Set([...list.map((entry) => entry.name), "plan", "build", "general"]),
@@ -54,42 +51,55 @@ const survey = { id: "survey", kind: "compose", worker_type: "surveyor", depends
 const messages = (result: { errors: readonly { message: string }[] }) => result.errors.map((error) => error.message)
 
 describe("a compose block under the environment profile", () => {
-  it("compiles, and is refused only by the gate: nothing else about the graph is wrong", async () => {
+  it("compiles and is submitted: nothing about the graph is wrong, and the split node and slot are what is prepared", async () => {
     const result = await prepare({ graph: blocks(survey) })
-    expect(result.valid).toBe(false)
-    expect(result.errors.map((error) => [error.code, error.path])).toEqual([["dag.invalid", "config.blocks[survey]"]])
-    expect(messages(result)[0]).toContain(GATE)
-    expect(messages(result)[0]).toContain('compose block "survey"')
+    expect(result.errors).toEqual([])
+    expect(result.valid).toBe(true)
     // The graph that was checked is the compiled one, split node and slot included.
     expect(result.nodes.map((node) => [node.id, node.worker_type, node.depends_on, node.has_output_schema])).toEqual([
       ["map", "explore", [], false],
       ["survey--split", "surveyor", ["map"], true],
       ["survey", "surveyor", ["survey--split"], true],
     ])
-    expect(result.prepared).toBeUndefined()
+    const prepared = result.prepared?.nodes
+    expect(prepared?.map((node) => node.id)).toEqual(["map", "survey--split", "survey"])
+    // The marker the scheduler expands by travels with the prepared graph, and only on the slot.
+    expect(prepared?.find((node) => node.id === "survey")?.expand).toBe("survey--split")
+    expect(prepared?.filter((node) => node.expand !== undefined)).toHaveLength(1)
+    expect(prepared?.find((node) => node.id === "survey--split")?.generated_helper).toBe("split")
   })
 
-  it("is refused under the strict gate for the gate alone, not for being a write-capable worker", async () => {
+  it("is no write escalation under the strict gate, where it is accepted like any other read-only block", async () => {
     const result = await prepare({ graph: blocks(survey), review_gate: "strict" })
-    expect(messages(result)).toHaveLength(1)
-    expect(messages(result)[0]).toContain(GATE)
+    expect(result.errors).toEqual([])
+    expect(result.valid).toBe(true)
+    expect(result.prepared?.nodes.map((node) => node.id)).toEqual(["map", "survey--split", "survey"])
   })
 
   it("lets the blocks after it depend on it", async () => {
     const result = await prepare({
       graph: blocks(survey, { id: "decide", kind: "synthesize", depends_on: ["survey"] }),
     })
-    expect(messages(result)).toHaveLength(1)
+    expect(result.errors).toEqual([])
     expect(result.nodes.find((node) => node.id === "decide")?.depends_on).toEqual(["survey"])
   })
 
-  it("is refused in an extend and in a replan fragment as well", async () => {
+  it("is accepted in an extend and in a replan fragment as well", async () => {
     const extend = await prepare({ action: "extend", graph: { objective: OBJECTIVE, blocks: [survey] } })
-    expect(messages(extend)).toHaveLength(1)
-    expect(messages(extend)[0]).toContain(GATE)
+    expect(extend.errors).toEqual([])
+    expect(extend.prepared?.nodes.map((node) => node.id)).toEqual(["survey--split", "survey"])
     const replan = await prepare({ action: "replan", graph: blocks(survey) })
-    expect(messages(replan)).toHaveLength(1)
-    expect(messages(replan)[0]).toContain(GATE)
+    expect(replan.errors).toEqual([])
+    expect(replan.prepared?.nodes.map((node) => node.id)).toEqual(["map", "survey--split", "survey"])
+  })
+
+  it("still refuses what a compose block cannot carry, naming the block", async () => {
+    const lenses = await prepare({ graph: blocks({ ...survey, lenses: ["standards"] }) })
+    expect(lenses.errors.map((error) => error.code)).toEqual(["block.compile_failed"])
+    expect(messages(lenses)[0]).toContain('Block "survey" declares lenses, which only review blocks support')
+    const plan = { id: "plan", kind: "plan", depends_on: ["map"] }
+    const fanOut = await prepare({ graph: blocks(plan, { ...survey, fan_out: "plan" }) })
+    expect(messages(fanOut)[0]).toContain('Block "survey" uses fan_out, which only coding blocks support')
   })
 })
 
@@ -102,18 +112,18 @@ describe("a node whose worker is a composer, under the environment profile", () 
     prompt_template: { inline: "Compare the designs", input: {} },
   }
 
-  it("compiles to the same split node and slot, and is refused by the gate alone", async () => {
+  it("compiles to the same split node and slot, and is submitted", async () => {
     const result = await prepare({ graph: { nodes: [node] } })
-    expect(result.errors.map((error) => [error.code, error.path])).toEqual([["dag.invalid", "nodes[survey]"]])
-    expect(messages(result)[0]).toContain(GATE)
-    expect(messages(result)[0]).toContain('composer node "survey"')
+    expect(result.errors).toEqual([])
     expect(result.nodes.map((entry) => entry.id)).toEqual(["survey--split", "survey"])
+    expect(result.prepared?.nodes.find((entry) => entry.id === "survey")?.expand).toBe("survey--split")
   })
 
   it("is an ordinary node when its worker is not a composer", async () => {
     const result = await prepare({ graph: { nodes: [{ ...node, worker_type: "researcher" }] } })
     expect(result.valid).toBe(true)
     expect(result.nodes.map((entry) => entry.id)).toEqual(["survey"])
+    expect(result.prepared?.nodes.some((entry) => entry.expand !== undefined)).toBe(false)
   })
 })
 
@@ -127,12 +137,14 @@ describe("validate says why a compose block cannot be used", () => {
 
   it("reports a worker_type that is not a composer, naming the agent", async () => {
     const result = await prepare({ graph: blocks({ ...survey, worker_type: "researcher" }) })
+    expect(result.valid).toBe(false)
+    expect(result.prepared).toBeUndefined()
     expect(result.errors.find((error) => error.path === "config.blocks[survey].worker_type")).toMatchObject({
       code: "dag.invalid",
       message: 'compose block "survey": agent "researcher" is not a composer',
     })
-    // The block was not compiled, so the gate refuses it as well.
-    expect(messages(result).some((message) => message.includes(GATE))).toBe(true)
+    // The block could not be compiled, so it stays the one node it was and the check is the only thing between it
+    // and a start.
     expect(result.nodes.map((node) => node.id)).toEqual(["map", "survey"])
   })
 
@@ -157,7 +169,7 @@ describe("validate says why a compose block cannot be used", () => {
     expect(found?.message).toContain("can write files")
     // The same block is usable while the catalog is untouched.
     const usable = await prepare({ graph: blocks({ id: "map-repo", kind: "compose", worker_type: "mapper" }) })
-    expect(usable.errors.some((error) => error.path === "config.blocks[map-repo].worker_type")).toBe(false)
+    expect(usable.errors).toEqual([])
   })
 
   it("reports an unavailable composer behind a node the same way", async () => {
@@ -174,14 +186,52 @@ describe("validate says why a compose block cannot be used", () => {
     })
     expect(messages(result).join("\n")).toContain('node "map-repo": composer "mapper" is unavailable')
   })
+
+  it("refuses a composer node that uses a prompt asset, and one that carries fan_out or review", async () => {
+    const node = { id: "survey", name: "Survey", worker_type: "surveyor", depends_on: [] }
+    const asset = await prepare({ graph: { nodes: [{ ...node, prompt_template: { id: "survey-prompt" } }] } })
+    expect(messages(asset).join("\n")).toContain("cannot run with a prompt asset")
+    const fanOut = await prepare({
+      graph: { nodes: [{ ...node, prompt_template: { inline: "x" }, fan_out: "plan" }] },
+    })
+    expect(messages(fanOut).join("\n")).toContain("cannot carry fan_out")
+  })
+
+  it("refuses an input alias in the namespace the expansion binds its own nodes under", async () => {
+    const result = await prepare({
+      graph: {
+        nodes: [
+          { id: "map", name: "Map", worker_type: "explore", depends_on: [], prompt_template: { inline: "Map" } },
+          {
+            id: "survey",
+            name: "Survey",
+            worker_type: "surveyor",
+            depends_on: ["map"],
+            input_mapping: { "survey--code": "map" },
+            prompt_template: { inline: "Compare the designs in {{survey--code}}" },
+          },
+        ],
+      },
+    })
+    expect(messages(result).join("\n")).toContain('input alias "survey--code" is reserved')
+    expect(result.valid).toBe(false)
+  })
 })
 
 describe("under the portable profile", () => {
-  it("has no catalog, so a compose block compiles to its one node and is refused by the gate alone", async () => {
+  it("has no catalog, so a compose block compiles to its one node and the check does not judge its composer", async () => {
     const result = await prepare({ graph: blocks(survey), profile: "portable" })
-    expect(result.errors.map((error) => [error.code, error.path])).toEqual([["dag.invalid", "config.blocks[survey]"]])
-    expect(messages(result)[0]).toContain(GATE)
+    expect(result.errors).toEqual([])
+    expect(result.valid).toBe(true)
     expect(result.nodes.map((node) => node.id)).toEqual(["map", "survey"])
+    // Nothing expands: whether the composer is usable is for the start, which compiles under the environment profile.
+    expect(result.prepared?.nodes.some((node) => node.expand !== undefined)).toBe(false)
+  })
+
+  it("accepts a compose block naming an agent it cannot resolve, which the environment profile refuses", async () => {
+    const graph = blocks({ ...survey, worker_type: "ghost" })
+    expect((await prepare({ graph, profile: "portable" })).valid).toBe(true)
+    expect((await prepare({ graph })).valid).toBe(false)
   })
 
   it("still reports a missing worker_type", async () => {
@@ -205,13 +255,29 @@ describe("under the portable profile", () => {
 })
 
 describe("an environment that carries no composer catalog", () => {
-  it("leaves the compose block as one node and lets the gate refuse it", async () => {
-    const result = await prepare({
-      graph: blocks(survey),
-      catalogs: { worker_types: new Set(["explore", "surveyor"]) },
-    })
-    expect(result.errors.map((error) => error.path)).toEqual(["config.blocks[survey]"])
+  // It cannot compile the block, and the one node left would run the composer on the task statement with nothing to
+  // expand, so the profile that starts workflows reports it instead of submitting it.
+  const catalogs = { worker_types: new Set(["explore", "plan", "surveyor"]) }
+
+  it("reports the compose block it could not compile and prepares nothing", async () => {
+    const result = await prepare({ graph: blocks(survey), catalogs })
+    expect(result.valid).toBe(false)
+    expect(result.prepared).toBeUndefined()
+    expect(result.errors.map((error) => [error.code, error.path])).toEqual([["dag.invalid", "config.blocks[survey]"]])
+    expect(messages(result)[0]).toContain(
+      'compose block "survey" cannot be compiled: the environment has no agent catalog',
+    )
     expect(result.nodes.map((node) => node.id)).toEqual(["map", "survey"])
+  })
+
+  it("lets the same graph through under the portable profile, which has no catalog by design", async () => {
+    const result = await prepare({ graph: blocks(survey), catalogs, profile: "portable" })
+    expect(result.valid).toBe(true)
+  })
+
+  it("leaves a graph without compose blocks alone", async () => {
+    const result = await prepare({ graph: blocks({ id: "plan", kind: "plan", depends_on: ["map"] }), catalogs })
+    expect(result.valid).toBe(true)
   })
 })
 

@@ -3,8 +3,8 @@
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the agent catalog and the config service are narrow stand-ins.
 // #1158 PR3b-1: the admission seam's step, over a real Dag service and database. A workflow is created
-// from a compiled compose block (the authoring gate is bypassed, as in compose-persistence.test.ts), its
-// split node is settled by hand, and `DagComposeExpansion.expand` is what the scheduler calls for the
+// from a compiled compose block (compiled directly, without the authoring check, as in compose-persistence.test.ts),
+// its split node is settled by hand, and `DagComposeExpansion.expand` is what the scheduler calls for the
 // slot. The loop around it is covered by dag-compose-runtime.test.ts.
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer } from "effect"
@@ -60,10 +60,11 @@ const setupFKs = () =>
       .pipe(Effect.orDie)
   })
 
-/** A compose block `survey`, and a node `report` that reads it. */
+/** A compose block `survey` (by the fan-out `surveyor`, unless `worker` says otherwise), and a node `report` that reads it. */
 const route = (
   survey: Partial<ConstructorParameters<typeof DagBlocks.WorkflowBlock>[0]> = {},
   upstream = false,
+  worker = "surveyor",
 ): NodeConfig[] => [
   ...DagCompose.compileNodes(
     DagBlocks.compileWorkflowBlocks({
@@ -73,7 +74,7 @@ const route = (
         new DagBlocks.WorkflowBlock({
           id: "survey",
           kind: "compose",
-          worker_type: "surveyor",
+          worker_type: worker,
           instruction: "Compare the designs",
           ...(upstream ? { depends_on: ["map"] } : {}),
           ...survey,
@@ -104,6 +105,8 @@ const plan = (items: unknown[]) => ({ rationale: "split by source", items, not_p
 const DEADLINE = () => Date.now() + 600_000
 
 interface Setup {
+  /** The composer of the block: the fan-out `surveyor`, or the recursive `mapper` whose items can be split again. */
+  readonly composer?: string
   readonly maxTotalNodes?: number
   /** A block `map` that the compose block reads, settled before the split node runs. */
   readonly upstream?: boolean
@@ -133,7 +136,7 @@ const scenario = (setup: Setup) =>
           name: "compose-expansion",
           ...(setup.maxTotalNodes !== undefined ? { max_total_nodes: setup.maxTotalNodes } : {}),
           ...(setup.reviewGate !== undefined ? { review_gate: setup.reviewGate } : {}),
-          nodes: [...route(setup.survey, setup.upstream), ...(setup.extraNodes ?? [])],
+          nodes: [...route(setup.survey, setup.upstream, setup.composer), ...(setup.extraNodes ?? [])],
         },
       })
       .pipe(Effect.orDie)
@@ -154,10 +157,12 @@ const scenario = (setup: Setup) =>
       const row = rows.find((candidate) => candidate.id === "survey")
       return { workflow, rows, config, row }
     })
-    const expand = (port: Pick<Dag.Interface, "extend" | "nodeFailed"> = dag) =>
+    // `slotID` is the slot as a recovery renamed it; the block's own id otherwise.
+    const expand = (port: Pick<Dag.Interface, "extend" | "nodeFailed"> = dag, slotID = "survey") =>
       Effect.gen(function* () {
-        const { workflow, rows, config, row } = yield* read
-        const slot = config?.nodes.find((candidate) => candidate.id === "survey")
+        const { workflow, rows, config } = yield* read
+        const slot = config?.nodes.find((candidate) => candidate.id === slotID)
+        const row = rows.find((candidate) => candidate.id === slotID)
         if (!slot || !row || !workflow) throw new Error("the slot is gone")
         yield* DagComposeExpansion.expand({
           port,
@@ -165,6 +170,7 @@ const scenario = (setup: Setup) =>
           dagID,
           slot: setup.patchSlot ? setup.patchSlot(slot) : slot,
           nodes: rows,
+          graph: config?.nodes ?? [],
           attempt: { replanAttempts: row.replanAttempts, nodeSeq: row.seq, graphRev: workflow.graphRev },
         }).pipe(
           Effect.provideService(Config.Service, {
@@ -328,6 +334,7 @@ describe("expanding a slot through Dag.extend", () => {
         dagID: before.workflow.id,
         slot,
         nodes: before.rows,
+        graph: before.config?.nodes ?? [],
         attempt: { replanAttempts: row.replanAttempts, nodeSeq: row.seq, graphRev: before.workflow.graphRev },
       })
       const after = yield* read
@@ -596,5 +603,876 @@ describe("what a required slot does when its expansion cannot be made", () => {
         expect(row).toMatchObject({ status: "failed", errorClass: "compose_capacity", required: true })
         expect(config?.nodes.find((node) => node.id === "survey")?.required).toBe(true)
       }),
+  )
+})
+
+/** What the scheduler does with a node that runs: queued, started, and then settled by its worker. */
+const settle = (
+  dag: Dag.Interface,
+  dagID: string,
+  id: string,
+  outcome: { readonly output: unknown } | { readonly failed: string },
+) =>
+  Effect.gen(function* () {
+    yield* dag.nodeQueued(dagID, id, DEADLINE())
+    yield* dag.nodeStarted(dagID, id, `ses_${id}`, DEADLINE())
+    if ("output" in outcome) yield* dag.nodeCompleted(dagID, id, outcome.output)
+    else yield* dag.nodeFailed(dagID, id, outcome.failed, "exec_failed")
+  })
+
+/** The join node's admission check, as the scheduler calls it for a node that has become ready. */
+const admit = (dag: Dag.Interface, dagID: string, options: { node?: string; staleSeq?: boolean } = {}) =>
+  Effect.gen(function* () {
+    const id = options.node ?? "survey"
+    const workflow = yield* dag.store.getWorkflow(dagID)
+    const rows = yield* dag.store.getNodes(dagID)
+    const node = parseWorkflowConfig(workflow?.config ?? "")?.nodes.find((candidate) => candidate.id === id)
+    const row = rows.find((candidate) => candidate.id === id)
+    if (!node || !row || !workflow) throw new Error("the node is gone")
+    return yield* DagComposeExpansion.admitJoin({
+      port: dag,
+      dagID,
+      node,
+      nodes: rows,
+      attempt: {
+        replanAttempts: row.replanAttempts,
+        nodeSeq: options.staleSeq ? row.seq + 1 : row.seq,
+        graphRev: workflow.graphRev,
+      },
+    })
+  })
+
+describe("the join node's admission check over a real Dag service", () => {
+  it.live("fails a join node whose required item has no result with compose_required_missing, and only that node", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { output: "official says" })
+      // The block is optional, so the child of its required item is optional too: its failure does not fail the workflow.
+      yield* settle(dag, dagID, "survey--security", { failed: "the audit crashed" })
+      expect((yield* read).workflow?.status).toBe("running")
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const { rows, workflow } = yield* read
+      const byRow = new Map(rows.map((row) => [row.id, row]))
+      expect(byRow.get("survey")).toMatchObject({
+        status: "failed",
+        errorClass: "compose_required_missing",
+        childSessionId: null,
+        required: false,
+      })
+      expect(byRow.get("survey")?.errorReason).toContain('"security" (survey--security: failed)')
+      expect(byRow.get("survey")?.errorReason).not.toContain('"official"')
+      // The failure is the join node's alone: its dependent waits for the scheduler, and the workflow carries on.
+      expect(byRow.get("report")?.status).toBe("pending")
+      expect(workflow?.status).toBe("running")
+    }),
+  )
+
+  it.live("lets a join node through when only items that may be left out have no result, and writes nothing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--security", { output: "security says" })
+      const before = yield* read
+      expect(yield* admit(dag, dagID)).toBe(true)
+      expect((yield* read).rows).toEqual(before.rows)
+    }),
+  )
+
+  it.live("fails a join node none of whose children has a result with compose_no_results", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const row = (yield* read).rows.find((candidate) => candidate.id === "survey")
+      expect(row).toMatchObject({ status: "failed", errorClass: "compose_no_results" })
+      expect(row?.errorReason).toContain("survey--official: failed")
+      expect(row?.errorReason).toContain("survey--code: failed")
+    }),
+  )
+
+  it.live("fails the join node of a degraded expansion when its fallback worker has no result", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([]) } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--fallback", { failed: "the worker gave up" })
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const row = (yield* read).rows.find((candidate) => candidate.id === "survey")
+      expect(row).toMatchObject({ status: "failed", errorClass: "compose_no_results" })
+      expect(row?.errorReason).toContain("the fallback worker produced no result")
+    }),
+  )
+
+  it.live("takes a required join node's failure for the workflow's: a required block fails its dependents", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        survey: { required: true },
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      // Skippable items of a required block are optional children: the scheduler lets the join node become ready.
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const { rows } = yield* read
+      expect(rows.find((candidate) => candidate.id === "survey")).toMatchObject({
+        status: "failed",
+        errorClass: "compose_no_results",
+        required: true,
+      })
+    }),
+  )
+
+  it.live("leaves a join node pending, and does not let it run, when the attempt it checked has gone stale", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+      // A round that read the node before a parent's replan reshaped it: the refusal is not written.
+      expect(yield* admit(dag, dagID, { staleSeq: true })).toBe(false)
+      expect((yield* read).rows.find((candidate) => candidate.id === "survey")).toMatchObject({
+        status: "pending",
+        errorClass: null,
+      })
+    }),
+  )
+
+  it.live("has nothing to check on a node that is no join node", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      const before = yield* read
+      expect(yield* admit(dag, dagID, { node: "report" })).toBe(true)
+      expect((yield* read).rows).toEqual(before.rows)
+    }),
+  )
+})
+
+/** Stops the run the way a failure of the workflow does, and recovers the nodes; the plan says what was replaced. */
+const stopAndRecover = (dag: Dag.Interface, dagID: string, nodeIDs: string[]) =>
+  Effect.gen(function* () {
+    yield* dag.fail(dagID, "the run was stopped")
+    const workflow = yield* dag.store.getWorkflow(dagID)
+    if (!workflow) throw new Error("the workflow is gone")
+    const recovered = yield* dag.recover(dagID, { nodeIDs, expectedGraphRev: workflow.graphRev })
+    const attempt = (logical: string) => {
+      const found = recovered.replacements.find((entry) => entry.logical === logical)
+      if (!found) throw new Error(`${logical} was not replaced`)
+      return found.current
+    }
+    return { recovered, attempt }
+  })
+
+describe("recovering a compose node over a real Dag service", () => {
+  it.live(
+    "reads the plan of the recovered split node: the slot is pointed at it and expands instead of degrading",
+    () =>
+      Effect.gen(function* () {
+        // The split node failed and the run was stopped before the slot was expanded. The block reads `map` for itself.
+        const { dag, dagID, read, expand } = yield* scenario({ upstream: true, split: { failed: "the model gave up" } })
+        const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--split"])
+        const splitID = attempt("survey--split")
+        const slotID = attempt("survey")
+        expect(byID((yield* read).config?.nodes).get(slotID)?.expand).toBe(splitID)
+
+        yield* settle(dag, dagID, splitID, {
+          output: JSON.stringify(plan([item("official", "researcher"), item("code", "explore")])),
+        })
+        yield* expand(dag, slotID)
+        const { config, rows } = yield* read
+        const nodes = byID(config?.nodes)
+        const joinNode = nodes.get(slotID)
+        // Read against the failed attempt, which is what the slot named before, the plan would have been "the split node failed".
+        expect(joinNode?.join?.degraded).toBeUndefined()
+        expect(joinNode?.join?.plan).toBe(splitID)
+        expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual([`${slotID}--official`, `${slotID}--code`])
+        for (const entry of joinNode?.join?.items ?? []) expect(nodes.get(entry.node)?.depends_on).toEqual([splitID])
+        expect(rows.find((row) => row.id === slotID)?.dependsOn).toEqual([`${slotID}--official`, `${slotID}--code`])
+        // The recovered slot is a slot of its own namespace: its expansion binds the nodes it made under their ids,
+        // beside the input the block reads for itself.
+        expect(joinNode?.input_mapping).toEqual({
+          map: "map",
+          [splitID]: splitID,
+          [`${slotID}--official`]: `${slotID}--official`,
+          [`${slotID}--code`]: `${slotID}--code`,
+        })
+      }),
+  )
+
+  it.live("points the join node at the recovered child, so its check reads the attempt that counts", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { output: "official says" })
+      yield* settle(dag, dagID, "survey--security", { failed: "the audit crashed" })
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--security"])
+      const childID = attempt("survey--security")
+      const joinID = attempt("survey")
+      const joinNode = byID((yield* read).config?.nodes).get(joinID)
+      expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual(["survey--official", childID])
+      expect(joinNode?.depends_on).toEqual(["survey--official", childID])
+      // The keys it reads its inputs under name the same attempts, and no key is left for the one that was replaced.
+      expect(joinNode?.input_mapping).toEqual({
+        "survey--split": "survey--split",
+        "survey--official": "survey--official",
+        [childID]: childID,
+      })
+
+      // The recovered child produces its result: the recovered join node finds it where the failed attempt was.
+      yield* settle(dag, dagID, childID, { output: "security says" })
+      expect(yield* admit(dag, dagID, { node: joinID })).toBe(true)
+      expect((yield* dag.store.getNode(dagID, joinID))?.status).toBe("pending")
+    }),
+  )
+
+  it.live("points the join node at every recovered attempt when the split node is recovered", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--split"])
+      const joinNode = byID((yield* read).config?.nodes).get(attempt("survey"))
+      expect(joinNode?.join?.plan).toBe(attempt("survey--split"))
+      expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual([
+        attempt("survey--official"),
+        attempt("survey--code"),
+      ])
+      // Everything the join node reads is a row of the current graph, under a key of the same name.
+      const current = new Set((yield* dag.store.getCurrentNodes(dagID)).map((row) => row.id))
+      const ids = [joinNode?.join?.plan ?? "", ...(joinNode?.join?.items.map((entry) => entry.node) ?? [])]
+      for (const id of ids) expect(current.has(id), id).toBe(true)
+      expect(joinNode?.input_mapping).toEqual(Object.fromEntries(ids.map((id) => [id, id])))
+    }),
+  )
+
+  it.live(
+    "does not read a superseded attempt: with the old child's failure left in place, the join node still runs",
+    () =>
+      Effect.gen(function* () {
+        const { dag, dagID, expand } = yield* scenario({
+          split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+        })
+        yield* expand()
+        yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+        yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+        const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--official", "survey--code"])
+        yield* settle(dag, dagID, attempt("survey--official"), { output: "official says" })
+        yield* settle(dag, dagID, attempt("survey--code"), { failed: "the search timed out again" })
+        // The superseded attempts failed too, but only the recovered ones count: one has a result.
+        expect((yield* dag.store.getNode(dagID, "survey--official"))?.status).toBe("failed")
+        expect(yield* admit(dag, dagID, { node: attempt("survey") })).toBe(true)
+      }),
+  )
+})
+
+describe("what a replan may do to the marks of a compose node over a real Dag service", () => {
+  it.live("refuses a replacement of the join node that drops its join record, and changes nothing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      const before = yield* read
+      const joinNode = byID(before.config?.nodes).get("survey")
+      if (!joinNode) throw new Error("the join node is gone")
+      const { join: _join, ...restated } = joinNode
+      const failure = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(failure.message).toContain('Node "survey" carries join')
+      expect(failure.message).toContain("cannot change or clear it")
+      const after = yield* read
+      expect(after.config).toEqual(before.config)
+      expect(after.workflow?.graphRev).toBe(before.workflow?.graphRev)
+    }),
+  )
+
+  it.live("lets a replacement that keeps the join record as it is through", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      const joinNode = byID((yield* read).config?.nodes).get("survey")
+      if (!joinNode) throw new Error("the join node is gone")
+      const result = yield* dag.extend(dagID, [{ ...joinNode, name: "survey: joined" }])
+      expect(result.replace).toContain("survey")
+      const after = byID((yield* read).config?.nodes).get("survey")
+      expect(after?.name).toBe("survey: joined")
+      expect(after?.join).toEqual(joinNode.join)
+    }),
+  )
+
+  it.live("refuses a replacement of a slot that has not been expanded and lacks its marker", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      const before = yield* read
+      const slot = byID(before.config?.nodes).get("survey")
+      if (!slot?.expand) throw new Error("the slot is gone")
+      const { expand: _expand, ...restated } = slot
+      const failure = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(failure.message).toContain('Node "survey" carries expand')
+      expect((yield* read).config).toEqual(before.config)
+    }),
+  )
+
+  it.live("holds a running join node by the admitted-field guard, and a restart of it by the compose one", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { output: "official says" })
+      yield* dag.nodeQueued(dagID, "survey", DEADLINE())
+      yield* dag.nodeStarted(dagID, "survey", "ses_survey", DEADLINE())
+      const before = yield* read
+      const joinNode = byID(before.config?.nodes).get("survey")
+      if (!joinNode) throw new Error("the join node is gone")
+      const { join: _join, ...restated } = joinNode
+      const held = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(held.message).toContain("changes admitted execution fields without restart: join")
+      const restarted = yield* dag.extend(dagID, [{ ...restated, restart: true }]).pipe(Effect.flip)
+      expect(restarted.message).toContain('Node "survey" carries join')
+      expect((yield* read).config).toEqual(before.config)
+    }),
+  )
+})
+
+// #1158 PR3b-2: an item of a recursive composer that asks to be split again becomes a nested split node and a nested
+// slot, and the slot is expanded the same way, by the same function, once its own split node has settled.
+const nestedPlan = plan([item("big", "explore", { split: true }), item("small", "explore")])
+const leaves = plan([item("leaf1", "explore"), item("leaf2", "explore")])
+
+const generated = (config: { nodes: readonly NodeConfig[] } | undefined) =>
+  (config?.nodes ?? []).filter((node) => node.compose_subtree !== undefined)
+
+/** Where the plan of a node sits in the graph a scheduling round would read now. */
+const positionFor = (
+  state: { config: ReturnType<typeof parseWorkflowConfig>; rows: readonly DagStore.NodeRow[] },
+  id: string,
+  limits: DagCompose.Limits = DagCompose.DEFAULT_LIMITS,
+) => {
+  const slot = state.config?.nodes.find((node) => node.id === id)
+  if (!slot) throw new Error(`no node ${id}`)
+  return DagComposeExpansion.positionIn(slot, state.config?.nodes ?? [], state.rows, limits)
+}
+
+describe("a nested plan through Dag.extend", () => {
+  it.live(
+    "writes a two-level expansion: the first plan nests, and the nested slot becomes the join node of its own plan",
+    () =>
+      Effect.gen(function* () {
+        const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+        yield* expand()
+        const first = yield* read
+        const nested = byID(first.config?.nodes)
+        expect([...nested.keys()].sort()).toEqual(
+          ["report", "survey", "survey--big", "survey--big--split", "survey--small", "survey--split"].sort(),
+        )
+        expect(nested.get("survey--big--split")).toMatchObject({
+          depends_on: ["survey--split"],
+          generated_helper: "split",
+          compose_subtree: { root: "survey", depth: 2 },
+        })
+        expect(nested.get("survey--big")).toMatchObject({
+          depends_on: ["survey--big--split"],
+          expand: "survey--big--split",
+          compose_subtree: { root: "survey", depth: 2 },
+        })
+        // The join node above waits for the nested slot and nothing of its split node.
+        expect(nested.get("survey")?.depends_on).toEqual(["survey--big", "survey--small"])
+        const rows = new Map(first.rows.map((row) => [row.id, row]))
+        expect(first.rows).toHaveLength(6)
+        expect(rows.get("survey--big--split")).toMatchObject({
+          status: "pending",
+          dependsOn: ["survey--split"],
+          workerType: "mapper",
+          required: false,
+        })
+        expect(rows.get("survey--big")).toMatchObject({
+          status: "pending",
+          dependsOn: ["survey--big--split"],
+          workerType: "mapper",
+        })
+
+        // Its split node runs and settles; the slot is then expanded the same way, into the join node of its own plan.
+        yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+        yield* expand(dag, "survey--big")
+        const second = yield* read
+        const all = byID(second.config?.nodes)
+        expect([...all.keys()].sort()).toEqual([...nested.keys(), "survey--big--leaf1", "survey--big--leaf2"].sort())
+        expect(all.get("survey--big")?.expand).toBeUndefined()
+        expect(all.get("survey--big")).toMatchObject({
+          depends_on: ["survey--big--leaf1", "survey--big--leaf2"],
+          compose_subtree: { root: "survey", depth: 2 },
+          join: {
+            plan: "survey--big--split",
+            items: [
+              { id: "leaf1", node: "survey--big--leaf1", agent: "explore", required: false },
+              { id: "leaf2", node: "survey--big--leaf2", agent: "explore", required: false },
+            ],
+          },
+        })
+        for (const id of ["survey--big--leaf1", "survey--big--leaf2"])
+          expect(all.get(id), id).toMatchObject({
+            depends_on: ["survey--big--split"],
+            workspace_writes: "deny",
+            report_to_parent: false,
+            compose_subtree: { root: "survey", depth: 2 },
+          })
+        // What binds to the nested slot is unchanged, and the join node above still records it as a nested item.
+        expect(all.get("survey")?.depends_on).toEqual(["survey--big", "survey--small"])
+        expect(all.get("survey")?.join?.items[0]).toMatchObject({ node: "survey--big", nested: true })
+        expect(second.rows).toHaveLength(8)
+        expect(new Map(second.rows.map((row) => [row.id, row])).get("survey--big")).toMatchObject({
+          status: "pending",
+          dependsOn: ["survey--big--leaf1", "survey--big--leaf2"],
+        })
+      }),
+  )
+
+  it.live("settles a nested plan that was read before a crash the same way: the same ids and definitions", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      // The process dies after reading the nested plan and before the extend commits: nothing is written.
+      const crashing = {
+        extend: () => Effect.die(new Error("process died before the extend committed")),
+        nodeFailed: dag.nodeFailed,
+      }
+      expect(Exit.isFailure(yield* Effect.exit(expand(crashing, "survey--big")))).toBe(true)
+      const before = yield* read
+      expect(before.rows).toHaveLength(6)
+      expect(byID(before.config?.nodes).get("survey--big")?.expand).toBe("survey--big--split")
+
+      // What the next round plans from that persisted state is what it then writes, and planning twice agrees.
+      const composer = DagCompose.resolve(catalog(), "mapper")
+      const slot = byID(before.config?.nodes).get("survey--big")
+      if (!slot || !composer.available) throw new Error("no slot or composer")
+      const plan = () =>
+        DagCompose.planExpansion({
+          slot,
+          composer: composer.composer,
+          limits: DagCompose.DEFAULT_LIMITS,
+          source: before.rows.find((row) => row.id === "survey--big--split"),
+          existingNodeIDs: new Set(before.rows.map((row) => row.id)),
+          position: positionFor(before, "survey--big"),
+        })
+      const planned = plan()
+      expect(plan()).toEqual(planned)
+      yield* expand(dag, "survey--big")
+      const written = byID((yield* read).config?.nodes)
+      expect(planned.nodes.map((node) => node.id)).toEqual(["survey--big--leaf1", "survey--big--leaf2", "survey--big"])
+      // Creation adds the workflow's defaults to a definition; everything the plan wrote is kept as it was planned.
+      for (const node of planned.nodes) expect(written.get(node.id), node.id).toMatchObject(node)
+    }),
+  )
+
+  it.live("fails the join node above when a required nested item has no result, which it reads as a missing item", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        composer: "mapper",
+        split: { plan: plan([item("big", "explore", { split: true, required: true }), item("small", "explore")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      yield* expand(dag, "survey--big")
+      yield* settle(dag, dagID, "survey--small", { output: "small says" })
+      yield* settle(dag, dagID, "survey--big--leaf1", { failed: "the search timed out" })
+      yield* settle(dag, dagID, "survey--big--leaf2", { failed: "the source was unreachable" })
+      // The nested join finds nothing among its own children, and fails before any model is asked...
+      expect(yield* admit(dag, dagID, { node: "survey--big" })).toBe(false)
+      const { rows } = yield* read
+      expect(rows.find((row) => row.id === "survey--big")).toMatchObject({
+        status: "failed",
+        errorClass: "compose_no_results",
+        // The block is optional, so is its nested slot: the failure is the nested join's alone.
+        required: false,
+      })
+      // ... and the join node above, whose item is required, reads that as the item missing.
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const above = (yield* read).rows.find((row) => row.id === "survey")
+      expect(above).toMatchObject({ status: "failed", errorClass: "compose_required_missing" })
+      expect(above?.errorReason).toContain('"big" (survey--big: failed)')
+    }),
+  )
+})
+
+describe("a nested plan the graph has no room for", () => {
+  // split + slot + report is three nodes; the first plan adds the nested split node, the nested slot and `small`
+  // (the slot's place becomes the join node): six. The nested plan then adds two workers, or one fallback worker.
+  const settledNested = (maxTotalNodes: number) =>
+    Effect.gen(function* () {
+      const scene = yield* scenario({ composer: "mapper", maxTotalNodes, split: { plan: nestedPlan } })
+      yield* scene.expand()
+      yield* settle(scene.dag, scene.dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      return scene
+    })
+
+  it.live(
+    "falls back to one worker for the nested slot when the node ceiling refuses its plan and the fallback fits",
+    () =>
+      Effect.gen(function* () {
+        const { dag, read, expand } = yield* settledNested(7)
+        yield* expand(dag, "survey--big")
+        const { config, workflow, rows } = yield* read
+        const nodes = byID(config?.nodes)
+        expect(nodes.get("survey--big")?.join?.degraded).toContain("the expanded graph was rejected")
+        expect(nodes.get("survey--big")?.depends_on).toEqual(["survey--big--fallback"])
+        expect(nodes.get("survey--big--fallback")?.compose_subtree).toEqual({ root: "survey", depth: 2 })
+        expect(rows).toHaveLength(7)
+        // A refusal is not a failure of the workflow, nor a pause.
+        expect(workflow?.status).not.toBe("paused")
+        expect(rows.some((row) => row.status === "failed")).toBe(false)
+      }),
+  )
+
+  it.live("fails the nested slot with compose_capacity when not even the fallback fits, and only that node", () =>
+    Effect.gen(function* () {
+      const { dag, read, expand } = yield* settledNested(6)
+      yield* expand(dag, "survey--big")
+      const { config, workflow, rows } = yield* read
+      expect(rows).toHaveLength(6)
+      expect(byID(config?.nodes).get("survey--big")?.expand).toBe("survey--big--split")
+      // The slot is optional, as its item is: the join node above is not told the workflow failed.
+      expect(rows.find((row) => row.id === "survey--big")).toMatchObject({
+        status: "failed",
+        errorClass: DagComposeExpansion.CAPACITY,
+        required: false,
+      })
+      expect(rows.filter((row) => row.status === "failed")).toHaveLength(1)
+      expect(workflow?.status).toBe("running")
+    }),
+  )
+
+  it.live("fails the nested slot with compose_unavailable when its composer cannot be used any more", () =>
+    Effect.gen(function* () {
+      // The catalog is read at every expansion: by the time the nested plan is expanded `explore` is private, so the
+      // mapper has nothing left to expand into, and no fallback worker either.
+      let catalog = agents()
+      const { dag, dagID, read, expand } = yield* scenario({
+        composer: "mapper",
+        get agents() {
+          return catalog
+        },
+        split: { plan: nestedPlan },
+      })
+      yield* expand()
+      catalog = catalog.map((entry) =>
+        entry.name === "explore" ? agent("explore", { contract: { visibility: "private" } }) : entry,
+      )
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      yield* expand(dag, "survey--big")
+      const { rows, workflow } = yield* read
+      expect(rows).toHaveLength(6)
+      expect(rows.find((row) => row.id === "survey--big")).toMatchObject({
+        status: "failed",
+        errorClass: DagComposeExpansion.UNAVAILABLE,
+        required: false,
+      })
+      expect(workflow?.status).toBe("running")
+    }),
+  )
+
+  it.live("passes the merged graph's strict review gate at both levels: nested nodes are not writers", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        composer: "mapper",
+        reviewGate: "strict",
+        split: { plan: nestedPlan },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      yield* expand(dag, "survey--big")
+      const { config, rows } = yield* read
+      expect(config?.review_gate).toBe("strict")
+      expect(byID(config?.nodes).get("survey--big")?.expand).toBeUndefined()
+      expect(byID(config?.nodes).get("survey--big")?.join?.items).toHaveLength(2)
+      expect(rows).toHaveLength(8)
+    }),
+  )
+})
+
+describe("the room that siblings share", () => {
+  // The smallest quota the user's config accepts is 10 nodes.
+  const tight = { compose: { max_subtree_nodes: 10 } }
+
+  it.live(
+    "gives the first nested slot to be expanded the room it asks for, and degrades the next one that does not fit",
+    () =>
+      Effect.gen(function* () {
+        const { dag, dagID, read, expand } = yield* scenario({
+          composer: "mapper",
+          globalDag: tight,
+          split: {
+            plan: plan([
+              item("a", "explore", { split: true }),
+              item("b", "explore", { split: true }),
+              item("c", "explore"),
+            ]),
+          },
+        })
+        const limit = { ...DagCompose.DEFAULT_LIMITS, maxSubtreeNodes: 10 }
+        yield* expand()
+        const four = ["a1", "a2", "a3", "a4"].map((id) => item(id, "explore"))
+        yield* settle(dag, dagID, "survey--a--split", { output: JSON.stringify(plan(four)) })
+        yield* settle(dag, dagID, "survey--b--split", {
+          output: JSON.stringify(plan([item("b1", "explore"), item("b2", "explore")])),
+        })
+        // Three items and two nested split nodes are written: 5 of the 10. `b` keeps a node for itself, which leaves 4.
+        expect(positionFor(yield* read, "survey--a", limit)).toEqual({ depth: 2, remainingNodes: 4 })
+        yield* expand(dag, "survey--a")
+        // `a` took its four items. `b` finds one node left, which is not enough for its two.
+        expect(positionFor(yield* read, "survey--b", limit)).toEqual({ depth: 2, remainingNodes: 1 })
+        yield* expand(dag, "survey--b")
+        const { config } = yield* read
+        const nodes = byID(config?.nodes)
+        expect(nodes.get("survey--a")?.join?.degraded).toBeUndefined()
+        expect(nodes.get("survey--a")?.depends_on).toEqual([
+          "survey--a--a1",
+          "survey--a--a2",
+          "survey--a--a3",
+          "survey--a--a4",
+        ])
+        expect(nodes.get("survey--b")?.join?.degraded).toContain("room for 1 more nodes")
+        expect(nodes.get("survey--b")?.depends_on).toEqual(["survey--b--fallback"])
+        // The fallback fits because its place was kept: the subtree is exactly as large as its quota, not larger.
+        expect(generated(config)).toHaveLength(10)
+      }),
+  )
+
+  it.live("runs an item as one worker when the items before it took the room, and says so where the workers read", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        composer: "mapper",
+        globalDag: { compose: { max_children: 12, max_subtree_nodes: 10 } },
+        // Eight items leave 2 of the 10: one nested plan is paid for, and `a` is served before `b`.
+        split: {
+          plan: plan([
+            item("a", "explore", { split: true }),
+            item("b", "explore", { split: true }),
+            ...["c", "d", "e", "f", "g", "h"].map((id) => item(id, "explore")),
+          ]),
+        },
+      })
+      yield* expand()
+      const { config } = yield* read
+      const nodes = byID(config?.nodes)
+      expect(nodes.get("survey--a")?.expand).toBe("survey--a--split")
+      expect(nodes.has("survey--b--split")).toBe(false)
+      expect(nodes.get("survey--b")?.expand).toBeUndefined()
+      const reason = "the subtree has no room left for a nested plan under dag.compose.max_subtree_nodes 10"
+      expect(nodes.get("survey--b")?.prompt_template.inline).toContain(reason)
+      expect(nodes.get("survey")?.join?.items.find((entry) => entry.id === "b")).toMatchObject({ unsplit: reason })
+      expect(nodes.get("survey")?.prompt_template.inline).toContain(reason)
+      // Eight items and one nested split node: nine of the ten.
+      expect(generated(config)).toHaveLength(9)
+    }),
+  )
+
+  it.live("runs every split item as one worker when the block may not go deeper", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        composer: "mapper",
+        globalDag: { compose: { max_depth: 1 } },
+        split: { plan: nestedPlan },
+      })
+      yield* expand()
+      const nodes = byID((yield* read).config?.nodes)
+      expect([...nodes.keys()].filter((id) => id.endsWith("--split"))).toEqual(["survey--split"])
+      expect(nodes.get("survey")?.join?.items.map((entry) => entry.unsplit?.slice(0, 40))).toEqual([
+        "the expansion is already as deep as dag.",
+        undefined,
+      ])
+    }),
+  )
+})
+
+describe("a nested slot that was cancelled before it was expanded", () => {
+  const split = plan([
+    item("a", "explore", { split: true }),
+    item("b", "explore", { split: true }),
+    item("c", "explore"),
+  ])
+
+  it.live("is not expanded by a round that read it before the cancellation, though its split node settled", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read } = yield* scenario({ composer: "mapper", split: { plan: split } })
+      yield* DagComposeExpansion.expand({
+        port: dag,
+        agents: { list: () => Effect.succeed(agents() as never) },
+        dagID,
+        slot: byID((yield* read).config?.nodes).get("survey")!,
+        nodes: (yield* read).rows,
+        graph: (yield* read).config?.nodes ?? [],
+        attempt: {
+          replanAttempts: (yield* read).row!.replanAttempts,
+          nodeSeq: (yield* read).row!.seq,
+          graphRev: (yield* read).workflow!.graphRev,
+        },
+      })
+      yield* settle(dag, dagID, "survey--a--split", { output: JSON.stringify(leaves) })
+      // The round reads the slot as pending, with its plan.
+      const stale = yield* read
+      const row = stale.rows.find((candidate) => candidate.id === "survey--a")
+      const slot = byID(stale.config?.nodes).get("survey--a")
+      if (!row || !slot || !stale.workflow) throw new Error("the slot is gone")
+      // Then the parent cancels it (control.cancel_node).
+      yield* dag.nodeCancelled(dagID, "survey--a", "not needed")
+      const cancelled = yield* read
+      yield* DagComposeExpansion.expand({
+        port: dag,
+        agents: { list: () => Effect.succeed(agents() as never) },
+        dagID,
+        slot,
+        nodes: stale.rows,
+        graph: stale.config?.nodes ?? [],
+        attempt: { replanAttempts: row.replanAttempts, nodeSeq: row.seq, graphRev: stale.workflow.graphRev },
+      })
+      const after = yield* read
+      expect(after.rows.map((node) => [node.id, node.status])).toEqual(
+        cancelled.rows.map((node) => [node.id, node.status]),
+      )
+      expect(after.config).toEqual(cancelled.config)
+      expect(after.rows.map((node) => node.id)).not.toContain("survey--a--leaf1")
+    }),
+  )
+
+  it.live("no longer keeps the room set aside for its plan, though the node it is stays in the graph", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: split } })
+      yield* expand()
+      // Five nodes are written and `a` keeps one for its plan: 40 - 5 - 1 for `b`.
+      expect(positionFor(yield* read, "survey--b").remainingNodes).toBe(34)
+      yield* dag.nodeCancelled(dagID, "survey--a", "not needed")
+      // A control cancellation ends the attempt and leaves the row in the current revision: it is still one of the five.
+      expect((yield* read).rows.find((row) => row.id === "survey--a")).toMatchObject({
+        status: "failed",
+        errorClass: "cancelled",
+        superseded: false,
+      })
+      expect(positionFor(yield* read, "survey--b").remainingNodes).toBe(35)
+    }),
+  )
+})
+
+describe("a nested plan after a recovery", () => {
+  it.live("keeps its depth and its place in the subtree, and expands under the id its slot has now", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+      yield* expand()
+      const before = yield* read
+      const beforeCount = generated(before.config).length
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--big--split"])
+      const slotID = attempt("survey--big")
+      const splitID = attempt("survey--big--split")
+      const recovered = yield* read
+      const slot = byID(recovered.config?.nodes).get(slotID)
+      // The mark follows the node it is on; its root is a key, not a reference to a node that was replaced.
+      expect(slot).toMatchObject({ expand: splitID, compose_subtree: { root: "survey", depth: 2 } })
+      // The replaced attempts left the config: the subtree is as large as it was, and the slot is as deep.
+      expect(generated(recovered.config)).toHaveLength(beforeCount)
+      const position = positionFor(recovered, slotID)
+      expect(position).toEqual({ depth: 2, remainingNodes: positionFor(before, "survey--big").remainingNodes })
+      // Even a graph that still lists the replaced definitions counts what the rows say is current, once.
+      expect(
+        DagComposeExpansion.positionIn(
+          byID(recovered.config?.nodes).get(slotID)!,
+          [...(before.config?.nodes ?? []), ...(recovered.config?.nodes ?? [])],
+          recovered.rows,
+          DagCompose.DEFAULT_LIMITS,
+        ),
+      ).toEqual(position)
+
+      yield* settle(dag, dagID, splitID, { output: JSON.stringify(leaves) })
+      yield* expand(dag, slotID)
+      const done = yield* read
+      const nodes = byID(done.config?.nodes)
+      expect(nodes.get(slotID)?.join?.items.map((entry) => entry.node)).toEqual([
+        `${slotID}--leaf1`,
+        `${slotID}--leaf2`,
+      ])
+      expect(nodes.get(`${slotID}--leaf1`)?.compose_subtree).toEqual({ root: "survey", depth: 2 })
+      // Every node of the subtree is there once, and the replaced attempts are not read again.
+      const ids = (done.config?.nodes ?? []).map((node) => node.id)
+      expect(new Set(ids).size).toBe(ids.length)
+      expect(generated(done.config)).toHaveLength(beforeCount + 2)
+    }),
+  )
+
+  it.live("points the join node above at a recovered nested join, which reads the recovered child it was missing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      yield* expand(dag, "survey--big")
+      yield* settle(dag, dagID, "survey--small", { output: "small says" })
+      yield* settle(dag, dagID, "survey--big--leaf1", { output: "leaf1 says" })
+      yield* settle(dag, dagID, "survey--big--leaf2", { failed: "the search timed out" })
+      const before = yield* read
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--big--leaf2"])
+      const leafID = attempt("survey--big--leaf2")
+      const innerID = attempt("survey--big")
+      const outerID = attempt("survey")
+      const recovered = yield* read
+      const nodes = byID(recovered.config?.nodes)
+      // The nested join reads the recovered leaf where the failed one was, and is still part of the same subtree.
+      expect(nodes.get(innerID)).toMatchObject({
+        depends_on: ["survey--big--leaf1", leafID],
+        compose_subtree: { root: "survey", depth: 2 },
+        join: { plan: "survey--big--split" },
+      })
+      expect(nodes.get(innerID)?.join?.items.map((entry) => entry.node)).toEqual(["survey--big--leaf1", leafID])
+      // The join node above reads the recovered nested join as its item, and the item is still a nested one.
+      expect(nodes.get(outerID)?.depends_on).toEqual([innerID, "survey--small"])
+      expect(nodes.get(outerID)?.join?.items[0]).toMatchObject({ id: "big", node: innerID, nested: true })
+      expect(nodes.get(outerID)?.input_mapping).toMatchObject({ [innerID]: innerID })
+      expect(nodes.get(outerID)?.input_mapping).not.toHaveProperty("survey--big")
+      expect(nodes.get(outerID)?.prompt_template.inline).toContain(`"${innerID}": item "big", split again`)
+      // Nothing was added to the subtree: every node the recovery replaced was replaced by one.
+      expect(generated(recovered.config)).toHaveLength(generated(before.config).length)
+    }),
+  )
+})
+
+describe("what a replan may do to the subtree mark of a node", () => {
+  it.live("refuses a replacement of a pending nested slot that drops its subtree, and changes nothing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+      yield* expand()
+      const before = yield* read
+      const slot = byID(before.config?.nodes).get("survey--big")
+      if (!slot) throw new Error("the nested slot is gone")
+      const { compose_subtree: _mark, ...restated } = slot
+      const failure = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(failure.message).toContain('Node "survey--big" carries compose_subtree')
+      expect((yield* read).config).toEqual(before.config)
+    }),
+  )
+
+  it.live("refuses a replacement of a pending worker that changes its subtree, and lets an unchanged one through", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+      yield* expand()
+      const worker = byID((yield* read).config?.nodes).get("survey--small")
+      if (!worker) throw new Error("the worker is gone")
+      const moved = yield* dag
+        .extend(dagID, [{ ...worker, compose_subtree: { root: "elsewhere", depth: 1 } }])
+        .pipe(Effect.flip)
+      expect(moved.message).toContain('Node "survey--small" carries compose_subtree')
+      yield* dag.extend(dagID, [{ ...worker, name: "small, renamed" }])
+      expect(byID((yield* read).config?.nodes).get("survey--small")).toMatchObject({
+        name: "small, renamed",
+        compose_subtree: { root: "survey", depth: 1 },
+      })
+    }),
   )
 })

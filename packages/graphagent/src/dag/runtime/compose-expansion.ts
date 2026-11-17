@@ -21,12 +21,24 @@ import { DagValidation } from "../validation"
  * reshaped graph. The marker lives in the persisted definition, so a crash
  * before the extend commits plans again on the next round and gets the same ids.
  *
+ * A nested slot, the node of an item that was split again, is expanded the same way
+ * when its own split node has settled. How deep it sits and what is left of the
+ * subtree's quota are read from the persisted graph (`DagCompose.positionOf`), never
+ * kept anywhere else, and the rounds of one workflow run one at a time, so siblings
+ * share the quota in the order they are expanded and a replay decides as the first
+ * run did.
+ *
  * Expanding never fails or parks the workflow. A plan that cannot be expanded
  * degrades to one fallback worker that takes the whole task, and when even that
  * does not fit the graph, the slot itself fails with `compose_capacity` and
  * takes the failure semantics of its own `required`. What decides all of this is
  * `DagCompose.planExpansion`; this module only reads the state it needs, writes
  * the result and reports.
+ *
+ * The other end of the expansion is `admitJoin`: when the join node it left
+ * behind becomes ready, it is checked against what its children produced before
+ * any model is asked, and a join node with nothing it needs fails the way a slot
+ * does, with its own `required` deciding what that costs.
  */
 
 /** The error class a slot fails with when neither the expansion nor the fallback fits the graph. */
@@ -43,6 +55,8 @@ export interface Input {
   readonly slot: NodeConfig
   /** The workflow's rows of this scheduling round. */
   readonly nodes: readonly DagStore.NodeRow[]
+  /** The workflow's node definitions as the round holds them: with the rows, the graph the subtree's depth and quota are read from. */
+  readonly graph: readonly NodeConfig[]
   /** What the round read of the slot, so a parent's replan or cancel in between wins. */
   readonly attempt: NodeExecutionAttempt
 }
@@ -85,6 +99,7 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     return
   }
   const existingNodeIDs = new Set(nodes.map((candidate) => candidate.id))
+  const position = positionIn(slot, input.graph, nodes, limits)
   // `Dag.extend` replaces a pending node and keeps a terminal one, so a fallback id some other node already holds
   // would either overwrite that node's work or let the join read its result as the fallback's. Fail instead.
   const fallbackTaken = existingNodeIDs.has(DagCompose.fallbackID(slot.id))
@@ -95,6 +110,7 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     limits,
     source: nodes.find((candidate) => candidate.id === slot.expand),
     existingNodeIDs,
+    position,
   })
   if (plan.kind === "fallback" && fallbackTaken) {
     yield* giveUp(fallbackCollision)
@@ -134,6 +150,70 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
   yield* giveUp(reason, errorClass)
 })
 
+/**
+ * Where the plan of `slot` sits in the graph a round holds (`DagCompose.positionOf`): its depth, and the room its
+ * subtree has left. The graph is the definitions whose rows are current: a node a cancellation or a recovery
+ * superseded no longer counts, so neither does it hold room nor keep a nested slot waiting for it.
+ */
+export const positionIn = (
+  slot: NodeConfig,
+  graph: readonly NodeConfig[],
+  nodes: readonly DagStore.NodeRow[],
+  limits: DagCompose.Limits,
+): DagCompose.Position => {
+  const rows = new Map(nodes.map((row) => [row.id, row]))
+  return DagCompose.positionOf(
+    slot,
+    graph.flatMap((node) => {
+      const row = rows.get(node.id)
+      return row === undefined || row.superseded ? [] : [{ node, status: row.status }]
+    }),
+    limits,
+  )
+}
+
+export interface JoinInput {
+  /** The runner's writes: the entry's port, so a lost lease refuses them. */
+  readonly port: Pick<Dag.Interface, "nodeFailed">
+  readonly dagID: string
+  /** The join node as persisted: the definition that carries `join`. */
+  readonly node: NodeConfig
+  /** The workflow's rows of this scheduling round. */
+  readonly nodes: readonly DagStore.NodeRow[]
+  /** What the round read of the node, so a parent's replan or cancel in between wins. */
+  readonly attempt: NodeExecutionAttempt
+}
+
+/**
+ * The join node's admission check (#1158): resolves `true` when the node may go
+ * on to be spawned, and `false` when it was refused here, which is a durable
+ * failure of the node with `compose_required_missing` or `compose_no_results`.
+ * A refused join node never reaches a model. A write that a stale attempt or a
+ * lost lease refused leaves the node pending and also resolves `false`, so a
+ * round that no longer owns the node does not spawn it. A node with no `join`
+ * is not one this applies to, and passes.
+ *
+ * The children are read by the node ids the join record holds. A recovery
+ * rewrites that record together with the join node it replaces (`planRecovery`),
+ * so the ids name the attempts that count and a superseded one is not read as if
+ * it were current.
+ */
+export const admitJoin = Effect.fn("DagComposeExpansion.admitJoin")(function* (input: JoinInput) {
+  const { port, dagID, node, nodes, attempt } = input
+  if (node.join === undefined) return true
+  const rows = new Map(nodes.map((row) => [row.id, row]))
+  const verdict = DagCompose.checkJoin(node.join, (id) => rows.get(id))
+  if (verdict.kind === "run") return true
+  yield* Effect.logWarning("DAG compose join refused: its children left nothing it needs", {
+    dagID,
+    nodeID: node.id,
+    errorClass: verdict.errorClass,
+    reason: verdict.reason,
+  })
+  yield* port.nodeFailed(dagID, node.id, verdict.reason, "exec_failed", attempt, verdict.errorClass).pipe(Effect.ignore)
+  return false
+})
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /** A graph the ceilings have no room for is `compose_capacity`; any other refusal is a plain expansion failure. */
@@ -149,4 +229,15 @@ const reportDegraded = (dagID: string, nodeID: string, plan: DagCompose.Expansio
         nodeID,
         reason: plan.reason,
       })
-    : Effect.void
+    : // An item that asked to be split further and was not: it runs as one worker, and its prompt and the join node's input say why.
+      Effect.forEach(
+        plan.declined,
+        (declined) =>
+          Effect.logWarning("DAG compose item runs as one worker though its plan asked to split it", {
+            dagID,
+            nodeID,
+            item: declined.item,
+            reason: declined.reason,
+          }),
+        { discard: true },
+      )
