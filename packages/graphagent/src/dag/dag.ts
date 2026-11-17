@@ -176,11 +176,24 @@ export interface NodeConfig {
   /** #1158: the expansion slot of a compose block or a composer node, naming its
    * split node. A node that carries it is never to be spawned as authored: at
    * admission the split node's plan replaces it with the expanded subtree and the
-   * join node under its id, as `fan_out` does for a writer. That admission step is
-   * the runtime half of #1158; until it exists the Workflow Authoring Check refuses
-   * to submit a graph with a slot (`DagCompose.gate`). Written by the compiler
-   * (`DagCompose`), never by an author; no model-writable node schema has the field. */
+   * join node under its id, as `fan_out` does for a writer
+   * (`DagComposeExpansion`, in the loop's admission seam). The Workflow Authoring
+   * Check still refuses to submit a graph with a slot until the rest of the
+   * feature lands (`DagCompose.gate`). Written by the compiler (`DagCompose`),
+   * never by an author; no model-writable node schema has the field. */
   expand?: string
+  /** #1158: what the join node of an expanded slot joins. Written at expansion,
+   * in the same extend that replaces the slot, so the join's admission check and
+   * the coverage section read the plan's items without reparsing the plan: the
+   * split node the plan came from, per item the child node that runs it, its agent
+   * and whether the item's work is required (the child's own `required` also
+   * depends on the block, so it is not that), and the reason when the plan was not
+   * expanded and one fallback worker took the whole task. Never authored. */
+  join?: {
+    plan: string
+    items: { id: string; node: string; agent: string; required: boolean }[]
+    degraded?: string
+  }
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow
