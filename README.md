@@ -122,7 +122,7 @@ v2.0 开发中，即将发布。发布进度在[里程碑](https://github.com/Le
 
 ## 快速开始
 
-预构建的二进制（Linux、macOS、Windows，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。仓库里现有的 `oc` 安装脚本会在 v2.1 删除，安装和升级都并入主程序，见路线图。GraphAgent 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是 GraphAgent。
+预构建的二进制（Linux、macOS，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。v2.0 起不再发布 Windows 原生版本，也不再运行 Windows 集成测试；Windows 用户请安装 WSL，在 WSL 中按 Linux 方式安装使用。仓库里现有的 `oc` 安装脚本会在 v2.1 删除，安装和升级都并入主程序，见路线图。GraphAgent 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是 GraphAgent。
 
 从源码运行需要 `package.json` 里 `packageManager` 固定的 Bun，以及 `.node-version` 指定的 Node：
 
@@ -186,7 +186,7 @@ v2.0 的剩余工作也在[里程碑](https://github.com/LeXwDeX/GraphAgent/mile
 - workflow 工具接口收敛、工作流级 worktree、事件驱动邮箱与持久对账。
 - agent 契约与 composer：内置调研、架构设计、原型设计 agent，并在 DAG 内组合公共 agent。
 - PR 监听改为事件源；`/remind` 持久提醒；后台任务显示与子 agent 只读界面。
-- v2.0.0 发布：版本推导、Breaking 清单、中英迁移指南与三平台冒烟。
+- v2.0.0 发布：版本推导、Breaking 清单、中英迁移指南与 Linux、macOS 冒烟。
 - v2.1：安装与升级并入主程序，直接从 GitHub 检索新版本并升级，不再需要 `oc` 脚本；release 打包随之调整，macOS 上安装不用再输密码；配置也可以从 GitHub 仓库读取（[#1281](https://github.com/LeXwDeX/GraphAgent/issues/1281)）。
 
 这些都是计划，实际状态以里程碑为准。

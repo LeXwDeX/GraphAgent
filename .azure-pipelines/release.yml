@@ -1,7 +1,7 @@
 # ============================================================================
 # Release · Fork Build (Azure Pipelines)
 # ----------------------------------------------------------------------------
-# Purpose : Build GraphAgent CLI binaries (linux / macos / windows), package
+# Purpose : Build GraphAgent CLI binaries (linux / macos), package
 #           the reference templates, assemble a verified release candidate
 #           and optionally publish it as a GitHub Release.
 # Trigger : Manual run from `main` only.
@@ -13,17 +13,16 @@
 #           draftRelease  — with createRelease, create an unpublished draft
 #                           instead: no tag, not Latest. Used to prove the
 #                           publish path; delete the draft afterwards.
-#           platforms     — comma-separated subset of linux,macos,windows.
+#           platforms     — comma-separated subset of linux,macos.
 # Secrets : none. Only the publish job uses the github.com_LeXwDeX service
 #           connection (Azure Pipelines GitHub App) to create the release.
 # Role    : Fallback for .github/workflows/release-fork.yml when GitHub
 #           Actions cannot run; never publish the same version from both.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute:
-#           ubuntu-24.04-8-core and macos-26-arm64; Windows uses the free
-#           Microsoft-hosted windows-latest tier for now.
+#           ubuntu-24.04-8-core and macos-26-arm64.
 # macOS   : Like release-fork.yml, the arm64 macOS job builds darwin-arm64
 #           natively and runs the self-contained install acceptance stub.
-# Output  : Pipeline artifacts graphagent-{linux,macos,windows},
+# Output  : Pipeline artifacts graphagent-{linux,macos},
 #           dag-templates and release-candidate-<version>.
 # ============================================================================
 
@@ -42,9 +41,9 @@ parameters:
     type: boolean
     default: false
   - name: platforms
-    displayName: Platforms to build (comma-separated subset of linux,macos,windows)
+    displayName: Platforms to build (comma-separated subset of linux,macos)
     type: string
-    default: linux,macos,windows
+    default: linux,macos
   - name: buildTargets
     type: object
     default:
@@ -53,9 +52,6 @@ parameters:
         buildArgs: --single --skip-install
       - name: macos
         image: macos-26-arm64
-        buildArgs: --single --skip-install
-      - name: windows
-        image: windows-latest
         buildArgs: --single --skip-install
 
 jobs:
@@ -144,15 +140,9 @@ jobs:
             dependsOn:
               - version
               - package_templates
-            # Windows 8-core images have not reached the GitHub-hosted Agents
-            # pool yet, so Windows builds on the free Microsoft-hosted tier.
-            ${{ if eq(target.name, 'windows') }}:
-              pool:
-                vmImage: ${{ target.image }}
-            ${{ else }}:
-              pool:
-                name: GitHub-hosted Agents
-                vmImage: ${{ target.image }}
+            pool:
+              name: GitHub-hosted Agents
+              vmImage: ${{ target.image }}
             timeoutInMinutes: 60
             variables:
               GRAPHAGENT_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
@@ -167,7 +157,6 @@ jobs:
               # start without reaching https://models.dev at runtime.
               - bash: |
                   snapshot_path="$AGENT_TEMPDIRECTORY/models-dev-api.json"
-                  if command -v cygpath >/dev/null 2>&1; then snapshot_path="$(cygpath -m "$snapshot_path")"; fi
                   for attempt in 1 2 3; do
                     if curl -fsSL --max-time 30 https://models.dev/api.json -o "$snapshot_path"; then
                       echo "models.dev snapshot downloaded (attempt $attempt)"
@@ -188,11 +177,8 @@ jobs:
                   set -euo pipefail
                   mkdir -p dag-templates-src
                   archive="$(Pipeline.Workspace)/dag-templates/dag-templates.tar.gz"
-                  # GNU tar reads "D:\..." as host "D"; give it a POSIX path.
-                  if command -v cygpath >/dev/null 2>&1; then archive="$(cygpath -u "$archive")"; fi
                   tar -xzf "$archive" -C dag-templates-src
                   templates_dir="$(pwd)/dag-templates-src"
-                  if command -v cygpath >/dev/null 2>&1; then templates_dir="$(cygpath -m "$templates_dir")"; fi
                   echo "##vso[task.setvariable variable=DAG_TEMPLATES_DIR]$templates_dir"
                 displayName: Extract templates
               - bash: ./packages/graphagent/script/build.ts ${{ target.buildArgs }}
@@ -205,7 +191,6 @@ jobs:
                       set -euo pipefail
                       for dir in packages/graphagent/dist/graphagent-*/; do
                         cli="$dir/bin/graphagent"
-                        if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
                         actual="$("$cli" --version)"
                         if [[ "$actual" != "$GRAPHAGENT_VERSION" ]]; then
                           echo "Unexpected CLI version: $actual" >&2
@@ -285,7 +270,6 @@ jobs:
           }
           require_archive linux "graphagent-linux-*.tar.gz"
           require_archive macos "graphagent-darwin-*.zip"
-          require_archive windows "graphagent-windows-*.zip"
           sha256sum "${assets[@]}" > SHA256SUMS
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS

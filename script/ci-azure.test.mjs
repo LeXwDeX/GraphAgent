@@ -69,24 +69,27 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
   )
 })
 
-await test("Azure Pipelines runs development CI and GitHub Actions runs release, Windows E2E and extra Nix platforms", () => {
+await test("Azure Pipelines runs development CI and GitHub Actions runs release and extra Nix platforms", () => {
   const workflows = new URL("../.github/workflows/", import.meta.url)
   assert.deepEqual(
     readdirSync(workflows).sort(),
-    ["nix-extra-platforms.yml", "release-fork.yml", "windows-e2e.yml"],
-    ".github/workflows holds the release, Windows E2E and the extra Nix platforms",
+    ["nix-extra-platforms.yml", "release-fork.yml"],
+    ".github/workflows holds the release and the extra Nix platforms",
   )
   for (const file of ["ci.yml", "nix-verify.yml", "nightly-pty.yml", "release.yml", "templates/toolchain.yml"])
     assert(existsSync(new URL(`../.azure-pipelines/${file}`, import.meta.url)), file)
   const release = read(".azure-pipelines/release.yml")
   assert.match(release, /\ntrigger: none\npr: none\n/, "the Azure release fallback is manual only")
-  const windows = read(".github/workflows/windows-e2e.yml")
-  assert.match(windows, /name: Verify DAG artifact storage on Windows\n\s+working-directory: packages\/graphagent/)
-  for (const file of ["dag-output-ref", "dag-output-ref-result", "dag-input-mapping-runtime", "dag-artifact-permissions"])
-    assert(windows.includes(`test/dag/${file}.test.ts`), file)
   const nix = read(".azure-pipelines/nix-verify.yml")
   assert.match(nix, /\ntrigger: none\n/)
   assert.match(nix, /\n  paths:\n    include:\n      - flake\.nix\n/)
+})
+
+// #1364: native Windows is not supported from v2.0 (Windows users run the Linux build under WSL), so
+// neither release pipeline builds, packages or checks a Windows artifact.
+await test("the release pipelines build Linux and macOS only", () => {
+  for (const file of [".github/workflows/release-fork.yml", ".azure-pipelines/release.yml"])
+    assert.doesNotMatch(read(file), /windows/i, `${file} has no Windows target`)
 })
 
 // #1095: the Azure pool cannot route aarch64-linux and x86_64-darwin, so a GitHub workflow runs the same
@@ -155,8 +158,7 @@ await test("every job runs on the per-minute GitHub-hosted Agents pool", () => {
     const pipeline = read(`.azure-pipelines/${file}`)
     const pools = pipeline.match(/\n\s+pool:\n[^\n]+/g) ?? []
     assert(pools.length > 0, file)
-    for (const pool of pools)
-      assert.match(pool, /name: GitHub-hosted Agents$|vmImage: (windows-latest|\$\{\{ target\.image \}\})$/, `${file}: ${pool.trim()}`)
+    for (const pool of pools) assert.match(pool, /name: GitHub-hosted Agents$/, `${file}: ${pool.trim()}`)
   }
 })
 
@@ -164,12 +166,12 @@ await test("the root Azure pipeline stays a bounded, credential-free runner prob
   const smoke = read("azure-pipelines.yml")
   assert.match(smoke, /\ntrigger: none\npr: none\n/)
   assert.match(smoke, /Manual capacity probe only; development CI is\n#\s+\.azure-pipelines\/ci\.yml/)
-  assert.equal((smoke.match(/- job: smoke_/g) ?? []).length, 3, "linux, windows and macOS probes")
-  assert.equal((smoke.match(/timeoutInMinutes: 10/g) ?? []).length, 3, "every probe is bounded")
-  assert.equal((smoke.match(/- checkout: none/g) ?? []).length, 3, "no probe checks out repository code")
+  assert.equal((smoke.match(/- job: smoke_/g) ?? []).length, 2, "linux and macOS probes")
+  assert.equal((smoke.match(/timeoutInMinutes: 10/g) ?? []).length, 2, "every probe is bounded")
+  assert.equal((smoke.match(/- checkout: none/g) ?? []).length, 2, "no probe checks out repository code")
   assert.doesNotMatch(smoke, /azureSubscription:|serviceConnection:|secrets\.|- task:|checkout: self/)
   for (const pool of smoke.match(/vmImage: [^\n]+/g) ?? [])
-    assert.match(pool, /vmImage: (ubuntu-latest|windows-latest|macOS-latest)$/, pool)
+    assert.match(pool, /vmImage: (ubuntu-latest|macOS-latest)$/, pool)
   for (const name of smoke.match(/^ {8}name: [^\n]+$/gm) ?? [])
     assert.equal(name.trim(), "name: yc-ci-linux", "named pools stay on the managed CI pool")
 })

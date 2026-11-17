@@ -4,8 +4,7 @@
 # Installs the repository's exact Node (.node-version), Bun (packageManager)
 # and optionally Go (config_assistant/go.mod) pins, verifies them with
 # script/toolchain.mjs, restores the Bun download cache and runs
-# `bun install --frozen-lockfile`. Works on Linux, macOS and Windows agents
-# (Windows steps run in Git Bash).
+# `bun install --frozen-lockfile`. Works on Linux and macOS agents.
 # ============================================================================
 
 parameters:
@@ -47,7 +46,6 @@ steps:
       case "$(uname -s)" in
         Linux) os=linux ;;
         Darwin) os=darwin ;;
-        MINGW* | MSYS* | CYGWIN*) os=windows ;;
         *) echo "##vso[task.logissue type=error]Unsupported OS $(uname -s)"; exit 1 ;;
       esac
       case "$(uname -m)" in
@@ -70,12 +68,7 @@ steps:
       bin="$dir/$asset"
       chmod +x "$bin"/bun* || true
       # The release zip ships only bun; setup-bun adds bunx the same way.
-      if [ "$os" = windows ]; then
-        cp "$bin/bun.exe" "$bin/bunx.exe"
-      else
-        ln -sf bun "$bin/bunx"
-      fi
-      if command -v cygpath >/dev/null 2>&1; then bin="$(cygpath -w "$bin")"; fi
+      ln -sf bun "$bin/bunx"
       echo "##vso[task.prependpath]$bin"
     displayName: Setup Bun
 
@@ -94,15 +87,7 @@ steps:
       - bash: python3 -m pip install setuptools || python -m pip install setuptools || true
         displayName: Install setuptools for distutils compatibility
 
-      - bash: |
-          set -euo pipefail
-          # Workaround for patched peer variants (./patches/), see
-          # https://github.com/oven-sh/bun/issues/28147
-          if [ "$AGENT_OS" = "Windows_NT" ]; then
-            bun install --frozen-lockfile --linker hoisted
-          else
-            bun install --frozen-lockfile
-          fi
+      - bash: bun install --frozen-lockfile
         displayName: Install dependencies
 
   - ${{ if parameters.ripgrep }}:
