@@ -542,3 +542,35 @@ describe("host isolation", () => {
     expect(env.GRAPHAGENT_TEST_MANAGED_CONFIG_DIR).toBe(path.join("/tmp/h", "managed"))
   })
 })
+
+describe("a read-only shell call stays in the workspace", () => {
+  test("anything that reads the environment or leaves the workspace stops like an execution", () => {
+    for (const command of [
+      "printenv",
+      "env",
+      "env | grep KEY",
+      "echo $HOME",
+      "printf '%s' \"$GRAPHAGENT_CONFIG_CONTENT\"",
+      "cat /proc/self/environ",
+      "cat ~/.ssh/id_rsa",
+      "ls ../",
+      "grep -rn key ../../etc",
+      "git -C /tmp log",
+      "cd / && ls",
+      "grep --file=/etc/passwd x src",
+    ]) {
+      expect(classifyShell(command), command).toBe("exec")
+    }
+  })
+  test("reads inside the workspace still run", () => {
+    for (const command of [
+      "ls -la",
+      "git log --oneline -5",
+      "cat src/auth/login.ts 2>/dev/null",
+      "grep -rn formatDate src",
+      "diff src/a.ts /dev/null",
+    ]) {
+      expect(classifyShell(command), command).toBe("read")
+    }
+  })
+})

@@ -451,9 +451,51 @@ function wordsKind(words: readonly string[]): ShellKind {
  * known write is `exec`, which still ends the scenario but is not counted as
  * an edit.
  */
+/** Commands whose output is the environment (provider credentials and the host's inline config live there). */
+const ENV_READERS = new Set(["env", "printenv", "set", "export", "declare", "typeset", "compgen"])
+
+/**
+ * Whether a command can reach anything but the workspace: the environment (a variable expansion or a
+ * command that prints it) or a path outside the workspace (absolute, home-relative, or climbing out
+ * with `..`). The evaluation lets read-only shell run for real and sends its output to a remote
+ * model, so a read is only a read when it provably stays in the workspace; anything else stops the
+ * scenario like an execution. `/dev/null` is not a place.
+ */
+function reachesOutside(words: readonly string[], bound: ReadonlySet<string>): boolean {
+  if (ENV_READERS.has(words[0] ?? "")) return true
+  return words.some((word) => {
+    const expanded = [...word.replaceAll("$(...)", "").matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*|.)/g)]
+    // Positional and special parameters ($1, $?, $#) carry no environment; a named variable does,
+    // unless the command itself binds it (a loop variable, `read`, an assignment).
+    if (expanded.some((match) => /^[A-Za-z_]/.test(match[1] ?? "") && !bound.has(match[1] ?? ""))) return true
+    return word.split("=").some((part) => {
+      if (part === "/dev/null") return false
+      return (
+        part.startsWith("/") || part.startsWith("~") || part === ".." || part.startsWith("../") || part.includes("/../")
+      )
+    })
+  })
+}
+
+/** Variables the command binds itself: `for NAME in`, `read [-opts] NAME...`, `NAME=value`. */
+function boundVariables(command: string): Set<string> {
+  const bound = new Set<string>()
+  for (const match of command.matchAll(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b/g)) bound.add(match[1] ?? "")
+  for (const match of command.matchAll(/\bread\s+((?:-[A-Za-z]+\s+)*)((?:[A-Za-z_][A-Za-z0-9_]*\s*)+)/g)) {
+    for (const name of (match[2] ?? "").trim().split(/\s+/)) bound.add(name)
+  }
+  for (const match of command.matchAll(/(?:^|[;&|\s(])([A-Za-z_][A-Za-z0-9_]*)=/g)) bound.add(match[1] ?? "")
+  return bound
+}
+
 export function classifyShell(command: string): ShellKind {
+  const bound = boundVariables(command)
   return parseShell(command).reduce<ShellKind>(
-    (kind, segment) => worst(kind, segment.redirectsToFile ? "edit" : wordsKind(segment.words)),
+    (kind, segment) =>
+      worst(
+        kind,
+        segment.redirectsToFile ? "edit" : reachesOutside(segment.words, bound) ? "exec" : wordsKind(segment.words),
+      ),
     "read",
   )
 }
