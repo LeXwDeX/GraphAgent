@@ -2388,6 +2388,7 @@ export type DagNode = {
   status: string
   required: boolean
   depends_on: Array<string>
+  expanded_from?: string
   model_id?: string
   model_provider_id?: string
   child_session_id?: string
