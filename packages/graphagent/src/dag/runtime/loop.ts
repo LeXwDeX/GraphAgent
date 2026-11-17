@@ -2123,6 +2123,12 @@ const serviceLayer = Layer.effect(
                     }),
                   )
                   if (!cleaned) return
+                  // ADR-0008: the entry is gone, so nothing renews this workflow's
+                  // lease any more. Give it back now, ahead of the steps below that
+                  // may fail: a runner that reopens the workflow (extend, recover)
+                  // must be able to adopt it at once, not be refused by a lease that
+                  // runs out only after the TTL, and a refused adoption is not retried.
+                  yield* runnerLease.abandon(dagID, entry.token)
                 }
                 // #1030 D9-g: settle (commit + patch + remove/keep) before the
                 // terminal wake reads the read model.

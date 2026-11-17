@@ -22,6 +22,9 @@ import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
  *     `DagStore.tryClaimAdoption` did for the window after the reconciliation.
  *     An adoption that ends without an entry gives its claim back (`abandon`),
  *     so the next runner does not wait out a TTL for a workflow nobody drives.
+ *     So does a workflow that ended: once its entry is dropped nothing renews
+ *     its lease, and left alone that lease would keep every other runner from
+ *     adopting the workflow again (extend, recover) until the TTL ran out.
  *   - One fiber per instance renews the lease of every runtime entry, paused
  *     and stepping workflows included, every `RENEWAL_PERIOD_MS`. A renewal
  *     that finds the row naming another token means the lease is lost: the
@@ -86,7 +89,14 @@ export interface Interface<E extends Held = Held> {
   readonly claim: (dagID: string) => Effect.Effect<DagLease.Token | undefined>
   /** Whether `token` still holds the lease of a workflow that is still live: the last check before an entry is published. */
   readonly confirm: (dagID: string, token: DagLease.Token) => Effect.Effect<boolean>
-  /** Give a claim back unless an entry carries it now. No claim (`undefined`) is nothing to give back. */
+  /**
+   * Give a claim back unless an entry carries it now: an adoption that ended
+   * without an entry, or a workflow that ended and whose entry was just dropped.
+   * Nothing renews such a lease, and left alone it keeps every other runner out
+   * until the TTL runs out (and a refused adoption is not retried). The workflow
+   * itself may be terminal: the release matches the token and nothing else. No
+   * claim (`undefined`) is nothing to give back.
+   */
   readonly abandon: (dagID: string, token: DagLease.Token | undefined) => Effect.Effect<void>
   /**
    * A spawn's re-read right before its child session exists (ADR-0008 decision
@@ -211,7 +221,7 @@ export function make<E extends Held>(input: {
         if (token === undefined) return
         const entry = entries.get(dagID)
         if (entry !== undefined && sameToken(entry.token, token)) return
-        yield* release(dagID, token, "DagLoop could not give back the lease of an abandoned adoption")
+        yield* release(dagID, token, "DagLoop could not give back a runner lease it no longer needs")
       }),
       verify: Effect.fn("RunnerLease.verify")(function* (dagID: string, entry: E) {
         const holds = DagLease.holds(yield* leases.held(dagID), entry.token)

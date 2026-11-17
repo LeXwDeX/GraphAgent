@@ -528,6 +528,87 @@ describe("giving the leases back at a clean exit", () => {
   )
 })
 
+describe("a workflow that ended gives its lease back (ADR-0008)", () => {
+  /** Wait until the lease row of `dagID` has run out: given back, since nothing is left to renew it. */
+  const givenBack = (dual: DualRunner, dagID: string) =>
+    pollOnTestClock(
+      Effect.gen(function* () {
+        const row = yield* dual.leaseRow(dagID)
+        return row !== undefined && row.expiresAt <= (yield* now) ? row : undefined
+      }),
+      `the lease of ${dagID} was not given back`,
+    )
+
+  /** A runner that adopted the workflow: it holds the lease at the epoch after R1's, and drives the node it was reopened with. */
+  const adoptedByR2 = (dual: DualRunner, dagID: string) =>
+    Effect.gen(function* () {
+      yield* pollOnTestClock(
+        Effect.sync(() => (dual.r2.created.length > 0 ? true : undefined)),
+        "R2 did not adopt the reopened workflow: it started no child session",
+      )
+      const row = yield* rowOf(dual, dagID)
+      expect(row).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
+      expect(row.expiresAt).toBeGreaterThan(yield* now)
+      // Nobody waited for the TTL: the clock only moved by the waits above.
+      expect(yield* now).toBeLessThan(DagLease.TTL_MS)
+    })
+
+  it.effect("the loop gives the lease back as its entry is dropped, and the row keeps its holder and epoch", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual)
+      expect((yield* rowOf(dual, dagID)).expiresAt).toBeGreaterThan(yield* now)
+
+      yield* Deferred.succeed(gate.release, "done")
+      yield* completed(dual, dagID)
+
+      // Not left to run out: the workflow ended, nothing renews it, and the row is expired now.
+      expect(yield* givenBack(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
+    }),
+  )
+
+  it.effect("a workflow extended by another runner after the first one exited is adopted at once", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      // A completed workflow can be reopened by an additive extend when a reporting leaf completed it.
+      const { dagID, gate } = yield* driveOnR1(dual, { nodes: [{ ...node("n1"), report_to_parent: true }] })
+      yield* Deferred.succeed(gate.release, "done")
+      yield* completed(dual, dagID)
+      yield* givenBack(dual, dagID)
+      // R1 exits cleanly. Its exit gives back what its entries hold, and the ended workflow has none.
+      yield* dual.r1.stop
+
+      // R2 reopens the workflow with one more node and adopts it: its claim is not refused by a lease nobody renews.
+      yield* dual.r2.init
+      yield* dual.r2.dag.extend(dagID, [node("m", ["n1"])])
+
+      yield* adoptedByR2(dual, dagID)
+    }),
+  )
+
+  it.effect("a failed workflow recovered by another runner after the first one exited is adopted at once", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID } = yield* driveOnR1(dual)
+      yield* dual.r1.dag.nodeFailed(dagID, "n1", "boom", "exec_failed")
+      yield* pollOnTestClock(
+        dual.r2.store
+          .getWorkflow(dagID)
+          .pipe(Effect.map((workflow) => (workflow?.status === "failed" ? workflow : undefined))),
+        `${dagID} did not fail`,
+      )
+      yield* givenBack(dual, dagID)
+      yield* dual.r1.stop
+
+      yield* dual.r2.init
+      const failed = yield* dual.r2.store.getWorkflow(dagID)
+      yield* dual.r2.dag.recover(dagID, { nodeIDs: ["n1"], expectedGraphRev: failed?.graphRev ?? 0 })
+
+      yield* adoptedByR2(dual, dagID)
+    }),
+  )
+})
+
 /**
  * `RunnerLease` over a scripted `DagLease`: what the loop's use of the
  * primitives promises, one rule at a time and without a database. The script
