@@ -1568,14 +1568,13 @@ export const layer = Layer.effect(
       const nodeStatusById = new Map(nodes.map((n) => [n.id, n.status]))
       const definitionErrors: string[] = []
       // #1158: `expand` and `join` are the engine's marks on a compose node, and no definition a caller writes in can
-      // carry them, so restating such a node drops them. A running or queued node is held by the admitted-field guard
-      // below; a pending node is replaced and a restarted one is redefined, which is where a mark would be lost and
-      // the node would go on as an ordinary one (a slot spawned as authored, a join node no longer checked).
+      // carry them, so restating such a node drops them. A pending node is replaced by its restatement and a running
+      // one is redefined by a restart, which is where a mark would be lost and the node would go on as an ordinary
+      // one (a slot spawned as authored, a join node no longer checked). A running or queued node that is neither is
+      // held by the admitted-field guard below, and a terminal one keeps its definition.
       for (const next of normalizedFragment.nodes) {
-        if (next.cancel) continue
         const status = nodeStatusById.get(next.id)
-        if (status === undefined || isNodeTerminalStatus(status as NodeStatus)) continue
-        if (!next.restart && (status === NodeStatus.RUNNING || status === NodeStatus.QUEUED)) continue
+        if (next.cancel || !(status === NodeStatus.PENDING || (status === NodeStatus.RUNNING && next.restart))) continue
         const current = cfgById.get(next.id)
         if (!current) continue
         const marks = ReplanDefinition.changedEngineOwnedFields(current, next)
