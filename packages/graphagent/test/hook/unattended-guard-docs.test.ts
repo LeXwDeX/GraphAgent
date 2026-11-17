@@ -43,7 +43,7 @@ describe("the unattended-permissions guide", () => {
       expect(git("check-ignore", "-q", file).code).toBe(1)
     }
     const security = await read("SECURITY.md")
-    const section = security.slice(security.indexOf("### No Sandbox"), security.indexOf("### Server Mode"))
+    const section = security.slice(security.indexOf("### No Sandbox"), security.indexOf("### Out of Scope"))
     expect(section).toContain("docs/unattended-permissions.en.md")
     expect(section).toContain("docs/unattended-permissions.md")
   })

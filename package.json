@@ -151,7 +151,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/anomalyco/opencode"
+    "url": "https://github.com/LeXwDeX/GraphAgent"
+  },
+  "homepage": "https://github.com/LeXwDeX/GraphAgent#readme",
+  "bugs": {
+    "url": "https://github.com/LeXwDeX/GraphAgent/issues"
   },
   "license": "Apache-2.0 AND MIT",
   "prettier": {

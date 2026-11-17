@@ -1,29 +1,21 @@
-### Issue for this PR
+<!-- 标题：type(Issue号): 中文说明，例如 fix(1234): 修复 xxx。正文四节都要填写，不保留占位符。 -->
+
+## 原因
+
+<!-- 关联 Issue 与要解决的问题。 -->
+
+## 变更
+
+<!-- 改了什么、为什么这样改。 -->
+
+## 证据
+
+<!-- 实际运行的命令与结果；UI 改动附截图或录屏。 -->
+
+## 检查清单
+
+- [ ] 已在本地运行受影响包的 typecheck 与相关测试
+- [ ] 已运行 `bun run lint` 与 `bun run check:hosts`
+- [ ] 不含无关改动
 
 Closes #
-
-### Type of change
-
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Refactor / code improvement
-- [ ] Documentation
-
-### What does this PR do?
-
-Please provide a description of the issue, the changes you made to fix it, and why they work. It is expected that you understand why your changes work and if you do not understand why at least say as much so a maintainer knows how much to value the PR.
-
-**If you paste a large clearly AI generated description here your PR may be IGNORED or CLOSED!**
-
-### How did you verify your code works?
-
-### Screenshots / recordings
-
-_If this is a UI change, please include a screenshot or recording._
-
-### Checklist
-
-- [ ] I have tested my changes locally
-- [ ] I have not included unrelated changes in this PR
-
-_If you do not follow this template your PR will be automatically rejected._
