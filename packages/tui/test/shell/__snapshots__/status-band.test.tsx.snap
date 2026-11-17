@@ -43,3 +43,67 @@ exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait i
 exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 120 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                       waiting for main agent  mode on  budget 85%"`;
 
 exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 120 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                   mode on  budget 85%"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a watched PR over the goal in zh-CN at 80x24 1`] = `"  PR #1035  CI 4/6"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR mark at the workflow row's tail in zh-CN at 80x24 1`] = `"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 完成 · 第 2/3 波 · 1 运行中       模式关  PR ~4/6"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws several PRs in zh-CN at 80x24 1`] = `"  PR !#1040 ~#1036 >#1035 ✓#1034"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a reminder in zh-CN at 80x24 1`] = `"  提醒 · 5m后 · 部署完成后检查"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a watched PR over the goal in zh-CN at 120x40 1`] = `
+"  PR #1035  CI 4/6
+  ◎ 目标  ship the upgrade                                                                  第 6/30 轮 · 进行中  /goal"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR mark at the workflow row's tail in zh-CN at 120x40 1`] = `
+"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 完成 · 第 2/3 波 · 1 运行中                                         模式关  /dag  PR ~4/6
+  ◎ 目标  ship the upgrade                                                                  第 6/30 轮 · 进行中  /goal"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR warning over the workflow row in zh-CN at 120x40 1`] = `
+"  PR #1040  ✓ 通过 · agent 未响应
+  ◆ alpha ━━━━━━ ━━━ ─── 2/4 完成 · 第 2/3 波 · 1 运行中                                                  模式关  /dag"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws several PRs in zh-CN at 120x40 1`] = `
+"  PR !#1040 ~#1036 >#1035 ✓#1034
+  ◎ 目标  ship the upgrade                                                                  第 6/30 轮 · 进行中  /goal"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a reminder in zh-CN at 120x40 1`] = `"  提醒 · 5m后 · 部署完成后检查"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a watched PR over the goal in en at 80x24 1`] = `"  PR #1035  CI 4/6"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR mark at the workflow row's tail in en at 80x24 1`] = `"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 done · wave 2/3 · 1 running     mode off  PR ~4/6"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws several PRs in en at 80x24 1`] = `"  PR !#1040 ~#1036 >#1035 ✓#1034"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a reminder in en at 80x24 1`] = `"  reminder · in 5m · 部署完成后检查"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a watched PR over the goal in en at 120x40 1`] = `
+"  PR #1035  CI 4/6
+  ◎ Goal  ship the upgrade                                                                   turn 6/30 · Active  /goal"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR mark at the workflow row's tail in en at 120x40 1`] = `
+"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 done · wave 2/3 · 1 running                                       mode off  /dag  PR ~4/6
+  ◎ Goal  ship the upgrade                                                                   turn 6/30 · Active  /goal"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR warning over the workflow row in en at 120x40 1`] = `
+"  PR #1040  ✓ passed · agent not responding
+  ◆ alpha ━━━━━━ ━━━ ─── 2/4 done · wave 2/3 · 1 running                                                mode off  /dag"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws several PRs in en at 120x40 1`] = `
+"  PR !#1040 ~#1036 >#1035 ✓#1034
+  ◎ Goal  ship the upgrade                                                                   turn 6/30 · Active  /goal"
+`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a reminder in en at 120x40 1`] = `"  reminder · in 5m · 部署完成后检查"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR warning over the workflow row in zh-CN at 80x24 1`] = `"  PR #1040  ✓ 通过 · agent 未响应"`;
+
+exports[`PR and reminder rows at 80 and 120 columns draws a PR warning over the workflow row in en at 80x24 1`] = `"  PR #1040  ✓ passed · agent not responding"`;

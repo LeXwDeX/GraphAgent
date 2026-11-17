@@ -3,7 +3,8 @@
 
 import type { DagWorkflowSummary, Goal } from "@graphagent/sdk"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, For, on, onCleanup, Show, type ParentProps } from "solid-js"
+import open from "open"
+import { createEffect, createMemo, For, Index, on, onCleanup, type ParentProps } from "solid-js"
 import { resolveRootSessionID, sessionTree } from "../ask/ask-queue"
 import { useCommands } from "../commands/context"
 import { useKV } from "../context/kv"
@@ -33,6 +34,16 @@ import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
 import { remoteLine } from "../util/remote-text"
 import { useBottomZoneOptional } from "./bottom-zone"
+import {
+  chooseBandRows,
+  layoutPrRow,
+  layoutReminderRow,
+  prHasWarning,
+  prOpenUrl,
+  prTailText,
+  type BandRowKind,
+} from "./pr-line"
+import { usePrTracker } from "./pr-tracker-context"
 
 /** Status band slot: zero to two lines above the bottom zone (F4). */
 export function StatusBand(props: ParentProps) {
@@ -155,6 +166,11 @@ export interface DagRowInput {
   readonly usage?: DagUsage
   /** A checkpoint waits for the main agent and it is not at work on it. */
   readonly waiting?: boolean
+  /**
+   * The short mark of the tracked PRs at the row's tail (`PR ~4/6`, at most 14 cells, F6 2.2). It stays with the bar
+   * and the mode mark at every level of the spec, so it does not give way on a narrow row.
+   */
+  readonly pr?: string
   /** Cells the row may use. */
   readonly width: number
   readonly ambiguousWidth?: AmbiguousWidth
@@ -166,8 +182,9 @@ export interface DagRowInput {
  * concurrency of the usage, the folded count, the wave, the wait, the counts
  * squeezed to `n/m`, and the title cut short. The mode mark stays with the bar
  * (it is at most 8 cells): only the last level, beyond the spec and for a
- * terminal so narrow that not even the bar fits with it, lets go of it. The
- * levels after the title cut go beyond the spec too.
+ * terminal so narrow that not even the bar fits with it, lets go of it. The PR
+ * mark at the tail (at most 14 cells) stays with it the same way. The levels
+ * after the title cut go beyond the spec too.
  */
 interface DagLevel {
   readonly hint: boolean
@@ -350,7 +367,8 @@ export function layoutDagRow(input: DagRowInput): BandRow {
     const name = level.name === "none" ? "" : level.name === "short" ? shortTitle : title
     const head: BandSpan[] = [...lead, ...(name === "" ? [] : [{ text: name, token: "text" as const }, blank(1)])]
     const counts = dagCounts(summary, wave, level)
-    // At the right edge, from the counts outward: the wait, the mode mark, the usage, the folded workflows, the hint.
+    // At the right edge, from the counts outward: the wait, the mode mark, the usage, the folded workflows, the hint,
+    // the PR mark.
     const groups: BandSpan[][] = []
     if (level.waiting && input.waiting) groups.push([{ text: t("dagmode.band.waiting"), token: "warning" }])
     if (level.mark && input.mode) {
@@ -364,6 +382,8 @@ export function layoutDagRow(input: DagRowInput): BandRow {
     if (usage.length > 0) groups.push(separated(usage))
     if (level.more && more > 0) groups.push([{ text: t("dagmode.band.more", { count: more }), token: "textMuted" }])
     if (level.hint) groups.push([{ text: DAG_HINT, token: "textDim" }])
+    // The PR mark does not give way with the text: it goes with the mode mark, at the last level only.
+    if (level.mark && input.pr) groups.push([{ text: input.pr, token: "textMuted" }])
     const right = groups.flatMap((group, index) =>
       index === 0 ? group : [{ text: HINT_GAP, token: "textMuted" as const }, ...group],
     )
@@ -406,8 +426,11 @@ export function layoutDagRow(input: DagRowInput): BandRow {
   return aligned(left, right, width, aw)
 }
 
-/** The row `always` shows while the session tree has no workflow at all. */
-function layoutEmptyRow(input: { width: number; ambiguousWidth?: AmbiguousWidth }): BandRow {
+/**
+ * The row `always` shows while the session tree has no workflow at all. A quiet PR's mark (`pr`) rides at its tail
+ * as on a workflow row: this is the row the PR would otherwise be left out of, so the text gives way to the mark.
+ */
+function layoutEmptyRow(input: { width: number; ambiguousWidth?: AmbiguousWidth; pr?: string }): BandRow {
   const aw = input.ambiguousWidth ?? 1
   const width = whole(input.width)
   const lead: BandSpan[] = [
@@ -416,10 +439,19 @@ function layoutEmptyRow(input: { width: number; ambiguousWidth?: AmbiguousWidth 
   ]
   const room = width - cellsOf(lead, aw)
   if (room < 0) return EMPTY_ROW
-  const left = [...lead, { text: truncateCells(t("dagmode.band.empty"), room, aw), token: "textMuted" as const }]
+  const mark: BandSpan[] = input.pr ? [{ text: input.pr, token: "textMuted" }] : []
+  const markRoom = mark.length > 0 ? MIN_GAP + cellsOf(mark, aw) : 0
+  // A mark that does not fit beside the lead is left out.
+  const edge = markRoom <= room ? mark : []
+  const reserved = edge.length > 0 ? markRoom : 0
+  const left = [
+    ...lead,
+    { text: truncateCells(t("dagmode.band.empty"), room - reserved, aw), token: "textMuted" as const },
+  ]
   const hint: BandSpan = { text: DAG_HINT, token: "textDim" }
-  const fits = cellsOf(left, aw) + MIN_GAP + cellsOf([hint], aw) <= width
-  return aligned(left, fits ? [hint] : [], width, aw)
+  const hinted = edge.length > 0 ? [hint, { text: HINT_GAP, token: "textMuted" as const }, ...edge] : [hint]
+  const fits = cellsOf(left, aw) + MIN_GAP + cellsOf(hinted, aw) <= width
+  return aligned(left, fits ? hinted : edge, width, aw)
 }
 
 // ── The goal row ─────────────────────────────────────────────────────────────
@@ -553,14 +585,15 @@ function BandLine(props: { row: BandRow; onClick?: () => void }) {
 }
 
 /**
- * The band's content on a session route: the workflow row and the goal row of
- * the root session's tree, whichever view of the tree is on screen (F4 1).
- * Read-only: a click on the workflow row only opens `/dag`.
+ * The band's content on a session route: the rows of the root session's tree, whichever view of the tree is on
+ * screen: the PR row, the workflow row, the goal row and the reminder row (F4 1, F6 2). Which of them are drawn is
+ * `chooseBandRows`. Read-only: a click on the workflow row only opens `/dag`, a click on the PR row only opens the
+ * pull request in the system browser.
  *
- * It shows what `sync.data` holds and keeps no state of its own. The one thing
- * it does besides drawing is declaring the workflow it shows to `sync.dag.watch`,
- * which registers the owner session and loads the node table; the declaration
- * ends when the row goes away and when the band unmounts.
+ * It shows what `sync.data` and the PR tracker hold and keeps no state of its own; it subscribes to no clock, all
+ * the timing of PRs and reminders being the tracker's. The one thing it does besides drawing is declaring the
+ * workflow it shows to `sync.dag.watch`, which registers the owner session and loads the node table; the
+ * declaration ends when the row goes away and when the band unmounts.
  *
  * The app hands it to the frame's `statusBand` slot, which builds it inside the
  * bottom zone's provider: that is where it reads the panel stack, to leave the
@@ -574,6 +607,8 @@ export function SessionStatusBand() {
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const zone = useBottomZoneOptional()
+  // Absent where no tracker is provided (a band mounted alone): then there is no PR and no reminder to draw.
+  const tracker = usePrTracker()
 
   const sessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
   const rootID = createMemo(() => {
@@ -654,10 +689,19 @@ export function SessionStatusBand() {
     })
   })
 
+  // The tracked PRs and the nearest reminder of the root session, as the tracker lists them (sticky warnings first).
+  const prItems = createMemo(() => {
+    const root = rootID()
+    return root === undefined ? [] : (tracker?.items(root) ?? [])
+  })
+  const prWarning = createMemo(() => prHasWarning(prItems()))
+
   const dagRow = createMemo<BandRow | undefined>(() => {
     const shown = target()
     if (shown === undefined) return undefined
-    if (shown === "empty") return layoutEmptyRow({ width: width(), ambiguousWidth: aw() })
+    // A quiet PR rides at the tail of this row; a warning has a row of its own, so the tail is empty then.
+    const pr = prTailText(prItems())
+    if (shown === "empty") return layoutEmptyRow({ width: width(), ambiguousWidth: aw(), pr })
     const { summary } = shown.entry
     return layoutDagRow({
       summary,
@@ -666,6 +710,7 @@ export function SessionStatusBand() {
       mode: modeMark(),
       usage: usage(),
       waiting: waiting(),
+      pr,
       width: width(),
       ambiguousWidth: aw(),
     })
@@ -678,15 +723,37 @@ export function SessionStatusBand() {
     return isGoalShown(goal) ? layoutGoalRow({ goal, width: width(), ambiguousWidth: aw() }) : undefined
   })
 
-  // Below the narrow limit the two rows merge into one: the workflow's, else the goal's.
-  const rows = createMemo(() => {
-    const dag = dagRow()
-    return { dag, goal: narrow() && dag ? undefined : goalRow() }
+  const prRow = createMemo<BandRow | undefined>(() => {
+    const items = prItems()
+    return items.length > 0 ? layoutPrRow(items, width(), aw()) : undefined
   })
+
+  const reminderRow = createMemo<BandRow | undefined>(() => {
+    const root = rootID()
+    const item = root === undefined ? undefined : tracker?.reminder(root)
+    return item === undefined ? undefined : layoutReminderRow(item, width(), aw())
+  })
+
+  // At most two rows, one below the narrow limit: a PR warning, the workflow, a quiet PR (only when there is no
+  // workflow row), the goal, the reminder, in that order.
+  const chosen = createMemo(() => {
+    const pr = prRow()
+    return chooseBandRows(
+      {
+        pr: pr === undefined ? undefined : { row: pr, warning: prWarning() },
+        dag: dagRow(),
+        goal: goalRow(),
+        reminder: reminderRow(),
+      },
+      narrow(),
+    )
+  })
+  const dagShown = createMemo(() => chosen().some((choice) => choice.kind === "dag"))
 
   const watched = createMemo<readonly DagWatch[]>(() => {
     const shown = target()
-    return shown === undefined || shown === "empty"
+    // A workflow whose row a PR warning pushed out of a narrow band is not on screen, so it is not declared.
+    return shown === undefined || shown === "empty" || !dagShown()
       ? []
       : [{ workflowID: shown.entry.summary.id, sessionID: shown.entry.sessionID }]
   })
@@ -716,10 +783,21 @@ export function SessionStatusBand() {
     })
   }
 
+  function openPr() {
+    // A drag that ended on the row selected text; it is not a click.
+    if (renderer.getSelection()?.getSelectedText()) return
+    const url = prOpenUrl(prItems())
+    if (url === undefined) return
+    // A browser that cannot start (no display, no opener) has no place to be reported from a click, and the band
+    // writes no toast: the row stays as it is. Same as `ui/link.tsx`.
+    open(url).catch(() => {})
+  }
+
+  const clickOf = (kind: BandRowKind) => (kind === "dag" ? openDag : kind === "pr" ? openPr : undefined)
+
   return (
     <box flexDirection="column" flexShrink={0}>
-      <Show when={rows().dag}>{(row) => <BandLine row={row()} onClick={openDag} />}</Show>
-      <Show when={rows().goal}>{(row) => <BandLine row={row()} />}</Show>
+      <Index each={chosen()}>{(choice) => <BandLine row={choice().row} onClick={clickOf(choice().kind)} />}</Index>
     </box>
   )
 }

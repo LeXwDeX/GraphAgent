@@ -1241,6 +1241,10 @@ export const {
           // #1032 7: a config write that disposes the instance sends this instead of `config.updated`, and the
           // bootstrap does not read the mode snapshots: every one held or being read is read again here.
           void fetchDagMode(dagModeRoots())
+          // #1036 F6: the watches and the reminders live in the instance too, and no event says what the new one
+          // holds: they are read again as after a reconnect (every root held, and the root of the route).
+          void refreshPrWatches()
+          void refreshReminders()
           break
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]

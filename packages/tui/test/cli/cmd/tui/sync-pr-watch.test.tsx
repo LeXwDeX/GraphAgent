@@ -511,6 +511,71 @@ describe("tui sync pr_watch and reminder slices: reads", () => {
     })
   })
 
+  test("a write that disposes the instance reads the root of the route and every root held again", async () => {
+    const watches: Record<string, PrWatchEntry[]> = {
+      ses_root: [watch()],
+      ses_other: [watch({ sessionID: "ses_other", watchID: "w3", number: 9 })],
+    }
+    const reminders: Record<string, SessionReminder[]> = { ses_root: [reminder()] }
+    const server = createServer({
+      sessions: [{ id: "ses_root" }],
+      prWatch: (sessionID) => json({ entries: watches[sessionID] ?? [] }),
+      reminder: (sessionID) => json({ entries: reminders[sessionID] ?? [] }),
+    })
+    await withMount(server, async ({ emit, sdk, sync }) => {
+      await sync.session.activate("ses_root")
+      emit(updated(watch({ sessionID: "ses_other", watchID: "w3", number: 9 })))
+      await advanceUntil(
+        sdk,
+        () =>
+          sync.data.pr_watch.ses_root?.w1 !== undefined &&
+          sync.data.pr_watch.ses_other?.w3 !== undefined &&
+          sync.data.reminder.ses_root !== undefined,
+      )
+      const watchReads = server.prWatchReads.length
+      const reminderReads = server.reminderReads.length
+
+      // The new instance holds other state, and no event says so: the watch ended, the reminder is gone.
+      watches.ses_root = [watch({ phase: "succeeded", outcome: "success", updatedAt: 4_000 })]
+      watches.ses_other = []
+      reminders.ses_root = []
+      emit(global({ id: `evt_disposed_${++sequence}`, type: "server.instance.disposed", properties: { directory } }))
+      await advanceUntil(
+        sdk,
+        () => sync.data.pr_watch.ses_root.w1.phase === "succeeded" && sync.data.reminder.ses_root.length === 0,
+      )
+
+      expect(server.prWatchReads.slice(watchReads).toSorted()).toEqual(["ses_other", "ses_root"])
+      expect(server.reminderReads.slice(reminderReads)).toEqual(["ses_root"])
+      expect(sync.data.pr_watch.ses_other).toEqual({})
+    })
+  })
+
+  test("a write that disposes the instance reads the root of the route even when it held nothing", async () => {
+    let answer: PrWatchEntry[] = []
+    const server = createServer({ sessions: [{ id: "ses_root" }], prWatch: () => json({ entries: answer }) })
+    await withMount(server, async ({ emit, sdk, sync }) => {
+      await sync.session.activate("ses_root")
+      await advanceUntil(sdk, () => sync.data.pr_watch.ses_root !== undefined)
+      expect(sync.data.pr_watch.ses_root).toEqual({})
+
+      answer = [watch()]
+      emit(global({ id: `evt_disposed_${++sequence}`, type: "server.instance.disposed", properties: { directory } }))
+      await advanceUntil(sdk, () => sync.data.pr_watch.ses_root?.w1 !== undefined)
+      expect(server.prWatchReads).toEqual(["ses_root", "ses_root"])
+    })
+  })
+
+  test("a write that disposes the instance reads nothing when no root is held and no route is open", async () => {
+    const server = createServer()
+    await withMount(server, async ({ emit }) => {
+      emit(global({ id: `evt_disposed_${++sequence}`, type: "server.instance.disposed", properties: { directory } }))
+      await settle()
+      expect(server.prWatchReads).toEqual([])
+      expect(server.reminderReads).toEqual([])
+    })
+  })
+
   test("a reconnect reads the reminders of every session held again and replaces the list", async () => {
     const answers: Record<string, SessionReminder[]> = {
       ses_root: [reminder()],

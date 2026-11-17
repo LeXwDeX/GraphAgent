@@ -1,0 +1,787 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import type { Message, Part, PrWatchEntry, SessionReminder, SessionStatus } from "@graphagent/sdk"
+import { batch, createEffect, createRoot } from "solid-js"
+import { createStore, reconcile } from "solid-js/store"
+import { setLanguage } from "../../src/i18n"
+import { reminderNextAt } from "../../src/pr/reminder"
+import { PR_HANDLED_VISIBLE_MS, PR_UNRESPONSIVE_MS } from "../../src/pr/state"
+import { createPrTracker } from "../../src/shell/pr-tracker"
+import type { ToastOptions } from "../../src/ui/toast"
+
+// The tracker is driven directly, with no app around it: a fake ticker that only has `at` and `now` (the tracker
+// has no other clock to reach for, so a `second` or `frame` call would be a TypeError here), a fake toast, a fake
+// event emitter and a Solid store standing in for `sync.data`. No test waits for a duration.
+
+const T0 = 1_700_000_000_000
+const SECOND = 1_000
+const MINUTE = 60_000
+const ROOT = "ses_root"
+const OTHER = "ses_other"
+const URL = "https://forge.test/acme/app/pull/7"
+
+beforeEach(() => {
+  setLanguage("en")
+})
+
+const disposers: Array<() => void> = []
+const tickers: Array<{ readonly widest: number }> = []
+
+afterEach(() => {
+  for (const dispose of disposers.splice(0)) dispose()
+  setLanguage("zh-CN")
+  // Whatever a test did, the tracker never had two callbacks waiting at once.
+  for (const clock of tickers.splice(0)) expect(clock.widest).toBeLessThanOrEqual(1)
+})
+
+function entry(over: Partial<PrWatchEntry> = {}): PrWatchEntry {
+  return {
+    sessionID: ROOT,
+    watchID: "w1",
+    url: URL,
+    provider: "github",
+    number: 7,
+    phase: "watching",
+    startedAt: T0 - MINUTE,
+    updatedAt: T0,
+    deadlineAt: T0 + 60 * MINUTE,
+    ...over,
+  }
+}
+
+/** A watch that ended in `success` and whose notice reached the session at `at`. */
+function delivered(at: number, over: Partial<PrWatchEntry> = {}): PrWatchEntry {
+  return entry({
+    phase: "succeeded",
+    outcome: "success",
+    updatedAt: at,
+    delivery: { state: "delivered", deliveredAt: at },
+    ...over,
+  })
+}
+
+function reminder(over: Partial<SessionReminder> = {}): SessionReminder {
+  return {
+    id: "rem_1",
+    sessionID: ROOT,
+    text: "check the deploy",
+    fireAt: T0 + 5 * MINUTE + 30 * SECOND,
+    everyMs: null,
+    status: "scheduled",
+    createdAt: T0,
+    ...over,
+  }
+}
+
+/** An assistant message; `failed` ends its turn in an error. */
+function assistant(id: string, created: number, completed?: number, failed = false): Message {
+  return {
+    id,
+    sessionID: ROOT,
+    role: "assistant",
+    time: { created, ...(completed !== undefined ? { completed } : {}) },
+    ...(failed ? { error: { name: "UnknownError" as const, data: { message: "failed" } } } : {}),
+    parentID: "msg_user",
+    modelID: "model",
+    providerID: "provider",
+    mode: "build",
+    agent: "build",
+    path: { cwd: "/work", root: "/work" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+}
+
+function user(id: string, created: number): Message {
+  return {
+    id,
+    sessionID: ROOT,
+    role: "user",
+    time: { created },
+    agent: "build",
+    model: { providerID: "provider", modelID: "model" },
+  }
+}
+
+function text(id: string, messageID: string, synthetic?: boolean): Part {
+  return {
+    id,
+    sessionID: ROOT,
+    messageID,
+    type: "text",
+    text: "hello",
+    ...(synthetic !== undefined ? { synthetic } : {}),
+  }
+}
+
+interface TestData {
+  pr_watch: Record<string, Record<string, PrWatchEntry>>
+  reminder: Record<string, SessionReminder[]>
+  session_status: Record<string, SessionStatus>
+  message: Record<string, Message[]>
+  part: Record<string, Part[]>
+}
+
+/** The ticker the tracker gets (`at`, `now`) and the controls only the test has. */
+function fakeTicker(start: number) {
+  let current = start
+  const pending = new Set<{ time: number; cb: () => void }>()
+  let widest = 0
+  return {
+    ticker: {
+      now: () => current,
+      at(time: number, cb: () => void) {
+        const timer = { time, cb }
+        pending.add(timer)
+        widest = Math.max(widest, pending.size)
+        return () => {
+          pending.delete(timer)
+        }
+      },
+    },
+    /** The times of the callbacks waiting to run. */
+    pending: () => [...pending].map((timer) => timer.time).toSorted((a, b) => a - b),
+    /** The most callbacks that were ever waiting at once. */
+    get widest() {
+      return widest
+    },
+    /** The clock reaches `time`; what is due runs once, earliest first, like the real ticker's loop. */
+    advanceTo(time: number) {
+      current = time
+      for (const timer of [...pending].toSorted((a, b) => a.time - b.time)) {
+        if (timer.time > time || !pending.delete(timer)) continue
+        timer.cb()
+      }
+    },
+  }
+}
+
+function mount(options: { start?: number } = {}) {
+  const clock = fakeTicker(options.start ?? T0)
+  tickers.push(clock)
+  const toasts: ToastOptions[] = []
+  const listeners = new Set<(entry: PrWatchEntry) => void>()
+  let current: string | undefined = ROOT
+  const opened: string[] = []
+
+  return createRoot((dispose) => {
+    disposers.push(dispose)
+    const [data, setData] = createStore<TestData>({
+      pr_watch: {},
+      reminder: {},
+      session_status: {},
+      message: {},
+      part: {},
+    })
+    const tracker = createPrTracker({
+      data,
+      ticker: clock.ticker,
+      toast: { show: (toast) => toasts.push(toast) },
+      onPrWatchEvent(listener) {
+        listeners.add(listener)
+        return () => {
+          listeners.delete(listener)
+        }
+      },
+      currentRoot: () => current,
+      openUrl: (url) => {
+        opened.push(url)
+      },
+    })
+
+    /** What the sync store does with an event: an entry older than the one held is dropped, the rest replace it. */
+    function upsert(next: PrWatchEntry) {
+      const map = data.pr_watch[next.sessionID]
+      const held = map?.[next.watchID]
+      if (held && held.updatedAt > next.updatedAt) return
+      if (map) setData("pr_watch", next.sessionID, next.watchID, reconcile(next))
+      else setData("pr_watch", next.sessionID, { [next.watchID]: next })
+    }
+
+    return {
+      tracker,
+      clock,
+      toasts,
+      opened,
+      data,
+      listeners: () => listeners.size,
+      dispose,
+      setCurrentRoot(root: string | undefined) {
+        current = root
+      },
+      /**
+       * A frame of events as the SDK dispatches it: one batch, the store's own handler first, then the subscribers.
+       * The effect that folds the store into the tracker has not run when the listener does.
+       */
+      deliver(next: PrWatchEntry) {
+        batch(() => {
+          upsert(next)
+          for (const listener of listeners) listener(next)
+        })
+      },
+      /** A read (entry into a tree, a reconnect): the root's map is replaced, and no event runs. */
+      replace(root: string, entries: PrWatchEntry[]) {
+        const map = Object.fromEntries(entries.map((item) => [item.watchID, item]))
+        if (data.pr_watch[root]) setData("pr_watch", root, reconcile(map))
+        else setData("pr_watch", root, map)
+      },
+      setStatus(type: "idle" | "busy") {
+        setData("session_status", ROOT, { type })
+      },
+      /** A message comes first; its parts arrive in later events (`setParts`). */
+      addMessage(message: Message) {
+        setData("message", ROOT, (list = []) => [...list, message])
+      },
+      setParts(messageID: string, parts: Part[]) {
+        setData("part", messageID, parts)
+      },
+      setReminders(root: string, list: SessionReminder[]) {
+        if (data.reminder[root]) setData("reminder", root, reconcile(list))
+        else setData("reminder", root, list)
+      },
+    }
+  })
+}
+
+type Harness = ReturnType<typeof mount>
+
+/** A user message with its parts, the way a snapshot delivers it. */
+function say(h: Harness, id: string, created: number, ...parts: Part[]) {
+  h.addMessage(user(id, created))
+  h.setParts(id, parts)
+}
+
+function kinds(h: Harness, root = ROOT) {
+  return h.tracker.items(root).map((item) => `${item.watchID}:${item.state.kind}`)
+}
+
+describe("pr tracker: rows", () => {
+  test("a watching entry shows its CI counts and starts no timer", () => {
+    const h = mount()
+    h.replace(ROOT, [entry({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } })])
+
+    const [item, ...rest] = h.tracker.items(ROOT)
+    expect(rest).toEqual([])
+    expect(item.state.kind).toBe("watching")
+    expect(item.state.text).toBe("CI 4/6")
+    expect(item.number).toBe(7)
+    expect(item.url).toBe(URL)
+    expect(item.entry).toEqual({ number: 7, checks: { total: 6, pending: 2, failed: 0, passed: 4 } })
+    expect(h.clock.pending()).toEqual([])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a root with nothing, an unknown root and no root show nothing", () => {
+    const h = mount()
+    h.replace(ROOT, [entry()])
+    expect(h.tracker.items(OTHER)).toEqual([])
+    expect(h.tracker.items(undefined)).toEqual([])
+    expect(h.tracker.reminder(OTHER)).toBeUndefined()
+    expect(h.tracker.reminder(undefined)).toBeUndefined()
+  })
+
+  test("a notice nobody answers turns unresponsive at exactly three minutes, once, by the one pending callback", () => {
+    const h = mount()
+    h.deliver(entry({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } }))
+    expect(kinds(h)).toEqual(["w1:watching"])
+    expect(h.toasts).toEqual([])
+
+    // The outcome is known; the notice is owed.
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(
+      entry({ phase: "delivering", outcome: "success", updatedAt: T0 + SECOND, delivery: { state: "pending" } }),
+    )
+    expect(kinds(h)).toEqual(["w1:awaiting"])
+    expect(h.clock.pending()).toEqual([T0 + SECOND + PR_UNRESPONSIVE_MS])
+    expect(h.toasts.map((toast) => toast.text)).toEqual(["PR #7 ✓ passed"])
+
+    // Delivered: the callback moves to the new boundary, and there is still only one.
+    h.clock.advanceTo(T0 + 2 * SECOND)
+    h.deliver(delivered(T0 + 2 * SECOND))
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.clock.pending()).toEqual([T0 + 2 * SECOND + PR_UNRESPONSIVE_MS])
+    expect(h.toasts).toHaveLength(1)
+
+    h.clock.advanceTo(T0 + 2 * SECOND + PR_UNRESPONSIVE_MS - 1)
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.toasts).toHaveLength(1)
+
+    h.clock.advanceTo(T0 + 2 * SECOND + PR_UNRESPONSIVE_MS)
+    const [item] = h.tracker.items(ROOT)
+    expect(item.state).toMatchObject({ kind: "unresponsive", sticky: true, tone: "warning" })
+    expect(h.toasts).toHaveLength(2)
+    expect(h.toasts[1]).toMatchObject({
+      text: "PR #7 agent not responding",
+      level: "warning",
+      dedupeKey: "pr:w1:unresponsive",
+    })
+    // A warning has no boundary of its own: nothing is left to wake.
+    expect(h.clock.pending()).toEqual([])
+    expect(h.clock.widest).toBe(1)
+  })
+
+  test("a handled row is hidden a minute after the agent's last error-free turn ended", () => {
+    const h = mount({ start: T0 + 30 * SECOND })
+    say(h, "msg_u1", T0 + 2 * SECOND, text("prt_1", "msg_u1", true))
+    h.addMessage(assistant("msg_a1", T0 + 5 * SECOND, T0 + 20 * SECOND))
+    h.replace(ROOT, [delivered(T0)])
+
+    expect(kinds(h)).toEqual(["w1:handled"])
+    expect(h.clock.pending()).toEqual([T0 + 20 * SECOND + PR_HANDLED_VISIBLE_MS])
+
+    h.clock.advanceTo(T0 + 20 * SECOND + PR_HANDLED_VISIBLE_MS - 1)
+    expect(kinds(h)).toEqual(["w1:handled"])
+
+    h.clock.advanceTo(T0 + 20 * SECOND + PR_HANDLED_VISIBLE_MS)
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.clock.pending()).toEqual([])
+    // The row going away is the clock's doing, and says nothing.
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a busy session is working; a notice that started no turn is a sticky warning", () => {
+    const h = mount()
+    h.setStatus("busy")
+    h.replace(ROOT, [delivered(T0)])
+    expect(kinds(h)).toEqual(["w1:working"])
+
+    h.setStatus("idle")
+    h.replace(ROOT, [delivered(T0, { delivery: { state: "delivered", deliveredAt: T0, noReply: true } })])
+    const [item] = h.tracker.items(ROOT)
+    expect(item.state).toMatchObject({ kind: "noReply", sticky: true, tone: "warning" })
+  })
+
+  test("sticky rows come first, then the newest watch", () => {
+    const h = mount()
+    h.replace(ROOT, [
+      entry({ watchID: "old", number: 1, startedAt: T0 - 30 * MINUTE }),
+      entry({ watchID: "new", number: 3, startedAt: T0 - MINUTE }),
+      delivered(T0 - 10 * MINUTE, {
+        watchID: "warn",
+        number: 2,
+        startedAt: T0 - 40 * MINUTE,
+        delivery: { state: "delivered", deliveredAt: T0 - 10 * MINUTE, noReply: true },
+      }),
+    ])
+    expect(kinds(h)).toEqual(["warn:noReply", "new:watching", "old:watching"])
+  })
+
+  test("a snapshot is judged at the time it appears: an old notice is unresponsive at once, without a word", () => {
+    const h = mount({ start: T0 + 10 * MINUTE })
+    h.replace(ROOT, [delivered(T0)])
+
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.clock.pending()).toEqual([])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("the rows are copies: a later write to the store does not move a row already handed out", () => {
+    const h = mount()
+    h.deliver(entry({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } }))
+    const [before] = h.tracker.items(ROOT)
+
+    h.deliver(entry({ updatedAt: T0 + SECOND, checks: { total: 6, pending: 1, failed: 0, passed: 5 } }))
+    expect(before.entry.checks?.passed).toBe(4)
+    expect(h.tracker.items(ROOT)[0].state.text).toBe("CI 5/6")
+  })
+})
+
+describe("pr tracker: held warnings", () => {
+  /** A warning first seen at `T0 + 200s`, three minutes after a notice nobody answered. */
+  function warned() {
+    const h = mount({ start: T0 + 200 * SECOND })
+    h.replace(ROOT, [delivered(T0)])
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    return h
+  }
+
+  test("a warning outlives its entry: a read that drops the watch does not clear it", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+
+    const [item] = h.tracker.items(ROOT)
+    expect(item.watchID).toBe("w1")
+    expect(item.number).toBe(7)
+    expect(item.state).toMatchObject({ kind: "unresponsive", sticky: true })
+  })
+
+  test("a user message after the warning clears it", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+    say(h, "msg_u1", T0 + 200 * SECOND + 1, text("prt_1", "msg_u1", false))
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("a user message from before the warning does not clear it", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+    say(h, "msg_u1", T0 + 100 * SECOND, text("prt_1", "msg_u1"))
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+  })
+
+  test("a synthetic message is not the user: a notice or a hook leaves the warning on screen", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+    say(h, "msg_u1", T0 + 201 * SECOND, text("prt_1", "msg_u1", true), text("prt_2", "msg_u1", true))
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+
+    // One text of their own among the synthetic ones makes it theirs.
+    say(h, "msg_u2", T0 + 202 * SECOND, text("prt_3", "msg_u2", true), text("prt_4", "msg_u2"))
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("a message arrives before its parts: until they do it is not judged, and a notice never clears the warning", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+    h.addMessage(user("msg_u1", T0 + 201 * SECOND))
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+
+    h.setParts("msg_u1", [text("prt_1", "msg_u1", true)])
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+
+    h.addMessage(user("msg_u2", T0 + 202 * SECOND))
+    h.setParts("msg_u2", [text("prt_2", "msg_u2")])
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("a user message with no text part counts as the user's", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+    say(h, "msg_u1", T0 + 201 * SECOND)
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("a newer watch on the same pull request clears it; one on another pull request does not", () => {
+    const h = warned()
+    h.replace(ROOT, [
+      entry({ watchID: "w2", number: 8, url: "https://forge.test/acme/app/pull/8", startedAt: T0 + 201 * SECOND }),
+    ])
+    expect(kinds(h)).toEqual(["w1:unresponsive", "w2:watching"])
+
+    h.replace(ROOT, [entry({ watchID: "w3", startedAt: T0 + 201 * SECOND })])
+    expect(kinds(h)).toEqual(["w3:watching"])
+  })
+
+  test("a warning whose entry is still there is cleared the same way, and stays cleared", () => {
+    const h = mount({ start: T0 + 200 * SECOND })
+    const stopped = delivered(T0, { delivery: { state: "delivered", deliveredAt: T0, noReply: true } })
+    h.replace(ROOT, [stopped])
+    expect(kinds(h)).toEqual(["w1:noReply"])
+
+    say(h, "msg_u1", T0 + 201 * SECOND, text("prt_1", "msg_u1"))
+    expect(h.tracker.items(ROOT)).toEqual([])
+
+    // The entry keeps saying noReply; the read that brings it again is not a new warning.
+    h.replace(ROOT, [stopped])
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("an entry that is back in another state ends the hold", () => {
+    const h = warned()
+    h.replace(ROOT, [])
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+
+    h.replace(ROOT, [entry()])
+    expect(kinds(h)).toEqual(["w1:watching"])
+
+    h.replace(ROOT, [])
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("another kind of warning on the same watch is a new one, raised when it appears", () => {
+    const h = mount({ start: T0 + 200 * SECOND })
+    h.replace(ROOT, [delivered(T0)])
+    say(h, "msg_u1", T0 + 201 * SECOND, text("prt_1", "msg_u1"))
+    expect(h.tracker.items(ROOT)).toEqual([])
+
+    // The agent picked the notice up and failed: its turn ended in an error. The earlier message predates this warning.
+    h.clock.advanceTo(T0 + 210 * SECOND)
+    h.addMessage(assistant("msg_a1", T0 + 205 * SECOND, T0 + 206 * SECOND, true))
+    expect(kinds(h)).toEqual(["w1:turnError"])
+
+    say(h, "msg_u2", T0 + 211 * SECOND, text("prt_2", "msg_u2"))
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("a held warning of another root waits for its root", () => {
+    const h = mount({ start: T0 + 200 * SECOND })
+    h.replace(OTHER, [delivered(T0, { sessionID: OTHER, watchID: "w9" })])
+    h.replace(OTHER, [])
+    expect(kinds(h, OTHER)).toEqual(["w9:unresponsive"])
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+})
+
+describe("pr tracker: toasts", () => {
+  const done = () => delivered(T0 + SECOND)
+
+  test("an event's outcome toasts once, and the same event again does not", () => {
+    const h = mount()
+    h.deliver(entry())
+    expect(h.toasts).toEqual([])
+
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(done())
+    expect(h.toasts).toEqual([
+      { text: "PR #7 ✓ passed", level: "success", dedupeKey: "pr:w1:success", onActivate: expect.any(Function) },
+    ])
+
+    h.deliver(done())
+    h.deliver(done())
+    expect(h.toasts).toHaveLength(1)
+  })
+
+  test("a watch a read dropped and a late event brings back does not say its outcome twice", () => {
+    const h = mount()
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(done())
+    expect(h.toasts).toHaveLength(1)
+
+    // A read: the watch ended for good and the map is replaced. A redelivered event then finds nothing known of it.
+    h.replace(ROOT, [])
+    h.deliver(done())
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.toasts).toHaveLength(1)
+  })
+
+  test("a read with a new outcome is silent, and so is the identical event after it", () => {
+    const h = mount()
+    h.deliver(entry())
+
+    // A reconnect read: the map is replaced and no event runs.
+    h.clock.advanceTo(T0 + SECOND)
+    h.replace(ROOT, [done()])
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.toasts).toEqual([])
+
+    h.deliver(done())
+    expect(h.toasts).toEqual([])
+  })
+
+  test("the first read of a tree is silent too, whatever it holds", () => {
+    const h = mount({ start: T0 + 10 * MINUTE })
+    h.replace(ROOT, [delivered(T0), entry({ watchID: "w2", phase: "failed", outcome: "failure", updatedAt: T0 })])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("an event for another root is not announced, and not announced later either", () => {
+    const h = mount()
+    const other = delivered(T0 + SECOND, { sessionID: OTHER, watchID: "w9", number: 9 })
+    h.deliver(entry({ sessionID: OTHER, watchID: "w9", number: 9 }))
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(other)
+    expect(h.toasts).toEqual([])
+    expect(kinds(h, OTHER)).toEqual(["w9:notified"])
+
+    h.setCurrentRoot(OTHER)
+    h.deliver(other)
+    expect(h.toasts).toEqual([])
+  })
+
+  test("no route, no toast", () => {
+    const h = mount()
+    h.setCurrentRoot(undefined)
+    h.deliver(entry())
+    h.deliver(done())
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a cancelled watch is removed and never toasts", () => {
+    const h = mount()
+    h.deliver(entry())
+    expect(kinds(h)).toEqual(["w1:watching"])
+
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(entry({ phase: "cancelled", updatedAt: T0 + SECOND }))
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("an event older than the entry the store holds is ignored", () => {
+    const h = mount()
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(done())
+    expect(h.toasts).toHaveLength(1)
+
+    // It arrives late: the store drops it, and so does the tracker.
+    h.deliver(entry({ updatedAt: T0 }))
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.toasts).toHaveLength(1)
+  })
+
+  test("a warning an event brings toasts at once, as a warning", () => {
+    const h = mount({ start: T0 + 10 * MINUTE })
+    h.deliver(
+      delivered(T0 + 9 * MINUTE, { delivery: { state: "delivered", deliveredAt: T0 + 9 * MINUTE, noReply: true } }),
+    )
+    expect(h.toasts.map((toast) => [toast.level, toast.dedupeKey])).toEqual([["warning", "pr:w1:noReply"]])
+  })
+
+  test("a click on the toast opens the pull request, but only a web address", () => {
+    const h = mount()
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(done())
+    h.toasts[0].onActivate?.()
+    expect(h.opened).toEqual([URL])
+
+    h.deliver(delivered(T0 + SECOND, { watchID: "w2", url: "file:///etc/hosts" }))
+    expect(h.toasts).toHaveLength(2)
+    expect(h.toasts[1].onActivate).toBeUndefined()
+  })
+
+  test("without a way to open a URL a toast has no click", () => {
+    const clock = fakeTicker(T0)
+    tickers.push(clock)
+    const toasts: ToastOptions[] = []
+    createRoot((dispose) => {
+      disposers.push(dispose)
+      const [data] = createStore<TestData>({
+        pr_watch: { [ROOT]: { w1: delivered(T0) } },
+        reminder: {},
+        session_status: {},
+        message: {},
+        part: {},
+      })
+      let listener: ((entry: PrWatchEntry) => void) | undefined
+      createPrTracker({
+        data,
+        ticker: clock.ticker,
+        toast: { show: (toast) => toasts.push(toast) },
+        onPrWatchEvent: (next) => {
+          listener = next
+          return () => {}
+        },
+        currentRoot: () => ROOT,
+      })
+      listener?.(entry({ watchID: "w1", phase: "failed", outcome: "failure", updatedAt: T0 + SECOND }))
+    })
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].onActivate).toBeUndefined()
+  })
+})
+
+describe("pr tracker: reminders", () => {
+  test("the nearest reminder counts down by the minute, with one callback per step", () => {
+    const h = mount()
+    const fireAt = T0 + 5 * MINUTE + 30 * SECOND
+    h.setReminders(ROOT, [reminder({ fireAt }), reminder({ id: "rem_2", fireAt: fireAt + MINUTE, text: "later" })])
+
+    expect(h.tracker.reminder(ROOT)).toEqual({ when: "5m", text: "check the deploy", due: false })
+    expect(h.clock.pending()).toEqual([T0 + 30 * SECOND + 1])
+    expect(h.clock.pending()).toEqual([reminderNextAt(fireAt, T0)!])
+
+    h.clock.advanceTo(T0 + 30 * SECOND + 1)
+    expect(h.tracker.reminder(ROOT)?.when).toBe("4m")
+    expect(h.clock.pending()).toEqual([T0 + 90 * SECOND + 1])
+
+    // In the last minute the text stays `<1m`; the next change is the reminder itself.
+    h.clock.advanceTo(fireAt - 59 * SECOND)
+    expect(h.tracker.reminder(ROOT)?.when).toBe("<1m")
+    expect(h.clock.pending()).toEqual([fireAt])
+
+    h.clock.advanceTo(fireAt)
+    expect(h.tracker.reminder(ROOT)).toEqual({ when: undefined, text: "check the deploy", due: true })
+    expect(h.clock.pending()).toEqual([])
+    expect(h.clock.widest).toBe(1)
+  })
+
+  test("a reminder the server calls due is due at once, with no callback", () => {
+    const h = mount()
+    h.setReminders(ROOT, [reminder({ status: "due", fireAt: T0 + 10 * MINUTE })])
+    expect(h.tracker.reminder(ROOT)).toEqual({ when: undefined, text: "check the deploy", due: true })
+    expect(h.clock.pending()).toEqual([])
+  })
+
+  test("a reminder removed from the store goes away with its callback", () => {
+    const h = mount()
+    h.setReminders(ROOT, [reminder()])
+    expect(h.clock.pending()).toHaveLength(1)
+
+    h.setReminders(ROOT, [])
+    expect(h.tracker.reminder(ROOT)).toBeUndefined()
+    expect(h.clock.pending()).toEqual([])
+  })
+
+  test("the text passes through remoteLine", () => {
+    const h = mount()
+    h.setReminders(ROOT, [reminder({ text: "ship\u001b[31m it\nnow\u0007" })])
+    expect(h.tracker.reminder(ROOT)?.text).toBe("ship it now")
+  })
+})
+
+describe("pr tracker: one clock", () => {
+  test("one callback at the earliest boundary of the rows and the reminders, moved as they change", () => {
+    const h = mount()
+    h.clock.advanceTo(T0 + 10 * SECOND)
+    h.replace(ROOT, [delivered(T0 + 5 * SECOND), delivered(T0 + 8 * SECOND, { watchID: "w2", number: 8 })])
+    h.setReminders(ROOT, [reminder({ fireAt: T0 + 10 * SECOND + 20 * SECOND })])
+
+    // The reminder is due at 30 s, before either notice has waited three minutes.
+    expect(h.clock.pending()).toEqual([T0 + 30 * SECOND])
+
+    h.clock.advanceTo(T0 + 30 * SECOND)
+    expect(h.tracker.reminder(ROOT)?.due).toBe(true)
+    expect(h.clock.pending()).toEqual([T0 + 5 * SECOND + PR_UNRESPONSIVE_MS])
+
+    h.clock.advanceTo(T0 + 5 * SECOND + PR_UNRESPONSIVE_MS)
+    expect(kinds(h)).toEqual(["w1:unresponsive", "w2:notified"])
+    expect(h.clock.pending()).toEqual([T0 + 8 * SECOND + PR_UNRESPONSIVE_MS])
+
+    h.clock.advanceTo(T0 + 8 * SECOND + PR_UNRESPONSIVE_MS)
+    expect(kinds(h)).toEqual(["w1:unresponsive", "w2:unresponsive"])
+    expect(h.clock.pending()).toEqual([])
+    expect(h.clock.widest).toBe(1)
+  })
+
+  test("a row that was rewritten before its boundary does not leave the old callback behind", () => {
+    const h = mount()
+    h.deliver(delivered(T0))
+    expect(h.clock.pending()).toEqual([T0 + PR_UNRESPONSIVE_MS])
+
+    h.setStatus("busy")
+    expect(kinds(h)).toEqual(["w1:working"])
+    expect(h.clock.pending()).toEqual([])
+    expect(h.clock.widest).toBe(1)
+  })
+
+  test("a change in another root does not wake a reader of this one", () => {
+    const h = mount()
+    h.replace(ROOT, [entry()])
+    let runs = 0
+    createRoot((dispose) => {
+      disposers.push(dispose)
+      createEffect(() => {
+        h.tracker.items(ROOT)
+        h.tracker.reminder(ROOT)
+        runs++
+      })
+    })
+    expect(runs).toBe(1)
+
+    h.replace(OTHER, [entry({ sessionID: OTHER, watchID: "w9" })])
+    h.setReminders(OTHER, [reminder({ sessionID: OTHER })])
+    expect(runs).toBe(1)
+
+    // The boundary of the other root's reminder moves a callback; this root still draws the same.
+    h.clock.advanceTo(T0 + 30 * SECOND + 1)
+    expect(h.tracker.reminder(OTHER)?.when).toBe("4m")
+    expect(runs).toBe(1)
+
+    h.deliver(entry({ updatedAt: T0 + SECOND, checks: { total: 2, pending: 1, failed: 0, passed: 1 } }))
+    expect(runs).toBe(2)
+  })
+
+  test("cleanup cancels the pending callback and stops listening", () => {
+    const h = mount()
+    h.deliver(delivered(T0))
+    h.setReminders(ROOT, [reminder()])
+    expect(h.clock.pending()).toHaveLength(1)
+    expect(h.listeners()).toBe(1)
+
+    h.dispose()
+    expect(h.clock.pending()).toEqual([])
+    expect(h.listeners()).toBe(0)
+  })
+})

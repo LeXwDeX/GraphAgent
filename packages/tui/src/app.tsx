@@ -1,6 +1,7 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
+import open from "open"
 import { Global } from "@graphagent/core/global"
 import { APP_TITLE } from "@graphagent/core/brand"
 import { Flag } from "@graphagent/core/flag/flag"
@@ -44,6 +45,7 @@ import { Main } from "./routes/session"
 import { Diff } from "./routes/diff"
 import { useDiffNavigation } from "./routes/diff/route"
 import { useDiffFooterHints } from "./routes/diff/footer-hints"
+import { resolveRootSessionID } from "./ask/ask-queue"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
 import { AgentPanel } from "./panel/agent"
@@ -66,6 +68,8 @@ import { useFooterStatus } from "./shell/footer-status"
 import { dagIndicatorReserve } from "./shell/dag-indicator"
 import { sameSubagentView, subagentView } from "./shell/subagent-path"
 import { HookProgress } from "./shell/hook-progress"
+import { createPrTracker } from "./shell/pr-tracker"
+import { PrTrackerProvider } from "./shell/pr-tracker-context"
 import { SessionStatusBand } from "./shell/status-band"
 import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
@@ -78,7 +82,7 @@ import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { FooterToastProvider, serverToastText, useToast } from "./ui/toast"
-import { TickerProvider } from "./context/ticker-context"
+import { TickerProvider, useTicker } from "./context/ticker-context"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
@@ -169,6 +173,36 @@ export type TuiInput = {
 function LocalWithToast(props: ParentProps) {
   const toast = useToast()
   return <LocalProvider notify={(notice) => toast.show(notice)}>{props.children}</LocalProvider>
+}
+
+/**
+ * The tracked PRs and reminders the status band shows (#1036 F6), wired to the data layer, the clock, the footer
+ * toasts and the route. One tracker for the life of the app: it owns its event subscription and its one pending
+ * `ticker.at`, and the band reads it through `usePrTracker`.
+ */
+function PrTrackerScope(props: ParentProps) {
+  const route = useRoute()
+  const sync = useSync()
+  const project = useProject()
+  const event = useEvent()
+  const toast = useToast()
+  const tracker = createPrTracker({
+    data: sync.data,
+    ticker: useTicker(),
+    toast,
+    onPrWatchEvent: (listener) =>
+      event.on("pr.watch.updated", (payload, metadata) => {
+        // The store ignores an event routed to another workspace, and so does the tracker.
+        if (metadata.workspace !== undefined && metadata.workspace !== project.workspace.current()) return
+        listener(payload.properties)
+      }),
+    currentRoot: () =>
+      route.data.type === "session" ? resolveRootSessionID(sync.data.session, route.data.sessionID) : undefined,
+    openUrl: (url) => {
+      open(url).catch((error) => TuiLog.write("error", "Opening the pull request failed", { error: String(error) }))
+    },
+  })
+  return <PrTrackerProvider value={tracker}>{props.children}</PrTrackerProvider>
 }
 
 function errorMessage(error: unknown) {
@@ -325,7 +359,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                 <LocationProvider>
                                                                   <HomeSessionDestinationProvider>
                                                                     <BtwProvider>
-                                                                      <App onSnapshot={input.onSnapshot} />
+                                                                      <PrTrackerScope>
+                                                                        <App onSnapshot={input.onSnapshot} />
+                                                                      </PrTrackerScope>
                                                                     </BtwProvider>
                                                                   </HomeSessionDestinationProvider>
                                                                 </LocationProvider>
