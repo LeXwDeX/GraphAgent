@@ -5,6 +5,7 @@ import { expect, test } from "bun:test"
 import type { Part, ReasoningPart, TextPart, ToolPart } from "@graphagent/sdk"
 import {
   completedOutput,
+  delegationFolds,
   errorDenied,
   foldFlag,
   genericShowsBlock,
@@ -16,6 +17,8 @@ import {
   type FoldEnv,
   type FoldSource,
 } from "../../../src/routes/session/fold"
+import { DELEGATION_PROMPT_LINES } from "../../../src/routes/session/rows"
+import { collapseToolOutput } from "../../../src/util/collapse-tool-output"
 
 /**
  * What can fold, as `view.expand.toggle` reads it from the parts of a transcript. The blocks draw from the same
@@ -187,6 +190,57 @@ test("the block rule of a generic tool", () => {
   expect(genericShowsBlock(undefined, "output", false)).toBe(false)
   expect(genericShowsBlock(undefined, "", true)).toBe(false)
   expect(genericShowsBlock(undefined, undefined, true)).toBe(false)
+})
+
+test("the prompt of a task block folds past its lines, and past the characters those lines take", () => {
+  expect(DELEGATION_PROMPT_LINES).toBe(8)
+  expect(delegationFolds("scan the changelog", 100)).toBe(false)
+  expect(delegationFolds("", 100)).toBe(false)
+  expect(delegationFolds(lines(DELEGATION_PROMPT_LINES), 100)).toBe(false)
+  expect(delegationFolds(lines(DELEGATION_PROMPT_LINES + 1), 100)).toBe(true)
+
+  const cap = outputCharCap(DELEGATION_PROMPT_LINES, 100)
+  expect(cap).toBe(752)
+  expect(delegationFolds("x".repeat(cap), 100)).toBe(false)
+  expect(delegationFolds("x".repeat(cap + 1), 100)).toBe(true)
+})
+
+test("the prompt of a task block folds by the width of the view: a wider one shows more of it", () => {
+  const prompt = "x".repeat(outputCharCap(DELEGATION_PROMPT_LINES, 100) + 1)
+  expect(delegationFolds(prompt, 100)).toBe(true)
+  expect(delegationFolds(prompt, 200)).toBe(false)
+  // The least width the cap is taken from: a narrow view still shows twenty characters to a line.
+  expect(delegationFolds("x".repeat(160), 10)).toBe(false)
+  expect(delegationFolds("x".repeat(161), 10)).toBe(true)
+})
+
+test("the prompt of a task block counts characters, not the units a character takes in a string", () => {
+  const cap = outputCharCap(DELEGATION_PROMPT_LINES, 100)
+  // Each takes two UTF-16 units: the string is longer than the cap, the text is not.
+  const emoji = "\u{1F600}".repeat(cap - 1)
+  expect(emoji.length).toBeGreaterThan(cap)
+  expect(delegationFolds(emoji, 100)).toBe(false)
+  expect(delegationFolds(`${emoji}\u{1F600}\u{1F600}`, 100)).toBe(true)
+  expect(delegationFolds("请".repeat(cap), 100)).toBe(false)
+  expect(delegationFolds("请".repeat(cap + 1), 100)).toBe(true)
+})
+
+test("the fold of a task block is the one its block draws: it folds exactly when the output is cut", () => {
+  const prompts = [
+    "",
+    "short",
+    lines(DELEGATION_PROMPT_LINES),
+    lines(DELEGATION_PROMPT_LINES + 1),
+    `${lines(DELEGATION_PROMPT_LINES)}\n`,
+    "x".repeat(900),
+    "请".repeat(700),
+  ]
+  for (const width of [10, 60, 100, 200]) {
+    for (const prompt of prompts) {
+      const cap = outputCharCap(DELEGATION_PROMPT_LINES, width)
+      expect(delegationFolds(prompt, width)).toBe(collapseToolOutput(prompt, DELEGATION_PROMPT_LINES, cap).overflow)
+    }
+  }
 })
 
 test("the metadata of a call is the stored one, with the running preview laid over its output", () => {

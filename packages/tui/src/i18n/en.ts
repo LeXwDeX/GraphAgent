@@ -15,7 +15,7 @@ export const en: Record<MessageKey, string> = {
   "dagmode.toggle.needSession": "Start a session first, or set the new-session default in /config",
   "help.dagmode.toggle": "Toggle DAG mode for this session",
   "help.expand.toggle": "Expand or collapse the latest output",
-  "help.expand.toggle.note": "Acts on the latest foldable reasoning, tool output or tool error",
+  "help.expand.toggle.note": "Acts on the latest foldable reasoning, tool output, tool error or sub-agent task block",
   "dagmode.receipt.on":
     "DAG mode is on for this session, starting with the next request. Token usage usually multiplies; concurrency cap {cap} (shared by all sessions), per-workflow node cap {nodes}, token budget {budget}. Turn it off with /dag-mode off or {key}.",
   "dagmode.receipt.on.noBudget": "No token budget is configured.",
@@ -82,6 +82,8 @@ export const en: Record<MessageKey, string> = {
   "subagent.hint.switch": "switch",
   "subagent.hint.back": "back",
   "subagent.task.title": "Task · from the main session",
+  "subagent.task.expand": "Click to expand",
+  "subagent.task.collapse": "Click to collapse",
   "subagent.end.done": "Done, result handed back to the main session",
   "subagent.end.failed": "Failed, error handed back to the main session",
   "subagent.end.tools.one": "{count} tool call",

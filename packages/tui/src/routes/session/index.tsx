@@ -124,7 +124,9 @@ import {
   createRowMeasurements,
   createSessionViewState,
   DELEGATION_PROMPT_LINES,
+  delegationFoldID,
   estimateRowHeight,
+  foldRowKey,
   isWindowed,
   PART_OVERSCAN,
   prefixPositions,
@@ -140,6 +142,7 @@ import { toggleExpand } from "./expand"
 import { diffView, sessionContentWidth } from "./diff-view"
 import {
   completedOutput,
+  delegationFolds,
   editShowsBlock,
   errorDenied,
   foldFlag,
@@ -452,7 +455,8 @@ export function Main() {
   const pinnedKeys = createMemo(
     () => {
       const keys = new Set(rowData().streaming)
-      for (const [partID, flags] of view.state()) if (flags.expanded || flags.errorExpanded) keys.add(`part:${partID}`)
+      for (const [partID, flags] of view.state())
+        if (flags.expanded || flags.errorExpanded) keys.add(foldRowKey(partID))
       return keys
     },
     new Set<string>(),
@@ -869,6 +873,10 @@ export function Main() {
       showGenericToolOutput: showGenericToolOutput(),
     }
     return (row: Row) => {
+      // The task block of a sub-agent view is drawn from a user message: its prompt folds under the same flag.
+      if (row.kind === "delegation") {
+        return delegationFolds(promptText(sync.data.part[row.messageID] ?? []), env.width) ? "expanded" : undefined
+      }
       if (row.kind !== "reasoning" && row.kind !== "tool") return undefined
       const part = sync.data.part[row.messageID]?.find((item) => item.id === row.partID)
       return part ? foldFlag(part, env, foldSource) : undefined
@@ -2169,20 +2177,24 @@ function UserMessage(props: {
 /**
  * The task a sub-agent view opens with (#1033 3.4): what the main agent asked of it, read-only. It stands where the
  * first user message of the session would, so the prompt is drawn once, here and not again as a user message. A long
- * prompt is cut after `DELEGATION_PROMPT_LINES` lines the way a long tool output is; `/copy` and `/export` keep it
- * whole.
+ * prompt is cut after `DELEGATION_PROMPT_LINES` lines the way a long tool output is, and opens the way one does: by a
+ * click on the block or by `view.expand.toggle`, which flip the same flag (`delegationFolds` decides when there is
+ * anything to open). `/copy` and `/export` keep the prompt whole either way.
  */
 function DelegationBlock(props: { messageID: string; parts: Part[] }) {
   const ctx = use()
   const { theme } = useTheme()
+  const renderer = useRenderer()
+  const [hover, setHover] = createSignal(false)
   const description = createMemo(() => ctx.delegation()?.description)
-  const prompt = createMemo(
-    () =>
-      collapseToolOutput(
-        promptText(props.parts),
-        DELEGATION_PROMPT_LINES,
-        outputCharCap(DELEGATION_PROMPT_LINES, ctx.width),
-      ).output,
+  const text = createMemo(() => promptText(props.parts))
+  const folds = createMemo(() => delegationFolds(text(), ctx.width))
+  const foldID = () => delegationFoldID(props.messageID)
+  const expanded = () => ctx.view.get(foldID(), "expanded")
+  const prompt = createMemo(() =>
+    expanded() || !folds()
+      ? text()
+      : collapseToolOutput(text(), DELEGATION_PROMPT_LINES, outputCharCap(DELEGATION_PROMPT_LINES, ctx.width)).output,
   )
 
   return (
@@ -2194,7 +2206,20 @@ function DelegationBlock(props: { messageID: string; parts: Part[] }) {
       customBorderChars={SplitBorder.customBorderChars}
       flexShrink={0}
     >
-      <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel} flexShrink={0}>
+      <box
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        backgroundColor={folds() && hover() ? theme.backgroundMenu : theme.backgroundPanel}
+        flexShrink={0}
+        onMouseOver={() => folds() && setHover(true)}
+        onMouseOut={() => setHover(false)}
+        onMouseUp={() => {
+          // Only a prompt that folds is clickable, and a drag that selected text is not a click.
+          if (!folds() || renderer.getSelection()?.getSelectedText()) return
+          ctx.view.set(foldID(), "expanded", !expanded())
+        }}
+      >
         <text fg={theme.textMuted}>{t("subagent.task.title")}</text>
         <Show when={description()}>
           <text fg={theme.text} attributes={TextAttributes.BOLD}>
@@ -2202,8 +2227,11 @@ function DelegationBlock(props: { messageID: string; parts: Part[] }) {
           </text>
         </Show>
         <Show when={prompt()}>
-          <box paddingTop={1}>
+          <box paddingTop={1} gap={1}>
             <text fg={theme.text}>{prompt()}</text>
+            <Show when={folds()}>
+              <text fg={theme.textMuted}>{expanded() ? t("subagent.task.collapse") : t("subagent.task.expand")}</text>
+            </Show>
           </box>
         </Show>
       </box>
