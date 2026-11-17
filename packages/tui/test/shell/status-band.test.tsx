@@ -4,7 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { CapturedFrame, RGBA } from "@opentui/core"
-import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal } from "@graphagent/sdk"
+import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal, Session } from "@graphagent/sdk"
 import { createSignal, Show } from "solid-js"
 import { DEFAULT_THEME } from "../../src/context/theme"
 import type { Ticker } from "../../src/context/ticker"
@@ -13,7 +13,7 @@ import { BAND_NARROW_WIDTH, DAG_PANEL_ID, SessionStatusBand } from "../../src/sh
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { createEventSource, directory, json, type FetchHandler } from "../fixture/tui-sdk"
-import { mountRoute, sessionFixture, waitFor, type MountOptions } from "../routes/dag-mode-harness"
+import { dagModeStatus, mountRoute, sessionFixture, waitFor, type MountOptions } from "../routes/dag-mode-harness"
 
 // The band as the session route shows it: the real provider stack, a fake server that serves the workflows'
 // summaries and node tables, and the production event path for every change after that.
@@ -854,4 +854,501 @@ describe("at 80 and 120 columns", () => {
       }
     }
   }
+})
+
+// ── DAG mode on the band (#1032 7) ─────────────────────────────────────────────────────────────────────────────
+
+const modeSessions = [
+  sessionFixture(rootID, { time: { created: 1, updated: 9 }, dagMode: "on" }),
+  sessionFixture(childID, { parentID: rootID }),
+  sessionFixture(otherID, { time: { created: 1, updated: 3 } }),
+]
+
+const palette = () => resolveTheme(DEFAULT_THEMES[DEFAULT_THEME], "dark")
+
+/** The color a piece of text is drawn in: the foreground of the first span that holds it. */
+function colorOf(frame: CapturedFrame, needle: string): RGBA | undefined {
+  for (const line of frame.lines) {
+    for (const span of line.spans) if (span.text.includes(needle)) return span.fg
+  }
+  return undefined
+}
+
+const modeReads = (harness: Mount) =>
+  harness.requested.filter((entry) => entry === `GET /session/${rootID}/dag-mode`).length
+
+/** A running workflow that has used `tokens`, in a process whose slots are 3 busy out of 12 (set by `budgeted`). */
+function usageWorld(tokens: number, extra: Partial<DagWorkflowSummary> = {}): World {
+  return {
+    summaries: { [rootID]: [flow("dag_alpha", "running", { tokens, concurrencyRunning: 3, ...extra })] },
+    tables: { dag_alpha: table("dag_alpha") },
+  }
+}
+
+const budgeted = (tokens: number | null = 1000, extra: { concurrency?: number } = {}) =>
+  dagModeStatus({
+    budget: { tokens, used: 620, usedCacheRead: 0, warnRatio: 0.8 },
+    limits: { concurrency: extra.concurrency ?? 12, maxTotalNodes: 100, running: 3 },
+  })
+
+const sessionUpdated = (info: Session) => event({ type: "session.updated", properties: { info } })
+const statusEvent = (sessionID: string, type: "idle" | "busy") =>
+  event({ type: "session.status", properties: { sessionID, status: { type } } })
+const settledEvent = (sessionID: string, outcome: Record<string, unknown>, timeEnded: number) =>
+  event({
+    type: "session.turn.settled",
+    properties: { sessionID, turnID: `turn_${timeEnded}`, outcome, steps: 1, timeEnded },
+  })
+
+/**
+ * Mounts the band and enters the session the way the session route does: the data layer then reads what the tree
+ * needs, the mode snapshot among it. The band alone has no route to do that. The goal read answers "no goal", as the
+ * real server does for a session without one: the harness's default reply parses as an empty goal object.
+ */
+async function mountEntered(world: World, options: Partial<MountOptions> = {}, entering = rootID) {
+  const { handler: first, ...rest } = options
+  const mounted = await mountBand(world, {
+    ...rest,
+    handler: async (url, request) =>
+      (await first?.(url, request)) ?? (/^\/session\/[^/]+\/goal$/.test(url.pathname) ? json(null) : undefined),
+  })
+  await mounted.harness.sync().session.activate(entering)
+  return mounted
+}
+
+/** The mounted band's row, once `ready` holds for it. */
+async function row0(harness: Mount, ready: (line: string) => boolean, what: string) {
+  const lines = await band(harness, (all) => all.length > 0 && ready(all[0]), what)
+  return lines[0]
+}
+
+describe("the mode mark", () => {
+  test("says the mode is on when the session has it on", async () => {
+    const { harness } = await mountBand(running, { sessions: modeSessions })
+    try {
+      const line = await row0(harness, (text) => text.includes("第 2/3 波"), "the loaded table")
+      expect(line).toContain("模式开")
+      expect(line).not.toContain("模式关")
+      expect(line.endsWith("/dag")).toBe(true)
+      expect(colorOf(await harness.spans(), "模式开")?.equals(palette().text)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says the mode is off, dim, while a workflow runs under it", async () => {
+    const { harness } = await mountBand(running)
+    try {
+      const line = await row0(harness, (text) => text.includes("第 2/3 波"), "the loaded table")
+      expect(line).toContain("模式关")
+      const frame = await harness.spans()
+      expect(colorOf(frame, "模式关")?.equals(palette().textDim)).toBe(true)
+      expect(colorOf(frame, "模式关")?.equals(palette().textMuted)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says nothing about the mode while it is off and nothing is running", async () => {
+    const failedWorld: World = {
+      summaries: { [rootID]: [flow("dag_alpha", "failed", { failedNodes: 1, runningNodes: 0, completedNodes: 3 })] },
+      tables: {},
+    }
+    const { harness } = await mountBand(failedWorld)
+    try {
+      const line = await row0(harness, (text) => text.includes("alpha"), "the unconfirmed failure")
+      expect(line).not.toContain("模式")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the session's own switch, without reading anything again", async () => {
+    const { harness } = await mountBand(running)
+    try {
+      await row0(harness, (text) => text.includes("模式关"), "the off mark")
+      const reads = modeReads(harness)
+      harness.events.emit(sessionUpdated(sessionFixture(rootID, { time: { created: 1, updated: 10 }, dagMode: "on" })))
+      await row0(harness, (text) => text.includes("模式开"), "the on mark")
+      expect(modeReads(harness)).toBe(reads)
+      harness.events.emit(sessionUpdated(sessionFixture(rootID, { time: { created: 1, updated: 11 }, dagMode: "off" })))
+      await row0(harness, (text) => text.includes("模式关"), "the off mark again")
+      expect(modeReads(harness)).toBe(reads)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    setLanguage("en")
+    const { harness } = await mountBand(running, { sessions: modeSessions, language: "en" })
+    try {
+      const line = await row0(harness, (text) => text.includes("wave 2/3"), "the loaded table")
+      expect(line).toContain("mode on")
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the usage", () => {
+  test("shows the slots of the whole process, the tokens and the budget used, read once and drawn from then on", async () => {
+    const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      const line = await row0(harness, (text) => text.includes("预算 62%"), "the usage")
+      expect(line).toContain("全进程并发 3/12 · 620 tok · 预算 62%")
+      expect(modeReads(harness)).toBe(1)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the slots of the whole process when a session outside the tree moves them", async () => {
+    const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      await row0(harness, (text) => text.includes("全进程并发 3/12"), "the usage")
+      // Only the other session's own summary says so; the workflows of this tree keep their old figure of three.
+      harness.events.emit(summaryEvent(otherID, [flow("dag_other", "running", { concurrencyRunning: 7 })]))
+      const line = await row0(harness, (text) => text.includes("全进程并发 7/12"), "the slots of the whole process")
+      expect(line).toContain("全进程并发 7/12 · 620 tok · 预算 62%")
+      expect(modeReads(harness)).toBe(1)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("colors the budget by its band, and takes the color back when the usage falls", async () => {
+    const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      await row0(harness, (text) => text.includes("预算 62%"), "the usage")
+      expect(colorOf(await harness.spans(), "预算 62%")?.equals(palette().textMuted)).toBe(true)
+
+      const push = (tokens: number) =>
+        harness.events.emit(summaryEvent(rootID, [flow("dag_alpha", "running", { tokens, concurrencyRunning: 3 })]))
+      push(850)
+      await row0(harness, (text) => text.includes("预算 85%"), "the warning band")
+      expect(colorOf(await harness.spans(), "预算 85%")?.equals(palette().warning)).toBe(true)
+
+      push(1000)
+      await row0(harness, (text) => text.includes("预算 100%"), "the exhausted band")
+      expect(colorOf(await harness.spans(), "预算 100%")?.equals(palette().error)).toBe(true)
+
+      push(100)
+      await row0(harness, (text) => text.includes("预算 10%"), "the normal band again")
+      expect(colorOf(await harness.spans(), "预算 10%")?.equals(palette().textMuted)).toBe(true)
+      // The workflows' own events moved all of it: the mode was not read again.
+      expect(modeReads(harness)).toBe(1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("shows no percent without a budget, and no slot count before the mode is known", async () => {
+    const { harness } = await mountEntered(usageWorld(5000), { dagMode: () => budgeted(null) })
+    try {
+      const line = await row0(harness, (text) => text.includes("5K tok"), "the usage")
+      expect(line).toContain("全进程并发 3/12 · 5K tok")
+      expect(line).not.toContain("预算")
+    } finally {
+      await harness.dispose()
+    }
+
+    const broken = await mountEntered(usageWorld(5000), { dagMode: () => new Response("nope", { status: 500 }) })
+    try {
+      const line = await row0(broken.harness, (text) => text.includes("5K tok"), "the tokens alone")
+      expect(line).not.toContain("并发")
+      expect(line).not.toContain("预算")
+    } finally {
+      await broken.harness.dispose()
+    }
+  })
+
+  test("reads the mode again when the session's budget changes, and the percent follows", async () => {
+    let reply = budgeted(1000)
+    const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => reply })
+    try {
+      await row0(harness, (text) => text.includes("预算 62%"), "the usage")
+      reply = budgeted(2000)
+      harness.events.emit(
+        sessionUpdated(
+          sessionFixture(rootID, { time: { created: 1, updated: 10 }, dagMode: "on", dagBudgetTokens: 2000 }),
+        ),
+      )
+      await row0(harness, (text) => text.includes("预算 31%"), "the new budget")
+      expect(modeReads(harness)).toBe(2)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("reads the mode again after a reconnect", async () => {
+    let reply = budgeted(1000)
+    const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => reply })
+    try {
+      await row0(harness, (text) => text.includes("3/12"), "the usage")
+      reply = budgeted(1000, { concurrency: 8 })
+      harness.events.reconnect()
+      await row0(harness, (text) => text.includes("全进程并发 3/8"), "the new cap")
+      expect(modeReads(harness)).toBe(2)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("raises no toast of its own, whether the snapshot arrives exhausted or the band is crossed", async () => {
+    const { harness } = await mountEntered(usageWorld(1000), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      await row0(harness, (text) => text.includes("预算 100%"), "an exhausted snapshot")
+      await harness.settle()
+      expect(harness.toast().currentToast).toBeNull()
+      expect(harness.toast().queued).toEqual([])
+
+      const push = (tokens: number) =>
+        harness.events.emit(summaryEvent(rootID, [flow("dag_alpha", "running", { tokens, concurrencyRunning: 3 })]))
+      push(100)
+      await row0(harness, (text) => text.includes("预算 10%"), "back to normal")
+      push(850)
+      await row0(harness, (text) => text.includes("预算 85%"), "a warning")
+      harness.events.reconnect()
+      await harness.settle()
+      expect(harness.toast().currentToast).toBeNull()
+      expect(harness.toast().queued).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is the root session's in a sub-agent view", async () => {
+    const { harness } = await mountEntered(
+      usageWorld(620),
+      { sessions: modeSessions, dagMode: () => budgeted(), route: { type: "session", sessionID: childID } },
+      childID,
+    )
+    try {
+      const line = await row0(harness, (text) => text.includes("预算 62%"), "the usage")
+      expect(line).toContain("模式开")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("keeps the mark and the bar in a 60-column terminal, and the row inside it", async () => {
+    for (const aw of [1, 2] as const) {
+      const { harness } = await mountEntered(usageWorld(620, { checkpointPending: true }), {
+        sessions: modeSessions,
+        dagMode: () => budgeted(),
+        width: 60,
+        kv: { ambiguous_width: aw },
+      })
+      try {
+        const line = await row0(harness, (text) => text.includes("模式开"), "the mark")
+        expect(line).toMatch(/[━─]/)
+        expect(cellWidth(line, aw as AmbiguousWidth)).toBeLessThanOrEqual(60)
+        expect(rows(await harness.frame())).toHaveLength(1)
+      } finally {
+        await harness.dispose()
+      }
+    }
+  })
+})
+
+describe("waiting for the main agent", () => {
+  const waiting = (status = "paused"): World => ({
+    summaries: { [rootID]: [flow("dag_alpha", status, { checkpointPending: true })] },
+    tables: { dag_alpha: table("dag_alpha", "queued") },
+  })
+
+  test("a checkpoint is waiting and the main agent is not working: a warning on the row", async () => {
+    const { harness } = await mountBand(waiting())
+    try {
+      const line = await row0(harness, (text) => text.includes("等待主 agent"), "the wait")
+      expect(line.endsWith("/dag")).toBe(true)
+      expect(colorOf(await harness.spans(), "等待主 agent")?.equals(palette().warning)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("goes while the main agent works, and comes back when it stops", async () => {
+    const { harness } = await mountBand(waiting())
+    try {
+      await row0(harness, (text) => text.includes("等待主 agent"), "the wait")
+      harness.events.emit(statusEvent(rootID, "busy"))
+      await row0(harness, (text) => !text.includes("等待主 agent"), "the main agent busy")
+      harness.events.emit(statusEvent(rootID, "idle"))
+      await row0(harness, (text) => text.includes("等待主 agent"), "the main agent idle")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a turn that ended in an error counts as not working, whatever the status says", async () => {
+    const { harness } = await mountBand(waiting())
+    try {
+      harness.events.emit(statusEvent(rootID, "busy"))
+      await row0(harness, (text) => !text.includes("等待主 agent"), "the main agent busy")
+      harness.events.emit(settledEvent(rootID, { type: "error", code: "provider_error", retryable: true }, 5_000))
+      await row0(harness, (text) => text.includes("等待主 agent"), "the error")
+      // A later turn that settled well is not an error.
+      harness.events.emit(settledEvent(rootID, { type: "completed" }, 6_000))
+      await row0(harness, (text) => !text.includes("等待主 agent"), "the error gone")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says nothing when no checkpoint waits", async () => {
+    const quiet: World = {
+      summaries: { [rootID]: [flow("dag_alpha", "paused")] },
+      tables: { dag_alpha: table("dag_alpha", "queued") },
+    }
+    const { harness } = await mountBand(quiet)
+    try {
+      const line = await row0(harness, (text) => text.includes("alpha"), "the paused workflow")
+      expect(line).not.toContain("等待主")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    setLanguage("en")
+    const { harness } = await mountBand(waiting(), { language: "en" })
+    try {
+      await row0(harness, (text) => text.includes("waiting for main agent"), "the wait")
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("DAG mode at 80 and 120 columns", () => {
+  const upgrade: World = {
+    summaries: {
+      [rootID]: [
+        flow("dag_upgrade", "running", {
+          title: "依赖升级验证",
+          nodeCount: 9,
+          completedNodes: 4,
+          runningNodes: 2,
+          failedNodes: 1,
+          queuedNodes: 2,
+          tokens: 850,
+          concurrencyRunning: 3,
+          checkpointPending: true,
+        }),
+      ],
+    },
+    tables: {
+      dag_upgrade: [
+        wire("dag_upgrade", "n1", "completed"),
+        wire("dag_upgrade", "n2", "completed"),
+        wire("dag_upgrade", "n3", "completed"),
+        wire("dag_upgrade", "n4", "completed", ["n1"]),
+        wire("dag_upgrade", "n5", "failed", ["n2"]),
+        wire("dag_upgrade", "n6", "running", ["n4"]),
+        wire("dag_upgrade", "n7", "running", ["n4"]),
+        wire("dag_upgrade", "n8", "queued", ["n6", "n7"]),
+        wire("dag_upgrade", "n9", "queued", ["n8"]),
+      ],
+    },
+  }
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const width of [80, 120]) {
+      for (const aw of [1, 2] as const) {
+        test(`draws the mark, the usage and the wait in ${language} inside ${width} columns at ambiguous width ${aw}`, async () => {
+          setLanguage(language)
+          const { harness, served } = await mountEntered(upgrade, {
+            sessions: modeSessions,
+            dagMode: () => budgeted(1000),
+            width,
+            language,
+            kv: { ambiguous_width: aw },
+          })
+          try {
+            await waitFor(() => served.reads.length > 0)
+            await harness.settle()
+            const drawn = rows(await harness.frame())
+            expect(drawn).toHaveLength(1)
+            for (const line of drawn) expect(cellWidth(line, aw as AmbiguousWidth), line).toBeLessThanOrEqual(width)
+            // The mark does not give way at either width, and the bar is still there beside it.
+            expect(drawn[0]).toContain(language === "en" ? "mode on" : "模式开")
+            expect(drawn[0]).toMatch(/[━─]/)
+            // The budget is at its warning band (850 of 1000), so it is the last piece of the usage to go: both widths
+            // keep it. At 120 columns the wait that is also on the row keeps its place beside it; at 80 the room
+            // beside the bar, the title and the counts is short for both, and the budget stays while the wait goes.
+            if (aw === 1) {
+              expect(drawn[0]).toContain(language === "en" ? "budget 85%" : "预算 85%")
+              const wait = language === "en" ? "waiting for main agent" : "等待主 agent"
+              if (width === 120) expect(drawn[0]).toContain(wait)
+              else expect(drawn[0]).not.toContain(wait)
+            }
+            expect(drawn.join("\n")).toMatchSnapshot()
+          } finally {
+            await harness.dispose()
+          }
+        })
+      }
+    }
+  }
+})
+
+describe("a goal that is not one", () => {
+  /** A goal body as a broken server might send it: the wire type says what a goal has, this has less. */
+  function malformed(body: Record<string, unknown>): Goal {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- synthetic: a body the wire type does not allow.
+    return body as unknown as Goal
+  }
+
+  test("takes no row, and the rest of the band goes on following the server", async () => {
+    const { harness } = await mountBand(running)
+    try {
+      await band(harness, (all) => all.some((row) => row.includes("第 2/3 波")), "the loaded table")
+
+      harness.events.emit(goalEvent(rootID, malformed({})))
+      harness.events.emit(summaryEvent(rootID, [flow("dag_alpha", "running", { completedNodes: 3, queuedNodes: 0 })]))
+      const lines = await band(harness, (all) => all.some((row) => row.includes("3/4 完成")), "the refreshed counts")
+      // The workflow row only: a goal row with nothing in it would still take a line.
+      expect(lines).toHaveLength(1)
+
+      // A body with a text and no status is no goal either; the row stays away and the band still refreshes.
+      harness.events.emit(goalEvent(rootID, malformed({ goal: "ship the upgrade" })))
+      harness.events.emit(
+        summaryEvent(rootID, [flow("dag_alpha", "running", { completedNodes: 4, queuedNodes: 0, runningNodes: 0 })]),
+      )
+      const later = await band(harness, (all) => all.some((row) => row.includes("4/4 完成")), "the counts again")
+      expect(later).toHaveLength(1)
+
+      // And a goal that is one gets its row once it arrives.
+      harness.events.emit(goalEvent(rootID, goal()))
+      const both = await band(harness, (all) => all.length === 2 && all[1].includes("◎ 目标"), "the real goal")
+      expect(both[0]).toContain("4/4 完成")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("does not stop the goal row of the next goal from coming and updating either", async () => {
+    const { harness } = await mountBand(running)
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 2 && all[1].includes("第 6/30 轮"), "the goal")
+      harness.events.emit(goalCleared(rootID))
+      await band(harness, (all) => all.length === 1, "the goal cleared")
+      // The store merges an update into what it holds; with nothing held, this body is all there is of the goal.
+      harness.events.emit(goalEvent(rootID, malformed({ status: "active" })))
+      await harness.settle()
+      expect(rows(await harness.frame())).toHaveLength(1)
+      // A goal that is one arrives on top of it and is drawn whole.
+      harness.events.emit(goalEvent(rootID, goal({ turnsUsed: 7 })))
+      await band(harness, (all) => all.length === 2 && all[1].includes("第 7/30 轮"), "the goal again")
+    } finally {
+      await harness.dispose()
+    }
+  })
 })

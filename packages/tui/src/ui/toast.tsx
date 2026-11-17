@@ -35,6 +35,16 @@ export const TOAST_DEDUPE_MS = 10_000
 export const TOAST_DEFAULT_MS = 4_000
 export const TOAST_ERROR_MS = 8_000
 
+/**
+ * The text of a toast a server event carries: the title in front of the message, unless the message already begins
+ * with it. The server's budget toasts do (title "DAG token budget", message "DAG token budget: over 85% used"),
+ * and the title said twice reads as a stutter.
+ */
+export function serverToastText(title: string | undefined, message: string): string {
+  if (!title || message.startsWith(title)) return message
+  return `${title}: ${message}`
+}
+
 export function toastDuration(options: ToastOptions): number {
   return options.duration ?? (options.level === "error" ? TOAST_ERROR_MS : TOAST_DEFAULT_MS)
 }
