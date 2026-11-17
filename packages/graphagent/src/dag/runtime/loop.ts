@@ -193,6 +193,9 @@ const serviceLayer = Layer.effect(
           entries: runtimes,
           evict: (dagID, entry, stillLost) => evictEntry?.(dagID, entry, stillLost) ?? Effect.void,
           round: (input) => reconciler?.round(input) ?? Effect.void,
+          // A lease found lost (a renewal, a spawn's re-read) is news for the reconciler (Amendment 3, 4b-C): it
+          // evicts the entry when another holder shows, and retires one of a workflow that ended (row 1).
+          reconcile: (dagID) => reconciler?.reconcileAfter(dagID) ?? Effect.void,
         })
         // ADR-0008 decision 5: runner writes go through the port of the entry (or of the claim, before its
         // entry exists). A refused token drops the workflow: nothing to drop while there is no entry yet,
@@ -1268,13 +1271,125 @@ const serviceLayer = Layer.effect(
           )
         })
 
+        // ADR-0008 decision 2: settlement is not behind the lease re-check. It
+        // runs after the workflow ended, and `held` has no lease for a terminal
+        // workflow (the admission guarantee), so a check here would always
+        // refuse; the seam is idempotent and owner-gated instead.
+        // #1030 D9-g: settlement runs on the terminal transition, before the
+        // wake nudge, so the report/status read model carries its evidence. The
+        // seam lives in worktree-completion (reused by E1b #1029 and a future
+        // process-level reconciler); a host sweep that terminalizes without a
+        // loop entry still has no settlement here until that reconciler exists.
+        const settleWorkflowTerminal = (dagID: string) =>
+          settleTerminalWorkflowWorktree({
+            dagID,
+            store,
+            publish: events.publish,
+            ambient: ctx,
+            // #1030 D9-g: settlement and recovery/replan share one
+            // per-workflow critical section, so a settlement computed for the
+            // old terminal episode cannot commit the reopened episode's work.
+            exclusive: (effect) => dag.exclusive(dagID, effect),
+          })
+
+        // ADR-0008 decision 6, row 1 (Amendment 3, 4b-C): the end of a runtime entry whose workflow ended or was deleted,
+        // in one routine for the two ways this process learns of it. The terminal event handlers below hear of an end
+        // that this process's own bus carried. An end that another process caused never reaches this bus (events do not
+        // cross processes), so no handler runs here for it, and the news is the lost lease that a renewal or a spawn's
+        // re-read finds, or the round's look at the entries that its scan did not list (a control op needs no lease, so
+        // the renewal can go on succeeding): the reconciler's `retire` action (row 1) runs this same routine. Whichever
+        // takes the entry's lock first retires the entry and does what follows; the other finds it gone, or replaced, and
+        // ends right there, so the settlement and the wake of the parent follow once per entry. Returns whether this call
+        // retired it.
+        const retireTerminal = Effect.fn("DagLoop.retireTerminal")(function* (
+          dagID: string,
+          entry: WorkflowEntry,
+          source: string,
+        ) {
+          const retired = yield* entry.evalLock.withPermits(1)(
+            Effect.gen(function* () {
+              // Terminal events have their own subscriber fiber per event
+              // type, so a late WorkflowCompleted/Failed/Cancelled can be
+              // delivered after an additive extend already reopened the
+              // workflow (WorkflowReplanned), and the reconciler's verdict is
+              // as old as its reads. Projectors run inside the durable publish
+              // transaction, so a non-terminal durable row proves the news
+              // stale: keep the new revision's fibers and runtime entry; its
+              // own terminal event cleans up later. A row that is gone is a
+              // deleted workflow, which is retired as an ended one.
+              const durable = yield* store.getWorkflow(dagID)
+              if (durable && !isTerminalWorkflowStatusValue(durable.status)) {
+                yield* Effect.logDebug("DagLoop kept the entry of a workflow that is live again", {
+                  dagID,
+                  source,
+                  dbStatus: durable.status,
+                })
+                return false
+              }
+              // The entry may have been removed or replaced while this call
+              // waited for the evalLock.
+              if (runtimes.get(dagID) !== entry) return false
+              // The children are stopped for the reason the durable row gives: how the workflow ended, or its deletion
+              // (the session it hangs from was deleted, which cascades).
+              const abort =
+                durable?.status === "completed"
+                  ? childAbort("workflow-complete", "dag-loop")
+                  : durable?.status === "failed"
+                    ? childAbort("workflow-failed", "dag-loop")
+                    : durable?.status === "cancelled"
+                      ? childAbort("control-cancel", "parent-control")
+                      : childAbort("parent-session-deleted", "parent-session")
+              for (const [nodeID, fiber] of entry.fibers) {
+                // The child that this entry's own attempt recorded (`Evictable.attemptChild`), where it recorded one: once
+                // another runner took the workflow over and restarted a node, the node row names that runner's child,
+                // which this entry must not touch. An attempt that has recorded none (its spawn has not created the
+                // child) falls back to the row, as the terminal handler always did.
+                const own = entry.attemptChild.get(fiber)?.()
+                const childSessionID = own ?? (yield* store.getNode(dagID, nodeID))?.childSessionId ?? null
+                yield* abortChild(dagID, nodeID, childSessionID, "dag.loop.workflowTerminal", abort).pipe(Effect.ignore)
+                yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
+                const watcher = entry.watchers.get(nodeID)
+                if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
+              }
+              entry.fibers.clear()
+              entry.watchers.clear()
+              runtimes.delete(dagID)
+              return true
+            }),
+          )
+          if (!retired) return false
+          // ADR-0008: the entry is gone, so nothing renews this workflow's
+          // lease any more. Give it back now, ahead of the steps below that
+          // may fail: a runner that reopens the workflow (extend, recover)
+          // must be able to adopt it at once, not be refused by a lease that
+          // runs out only after the TTL, and a refused adoption is not retried.
+          yield* runnerLease.abandon(dagID, entry.token)
+          // #1030 D9-g: settle (commit + patch + remove/keep) before the
+          // terminal wake reads the read model.
+          yield* settleWorkflowTerminal(dagID)
+          // P1-6: trigger wake on workflow terminal so the parent
+          // learns the final outcome even if no idle event fires.
+          // GOAL-FP-01-03: the dag registration lifetime is bound to
+          // workflow state, not to wake delivery. A workflow that
+          // terminalizes without a successful wake delivery must not
+          // keep its registration (and the Session's ownership)
+          // indefinitely. The key matches the registration key
+          // (WorkflowTable.id === event dagID, per the projector);
+          // the delivery drain re-registers its batch itself before
+          // claiming the wake lease when a delivery is attempted.
+          yield* automation.unregister(SessionID.make(entry.parentSessionID), { kind: "dag", id: dagID })
+          yield* delivery.nudge(entry.parentSessionID)
+          return true
+        })
+
         // ADR-0008 decision 6: this instance's reconciler. Startup and the renewal tick run its rounds (`reconcile`;
         // the tick's in a fiber of its own, so the renewals never wait for it), and the event triggers below (a first
-        // wave, a replan with no entry, a session move) call `reconcileAfter`, which re-evaluates behind an
-        // evaluation under way instead of joining it. Every adoption runs in an evaluation, which is single-flight
-        // per workflow. It also disposes of the orphan `pending` rows an older version left behind (`Dag.create` is
-        // one transaction now): after a grace period, claim, then fail them. It reads every observation's clock into
-        // the instance's clock watch, which the lease owns (decision 2).
+        // wave, a replan with no entry, a session move) and a lease found lost (the renewal, a spawn's re-read: wired
+        // into `runnerLease` above) call `reconcileAfter`, which re-evaluates behind an evaluation under way instead
+        // of joining it. Every adoption runs in an evaluation, which is single-flight per workflow. It also disposes of
+        // the orphan `pending` rows an older version left behind (`Dag.create` is one transaction now): after a grace
+        // period, claim, then fail them in one command. It reads every observation's clock into the instance's clock
+        // watch, which the lease owns (decision 2).
         const evictMoved = DagReconciler.movedEvictor({
           entries: runtimes,
           store,
@@ -1293,7 +1408,6 @@ const serviceLayer = Layer.effect(
           runnerID,
           directory: ctx.directory,
           entries: runtimes,
-          events,
           lease: runnerLease,
           noteClock: runnerLease.noteClock,
           portFor,
@@ -1301,6 +1415,16 @@ const serviceLayer = Layer.effect(
           adopt: (wf) => recoverWorkflow(wf).pipe(Effect.provideService(Scope.Scope, stateScope), Effect.orDie),
           failUnusable: failUnusableWorkspace,
           evictMoved,
+          // Row 1: the entry of a workflow that ended, which no terminal handler here is going to hear of when another
+          // process ended it.
+          retire: (dagID, entry) =>
+            retireTerminal(dagID, entry, "reconcile").pipe(
+              Effect.flatMap((retired) =>
+                retired
+                  ? Effect.logInfo("DagLoop retired the runtime entry of a workflow that ended", { dagID })
+                  : Effect.void,
+              ),
+            ),
         })
         const { reconcileAfter } = reconciler
 
@@ -1941,134 +2065,51 @@ const serviceLayer = Layer.effect(
           Effect.forkScoped({ startImmediately: true }),
         )
 
-        // ADR-0008 decision 2: settlement is not behind the lease re-check. It
-        // runs after the workflow ended, and `held` has no lease for a terminal
-        // workflow (the admission guarantee), so a check here would always
-        // refuse; the seam is idempotent and owner-gated instead.
-        // #1030 D9-g: settlement runs on the terminal transition, before the
-        // wake nudge, so the report/status read model carries its evidence. The
-        // seam lives in worktree-completion (reused by E1b #1029 and a future
-        // process-level reconciler); a host sweep that terminalizes without a
-        // loop entry still has no settlement here until that reconciler exists.
-        const settleWorkflowTerminal = (dagID: string) =>
-          settleTerminalWorkflowWorktree({
-            dagID,
-            store,
-            publish: events.publish,
-            ambient: ctx,
-            // #1030 D9-g: settlement and recovery/replan share one
-            // per-workflow critical section, so a settlement computed for the
-            // old terminal episode cannot commit the reopened episode's work.
-            exclusive: (effect) => dag.exclusive(dagID, effect),
-          })
-
         for (const def of [DagEvent.WorkflowCompleted, DagEvent.WorkflowFailed, DagEvent.WorkflowCancelled]) {
-          const terminalAbort =
-            def === DagEvent.WorkflowCompleted
-              ? childAbort("workflow-complete", "dag-loop")
-              : def === DagEvent.WorkflowFailed
-                ? childAbort("workflow-failed", "dag-loop")
-                : childAbort("control-cancel", "parent-control")
           // Deliberately NO runtimes.has filter: a workflow terminalized by a
           // control op after a failed startup recovery (e.g. recoverWorkflow
           // aborted on an unreadable persisted row) has no runtime entry but
           // may still hold a dag registration from the startup wake sweep.
           // The handler stays a no-op for events not concerning this
-          // instance: the evalLock cleanup and wake fork remain gated on
-          // `entry`, and the no-entry release below is scoped by the durable
-          // row's project — the same cross-instance guard every adoption
-          // path uses.
+          // instance: the entry's retirement (`retireTerminal`) and its wake
+          // remain gated on `entry`, and the no-entry release below is scoped
+          // by the durable row's project — the same cross-instance guard
+          // every adoption path uses.
           yield* events.subscribe(def).pipe(
             Stream.runForEach((evt) =>
               Effect.gen(function* () {
                 const dagID = evt.data.dagID as string
                 const entry = runtimes.get(dagID)
-                const parentSessionID = entry?.parentSessionID
                 if (entry) {
-                  const cleaned = yield* entry.evalLock.withPermits(1)(
-                    Effect.gen(function* () {
-                      // Terminal events have their own subscriber fiber per event
-                      // type, so a late WorkflowCompleted/Failed/Cancelled can be
-                      // delivered after an additive extend already reopened the
-                      // workflow (WorkflowReplanned). Projectors run inside the
-                      // durable publish transaction, so a non-terminal durable row
-                      // proves this event is stale: keep the new revision's fibers
-                      // and runtime entry; its own terminal event cleans up later.
-                      const durable = yield* store.getWorkflow(dagID)
-                      if (durable && !isTerminalWorkflowStatusValue(durable.status)) {
-                        yield* Effect.logDebug("DagLoop dropped stale workflow terminal event", {
-                          dagID,
-                          event: def.type,
-                          dbStatus: durable.status,
-                        })
-                        return false
-                      }
-                      // The entry may have been removed or replaced while this
-                      // handler waited for the evalLock.
-                      if (runtimes.get(dagID) !== entry) return false
-                      for (const [nodeID, fiber] of entry.fibers) {
-                        const node = yield* store.getNode(dagID, nodeID)
-                        yield* abortChild(
-                          dagID,
-                          nodeID,
-                          node?.childSessionId ?? null,
-                          "dag.loop.workflowTerminal",
-                          terminalAbort,
-                        ).pipe(Effect.ignore)
-                        yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
-                        const watcher = entry.watchers.get(nodeID)
-                        if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
-                      }
-                      entry.fibers.clear()
-                      entry.watchers.clear()
-                      runtimes.delete(dagID)
-                      return true
-                    }),
-                  )
-                  if (!cleaned) return
-                  // ADR-0008: the entry is gone, so nothing renews this workflow's
-                  // lease any more. Give it back now, ahead of the steps below that
-                  // may fail: a runner that reopens the workflow (extend, recover)
-                  // must be able to adopt it at once, not be refused by a lease that
-                  // runs out only after the TTL, and a refused adoption is not retried.
-                  yield* runnerLease.abandon(dagID, entry.token)
+                  // The cleanup, the lease, the settlement and the wake of the parent: the routine that the reconciler
+                  // runs for a workflow that another process ended (row 1). A stale event, an entry that is gone or
+                  // replaced already, ends in it without a trace.
+                  yield* retireTerminal(dagID, entry, def.type)
+                  return
                 }
                 // #1030 D9-g: settle (commit + patch + remove/keep) before the
                 // terminal wake reads the read model.
                 yield* settleWorkflowTerminal(dagID)
                 // P1-6: trigger wake on workflow terminal so the parent
                 // learns the final outcome even if no idle event fires.
-                if (parentSessionID) {
-                  // GOAL-FP-01-03: the dag registration lifetime is bound to
-                  // workflow state, not to wake delivery. A workflow that
-                  // terminalizes without a successful wake delivery must not
-                  // keep its registration (and the Session's ownership)
-                  // indefinitely. The key matches the registration key
-                  // (WorkflowTable.id === event dagID, per the projector);
-                  // the delivery drain re-registers its batch itself before
-                  // claiming the wake lease when a delivery is attempted.
-                  yield* automation.unregister(SessionID.make(parentSessionID), { kind: "dag", id: dagID })
-                  yield* delivery.nudge(parentSessionID)
-                } else {
-                  // GOAL-FP-01-03 follow-up (P2-A): no runtime entry, but the
-                  // startup wake sweep may have registered this non-terminal
-                  // row before its recovery failed. Release from the durable
-                  // row (session_id + project) so a control-op
-                  // terminalization cannot leave a permanent registration
-                  // with no runtime to ever clean it. Foreign-project events
-                  // are a no-op here.
-                  const wf = yield* store.getWorkflow(dagID)
-                  // A stale terminal event for a reopened (running) workflow must
-                  // not release its registration; a terminal row only event is
-                  // the one that owes the wake.
-                  if (wf && wf.projectId === ctx.project.id && isTerminalWorkflowStatusValue(wf.status)) {
-                    yield* automation.unregister(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
-                    // #948: a workflow terminalized without a runtime entry
-                    // (swept at host level, or recovery that never adopted)
-                    // still owes the parent one wake. The drain re-applies
-                    // execution and notification-only ownership.
-                    yield* delivery.nudge(wf.sessionId)
-                  }
+                // GOAL-FP-01-03 follow-up (P2-A): no runtime entry, but the
+                // startup wake sweep may have registered this non-terminal
+                // row before its recovery failed. Release from the durable
+                // row (session_id + project) so a control-op
+                // terminalization cannot leave a permanent registration
+                // with no runtime to ever clean it. Foreign-project events
+                // are a no-op here.
+                const wf = yield* store.getWorkflow(dagID)
+                // A stale terminal event for a reopened (running) workflow must
+                // not release its registration; a terminal row only event is
+                // the one that owes the wake.
+                if (wf && wf.projectId === ctx.project.id && isTerminalWorkflowStatusValue(wf.status)) {
+                  yield* automation.unregister(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
+                  // #948: a workflow terminalized without a runtime entry
+                  // (swept at host level, or recovery that never adopted)
+                  // still owes the parent one wake. The drain re-applies
+                  // execution and notification-only ownership.
+                  yield* delivery.nudge(wf.sessionId)
                 }
               }).pipe(guarded("WorkflowTerminal")),
             ),

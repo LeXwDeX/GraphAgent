@@ -29,20 +29,33 @@ import { ReconcileDecide } from "./reconcile-decide"
  *   - One fiber per instance renews the lease of every runtime entry, paused
  *     and stepping workflows included, every `RENEWAL_PERIOD_MS`. A renewal
  *     that finds the row naming another token means the lease is lost: the
- *     runner evicts the workflow at once (`evict`, which stops driving it and
- *     writes nothing for it; the new holder decides the outcome). A renewal
- *     that fails is not that: a database failure (`SQLITE_BUSY` after the busy
- *     timeout) is transient and is retried at the next tick.
+ *     workflow goes to the reconciler (`reconcile`, below), whose judgement
+ *     evicts it (the eviction stops driving it and writes nothing for it; the
+ *     new holder decides the outcome). A renewal that fails is not that: a
+ *     database failure (`SQLITE_BUSY` after the busy timeout) is transient and
+ *     is retried at the next tick.
  *   - At a clean exit the instance releases the leases it holds, after it has
  *     interrupted its fibers, so another runner can claim them at once.
  *   - A spawn re-reads the lease right before it creates a child session
- *     (`verify`); a lost lease ends the spawn and evicts the workflow.
+ *     (`verify`); a lost lease ends the spawn and hands the workflow to the
+ *     reconciler the same way.
  *   - `evictor` is the eviction itself: what an instance does with the entry of
  *     a workflow whose lease it lost. It cancels the children its own attempts
  *     created and no other (`Evictable.attemptChild`).
  *   - A write under the entry's token that the fence refuses (`refused`, which
  *     the runner port calls, `runner-port.ts`) is the third way to learn of the
  *     loss, after the renewal and the spawn's re-read: it evicts the same way.
+ *
+ * A lost lease is a trigger, not a verdict (ADR-0008 Amendment 3, 4b-C). The renewal
+ * and `verify` only learn that the row does not name the entry's token. What that
+ * means is the reconciler's judgement (`reconcile`, the loop's `reconcileAfter`:
+ * the news is newer than any evaluation under way): the row of a workflow that
+ * ended or was deleted is no loss, and its entry is retired by the routine of the
+ * terminal handler (row 1), another holder's is evicted (row 3). Each trigger runs
+ * in a fiber of the instance's scope, so neither the renewal tick nor the spawn
+ * that asked waits for it. A graph that has no reconciler (the unit graphs of this
+ * file's own tests) keeps the direct eviction of PR2, where nobody else is there
+ * to judge.
  *
  * The same tick starts the instance's reconcile round (`round`, ADR-0008
  * decision 6, `reconciler.ts`), in a fiber of its own and never more than one at a
@@ -121,9 +134,13 @@ export interface Interface<E extends Held = Held> {
   /**
    * A spawn's re-read right before its child session exists (ADR-0008 decision
    * 2): whether the entry's token still holds the lease of a live workflow. When
-   * it does not, the lease is lost and the workflow is evicted, from a fiber of
-   * its own: the evictor interrupts the spawn fiber that asks, which therefore
-   * cannot wait for it.
+   * it does not, the spawn ends and the lease is handed to the reconciler to judge
+   * (`reconcile`), from a fiber of its own: the eviction that follows interrupts
+   * the spawn fiber that asks, which therefore cannot wait for it. `verify` does
+   * not evict itself: `held` has no row for a workflow that ended, and an eviction
+   * that got to such an entry first would cost it the worktree settlement and the
+   * wake of the parent; the reconciler retires it instead (row 1), settlement and
+   * wake included. Without a `reconcile` it evicts directly, as it did before PR4b.
    */
   readonly verify: (dagID: string, entry: E) => Effect.Effect<boolean>
   /**
@@ -139,7 +156,7 @@ export interface Interface<E extends Held = Held> {
    *   - the lease row does not show another holder: the workflow is gone or
    *     terminal (its terminal and deletion handlers clean the entry up, and an
    *     eviction racing them would cost the terminal wake and the worktree
-   *     settlement that only the handler does), the row still names the token, or
+   *     settlement that they do), the row still names the token, or
    *     it could not be read (transient, as for a renewal; the next tick looks).
    */
   readonly refused: (dagID: string, token: DagLease.Token) => Effect.Effect<void>
@@ -153,9 +170,10 @@ export interface Interface<E extends Held = Held> {
    * alone when
    *   - it is gone, or an entry that replaced it is the table's now;
    *   - the row does not show another holder (the judgement of `refused`): the
-   *     workflow ended in between, and the entry is the terminal handler's to
-   *     settle (the worktree, the parent's wake), or the row names the token after
-   *     all, or it could not be read (the next round looks again).
+   *     workflow ended in between, and the entry is for the terminal handler or
+   *     the next judgement to retire (row 1: the worktree, the parent's wake), or
+   *     the row names the token after all, or it could not be read (the next round
+   *     looks again).
    */
   readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
   /**
@@ -229,8 +247,20 @@ export function make<E extends Held>(input: {
    * instance closes is interrupted.
    */
   readonly round?: (input: { readonly afterClockJump: boolean }) => Effect.Effect<void>
+  /**
+   * What a lost lease sets going (ADR-0008 Amendment 3, 4b-C): the reconciler's
+   * trailing entry, `reconcileAfter(dagID)`. A renewal that finds its row naming
+   * another token and a `verify` that finds the lease not held each start one, in
+   * a fiber of the instance's scope that nobody waits for, so neither the tick nor
+   * the spawn is held up. Its verdict is `decide`'s: an eviction when another
+   * holder shows (row 3), the retirement of the entry when the workflow ended
+   * (row 1). A call that fails is logged, and the next round looks again. Left
+   * out, the direct eviction of PR2 stays (`evict` above): the graphs of this
+   * file's own unit tests run no reconciler to judge a lost lease.
+   */
+  readonly reconcile?: (dagID: string) => Effect.Effect<unknown>
 }): Effect.Effect<Interface<E>, never, Scope.Scope> {
-  const { leases, runnerID, entries, evict, round } = input
+  const { leases, runnerID, entries, evict, round, reconcile } = input
   return Effect.gen(function* () {
     const scope = yield* Scope.Scope
     const release = (dagID: string, token: DagLease.Token, message: string) =>
@@ -265,6 +295,20 @@ export function make<E extends Held>(input: {
         yield* announceLoss(dagID, entry)
         yield* evictAbsorbed(dagID, entry)
       })
+    // A lease found lost, by a renewal or by `verify`: the reconciler is asked to judge it (see `reconcile`), or
+    // without one the entry is evicted on the spot. Either way in a fiber of the instance's scope, which is neither
+    // the tick's nor the spawn's: the eviction interrupts the spawn's fiber, and the tick never waits for a judgement
+    // (decision 6, two fibers). The fork does not start at once, so the call does not run on the caller's stack.
+    const lostLease = (dagID: string, entry: E) =>
+      (reconcile === undefined
+        ? evictLost(dagID, entry)
+        : absorb(
+            Effect.asVoid(reconcile(dagID)),
+            undefined,
+            "DagLoop could not reconcile a workflow whose runner lease is lost; the next round looks again",
+            { dagID },
+          )
+      ).pipe(Effect.forkIn(scope), Effect.asVoid)
     // Whether the lease row shows another holder right now: the row exists, so the workflow is live, and it does
     // not name `token`. No row (the workflow is gone or terminal), a row that names the token and a row that
     // cannot be read (transient, as for a renewal) are not a lost lease. `refused` and the reconciler's eviction
@@ -287,7 +331,7 @@ export function make<E extends Held>(input: {
         )
         if (!renewed) lost.push([dagID, entry])
       }
-      for (const [dagID, entry] of lost) yield* evictLost(dagID, entry)
+      for (const [dagID, entry] of lost) yield* lostLease(dagID, entry)
     })
     // The clock-jump rule: one watch for the instance, seeded with its start. The tick feeds it every period, so
     // a round that is merely long is no jump, and the reconciler feeds it the reading of every observation, so a
@@ -357,7 +401,7 @@ export function make<E extends Held>(input: {
       }),
       verify: Effect.fn("RunnerLease.verify")(function* (dagID: string, entry: E) {
         const holds = DagLease.holds(yield* leases.held(dagID), entry.token)
-        if (!holds) yield* evictLost(dagID, entry).pipe(Effect.forkIn(scope))
+        if (!holds) yield* lostLease(dagID, entry)
         return holds
       }),
       refused: Effect.fn("RunnerLease.refused")(function* (dagID: string, token: DagLease.Token) {
@@ -375,7 +419,7 @@ export function make<E extends Held>(input: {
       }),
       evict: Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E) {
         // The reconciler's verdict was made from reads that are older than the entry's lock: once the eviction holds
-        // it, the lease row is read again, and a workflow that ended in between is left to its terminal handler.
+        // it, the lease row is read again, and a workflow that ended in between is left to be retired (row 1).
         const stillLost = heldByAnother(
           dagID,
           entry.token,
@@ -418,7 +462,7 @@ export const evictor = <E extends Evictable>(input: {
         // Already gone: a terminal event or a move dropped it first.
         if (input.entries.get(dagID) !== entry) return false
         // Decided on older reads: what they showed may have ended since (a workflow that went terminal has its
-        // terminal handler waiting for this lock, and the entry is what it settles).
+        // retirement waiting for this lock, and the entry is what it settles).
         if (stillLost !== undefined && !(yield* stillLost)) return false
         for (const [nodeID, fiber] of entry.fibers) {
           // A spawn that has not created its child yet has nothing to cancel: interrupting its fiber ends it.

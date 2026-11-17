@@ -469,6 +469,7 @@ function gatedDag(gate: Gate) {
         cancel: held("dag.workflow.cancelled", real.cancel),
         complete: held("dag.workflow.completed", real.complete),
         fail: held("dag.workflow.failed", real.fail),
+        failOrphan: held("dag.workflow.failed", real.failOrphan),
         failUnrecoverable: held("dag.workflow.failed", real.failUnrecoverable),
         settleCompletion: held("dag.workflow.completed", real.settleCompletion),
         replan: held("dag.workflow.replanned", real.replan),

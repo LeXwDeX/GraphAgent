@@ -681,6 +681,17 @@ export interface Interface {
   ) => Effect.Effect<void, Error>
   readonly fail: (dagID: string, reason: string) => Effect.Effect<void, Error>
   /**
+   * Terminalize an orphan `pending` workflow (ADR-0008 Amendment 3, 4b-C): the
+   * legal pending -> running -> failed sequence in ONE transaction, a runner
+   * write that carries the lease token like `fail`. The projector accepts
+   * `WorkflowFailed` only from running or stepping, so `WorkflowStarted` has
+   * to land first; in one transaction nothing can observe the `running` midpoint
+   * and a refused fence leaves neither event. Failed, not cancelled (an
+   * interrupted create), with `reason` in the durable event. Rejects a workflow
+   * that is not `pending`: this is not `failUnrecoverable`.
+   */
+  readonly failOrphan: (dagID: string, reason: string) => Effect.Effect<void, Error>
+  /**
    * Fail a workflow whose execution location is unusable outside the normal
    * control flow (its directory disappeared or was never stamped). Unlike
    * `fail`, this also legalizes the pending→running and paused→running legs
@@ -1361,6 +1372,22 @@ export const layer = Layer.effect(
         timestamp: yield* DateTime.now,
       })
       yield* terminateNonTerminalNodes(lock, dagID, "workflow_failed", reason, true)
+    })
+
+    /**
+     * The orphan's terminalization (ADR-0008 Amendment 3, 4b-C): `WorkflowStarted`
+     * legalizes the pending -> running leg that the projector requires of a
+     * `WorkflowFailed`, and `fail` takes it from there, in the one transaction
+     * of the command. The guard admits `pending` alone: `guardWorkflow` would let a
+     * `paused` workflow through (paused -> running is legal), which no create
+     * sequence leaves behind.
+     */
+    const failOrphan = Effect.fn("Dag.failOrphan")(function* (lock: WorkflowLock, dagID: string, reason: string) {
+      const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
+      if (workflow.status !== WorkflowStatus.PENDING)
+        yield* Effect.fail(new InvalidTransitionError(dagID, workflow.status, WorkflowStatus.RUNNING))
+      yield* events.publish(DagEvent.WorkflowStarted, { dagID: ID.make(dagID), timestamp: yield* DateTime.now })
+      yield* fail(lock, dagID, reason)
     })
 
     /**
@@ -2701,6 +2728,8 @@ export const layer = Layer.effect(
       complete: (dagID, options) =>
         command(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
       fail: (dagID, reason) => command(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
+      failOrphan: (dagID, reason) =>
+        command(dagID)((lock) => withMailbox(dagID, "failed", failOrphan(lock, dagID, reason))),
       failUnrecoverable: (dagID, reason) =>
         command(dagID)((lock) =>
           // An `ignored` outcome means the workflow moved or terminalized
