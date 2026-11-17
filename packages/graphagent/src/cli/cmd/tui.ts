@@ -11,6 +11,7 @@ import type { EventSource } from "@graphagent/tui/context/sdk"
 import { writeHeapSnapshot } from "v8"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@graphagent/tui/terminal-win32"
+import { t } from "@graphagent/tui/i18n"
 
 declare global {
   const GRAPHAGENT_WORKER_PATH: string
@@ -87,43 +88,43 @@ async function needsTranspileReexec() {
 
 export const TuiThreadCommand = cmd({
   command: "$0 [project]",
-  describe: "start graphagent tui",
+  describe: t("cli.tui.describe"),
   builder: (yargs) =>
     yargs
       .positional("project", {
         type: "string",
-        describe: "path to start graphagent in",
+        describe: t("cli.tui.option.project"),
       })
       .option("model", {
         type: "string",
         alias: ["m"],
-        describe: "model to use in the format of provider/model",
+        describe: t("cli.run.option.model"),
       })
       .option("continue", {
         alias: ["c"],
-        describe: "continue the last session",
+        describe: t("cli.run.option.continue"),
         type: "boolean",
       })
       .option("session", {
         alias: ["s"],
         type: "string",
-        describe: "session id to continue",
+        describe: t("cli.run.option.session"),
       })
       .option("fork", {
         type: "boolean",
-        describe: "fork the session when continuing (use with --continue or --session)",
+        describe: t("cli.tui.option.fork"),
       })
       .option("prompt", {
         type: "string",
-        describe: "prompt to use",
+        describe: t("cli.tui.option.prompt"),
       })
       .option("agent", {
         type: "string",
-        describe: "agent to use",
+        describe: t("cli.run.option.agent"),
       })
       .option("mini", {
         type: "boolean",
-        describe: "start the minimal interactive interface",
+        describe: t("cli.tui.option.mini"),
         default: false,
       })
       .option("replay", {
@@ -132,11 +133,11 @@ export const TuiThreadCommand = cmd({
       })
       .option("no-replay", {
         type: "boolean",
-        describe: "disable mini session history replay on resume and after resize",
+        describe: t("cli.tui.option.noReplay"),
       })
       .option("replay-limit", {
         type: "number",
-        describe: "cap visible mini replay to the newest N messages",
+        describe: t("cli.tui.option.replayLimit"),
       })
       .option("demo", {
         type: "boolean",
@@ -144,7 +145,7 @@ export const TuiThreadCommand = cmd({
       }),
   handler: async (args) => {
     if (args.replay === true) {
-      UI.error("--replay is not supported; replay is enabled by default")
+      UI.error(t("cli.tui.error.replayUnsupported"))
       process.exitCode = 1
       return
     }
@@ -173,7 +174,7 @@ export const TuiThreadCommand = cmd({
       ["--demo", args.demo !== undefined],
     ].find((entry) => entry[1])?.[0]
     if (unsupported) {
-      UI.error(`${unsupported} requires --mini`)
+      UI.error(t("cli.run.error.requiresMini", { flag: String(unsupported) }))
       process.exitCode = 1
       return
     }
@@ -200,7 +201,7 @@ export const TuiThreadCommand = cmd({
     try {
       const { TuiConfig } = await import("@/config/tui")
       if (args.fork && !args.continue && !args.session) {
-        UI.error("--fork requires --continue or --session")
+        UI.error(t("cli.run.error.forkNeedsSession"))
         process.exitCode = 1
         return
       }
@@ -212,7 +213,7 @@ export const TuiThreadCommand = cmd({
       try {
         process.chdir(next)
       } catch {
-        UI.error("Failed to change directory to " + next)
+        UI.error(t("cli.run.error.changeDirectory", { dir: next }))
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
@@ -240,12 +241,12 @@ export const TuiThreadCommand = cmd({
         stopped = true
         process.off("SIGUSR2", reload)
         worker.terminate()
-        UI.error("server worker crashed: " + reason)
+        UI.error(t("cli.tui.error.workerCrashed", { reason }))
         process.exit(1)
       }
       client.on("worker.fatal", (data) => fatal(data.message))
       worker.addEventListener("error", (event) => fatal(errorMessage(event.error ?? event.message)))
-      worker.addEventListener("close", () => fatal("worker exited unexpectedly"))
+      worker.addEventListener("close", () => fatal(t("cli.tui.error.workerExited")))
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()

@@ -1,68 +1,44 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { AssistantMessage } from "@graphagent/sdk"
-import { InstallationChannel } from "@graphagent/core/installation/version"
-import { createMemo, createSignal, For, Match, Show, Switch, type Accessor, type JSX } from "solid-js"
-import { TodoItem } from "../../component/todo-item"
+import { createMemo, For, Show } from "solid-js"
+import { resolveRootSessionID } from "../../ask/ask-queue"
 import { WorkspaceLabel } from "../../component/workspace-label"
 import { useTuiConfig } from "../../config"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
-import { t, type MessageKey } from "../../i18n"
+import { t } from "../../i18n"
 import { useCommandShortcut } from "../../keymap"
-import { Locale } from "../../util/locale"
-import { getScrollAcceleration } from "../../util/scroll"
 import { isGoalShown } from "../../shell/status-band"
-
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-})
-
-const FILE_LABEL_WIDTH = 34
-
-const STATUS_KEY: Record<string, MessageKey> = {
-  active: "goal.status.active",
-  waiting: "goal.status.waiting",
-  done: "goal.status.done",
-  paused: "goal.status.paused",
-}
-
-function statusLabel(status: string) {
-  const key = STATUS_KEY[status]
-  return key ? t(key) : status
-}
-
-function changeCountWidth(item: { additions: number; deletions: number }) {
-  return [item.additions ? `+${item.additions}` : "", item.deletions ? `-${item.deletions}` : ""]
-    .filter(Boolean)
-    .join(" ").length
-}
+import { remoteLine } from "../../util/remote-text"
+import { getScrollAcceleration } from "../../util/scroll"
+import {
+  CONTEXT_BAR_CELLS,
+  contextBarCells,
+  contextTone,
+  contextUsage,
+  costText,
+  goalLine,
+  services,
+  todoCount,
+  todoMark,
+} from "./drawer-model"
 
 /**
- * Collapsible section header. Only long lists collapse; short sections always
- * render their content.
+ * The drawer's sections (#1032 5.2), in their fixed order: session, context, cost, the DAG mode line, goal, todo,
+ * services. Each is a plain display component over `useSync()`; nothing in the drawer is clickable. The context,
+ * cost and todo follow the session on screen, a sub-agent's included; the goal is always the root session's; LSP and
+ * MCP are global. The modified-files section is left out for now (#1032 D8): since H5 its data source is mostly empty.
  */
-function SectionHeader(props: {
-  title: string
-  collapsible: boolean
-  open: Accessor<boolean>
-  onToggle: () => void
-  summary?: JSX.Element
-}) {
+
+function Heading(props: { title: string; detail?: string }) {
   const { theme } = useTheme()
   return (
-    <box flexDirection="row" gap={1} onMouseDown={() => props.collapsible && props.onToggle()}>
-      <Show when={props.collapsible}>
-        <text fg={theme.text}>{props.open() ? "▼" : "▶"}</text>
-      </Show>
-      <text fg={theme.text}>
-        <b>{props.title}</b>
-        {props.summary}
-      </text>
-    </box>
+    <text fg={theme.text} wrapMode="none">
+      <b>{props.title}</b>
+      <Show when={props.detail}>{(detail) => <span style={{ fg: theme.textMuted }}> {detail()}</span>}</Show>
+    </text>
   )
 }
 
@@ -76,17 +52,15 @@ function DrawerSession(props: { sessionID: string }) {
     if (!workspaceID) return
     return project.workspace.get(workspaceID)
   }
+  const branch = createMemo(() => sync.data.vcs?.branch)
 
   return (
     <Show when={session()}>
       {(current) => (
-        <box paddingRight={1}>
+        <box>
           <text fg={theme.text}>
-            <b>{current().title}</b>
+            <b>{remoteLine(current().title)}</b>
           </text>
-          <Show when={InstallationChannel !== "latest"}>
-            <text fg={theme.textMuted}>{props.sessionID}</text>
-          </Show>
           <Show when={current().workspaceID}>
             <text fg={theme.textMuted}>
               <Show
@@ -104,6 +78,13 @@ function DrawerSession(props: { sessionID: string }) {
               </Show>
             </text>
           </Show>
+          <Show when={branch()}>
+            {(name) => (
+              <text fg={theme.textMuted} wrapMode="none">
+                {t("drawer.session.branch", { branch: remoteLine(name()) })}
+              </text>
+            )}
+          </Show>
         </box>
       )}
     </Show>
@@ -113,28 +94,33 @@ function DrawerSession(props: { sessionID: string }) {
 function DrawerContext(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const messages = createMemo(() => sync.data.message[props.sessionID] ?? [])
-  const state = createMemo(() => {
-    const last = messages().findLast(
-      (item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0,
-    )
-    if (!last) return { tokens: 0, percent: null }
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    return {
-      tokens,
-      percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
-    }
-  })
+  const usage = createMemo(() => contextUsage(sync.data.message[props.sessionID] ?? [], sync.data.provider))
+  const tone = (percent: number) => theme[contextTone(percent)]
 
   return (
     <box>
-      <text fg={theme.text}>
-        <b>{t("drawer.context")}</b>
-      </text>
-      <text fg={theme.textMuted}>{t("drawer.context.tokens", { tokens: state().tokens.toLocaleString() })}</text>
-      <text fg={theme.textMuted}>{t("drawer.context.used", { percent: state().percent ?? 0 })}</text>
+      <Heading title={t("drawer.context")} />
+      <Show when={usage()} fallback={<text fg={theme.textMuted}>—</text>}>
+        {(current) => (
+          <>
+            <text fg={theme.textMuted} wrapMode="none">
+              {t("drawer.context.usage", {
+                used: current().used.toLocaleString("en-US"),
+                limit: current().limit?.toLocaleString("en-US") ?? "—",
+              })}
+            </text>
+            <Show when={current().percent !== undefined}>
+              <text fg={theme.textMuted} wrapMode="none">
+                <span style={{ fg: tone(current().percent!) }}>{"█".repeat(contextBarCells(current().percent!))}</span>
+                <span style={{ fg: theme.textDim }}>
+                  {"█".repeat(CONTEXT_BAR_CELLS - contextBarCells(current().percent!))}
+                </span>{" "}
+                <span style={{ fg: tone(current().percent!) }}>{current().percent}%</span>
+              </text>
+            </Show>
+          </>
+        )}
+      </Show>
     </box>
   )
 }
@@ -142,14 +128,12 @@ function DrawerContext(props: { sessionID: string }) {
 function DrawerCost(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const cost = createMemo(() => sync.session.get(props.sessionID)?.cost ?? 0)
+  const cost = createMemo(() => costText(sync.session.get(props.sessionID)?.cost))
 
   return (
     <box>
-      <text fg={theme.text}>
-        <b>{t("drawer.cost")}</b>
-      </text>
-      <text fg={theme.textMuted}>{t("drawer.cost.spent", { amount: money.format(cost()) })}</text>
+      <Heading title={t("drawer.cost")} />
+      <text fg={theme.textMuted}>{cost()}</text>
     </box>
   )
 }
@@ -176,28 +160,39 @@ function DrawerDagMode(props: { sessionID: string }) {
   )
 }
 
-function DrawerGoal(props: { sessionID: string }) {
+/** The root session's goal, whichever session of the tree is on screen. Hidden without a goal. */
+function DrawerGoal(props: { rootID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  // A partial goal body (no text or status) is no goal: reading `.goal.length` on it would throw.
+  // A partial goal body (no text or status) is no goal: reading `.goal` on it would throw.
   const goal = createMemo(() => {
-    const value = sync.data.goal[props.sessionID]
+    const value = sync.data.goal[props.rootID]
     return isGoalShown(value) ? value : undefined
+  })
+  const line = createMemo(() => {
+    const current = goal()
+    return current ? goalLine(current) : undefined
+  })
+  const subgoals = createMemo(() => {
+    const list = goal()?.subgoals
+    return Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []
   })
 
   return (
     <Show when={goal()}>
       {(current) => (
         <box>
-          <text fg={theme.text}>
-            <b>{t("goal.title")}</b> [{statusLabel(current().status)}]
-          </text>
-          <text fg={theme.textMuted}>
-            {current().goal.length > 60 ? current().goal.slice(0, 57) + "..." : current().goal}
-          </text>
-          <text fg={theme.textMuted}>
-            {t("goal.turns", { used: Number(current().turnsUsed), max: Number(current().maxTurns) })}
-          </text>
+          <Heading title={t("goal.title")} />
+          <text fg={theme.text}>{remoteLine(current().goal)}</text>
+          <Show when={line()}>
+            {(state) => (
+              <text fg={theme.textMuted} wrapMode="none">
+                {state().turns ? `${state().turns} · ` : ""}
+                <span style={{ fg: state().warning ? theme.warning : theme.textMuted }}>{state().state}</span>
+              </text>
+            )}
+          </Show>
+          <For each={subgoals()}>{(item) => <text fg={theme.textMuted}>{`· ${remoteLine(item)}`}</text>}</For>
         </box>
       )}
     </Show>
@@ -207,209 +202,79 @@ function DrawerGoal(props: { sessionID: string }) {
 function DrawerTodo(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const [open, setOpen] = createSignal(true)
   const list = createMemo(() => sync.data.todo[props.sessionID] ?? [])
-  const visible = createMemo(() => list().length > 0 && list().some((item) => item.status !== "completed"))
-  const collapsible = createMemo(() => list().length > 2)
-
-  return (
-    <Show when={visible()}>
-      <box>
-        <SectionHeader
-          title={t("drawer.todo")}
-          collapsible={collapsible()}
-          open={open}
-          onToggle={() => setOpen((value) => !value)}
-        />
-        <Show when={!collapsible() || open()}>
-          <For each={list()}>{(item) => <TodoItem status={item.status} content={item.content} />}</For>
-        </Show>
-      </box>
-    </Show>
-  )
-}
-
-function DrawerFiles(props: { sessionID: string }) {
-  const sync = useSync()
-  const { theme } = useTheme()
-  const [open, setOpen] = createSignal(true)
-  const list = createMemo(() =>
-    (sync.data.session_diff[props.sessionID] ?? []).flatMap((item) =>
-      item.file === undefined ? [] : [{ ...item, file: item.file }],
-    ),
-  )
-  const collapsible = createMemo(() => list().length > 2)
 
   return (
     <Show when={list().length > 0}>
       <box>
-        <SectionHeader
-          title={t("drawer.files")}
-          collapsible={collapsible()}
-          open={open}
-          onToggle={() => setOpen((value) => !value)}
-        />
-        <Show when={!collapsible() || open()}>
-          <For each={list()}>
-            {(item) => (
-              <box flexDirection="row" gap={1} justifyContent="space-between">
-                <text fg={theme.textMuted} wrapMode="none">
-                  {Locale.truncateLeft(item.file, Math.max(2, FILE_LABEL_WIDTH - changeCountWidth(item)))}
-                </text>
-                <box flexDirection="row" gap={1} flexShrink={0}>
-                  <Show when={item.additions}>
-                    <text fg={theme.diffAdded}>+{item.additions}</text>
-                  </Show>
-                  <Show when={item.deletions}>
-                    <text fg={theme.diffRemoved}>-{item.deletions}</text>
-                  </Show>
-                </box>
-              </box>
-            )}
-          </For>
-        </Show>
-      </box>
-    </Show>
-  )
-}
-
-function DrawerLsp() {
-  const sync = useSync()
-  const { theme } = useTheme()
-  const [open, setOpen] = createSignal(true)
-  const list = createMemo(() => sync.data.lsp)
-  const off = createMemo(() => !sync.data.config.lsp)
-  const collapsible = createMemo(() => list().length > 2)
-
-  return (
-    <box>
-      <SectionHeader title="LSP" collapsible={collapsible()} open={open} onToggle={() => setOpen((value) => !value)} />
-      <Show when={!collapsible() || open()}>
-        <Show when={list().length === 0}>
-          <text fg={theme.textMuted}>{off() ? t("drawer.lsp.disabled") : t("drawer.lsp.waiting")}</text>
-        </Show>
+        <Heading title={t("drawer.todo")} detail={todoCount(list())} />
         <For each={list()}>
           {(item) => (
-            <box flexDirection="row" gap={1}>
-              <text
-                flexShrink={0}
-                style={{
-                  fg: item.status === "connected" ? theme.success : theme.error,
-                }}
-              >
-                •
+            <box flexDirection="row">
+              <text flexShrink={0} fg={theme[todoMark(item.status).tone]}>
+                {`${todoMark(item.status).symbol} `}
               </text>
-              <text fg={theme.textMuted}>
-                {item.id} {item.root}
+              <text flexGrow={1} wrapMode="word" fg={item.status === "completed" ? theme.textMuted : theme.text}>
+                {remoteLine(item.content)}
               </text>
             </box>
           )}
         </For>
-      </Show>
-    </box>
+      </box>
+    </Show>
   )
 }
 
-function DrawerMcp() {
+function DrawerServices() {
   const sync = useSync()
   const { theme } = useTheme()
-  const [open, setOpen] = createSignal(true)
-  const list = createMemo(() =>
-    Object.entries(sync.data.mcp)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([name, item]) => ({
-        name,
-        status: item.status,
-        error: item.status === "failed" ? item.error : undefined,
-      })),
-  )
-  const on = createMemo(() => list().filter((item) => item.status === "connected").length)
-  const bad = createMemo(
-    () =>
-      list().filter(
-        (item) =>
-          item.status === "failed" || item.status === "needs_auth" || item.status === "needs_client_registration",
-      ).length,
-  )
-  const collapsible = createMemo(() => list().length > 2)
-
-  const dot = (status: string) => {
-    if (status === "connected") return theme.success
-    if (status === "failed") return theme.error
-    if (status === "disabled") return theme.textMuted
-    if (status === "needs_auth") return theme.warning
-    if (status === "needs_client_registration") return theme.error
-    return theme.textMuted
-  }
+  const state = createMemo(() => services(sync.data.lsp, sync.data.mcp))
 
   return (
-    <Show when={list().length > 0}>
-      <box>
-        <SectionHeader
-          title="MCP"
-          collapsible={collapsible()}
-          open={open}
-          onToggle={() => setOpen((value) => !value)}
-          summary={
-            <Show when={!open()}>
-              <span style={{ fg: theme.textMuted }}>
-                {" "}
-                {t("drawer.mcp.summary", {
-                  active: on(),
-                  errors: bad() > 0 ? t("drawer.mcp.errors", { count: bad() }) : "",
-                })}
-              </span>
-            </Show>
-          }
-        />
-        <Show when={!collapsible() || open()}>
-          <For each={list()}>
+    <Show when={state()}>
+      {(current) => (
+        <box>
+          <Heading title={t("drawer.services")} />
+          <For each={current().lsp}>
             {(item) => (
-              <box flexDirection="row" gap={1}>
-                <text
-                  flexShrink={0}
-                  style={{
-                    fg: dot(item.status),
-                  }}
-                >
-                  •
-                </text>
-                <text fg={theme.text} wrapMode="word">
-                  {item.name}{" "}
-                  <span style={{ fg: theme.textMuted }}>
-                    <Switch fallback={item.status}>
-                      <Match when={item.status === "connected"}>{t("drawer.mcp.connected")}</Match>
-                      <Match when={item.status === "failed"}>
-                        <i>{item.error}</i>
-                      </Match>
-                      <Match when={item.status === "disabled"}>{t("drawer.mcp.disabled")}</Match>
-                      <Match when={item.status === "needs_auth"}>{t("drawer.mcp.needsAuth")}</Match>
-                      <Match when={item.status === "needs_client_registration"}>{t("drawer.mcp.needsClientId")}</Match>
-                    </Switch>
-                  </span>
-                </text>
-              </box>
+              <text fg={theme.textMuted} wrapMode="none">
+                <span style={{ fg: item.ok ? theme.success : theme.error }}>●</span>
+                {` ${t("drawer.lsp", { id: remoteLine(item.id) })}`}
+              </text>
             )}
           </For>
-        </Show>
-      </box>
+          <Show when={current().mcpConnected !== undefined}>
+            <text fg={theme.textMuted} wrapMode="none">
+              <span style={{ fg: (current().mcpConnected ?? 0) > 0 ? theme.success : theme.textDim }}>●</span>{" "}
+              {t("drawer.mcp.connectedCount", { count: current().mcpConnected ?? 0 })}
+            </text>
+          </Show>
+          <Show when={current().mcpFailed.length > 0}>
+            <text fg={theme.error}>
+              {`● ${t("drawer.mcp.failed", { names: current().mcpFailed.map(remoteLine).join(", ") })}`}
+            </text>
+          </Show>
+        </box>
+      )}
     </Show>
   )
 }
 
 /**
- * Session drawer content. Mounted only while the drawer is visible, so its
- * sections create no subscriptions when the drawer is closed.
+ * Session drawer content. Mounted only while the drawer is visible, so its sections create no subscriptions when the
+ * drawer is closed. The last row names the key that closes it, from the keymap.
  */
 export function SessionDrawer(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
+  const toggle = useCommandShortcut("session.drawer.toggle")
+  const rootID = createMemo(() => resolveRootSessionID(sync.data.session, props.sessionID))
 
   return (
     <Show when={sync.session.get(props.sessionID)}>
-      <box height="100%" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
+      <box height="100%" paddingTop={1} paddingLeft={2} paddingRight={2}>
         <scrollbox
           flexGrow={1}
           scrollAcceleration={scrollAcceleration()}
@@ -425,13 +290,20 @@ export function SessionDrawer(props: { sessionID: string }) {
             <DrawerContext sessionID={props.sessionID} />
             <DrawerCost sessionID={props.sessionID} />
             <DrawerDagMode sessionID={props.sessionID} />
-            <DrawerGoal sessionID={props.sessionID} />
+            <DrawerGoal rootID={rootID()} />
             <DrawerTodo sessionID={props.sessionID} />
-            <DrawerFiles sessionID={props.sessionID} />
-            <DrawerLsp />
-            <DrawerMcp />
+            <DrawerServices />
           </box>
         </scrollbox>
+        <box height={1} flexShrink={0}>
+          <Show when={toggle()}>
+            {(key) => (
+              <text fg={theme.textDim} wrapMode="none">
+                {t("drawer.closeHint", { key: key() })}
+              </text>
+            )}
+          </Show>
+        </box>
       </box>
     </Show>
   )

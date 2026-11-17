@@ -92,13 +92,13 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 
 import 规则：
 
-| 目录 | 不得 import | 检查 |
-| --- | --- | --- |
-| `ui/` | 数据层（`sync`、`sdk`、`event-gate` 等）、`shell/`、`panel/`、`ask/`、`commands/`、`routes/` | 依赖方向检查 |
-| `dag/`、`pr/` | `solid-js`、`@opentui/solid`、`context/*`、数据层 | `grep -rn -e "solid-js" -e "@opentui/solid" -e "/context/" packages/tui/src/dag packages/tui/src/pr` 为空 |
-| `theme/`、`i18n/` | 数据层、组件目录 | 依赖方向检查 |
-| 数据层 | `ui/`、`shell/`、`panel/`、`ask/`、`commands/`、`routes/` | 依赖方向检查 |
-| `shell/`、`panel/`、`ask/`、`commands/`、`session/`、`attention/`、`component/` | `routes/` | 依赖方向检查 |
+| 目录                                                                            | 不得 import                                                                                  | 检查                                                                                                      |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `ui/`                                                                           | 数据层（`sync`、`sdk`、`event-gate` 等）、`shell/`、`panel/`、`ask/`、`commands/`、`routes/` | 依赖方向检查                                                                                              |
+| `dag/`、`pr/`                                                                   | `solid-js`、`@opentui/solid`、`context/*`、数据层                                            | `grep -rn -e "solid-js" -e "@opentui/solid" -e "/context/" packages/tui/src/dag packages/tui/src/pr` 为空 |
+| `theme/`、`i18n/`                                                               | 数据层、组件目录                                                                             | 依赖方向检查                                                                                              |
+| 数据层                                                                          | `ui/`、`shell/`、`panel/`、`ask/`、`commands/`、`routes/`                                    | 依赖方向检查                                                                                              |
+| `shell/`、`panel/`、`ask/`、`commands/`、`session/`、`attention/`、`component/` | `routes/`                                                                                    | 依赖方向检查                                                                                              |
 
 - `ui/` 可以读主题 token（现状先例：`ui/toast.tsx` 用 `useTheme`），文字由调用方经 props 传入。
 - 依赖方向检查：脚本 `script/check-tui-imports.ts`，遍历 `packages/tui/src` 的 import，按上表判错。它在 `packages/tui` 的 `bun test` 里以 `test/architecture.test.ts` 运行（CI 必跑），改上表规则必须同时改脚本与本文。脚本的 `EXEMPTIONS` 登记存量违规，F1 收口（#886 验收 34）时已清空，`test/architecture.test.ts` 断言它为空：新代码按依赖方向改 import，不得新增条目。机制保留，供用合成目录树的测试使用，过期条目仍会让测试失败。
@@ -142,19 +142,19 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 数字来自 F2（#1025）方案 7.4 的"目标"列和 F2a（#1007）基准。机器无关的计数标"硬"，直接失败。
 
-| 红线 | 要求 | 检查（F2a 场景） |
-| --- | --- | --- |
-| 空闲 | 无运行中的会话、无新事件时渲染帧数为 0（硬） | P15 |
-| 忙碌 | spinner 在屏内时 ≤ `2 × 1000 / TICK_MS + 2` 帧 / 2 秒（硬） | P16 |
-| 屏外 spinner | 消息区 spinner 全部滚出视口时，帧数与屏外个数无关（硬）；底区被面板或询问区占用时为 0（硬） | P17、P17b |
-| 失焦、空白区鼠标 | 窗口 `blur` 且忙碌 0 帧；无悬停元素的区域移动鼠标 0 帧（硬） | P18、P19 |
-| layer 注册 | 连续输入 50 个普通字符 `registerLayer` 为 0（硬）；`/` 序列整体 ≤ 2（打开一次、关闭一次）（硬） | P3、P7 |
-| selector 求值 | 每次按键的 keymap 选择器求值次数，S 档与 L 档相同（硬） | P4 |
-| store 写入 | 流式 delta 对 `store.part` 写入为 0；每帧对 `store.message`/`store.part` 写入 ≤ 1（硬） | P13 |
-| 流式一帧的读文本 | 一帧流式输出只读正在写入的那条 part 的文本，次数与会话长度无关（硬）；窗口化会话的流式 p95 ≤ 2 × L 档（附 2 ms 噪声下限，随机器系数放宽） | `test/routes/session/stream-cost.test.tsx`、P12 |
-| 干扰 | 非当前会话对 `store.message`/`store.part` 写入为 0（硬）；主会话输入 p95 增幅 ≤ 10% | P14 |
-| 挂载行数（仅超过 `WINDOW_MIN_ROWS` 的窗口化会话） | ≤ 视口行数 + 2 × `PART_OVERSCAN` + `TAIL_ALWAYS`（硬） | P10 |
-| 延迟 | 输入 p95 ≤ 16ms、p99 ≤ 33ms；`/` 打开 p95 ≤ 33ms 且无 > 100ms 的帧；冷滚动 p99 ≤ 33ms 且无 > 100ms 的帧 | P1、P5、P8 |
+| 红线                                              | 要求                                                                                                                                      | 检查（F2a 场景）                                |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| 空闲                                              | 无运行中的会话、无新事件时渲染帧数为 0（硬）                                                                                              | P15                                             |
+| 忙碌                                              | spinner 在屏内时 ≤ `2 × 1000 / TICK_MS + 2` 帧 / 2 秒（硬）                                                                               | P16                                             |
+| 屏外 spinner                                      | 消息区 spinner 全部滚出视口时，帧数与屏外个数无关（硬）；底区被面板或询问区占用时为 0（硬）                                               | P17、P17b                                       |
+| 失焦、空白区鼠标                                  | 窗口 `blur` 且忙碌 0 帧；无悬停元素的区域移动鼠标 0 帧（硬）                                                                              | P18、P19                                        |
+| layer 注册                                        | 连续输入 50 个普通字符 `registerLayer` 为 0（硬）；`/` 序列整体 ≤ 2（打开一次、关闭一次）（硬）                                           | P3、P7                                          |
+| selector 求值                                     | 每次按键的 keymap 选择器求值次数，S 档与 L 档相同（硬）                                                                                   | P4                                              |
+| store 写入                                        | 流式 delta 对 `store.part` 写入为 0；每帧对 `store.message`/`store.part` 写入 ≤ 1（硬）                                                   | P13                                             |
+| 流式一帧的读文本                                  | 一帧流式输出只读正在写入的那条 part 的文本，次数与会话长度无关（硬）；窗口化会话的流式 p95 ≤ 2 × L 档（附 2 ms 噪声下限，随机器系数放宽） | `test/routes/session/stream-cost.test.tsx`、P12 |
+| 干扰                                              | 非当前会话对 `store.message`/`store.part` 写入为 0（硬）；主会话输入 p95 增幅 ≤ 10%                                                       | P14                                             |
+| 挂载行数（仅超过 `WINDOW_MIN_ROWS` 的窗口化会话） | ≤ 视口行数 + 2 × `PART_OVERSCAN` + `TAIL_ALWAYS`（硬）                                                                                    | P10                                             |
+| 延迟                                              | 输入 p95 ≤ 16ms、p99 ≤ 33ms；`/` 打开 p95 ≤ 33ms 且无 > 100ms 的帧；冷滚动 p99 ≤ 33ms 且无 > 100ms 的帧                                   | P1、P5、P8                                      |
 
 - 用户报告的两个场景（P5 `/`、P8 滚动）的"无 > 100ms 的帧"是写死的绝对上限，只许收紧，放宽需用户确认。
 - 稳态内存：循环"流式、切换会话、回来"，第 3 个窗口堆增长相对第 2 个 ≤ 5%（P20）。
@@ -174,6 +174,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - `at(time, cb)`：一次性到点回调，可取消，内部用单个调度定时器。
 
   订阅方式沿用 F2 方案 5 的 `subscribe()`；没有订阅者不创建定时器，窗口失焦时 `frame` 暂停。
+
 - 只有 `context/ticker.ts`、`context/frame-clock.ts`（帧对齐回退）和 `terminal-win32.ts`（平台适配，不在渲染路径）允许出现 `setTimeout`/`setInterval`。检查：`grep -rln "setInterval\|setTimeout" packages/tui/src` 只命中这三个文件。新增白名单必须改本规范，并在 PR 里说明理由。组件内计时、自建轮询一律禁止。
 - toast 时长、提问倒计时（F3）、已用时间（F4）、PR 的"3 分钟未响应"与"60 秒隐藏"（F6）全部用 `second` 或 `at`。
 - P15（空闲 0 帧）在没有任何秒级显示可见时成立；显示秒级耗时的组件只在可见时订阅 `second`。
@@ -293,10 +294,10 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 抽屉（`shell/drawer.tsx`）：
 
-- 默认隐藏，覆盖在主区右侧 40 列，从顶栏下沿到底区上沿，不盖底区与页脚，不挤压主区（`contentWidth` 不变）。宽 < 60 时整屏只显示"终端太小"，抽屉不设宽度回退分支（已删除 F4 5.1 的"宽 − 4"）。关闭方式：`esc`、点击背景（有文本选区时不关）、再按开关键、`/sidebar`。
-- 区块顺序固定：会话、上下文、费用、目标、待办、修改的文件、服务（F4 5.2）；DAG 模式状态一行（`DAG 模式 开 {key}` / `DAG 模式 关`，`{key}` 取 `session.dagmode.toggle` 的实际绑定）在费用与目标之间，只读、不可点击，子 agent 视图没有这一行。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、费用、待办、文件跟随子会话；目标始终是根会话；LSP、MCP 全局）。
+- 默认隐藏，覆盖在主区右侧 40 列，从顶栏下沿到底区上沿，不盖底区与页脚，不挤压主区（`contentWidth` 不变）。宽 < 60 时整屏只显示"终端太小"，抽屉不设宽度回退分支（已删除 F4 5.1 的"宽 − 4"）。关闭方式：`esc`、点击背景（有文本选区时不关）、再按开关键、`/sidebar`。背景点击不用覆盖主区的命中盒（它会吞掉转录的滚轮与选区），而是 `AppFrame` 主区列的 `onMouseUp`：点击从落点冒泡上来，抽屉是兄弟节点，自己的点击不会到这里；只在抽屉显示时传 `onDrawerBackdrop`。子 agent 视图同样能开抽屉，`esc` 先关抽屉再返回父会话。
+- 区块顺序固定：会话、上下文、费用、目标、待办、修改的文件、服务（F4 5.2），最底一行是 `<开关键> 关闭`；“修改的文件”本期隐藏（#1032 D8：H5 之后数据源基本为空），重新启用时按 5.2 的回合结束后 HTTP `diff` 取数；DAG 模式状态一行（`DAG 模式 开 {key}` / `DAG 模式 关`，`{key}` 取 `session.dagmode.toggle` 的实际绑定）在费用与目标之间，只读、不可点击，子 agent 视图没有这一行。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、费用、待办、文件跟随子会话；目标始终是根会话；LSP、MCP 全局）。
 - 区块是纯展示函数组件。抽屉关闭时不创建任何区块组件、不订阅任何数据。抽屉里不放任何操作按钮。
-- 显示策略 kv `drawer_mode`（`hidden` 默认 / `auto` / `always`），不读旧 kv `sidebar`。
+- 显示策略 kv `drawer_mode`（`hidden` 默认 / `auto` / `always`），不读旧 kv `sidebar`。`auto` 跟随实时宽度（> 120 列打开）。开关键、`/sidebar`、`esc`、背景点击只改内存里的手动状态（`useDrawer`，按 kv 实例各一份，不落盘），当次运行内优先于 `drawer_mode`；在 `/config` 改策略（`drawer.setMode`）时清掉手动状态，新策略立即生效（#1032 D7）。
 
 必须写的测试：80 与 120 列快照；两种语言 80 列不溢出换行；`ambiguous_width` 为 1 和 2 时 80 列都不溢出（状态带、抽屉）；写请求计数为 0；抽屉关闭时订阅计数为 0。
 
@@ -357,6 +358,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   输入框提示符 `›` 原为白名单第 2 项，#886 收口时决定不做并从白名单删去：输入框的输入门禁与光标几何风险高，收益只是一个装饰字符。
 
   新增白名单位置需维护者批准，先停下提出。
+
 - 调色板 lint 测试：`graphagent` 中除 `primary`/`accent` 及其派生（`logoAccent`、`statusRunning`）外没有第二个高饱和色相；`success` 为灰。对比度：`text`/`background` ≥ 4.5:1，`textMuted`/`background` ≥ 3:1。
 - DAG 状态颜色与字符由纯函数映射（`dag/`），返回 token 名，不返回颜色值；颜色之外还靠字符区分（`━` 完成/失败/运行/暂停，`─` 排队，`╌` 跳过/取消/中止），不只靠颜色（F4 2.2）。
 - 输入框光标不闪烁：`<textarea>` 显式传 `cursorStyle={{ style: "block", blinking: false }}`。`grep -rn "BLINK\|createFadeIn" packages/tui/src` 为空。
@@ -409,20 +411,20 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 每类改动的最低测试：
 
-| 改动 | 最低测试 |
-| --- | --- |
-| 新 `/` 命令 | 注册表三范围快照；提交规则；双语键；只读视图写请求 0 |
-| 新面板 | 80×24 与 120×40 快照；打开/选中/关闭/一个动作；草稿保留；layer 注册不增加 |
-| 新键位 | 处置表遍历；同层无重复键；帮助文字随改键变化；涉及 `esc` 时每层一条用例 |
-| 状态带行 / 抽屉区块 | 80/120 列快照；双语不溢出；写请求 0；无 `setInterval`；抽屉关闭时订阅 0 |
-| 新服务端事件 | gate 决策；非完整集合会话 store 写入 0；重连刷新；乱序；空闲帧 0 |
-| 新消息类型 / 行 | 高度估算；`revision`；窗口化挂载行数；展开状态卸载后保留；可折叠的块有 `fold.ts` 判定（窗口化会话里已卸载的块 `ctrl+o` 也能展开） |
-| 新设置项 | 存储位置遍历；C1 不可用时只读；读回 |
-| 新预填模板 | 出现条件；`session.prompt` 为 0；草稿追加；双语 |
-| 新 toast | 页脚快照；排队与溢出；`dedupeKey` 合并；截断 |
-| 新 token | 遍历 `DEFAULT_THEMES` 均有值；`run/theme.ts` 一致；对比度与调色板 lint |
-| 新动画 / 计时 | P15–P19 相关用例；`ticker` 订阅与取消；`ambiguous_width` 为 1 和 2 的 80 列用例（对齐敏感布局） |
-| 任何渲染路径改动 | `bun run bench:tui` 对照表附 PR 描述 |
+| 改动                | 最低测试                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 新 `/` 命令         | 注册表三范围快照；提交规则；双语键；只读视图写请求 0                                                                              |
+| 新面板              | 80×24 与 120×40 快照；打开/选中/关闭/一个动作；草稿保留；layer 注册不增加                                                         |
+| 新键位              | 处置表遍历；同层无重复键；帮助文字随改键变化；涉及 `esc` 时每层一条用例                                                           |
+| 状态带行 / 抽屉区块 | 80/120 列快照；双语不溢出；写请求 0；无 `setInterval`；抽屉关闭时订阅 0                                                           |
+| 新服务端事件        | gate 决策；非完整集合会话 store 写入 0；重连刷新；乱序；空闲帧 0                                                                  |
+| 新消息类型 / 行     | 高度估算；`revision`；窗口化挂载行数；展开状态卸载后保留；可折叠的块有 `fold.ts` 判定（窗口化会话里已卸载的块 `ctrl+o` 也能展开） |
+| 新设置项            | 存储位置遍历；C1 不可用时只读；读回                                                                                               |
+| 新预填模板          | 出现条件；`session.prompt` 为 0；草稿追加；双语                                                                                   |
+| 新 toast            | 页脚快照；排队与溢出；`dedupeKey` 合并；截断                                                                                      |
+| 新 token            | 遍历 `DEFAULT_THEMES` 均有值；`run/theme.ts` 一致；对比度与调色板 lint                                                            |
+| 新动画 / 计时       | P15–P19 相关用例；`ticker` 订阅与取消；`ambiguous_width` 为 1 和 2 的 80 列用例（对齐敏感布局）                                   |
+| 任何渲染路径改动    | `bun run bench:tui` 对照表附 PR 描述                                                                                              |
 
 ## 11. 禁止事项清单
 

@@ -5,6 +5,7 @@ import type { InstanceStore, LoadInput } from "@/project/instance-store"
 import type { InstanceContext } from "@/project/instance-context"
 import { cmd, type WithDoubleDash } from "./cmd/cmd"
 import { UI } from "./ui"
+import { t } from "@graphagent/tui/i18n"
 
 /**
  * User-visible command failure. Throw via `fail("...")` from an effectCmd handler
@@ -82,8 +83,9 @@ async function reportSkipped(ctx: InstanceContext) {
   )
   UI.println(
     UI.Style.TEXT_WARNING +
-      `Skipped ${skipped.length} untrusted project ${skipped.length === 1 ? "entry" : "entries"}. ` +
-      `Run /trust to review them.` +
+      t(skipped.length === 1 ? "cli.common.untrustedSkipped.one" : "cli.common.untrustedSkipped.other", {
+        count: skipped.length,
+      }) +
       UI.Style.TEXT_NORMAL,
   )
 }

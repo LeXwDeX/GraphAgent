@@ -5,6 +5,7 @@ import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
+import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Cause, Duration, Effect, Layer, Scope } from "effect"
@@ -191,6 +192,40 @@ function withContext<A, E>(
             run(modules.Todo.Service.use((svc) => svc.update({ sessionID, todos }).pipe(Effect.orDie))),
           goal: (sessionID, goalText, maxTurns) =>
             run(modules.Goal.Service.use((svc) => svc.set(sessionID, goalText, maxTurns))).pipe(Effect.asVoid),
+          prWatch: (input) =>
+            run(
+              Effect.gen(function* () {
+                const { db } = yield* Database.Service
+                const far = Date.now() + 60 * 60_000
+                yield* db
+                  .insert(PrWatchTable)
+                  .values({
+                    id: input.id,
+                    forge: "github",
+                    host: "github.com",
+                    url: input.url,
+                    repo: "acme/widgets",
+                    number: input.number,
+                    session_id: input.sessionID,
+                    head: input.head ?? null,
+                    baseline_review: null,
+                    phase: input.phase,
+                    next_poll_at: input.phase === "watching" ? far : null,
+                    deadline_at: far,
+                    outcome: input.outcome ?? null,
+                    delivery: null,
+                    process_id: modules.EngineProcess.runner.id,
+                    created_at: input.updatedAt,
+                    updated_at: input.updatedAt,
+                  })
+                  .run()
+                  .pipe(Effect.orDie)
+              }),
+            ),
+          reminder: (sessionID, text, fireAt) =>
+            run(modules.ReminderClock.Service.use((svc) => svc.create({ sessionID, text, fireAt }))).pipe(
+              Effect.map((info) => ({ id: info.id })),
+            ),
           worktree: (input) => run(modules.Worktree.Service.use((svc) => svc.create(input).pipe(Effect.orDie))),
           worktreeRemove: (directory) =>
             run(modules.Worktree.Service.use((svc) => svc.remove({ directory })).pipe(Effect.ignore)),

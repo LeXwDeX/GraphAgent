@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { children as resolveChildren, createMemo, Show, type JSX } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
+import { MouseButton } from "@opentui/core"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import type { DagIndicatorState } from "./dag-indicator"
@@ -12,6 +13,9 @@ import { StatusBand } from "./status-band"
 import { TopBar, type TopBarRight } from "./top-bar"
 
 /** Below either limit the frame renders only the "terminal too small" notice. */
+/** The primary button, as the plain number a mouse event carries. */
+const LEFT_BUTTON: number = MouseButton.LEFT
+
 export const SHELL_MIN_WIDTH = 60
 export const SHELL_MIN_HEIGHT = 12
 
@@ -45,6 +49,11 @@ export type AppFrameProps = {
   bottomZone?: JSX.Element
   /** Right-edge overlay between the top bar and the bottom zone (F4). */
   drawer?: JSX.Element
+  /**
+   * A left click that ends on the main or status rows (#1032 5.1); pass it only while the drawer is shown. It does not
+   * fire when the press selected text, or for clicks inside the drawer.
+   */
+  onDrawerBackdrop?: () => void
   /** Dims the main and status rows while a bottom-zone panel or ask surface is open. */
   dimmed?: () => boolean
   children?: JSX.Element
@@ -79,6 +88,7 @@ export function AppFrame(props: AppFrameProps) {
   const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
 
+  const renderer = useRenderer()
   const tooSmall = createMemo(() => dimensions().width < SHELL_MIN_WIDTH || dimensions().height < SHELL_MIN_HEIGHT)
 
   return (
@@ -96,7 +106,21 @@ export function AppFrame(props: AppFrameProps) {
         <TopBar path={props.topBar?.path} right={props.topBar?.right} />
         <box height={1} flexShrink={0} />
         <box flexGrow={1} minHeight={0} flexDirection="column" position="relative">
-          <box flexGrow={1} minHeight={0} flexDirection="column" opacity={props.dimmed?.() ? DIMMED_OPACITY : 1}>
+          {/* The drawer's backdrop is this column itself, not a hit box laid over it: a box over the transcript would
+              take its wheel and its text selection while the drawer is open. A click here bubbles up from whatever it
+              landed on; the drawer is a sibling, so its own clicks never get here. */}
+          <box
+            flexGrow={1}
+            minHeight={0}
+            flexDirection="column"
+            opacity={props.dimmed?.() ? DIMMED_OPACITY : 1}
+            onMouseUp={(event) => {
+              const backdrop = props.onDrawerBackdrop
+              if (!backdrop || event.button !== LEFT_BUTTON) return
+              if (renderer.getSelection()?.getSelectedText()) return
+              backdrop()
+            }}
+          >
             <box flexGrow={1} minHeight={0} flexDirection="column">
               {props.children}
             </box>

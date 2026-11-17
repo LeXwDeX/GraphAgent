@@ -316,7 +316,8 @@ test("/rename without a title edits the current title in the composer", async ()
   const harness = await mountMain()
   try {
     await harness.mount()
-    await waitForFrame(harness.app, "agents")
+    // The prompt is drawn once its bottom edge is: its key hints are the footer's since #1032 PR6.
+    await waitForFrame(harness.app, "╹▀")
     for (const key of "/rename") harness.app.mockInput.pressKey(key)
     await harness.app.renderOnce()
     harness.app.mockInput.pressEnter()

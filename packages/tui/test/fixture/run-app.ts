@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync } from "node:fs"
 import { mock } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
@@ -45,6 +46,12 @@ export async function captureFrame(setup: Setup): Promise<string> {
   }
   throw new Error("renderer stayed busy while capturing a frame")
 }
+
+/**
+ * Text that only the prompt draws: its agent and model line. The key hints that used to mark it are the footer's
+ * alone since #1032 PR6, and the footer writes the agent name in lower case.
+ */
+export const PROMPT_MARK = "Build · "
 
 export async function waitForFrame(setup: Setup, predicate: (frame: string) => boolean, label: string, timeout = 5000) {
   const start = Date.now()
@@ -143,6 +150,8 @@ export async function runApp(options: {
     events,
     commands: () => sent.filter((item) => item.path.endsWith("/command")),
     writes: () => sent.filter((item) => !item.path.endsWith("/attention")),
+    /** The kv file as it is on disk now. */
+    kv: (): Record<string, unknown> => JSON.parse(readFileSync(`${tmp.path}/kv.json`, "utf8")),
     async stop() {
       try {
         if (!setup.renderer.isDestroyed) {

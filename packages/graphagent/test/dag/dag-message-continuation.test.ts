@@ -131,7 +131,6 @@ async function exercise(options: Case = {}) {
   if (options.modelError && initial.info.role === "assistant")
     initial.info.error = { name: "UnknownError", data: { message: "blocked" } }
   const storeLayer = Layer.mock(DagStore.Service, {
-    tryClaimAdoption: () => Effect.succeed(true),
     getNode: () => Effect.succeed(node),
     getWorkflow: () => Effect.succeed(workflow),
     setCapturedOutput: (_id, output, snapshot) =>

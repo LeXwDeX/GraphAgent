@@ -15,6 +15,7 @@ import { admitNowUnderFence } from "@/session/turn/admit"
 import type { AdmissionOptions, TurnOrigin } from "@/session/turns"
 import { EngineProcess } from "@/session/engine-process"
 import { renderNotice, type Notice } from "./forge"
+import { PrWatchProgress } from "./progress"
 import { PrWatchStore as Store } from "./store"
 
 /**
@@ -100,12 +101,9 @@ const maybeDelivering = () => [...EngineProcess.prWatch.watches.values()].some((
 const wakeGoal = (goal: Deps["goal"], row: Store.Row, notice: Notice) => {
   if (!goal) return Effect.void
   return goal
-    .wake(
-      SessionID.make(row.session_id),
-      { source: "watch_pr", ids: [row.id, row.url] },
-      renderNotice(notice),
-      { evaluate: false },
-    )
+    .wake(SessionID.make(row.session_id), { source: "watch_pr", ids: [row.id, row.url] }, renderNotice(notice), {
+      evaluate: false,
+    })
     .pipe(
       Effect.catchCause((cause) =>
         Cause.hasInterrupts(cause)
@@ -127,11 +125,7 @@ const wakeGoal = (goal: Deps["goal"], row: Store.Row, notice: Notice) => {
  * ambient lookup succeeds on the idle path and silently fails on the
  * turn-end one.
  */
-const publishSettled = (
-  lifecycle: Deps["lifecycle"],
-  row: Store.Row,
-  phase: "succeeded" | "failed" | "expired",
-) => {
+const publishSettled = (lifecycle: Deps["lifecycle"], row: Store.Row, phase: "succeeded" | "failed" | "expired") => {
   if (!lifecycle) return Effect.void
   return Effect.gen(function* () {
     yield* lifecycle.transition({
@@ -232,6 +226,22 @@ const deliver = (ctx: Ctx, session: Store.SessionInfo, row: Store.Row, claimEpoc
       // edge the durable row already records.
       EngineProcess.prWatch.watches.delete(row.id)
       yield* publishSettled(ctx.lifecycle, row, phase)
+      // The delivery the status line reports (#1036): the committed notice
+      // message is the admission point, and an admission that wrote the
+      // message without starting a turn is `noReply`.
+      const message = fenced.start.message.info
+      yield* PrWatchProgress.observe(
+        ctx.db,
+        { ...row, delivery: key, phase, updated_at: now },
+        {
+          delivery: {
+            state: "delivered",
+            deliveredAt: message.time.created,
+            noticeMessageID: message.id,
+            ...(fenced.start.admission.kind === "not_started" ? { noReply: true } : {}),
+          },
+        },
+      )
       return true
     }
     return false

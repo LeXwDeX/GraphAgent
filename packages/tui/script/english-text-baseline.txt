@@ -70,8 +70,6 @@ component/prompt/index.tsx	jsx-text	Some session details could not load (
 component/prompt/index.tsx	jsx-text	Stopping…
 component/prompt/index.tsx	jsx-text	Workspace	2
 component/prompt/index.tsx	jsx-text	again to interrupt
-component/prompt/index.tsx	jsx-text	agents
-component/prompt/index.tsx	jsx-text	commands
 component/prompt/index.tsx	jsx-text	esc	2
 component/prompt/index.tsx	jsx-text	exit shell mode
 component/prompt/index.tsx	jsx-text	interrupt
@@ -128,8 +126,6 @@ panel/settings.tsx	prop	Page down
 panel/settings.tsx	prop	Page up
 panel/settings.tsx	prop	Previous row
 panel/settings.tsx	prop	Previous tab
-routes/session/drawer.tsx	jsx-attr	LSP
-routes/session/drawer.tsx	jsx-attr	MCP
 routes/session/index.tsx	jsx-attr	# ${}: blocked
 routes/session/index.tsx	jsx-attr	# Questions
 routes/session/index.tsx	jsx-attr	# Todos

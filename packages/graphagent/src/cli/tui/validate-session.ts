@@ -1,6 +1,7 @@
 import { createClient } from "@graphagent/sdk"
 import { SessionID } from "@/session/schema"
 import { Schema } from "effect"
+import { t } from "@graphagent/tui/i18n"
 
 const decodeSessionID = Schema.decodeUnknownSync(SessionID)
 
@@ -17,7 +18,12 @@ export async function validateSession(input: {
   try {
     sessionID = decodeSessionID(input.sessionID)
   } catch (error) {
-    throw new Error(`Invalid session ID: ${error instanceof Error ? error.message : "unknown error"}`, { cause: error })
+    throw new Error(
+      t("cli.tui.error.invalidSessionID", {
+        reason: error instanceof Error ? error.message : t("cli.tui.error.unknown"),
+      }),
+      { cause: error },
+    )
   }
 
   await createClient({

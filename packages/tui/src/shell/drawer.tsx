@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { createMemo, type ParentProps } from "solid-js"
+import { createMemo, createSignal, type ParentProps, type Signal } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
@@ -9,8 +9,8 @@ import { useTheme } from "../context/theme"
 /** Fixed width of the drawer overlay in terminal cells. */
 export const DRAWER_WIDTH = 40
 
-/** Below this width the drawer stops opening automatically in `auto` mode. */
-const AUTO_WIDTH = 120
+/** `auto` opens the drawer while the terminal is wider than this. */
+export const DRAWER_AUTO_WIDTH = 120
 
 /**
  * Display policy for the drawer. `hidden` never opens on its own, `auto` opens
@@ -18,25 +18,57 @@ const AUTO_WIDTH = 120
  */
 export type DrawerMode = "hidden" | "auto" | "always"
 
+const MODES: readonly DrawerMode[] = ["hidden", "auto", "always"]
+
+/** The stored policy; anything else in the key (a hand-edited or future value) reads as the default. */
+export function drawerMode(value: unknown): DrawerMode {
+  return MODES.find((mode) => mode === value) ?? "hidden"
+}
+
+/** Whether the policy alone opens the drawer at a terminal width. `auto` follows the live width (#1032 D7). */
+export function drawerOpensByPolicy(mode: DrawerMode, width: number) {
+  return mode === "always" || (mode === "auto" && width > DRAWER_AUTO_WIDTH)
+}
+
 /**
- * Reads the persisted drawer policy and exposes the derived visibility plus
- * the toggle/close actions shared by the frame and the session keybindings.
+ * The user's own open or close, held in memory only (#1032 5.1, D7): it wins over the policy until the process ends
+ * or the policy is changed in `/config`, and nothing of it is written to the kv file. Keyed by the kv store so each
+ * mounted app has its own, without a new context; `undefined` means the user has not touched the drawer.
+ */
+const manualByApp = new WeakMap<object, Signal<boolean | undefined>>()
+
+function manualFor(kv: object) {
+  const existing = manualByApp.get(kv)
+  if (existing) return existing
+  const created = createSignal<boolean | undefined>(undefined)
+  manualByApp.set(kv, created)
+  return created
+}
+
+/**
+ * Reads the drawer policy and exposes the derived visibility plus the toggle/close actions shared by the frame, the
+ * session keybindings and `/config`. The legacy kv `sidebar` is never read (#1032 5.1).
  */
 export function useDrawer() {
   const kv = useKV()
   const dimensions = useTerminalDimensions()
-  const [mode, setMode] = kv.signal<DrawerMode>("drawer_mode", "hidden")
-  const wide = createMemo(() => dimensions().width > AUTO_WIDTH)
-  const visible = createMemo(() => mode() === "always" || (mode() === "auto" && wide()))
+  const [manual, setManual] = manualFor(kv)
+  const mode = createMemo(() => drawerMode(kv.get("drawer_mode")))
+  const visible = createMemo(() => manual() ?? drawerOpensByPolicy(mode(), dimensions().width))
 
   return {
     mode,
     visible,
     toggle() {
-      setMode(() => (visible() ? "hidden" : "always"))
+      setManual(!visible())
     },
     close() {
-      setMode(() => "hidden")
+      setManual(false)
+    },
+    /** Stores a new policy and drops the manual choice, so the policy shows at once. */
+    setMode(next: DrawerMode) {
+      kv.set("drawer_mode", next)
+      setManual(undefined)
     },
   }
 }
