@@ -21,8 +21,8 @@ import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
  *   4.  the location is unusable, no other runner holds it live  -> fail-unrecoverable
  *   5.  another runner holds a live lease                        -> defer
  *   6.  an entry (its lease is held)                             -> renew
- *   7.  another runner's lease expired, and this round or the
- *       previous one follows a clock jump                        -> defer (no preemption)
+ *   7.  another runner's lease expired, and the clock jumped
+ *       within the last two periods                              -> defer (no preemption)
  *   8.  pending, every node pending, past the grace period       -> terminalize-orphan
  *   9.  pending otherwise                                        -> defer
  *   10. otherwise: no lease row, another runner's expired row,
@@ -73,9 +73,13 @@ export interface Observation {
   readonly lease: LeaseView
   /** Whether this instance has a runtime entry for the workflow. */
   readonly hasEntry: boolean
-  /** Only read when there is an entry: the lease row still names the entry's token. */
+  /**
+   * Only read when there is an entry: the lease row still names the entry's token. The shell reads the row before it
+   * reads the workflow: `DagLease.held` has no row for a workflow that ended, so the other order would report the lease
+   * of a workflow that ended in between as lost.
+   */
   readonly entryTokenHeld: boolean
-  /** This round or the previous one follows a clock jump (`clockJumped`, measured by the renewal tick). */
+  /** The reading of the clock this observation was made at jumped, or falls in the two periods after a jump (`noteClock`). */
   readonly afterClockJump: boolean
 }
 
@@ -133,12 +137,49 @@ export const classifyLease = (
 }
 
 /**
- * ADR-0008 decision 2: whether two successive readings of the wall clock by one
- * reconciler are more than two periods apart. A tick every period is the norm,
- * so a longer gap means that the machine slept or the process stalled, and
- * everything on the machine saw the same jump: an expired lease seen right
- * after it is evidence of the stall, not of a dead owner. No earlier reading,
- * or exactly two periods, is not a jump.
+ * What one reconciler remembers of the wall clock (ADR-0008 decision 2), the
+ * value `noteClock` moves on. A suspended machine and a dead owner look alike
+ * from a lease that ran out; the clock tells them apart: when two readings
+ * are more than two periods apart, the machine slept or the process stalled,
+ * and everything on it saw the same jump, so the lease ran out because nobody
+ * could renew it.
  */
-export const clockJumped = (previousAt: number | undefined, at: number, periodMs: number): boolean =>
-  previousAt !== undefined && at - previousAt > 2 * periodMs
+export interface ClockWatch {
+  /**
+   * The latest reading, or `undefined` before the first. It is the largest one
+   * seen: a reading that arrives late, or from a clock that stepped back, does
+   * not move it back, so two fibers that feed one watch need not feed it in
+   * order.
+   */
+  readonly lastAt: number | undefined
+  /** After a jump: the reading before which another runner's expired lease is still left alone. */
+  readonly quietUntil: number
+}
+
+/** A watch that has seen no reading. */
+export const unwatched: ClockWatch = { lastAt: undefined, quietUntil: 0 }
+
+/**
+ * Take one reading of the wall clock, `at`, into `watch`: the watch after it,
+ * and whether the reading is in the shadow of a jump.
+ *
+ *   - A reading jumps when it is more than two periods after the latest one
+ *     (exactly two is not: a tick that is a period late is a tick). It then
+ *     starts a quiet period of two periods from itself.
+ *   - A reading that jumps, or that falls within a quiet period, is `afterJump`.
+ *
+ * The quiet period is wall-clock time, not a number of rounds: it is the time
+ * the owner has to renew a lease that the jump made look expired, whichever
+ * reading, a tick's or an observation's, is the first after the jump. The
+ * first reading has no predecessor, and a clock that went backwards is not a
+ * jump.
+ */
+export const noteClock = (
+  watch: ClockWatch,
+  at: number,
+  periodMs: number,
+): { readonly watch: ClockWatch; readonly afterJump: boolean } => {
+  const jumped = watch.lastAt !== undefined && at - watch.lastAt > 2 * periodMs
+  const quietUntil = jumped ? at + 2 * periodMs : watch.quietUntil
+  return { watch: { lastAt: Math.max(watch.lastAt ?? at, at), quietUntil }, afterJump: jumped || at < quietUntil }
+}

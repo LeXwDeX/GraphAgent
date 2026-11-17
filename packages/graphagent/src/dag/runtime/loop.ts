@@ -187,14 +187,15 @@ const serviceLayer = Layer.effect(
         // ADR-0008: this instance's runner leases. Made before any fiber is
         // forked below, so its release at exit runs after they are interrupted.
         // The eviction and the reconciler are made below, once what they need exists; the first tick is a period away.
-        let evictEntry: ((dagID: string, entry: WorkflowEntry) => Effect.Effect<void>) | undefined
-        // ADR-0008 decision 6: the renewal tick runs the instance's reconcile round.
+        let evictEntry:
+          ((dagID: string, entry: WorkflowEntry, stillLost?: Effect.Effect<boolean>) => Effect.Effect<void>) | undefined
+        // ADR-0008 decision 6: the renewal tick starts the instance's reconcile round, in a fiber of its own.
         let reconciler: DagReconciler.Interface | undefined
         const runnerLease = yield* RunnerLease.make({
           leases,
           runnerID,
           entries: runtimes,
-          evict: (dagID, entry) => evictEntry?.(dagID, entry) ?? Effect.void,
+          evict: (dagID, entry, stillLost) => evictEntry?.(dagID, entry, stillLost) ?? Effect.void,
           round: (input) => reconciler?.round(input) ?? Effect.void,
         })
         // ADR-0008 decision 5: runner writes go through the port of the entry (or of the claim, before its
@@ -1269,10 +1270,12 @@ const serviceLayer = Layer.effect(
           )
         })
 
-        // ADR-0008 decision 6: this instance's reconciler. Startup and the renewal tick run its rounds; the
-        // other triggers below (a first wave, a replan with no entry, a session move) still adopt through
-        // recoverWorkflow themselves (PR4b). It also disposes of the orphan `pending` rows an older version
-        // left behind (`Dag.create` is one transaction now): after a grace period, claim, then fail them.
+        // ADR-0008 decision 6: this instance's reconciler. Startup and the renewal tick run its rounds (the tick's
+        // in a fiber of its own, so the renewals never wait for it); the other triggers below (a first wave, a
+        // replan with no entry, a session move) still adopt through recoverWorkflow themselves (PR4b). It also
+        // disposes of the orphan `pending` rows an older version left behind (`Dag.create` is one transaction
+        // now): after a grace period, claim, then fail them. It reads every observation's clock into the
+        // instance's clock watch, which the lease owns (decision 2).
         const evictMoved = DagReconciler.movedEvictor({
           entries: runtimes,
           store,
@@ -1294,8 +1297,9 @@ const serviceLayer = Layer.effect(
           recovering,
           events,
           lease: runnerLease,
+          noteClock: runnerLease.noteClock,
           portFor,
-          // The scope is the instance's, as it is for the startup scan: a round runs in the renewal fiber.
+          // The scope is the instance's, as it is for the startup scan: a round runs in a fiber of its own.
           adopt: (wf) => recoverWorkflow(wf).pipe(Effect.provideService(Scope.Scope, stateScope), Effect.orDie),
           failUnusable: failUnusableWorkspace,
           evictMoved,

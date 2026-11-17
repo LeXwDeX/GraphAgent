@@ -23,9 +23,13 @@
  * The last two groups have no database at all: they run `RunnerLease` over a
  * scripted `DagLease` and a plain table of entries, one rule per test.
  *
- * Since PR4a the same tick that renews also runs the instance's reconcile round
- * (ADR-0008 decision 6, `reconciler.ts`): "the reconcile tick" below is what that
- * adds to a runner that is already up, and the clock-jump rule it measures.
+ * Since PR4a the same tick that renews also starts the instance's reconcile round
+ * (ADR-0008 decision 6, `reconciler.ts`) in a fiber of its own, never two at once and
+ * never waited for: "the reconcile tick" below is what that adds to a runner that is
+ * already up, and the clock watch the tick and the reconciler's observations feed
+ * (decision 2). On the TestClock a sleeping tick is woken at every period, so a tick
+ * only sees a gap in the clock when it is parked mid-renewal (`freeze()` of a runner
+ * that drives a workflow, a renewal that waits in a scripted lease).
  */
 
 import { describe, expect } from "bun:test"
@@ -690,6 +694,46 @@ describe("the reconcile tick (ADR-0008 decision 6)", () => {
       }),
   )
 
+  // ADR-0008 decisions 2 and 6: the round runs beside the renewals, not in front of them. A round can wait for a
+  // worktree removal, the lifecycle lock or a user hook, and R1 is still driving its workflow while it does: its
+  // renewals go on, and R2, whose rounds are on time, never sees a lease that ran out.
+  it.effect(
+    "a reconcile round that is stuck past the TTL does not stop the renewals: nobody takes the workflow over",
+    () =>
+      Effect.gen(function* () {
+        const dual = yield* makeDualRunner()
+        const { dagID, gate } = yield* driveOnR1(dual)
+        yield* dual.r2.init
+        // R1's first round from here on parks at its first read of the lease, and stays there.
+        const stuck = yield* dual.r1.hold((publish) => publish.type === "dag.lease.held")
+        const renewals = () =>
+          dual.r1.leaseCalls.filter((call) => call.operation === "renew" && call.dagID === dagID).length
+
+        yield* TestClock.adjust(PERIOD)
+        yield* stuck.reached
+        // Five periods in all, more than the TTL: every tick renews, with the round of the first one still parked.
+        for (let tick = 2; tick <= 5; tick++) {
+          yield* TestClock.adjust(PERIOD)
+          yield* pollOnTestClock(
+            Effect.sync(() => (renewals() >= tick ? true : undefined)),
+            `R1's tick ${tick} did not renew: its round held the tick up`,
+          )
+        }
+
+        const row = yield* rowOf(dual, dagID)
+        expect(row).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
+        expect(row.expiresAt).toBeGreaterThan(yield* now)
+        expect(dual.r2.leaseCalls.filter((call) => call.operation === "claim")).toEqual([])
+        expect(dual.r1.leaseCalls.filter((call) => call.operation === "claim")).toHaveLength(1)
+
+        // The round ends, and the workflow completes under the lease R1 kept.
+        yield* stuck.release
+        yield* Deferred.succeed(gate.release, "done")
+        yield* completed(dual, dagID)
+        expect(dual.r1.fenced.filter((write) => write.outcome === "refused")).toEqual([])
+      }),
+  )
+
   // Row 4 against row 5: the location is a durable fact, but a runner that is driving the workflow judges it itself.
   it.effect("a workflow whose workspace is gone is failed once nobody holds a live lease on it, not before", () =>
     Effect.gen(function* () {
@@ -1172,37 +1216,102 @@ describe("RunnerLease over a scripted lease", () => {
       }),
   )
 
-  // ADR-0008 decision 2: the gap is between the starts of two ticks. A tick that is stuck (a suspended machine
-  // stops the process in the middle of its round) is not late itself: it started on time. The tick after it is.
+  // ADR-0008 decision 2: the gap is between the starts of two ticks, and the quiet period that follows it is two periods
+  // of the clock. A tick whose renewal is stuck (a suspended machine stops the process in the middle of it) is not late
+  // itself: it started on time. The tick after it is.
   it.effect(
-    "it tells the round of a clock jump: the tick that starts more than two periods after the one before, and the next",
+    "it tells the round of a clock jump: the tick that starts more than two periods after the one before, and the ticks of the two periods after it",
     () =>
       Effect.gen(function* () {
-        const { leases } = scripted({})
-        const rounds: boolean[] = []
-        const ended: number[] = []
         const suspended = yield* Deferred.make<void>()
-        yield* started(leases, entries({}), [], undefined, (input) =>
-          Effect.gen(function* () {
-            rounds.push(input.afterClockJump)
-            // The first round is the one the machine went to sleep in.
-            if (rounds.length === 1) yield* Deferred.await(suspended)
-            ended.push(rounds.length)
-          }),
+        let renewals = 0
+        const { leases } = scripted({
+          // The first renewal is the one the machine went to sleep in.
+          renew: () => (++renewals === 1 ? Deferred.await(suspended).pipe(Effect.as(true)) : Effect.succeed(true)),
+        })
+        const rounds: boolean[] = []
+        yield* started(leases, entries({ "dag-a": token(1) }), [], undefined, (input) =>
+          Effect.sync(() => void rounds.push(input.afterClockJump)),
         )
 
         yield* TestClock.adjust(PERIOD)
-        yield* until(() => rounds.length === 1, "the first tick did not run its round")
+        yield* until(() => renewals === 1, "the first tick did not start its renewal")
         yield* TestClock.adjust(PAST_TTL)
         yield* Deferred.succeed(suspended, undefined)
-        yield* until(() => ended.length === 1, "the round did not end after the machine woke up")
+        yield* until(() => rounds.length === 1, "the round of the first tick did not run after the machine woke up")
 
-        // The round that was stuck started on time; the three after it start 30 s apart, the first of them 150 s late.
+        // The tick that was stuck started on time; the three after it start 30 s apart, the first of them 150 s late.
         for (let tick = 1; tick < 4; tick++) {
           yield* TestClock.adjust(PERIOD)
           yield* until(() => rounds.length === tick + 1, `tick ${tick + 1} did not run its round`)
         }
         expect(rounds).toEqual([false, true, true, false])
+      }),
+  )
+
+  // The watch is one value: the reading that sees the jump first, a tick's or an observation's, starts the quiet period
+  // for the other.
+  it.effect(
+    "a jump that an observation of the reconciler was the first to see starts the quiet period of the ticks too",
+    () =>
+      Effect.gen(function* () {
+        const suspended = yield* Deferred.make<void>()
+        let renewals = 0
+        const { leases } = scripted({
+          renew: () => (++renewals === 1 ? Deferred.await(suspended).pipe(Effect.as(true)) : Effect.succeed(true)),
+        })
+        const rounds: boolean[] = []
+        const runnerLease = yield* started(leases, entries({ "dag-a": token(1) }), [], undefined, (input) =>
+          Effect.sync(() => void rounds.push(input.afterClockJump)),
+        )
+
+        // The machine sleeps in the middle of the first tick's renewal, and when it wakes an observation of the
+        // reconciler is the first to read the clock.
+        yield* TestClock.adjust(PERIOD)
+        yield* until(() => renewals === 1, "the first tick did not start its renewal")
+        yield* TestClock.adjust(PAST_TTL)
+        expect(runnerLease.noteClock(yield* now)).toBe(true)
+        yield* Deferred.succeed(suspended, undefined)
+        yield* until(() => rounds.length === 1, "the round of the first tick did not run")
+
+        // The tick 30 s after it is on time with respect to that reading and still follows the jump; the one after is
+        // two periods on and does not.
+        for (let tick = 1; tick < 3; tick++) {
+          yield* TestClock.adjust(PERIOD)
+          yield* until(() => rounds.length === tick + 1, `tick ${tick + 1} did not run its round`)
+        }
+        expect(rounds).toEqual([false, true, false])
+      }),
+  )
+
+  it.effect(
+    "noteClock answers for the instance's watch, which starts with the instance and tells a jump from two periods on",
+    () =>
+      Effect.gen(function* () {
+        const { leases } = scripted({})
+        const runnerLease = yield* started(leases, entries({}))
+        const PERIOD_MS = DagLease.RENEWAL_PERIOD_MS
+
+        // Seeded at the start of the instance, the clock's 0: a first reading two periods on is not a jump, one a
+        // millisecond later is, and every reading within two periods of that is after it.
+        expect(runnerLease.noteClock(2 * PERIOD_MS)).toBe(false)
+        expect(runnerLease.noteClock(4 * PERIOD_MS + 1)).toBe(true)
+        expect(runnerLease.noteClock(5 * PERIOD_MS)).toBe(true)
+        expect(runnerLease.noteClock(6 * PERIOD_MS + 1)).toBe(false)
+      }),
+  )
+
+  it.effect(
+    "noteClock sees the readings of the ticks: a tick is the reading that a late observation is measured from",
+    () =>
+      Effect.gen(function* () {
+        const { leases } = scripted({})
+        const runnerLease = yield* started(leases, entries({}))
+
+        // The first tick reads the clock at 30 s. 85 s is 55 s after that and 85 s after the start, which is a jump if
+        // the tick did not feed the watch.
+        yield* TestClock.adjust(PERIOD)
+        expect(runnerLease.noteClock(85_000)).toBe(false)
       }),
   )
 
@@ -1225,6 +1334,81 @@ describe("RunnerLease over a scripted lease", () => {
 
       // The renewals of both ticks went through: a round that dies costs nothing but itself.
       expect(calls.renew).toHaveLength(2)
+    }),
+  )
+
+  it.effect("a round that throws instead of returning an effect costs the tick nothing and frees the slot", () =>
+    Effect.gen(function* () {
+      const { leases, calls } = scripted({})
+      let runs = 0
+      yield* started(leases, entries({ "dag-a": token(1) }), [], undefined, () => {
+        if (++runs === 1) throw new Error("not an effect")
+        return Effect.void
+      })
+
+      yield* TestClock.adjust(PERIOD)
+      yield* until(() => runs === 1, "the first tick did not start its round")
+      yield* TestClock.adjust(PERIOD)
+      yield* until(() => runs === 2, "the next tick did not start another round: the slot was never freed")
+
+      expect(calls.renew).toHaveLength(2)
+    }),
+  )
+
+  // ADR-0008 decision 2: the renewals are the owner's proof of life, and a round can wait for a worktree removal, the
+  // lifecycle lock or a user hook for longer than the TTL. It must not hold them up, or another runner takes over a
+  // workflow this one still drives.
+  it.effect("a round that outlasts the TTL delays no renewal, and no second round starts beside it", () =>
+    Effect.gen(function* () {
+      const { leases, calls } = scripted({})
+      const blocked = yield* Deferred.make<void>()
+      const told: boolean[] = []
+      yield* started(leases, entries({ "dag-a": token(1) }), [], undefined, (input) =>
+        Effect.suspend(() => {
+          told.push(input.afterClockJump)
+          return told.length === 1 ? Deferred.await(blocked) : Effect.void
+        }),
+      )
+
+      // Five periods, more than the TTL, and the round of the first tick never ends.
+      for (let tick = 1; tick <= 5; tick++) {
+        yield* TestClock.adjust(PERIOD)
+        yield* until(() => calls.renew.length === tick, `tick ${tick} did not renew: the round held the tick up`)
+      }
+      expect(DagLease.RENEWAL_PERIOD_MS * 5).toBeGreaterThan(DagLease.TTL_MS)
+      expect(calls.renew.map((call) => call.now)).toEqual(
+        [1, 2, 3, 4, 5].map((tick) => tick * DagLease.RENEWAL_PERIOD_MS),
+      )
+      // The first tick started the round; the four after it found it running and started none.
+      expect(told).toEqual([false])
+
+      // It ends, and the next tick starts another. A round that is only long is no clock jump: every tick fed the
+      // watch on time, so the tick after it is told none.
+      yield* Deferred.succeed(blocked, undefined)
+      yield* TestClock.adjust(PERIOD)
+      yield* until(() => told.length === 2, "the tick after the round ended did not start another")
+      expect(told).toEqual([false, false])
+    }),
+  )
+
+  it.effect("a round in flight when the instance closes is interrupted, and the leases are given back after it", () =>
+    Effect.gen(function* () {
+      const order: string[] = []
+      const { leases } = scripted({ release: () => Effect.sync(() => (order.push("release"), true)) })
+      const scope = yield* Scope.make()
+      let running = false
+      yield* started(leases, entries({ "dag-a": token(1) }), [], scope, () =>
+        Effect.sync(() => void (running = true)).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Effect.sync(() => void order.push("round interrupted"))),
+        ),
+      )
+      yield* TestClock.adjust(PERIOD)
+      yield* until(() => running, "the first tick did not start its round")
+
+      yield* Scope.close(scope, Exit.void)
+
+      expect(order).toEqual(["round interrupted", "release"])
     }),
   )
 
@@ -1412,6 +1596,155 @@ describe("RunnerLease.evictor", () => {
 
       expect(table.has("dag-a")).toBe(false)
       expect(log.aborted).toEqual(["n1:ses_n1"])
+    }),
+  )
+})
+
+/**
+ * The reconciler's eviction (`RunnerLease.Interface.evict`, ADR-0008 decision 6, row 3) over the real evictor and a
+ * scripted lease. Its verdict rests on reads that are older than the entry's lock, and a workflow that ended meanwhile
+ * belongs to its terminal handler (the worktree settlement, the wake of the parent): the eviction reads the lease row
+ * again under the lock, and goes on only while the row shows another holder.
+ */
+describe("RunnerLease.evict: the reconciler's eviction re-reads the lease under the entry's lock", () => {
+  const RUNNER = "10:test"
+  const OTHER = "11:other"
+  const token = (epoch: number): DagLease.Token => ({ runnerID: RUNNER, epoch })
+  const lease = (epoch: number, runnerID: string): DagLease.Lease => ({ dagID: "dag-a", runnerID, epoch, expiresAt: 0 })
+
+  /** An entry with one running fiber and the child its attempt recorded. */
+  const entryOf = Effect.gen(function* () {
+    const fiber = yield* Effect.forkScoped(Effect.never)
+    const attemptChild: RunnerLease.Evictable["attemptChild"] = new WeakMap()
+    attemptChild.set(fiber, RunnerLease.attached("ses_n1"))
+    return {
+      token: token(3),
+      parentSessionID: "ses_parent",
+      evalLock: Semaphore.makeUnsafe(1),
+      fibers: new Map([["n1", fiber]]),
+      watchers: new Map<string, Fiber.Fiber<unknown, unknown>>(),
+      attemptChild,
+    }
+  })
+
+  const setup = (answer: () => Effect.Effect<DagLease.Lease | undefined>) =>
+    Effect.gen(function* () {
+      const entry = yield* entryOf
+      const table = new Map([["dag-a", entry]])
+      const log = { aborted: [] as string[], unregistered: [] as string[] }
+      const leases: DagLease.Interface = {
+        claim: () => Effect.succeed(undefined),
+        renew: () => Effect.succeed(true),
+        release: () => Effect.succeed(true),
+        held: () => answer(),
+      }
+      const runnerLease = yield* RunnerLease.make({
+        leases,
+        runnerID: RUNNER,
+        entries: table,
+        evict: RunnerLease.evictor({
+          entries: table,
+          abort: (_dagID, nodeID, childSessionID) =>
+            Effect.sync(() => void log.aborted.push(`${nodeID}:${childSessionID}`)),
+          unregister: (_entry, dagID) => Effect.sync(() => void log.unregistered.push(dagID)),
+        }),
+      })
+      return { entry, table, log, runnerLease }
+    })
+
+  const untouched = (input: Effect.Success<ReturnType<typeof setup>>) => {
+    expect(input.table.get("dag-a")).toBe(input.entry)
+    expect(input.log).toEqual({ aborted: [], unregistered: [] })
+    expect(input.entry.fibers.size).toBe(1)
+    // Still running: nobody interrupted it.
+    expect(input.entry.fibers.get("n1")?.pollUnsafe()).toBeUndefined()
+  }
+
+  it.effect("evicts the entry while the row shows another holder", () =>
+    Effect.gen(function* () {
+      const input = yield* setup(() => Effect.succeed(lease(4, OTHER)))
+
+      yield* input.runnerLease.evict("dag-a", input.entry)
+
+      expect(input.table.has("dag-a")).toBe(false)
+      expect(input.log).toEqual({ aborted: ["n1:ses_n1"], unregistered: ["dag-a"] })
+    }),
+  )
+
+  it.effect("evicts it when the same runner holds the row at a later epoch: the token is the pair", () =>
+    Effect.gen(function* () {
+      const input = yield* setup(() => Effect.succeed(lease(4, RUNNER)))
+
+      yield* input.runnerLease.evict("dag-a", input.entry)
+
+      expect(input.table.has("dag-a")).toBe(false)
+    }),
+  )
+
+  // The workflow ended: `DagLease.held` has no row for it, and its terminal handler is the one to settle the entry.
+  it.effect("leaves the entry of a workflow that ended to its terminal handler", () =>
+    Effect.gen(function* () {
+      const input = yield* setup(() => Effect.succeed(undefined))
+
+      yield* input.runnerLease.evict("dag-a", input.entry)
+
+      untouched(input)
+    }),
+  )
+
+  it.effect("leaves the entry alone when the row names its token after all", () =>
+    Effect.gen(function* () {
+      const input = yield* setup(() => Effect.succeed(lease(3, RUNNER)))
+
+      yield* input.runnerLease.evict("dag-a", input.entry)
+
+      untouched(input)
+    }),
+  )
+
+  it.effect(
+    "leaves the entry alone when the row cannot be read: that is not a lost lease, and the next round looks",
+    () =>
+      Effect.gen(function* () {
+        const input = yield* setup(() => Effect.die(new Error("SQLITE_BUSY: database is locked")))
+
+        yield* input.runnerLease.evict("dag-a", input.entry)
+
+        untouched(input)
+      }),
+  )
+
+  // What makes it a re-read "under the lock": a handler of the entry holds `evalLock` when the eviction starts, and the
+  // workflow ends while the eviction waits for it. A read before the lock would still have seen the other holder.
+  it.effect("reads the row once it holds the entry's lock, not before it", () =>
+    Effect.gen(function* () {
+      let row: DagLease.Lease | undefined = lease(4, OTHER)
+      const input = yield* setup(() => Effect.sync(() => row))
+      yield* input.entry.evalLock.take(1)
+
+      const eviction = yield* input.runnerLease
+        .evict("dag-a", input.entry)
+        .pipe(Effect.forkChild({ startImmediately: true }))
+      row = undefined
+      yield* input.entry.evalLock.release(1)
+      yield* Fiber.join(eviction)
+
+      untouched(input)
+    }),
+  )
+
+  // PR2's `verify` and the renewal evict a workflow whose row is gone as before: bringing them in line is PR4b's.
+  it.effect("is the reconciler's alone: verify still evicts the entry of a workflow that ended", () =>
+    Effect.gen(function* () {
+      const input = yield* setup(() => Effect.succeed(undefined))
+
+      expect(yield* input.runnerLease.verify("dag-a", input.entry)).toBe(false)
+      yield* pollOnTestClock(
+        Effect.sync(() => (input.table.has("dag-a") ? undefined : true)),
+        "verify did not evict the entry of a workflow that ended",
+      )
+
+      expect(input.log.unregistered).toEqual(["dag-a"])
     }),
   )
 })

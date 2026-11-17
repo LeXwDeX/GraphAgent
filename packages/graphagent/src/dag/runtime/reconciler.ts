@@ -27,8 +27,9 @@ import type { RunnerLease } from "./runner-lease"
  * `reconcile(dagID)` is single-flight: concurrent calls for one workflow share one
  * evaluation, so a trigger that arrives while another is mid-adoption joins it
  * instead of racing it. `round` reconciles every non-terminal workflow, orphans
- * first. The renewal tick of `RunnerLease` runs it once per period (and startup
- * runs it once), with the clock-jump flag the tick measured.
+ * first. The renewal tick of `RunnerLease` starts one per period, in a fiber of its
+ * own and never two at once (and startup runs one, awaited), so a round that waits
+ * for a worktree removal, the lifecycle lock or a user hook delays no renewal.
  *
  * What the shell does not decide: the adoption is `recoverWorkflow` (a claim, then
  * the node-level reconciliation, then the runtime entry) and still has its
@@ -37,15 +38,36 @@ import type { RunnerLease } from "./runner-lease"
  * triggers (a first wave, a replan with no entry, a session move) still call
  * `recoverWorkflow` themselves; they become calls of `reconcile` in PR4b.
  *
- * Time. The clock is read once, before the lease row, and a lease is judged
- * expired or live against that reading. A process that is suspended between the
- * reading and the lease read (a round that was in flight when the machine went to
- * sleep) then sees the lease as it was before the suspension, which can only make
- * it look younger than it is, never expired early. The tick that follows such a
- * suspension is the one that measures the jump (`RunnerLease`).
+ * Time. The clock is read once per observation, before the lease row, and a
+ * lease is judged expired or live against that reading. A process that is
+ * suspended between the reading and the lease read (a round that was in flight
+ * when the machine went to sleep) then sees the lease as it was before the
+ * suspension, which can only make it look younger than it is, never expired
+ * early. The reading also goes to the instance's clock watch (`noteClock`, kept by
+ * `RunnerLease`, which every tick feeds as well): a jump between the observations
+ * of one round, a machine that slept after the first workflow was looked at, makes
+ * the later observation `afterClockJump`, and so does every observation in the
+ * quiet period after any jump. The observation takes the watch's verdict and the
+ * caller's (`Round`) together.
+ *
+ * Order of the reads. The clock, then the instance's entry, then the lease row,
+ * then the workflow row. `DagLease.held` has no row for a workflow that ended, so
+ * the other order, the workflow and then the lease, reads a workflow that ended in
+ * between as a live one whose entry lost its lease, and that eviction can take the
+ * entry before the terminal handler does, which skips the worktree settlement and
+ * the parent's wake. Read first, a missing lease row of an entry means that the
+ * workflow had ended already, and the workflow row read after it says so (a
+ * terminal workflow does not turn live in between, bar the reopen of a completed
+ * one by an extend, which follows the terminal wake that the terminal handler
+ * sends after it took the entry). The eviction reads the lease row once more under
+ * the entry's lock, and leaves the entry alone unless another holder shows
+ * (`RunnerLease.Interface.evict`).
  */
 
-/** What a round needs to know of its caller (decision 2): this round or the previous one follows a clock jump. */
+/**
+ * What the caller already knows of the clock (decision 2): its own reading follows a clock jump. The observations ask
+ * the clock watch about theirs besides; either one holds back a takeover.
+ */
 export interface Round {
   readonly afterClockJump: boolean
 }
@@ -70,6 +92,11 @@ export interface Input<E extends RunnerLease.Evictable> {
   readonly recovering: Set<string>
   readonly events: Pick<EventV2.Interface, "publish">
   readonly lease: Pick<RunnerLease.Interface<E>, "claim" | "abandon" | "evict">
+  /**
+   * The instance's clock watch (`RunnerLease.Interface.noteClock`): each observation feeds it its reading of the clock
+   * and takes its verdict. Without one an observation is `afterClockJump` only when its caller says so (`Round`).
+   */
+  readonly noteClock?: (at: number) => boolean
   /** The `Dag` service bound to a claim's token (ADR-0008 decision 5): the orphan is failed through it. */
   readonly portFor: (dagID: string, token: DagLease.Token) => Pick<Dag.Interface, "fail">
   /** Take the workflow over: the loop's `recoverWorkflow`, which keeps its own guards and ends as a no-op when its claim is refused. */
@@ -101,13 +128,16 @@ interface Seen<E> {
 
 export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interface {
   const { store, leases, runnerID, directory, entries, recovering, events, lease, portFor } = input
-  const { adopt, failUnusable, evictMoved } = input
+  const { adopt, failUnusable, evictMoved, noteClock } = input
   const flights = new Map<string, Deferred.Deferred<Option.Option<ReconcileDecide.Action>>>()
 
   const observe = Effect.fn("DagReconciler.observe")(function* (dagID: string, round: Round) {
-    // The clock first: see the module comment.
+    // The clock first, and into the clock watch straight away: see the module comment.
     const startedAt = yield* Clock.currentTimeMillis
+    const afterClockJump = (noteClock?.(startedAt) ?? false) || round.afterClockJump
     const entry = entries.get(dagID)
+    // The lease row before the workflow row: see the module comment, "Order of the reads".
+    const row = yield* leases.held(dagID)
     const workflow = yield* store.getWorkflow(dagID)
     // The fields that the rows from 3 on read are left at their neutral value when an earlier row ends it.
     const unread = {
@@ -116,7 +146,7 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
       location: "ok",
       lease: "none",
       entryTokenHeld: false,
-      afterClockJump: round.afterClockJump,
+      afterClockJump,
     } as const
     const hasEntry = entry !== undefined
     if (workflow === undefined || isTerminalWorkflowStatusValue(workflow.status)) {
@@ -136,7 +166,6 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
     // No node proves that the create sequence did not progress (a vacuous truth for a workflow with none).
     const allNodesPending =
       workflow.status === "pending" ? (yield* store.getNodes(dagID)).every((node) => node.status === "pending") : false
-    const row = yield* leases.held(dagID)
     const observation = {
       status: workflow.status,
       allNodesPending,
@@ -146,7 +175,7 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
       lease: ReconcileDecide.classifyLease(row, runnerID, startedAt),
       hasEntry,
       entryTokenHeld: hasEntry && DagLease.holds(row, entry.token),
-      afterClockJump: round.afterClockJump,
+      afterClockJump,
     } satisfies ReconcileDecide.Observation
     return { observation, workflow, location, entry } satisfies Seen<E>
   })

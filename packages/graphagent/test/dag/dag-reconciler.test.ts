@@ -5,17 +5,18 @@
  * Issue #1029, PR4a: the shell of the reconciler (ADR-0008 decision 6) over a
  * real database and scripted collaborators. `decide` has its own table
  * (`dag-reconcile-decide.test.ts`); the cases here are what the shell does with
- * a verdict: what it reads to make the observation, which collaborator each
- * action calls (and which it does not), the reservation the orphan terminalization
- * holds, the single flight of `reconcile`, and the order and the resilience of a
- * round. The loop and two runners over one database are in
- * `dag-runner-lease.test.ts` ("the reconcile tick") and `dag-runner-races.test.ts`
- * (race 3).
+ * a verdict: what it reads to make the observation (and in which order), which
+ * collaborator each action calls (and which it does not), the reservation the
+ * orphan terminalization holds, the single flight of `reconcile`, the clock watch
+ * every observation feeds, and the order and the resilience of a round. The loop
+ * and two runners over one database are in `dag-runner-lease.test.ts` ("the
+ * reconcile tick") and `dag-runner-races.test.ts` (race 3).
  */
 
 import { describe, expect } from "bun:test"
 import { sql } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Semaphore } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { DagLease } from "@graphagent/core/dag/lease"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -143,6 +144,8 @@ const harness = Effect.gen(function* () {
   const recovering = new Set<string>()
   const calls = {
     getWorkflow: 0,
+    /** What an observation reads, in the order it reads it: the clock, then the lease row, then the workflow row. */
+    reads: [] as Array<"clock" | "held" | "workflow">,
     adopt: [] as string[],
     failUnusable: [] as Array<{ readonly dagID: string; readonly location: string }>,
     evictLost: [] as string[],
@@ -160,7 +163,17 @@ const harness = Effect.gen(function* () {
     fail: Effect.Effect<void, Error>
     adopt: Effect.Effect<void>
     beforeGetWorkflow: Effect.Effect<void>
-  } = { claim: token(1), fail: Effect.void, adopt: Effect.void, beforeGetWorkflow: Effect.void }
+    beforeHeld: Effect.Effect<void>
+    /** The instance's clock watch, which `RunnerLease` keeps in the loop; a test that gives none runs without one. */
+    noteClock: ((at: number) => boolean) | undefined
+  } = {
+    claim: token(1),
+    fail: Effect.void,
+    adopt: Effect.void,
+    beforeGetWorkflow: Effect.void,
+    beforeHeld: Effect.void,
+    noteClock: undefined,
+  }
 
   const reconciler = DagReconciler.make<Entry>({
     store: {
@@ -168,10 +181,17 @@ const harness = Effect.gen(function* () {
       getWorkflow: (id) =>
         Effect.suspend(() => {
           calls.getWorkflow++
+          calls.reads.push("workflow")
           return script.beforeGetWorkflow.pipe(Effect.andThen(real.getWorkflow(id)))
         }),
     },
-    leases,
+    leases: {
+      held: (id) =>
+        Effect.suspend(() => {
+          calls.reads.push("held")
+          return script.beforeHeld.pipe(Effect.andThen(leases.held(id)))
+        }),
+    },
     runnerID: RUNNER,
     directory: DIRECTORY,
     entries,
@@ -205,6 +225,10 @@ const harness = Effect.gen(function* () {
     failUnusable: (row, location) =>
       Effect.sync(() => void calls.failUnusable.push({ dagID: row.id, location: location._tag })),
     evictMoved: (dagID) => Effect.sync(() => void calls.evictMoved.push(dagID)),
+    noteClock: (at) => {
+      calls.reads.push("clock")
+      return script.noteClock?.(at) ?? false
+    },
   })
   return { reconciler, calls, script, entries, recovering }
 })
@@ -381,6 +405,227 @@ describe("what the reconciler does with a verdict", () => {
         expect(calls.adopt).toEqual(["wf-boom", "wf-boom"])
       }),
     ),
+  )
+})
+
+describe("the order of the reads (ADR-0008 decision 6, row 3)", () => {
+  it.live("an observation reads the clock, then the lease row, then the workflow row", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls } = yield* harness
+        yield* workflow("wf-order")
+
+        yield* reconciler.reconcile("wf-order")
+
+        // The lease row before the workflow: `DagLease.held` has no row for a workflow that ended.
+        expect(calls.reads).toEqual(["clock", "held", "workflow"])
+      }),
+    ),
+  )
+
+  // `DagLease.held` joins the workflow row and has none for a workflow that ended. Read second, it reports the lease of
+  // a workflow that ended between the two reads as lost, and its entry would be evicted before the terminal handler
+  // gets it (no worktree settlement, no wake of the parent).
+  it.live(
+    "a workflow that ends between the two reads is not a lost lease: its entry is left to the terminal handler",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, entries, script } = yield* harness
+          yield* workflow("wf-ending")
+          const { db } = yield* Database.Service
+          const complete = db
+            .run(sql`UPDATE workflow SET status = 'completed' WHERE id = 'wf-ending'`)
+            .pipe(Effect.orDie)
+          const leases = yield* DagLease.Service
+          const claimed = yield* leases.claim({ dagID: "wf-ending", runnerID: RUNNER, now: Date.now() })
+          const entry = entryOf("ending", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
+          entries.set("wf-ending", entry)
+          // It ends right before the second of the two reads, whichever of them that is.
+          let reads = 0
+          const endsBeforeTheSecondRead = Effect.suspend(() => (++reads === 2 ? complete : Effect.void))
+          script.beforeHeld = endsBeforeTheSecondRead
+          script.beforeGetWorkflow = endsBeforeTheSecondRead
+
+          expect(yield* reconciler.reconcile("wf-ending")).toEqual({ _tag: "noop" })
+
+          expect(reads).toBe(2)
+          expect(entries.get("wf-ending")).toBe(entry)
+          untouched(calls)
+        }),
+      ),
+  )
+
+  // The workflow ends as the lease row is read: `DagLease.held` has no row for it any more, and the workflow row read
+  // after it says that it ended. (Read the other way round, the workflow row would have shown a live workflow.)
+  it.live("a lease row that is gone because the workflow ended, and the workflow row that says so, are a noop", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-over")
+        const { db } = yield* Database.Service
+        const leases = yield* DagLease.Service
+        const claimed = yield* leases.claim({ dagID: "wf-over", runnerID: RUNNER, now: Date.now() })
+        const entry = entryOf("over", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
+        entries.set("wf-over", entry)
+        // The workflow fails right before the lease row is read.
+        script.beforeHeld = db
+          .run(sql`UPDATE workflow SET status = 'failed' WHERE id = 'wf-over'`)
+          .pipe(Effect.orDie, Effect.asVoid)
+
+        expect(yield* reconciler.reconcile("wf-over")).toEqual({ _tag: "noop" })
+
+        expect(entries.get("wf-over")).toBe(entry)
+        untouched(calls)
+      }),
+    ),
+  )
+
+  it.live("a lease that another runner took is still evicted as lost while the workflow is live", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries } = yield* harness
+        yield* workflow("wf-taken")
+        yield* heldByOther("wf-taken", "live")
+        entries.set("wf-taken", entryOf("taken", token(1)))
+
+        expect(yield* reconciler.reconcile("wf-taken")).toEqual({ _tag: "evict", reason: "lease-lost" })
+
+        expect(calls.evictLost).toEqual(["wf-taken"])
+      }),
+    ),
+  )
+})
+
+describe("the clock watch (ADR-0008 decision 2): every observation feeds it", () => {
+  const PERIOD = DagLease.RENEWAL_PERIOD_MS
+  const START = 1_000_000
+
+  /** The watch of an instance as `RunnerLease` keeps it: seeded with the start of the instance, fed with every reading. */
+  const watchFrom = (seed: number) => {
+    let watch = ReconcileDecide.noteClock(ReconcileDecide.unwatched, seed, PERIOD).watch
+    const readings: number[] = []
+    const noteClock = (at: number) => {
+      readings.push(at)
+      const noted = ReconcileDecide.noteClock(watch, at, PERIOD)
+      watch = noted.watch
+      return noted.afterJump
+    }
+    return { noteClock, readings }
+  }
+
+  /** A workflow whose lease another runner last renewed at 0: it ran out long before `START`. */
+  const lapsed = (dagID: string, ageMs: number) =>
+    Effect.gen(function* () {
+      yield* workflow(dagID, { ageMs })
+      const leases = yield* DagLease.Service
+      expect(yield* leases.claim({ dagID, runnerID: OTHER, now: 0 })).toMatchObject({ runnerID: OTHER, epoch: 1 })
+    })
+
+  it.effect(
+    "a jump between two observations of one round holds back the second, and the quiet period outlasts the round",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(START)
+          const { reconciler, calls, script } = yield* harness
+          const { noteClock, readings } = watchFrom(START)
+          script.noteClock = noteClock
+          // A round looks at the newest workflow first.
+          yield* lapsed("wf-first", 1_000)
+          yield* lapsed("wf-second", 5_000)
+          // Adopting the first takes the machine two minutes (it sleeps through them): the second is looked at after
+          // that, with a lease that ran out only because nobody could renew it. Its round was told no jump.
+          script.adopt = TestClock.adjust("2 minutes")
+
+          yield* reconciler.round({ afterClockJump: false })
+
+          expect(readings).toEqual([START, START + 120_000])
+          expect(calls.adopt).toEqual(["wf-first"])
+
+          // The jump started a quiet period of two periods: a round inside it holds both back, and a lease is taken
+          // by the first round after it. A round is no different for having been told nothing.
+          script.adopt = Effect.void
+          yield* TestClock.adjust(`${PERIOD} millis`)
+          yield* reconciler.round({ afterClockJump: false })
+          expect(calls.adopt).toEqual(["wf-first"])
+          yield* TestClock.adjust(`${PERIOD} millis`)
+          yield* reconciler.round({ afterClockJump: false })
+          expect(calls.adopt).toEqual(["wf-first", "wf-first", "wf-second"])
+        }),
+      ),
+  )
+
+  it.effect(
+    "an observation takes the verdict of the watch and the caller's together: either one holds a takeover back",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(START)
+          const { reconciler, calls, script } = yield* harness
+          const { noteClock } = watchFrom(START)
+          script.noteClock = noteClock
+          yield* lapsed("wf-lapsed", 1_000)
+
+          // The watch saw no jump, the caller did.
+          expect(yield* reconciler.reconcile("wf-lapsed", { afterClockJump: true })).toEqual({
+            _tag: "defer",
+            reason: "clock-jump",
+          })
+          // The watch sees one (nothing was fed for 10 periods), the caller did not.
+          yield* TestClock.adjust(`${10 * PERIOD} millis`)
+          expect(yield* reconciler.reconcile("wf-lapsed", { afterClockJump: false })).toEqual({
+            _tag: "defer",
+            reason: "clock-jump",
+          })
+          expect(calls.adopt).toEqual([])
+        }),
+      ),
+  )
+
+  // The reading is taken before the lease row: a process that is suspended between the two (a round that was in flight
+  // when the machine went to sleep) sees the lease as it was before, which can only make it look younger than it is.
+  it.effect(
+    "judges the lease against the clock as it was before the read: a stall in between never makes it expired",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(START)
+          const { reconciler, calls, script } = yield* harness
+          yield* workflow("wf-stalled", { ageMs: 1_000 })
+          const leases = yield* DagLease.Service
+          // Renewed by another runner at the very moment of the reading: live for another 90 s.
+          yield* leases.claim({ dagID: "wf-stalled", runnerID: OTHER, now: START })
+          script.beforeHeld = TestClock.adjust("2 minutes")
+
+          expect(yield* reconciler.reconcile("wf-stalled")).toEqual({ _tag: "defer", reason: "other-live" })
+          expect(calls.adopt).toEqual([])
+        }),
+      ),
+  )
+
+  it.live(
+    "every observation feeds its reading, whatever it concludes: a workflow that is gone or foreign included",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, script } = yield* harness
+          const readings: number[] = []
+          script.noteClock = (at) => {
+            readings.push(at)
+            return false
+          }
+          yield* workflow("wf-foreign", { directory: "/somewhere/else" })
+
+          yield* reconciler.reconcile("wf-nowhere")
+          yield* reconciler.reconcile("wf-foreign")
+
+          expect(readings).toHaveLength(2)
+          // The reading is the first thing an observation does.
+          expect(calls.reads.filter((read) => read === "clock")).toHaveLength(2)
+          expect(calls.reads[0]).toBe("clock")
+        }),
+      ),
   )
 })
 

@@ -6,7 +6,7 @@
  * truth table in ADR-0008 decision 6, and in each group the places where an
  * earlier row has to win over a later one (the table is first-match). No Effect
  * and no database: `decide` is a function of its observation, and
- * `classifyLease` and `clockJumped` are the two small functions that make the
+ * `classifyLease` and `noteClock` are the two small functions that make the
  * observation's lease and clock-jump fields.
  */
 
@@ -14,7 +14,7 @@ import { describe, expect, test } from "bun:test"
 import { DagLease } from "@graphagent/core/dag/lease"
 import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 
-const { ORPHAN_PENDING_GRACE_MS, decide, classifyLease, clockJumped } = ReconcileDecide
+const { ORPHAN_PENDING_GRACE_MS, decide, classifyLease, noteClock, unwatched } = ReconcileDecide
 
 const NOOP: ReconcileDecide.Action = { _tag: "noop" }
 const ADOPT: ReconcileDecide.Action = { _tag: "adopt" }
@@ -156,7 +156,7 @@ describe("row 6: an entry whose lease is held", () => {
 })
 
 describe("row 7: no preemption right after a clock jump", () => {
-  test("another runner's expired lease is left alone this round and the next", () => {
+  test("another runner's expired lease is left alone while the observation follows a jump", () => {
     expect(decide(observe({ lease: "other-expired", afterClockJump: true }))).toEqual(defer("clock-jump"))
     expect(decide(observe({ lease: "other-expired", afterClockJump: false }))).toEqual(ADOPT)
   })
@@ -240,25 +240,89 @@ describe("classifyLease", () => {
   })
 })
 
-describe("clockJumped", () => {
+describe("noteClock", () => {
   const PERIOD = DagLease.RENEWAL_PERIOD_MS
 
-  test("the first reading has no predecessor", () => {
-    expect(clockJumped(undefined, 10 * PERIOD, PERIOD)).toBe(false)
+  /** The readings fed to one watch in turn, each with its verdict: what a reconciler's tick and observations do. */
+  const feed = (readings: readonly number[], from: ReconcileDecide.ClockWatch = unwatched) => {
+    let watch = from
+    return readings.map((at) => {
+      const noted = noteClock(watch, at, PERIOD)
+      watch = noted.watch
+      return noted.afterJump
+    })
+  }
+
+  test("the first reading has no predecessor: it is no jump, however late it is, and it is the watch's latest", () => {
+    expect(noteClock(unwatched, 10 * PERIOD, PERIOD)).toEqual({
+      watch: { lastAt: 10 * PERIOD, quietUntil: 0 },
+      afterJump: false,
+    })
   })
 
-  test("a tick every period is not a jump, and neither is a tick that is up to two periods late", () => {
-    expect(clockJumped(0, PERIOD, PERIOD)).toBe(false)
-    expect(clockJumped(0, 2 * PERIOD, PERIOD)).toBe(false)
+  test("a tick every period is not a jump, and neither is a tick that is exactly two periods after the one before", () => {
+    expect(feed([0, PERIOD, 2 * PERIOD, 3 * PERIOD])).toEqual([false, false, false, false])
+    expect(feed([0, 2 * PERIOD])).toEqual([false, false])
   })
 
-  test("more than two periods is", () => {
-    expect(clockJumped(0, 2 * PERIOD + 1, PERIOD)).toBe(true)
-    expect(clockJumped(PERIOD, 10 * PERIOD, PERIOD)).toBe(true)
+  test("more than two periods after the latest reading is a jump, and the jump arms a quiet period of two periods", () => {
+    const jumped = noteClock({ lastAt: 0, quietUntil: 0 }, 2 * PERIOD + 1, PERIOD)
+    expect(jumped.afterJump).toBe(true)
+    expect(jumped.watch).toEqual({ lastAt: 2 * PERIOD + 1, quietUntil: 4 * PERIOD + 1 })
+    // A late first reading after a long silence is measured from the latest one, not from the start.
+    expect(noteClock({ lastAt: PERIOD, quietUntil: 0 }, 10 * PERIOD, PERIOD).afterJump).toBe(true)
   })
 
-  test("a clock that went backwards is not a jump", () => {
-    expect(clockJumped(10 * PERIOD, 0, PERIOD)).toBe(false)
+  test("every reading inside the quiet period follows the jump, and the first one at its end does not", () => {
+    // The jump at 5 periods: quiet until 7 periods.
+    expect(feed([0, 5 * PERIOD, 5 * PERIOD + 1, 6 * PERIOD, 7 * PERIOD - 1, 7 * PERIOD, 8 * PERIOD])).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+    ])
+  })
+
+  test("the quiet period is time, not readings: it holds however many readings fall in it, and for none of them if none does", () => {
+    // Ten readings a second apart inside the quiet period.
+    const inside = Array.from({ length: 10 }, (_, index) => 5 * PERIOD + 1_000 * (index + 1))
+    expect(feed([0, 5 * PERIOD, ...inside])).toEqual([false, true, ...inside.map(() => true)])
+    // No reading until it is over: the next one is no jump (it is 2 periods after the jump) and not quiet.
+    expect(feed([0, 5 * PERIOD, 7 * PERIOD])).toEqual([false, true, false])
+  })
+
+  test("a second jump inside the quiet period starts it over", () => {
+    // Jump at 5P (quiet until 7P), another at 10P: 5 periods after the reading before it.
+    expect(feed([0, 5 * PERIOD, 6 * PERIOD, 10 * PERIOD, 11 * PERIOD, 12 * PERIOD, 12 * PERIOD + 1])).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+    ])
+  })
+
+  test("a reading that comes late, or from a clock that went back, does not move the latest reading back", () => {
+    // The reading at 1P arrives after the one at 3P: the watch stays at 3P, and the next one is measured from it.
+    expect(noteClock({ lastAt: 3 * PERIOD, quietUntil: 0 }, PERIOD, PERIOD)).toEqual({
+      watch: { lastAt: 3 * PERIOD, quietUntil: 0 },
+      afterJump: false,
+    })
+    expect(feed([3 * PERIOD, PERIOD, 5 * PERIOD])).toEqual([false, false, false])
+    expect(feed([3 * PERIOD, PERIOD, 5 * PERIOD + 1])).toEqual([false, false, true])
+  })
+
+  test("is a function of the watch and the reading: it does not change the watch it was given", () => {
+    const watch: ReconcileDecide.ClockWatch = { lastAt: 0, quietUntil: 0 }
+    const noted = noteClock(watch, 10 * PERIOD, PERIOD)
+    expect(noted.afterJump).toBe(true)
+    expect(watch).toEqual({ lastAt: 0, quietUntil: 0 })
+    expect(noteClock(watch, 10 * PERIOD, PERIOD)).toEqual(noted)
   })
 })
 

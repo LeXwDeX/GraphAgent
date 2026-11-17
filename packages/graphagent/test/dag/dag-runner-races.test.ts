@@ -15,7 +15,9 @@
  * the guard cannot tell (a zombie's write that is a legal transition, or the very
  * attempt the new holder took over), the token does. Since PR4a the reconcile tick
  * of each runner (ADR-0008 decision 6) judges a lease that has run out only
- * after it has ruled out a clock jump (race 3).
+ * after it has ruled out a clock jump (race 3), which the runner's clock watch
+ * sees in the first reading of its clock after the jump, a tick's or an
+ * observation's.
  */
 
 import { describe, expect } from "bun:test"
@@ -73,8 +75,9 @@ const heldBy = (runner: Runner, dagID: string) =>
 
 /**
  * Move the TestClock on, a period at a time, until `runner`'s tick has read the
- * lease of `dagID` once more: its next reconcile round ran. A round runs one
- * after the other in one fiber, so the previous round is over when this returns.
+ * lease of `dagID` once more: its next reconcile round ran (the round reads the
+ * lease row first). A tick starts a round only when the previous one is over, so
+ * the rounds do not overlap.
  */
 const nextRound = (runner: Runner, dagID: string) =>
   Effect.gen(function* () {
@@ -88,6 +91,25 @@ const nextRound = (runner: Runner, dagID: string) =>
       }
     }
     yield* Effect.fail(new Error(`${runner.name} ran no reconcile round`))
+  })
+
+/**
+ * R2 drives a workflow of its own, so that its renewal tick has a renewal to be
+ * parked in when the machine stalls. On the TestClock a sleeping tick is woken
+ * at every period, however far the clock is moved: a suspension only shows to a
+ * tick that is parked when the clock jumps (`freeze()` parks a renewal), exactly
+ * as a real one stops the process in the middle of whatever it was doing.
+ */
+const driveOnR2 = (dual: DualRunner) =>
+  Effect.gen(function* () {
+    const dagID = yield* dual.r2.dag.create({
+      projectID: PROJECT_ID,
+      sessionID: PARENT_SESSION_ID,
+      title: "r2 own",
+      config: { name: "r2-own", nodes: [node("m1")] },
+    })
+    yield* dual.r2.nextPrompt("R2 did not start the child prompt of m1")
+    return dagID
   })
 
 /**
@@ -396,17 +418,22 @@ describe("races between two runners (#1029)", () => {
   // Race 3. The machine is suspended (a laptop sleeps, a VM is paused) and the wall clock jumps past the lease TTL
   // (90 s) while it is. Everything on it stalls, R1 included, so nothing renewed R1's lease, and when the machine
   // wakes up the lease looks expired only because nobody could renew it. R2 must not take the workflow over on that
-  // evidence: it leaves R1 alone for the round that follows the jump and the one after it (ADR-0008 decision 2 and
-  // decision 6, row 7), R1's renewal succeeds with an unchanged epoch, and its settlement is accepted.
+  // evidence: the first reading of its clock after the wake-up sees the jump, and R2 leaves R1 alone for two periods of
+  // the clock from there (ADR-0008 decision 2 and decision 6, row 7). R1's renewal succeeds with an unchanged epoch and
+  // its settlement is accepted.
   //
   // This is the case decision 2 describes. A single runner that stalls past the TTL while the rest of the machine
   // runs on is a different one, and there the opposite is right: another runner takes its workflows over (see
   // "a runner takes a lease over once it has expired" in dag-runner-lease.test.ts, and the next case).
+  //
+  // R2 drives a workflow of its own (`driveOnR2`) in both cases: that is what its frozen tick is parked in.
   it.effect("race 3: a wall-clock jump while the whole machine is suspended must not make R2 take over a live R1", () =>
     Effect.gen(function* () {
       const dual = yield* makeDualRunner()
       const { dagID, gate } = yield* driveOnR1(dual)
       yield* dual.r2.init
+      const ownDagID = yield* driveOnR2(dual)
+      const created = [...dual.r2.created]
       expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
       expect(heldBy(dual.r2, dagID)).toBe(1)
 
@@ -415,13 +442,13 @@ describe("races between two runners (#1029)", () => {
       const r1Stall = yield* dual.r1.freeze()
       yield* TestClock.adjust("2 minutes")
 
-      // It wakes up. R2 is released first, so that it is the first to look at the lease; the round it was in
-      // finishes with the clock two minutes on, and the next rounds are the ones that follow the jump.
+      // It wakes up. R2 is released first, so that it is the first to look at the lease: the round that its tick
+      // starts after its renewal reads the clock two minutes on, which is the jump, and the next rounds follow it.
       yield* r2Stall.release
       yield* r1Stall.release
       yield* pollOnTestClock(
         Effect.sync(() => (heldBy(dual.r2, dagID) >= 2 ? true : undefined)),
-        "R2's round did not finish after the machine woke up",
+        "R2's round did not run after the machine woke up",
       )
       for (let round = 0; round < 3; round++) yield* nextRound(dual.r2, dagID)
 
@@ -431,10 +458,11 @@ describe("races between two runners (#1029)", () => {
       expect(row?.status).toBe("running")
       expect(workflow).toBe("running")
       expect(dual.r2.cancelled).toEqual([])
-      expect(dual.r2.created).toEqual([])
-      // R2 looked at the lease in every round and claimed nothing.
+      expect(dual.r2.created).toEqual(created)
+      // R2 looked at the lease in every round and claimed nothing of R1's; R1 claimed nothing of R2's either.
       expect(heldBy(dual.r2, dagID)).toBe(5)
-      expect(dual.r2.leaseCalls.filter((call) => call.operation === "claim")).toEqual([])
+      expect(dual.r2.leaseCalls.filter((call) => call.operation === "claim" && call.dagID === dagID)).toEqual([])
+      expect(dual.r1.leaseCalls.filter((call) => call.operation === "claim" && call.dagID === ownDagID)).toEqual([])
       // R1 kept its lease at the epoch it had, and renewed it.
       const renewed = yield* rowOf(dual, dagID)
       expect(renewed).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
@@ -453,14 +481,15 @@ describe("races between two runners (#1029)", () => {
     }),
   )
 
-  // The other half of race 3: the clock rule is a delay, not a veto. R1 has two rounds of R2 to renew after the jump
-  // (the round that follows it and the one after); a lease that is still unrenewed at the third is a stall, and
-  // R2 takes the workflow over at the next epoch.
+  // The other half of race 3: the clock rule is a delay, not a veto. R1 has the round that sees the jump and the one
+  // after it to renew (two periods of the clock from the first reading after the wake-up); a lease that is still
+  // unrenewed at the third round is a stall, and R2 takes the workflow over at the next epoch.
   it.effect("race 3: R2 gives a silent R1 two rounds after the clock jump, and takes over at the third", () =>
     Effect.gen(function* () {
       const dual = yield* makeDualRunner()
       const { dagID } = yield* driveOnR1(dual)
       yield* dual.r2.init
+      yield* driveOnR2(dual)
 
       // The machine suspends, then wakes up; only R1 stays stalled (a process that did not come back).
       const r2Stall = yield* dual.r2.freeze()
@@ -469,13 +498,15 @@ describe("races between two runners (#1029)", () => {
       yield* r2Stall.release
       yield* pollOnTestClock(
         Effect.sync(() => (heldBy(dual.r2, dagID) >= 2 ? true : undefined)),
-        "R2's round did not finish after the machine woke up",
+        "R2's round did not run after the machine woke up",
       )
 
-      // The round that follows the jump and the one after it find R1's lease expired and leave it alone.
+      // The round that sees the jump (the one that just ran) and the one after it find R1's lease expired and leave it
+      // alone.
+      const claimsOnR1 = () => dual.r2.leaseCalls.filter((call) => call.operation === "claim" && call.dagID === dagID)
+      expect(claimsOnR1()).toEqual([])
       yield* nextRound(dual.r2, dagID)
-      yield* nextRound(dual.r2, dagID)
-      expect(dual.r2.leaseCalls.filter((call) => call.operation === "claim")).toEqual([])
+      expect(claimsOnR1()).toEqual([])
       expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
 
       // The third one does not: R2 claims the workflow right after it looked.
@@ -486,8 +517,8 @@ describe("races between two runners (#1029)", () => {
       )
       expect(adopted.epoch).toBe(2)
       const calls = dual.r2.leaseCalls.filter((call) => call.dagID === dagID).map((call) => call.operation)
-      expect(calls.slice(0, 5)).toEqual(["held", "held", "held", "held", "held"])
-      expect(calls[5]).toBe("claim")
+      expect(calls.slice(0, 4)).toEqual(["held", "held", "held", "held"])
+      expect(calls[4]).toBe("claim")
       yield* r1Stall.release
     }),
   )
