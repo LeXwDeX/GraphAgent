@@ -12,7 +12,7 @@
 import { backgroundResultOf, type BackgroundResult, type TextPartLike } from "../context/session-summary"
 import { t, type MessageKey } from "../i18n"
 import { Locale } from "../util/locale"
-import { remoteLine } from "../util/remote-text"
+import { remoteLine, remoteText } from "../util/remote-text"
 import { UNKNOWN } from "./subagent-record"
 
 export interface BackgroundCard {
@@ -39,7 +39,7 @@ export function backgroundCard(
   const found = backgroundResultOf(part)
   if (!found) return undefined
   const { childSessionID, result } = found
-  const body = resultBody(typeof part.text === "string" ? part.text : "")
+  const body = remoteText(resultBody(typeof part.text === "string" ? part.text : "", result.title))
   return {
     childSessionID,
     status: result.status,
@@ -64,9 +64,8 @@ const SUMMARY_CLOSE = "</summary>"
  * title is free text, and it ends at the last closing tag, because what the run wrote may hold one too. A text without
  * either element (a shape the server does not write today) is shown with the wrapper taken off.
  */
-export function resultBody(text: string): string {
-  const summaryEnd = text.indexOf(SUMMARY_CLOSE)
-  const from = summaryEnd === -1 ? 0 : summaryEnd + SUMMARY_CLOSE.length
+export function resultBody(text: string, title?: string): string {
+  const from = afterSummary(text, title)
   let element: (typeof RESULT_ELEMENTS)[number] | undefined
   let open = -1
   for (const candidate of RESULT_ELEMENTS) {
@@ -80,6 +79,22 @@ export function resultBody(text: string): string {
   const start = open + element.open.length
   const close = text.lastIndexOf(element.close)
   return (close >= start ? text.slice(start, close) : text.slice(start).replace(/\s*<\/task>\s*$/, "")).trim()
+}
+
+/**
+ * Where the summary element ends. The server writes it as `<summary>Background task <state>: <title></summary>` with
+ * the title unescaped, so a title that holds `</summary>` would end a plain search early: with the title from the
+ * metadata the end is found after it. Without a title, or when the text has no such summary, the first closing tag.
+ */
+function afterSummary(text: string, title: string | undefined): number {
+  const open = text.indexOf("<summary>")
+  if (title !== undefined && open !== -1) {
+    const end = `: ${title}${SUMMARY_CLOSE}`
+    const at = text.indexOf(end, open)
+    if (at !== -1) return at + end.length
+  }
+  const close = text.indexOf(SUMMARY_CLOSE)
+  return close === -1 ? 0 : close + SUMMARY_CLOSE.length
 }
 
 /** The text with the `<task …>` tag, the `<summary>` element and the closing `</task>` of the notice taken off. */

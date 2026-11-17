@@ -200,6 +200,14 @@ describe("backgroundCard: only the metadata says that a part is a result", () =>
   })
 })
 
+describe("the card's body", () => {
+  test("is cleaned of escapes and control characters and keeps its lines", () => {
+    const written = "\u001b[31mred\u001b[0m\u0007 alarm\r\nsecond\tline"
+    const found = backgroundCard(part(notice("completed", "Background task completed: s", written)))
+    expect(found?.body).toBe("red alarm\nsecond\tline")
+  })
+})
+
 describe("resultBody", () => {
   test("ends at the last closing tag, so a result that mentions one keeps it", () => {
     const written = "the notice ends with </task_result> and </task>, and so does this line"
@@ -209,6 +217,12 @@ describe("resultBody", () => {
   test("looks for the element after the summary, which holds a title that can say anything", () => {
     const text = notice("completed", "Background task completed: odd <task_error> title", "the body")
     expect(resultBody(text)).toBe("the body")
+  })
+
+  test("with the title, a title that holds both a closing summary and an opening result tag is not the body", () => {
+    const title = "Check </summary> and <task_result> parsing"
+    const text = notice("completed", `Background task completed: ${title}`, "Actual findings")
+    expect(resultBody(text, title)).toBe("Actual findings")
   })
 
   test("a run's text that holds the other element is still its body", () => {

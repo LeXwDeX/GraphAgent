@@ -526,6 +526,13 @@ test("the first line of a result is one clean line, whatever the run wrote", asy
     expect(card(frame, "dirty")!.preview).toStartWith("red alarm")
     expect(frame).not.toContain("\u001b")
     expect(frame).not.toContain("\u0007")
+    // Opened, the whole result is cleaned too, and keeps its lines.
+    pressExpand(harness)
+    const open = await harness.waitForFrame((value) => value.includes("second"), "the opened result")
+    expect(open).toContain("red alarm")
+    expect(open).not.toContain("\u001b")
+    expect(open).not.toContain("\u0007")
+    expect(open).not.toContain("[31m")
   } finally {
     await harness.dispose()
   }
