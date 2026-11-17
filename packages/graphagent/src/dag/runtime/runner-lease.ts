@@ -50,11 +50,12 @@ import { ReconcileDecide } from "./reconcile-decide"
  * and `verify` only learn that the row does not name the entry's token. What that
  * means is the reconciler's judgement (`reconcile`, the loop's `reconcileAfter`:
  * the news is newer than any evaluation under way): the row of a workflow that
- * ended or was deleted is no loss and its entry is left to the terminal handler
- * (row 1), another holder's is evicted (row 3). Each trigger runs in a fiber of the
- * instance's scope, so neither the renewal tick nor the spawn that asked waits for
- * it. A graph that has no reconciler (the unit graphs of this file's own tests)
- * keeps the direct eviction of PR2, where nobody else is there to judge.
+ * ended or was deleted is no loss, and its entry is retired by the routine of the
+ * terminal handler (row 1), another holder's is evicted (row 3). Each trigger runs
+ * in a fiber of the instance's scope, so neither the renewal tick nor the spawn
+ * that asked waits for it. A graph that has no reconciler (the unit graphs of this
+ * file's own tests) keeps the direct eviction of PR2, where nobody else is there
+ * to judge.
  *
  * The same tick starts the instance's reconcile round (`round`, ADR-0008
  * decision 6, `reconciler.ts`), in a fiber of its own and never more than one at a
@@ -137,9 +138,9 @@ export interface Interface<E extends Held = Held> {
    * (`reconcile`), from a fiber of its own: the eviction that follows interrupts
    * the spawn fiber that asks, which therefore cannot wait for it. `verify` does
    * not evict itself: `held` has no row for a workflow that ended, and an eviction
-   * that got to such an entry first would cost its terminal handler the worktree
-   * settlement and the wake of the parent; the reconciler leaves it to the handler
-   * (row 1). Without a `reconcile` it evicts directly, as it did before PR4b.
+   * that got to such an entry first would cost it the worktree settlement and the
+   * wake of the parent; the reconciler retires it instead (row 1), settlement and
+   * wake included. Without a `reconcile` it evicts directly, as it did before PR4b.
    */
   readonly verify: (dagID: string, entry: E) => Effect.Effect<boolean>
   /**
@@ -155,7 +156,7 @@ export interface Interface<E extends Held = Held> {
    *   - the lease row does not show another holder: the workflow is gone or
    *     terminal (its terminal and deletion handlers clean the entry up, and an
    *     eviction racing them would cost the terminal wake and the worktree
-   *     settlement that only the handler does), the row still names the token, or
+   *     settlement that they do), the row still names the token, or
    *     it could not be read (transient, as for a renewal; the next tick looks).
    */
   readonly refused: (dagID: string, token: DagLease.Token) => Effect.Effect<void>
@@ -169,9 +170,10 @@ export interface Interface<E extends Held = Held> {
    * alone when
    *   - it is gone, or an entry that replaced it is the table's now;
    *   - the row does not show another holder (the judgement of `refused`): the
-   *     workflow ended in between, and the entry is the terminal handler's to
-   *     settle (the worktree, the parent's wake), or the row names the token after
-   *     all, or it could not be read (the next round looks again).
+   *     workflow ended in between, and the entry is for the terminal handler or
+   *     the next judgement to retire (row 1: the worktree, the parent's wake), or
+   *     the row names the token after all, or it could not be read (the next round
+   *     looks again).
    */
   readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
   /**
@@ -251,10 +253,10 @@ export function make<E extends Held>(input: {
    * another token and a `verify` that finds the lease not held each start one, in
    * a fiber of the instance's scope that nobody waits for, so neither the tick nor
    * the spawn is held up. Its verdict is `decide`'s: an eviction when another
-   * holder shows (row 3), nothing when the workflow ended (row 1). A call that
-   * fails is logged, and the next round looks again. Left out, the direct eviction
-   * of PR2 stays (`evict` above): the graphs of this file's own unit tests run no
-   * reconciler to judge a lost lease.
+   * holder shows (row 3), the retirement of the entry when the workflow ended
+   * (row 1). A call that fails is logged, and the next round looks again. Left
+   * out, the direct eviction of PR2 stays (`evict` above): the graphs of this
+   * file's own unit tests run no reconciler to judge a lost lease.
    */
   readonly reconcile?: (dagID: string) => Effect.Effect<unknown>
 }): Effect.Effect<Interface<E>, never, Scope.Scope> {
@@ -417,7 +419,7 @@ export function make<E extends Held>(input: {
       }),
       evict: Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E) {
         // The reconciler's verdict was made from reads that are older than the entry's lock: once the eviction holds
-        // it, the lease row is read again, and a workflow that ended in between is left to its terminal handler.
+        // it, the lease row is read again, and a workflow that ended in between is left to be retired (row 1).
         const stillLost = heldByAnother(
           dagID,
           entry.token,
@@ -460,7 +462,7 @@ export const evictor = <E extends Evictable>(input: {
         // Already gone: a terminal event or a move dropped it first.
         if (input.entries.get(dagID) !== entry) return false
         // Decided on older reads: what they showed may have ended since (a workflow that went terminal has its
-        // terminal handler waiting for this lock, and the entry is what it settles).
+        // retirement waiting for this lock, and the entry is what it settles).
         if (stillLost !== undefined && !(yield* stillLost)) return false
         for (const [nodeID, fiber] of entry.fibers) {
           // A spawn that has not created its child yet has nothing to cancel: interrupting its fiber ends it.

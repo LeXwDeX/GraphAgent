@@ -134,6 +134,48 @@ const dagOwner = (runner: Runner) =>
     Option.isSome(claimed) ? claimed.value.owner.id : undefined,
   )
 
+/** The `release` calls that `runner`'s loop made for `dagID`: the give-back of one retirement (or of one adoption that ended without an entry). */
+const releases = (runner: Runner, dagID: string) =>
+  runner.leaseCalls.filter((call) => call.operation === "release" && call.dagID === dagID)
+
+/** The `renew` calls that `runner`'s loop made for `dagID`. */
+const renewals = (runner: Runner, dagID: string) =>
+  runner.leaseCalls.filter((call) => call.operation === "renew" && call.dagID === dagID).length
+
+/**
+ * Point the workflow at a workflow-level worktree whose directory is gone (`config.isolation` and `config.worktree`, as
+ * `Dag.create` writes them for an isolated workflow). The settlement of such a workflow publishes `WorkflowWorktreeSettled`
+ * without touching git, which makes the settlement visible in the durable log: one event, however many callers settle.
+ */
+const pointAtMissingWorktree = (dual: DualRunner, dagID: string) =>
+  dual.r2.database.db
+    .run(
+      sql`UPDATE workflow SET config = json_set(config, '$.isolation', 'worktree', '$.worktree', json(${JSON.stringify({ directory: "/nonexistent/dag-runner-lease-worktree", branch: "dag-test", baseHead: "0".repeat(40) })})) WHERE id = ${dagID}`,
+    )
+    .pipe(Effect.orDie, Effect.asVoid)
+
+/**
+ * Wait until the wake of the parent was reported: the delivery drain that a nudge starts marks the terminal workflow's wake
+ * durably (the wake turn itself is stubbed in the fixture), so this is how a test sees that the parent was woken.
+ */
+const woken = (dual: DualRunner, dagID: string, message: string | Effect.Effect<string>) =>
+  pollOnTestClock(
+    dual.r2.store.getWorkflow(dagID).pipe(Effect.map((workflow) => (workflow?.wakeReported ? true : undefined))),
+    message,
+  )
+
+/** The settlements of a workflow's worktree, from the durable log. */
+const settlements = (dual: DualRunner, dagID: string) =>
+  dual.log(dagID).pipe(Effect.map((events) => events.filter((event) => event.type === "dag.workflow.worktree_settled")))
+
+/** Give the runners' fibers a few turns of the clock and some real time: what a judgement does after the read that a test waits for. */
+const letTheJudgementRun = Effect.gen(function* () {
+  for (let turn = 0; turn < 20; turn++) {
+    yield* TestClock.adjust("1 millis")
+    yield* TestClock.withLive(Effect.sleep("2 millis"))
+  }
+})
+
 describe("claiming (ADR-0008 decision 6: the claim comes first)", () => {
   it.effect("a runner claims the lease of a workflow when it first drives it", () =>
     Effect.gen(function* () {
@@ -487,7 +529,8 @@ describe("a runner that lost its lease evicts the workflow (ADR-0008 decision 2)
 /**
  * ADR-0008 Amendment 3, 4b-C: a lease that a renewal or a spawn's re-read finds lost is news for the reconciler of the
  * loop (`reconcileAfter`), whose truth table judges it: another holder shows, the entry is evicted (row 3); the workflow
- * ended, nothing is (row 1), and the entry is left to its terminal handler. The lease itself evicts nothing.
+ * ended, the entry is retired (row 1), by the routine that the loop's terminal handlers run (the cleanup, the lease, the
+ * worktree settlement, the wake of the parent). The lease itself evicts nothing.
  */
 describe("a lost lease is news for the reconciler, not an eviction by the lease (ADR-0008 Amendment 3, 4b-C)", () => {
   // `n1 -> n2`: R1 drives n1; the child session of n2 is the next thing it would create.
@@ -540,9 +583,114 @@ describe("a lost lease is news for the reconciler, not an eviction by the lease 
   )
 
   // The entry of a workflow that ended is the terminal handler's (the worktree settlement, the wake of the parent), and
-  // in this process that handler hears of it from its own bus only: another runner's events do not arrive. The verdict
-  // for it is row 1 whoever asks, so the renewal leaves it, where PR2 evicted it.
-  it.effect("a renewal that finds the lease gone leaves the entry of a workflow that another runner ended alone", () =>
+  // in this process that handler hears of it from its own bus only: another runner's events do not arrive. The renewal
+  // that finds the lease gone is the news, and the verdict is row 1: the entry is retired by the handlers' own routine,
+  // not evicted (the children stop for how the workflow ended, not for the lease), and not left to run to its end.
+  it.effect("a renewal that finds the lease gone retires the entry of a workflow that another runner ended", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual)
+      yield* pointAtMissingWorktree(dual, dagID)
+      const registered = Effect.map(
+        dual.r1.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }),
+        Option.isSome,
+      )
+      expect(yield* registered).toBe(true)
+
+      // R1 stalls past its TTL, and R2 takes the workflow over and ends it. R2's own handler settles the worktree.
+      const frozen = yield* dual.r1.freeze()
+      yield* TestClock.adjust(PAST_TTL)
+      yield* dual.r2.init
+      expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
+      yield* dual.r2.dag.cancel(dagID)
+      expect((yield* dual.r2.store.getWorkflow(dagID))?.status).toBe("cancelled")
+      yield* pollOnTestClock(
+        Effect.map(settlements(dual, dagID), (settled) => (settled.length > 0 ? true : undefined)),
+        "R2 did not settle the worktree of the workflow it cancelled",
+      )
+      const events = yield* dual.log(dagID)
+      expect(dual.r1.cancelled).toEqual([])
+
+      // R1 wakes up, its renewal finds the lease gone, and the reconciler reads the workflow: ended.
+      yield* frozen.release
+      yield* pollOnTestClock(
+        Effect.map(registered, (still) => (still ? undefined : true)),
+        describeRunner(dual, dual.r1, dagID).pipe(
+          Effect.map((state) => `R1 did not retire the entry of the workflow that R2 ended\n  ${state}`),
+        ),
+      )
+
+      // The child stops for how the workflow ended, not for the lease; nothing was evicted.
+      yield* pollOnTestClock(
+        Effect.sync(() => (dual.r1.cancelled.includes(gate.sessionID) ? true : undefined)),
+        "R1 did not abort its child after the workflow ended",
+      )
+      const reasons = dual.r1.childRuns.cancelled.map((entry) => entry.by)
+      expect(reasons).toContainEqual({ kind: "engine", reason: "control-cancel", actor: "parent-control" })
+      expect(reasons).not.toContainEqual({ kind: "engine", reason: "lease-lost", actor: "dag-lease" })
+      // It gave its claim back, which names R2 now: nothing to give.
+      expect(releases(dual.r1, dagID)).toEqual([{ operation: "release", dagID, answer: false }])
+      // The settlement happened once (R2's, the durable pointer made R1's a no-op), and R1 wrote nothing.
+      expect(yield* settlements(dual, dagID)).toHaveLength(1)
+      expect(yield* dual.log(dagID)).toEqual(events)
+
+      // The entry is gone for good: nothing renews the workflow any more, and the lease stays R2's.
+      const renewed = renewals(dual.r1, dagID)
+      for (let tick = 0; tick < 3; tick++) yield* TestClock.adjust(PERIOD)
+      expect(renewals(dual.r1, dagID)).toBe(renewed)
+      expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
+      yield* Deferred.succeed(gate.release, "late output")
+    }),
+  )
+
+  // When nobody else's handler hears of the end (the CLI or the host sweep ends a workflow in a process that drives
+  // nothing), the retirement is what settles the worktree and releases the registration of the parent session.
+  it.effect("an ended workflow that no handler settled is settled by the retirement, once", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual)
+      yield* pointAtMissingWorktree(dual, dagID)
+      const registered = Effect.map(
+        dual.r1.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }),
+        Option.isSome,
+      )
+
+      // R2 takes the lease and cancels the workflow, with no loop of its own to settle it: an end that no handler hears.
+      const frozen = yield* dual.r1.freeze()
+      yield* TestClock.adjust(PAST_TTL)
+      expect(yield* dual.r2.lease.claim({ dagID, runnerID: dual.r2.identity.id, now: yield* now })).toMatchObject({
+        epoch: 2,
+      })
+      yield* dual.r2.dag.cancel(dagID)
+      expect(yield* settlements(dual, dagID)).toHaveLength(0)
+      expect(yield* registered).toBe(true)
+
+      yield* frozen.release
+      const settled = yield* pollOnTestClock(
+        Effect.map(settlements(dual, dagID), (found) => (found.length > 0 ? found : undefined)),
+        describeRunner(dual, dual.r1, dagID).pipe(
+          Effect.map((state) => `R1 did not settle the worktree of the workflow that ended\n  ${state}`),
+        ),
+      )
+      yield* pollOnTestClock(
+        Effect.map(registered, (still) => (still ? undefined : true)),
+        "R1 kept its dag registration of the workflow that ended",
+      )
+
+      // The parent was woken (after the settlement, which the wake waits for), and nobody but R1 was there to do it.
+      yield* woken(dual, dagID, "R1 did not wake the parent of the workflow that ended")
+      // One settlement, the durable pointer set, and no second one however long R1 goes on.
+      expect(settled).toHaveLength(1)
+      expect((yield* dual.r2.store.getWorkflow(dagID))?.worktree).toMatchObject({ state: "removed" })
+      yield* letTheJudgementRun
+      expect(yield* settlements(dual, dagID)).toHaveLength(1)
+      expect(releases(dual.r1, dagID)).toHaveLength(1)
+      yield* Deferred.succeed(gate.release, "late output")
+    }),
+  )
+
+  // A workflow that is deleted (its session was, in another process: the rows cascade) has no terminal event anywhere.
+  it.effect("the entry of a workflow that was deleted is retired too", () =>
     Effect.gen(function* () {
       const dual = yield* makeDualRunner()
       const { dagID, gate } = yield* driveOnR1(dual)
@@ -552,29 +700,175 @@ describe("a lost lease is news for the reconciler, not an eviction by the lease 
       )
       expect(yield* registered).toBe(true)
 
-      // R1 stalls past its TTL, and R2 takes the workflow over and ends it.
-      const frozen = yield* dual.r1.freeze()
-      yield* TestClock.adjust(PAST_TTL)
-      yield* dual.r2.init
-      expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
-      yield* dual.r2.dag.cancel(dagID)
-      expect((yield* dual.r2.store.getWorkflow(dagID))?.status).toBe("cancelled")
+      yield* dual.r2.database.db.run(sql`DELETE FROM workflow WHERE id = ${dagID}`).pipe(Effect.orDie)
+      expect(yield* dual.r2.store.getWorkflow(dagID)).toBeUndefined()
 
-      // R1 wakes up, its renewal finds the lease gone, and the reconciler reads the workflow: ended.
-      const seen = dual.r1.leaseCalls.length
-      yield* frozen.release
-      yield* heldAfter(dual.r1, dagID, seen, 1)
-      // Whatever the judgement would have done after that read, it does it within these few turns of the clock.
-      for (let turn = 0; turn < 20; turn++) yield* TestClock.adjust("1 millis")
+      // The next tick: the renewal finds no row, and the reconciler finds no workflow.
+      yield* TestClock.adjust(PERIOD)
+      yield* pollOnTestClock(
+        Effect.map(registered, (still) => (still ? undefined : true)),
+        describeRunner(dual, dual.r1, dagID).pipe(
+          Effect.map((state) => `R1 did not retire the entry of the workflow that was deleted\n  ${state}`),
+        ),
+      )
+      const renewed = renewals(dual.r1, dagID)
+      for (let tick = 0; tick < 3; tick++) yield* TestClock.adjust(PERIOD)
+      expect(renewals(dual.r1, dagID)).toBe(renewed)
+      expect(releases(dual.r1, dagID)).toHaveLength(1)
+      yield* Deferred.succeed(gate.release, "late output")
+    }),
+  )
 
-      expect(dual.r1.leaseCalls.slice(seen)).toContainEqual({ operation: "renew", dagID, answer: false })
+  // `verify` finds no lease row for a workflow that ended, whoever the (raw) row names, so a spawn of a workflow that was
+  // cancelled elsewhere ends at its re-read with no child session, and the entry is retired: row 1 gives the settlement
+  // and the registration back, and the claim, which is R1's own here, is given back with them.
+  it.effect("a spawn whose re-read finds the workflow ended creates no child session, and the entry is retired", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual, chain)
+      yield* pointAtMissingWorktree(dual, dagID)
+      const registered = Effect.map(
+        dual.r1.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }),
+        Option.isSome,
+      )
       expect(yield* registered).toBe(true)
-      expect(dual.r1.cancelled).toEqual([])
-      expect(dual.r1.childRuns.cancelled.map((entry) => entry.by)).not.toContainEqual({
-        kind: "engine",
-        reason: "lease-lost",
-        actor: "dag-lease",
+
+      // The first read of the lease that R1 makes from here on is the re-read of the spawn of n2: park it there.
+      const rereading = yield* dual.r1.hold((publish) => publish.type === "dag.lease.held")
+      yield* Deferred.succeed(gate.release, "n1 output")
+      yield* rereading.reached
+      // Another process ends the workflow while the spawn is parked. R1's lease row is not touched.
+      yield* dual.r2.dag.cancel(dagID)
+      expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
+      const before = (yield* dual.log(dagID)).length
+      yield* rereading.release
+
+      const settled = yield* pollOnTestClock(
+        Effect.map(settlements(dual, dagID), (found) => (found.length > 0 ? found : undefined)),
+        describeRunner(dual, dual.r1, dagID).pipe(
+          Effect.map(
+            (state) => `R1 did not settle the worktree of the workflow whose spawn found it ended\n  ${state}`,
+          ),
+        ),
+      )
+      yield* pollOnTestClock(
+        Effect.map(registered, (still) => (still ? undefined : true)),
+        "R1 kept its dag registration of the workflow that ended",
+      )
+      yield* woken(dual, dagID, "R1 did not wake the parent of the workflow that ended")
+      yield* letTheJudgementRun
+
+      // No child session for n2; the only thing R1 wrote is the one settlement; its own claim was given back.
+      expect(dual.r1.created).toEqual([gate.sessionID])
+      expect(settled).toHaveLength(1)
+      expect((yield* dual.log(dagID)).slice(before).map((event) => event.type)).toEqual([
+        "dag.workflow.worktree_settled",
+      ])
+      expect(releases(dual.r1, dagID)).toEqual([{ operation: "release", dagID, answer: true }])
+      expect(yield* givenBackRow(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
+    }),
+  )
+
+  // The reconciler's verdict is as old as its reads, and the retirement waits for the entry's lock behind whatever holds it.
+  // A workflow that was reopened in the meantime (an extend or a recover by another runner) is live again, and its entry is
+  // not the ended workflow's: the retirement leaves it alone. Here the lease is another runner's, so the eviction that the
+  // refused write starts is what drops it, for the lost lease (no give-back, no settlement).
+  it.effect("a retirement that waited for the entry's lock finds the workflow live again and keeps the entry", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual, chain)
+      yield* pointAtMissingWorktree(dual, dagID)
+      const registered = Effect.map(
+        dual.r1.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }),
+        Option.isSome,
+      )
+      const setStatus = (status: string) =>
+        dual.r2.database.db
+          .run(sql`UPDATE workflow SET status = ${status} WHERE id = ${dagID}`)
+          .pipe(Effect.orDie, Effect.asVoid)
+
+      // The admission of n2 parks inside the handler of n1's completion, which holds the entry's lock.
+      const holding = yield* dual.r1.hold((publish) => publish.type === "dag.node.queued")
+      yield* Deferred.succeed(gate.release, "n1 output")
+      yield* holding.reached
+      // R2 takes the lease and the workflow ends, with no event on R1's bus.
+      yield* dual.expireLease(dagID)
+      expect(yield* dual.r2.lease.claim({ dagID, runnerID: dual.r2.identity.id, now: yield* now })).toMatchObject({
+        epoch: 2,
       })
+      yield* setStatus("cancelled")
+
+      // R1's renewal finds the lease gone and the reconciler judges the workflow ended: the retirement waits for the lock.
+      yield* TestClock.adjust(PERIOD)
+      yield* letTheJudgementRun
+      expect(yield* registered).toBe(true)
+      expect(releases(dual.r1, dagID)).toEqual([])
+      // The workflow is reopened while it waits.
+      yield* setStatus("running")
+      yield* holding.release
+
+      // The parked admission is refused by the fence, and the eviction it starts drops the entry. The retirement had the
+      // lock first, read a live workflow and did nothing: it gave no lease back and settled nothing.
+      yield* pollOnTestClock(
+        Effect.map(registered, (still) => (still ? undefined : true)),
+        describeRunner(dual, dual.r1, dagID).pipe(
+          Effect.map((state) => `R1 did not evict the entry of the workflow that was live again\n  ${state}`),
+        ),
+      )
+      yield* letTheJudgementRun
+      expect(releases(dual.r1, dagID)).toEqual([])
+      expect(yield* settlements(dual, dagID)).toEqual([])
+      expect(dual.r1.fenced.filter((write) => write.outcome === "refused")).toHaveLength(1)
+    }),
+  )
+
+  // The cleanup, the lease, the settlement and the wake of the parent happen once per entry, whichever of the terminal
+  // handler and the reconciler takes the entry's lock first. Here the handler does (the workflow is cancelled on R1's own
+  // bus) and the reconciler's evaluation, which had read the entry before the workflow ended, comes after it with a
+  // verdict made from a state that is gone: it finds the entry replaced by nothing and ends right there. A second
+  // retirement would give the lease back a second time (and settle, and wake, a second time).
+  it.effect("the terminal handler and the reconciler that both reach the entry retire it once", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual)
+      yield* pointAtMissingWorktree(dual, dagID)
+      const registered = Effect.map(
+        dual.r1.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }),
+        Option.isSome,
+      )
+      expect(yield* registered).toBe(true)
+
+      // R2 takes the lease while R1 is not looking: R1's next tick finds it lost, and the reconciler evaluates.
+      yield* dual.expireLease(dagID)
+      expect(yield* dual.r2.lease.claim({ dagID, runnerID: dual.r2.identity.id, now: yield* now })).toMatchObject({
+        epoch: 2,
+      })
+      // Park that evaluation at its read of the lease row: it has read the entry, and not the workflow row yet.
+      const evaluating = yield* dual.r1.hold((publish) => publish.type === "dag.lease.held")
+      yield* TestClock.adjust(PERIOD)
+      yield* evaluating.reached
+      // The workflow ends on R1's own bus (a cancel needs no lease): R1's terminal handler retires the entry.
+      yield* dual.r1.dag.cancel(dagID)
+      yield* pollOnTestClock(
+        Effect.map(registered, (still) => (still ? undefined : true)),
+        "R1's terminal handler did not retire the entry",
+      )
+      yield* pollOnTestClock(
+        Effect.map(settlements(dual, dagID), (found) => (found.length > 0 ? true : undefined)),
+        "R1's terminal handler did not settle the worktree",
+      )
+      yield* woken(dual, dagID, "R1's terminal handler did not wake the parent")
+      expect(releases(dual.r1, dagID)).toHaveLength(1)
+      const events = yield* dual.log(dagID)
+
+      // The evaluation goes on: it reads a workflow that ended, and its verdict is to retire the entry it saw.
+      yield* evaluating.release
+      yield* letTheJudgementRun
+
+      expect(releases(dual.r1, dagID)).toHaveLength(1)
+      expect(yield* settlements(dual, dagID)).toHaveLength(1)
+      expect(yield* dual.log(dagID)).toEqual(events)
+      expect(yield* registered).toBe(false)
       yield* Deferred.succeed(gate.release, "late output")
     }),
   )

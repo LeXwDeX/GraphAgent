@@ -604,7 +604,8 @@ wins.
   settlement and the wake of the parent (the reason of Amendment 1's "no eviction
   on a terminal workflow", which `refused` already keeps). Read before it, a missing
   lease row of an entry means that the workflow had already ended, and the workflow
-  row read afterwards says so: `noop`. A terminal workflow does not turn live in
+  row read afterwards says so: row 1 (`noop`; for an instance that has an entry for
+  it, 4b-C makes it `retire`, below). A terminal workflow does not turn live in
   between, bar the reopen of a completed one by an extend, which follows the
   terminal wake that the handler sends after it took the entry.
 - The eviction of row 3 (`RunnerLease.Interface.evict`) reads the lease row again
@@ -838,15 +839,16 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
   raises waits for it and finds the workflow failed. It would find the same without waiting.
 - `dag.ts` grows by 29 lines, the command and its comments.
 
-### Decisions 2 and 5: `verify` leaves a workflow that ended to its terminal handler (4b-C)
+### Decisions 2 and 5: `verify` does not evict a workflow that ended (4b-C)
 
 - `verify` answers as before: `false` when the lease row, read together with its workflow
   (`DagLease.held`), does not name the entry's token. A workflow that is terminal or deleted has
   no row for anybody, so that is its answer too.
 - What changed is what it does about `false`. It no longer evicts. It starts the reconciler's
-  judgement (the next section), and the truth table reads a workflow that ended as row 1, `noop`:
-  the entry stays for the `WorkflowTerminal` handler, which settles the worktree and wakes the
-  parent, as `refused` has left it since Amendment 1. When another holder shows, row 3 evicts it.
+  judgement (the next section), and the truth table reads a workflow that ended as row 1: the
+  entry is retired, with the settlement of the worktree and the wake of the parent ("Decision 6,
+  row 1", below), not evicted, as `refused` has left it alone since Amendment 1. When another
+  holder shows, row 3 evicts it.
   The spawn that asked ends either way: no child session, no node event.
 - This closes the departure that Amendment 1 recorded under "Decisions 2 and 5: no eviction on a
   terminal workflow" ("PR2's `verify` still evicts on a terminal workflow; bringing the two into
@@ -869,7 +871,7 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
   logged, and the next round, whose row 3 reads the same, looks again.
 - The verdict is `decide`'s. Another holder's row evicts through `RunnerLease.evict`, which reads
   the row again under the entry's lock (`stillLost`), as the renewal's own eviction did; a workflow
-  that ended or was deleted is row 1, and its entry is left to its terminal or deletion handler. A
+  that ended or was deleted is row 1, and its entry is retired ("Decision 6, row 1", below). A
   renewal that cannot read (a database failure) is still no lost lease.
 - Fallback. Without a `reconcile`, a lost lease is evicted on the spot, as in PR2 (from a fiber of
   the scope too, so the tick does not wait for it). A graph that builds `RunnerLease` with no
@@ -877,15 +879,54 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
   always passes one.
 - `refused` is unchanged. It has its own judgement (`heldByAnother`) and its own de-duplication,
   and it already leaves a workflow that ended alone.
-- Cost. When another process ended the workflow before this runner's renewal noticed the loss, the
-  entry stays here. The terminal event reaches the subscribers of the bus that published it, and
-  another process's bus is not this one, so no terminal handler runs in this process. The renewal
-  fails at every tick, each trigger ends in row 1, and the children that the entry started run to
-  their end (their writes are refused by the fence). Before 4b-C the first failed renewal evicted
-  it. When the workflow is still live at that renewal, which is the usual order (the other runner
-  took the lease and has not ended the workflow yet), the entry is evicted as before. A sweep that
-  settles such entries is not part of 4b-C.
+- Another process ended the workflow before this runner's renewal noticed the loss. The terminal event
+  reaches the subscribers of the bus that published it, and another process's bus is not this one, so no
+  terminal handler runs in this process, and the failed renewal is the only news. Judged as `noop`, as row 1 was
+  at first, the entry would stay: the renewal fails at every tick, each trigger ends in row 1, and the children
+  that the entry started run to their end, their writes refused by the fence. Row 1 retires the entry instead
+  (the next section). When the workflow is still live at that renewal, which is the usual order (the other
+  runner took the lease and has not ended the workflow yet), the entry is evicted by row 3, as before.
 - `loop.ts` grows by 3 lines, the wiring.
+
+### Decision 6, row 1: the entry of a workflow that ended is retired (4b-C)
+
+- The row. A workflow that is terminal or gone is judged first, as before, and the verdict now depends on
+  whether the instance has an entry for it: `retire` when it has, `noop` when it has not. Row 1 stays ahead of
+  row 2, so a workflow that ended is retired whoever owns it and whatever its lease row says. The table's row 1
+  reads "`retire` if the instance has an entry, else `noop`", as row 2 reads for `evict`.
+- Why. Terminal events do not cross processes: when another process ended the workflow, no handler in this
+  one hears of it, and the entry has no other way out (see "a lost lease is news", above). `retire` is that
+  way out. It does what the `WorkflowTerminal` handlers do for an event this process did hear of.
+- One routine, two callers. `retireTerminal` in `loop.ts` is the body of the `WorkflowTerminal` handlers,
+  moved, and the reconciler's `retire` input is the same routine; the action runs in the workflow's flight, as an
+  eviction does. Under the entry's `evalLock` it reads the workflow row again (a live row means that the news is
+  stale, a late terminal event or a verdict made before an extend reopened the workflow, and the entry stays),
+  checks that the entry is still the table's, stops the children that the node rows name, interrupts the fibers and
+  watchers and drops the entry. Then, outside the lock and only for the call that dropped it, it gives the lease
+  back (`abandon`), settles the worktree, releases the dag registration of the parent session and nudges its
+  wake. The reason the children are stopped for is the durable status (completed, failed, cancelled; a row that is
+  gone is a deleted session); it used to follow the event type of the handler, which is the same in every order
+  but a stale event for a workflow that has ended differently since.
+- Once. Whichever call takes the entry's lock first retires it, and the other finds the entry gone or replaced and
+  ends there: the lease, the settlement, the registration and the wake follow once per entry, whether the handler
+  or the reconciler is first. A terminal event that arrives after the retirement finds no entry and takes the
+  entry-less path of the handler, unchanged. Its settlement is the durable-fact write of decision 3 (4b-A):
+  `workflow.worktree` is write-once, so a second settlement is a no-op. Its wake is a nudge, a notification whose
+  authority is the durable wake ledger, so a second one delivers nothing new. When another process settled and
+  woke already, this runner's settlement and nudge are the same no-ops: one effective settlement and one wake per
+  ended workflow, whoever runs them.
+- A row that is gone (the session was deleted in another process and the rows cascaded) takes the same path.
+  There is nothing to settle (the seam finds no row), the node rows that name the children are gone with it, so
+  no child is named, and the fibers are interrupted; the registration is released and the claim given back. The
+  handler's treatment of an entry whose row is missing was this already.
+- Without a `retire` given to the reconciler (the scripted collaborators of `dag-reconciler.test.ts`) row 1 does
+  nothing, as it did. The loop always gives one.
+- Not changed. `refused` still leaves a workflow that ended alone, and so does a renewal that cannot read. A
+  workflow that another process ended while the lease row still names this runner (nobody took it over: a control
+  op needs no lease) is not news either, because that renewal succeeds: only `verify` at the next spawn hands it to
+  the reconciler, as before 4b-C.
+- `loop.ts` grows by 34 lines (2317 to 2351): the routine has its comments, and `settleWorkflowTerminal` moved up
+  ahead of the reconciler's construction.
 
 ### Decision 8: line counts of `loop.ts` (4b-A)
 
