@@ -797,6 +797,60 @@ describe("DagLoop nested compose expansion", () => {
     ),
   )
 
+  it.live("expands two nested slots that become ready together, one after the other, each once", () =>
+    runLoopTest(({ dag, loop, store, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* start(dag, route({}, "mapper"))
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        yield* Deferred.succeed(
+          split.release,
+          plan([item("a", "explore", { split: true }), item("b", "explore", { split: true })]),
+        )
+        const planning = yield* take(records, 2, "the nested split nodes did not start")
+        expect(planning.map((record) => record.title).sort()).toEqual([nestedSplit("a"), nestedSplit("b")].sort())
+        // Both plans are answered before either slot is expanded: the scheduler finds two slots ready at once, and
+        // expands the first (one expansion a round), whose replan brings it back for the second.
+        const two = plan([item("x", "explore"), item("y", "explore")])
+        yield* Deferred.succeed(named(planning, nestedSplit("a")).release, two)
+        yield* Deferred.succeed(named(planning, nestedSplit("b")).release, two)
+        const workers = yield* take(records, 4, "the nested workers did not start")
+        expect(workers.map((record) => record.title).sort()).toEqual(
+          [grandchild("a", "x"), grandchild("a", "y"), grandchild("b", "x"), grandchild("b", "y")].sort(),
+        )
+        for (const worker of workers) yield* Deferred.succeed(worker.release, findings(`${worker.title} says`))
+        const joins = yield* take(records, 2, "the nested join nodes did not start")
+        expect(joins.map((record) => record.title).sort()).toEqual([nestedJoin("a"), nestedJoin("b")].sort())
+        for (const record of joins) yield* Deferred.succeed(record.release, projectMap(`${record.title} joined`))
+        const outer = yield* awaitWithTimeout(Queue.take(records), "the join node did not start")
+        expect(outer.title).toBe(JOIN)
+        yield* Deferred.succeed(outer.release, projectMap("everything joined"))
+        const report = yield* awaitWithTimeout(Queue.take(records), "the downstream node did not start")
+        yield* Deferred.succeed(report.release, "done")
+        yield* completedWorkflow(store, dagID)
+        // One expansion for each slot: every node is there once.
+        const ids = (yield* store.getNodes(dagID)).map((row) => row.id)
+        expect(new Set(ids).size).toBe(ids.length)
+        expect(ids.sort()).toEqual(
+          [
+            "report",
+            "survey",
+            "survey--a",
+            "survey--a--split",
+            "survey--a--x",
+            "survey--a--y",
+            "survey--b",
+            "survey--b--split",
+            "survey--b--x",
+            "survey--b--y",
+            "survey--split",
+          ].sort(),
+        )
+        expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
+      }),
+    ),
+  )
+
   it.live("degrades a nested slot to its fallback worker when its plan fails, and the workflow carries on", () =>
     runLoopTest(({ dag, loop, store, records }) =>
       Effect.gen(function* () {
