@@ -6,9 +6,15 @@
  * installed in the isolated user hook chain, never in a tracked file).
  *
  * It ends a scenario at the model's first decisive call: a `task` call, or any
- * call that is not a plain read. Reads run for real on the fixture copy; a
- * decisive call is stopped before it runs (`continue:false` ends the turn), so
- * no sub-agent starts and no file changes. Every call is also appended to the
+ * call that is not a plain read. A decisive call is stopped before it runs
+ * (`continue:false` ends the turn), so no sub-agent starts and no file changes.
+ * Reads go through the dedicated read tools (read, grep, glob, list), which the
+ * host's `external_directory` denial keeps inside the fixture copy. The shell
+ * never runs here: a shell call that only reads is denied with a pointer to
+ * those tools and the turn goes on. Whether a command line is harmless cannot
+ * be proven by looking at it, and its output would go to a remote model, so
+ * the shell classification only records what the model meant to do; safety
+ * does not rest on it. Every call is also appended to the
  * audit file named by the first argument, for diagnosis. What the model did is
  * read back from the session transcript, not from this file.
  *
@@ -19,6 +25,15 @@ import { appendFileSync, readFileSync } from "node:fs"
 import { classifyCall, isDecisive, isRecord } from "./classify"
 
 const STOP = JSON.stringify({ continue: false, stopReason: "delegation-eval: the scenario is decided" })
+const SHELL_TOOLS = new Set(["bash", "shell"])
+const NO_SHELL = JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason:
+      "Shell commands do not run in this session. Use the read, grep, glob and list tools to look at files.",
+  },
+})
 
 function audit(file: string | undefined, entry: Record<string, unknown>) {
   if (!file) return
@@ -62,6 +77,7 @@ function main() {
     background: input.background,
   })
   if (decisive) console.log(STOP)
+  else if (SHELL_TOOLS.has(tool)) console.log(NO_SHELL)
 }
 
 main()

@@ -398,6 +398,16 @@ describe("stop hook", () => {
     }
   })
 
+  test("never runs the shell: a reading command is denied and the turn goes on", async () => {
+    for (const command of ["ls -la", "git log --oneline -5", "cat src/auth/login.ts"]) {
+      const denied = await run({ session_id: "s", tool_name: "bash", tool_input: { command } })
+      const out = JSON.parse(denied.out)
+      expect(out.continue, command).toBeUndefined()
+      expect(out.hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" })
+      expect(denied.lines).toHaveLength(1)
+    }
+  })
+
   test("lets the review command's own task through", async () => {
     const input = { command: "review", subagent_type: "review", background: true }
     const own = await run({
