@@ -6,8 +6,10 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { testRender, useRenderer } from "@opentui/solid"
+import type { Event } from "@graphagent/sdk"
 import { createSignal, onCleanup, onMount, type JSX, type ParentProps } from "solid-js"
 import { TuiKeybind } from "../../src/config/keybind"
+import { createTuiNotifications } from "../../src/attention/notify"
 import { setLanguage } from "../../src/i18n"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { DEFAULT_THEME } from "../../src/context/theme"
@@ -479,6 +481,91 @@ test("does not merge an expired dedupeKey", async () => {
     expect(toast().currentToast?.text).toBe("first")
     expect(toast().queued.map((entry) => entry.text)).toEqual(["second"])
   } finally {
+    clock.mockRestore()
+    app.renderer.destroy()
+  }
+})
+
+// The toast of a finished background run (#1058 7) is keyed by its sub-agent, so a second result of the same one inside ten
+// seconds is the same toast, with the second's text and click target, and its window starts over; later it is a new one.
+test("two results of one sub-agent inside ten seconds are one toast, refreshed by the second", async () => {
+  const { app, toast } = await renderToastStore()
+  const clock = spyOn(Date, "now").mockReturnValue(1_000)
+  const handlers: ((event: Event) => void)[] = []
+  const opened: string[][] = []
+  const dispose = createTuiNotifications({
+    event: {
+      on: (type, handler) => {
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- test double: the handler is kept for, and called with, the one event type it registered for.
+        if (type === "message.part.updated") handlers.push(handler as (event: Event) => void)
+        return () => {}
+      },
+    },
+    sessions: { get: (sessionID) => ({ title: sessionID, parentID: sessionID === "child" ? "root" : undefined }) },
+    attention: { notify: async () => ({}) },
+    subagent: {
+      toast: toast(),
+      viewing: () => "root",
+      currentRoot: () => "root",
+      task: () => ({ kind: "explore" }),
+      open: () => {},
+      openResult: (sessionID, messageID) => void opened.push([sessionID, messageID]),
+    },
+  })
+  const report = (endedAt: number): Event => ({
+    id: `event-${endedAt}`,
+    type: "message.part.updated",
+    properties: {
+      sessionID: "root",
+      time: endedAt,
+      part: {
+        id: `prt-${endedAt}`,
+        sessionID: "root",
+        messageID: `msg-${endedAt}`,
+        type: "text",
+        text: "<task_result>done</task_result>",
+        synthetic: true,
+        metadata: {
+          backgroundResult: {
+            childSessionID: "child",
+            status: "completed",
+            title: "scan",
+            initiator: "agent",
+            startedAt: 100,
+            endedAt,
+          },
+        },
+      },
+    },
+  })
+  const emit = (event: Event) => {
+    for (const handler of handlers) handler(event)
+  }
+  try {
+    emit(report(300))
+    const first = toast().currentToast
+    expect(first?.text).toBe("explore 已完成 · 点击查看")
+    expect(first?.dedupeKey).toBe("child")
+
+    // Four seconds on, the same sub-agent reports again: it is the toast that is showing, not one behind it.
+    clock.mockReturnValue(5_000)
+    emit(report(400))
+    expect(toast().currentToast?.id).toBe(first?.id)
+    expect(toast().queued).toHaveLength(0)
+    // The click goes where the later report is.
+    toast().currentToast?.onActivate?.()
+    expect(opened).toEqual([["root", "msg-400"]])
+
+    // The window ran from the second report: nine seconds later it is still one toast, and past ten it is a new one.
+    clock.mockReturnValue(14_000)
+    emit(report(500))
+    expect(toast().currentToast?.id).toBe(first?.id)
+    expect(toast().queued).toHaveLength(0)
+    clock.mockReturnValue(30_000)
+    emit(report(600))
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["explore 已完成 · 点击查看"])
+  } finally {
+    dispose()
     clock.mockRestore()
     app.renderer.destroy()
   }

@@ -5,7 +5,7 @@ import { BoxRenderable, InputRenderable, ScrollBoxRenderable, TextAttributes } f
 import { useTerminalDimensions } from "@opentui/solid"
 import { entries, groupBy, isDeepEqual } from "remeda"
 import * as fuzzysort from "fuzzysort"
-import { createEffect, createMemo, createSignal, For, on, onMount, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, onMount, Show, untrack, type JSX } from "solid-js"
 import { useTuiConfig } from "../config"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
@@ -24,10 +24,16 @@ export interface ListItem<T> {
   lead?: JSX.Element | string
   /** Trailing content such as a timestamp, shortcut, or state. */
   trail?: JSX.Element | string
-  /** One-line description shown below the selected item. */
-  description?: string
+  /** One-line description shown below the selected item; a list of lines shows one row each. */
+  description?: string | readonly string[]
   disabled?: boolean
   suggested?: boolean
+}
+
+/** The rows of an item's description: none for an empty one, and no empty rows. */
+function descriptionLines(description: string | readonly string[] | undefined): readonly string[] | undefined {
+  const lines = (typeof description === "string" ? [description] : (description ?? [])).filter((line) => line !== "")
+  return lines.length > 0 ? lines : undefined
 }
 
 export interface ListAction<T> {
@@ -40,7 +46,8 @@ export interface ListAction<T> {
 }
 
 export interface ListPanelProps<T> {
-  title: string
+  /** A string is measured and truncated by the shell; JSX is left to flex layout, as `PanelShell` takes it. */
+  title: JSX.Element | string
   command?: string
   items: readonly ListItem<T>[]
   /** Initial selection; also gets the current-value marker. */
@@ -54,6 +61,14 @@ export interface ListPanelProps<T> {
   activeTab?: string
   onTab?: (id: string) => void
   onSelect(item: ListItem<T>): void
+  /**
+   * Opts in to a selection that survives the items changing. The selection always follows its item (by `id`) when the
+   * item moves, and without this prop it starts over, at the current value or the first item, whenever `items`
+   * changes. With it, a change of `items` leaves the selection on its item (an item that is gone leaves it at the
+   * same place, cut to the list), and it starts over only when this value changes (or the template's own filter text,
+   * for a list it filters itself). For an owner that narrows the items itself: pass what it narrows by.
+   */
+  selectionKey?: string
   /** Fires on every filter edit with the remaining items; used by previewing panels. */
   onFilter?(value: string, items: readonly ListItem<T>[]): void
   /** Preview hook, used by panels such as the theme picker. */
@@ -93,7 +108,16 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     () => entries(groupBy(filtered(), (item) => item.group ?? "")) as [string, ListItem<T>[]][],
   )
   const flat = createMemo(() => grouped().flatMap(([, items]) => items))
-  const [selected, setSelected] = createSignal(initialIndex())
+  // The selection is an item, kept by its id; where it stands in `flat()` is looked up every time. An item that moves
+  // (the owner reorders its items, or a `group` that follows data regroups them) takes the selection with it. One that
+  // is gone leaves the selection at the place it had, cut to the list, and the effect below hands it to the item there.
+  const [selectedID, setSelectedID] = createSignal<string | undefined>(flat()[initialIndex()]?.id)
+  const selected = createMemo<number>((previous) => {
+    const items = flat()
+    const id = selectedID()
+    const index = id === undefined ? -1 : items.findIndex((item) => item.id === id)
+    return index >= 0 ? index : Math.min(previous, Math.max(0, items.length - 1))
+  }, initialIndex())
   const selectedItem = createMemo(() => flat()[selected()])
   const currentItem = createMemo(() => {
     const current = props.current
@@ -108,6 +132,17 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     return index >= 0 ? index : 0
   }
 
+  function select(index: number) {
+    setSelectedID(flat()[index]?.id)
+  }
+
+  /** Starts the selection over: on the current value, or the first item. */
+  function reset() {
+    const current = props.current
+    const index = current === undefined ? -1 : flat().findIndex((item) => isDeepEqual(item.value, current))
+    select(index >= 0 ? index : 0)
+  }
+
   // The initial selection is derived from the current value before the first paint.
   createEffect(
     on(
@@ -115,27 +150,36 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
       (current) => {
         if (current === undefined) return
         const index = flat().findIndex((item) => isDeepEqual(item.value, current))
-        if (index >= 0) setSelected(index)
+        if (index >= 0) select(index)
       },
       { defer: true },
     ),
   )
 
+  // A list that did not ask to keep its selection (no `selectionKey`) starts over whenever its items change. One that did
+  // starts over when its key changes, or the filter text the template matches the items by (an owner that narrows
+  // them itself matches nothing here, so only its key counts).
+  const resetKey = createMemo(() =>
+    props.selectionKey === undefined
+      ? undefined
+      : `${filterEnabled() && clientFilter() ? filter() : ""}\u0000${props.selectionKey}`,
+  )
+  createEffect(on(resetKey, () => reset(), { defer: true }))
   createEffect(
     on(
       filtered,
       () => {
-        const current = props.current
-        const index = current === undefined ? -1 : flat().findIndex((item) => isDeepEqual(item.value, current))
-        setSelected(index >= 0 ? Math.min(index, Math.max(0, flat().length - 1)) : 0)
+        if (props.selectionKey === undefined) reset()
       },
       { defer: true },
     ),
   )
 
+  // The place of a selection whose item is gone is now another item's: that one is the selected item from here on,
+  // so a later move of it is followed too.
   createEffect(() => {
-    if (selected() < flat().length) return
-    setSelected(Math.max(0, flat().length - 1))
+    const id = flat()[selected()]?.id
+    if (id !== undefined && id !== untrack(selectedID)) setSelectedID(id)
   })
 
   onMount(() => {
@@ -158,9 +202,9 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     const items = flat()
     if (items.length === 0) return
     const index = ((next % items.length) + items.length) % items.length
-    setSelected(index)
     const item = items[index]
     if (!item) return
+    setSelectedID(item.id)
     if (preview) props.onMove?.(item)
     scrollTo(item)
   }
@@ -308,12 +352,17 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                     const index = () => flat().findIndex((candidate) => candidate.id === item.id)
                     const isSelected = () => flat()[selected()]?.id === item.id
                     const isCurrent = () => currentItem()?.id === item.id
+                    // The ref is the item's own column, the row with the lines of its description under it, so that
+                    // scrolling it into view takes the lines along.
                     return (
-                      <>
+                      <box
+                        ref={(element: BoxRenderable) => {
+                          rowRefs.set(item.id, element)
+                        }}
+                        flexDirection="column"
+                        flexShrink={0}
+                      >
                         <box
-                          ref={(element: BoxRenderable) => {
-                            rowRefs.set(item.id, element)
-                          }}
                           height={1}
                           flexShrink={0}
                           flexDirection="row"
@@ -348,12 +397,18 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                             </text>
                           </Show>
                         </box>
-                        <Show when={isSelected() && item.description}>
-                          <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
-                            {truncateCells(item.description!, descriptionBudget(), ambiguousWidth())}
-                          </text>
+                        <Show when={isSelected() && descriptionLines(item.description)}>
+                          {(lines) => (
+                            <For each={lines()}>
+                              {(line) => (
+                                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                                  {truncateCells(line, descriptionBudget(), ambiguousWidth())}
+                                </text>
+                              )}
+                            </For>
+                          )}
                         </Show>
-                      </>
+                      </box>
                     )
                   }}
                 </For>

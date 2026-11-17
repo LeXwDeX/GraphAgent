@@ -34,3 +34,13 @@ exports[`keeps the path and the position inside 80 columns in en at ambiguous_wi
 " ◇─◆ GraphAgent › Upgrade the toolc… › … › ● explore  subagent 3/12  ←→         
 "
 `;
+
+exports[`a background run's path ends with its tag in the muted color of the description, and a foreground run's does not 1`] = `
+" ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更 · 后台        Claude Sonnet 4.5 · high · 上下文 24% 
+"
+`;
+
+exports[`a run that was moved to the background says so, in both languages 1`] = `
+" ◇─◆ GraphAgent › Upgrade the toolchain and every dependency › ● explore · scan for breaking changes · background                           
+"
+`;

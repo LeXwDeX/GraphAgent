@@ -224,13 +224,13 @@ test("everything a sub-agent view offers is touched and no request is written", 
     }
     expect(app.writes()).toEqual([])
 
-    // The wheel, and ← → between the two sub-agents.
+    // The wheel, and ← → between the two sub-agents. No state is known for either, so the list has the newer one first.
     await app.setup.mockMouse.scroll(30, 10, "up")
     await app.setup.mockMouse.scroll(30, 10, "down")
     app.setup.mockInput.pressArrow("right")
-    await waitForFrame(app.setup, (value) => value.includes("子 agent 2/2"), "the second sub-agent")
+    await waitForFrame(app.setup, (value) => value.includes("子 agent 1/2"), "the second sub-agent")
     app.setup.mockInput.pressArrow("left")
-    await waitForFrame(app.setup, (value) => value.includes("子 agent 1/2"), "the first sub-agent")
+    await waitForFrame(app.setup, (value) => value.includes("子 agent 2/2"), "the first sub-agent")
     expect(app.writes()).toEqual([])
 
     // Escape goes back to the parent session: it is no interrupt of the sub-agent.

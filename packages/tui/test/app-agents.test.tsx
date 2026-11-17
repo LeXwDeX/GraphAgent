@@ -7,12 +7,13 @@ import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk"
 import { setLanguage } from "../src/i18n"
 import { cellWidth } from "../src/ui/width"
 import { PROMPT_MARK, captureFrame, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
+import { assistantMessage, textPart, userMessage } from "./fixture/session-records"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
 // The real app against a fake server: `/agents` in a main session and in a sub-agent view, what opening it asks the
 // server, where its action leads, and the footer toast a sub-agent leaves when the user is not looking at it
-// (#1033 5, 6).
+// (#1033 5, 6; #1058 6, 7).
 
 const rootID = "ses_agents_root"
 const alphaID = "ses_agents_a"
@@ -24,7 +25,9 @@ afterEach(() => {
   setLanguage("zh-CN")
 })
 
-// `a` and `b` were created at the same instant, so their ids settle the order; `c` is the newest.
+// `a` and `b` were created at the same instant, so their ids settle the order; `c` is the newest. The list is not in
+// that order but in groups: `b` and `c` are background runs (no state is known for either, which is the cold-start
+// look, and the background group holds them), then `a`, the foreground one, whose state is not known either.
 const tree = [
   sessionFixture(rootID, { title: "发布准备" }),
   sessionFixture(alphaID, { parentID: rootID, time: { created: 10, updated: 11 } }),
@@ -67,8 +70,63 @@ function taskPart(childID: string, description: string, background = false): Too
   }
 }
 
-/** The fake server's side: the root's transcript with the three Task links, and a record of the messages read. */
-function server() {
+/**
+ * The message the server adds to the main session when a background run ends: a synthetic text part whose metadata
+ * names the child and how it ended.
+ */
+function resultMessage(childID: string, endedAt = 300) {
+  return {
+    id: `msg_agents_result_${childID}_${endedAt}`,
+    sessionID: rootID,
+    role: "user" as const,
+    time: { created: endedAt },
+    agent: "plan",
+    model: { providerID: "test", modelID: "test-model" },
+  }
+}
+
+function resultPart(childID: string, status: "completed" | "error" | "interrupted" = "completed", endedAt = 300) {
+  return {
+    id: `prt_agents_result_${childID}_${endedAt}`,
+    sessionID: rootID,
+    messageID: resultMessage(childID, endedAt).id,
+    type: "text" as const,
+    synthetic: true,
+    text: `<task id="${childID}" state="${status}">\n<task_result>\nInspected.\n</task_result>\n</task>`,
+    metadata: {
+      backgroundResult: {
+        childSessionID: childID,
+        status,
+        title: "Inspect",
+        initiator: "agent",
+        startedAt: 100,
+        endedAt,
+      },
+    },
+  }
+}
+
+/** The result as it arrives live: the event of the part the server just wrote. */
+function resultEvent(
+  childID: string,
+  status: "completed" | "error" | "interrupted" = "completed",
+  endedAt = 300,
+): GlobalEvent {
+  return {
+    directory,
+    payload: {
+      id: `evt_agents_result_${childID}_${endedAt}`,
+      type: "message.part.updated",
+      properties: { sessionID: rootID, time: endedAt, part: resultPart(childID, status, endedAt) },
+    },
+  }
+}
+
+/**
+ * The fake server's side: the root's transcript with the three Task links, and a record of the messages read. A
+ * `snapshot` of results is in the transcript the server answers with: what a load, a hydration or a reconnect brings.
+ */
+function server(snapshot: readonly { childID: string; status?: "completed" | "error" | "interrupted" }[] = []) {
   const messageReads: string[] = []
   const handler: FetchHandler = (url, request) => {
     if ((request?.method ?? "GET") === "GET") {
@@ -85,11 +143,60 @@ function server() {
             taskPart(charlieID, "Inspect charlie", true),
           ],
         },
+        ...snapshot.map((each) => ({
+          info: resultMessage(each.childID),
+          parts: [resultPart(each.childID, each.status)],
+        })),
       ])
     }
     return undefined
   }
   return { handler, messageReads, childReads: () => messageReads.filter((id) => id !== rootID) }
+}
+
+const HEAD_TEXT = "HEAD-QUESTION"
+const TAIL_TEXT = "TAIL-ANSWER"
+
+/**
+ * The fake server's side for a main session with a long transcript: a question at the head, the Task calls, answers,
+ * the report of bravo's run (drawn as its result card) in the middle, then answers up to the last one. Long enough that
+ * the head, the card and the last answer are never on screen together. Messages are ordered by id: the answers before
+ * the report are `msg_agents_q_*`, the ones after it `msg_agents_z_*`.
+ */
+function longServer() {
+  const messageReads: string[] = []
+  const answers = Array.from({ length: 30 }, (_, index) => {
+    const id = `msg_agents_${index < 15 ? "q" : "z"}_${String(index).padStart(2, "0")}`
+    const text = `${index === 29 ? `${TAIL_TEXT}: nothing is left.` : `Answer ${index}`}\nsecond line\nthird line\nfourth line`
+    return {
+      info: assistantMessage(id, rootID, "msg_agents_000", 20 + index),
+      parts: [textPart(id, rootID, `prt_${id}`, text)],
+    }
+  })
+  const handler: FetchHandler = (url, request) => {
+    if ((request?.method ?? "GET") === "GET") {
+      const read = url.pathname.match(/^\/session\/([^/]+)\/message$/)
+      if (read) messageReads.push(read[1])
+    }
+    if (url.pathname !== `/session/${rootID}/message`) return undefined
+    return json([
+      {
+        info: userMessage("msg_agents_000", rootID, 5),
+        parts: [textPart("msg_agents_000", rootID, "prt_agents_head", `${HEAD_TEXT}: what is left to review?`)],
+      },
+      {
+        info: assistant,
+        parts: [
+          taskPart(alphaID, "Inspect alpha"),
+          taskPart(bravoID, "Inspect bravo", true),
+          taskPart(charlieID, "Inspect charlie", true),
+        ],
+      },
+      { info: resultMessage(bravoID), parts: [resultPart(bravoID)] },
+      ...answers,
+    ])
+  }
+  return { handler, messageReads }
 }
 
 function english(inner: FetchHandler): FetchHandler {
@@ -170,7 +277,7 @@ function permissionEvent(sessionID: string): GlobalEvent {
   }
 }
 
-test("/agents lists the sub-agents of the main session in walking order and loads none of them", async () => {
+test("/agents lists the sub-agents of the main session in the order of its groups and loads none of them", async () => {
   const fake = server()
   const app = await runApp({
     sessions: tree,
@@ -190,9 +297,15 @@ test("/agents lists the sub-agents of the main session in walking order and load
       "the sub-agent list",
     )
     expect(frame).not.toContain(PROMPT_MARK)
-    const order = ["Inspect alpha", "Inspect bravo", "Inspect charlie"].map((text) => frame.indexOf(text))
+    // The two background runs first, newest start first (they began together: the id settles it), then the other.
+    // (The transcript above the list names them too, in the order of the calls: only the list's own rows count.)
+    const order = ["explore · Inspect bravo", "explore · Inspect charlie", "explore · Inspect alpha"].map((text) =>
+      frame.indexOf(text),
+    )
     expect(order).toEqual([...order].sort((left, right) => left - right))
     expect(order.every((position) => position > 0)).toBe(true)
+    expect(frame).toContain("后台")
+    expect(frame).toContain("已结束")
     // No status was ever reported: no state to say, no tool count, and the time the session has.
     expect(frame).toContain("— · 工具 — ·")
     expect(frame).not.toContain("已完成")
@@ -229,7 +342,7 @@ test("enter in the list goes into the chosen sub-agent, which only then is loade
     app.setup.mockInput.pressArrow("down")
     await app.setup.renderOnce()
     app.setup.mockInput.pressEnter()
-    await waitFor(() => fake.childReads().includes(bravoID))
+    await waitFor(() => fake.childReads().includes(charlieID))
     const frame = await waitForFrame(
       app.setup,
       (value) => !value.includes(PROMPT_MARK) && !value.includes("筛选…"),
@@ -237,7 +350,7 @@ test("enter in the list goes into the chosen sub-agent, which only then is loade
     )
     // A sub-agent view has no input; the one the user chose is the only session that was loaded.
     expect(frame).not.toContain(PROMPT_MARK)
-    expect(fake.childReads()).toEqual([bravoID])
+    expect(fake.childReads()).toEqual([charlieID])
     expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
@@ -271,7 +384,8 @@ test("asking the main agent adds to the draft instead of replacing it, and submi
     )
     expect(frame).toContain("first, release notes")
     const [input] = textareas(app.setup)
-    expect(input?.plainText).toBe("first, release notes\nPlease handle the subagent explore · Inspect bravo:")
+    // The second row is a background run whose state nobody knows yet: the plain request, not a cancel.
+    expect(input?.plainText).toBe("first, release notes\nPlease handle the subagent explore · Inspect charlie:")
     expect(app.setup.renderer.currentFocusedRenderable).toBe(input)
     // Nothing was sent, not the draft and not a stop: the user reads it, edits it and decides.
     expect(app.writes()).toEqual([])
@@ -311,7 +425,7 @@ test("the list opens in a sub-agent view too, and asking from there ends in the 
       "the main session's input",
     )
     const [input] = textareas(app.setup)
-    expect(input?.plainText).toBe("Please handle the subagent explore · Inspect alpha:")
+    expect(input?.plainText).toBe("Please handle the subagent explore · Inspect bravo:")
     expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
@@ -329,7 +443,7 @@ function locate(frame: string, text: string) {
   return { row, column: row < 0 ? -1 : cellWidth(rows[row].slice(0, rows[row].indexOf(text))) }
 }
 
-test("a background sub-agent that finishes while the user is in the main session leaves a toast that goes into it", async () => {
+test("a background run that ends while the user is in the main session leaves a toast, which a click on leaves where it is", async () => {
   const fake = server()
   const app = await runApp({
     sessions: tree,
@@ -343,15 +457,142 @@ test("a background sub-agent that finishes while the user is in the main session
     await waitFor(() => fake.messageReads.includes(rootID))
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
 
+    // The report arrives; the sub-agent's own status events are not what makes the toast.
     app.events.emit(sessionEvent("busy", charlieID))
     app.events.emit(sessionEvent("idle", charlieID))
-    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成"), "the reminder")
+    for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
+    expect(await captureFrame(app.setup)).not.toContain("explore 已完成")
+
+    app.events.emit(resultEvent(charlieID))
+    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成 · 点击查看"), "the reminder")
     expect(fake.childReads()).toEqual([])
 
-    const { row, column } = locate(frame, "explore 已完成")
+    // The result card is in the main session, where the user is: the click goes there, and not into the sub-agent.
+    const { row, column } = locate(frame, "explore 已完成 · 点击查看")
     await app.setup.mockMouse.click(column + 2, row)
-    await waitFor(() => fake.childReads().includes(charlieID))
-    await waitForFrame(app.setup, (value) => !value.includes(PROMPT_MARK), "the sub-agent view")
+    for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
+    expect(await captureFrame(app.setup)).toContain(PROMPT_MARK)
+    expect(fake.childReads()).toEqual([])
+    expect(app.writes()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("a click on the toast takes the main session's transcript to the report's card; a later report keeps the toast, and a click on it goes where that report is", async () => {
+  const fake = longServer()
+  const app = await runApp({
+    sessions: tree,
+    args: { sessionID: rootID },
+    width: 120,
+    height: 30,
+    handler: fake.handler,
+  })
+  try {
+    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitFor(() => fake.messageReads.includes(rootID))
+    await waitForFrame(app.setup, (frame) => frame.includes(TAIL_TEXT), "the end of the transcript")
+
+    // The reader has gone back to the head of the transcript when the report arrives.
+    const atHead = (frame: string) => frame.includes(HEAD_TEXT) && !frame.includes(TAIL_TEXT)
+    const atEnd = (frame: string) => frame.includes(TAIL_TEXT) && !frame.includes(HEAD_TEXT)
+    const atCard = (frame: string) =>
+      frame.includes("Inspected.") && !frame.includes(HEAD_TEXT) && !frame.includes(TAIL_TEXT)
+    const toast = "explore 已完成 · 点击查看"
+    app.setup.mockInput.pressKey("g", { ctrl: true })
+    await waitForFrame(app.setup, atHead, "the head of the transcript")
+    app.events.emit(resultEvent(bravoID))
+    const first = await waitForFrame(app.setup, (value) => value.includes(toast) && atHead(value), "the reminder")
+    const place = locate(first, toast)
+    await app.setup.mockMouse.click(place.column + 2, place.row)
+    await waitForFrame(app.setup, atCard, "the result card, where the click took the reader")
+
+    // The reader goes back to the head. The same sub-agent reports again: one toast, which stays for another while. Only
+    // the part of this report has arrived, not its message, so it has no card yet and the click takes the reader to
+    // the end of the transcript, where it will be.
+    app.setup.mockInput.pressKey("g", { ctrl: true })
+    await waitForFrame(app.setup, atHead, "the head of the transcript again")
+    app.events.emit(resultEvent(bravoID, "completed", 301))
+    const second = await waitForFrame(
+      app.setup,
+      (value) => value.includes(toast) && atHead(value),
+      "the reminder again",
+    )
+    expect(second.split(toast).length - 1).toBe(1)
+    const again = locate(second, toast)
+    await app.setup.mockMouse.click(again.column + 2, again.row)
+    await waitForFrame(app.setup, atEnd, "the end of the transcript, a second time")
+    expect(app.writes()).toEqual([])
+    expect(fake.messageReads.filter((id) => id !== rootID)).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("from a sub-agent view a click on the toast goes to the main session, in both languages, and sends nothing", async () => {
+  for (const language of ["zh-CN", "en"] as const) {
+    const fake = server()
+    const app = await runApp({
+      sessions: tree,
+      args: { sessionID: alphaID },
+      width: 120,
+      height: 30,
+      handler: language === "en" ? english(fake.handler) : fake.handler,
+    })
+    try {
+      await waitFor(() => fake.messageReads.includes(alphaID))
+      await waitFor(() => fake.messageReads.includes(rootID))
+      for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
+
+      app.events.emit(resultEvent(bravoID, "error"))
+      const text = language === "en" ? "explore did not finish · click to view" : "explore 未完成 · 点击查看"
+      const frame = await waitForFrame(app.setup, (value) => value.includes(text), "the reminder")
+      expect(frame).not.toContain(PROMPT_MARK)
+
+      const { row, column } = locate(frame, text)
+      await app.setup.mockMouse.click(column + 2, row)
+      await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the main session")
+      expect(app.writes()).toEqual([])
+    } finally {
+      clearDrafts(app.setup)
+      await app.stop()
+    }
+  }
+})
+
+test("what a load or a reconnect brings is no event: a result already in the transcript leaves no toast, nor does it again", async () => {
+  const fake = server([{ childID: charlieID }])
+  const app = await runApp({
+    sessions: tree,
+    args: { sessionID: rootID },
+    width: 120,
+    height: 30,
+    handler: fake.handler,
+  })
+  try {
+    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitFor(() => fake.messageReads.includes(rootID))
+    for (let pass = 0; pass < 10; pass++) await app.setup.renderOnce()
+    // Loaded with the transcript: the data layer knows the run is over, and nobody says so in the footer.
+    expect(await captureFrame(app.setup)).not.toContain("explore 已完成")
+
+    // The connection drops and comes back; the transcript is read again.
+    const reads = fake.messageReads.length
+    app.events.reconnect()
+    await waitFor(() => fake.messageReads.length > reads)
+    for (let pass = 0; pass < 10; pass++) await app.setup.renderOnce()
+    expect(await captureFrame(app.setup)).not.toContain("explore 已完成")
+
+    // A result that arrives as an event is announced, once: the same part again (redelivered after the reconnect) is not.
+    app.events.emit(resultEvent(bravoID, "completed", 700))
+    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成 · 点击查看"), "the reminder")
+    expect(frame.split("explore 已完成 · 点击查看").length - 1).toBe(1)
+    app.events.reconnect()
+    app.events.emit(resultEvent(bravoID, "completed", 700))
+    for (let pass = 0; pass < 10; pass++) await app.setup.renderOnce()
+    expect((await captureFrame(app.setup)).split("explore 已完成 · 点击查看").length - 1).toBe(1)
     expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
@@ -434,7 +675,7 @@ test("a sub-agent that asks for permission leaves a toast too, in English as wel
   }
 })
 
-test("the sub-agent the user is looking at leaves no toast", async () => {
+test("the sub-agent the user is looking at leaves no toast, and another one's result does", async () => {
   const fake = server()
   const app = await runApp({
     sessions: tree,
@@ -448,17 +689,13 @@ test("the sub-agent the user is looking at leaves no toast", async () => {
     await waitFor(() => fake.messageReads.includes(rootID))
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
 
-    app.events.emit(sessionEvent("busy", charlieID))
-    app.events.emit(sessionEvent("idle", charlieID))
+    app.events.emit(resultEvent(charlieID))
     // Another background sub-agent that is not on screen does leave one: the reminder works, it is only quiet for this
     // one. Its toast would have come second, so the click below also shows the first never was.
-    app.events.emit(sessionEvent("busy", bravoID))
-    app.events.emit(sessionEvent("idle", bravoID))
+    app.events.emit(resultEvent(bravoID))
     const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成"), "the other reminder")
     expect(frame.split("explore 已完成").length - 1).toBe(1)
-    const { row, column } = locate(frame, "explore 已完成")
-    await app.setup.mockMouse.click(column + 2, row)
-    await waitFor(() => fake.childReads().includes(bravoID))
+    expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
     await app.stop()

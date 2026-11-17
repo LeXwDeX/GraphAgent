@@ -47,8 +47,16 @@ function status(sessionID: string, type: "busy" | "idle") {
   return event("session.status", { sessionID, status: { type } })
 }
 
-/** The Task part of the parent that started `childSessionID`: the summary layer links the two through it. */
-function taskPart(childSessionID: string, kind: string, description: string) {
+/**
+ * The Task part of the parent that started `childSessionID`: the summary layer links the two through it. A background
+ * run says so in the metadata of its part, and one that was moved there while it ran says that too.
+ */
+function taskPart(
+  childSessionID: string,
+  kind: string,
+  description: string,
+  mode: { background?: boolean; promoted?: boolean } = {},
+) {
   return event("message.part.updated", {
     sessionID: rootID,
     time: 12,
@@ -64,7 +72,11 @@ function taskPart(childSessionID: string, kind: string, description: string) {
         title: description,
         input: { description, subagent_type: kind },
         time: { start: 12 },
-        metadata: { sessionID: childSessionID },
+        metadata: {
+          sessionID: childSessionID,
+          ...(mode.background ? { background: true } : {}),
+          ...(mode.promoted ? { promoted: true } : {}),
+        },
       },
     },
   })
@@ -315,7 +327,7 @@ const sibling = (id: string, created: number, agent: string) =>
     time: { created, updated: created + 1 },
   })
 
-test("the top bar counts the sub-agent among its siblings in the order ←→ walks, and the footer offers the switch", async () => {
+test("the top bar counts the sub-agent among its siblings in the order of the list that ←→ walks, and the footer offers the switch", async () => {
   const siblings = [
     root,
     sibling("ses_sub_c", 30, "review"),
@@ -324,11 +336,12 @@ test("the top bar counts the sub-agent among its siblings in the order ←→ wa
   ]
   const app = await runApp({ sessions: siblings, args: { sessionID: "ses_sub_a" }, width: 120, height: 30 })
   try {
-    const first = await waitForFrame(app.setup, (frame) => topRow(frame).includes("子 agent 1/3"), "the position")
+    // Nothing is known of any state: newest start first, so explore (created first) is the last of three.
+    const first = await waitForFrame(app.setup, (frame) => topRow(frame).includes("子 agent 3/3"), "the position")
     expect(topRow(first)).toContain("←→")
     expect(footerRow(first)).toContain("←→ 切换")
 
-    // Created 10, 20, 30: explore, general, review. Right walks that order and wraps; left goes back.
+    // The list is review, general, explore. Right walks it and wraps; left goes back.
     const seen: string[] = []
     let previous = topRow(first)
     for (const key of ["right", "right", "right", "left"] as const) {
@@ -337,11 +350,43 @@ test("the top bar counts the sub-agent among its siblings in the order ←→ wa
       previous = topRow(frame)
       seen.push(frame)
     }
-    expect(seen.map((frame) => /子 agent (\d)\/3/.exec(topRow(frame))?.[1])).toEqual(["2", "3", "1", "3"])
-    expect(topRow(seen[0] ?? "")).toContain("general")
-    expect(topRow(seen[1] ?? "")).toContain("review")
+    expect(seen.map((frame) => /子 agent (\d)\/3/.exec(topRow(frame))?.[1])).toEqual(["1", "2", "3", "2"])
+    expect(topRow(seen[0] ?? "")).toContain("review")
+    expect(topRow(seen[1] ?? "")).toContain("general")
     expect(topRow(seen[2] ?? "")).toContain("explore")
-    expect(topRow(seen[3] ?? "")).toContain("review")
+    expect(topRow(seen[3] ?? "")).toContain("general")
+    expect(app.writes()).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a background run that runs is the first of the list: the position and the walk follow its state as it moves", async () => {
+  const siblings = [
+    root,
+    sibling("ses_sub_c", 30, "review"),
+    sibling("ses_sub_a", 10, "explore"),
+    sibling("ses_sub_b", 20, "general"),
+  ]
+  const app = await runApp({ sessions: siblings, args: { sessionID: "ses_sub_b" }, width: 120, height: 30 })
+  try {
+    await waitForFrame(app.setup, (frame) => topRow(frame).includes("子 agent 2/3"), "the position by creation")
+
+    // It is a background run that runs: it moves to the front of the list, and the position says so.
+    app.events.emit(taskPart("ses_sub_b", "general", "general 任务", { background: true }))
+    app.events.emit(status("ses_sub_b", "busy"))
+    const front = await waitForFrame(app.setup, (frame) => topRow(frame).includes("子 agent 1/3"), "the new position")
+    expect(topRow(front)).toContain("general")
+
+    // Right goes to the next of the list (review, then explore), and wraps back to the run.
+    const order: string[] = []
+    for (let step = 0; step < 3; step++) {
+      const before = topRow(await settled(app.setup))
+      app.setup.mockInput.pressArrow("right")
+      const frame = await waitForFrame(app.setup, (next) => topRow(next) !== before, "the next sub-agent")
+      order.push(/子 agent (\d)\/3/.exec(topRow(frame))?.[1] ?? "")
+    }
+    expect(order).toEqual(["2", "3", "1"])
     expect(app.writes()).toEqual([])
   } finally {
     await app.stop()
@@ -389,3 +434,96 @@ test("clicking a middle segment opens that sub-agent", async () => {
     await app.stop()
   }
 })
+
+// ── the tag of a background run in the top bar (#1058 8) ───────────────────────────────────────────────────────
+
+test("a background run's view has the tag after its description; a foreground run's has none", async () => {
+  const app = await runApp({ sessions, args: { sessionID: childID }, width: 120, height: 30 })
+  try {
+    const first = await waitForFrame(app.setup, (frame) => frame.includes("只读"), "the sub-agent footer")
+    // A sub-agent whose Task call is not known, or one the main agent waits for, is not tagged.
+    expect(topRow(first)).toContain("› explore · 扫描破坏性变更")
+    expect(topRow(first)).not.toContain("后台")
+    app.events.emit(taskPart(childID, "explore", "扫描破坏性变更"))
+    expect(topRow(await settled(app.setup))).not.toContain("后台")
+
+    app.events.emit(taskPart(childID, "explore", "扫描破坏性变更", { background: true }))
+    const tagged = await waitForFrame(app.setup, (frame) => topRow(frame).includes("· 后台"), "the tag")
+    expect(topRow(tagged)).toContain("› explore · 扫描破坏性变更 · 后台")
+    // The tag is the muted text of the description's own color, and the footer says nothing of it.
+    expect(footerRow(tagged)).not.toContain("后台")
+
+    // A run that was moved there while it ran says that.
+    app.events.emit(taskPart(childID, "explore", "扫描破坏性变更", { background: true, promoted: true }))
+    const moved = await waitForFrame(app.setup, (frame) => topRow(frame).includes("后台（已转）"), "the moved tag")
+    expect(topRow(moved)).toContain("› explore · 扫描破坏性变更 · 后台（已转）")
+    expect(app.writes()).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("says the tag in English too", async () => {
+  const app = await runApp({
+    sessions,
+    args: { sessionID: childID },
+    width: 120,
+    height: 30,
+    handler: (url) => (url.pathname === "/config" ? json({ language: "en" }) : undefined),
+  })
+  try {
+    await waitForFrame(app.setup, (frame) => frame.includes("read-only"), "the English footer")
+    app.events.emit(taskPart(childID, "explore", "scan", { background: true }))
+    const tagged = await waitForFrame(app.setup, (frame) => topRow(frame).includes("· background"), "the tag")
+    expect(topRow(tagged)).toContain("› explore · scan · background")
+    app.events.emit(taskPart(childID, "explore", "scan", { background: true, promoted: true }))
+    const moved = await waitForFrame(
+      app.setup,
+      (frame) => topRow(frame).includes("background (moved)"),
+      "the moved tag",
+    )
+    expect(topRow(moved)).toContain("› explore · scan · background (moved)")
+  } finally {
+    await app.stop()
+  }
+})
+
+for (const language of ["zh-CN", "en"] as const) {
+  for (const ambiguousWidth of [1, 2] as const) {
+    test(`the tag fits 80 columns in ${language} at ambiguous_width ${ambiguousWidth}, and the top bar never overflows`, async () => {
+      const app = await runApp({
+        sessions: language === "en" ? [longRootEn, longChildEn] : [longRoot, longChild],
+        args: { sessionID: childID },
+        width: 80,
+        height: 24,
+        ambiguousWidth,
+        handler: (url) => (url.pathname === "/config" ? json({ language }) : undefined),
+      })
+      try {
+        await waitForFrame(
+          app.setup,
+          (value) => footerRow(value).includes(language === "en" ? "read-only" : "只读"),
+          "the sub-agent footer",
+        )
+        const description =
+          language === "en"
+            ? "Scan every changelog for breaking changes and summarize each finding"
+            : "扫描全部变更日志中的破坏性变更并汇总每一项发现"
+        app.events.emit(taskPart(childID, "general-purpose", description, { background: true, promoted: true }))
+        // Whatever room the tag has, it is drawn whole or not at all: the row never exceeds the screen, and the
+        // current segment and the position at the right edge are there.
+        for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
+        const frame = await captureFrame(app.setup)
+        for (const line of frame.split("\n")) expect(cellWidth(line.trimEnd(), ambiguousWidth)).toBeLessThanOrEqual(80)
+        const row = topRow(frame)
+        expect(row).toContain("general-purpose")
+        expect(row).toContain(language === "en" ? "subagent 1/1" : "子 agent 1/1")
+        if (row.includes(language === "en" ? "background" : "后台")) {
+          expect(row).toContain(language === "en" ? "background (moved)" : "后台（已转）")
+        }
+      } finally {
+        await app.stop()
+      }
+    })
+  }
+}

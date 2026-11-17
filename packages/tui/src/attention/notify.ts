@@ -3,8 +3,8 @@
 
 import type { Event } from "@graphagent/sdk"
 import type { AttentionSoundName } from "../config"
-import type { TaskIndexEntry } from "../context/session-summary"
-import { t, type MessageKey } from "../i18n"
+import { backgroundResultOf, type BackgroundResult, type TaskIndexEntry } from "../context/session-summary"
+import { t } from "../i18n"
 import { subagentKind } from "../session/subagents"
 import type { ToastOptions } from "../ui/toast"
 
@@ -18,20 +18,24 @@ type NotifyInput = {
 }
 
 /**
- * What a sub-agent reminder needs beyond the sound (#1033 4, 6). Without it a sub-agent session only plays its sound,
- * as before.
+ * What a sub-agent reminder needs beyond the sound (#1033 4, 6; #1058 7). Without it a sub-agent session only plays
+ * its sound, as before.
  */
 export type SubagentReminders = {
   toast: { show(options: ToastOptions): void }
   /** The session on screen: the sub-agent the user is looking at needs no reminder. */
   viewing(): string | undefined
-  /**
-   * The parent's Task link of a child session: its kind, for the text of the reminder, and whether it runs in the
-   * background. A session with no link (a DAG node's) is a sub-agent that does not.
-   */
-  task(sessionID: string): Pick<TaskIndexEntry, "kind" | "background"> | undefined
+  /** The root of the session tree on screen; none on home. A background run is announced only within it. */
+  currentRoot(): string | undefined
+  /** The parent's Task link of a child session: its kind, for the text of the reminder. A DAG node has no link. */
+  task(sessionID: string): Pick<TaskIndexEntry, "kind"> | undefined
   /** Goes into a sub-agent session; `openSubAgent` is the one way in. */
   open(sessionID: string): void
+  /**
+   * Brings the user to the report of a background run: the session whose transcript holds it, scrolled to the message
+   * the server added (`messageID`).
+   */
+  openResult(sessionID: string, messageID: string): void
 }
 
 type NotificationsInput = {
@@ -47,20 +51,6 @@ type NotificationsInput = {
   subagent?: SubagentReminders
 }
 
-type SubagentReminder = "permission" | "done" | "failed"
-
-const REMINDER_TEXT: Record<SubagentReminder, MessageKey> = {
-  permission: "subagent.toast.permission",
-  done: "subagent.toast.done",
-  failed: "subagent.toast.failed",
-}
-
-const REMINDER_LEVEL: Record<SubagentReminder, ToastOptions["level"]> = {
-  permission: "warning",
-  done: "info",
-  failed: "error",
-}
-
 function sessionErrorMessage(error: SessionError) {
   if (error?.name === "MessageAbortedError") return t("attention.aborted")
   const data = error?.data
@@ -74,10 +64,14 @@ function sessionErrorMessage(error: SessionError) {
  * Built-in session attention notifications: pending questions and permissions,
  * completed turns, and session errors. Subagent sessions play a sound and never
  * raise a system notification. When the caller passes `subagent`, a sub-agent
- * that is not on screen also leaves a footer toast that goes into it: when it
- * asks for permission, whichever way it runs, and when a background one
- * finishes or fails. The others report to the main agent, which is what the user
- * is waiting on, and DAG nodes have their own progress display.
+ * that is not on screen also leaves a footer toast: one that goes into it when
+ * it asks for permission, whichever way it runs, and, when a background run ends,
+ * one that brings the user to that message in the session that holds it. That one comes
+ * from the arrival of the result (the `message.part.updated` event of the message
+ * the server adds), not from the child's status, and only once per result: the
+ * data a snapshot, a hydration or a reconnect loads never makes it. The foreground
+ * sub-agents report to the main agent, which is what the user is waiting on, and
+ * DAG nodes have their own progress display.
  * Returns the disposer that unsubscribes every event handler.
  */
 export function createTuiNotifications(input: NotificationsInput): () => void {
@@ -85,6 +79,8 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
   const errored = new Set<string>()
   const questions = new Set<string>()
   const permissions = new Set<string>()
+  // The results announced so far, by child and end time: the same part arriving again is not a new result.
+  const announced = new Set<string>()
 
   function notify(sessionID: string | undefined, message: string, sound: AttentionSoundName) {
     const session = sessionID ? input.sessions.get(sessionID) : undefined
@@ -97,20 +93,56 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
     })
   }
 
-  function remind(sessionID: string | undefined, reminder: SubagentReminder) {
+  /** A sub-agent that is not on screen asks for permission: whichever way it runs, the user is the one who can answer. */
+  function remindPermission(sessionID: string | undefined) {
     const reminders = input.subagent
     if (!reminders || !sessionID) return
     const session = input.sessions.get(sessionID)
     if (session?.parentID === undefined) return
     if (reminders.viewing() === sessionID) return
-    const task = reminders.task(sessionID)
-    if (reminder !== "permission" && task?.background !== true) return
-    const kind = subagentKind({ title: session.title ?? "", agent: session.agent }, task)
+    const kind = subagentKind({ title: session.title ?? "", agent: session.agent }, reminders.task(sessionID))
     reminders.toast.show({
-      text: t(REMINDER_TEXT[reminder], { kind }),
-      level: REMINDER_LEVEL[reminder],
-      dedupeKey: `subagent.${reminder}.${sessionID}`,
+      text: t("subagent.toast.permission", { kind }),
+      level: "warning",
+      dedupeKey: `subagent.permission.${sessionID}`,
       onActivate: () => reminders.open(sessionID),
+    })
+  }
+
+  function rootOf(sessionID: string): string {
+    const seen = new Set<string>()
+    let current = sessionID
+    while (!seen.has(current)) {
+      seen.add(current)
+      const parentID = input.sessions.get(current)?.parentID
+      if (!parentID) break
+      current = parentID
+    }
+    return current
+  }
+
+  /**
+   * A background run ended and the server reported it in `sessionID`, the session the run was started from. Only a
+   * result part is such a report, so a run the main agent waits for never comes here. The toast is for the tree the
+   * user is in, once per result, and not for the sub-agent the user is looking at.
+   */
+  function announceResult(sessionID: string, found: { childSessionID: string; result: BackgroundResult }) {
+    const reminders = input.subagent
+    if (!reminders) return
+    const root = reminders.currentRoot()
+    if (root === undefined || rootOf(sessionID) !== root) return
+    const key = `${found.childSessionID}:${found.result.endedAt}`
+    if (announced.has(key)) return
+    announced.add(key)
+    if (reminders.viewing() === found.childSessionID) return
+    const child = input.sessions.get(found.childSessionID)
+    const kind = subagentKind({ title: child?.title ?? "", agent: child?.agent }, reminders.task(found.childSessionID))
+    const completed = found.result.status === "completed"
+    reminders.toast.show({
+      text: t(completed ? "background.toast.done" : "background.toast.failed", { kind }),
+      level: completed ? "success" : "error",
+      dedupeKey: found.childSessionID,
+      onActivate: () => reminders.openResult(sessionID, found.result.messageID),
     })
   }
 
@@ -133,7 +165,7 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       if (permissions.has(event.properties.id)) return
       permissions.add(event.properties.id)
       notify(event.properties.sessionID, t("attention.permission"), "permission")
-      remind(event.properties.sessionID, "permission")
+      remindPermission(event.properties.sessionID)
     }),
     input.event.on("permission.replied", (event) => {
       permissions.delete(event.properties.requestID)
@@ -154,7 +186,6 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       }
       const session = input.sessions.get(sessionID)
       notify(sessionID, t("attention.done"), session?.parentID ? "subagent_done" : "done")
-      remind(sessionID, "done")
     }),
     input.event.on("session.error", (event) => {
       const sessionID = event.properties.sessionID
@@ -162,8 +193,13 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       if (!active.has(sessionID)) return
       errored.add(sessionID)
       notify(sessionID, sessionErrorMessage(event.properties.error), "error")
-      // An abort is the user's own doing, and stopping the main agent aborts every sub-agent under it.
-      if (event.properties.error?.name !== "MessageAbortedError") remind(sessionID, "failed")
+    }),
+    // The report of a background run is a message the server adds to the session that started it.
+    input.event.on("message.part.updated", (event) => {
+      const part = event.properties.part
+      if (part.type !== "text") return
+      const found = backgroundResultOf(part)
+      if (found) announceResult(part.sessionID, found)
     }),
   ]
 

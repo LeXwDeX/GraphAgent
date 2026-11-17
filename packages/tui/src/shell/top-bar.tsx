@@ -225,6 +225,9 @@ function PathPart(props: { part: SubagentPathPart; onOpen?: (sessionID: string) 
       <Show when={part.description}>
         <span style={{ fg: theme.textMuted }}>{DESCRIPTION_SEPARATOR + part.description}</span>
       </Show>
+      <Show when={part.tag}>
+        <span style={{ fg: theme.textMuted }}>{DESCRIPTION_SEPARATOR + part.tag}</span>
+      </Show>
     </text>
   )
 }

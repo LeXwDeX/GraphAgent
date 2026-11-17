@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { setLanguage } from "../../src/i18n"
 import { SUBAGENT_MARKER_GLYPH } from "../../src/session/subagents"
 import {
   DESCRIPTION_SEPARATOR,
@@ -18,11 +19,18 @@ import {
 } from "../../src/shell/subagent-path"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 
+afterEach(() => {
+  setLanguage("zh-CN")
+})
+
 /** The path as the top bar draws it, minus the separator in front of the first part. */
 function textOf(layout: SubagentPathLayout | undefined) {
   const text = (part: SubagentPathPart) =>
     part.type === "current"
-      ? part.glyph + part.kind + (part.description ? DESCRIPTION_SEPARATOR + part.description : "")
+      ? part.glyph +
+        part.kind +
+        (part.description ? DESCRIPTION_SEPARATOR + part.description : "") +
+        (part.tag ? DESCRIPTION_SEPARATOR + part.tag : "")
       : part.text
   return layout?.parts.map(text).join(PATH_SEPARATOR)
 }
@@ -187,6 +195,8 @@ test("the view of a session walks its parents up to the root", () => {
       summary: (id) => (id === "leaf" ? { status: "busy" } : undefined),
     },
   )
+  // A foreground run carries no tag.
+  expect(subagentView(lookup, "leaf")?.execution).toBeUndefined()
   expect(subagentView(lookup, "leaf")).toEqual({
     ancestors: [
       { id: "root", title: "Root title" },
@@ -244,8 +254,133 @@ test("two views are the same when they draw the same path", () => {
   expect(sameSubagentView(base, undefined)).toBe(false)
   expect(sameSubagentView(undefined, undefined)).toBe(true)
   expect(sameSubagentView(base, { ...base, marker: "done" })).toBe(false)
+  // The tag is part of what is drawn: a run that becomes a background one, or is moved there, changes the path.
+  expect(sameSubagentView(base, { ...base, execution: "background" })).toBe(false)
+  expect(sameSubagentView({ ...base, execution: "background" }, { ...base, execution: "promoted" })).toBe(false)
+  expect(sameSubagentView({ ...base, execution: "promoted" }, { ...base, execution: "promoted" })).toBe(true)
   expect(sameSubagentView(base, { ...base, kind: "plan" })).toBe(false)
   expect(sameSubagentView(base, { ...base, description: "scan more" })).toBe(false)
   expect(sameSubagentView(base, { ...base, ancestors: [{ ...root, title: "Renamed" }] })).toBe(false)
   expect(sameSubagentView(base, { ...base, ancestors: [root, middle] })).toBe(false)
 })
+
+// ── the tag of a background run (#1058 8) ───────────────────────────────────────────────────────────────────────
+
+test("the view takes the tag from the Task link: a background run, a run that was moved there, and none for the rest", () => {
+  const sessions = {
+    root: {},
+    a: { parentID: "root" },
+    b: { parentID: "root" },
+    c: { parentID: "root" },
+    d: { parentID: "root" },
+  }
+  const links: Record<string, { background?: boolean; promoted?: boolean }> = {
+    a: { background: true },
+    // A run that was moved to the background says both.
+    b: { background: true, promoted: true },
+    c: { background: false },
+  }
+  const lookup = lookupOf(sessions, { task: (id) => links[id] })
+  expect(subagentView(lookup, "a")?.execution).toBe("background")
+  expect(subagentView(lookup, "b")?.execution).toBe("promoted")
+  expect(subagentView(lookup, "c")?.execution).toBeUndefined()
+  // No Task link at all (a DAG node's session): not a background run.
+  expect(subagentView(lookup, "d")?.execution).toBeUndefined()
+})
+
+test("a background run's path ends with its tag after the description, in the interface language", () => {
+  const background = input({ marker: "running", execution: "background" })
+  expect(textOf(layoutSubagentPath(background))).toBe(`${root.title} › ● explore · ${description} · 后台`)
+  expect(textOf(layoutSubagentPath({ ...background, execution: "promoted" }))).toBe(
+    `${root.title} › ● explore · ${description} · 后台（已转）`,
+  )
+  setLanguage("en")
+  expect(textOf(layoutSubagentPath(background))).toBe(`${root.title} › ● explore · ${description} · background`)
+  expect(textOf(layoutSubagentPath({ ...background, execution: "promoted" }))).toBe(
+    `${root.title} › ● explore · ${description} · background (moved)`,
+  )
+  // The tag belongs to the current segment and is counted in its width.
+  const layout = layoutSubagentPath(background)
+  expect(layout?.parts.map((part) => part.type)).toEqual(["ancestor", "current"])
+  expect(layout?.parts.at(-1)).toMatchObject({ type: "current", tag: "background" })
+  expect(layout?.width).toBe(cellWidth(textOf(layout)!))
+})
+
+test("a foreground run's path has no tag, and a current segment without a description is the kind and the tag", () => {
+  expect(layoutSubagentPath(input())?.parts.at(-1)).not.toHaveProperty("tag")
+  expect(textOf(layoutSubagentPath(input({ description: "", execution: "background" })))).toBe(
+    `${root.title} › explore · 后台`,
+  )
+})
+
+test("the tag is the first thing to give way: it is drawn only while the whole path fits with it", () => {
+  setLanguage("en")
+  const view = input({ ancestors: [root, middle], marker: "running" })
+  const whole = `${root.title} › ${middle.title} › ● explore · ${description}`
+  const tag = " · background"
+  const at = (budget: number, execution?: "background") => layoutSubagentPath({ ...view, execution, budget })
+
+  // Room for everything: the tag is there.
+  expect(textOf(at(cellWidth(whole + tag), "background"))).toBe(whole + tag)
+  // One cell short of the tag: the path is the one without it, whole, not the description cut to keep the tag.
+  expect(textOf(at(cellWidth(whole + tag) - 1, "background"))).toBe(whole)
+  expect(textOf(at(cellWidth(whole), "background"))).toBe(whole)
+  // Shorter still: it is exactly the path of a foreground run, whatever gives way.
+  for (const budget of [110, 80, 60, 30, 20, 10]) {
+    expect(at(budget, "background")?.parts).toEqual(at(budget)?.parts)
+  }
+})
+
+for (const language of ["zh-CN", "en"] as const) {
+  for (const ambiguousWidth of [1, 2] as const) {
+    test(`the tag never exceeds the budget, and changes nothing else, in ${language} at ambiguous_width ${ambiguousWidth}`, () => {
+      setLanguage(language)
+      const views: SubagentPathInput[] = [
+        input({ ancestors: [root, middle], marker: "running" }),
+        input({
+          ancestors: [{ id: "ses_root", title: "升级工具链与全部依赖" }],
+          description: "扫描破坏性变更并给出结论",
+          marker: "done",
+        }),
+        input({ ancestors: [], marker: "failed" }),
+        input({ ancestors: [root], description: "" }),
+      ]
+      for (const view of views) {
+        for (const execution of ["background", "promoted"] as const) {
+          for (let budget = 0; budget <= 160; budget++) {
+            const plain = layoutSubagentPath({ ...view, budget, ambiguousWidth })
+            const tagged = layoutSubagentPath({ ...view, execution, budget, ambiguousWidth })
+            const label = `${execution} budget ${budget}`
+            if (!tagged) {
+              expect({ label, plain: plain === undefined }).toEqual({ label, plain: true })
+              continue
+            }
+            expect({ label, fits: cellWidth(textOf(tagged)!, ambiguousWidth) <= budget }).toEqual({ label, fits: true })
+            expect({ label, width: tagged.width }).toEqual({ label, width: cellWidth(textOf(tagged)!, ambiguousWidth) })
+            const current = tagged.parts.at(-1)
+            if (current?.type === "current" && current.tag) {
+              // Drawn whole, and every other part is what the path of a foreground run has at that budget.
+              expect(current.tag).toBe(
+                language === "en"
+                  ? execution === "promoted"
+                    ? "background (moved)"
+                    : "background"
+                  : execution === "promoted"
+                    ? "后台（已转）"
+                    : "后台",
+              )
+              // A layout with a tag exists only where the one without it does.
+              expect(plain).toBeDefined()
+              expect({ label, rest: tagged.parts.slice(0, -1) }).toEqual({ label, rest: plain!.parts.slice(0, -1) })
+              const { tag: _, ...bare } = current
+              expect(plain!.parts.at(-1)).toEqual(bare)
+            } else {
+              expect(plain).toBeDefined()
+              expect({ label, parts: tagged.parts }).toEqual({ label, parts: plain!.parts })
+            }
+          }
+        }
+      }
+    })
+  }
+}

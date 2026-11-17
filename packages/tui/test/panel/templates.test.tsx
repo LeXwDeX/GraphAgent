@@ -4,12 +4,14 @@
 /** @jsxImportSource @opentui/solid */
 import { BoxRenderable, Renderable } from "@opentui/core"
 import { afterEach, beforeEach, expect, test } from "bun:test"
+import { createSignal } from "solid-js"
 import { setLanguage } from "../../src/i18n"
 import { DetailPanel, type DetailRow } from "../../src/panel/detail"
 import { ListPanel, type ListItem } from "../../src/panel/list"
 import { SettingsPanel, type SettingsTab } from "../../src/panel/settings"
 import { DEFAULT_THEME } from "../../src/context/theme"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
+import { waitFor } from "../routes/dag-mode-harness"
 import { PanelSurface, renderPanel } from "./contexts"
 import { shellState } from "../shell/contexts"
 
@@ -356,6 +358,81 @@ test("long lists scroll inside the capped content area", async () => {
   }
 })
 
+/** Renders until the frame satisfies `ready`, no sleeping in between, and returns it. */
+async function untilFrame(app: Awaited<ReturnType<typeof renderPanel>>, ready: (frame: string) => boolean) {
+  let frame = ""
+  for (let pass = 0; pass < 200; pass++) {
+    await app.renderOnce()
+    frame = app.captureCharFrame()
+    if (ready(frame)) return frame
+  }
+  throw new Error(`the expected frame never came:\n${frame}`)
+}
+
+test("a description of several lines shows one row each under the selected item, empty lines left out", async () => {
+  await using tmp = await shellState()
+  const items: ListItem<string>[] = [
+    { id: "one", value: "one", title: "条目一", description: "只有一行" },
+    { id: "two", value: "two", title: "条目二", description: ["", "第一行", "", "第二行"] },
+    { id: "three", value: "three", title: "条目三", description: [] },
+    { id: "four", value: "four", title: "条目四", description: "" },
+  ]
+  const app = await renderPanel(
+    () => <PanelSurface spec={{ render: () => <ListPanel title="多行" items={items} onSelect={() => {}} /> }} />,
+    { width: 80, height: 24, state: tmp.path },
+  )
+
+  try {
+    const first = await untilFrame(app, (frame) => frame.includes("只有一行"))
+    expect(first).not.toContain("第一行")
+
+    app.mockInput.pressArrow("down")
+    const second = frameLines(await untilFrame(app, (frame) => frame.includes("第二行")))
+    // Each line is one row, straight under the item, and the empty ones take no row.
+    const row = second.findIndex((line) => line.includes("条目二"))
+    expect(second[row + 1]).toContain("第一行")
+    expect(second[row + 2]).toContain("第二行")
+    expect(second[row + 3]).toContain("条目三")
+    expect(second.join("\n")).not.toContain("只有一行")
+
+    // An empty list of lines, and an empty string, are no description at all: the next item follows at once.
+    app.mockInput.pressArrow("down")
+    const third = frameLines(await untilFrame(app, (frame) => !frame.includes("第二行")))
+    expect(third[third.findIndex((line) => line.includes("条目三")) + 1]).toContain("条目四")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the lines of a description scroll into view with their item, at the bottom of a long list", async () => {
+  await using tmp = await shellState()
+  const items: ListItem<string>[] = Array.from({ length: 20 }, (_, index) => ({
+    id: `item-${index}`,
+    value: `item-${index}`,
+    title: `条目 ${index + 1}`,
+    description: index === 19 ? ["最后的第一行", "最后的第二行", "最后的第三行"] : undefined,
+  }))
+  const app = await renderPanel(
+    () => <PanelSurface spec={{ render: () => <ListPanel title="长列表" items={items} onSelect={() => {}} /> }} />,
+    { width: 80, height: 24, state: tmp.path },
+  )
+
+  try {
+    await untilFrame(app, (frame) => frame.includes("条目 1"))
+    app.mockInput.pressKey("END")
+    // The last item is selected and all three lines under it are inside the capped area, not cut off below it.
+    const frame = await untilFrame(app, (value) => value.includes("最后的第三行"))
+    expect(frame).toContain("最后的第一行")
+    expect(frame).toContain("最后的第二行")
+    const lines = frameLines(frame)
+    expect(lines.findIndex((line) => line.includes("最后的第三行"))).toBeGreaterThan(
+      lines.findIndex((line) => line.includes("条目 20")),
+    )
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("list panel moves with arrows, selects with return, and runs ctrl bindings", async () => {
   await using tmp = await shellState()
   const selected: string[] = []
@@ -433,6 +510,141 @@ test("list panel reports the remaining items while filtering", async () => {
     await Bun.sleep(50)
     await app.renderOnce()
     expect(seen.at(-1)).toEqual(["alpha"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+/** The row of the frame that holds `text`. */
+const rowWith = (frame: string, text: string) => frameLines(frame).find((line) => line.includes(text))
+
+test("the selection stays on its item when a group that follows data moves the items around", async () => {
+  await using tmp = await shellState()
+  const [together, setTogether] = createSignal(false)
+  const selected: string[] = []
+  // Nothing about the items changes: only the group of the second one, which is read where the list is laid out.
+  const items: ListItem<string>[] = [
+    { id: "a", value: "a", title: "条目甲", group: "一组" },
+    {
+      id: "b",
+      value: "b",
+      title: "条目乙",
+      get group() {
+        return together() ? "一组" : "二组"
+      },
+    },
+    { id: "c", value: "c", title: "条目丙", group: "一组" },
+  ]
+  const app = await renderPanel(
+    () => (
+      <PanelSurface
+        spec={{ render: () => <ListPanel title="分组" items={items} onSelect={(item) => selected.push(item.id)} /> }}
+      />
+    ),
+    { width: 80, height: 24, state: tmp.path },
+  )
+
+  try {
+    // The list reads a, c under the first group and b under the second: c is the second row.
+    const apart = await untilFrame(app, (frame) => frame.includes("二组"))
+    const order = ["条目甲", "条目丙", "条目乙"].map((text) => apart.indexOf(text))
+    expect(order).toEqual([...order].sort((left, right) => left - right))
+    app.mockInput.pressArrow("down")
+    await untilFrame(app, (frame) => rowWith(frame, "条目丙")?.includes("›") === true)
+
+    // b joins the first group: the rows are a, b, c now, and c is the third. The index the selection had is b's.
+    setTogether(true)
+    const frame = await untilFrame(app, (value) => !value.includes("二组"))
+    expect(rowWith(frame, "条目丙")).toContain("›")
+    expect(rowWith(frame, "条目乙")).not.toContain("›")
+    app.mockInput.pressEnter()
+    await waitFor(() => selected.length > 0)
+    expect(selected).toEqual(["c"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("an owner that gives a selection key keeps the selection on its item through changes of the items", async () => {
+  await using tmp = await shellState()
+  const selected: string[] = []
+  const item = (id: string): ListItem<string> => ({ id, value: id, title: `条目${id}` })
+  const [items, setItems] = createSignal([item("a"), item("b"), item("c")])
+  const [key, setKey] = createSignal("")
+  const app = await renderPanel(
+    () => (
+      <PanelSurface
+        spec={{
+          render: () => (
+            <ListPanel
+              title="保持选中"
+              items={items()}
+              selectionKey={key()}
+              onSelect={(chosen) => selected.push(chosen.id)}
+            />
+          ),
+        }}
+      />
+    ),
+    { width: 80, height: 24, state: tmp.path },
+  )
+  // The row the pointer is on, in the frame, or none.
+  const pointed = (frame: string) => ["a", "b", "c", "d"].filter((id) => rowWith(frame, `条目${id}`)?.includes("›"))
+  const before = (frame: string, first: string, second: string) =>
+    frame.indexOf(`条目${first}`) < frame.indexOf(`条目${second}`)
+
+  try {
+    await untilFrame(app, (frame) => pointed(frame).join() === "a")
+    app.mockInput.pressArrow("down")
+    await untilFrame(app, (frame) => pointed(frame).join() === "b")
+
+    // The owner reorders to c, a, b. By place the pointer would be on a, and a start over would put it on c.
+    setItems([item("c"), item("a"), item("b")])
+    const reordered = await untilFrame(app, (frame) => before(frame, "c", "a") && before(frame, "a", "b"))
+    expect(pointed(reordered)).toEqual(["b"])
+
+    // The selected item is gone: the selection stays at the place it had, cut to the list, which is a's now.
+    setItems([item("c"), item("a")])
+    const gone = await untilFrame(app, (frame) => !frame.includes("条目b"))
+    expect(pointed(gone)).toEqual(["a"])
+
+    // The item that took the place is the selected one from here on: it moves to the end, and the pointer with it.
+    setItems([item("c"), item("d"), item("a")])
+    const moved = await untilFrame(app, (frame) => before(frame, "d", "a"))
+    expect(pointed(moved)).toEqual(["a"])
+
+    // A new key is a new question: the selection starts over at the first row, not on the row it was moved to.
+    app.mockInput.pressArrow("up")
+    await untilFrame(app, (frame) => pointed(frame).join() === "d")
+    setKey("z")
+    await untilFrame(app, (frame) => pointed(frame).join() === "c")
+    app.mockInput.pressEnter()
+    await waitFor(() => selected.length > 0)
+    expect(selected).toEqual(["c"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("without a selection key, a change of the items starts the selection over at the first row", async () => {
+  await using tmp = await shellState()
+  const item = (id: string): ListItem<string> => ({ id, value: id, title: `条目${id}` })
+  const [items, setItems] = createSignal([item("a"), item("b"), item("c")])
+  const app = await renderPanel(
+    () => <PanelSurface spec={{ render: () => <ListPanel title="重置" items={items()} onSelect={() => {}} /> }} />,
+    { width: 80, height: 24, state: tmp.path },
+  )
+
+  try {
+    await untilFrame(app, (frame) => rowWith(frame, "条目a")?.includes("›") === true)
+    app.mockInput.pressArrow("down")
+    await untilFrame(app, (frame) => rowWith(frame, "条目b")?.includes("›") === true)
+
+    // b is still the second row, but the items are not the ones the selection was made in: c is the first.
+    setItems([item("c"), item("b"), item("a")])
+    const frame = await untilFrame(app, (value) => value.indexOf("条目c") < value.indexOf("条目b"))
+    expect(rowWith(frame, "条目c")).toContain("›")
+    expect(rowWith(frame, "条目b")).not.toContain("›")
   } finally {
     app.renderer.destroy()
   }
