@@ -55,8 +55,7 @@ const it = testEffect(
   ).pipe(Layer.provide(Ripgrep.defaultLayer)),
 )
 
-// A composer is only ever declared in configuration in this PR; the first
-// built-in composers arrive with `surveyor` and `mapper`.
+// A configured composer, for the tests that need one beside the built-in `surveyor` and `mapper`.
 const composerConfig = {
   agent: {
     panel: {
@@ -155,6 +154,24 @@ describe("task tool and composers", () => {
     { config: composerConfig },
   )
 
+  it.instance("the built-in composers are workflow worker types and never task types", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const build = yield* agent.get("build")
+      if (!build) throw new Error("Expected the build agent")
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({ ...ref, agent: build })
+      const taskDescription = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
+      const workflowDescription = tools.find((tool) => tool.id === WorkflowTool.id)?.description ?? ""
+      for (const composer of ["surveyor", "mapper"]) {
+        expect(taskDescription, `task: ${composer}`).not.toContain(`- ${composer}:`)
+        expect(workflowDescription, `workflow: ${composer}`).toContain(`- ${composer}:`)
+      }
+      // The workers they dispatch to stay task types.
+      for (const worker of ["researcher", "explore"]) expect(taskDescription, `task: ${worker}`).toContain(`- ${worker}:`)
+    }),
+  )
+
   it.instance("the task and workflow catalogs of the plan agent hide the writer subagents it may not start", () =>
     Effect.gen(function* () {
       const agent = yield* Agent.Service
@@ -238,6 +255,40 @@ describe("task tool and composers", () => {
       }),
     { config: composerConfig },
   )
+
+  for (const composer of ["surveyor", "mapper"]) {
+    it.instance(`starting the built-in ${composer} through the task tool fails with a pointer to the workflow tool`, () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+
+        const exit = yield* def
+          .execute(
+            { description: "survey options", prompt: "compare three persistence designs", subagent_type: composer },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: forbiddenOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (!Exit.isFailure(exit)) return
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain(`"${composer}"`)
+        expect(message).toContain("is a composer")
+        expect(message).toContain("workflow")
+        expect(yield* (yield* Session.Service).children(chat.id)).toHaveLength(0)
+      }),
+    )
+  }
 
   it.instance(
     "a composer cannot be resumed through task_id either",
