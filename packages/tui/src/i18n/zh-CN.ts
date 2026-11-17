@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { cliZhCN } from "./cli"
+
 /**
  * Simplified Chinese message table. Every key added here must also exist in
  * `en.ts` with the same placeholder set; `test/i18n.test.ts` enforces both.
@@ -693,6 +695,7 @@ export const zhCN = {
   "command.app.console.description": "显示或隐藏控制台",
   "command.app.heap_snapshot.title": "堆快照",
   "command.app.heap_snapshot.description": "写入堆快照文件",
+  ...cliZhCN,
 } as const
 
 export type MessageKey = keyof typeof zhCN

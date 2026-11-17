@@ -2,6 +2,7 @@ import { Global } from "@graphagent/core/global"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import os from "os"
 import { Duration, Effect } from "effect"
+import { t } from "@graphagent/tui/i18n"
 import { effectCmd } from "../../effect-cmd"
 import { cmd } from "../cmd"
 import { ConfigCommand } from "./config"
@@ -16,7 +17,7 @@ import { StartupCommand } from "./startup"
 
 export const DebugCommand = cmd({
   command: "debug",
-  describe: "debugging and troubleshooting tools",
+  describe: t("cli.debug.describe"),
   builder: (yargs) =>
     yargs
       .command(ConfigCommand)

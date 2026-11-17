@@ -1,6 +1,7 @@
 import { NamedError } from "@graphagent/core/util/error"
 import { errorFormat } from "@/util/error"
 import { isRecord } from "@/util/record"
+import { t } from "@graphagent/tui/i18n"
 
 type ConfigIssue = { message: string; path: string[] }
 
@@ -47,7 +48,7 @@ export function FormatError(input: unknown): string | undefined {
   // MCPFailed: { name: string }
   if (NamedError.hasName(input, "MCPFailed")) {
     const data = isRecord(input) && isRecord(input.data) ? stringField(input.data, "name") : undefined
-    return `MCP server "${data}" failed. Note, GraphAgent does not support MCP authentication yet.`
+    return t("cli.error.mcpFailed", { name: String(data) })
   }
 
   // ProviderModelNotFoundError: { providerID: string, modelID: string, suggestions?: string[] }
@@ -57,30 +58,38 @@ export function FormatError(input: unknown): string | undefined {
       ? providerModelNotFound.suggestions.filter((x) => typeof x === "string")
       : []
     return [
-      `Model not found: ${stringField(providerModelNotFound, "providerID")}/${stringField(providerModelNotFound, "modelID")}`,
-      ...(suggestions.length ? ["Did you mean: " + suggestions.join(", ")] : []),
-      `Try: \`graphagent models\` to list available models`,
-      `Or check your config (graphagent.json) provider/model names`,
+      t("cli.error.modelNotFound", {
+        model: `${stringField(providerModelNotFound, "providerID")}/${stringField(providerModelNotFound, "modelID")}`,
+      }),
+      ...(suggestions.length ? [t("cli.error.modelSuggestions", { suggestions: suggestions.join(", ") })] : []),
+      t("cli.error.modelTryList"),
+      t("cli.error.modelCheckConfig"),
     ].join("\n")
   }
 
   // ProviderInitError: { providerID: string }
   const providerInit = configData(input, "ProviderInitError")
   if (providerInit) {
-    return `Failed to initialize provider "${stringField(providerInit, "providerID")}". Check credentials and configuration.`
+    return t("cli.error.providerInit", { provider: String(stringField(providerInit, "providerID")) })
   }
 
   // ConfigJsonError: { path: string, message?: string }
   const configJson = configData(input, "ConfigJsonError")
   if (configJson) {
     const message = stringField(configJson, "message")
-    return `Config file at ${stringField(configJson, "path")} is not valid JSON(C)` + (message ? `: ${message}` : "")
+    return (
+      t("cli.error.configJson", { path: String(stringField(configJson, "path")) }) + (message ? `: ${message}` : "")
+    )
   }
 
   // ConfigDirectoryTypoError: { dir: string, path: string, suggestion: string }
   const configDirectoryTypo = configData(input, "ConfigDirectoryTypoError")
   if (configDirectoryTypo) {
-    return `Directory "${stringField(configDirectoryTypo, "dir")}" in ${stringField(configDirectoryTypo, "path")} is not valid. Rename the directory to "${stringField(configDirectoryTypo, "suggestion")}" or remove it. This is a common typo.`
+    return t("cli.error.configDirectoryTypo", {
+      dir: String(stringField(configDirectoryTypo, "dir")),
+      path: String(stringField(configDirectoryTypo, "path")),
+      suggestion: String(stringField(configDirectoryTypo, "suggestion")),
+    })
   }
 
   // ConfigFrontmatterError: { message: string }
@@ -95,9 +104,9 @@ export function FormatError(input: unknown): string | undefined {
     const url = stringField(remoteAuth, "url")
     const remote = stringField(remoteAuth, "remote")
     return [
-      `Failed to load remote config${remote ? ` from ${remote}` : ""}: the server returned a login page instead of JSON.`,
-      `Authentication is missing or has expired (the endpoint is likely behind an SSO or identity-aware proxy).`,
-      ...(url ? [`Run \`graphagent auth login ${url}\` to re-authenticate.`] : []),
+      remote ? t("cli.error.remoteConfigLoginFrom", { remote }) : t("cli.error.remoteConfigLogin"),
+      t("cli.error.remoteConfigExpired"),
+      ...(url ? [t("cli.error.remoteConfigRelogin", { url })] : []),
     ].join("\n")
   }
 
@@ -108,7 +117,8 @@ export function FormatError(input: unknown): string | undefined {
     const message = stringField(configInvalid, "message")
     const issues = configIssues(configInvalid)
     return [
-      `Configuration is invalid${path && path !== "config" ? ` at ${path}` : ""}` + (message ? `: ${message}` : ""),
+      (path && path !== "config" ? t("cli.error.configInvalidAt", { path }) : t("cli.error.configInvalid")) +
+        (message ? `: ${message}` : ""),
       ...issues.map((issue) => "↳ " + issue.message + " " + issue.path.join(".")),
     ].join("\n")
   }

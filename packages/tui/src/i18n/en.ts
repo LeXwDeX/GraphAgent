@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { cliEn } from "./cli"
 import type { MessageKey } from "./zh-CN"
 
 /**
@@ -710,4 +711,5 @@ export const en: Record<MessageKey, string> = {
   "command.app.console.description": "Show or hide the console",
   "command.app.heap_snapshot.title": "Heap snapshot",
   "command.app.heap_snapshot.description": "Write a heap snapshot file",
+  ...cliEn,
 }
