@@ -37,6 +37,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const PROJECT_ID = "project-1"
 // #948: adoption now requires the stamped execution directory to exist.
@@ -79,7 +80,7 @@ describe("DagLoop session move with a running workflow", () => {
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const sessionProjector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-        const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+        const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
         const base = Layer.mergeAll(
           database,
           events,

@@ -27,6 +27,7 @@ import { and, eq, sql } from "drizzle-orm"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { transactLayer } from "./fixture/transact"
 
 const PROJECT_ID = "project-1"
 const SESSION_ID = "ses_parent"
@@ -41,7 +42,12 @@ function layers() {
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const sessionProjector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const messages = DagMessages.layer.pipe(Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(messages))
+  const dag = Dag.layer.pipe(
+    Layer.provide(bridge),
+    Layer.provide(store),
+    Layer.provide(messages),
+    Layer.provide(transactLayer(database)),
+  )
   return Layer.mergeAll(database, events, bridge, store, projector, sessionProjector, messages, dag)
 }
 

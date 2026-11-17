@@ -35,6 +35,8 @@ import { Truncate } from "@/tool/truncate"
 import { WorkflowTool } from "@/tool/workflow"
 import { Provider } from "@/provider/provider"
 import { testEffect } from "../lib/effect"
+import { Database } from "@graphagent/core/database/database"
+import { transactLayer } from "./fixture/transact"
 
 const projectID = ProjectV2.ID.make("project_test")
 
@@ -126,12 +128,16 @@ const storeImpl = {
     Effect.succeed(allRows.find((node) => node.workflowId === workflowID && node.id === nodeID)),
 }
 
+// The store and the bus are doubles, but `Dag` still runs every command in the real transaction, over an
+// in-memory database that only the transaction uses.
+const database = Database.layerFromPath(":memory:")
 const dag = Dag.layer.pipe(
   Layer.provide(Layer.mock(DagStore.Service, storeImpl)),
   Layer.provide(Layer.mock(EventV2Bridge.Service, {
     publish: (definition, data) =>
       Effect.succeed({ id: Event.ID.create(), type: definition.type, data }),
   })),
+  Layer.provide(transactLayer(database)),
 )
 const control = DagControl.layer.pipe(Layer.provide(dag))
 

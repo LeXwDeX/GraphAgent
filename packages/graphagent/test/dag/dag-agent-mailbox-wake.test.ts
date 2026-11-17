@@ -24,6 +24,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const parent = SessionID.make("ses_mailbox_parent")
 const message: DagMessages.Message = {
@@ -59,7 +60,7 @@ function mailboxLayer(probe: MailboxProbe) {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, status, dag, AgentScheduler.defaultLayer)
   const messages = Layer.mock(DagMessages.Service, {
     pendingRecipients: (scope) => Effect.succeed(scope.afterSessionID ? [] : [message.recipient]),

@@ -826,7 +826,7 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const store = yield* DagStore.Service
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
-    const transactService = yield* Effect.serviceOption(DagTransact.Service)
+    const transactService = yield* DagTransact.Service
     const withMailbox = <A, E, R>(
       dagID: string,
       reason: string | undefined | ((result: A) => string | undefined),
@@ -841,11 +841,8 @@ export const layer = Layer.effect(
           .withLock(dagID)(Effect.suspend(() => body(lockWitness)))
           .pipe(Effect.timeout(WORKFLOW_LOCK_TIMEOUT))
     // ADR-0008 decision 3: the guard and the publish of a write run in ONE
-    // IMMEDIATE transaction (`DagTransact`), so nothing can change the workflow
-    // between them. The service is optional for now, like `DagMessages`: the
-    // production layers always provide it, and the many harnesses that mock this
-    // layer's dependencies run the body as it stands. PR4b makes it required,
-    // with the removal of the old paths.
+    // IMMEDIATE transaction (`DagTransact`, a required service), so nothing can
+    // change the workflow between them.
     //
     // A runner write carries its lease token (ADR-0008 decision 4): the runner
     // port provides it around the call (`DagTransact.Fence`) and `underFence`
@@ -853,8 +850,7 @@ export const layer = Layer.effect(
     const transact = <A, E, R>(
       dagID: string,
       body: Effect.Effect<A, E, R>,
-    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> =>
-      Option.isSome(transactService) ? DagTransact.underFence(transactService.value, dagID, body) : body
+    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> => DagTransact.underFence(transactService, dagID, body)
     // A command that changes workflow state: the in-process lock queues it, then
     // one transaction carries its guard and its publish.
     const command =
@@ -1428,8 +1424,7 @@ export const layer = Layer.effect(
       // transaction. The command's `transact` owns that transaction; a nested
       // events.publish uses a savepoint on the same connection, so a recover
       // in another process cannot advance the graph between the reads and the
-      // terminal write. Without the service (unit harnesses), the same
-      // decision runs unfenced.
+      // terminal write.
       const terminalize = Effect.gen(function* () {
         const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
         if (!workflow || isTerminalWorkflowStatusValue(workflow.status))

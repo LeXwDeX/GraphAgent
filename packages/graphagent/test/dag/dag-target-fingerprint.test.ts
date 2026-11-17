@@ -25,6 +25,7 @@ import { targetSensitiveNode } from "@/dag/review-lifecycle"
 import { resultTargetFields } from "@/tool/workflow"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { tmpdir } from "../fixture/fixture"
+import { transactLayer } from "./fixture/transact"
 
 const projectID = Project.ID.make("project-target")
 const sessionID = Session.ID.make("ses_target_parent")
@@ -51,7 +52,7 @@ function targetLayer() {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   return Layer.mergeAll(database, events, bridge, store, projector, dag)
 }
 
