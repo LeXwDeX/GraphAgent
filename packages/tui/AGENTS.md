@@ -40,7 +40,8 @@ packages/tui/src/
   routes/               # home.tsx（及 home/）、session/、diff/
                         #   session/index.tsx 的 Main 按 parentID 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
                         #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
-  session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）
+  session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）、
+                        #   subagent-record.ts（子 agent 记录的任务块与结束行的判定和文字）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
   dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4 已落地）
   pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
@@ -73,7 +74,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
-- `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，`i/N`、`←→`、`<leader>down` 共用）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）。
+- `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，`i/N`、`←→`、`<leader>down` 共用）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）。
 - `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒。
 - `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。
 - `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
@@ -193,13 +194,13 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 ### 消息列表
 
 - 行数 ≥ `WINDOW_MIN_ROWS`（2000，依据见 `test/perf/README.md` 的“窗口化阈值”：OpenTUI 0.8.3 上约 2000 行以内全挂载满足全部延迟预算，窗口化的滚动反而更贵）时窗口化：视口上下各 `PART_OVERSCAN = 6` 行，末尾 `TAIL_ALWAYS = 4` 行始终挂载，`streaming` 行、选中行、展开中的行始终挂载。未挂载的连续行合并成一个占位盒。
-- 行模型是 `Row { key, messageID, partID?, kind, revision }`，`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice`。
-- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以内容宽度向上取整加边距，`tool` 2 行，`reasoning` 折叠态 1 行，`user` 按文本行数加内边距，其余 3 行（F2 3.3）。
+- 行模型是 `Row { key, messageID, partID?, kind, revision }`，`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice | delegation | handback`；后两种只在子 agent 视图出现：`delegation` 是该会话第一条用户消息（会话窗口里的第一条）改画成的“任务 · 来自主会话”块，取代同一条消息的 `user` 行，`handback` 是结束后追加在表尾的一行，二者都由 `createRowTable` 的 `delegation`、`handback` 入参给出；`revision` 分别取被取代的 `user` 行的 revision 加 Task 描述和展开标志、取那一行的文字（切换语言会重新测量）。`delegation` 行没有 part：它的 `partID` 就是它的 key，也是它在 `SessionViewState` 里的折叠 id（`delegation:<messageID>`，`delegationFoldID`），所以提示词按 `ctrl+o` 或点击都能展开（见下）。
+- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以内容宽度向上取整加边距，`tool` 2 行，`reasoning` 折叠态 1 行，`user` 按文本行数加内边距，`delegation` 按提示词折行数加 5 行（折叠态至多 `DELEGATION_PROMPT_LINES` 行加一行省略号，展开态取全部折行数；会折叠的提示词在其下另有空行加提示行共 2 行，展开与否都在），`handback` 2 行，其余 3 行（F2 3.3）。
 - 行表按消息增量维护（`routes/session/row-table.ts`）：每条消息一个 memo，只读自己的 parts，store 写入或一帧流式只重算它所属的那一条消息，`rowData` 只在某条消息贡献的行变了时重算。已结束的 part（有 `time.end`）读快照（`settledPartText`），不订阅 stream version；正在写入的 part 只在还没有可显示的文字时订阅，出现首批文字后不再订阅。新代码不得在行表或行内组件里对已结束的 part 调用 `readPartText`，也不得在行表里为未变化的 part 重新派生文本（`createTextFacts` 按文本缓存）。
 - 正在写入的 text/reasoning 行，`revision` 不含正文，只含 `done` 等标志，结束时按全文计算一次。正文变化会让每帧都产生新的 `Row`，使该行每帧重挂载、其后的行全部失效；它的高度靠挂载后的实测（`streaming` 行始终挂载）。`chars`（高度估算）因此只在该行出现与结束时更新。
 - 窗口化的行是否挂载经 `createSelector` 逐行询问（`pinned`、末尾、视口三个选择器），视口移动一行只唤醒进出窗口的那几行；`gaps` 用普通循环计算，内容相同的 map 不替换。不要让每一行都读同一个会随滚动变化的 signal。
 - 组件内局部状态（展开、选中）一律提升到 `SessionViewState = Map<partID, …>`，卸载后再挂载不丢。滚动定位走行表，不依赖渲染节点。
-- 可折叠的块（点击展开的推理、工具输出、工具错误）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定，挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
+- 可折叠的块（点击展开的推理、工具输出、工具错误，以及子 agent 视图任务块的提示词）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空；任务块没有 part，判定是 `delegationFolds(text, width)`（提示词超过 `DELEGATION_PROMPT_LINES` 行或这些行在内容宽度下的字符上限，与工具输出同一个 `outputOverflows`；块用 `ctx.width`，`foldOfRow` 用同一个 `contentWidth()`），`foldOfRow` 对 `delegation` 行在它为真时返回 `expanded`。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定（折叠 id 经 `foldRowKey` 换成行 key：part 行是 `part:<partID>`，任务块就是它自己的 id），挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
 - 宽度变化使缓存失效。
 - 窗口化转录保持视口内容不动：视口之上的行高变化（未测过的行首次挂载并被测量、行被展开或收起）用 OpenTUI 原生的 `scroll.anchor(行节点)` 保持锚点，由布局在同一帧里调整偏移；不用 `scroll.scrollBy(delta)`，它要等下一帧测到新高度才补偿，每次修正先跳一帧再跳回（#1277 实测 44 次跳动变成 96 次）。`SessionTranscript` 的窗口控制器每个 pass 锚定视口顶部所在的行（该行须已被上一次布局放好）；贴底时不锚定，让滚动盒继续跟随新内容。
 - 窗口按布局之后的偏移取：行表已经知道、布局尚未应用的变化（行集合变了，或某行的 `revision` 变了，例如展开）折算进偏移再算窗口，否则视口里的行会被卸载一帧，屏幕上出现空白。测量不在其中，它读的是已被锚定的布局。
@@ -241,7 +242,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - `slash.name` 以内置优先；服务端同名命令隐藏并写一条日志。别名只保留通用习惯用法。
 - `enabled` 是函数，不触发重新注册。命令列表不依赖 `useKeymapSelector`。
-- 子 agent 视图只允许不改子会话、也不向子会话发请求的命令。`scope` 含 `subagent` 的集合是 F5（#1033）3.3 列出的 12 个（`/new`、`/sessions`、`/copy`、`/export`、`/agents`、`/config`、`/theme`、`/status`、`/help`、`/sidebar`、`/dag`、`/exit`）。扩大它需要修订 F5 与本文。
+- 子 agent 视图只允许不改子会话、也不向子会话发请求的命令。`scope` 含 `subagent` 的集合是 F5（#1033）3.3 列出的 12 个（`/new`、`/sessions`、`/copy`、`/export`、`/agents`、`/config`、`/theme`、`/status`、`/help`、`/sidebar`、`/dag`、`/exit`）。扩大它需要修订 F5 与本文。调试类命令（`app.debug`、`app.console`、`app.heap_snapshot`）只在 `home`、`session`，不在子 agent 视图的面板里；键位照常可用。会改会话或向会话发请求的键（撤销、重做、压缩、后台化、重命名、分叉）在子 agent 视图里随命令一并关闭，`enabled` 取 `!readOnly()`，`test/routes/session/subagent-keys.test.tsx` 逐键验证。
 - 必填参数的命令，从命令面板选中时只把 `/名字 ` 填入输入框并聚焦，不直接执行。
 - 需要编辑一小段文字的操作（重命名、编辑排队消息）用"回填输入框"：预填文本、状态行显示"正在编辑：… · esc 取消"、`⏎` 提交、`esc` 放弃并恢复原草稿。不新增输入对话框（F3 5.4）。
 - 不恢复无斜杠的 `exit`、`quit`、`:q` 退出捷径。
@@ -388,7 +389,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 只读视图的定义是：TUI 在该视图里没有任何路径产生会改变对应对象的写请求。
 
 - DAG（`/dag` 面板、状态带、抽屉）：不调用任何 `dag.*` 写接口。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn '"message"' packages/tui/src/dag` 为空。测试：在 SDK mock 下完成全部可达操作（选择、展开、`⏎`、`i`、切标签、点击状态带、开关抽屉）后，`dag.*` 写请求与 `session.command` 均为 0。唯一的写入口是主会话视图里 `<leader>d`，它恰好发一次 `session.command`（`/dag-mode on|off`），状态以服务端为准，TUI 不自存模式状态。
-- 子 agent 视图（判定口径 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断。测试：触发所有可达操作后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
+- 子 agent 视图（判定口径 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断；用户消息块不可点击（点击不打开操作列表，选中文本照常可复制）；任务块的提示词折叠时，点击只展开或收起它（视图状态，不发请求，有选中文本时不翻转）。测试：触发所有可达操作（点击消息、命令面板里每个不离开视图的命令、会话键、`←→`、滚轮、`esc`，`test/app-subagent-readonly.test.tsx`）后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
 - PR 行：点击只调用 `open` 打开 PR URL，不复制、不产生写请求（mock 计数 0）。
 - "请主 agent 处理"= 预填主会话输入框，不提交（见 6.7）。任何停止、取消、重试、调超时都只能这样表达。
 - 询问区例外：对已存在的待决请求作选择（`permission.reply`、`question.reply`）不算向子 agent 发送对话内容，回复使用请求自己的 `sessionID`。子会话来源的请求只有选项，没有自由文本。TUI 不识别也不过滤 DAG 节点的请求，自动裁决只在服务端做一次，`ask/` 下不得出现 DAG 相关分支：`grep -rniE "dag" packages/tui/src/ask` 为空。

@@ -8,8 +8,11 @@ import {
   createRowMeasurements,
   createSessionViewState,
   createTextFacts,
+  DELEGATION_PROMPT_LINES,
+  delegationFoldID,
   estimateRowHeight,
   firstVisible,
+  foldRowKey,
   isWindowed,
   lastVisible,
   longestLine,
@@ -108,6 +111,44 @@ describe("estimateRowHeight", () => {
     expect(estimateRowHeight(row("a", "meta"), 40, 0)).toBe(2)
     expect(estimateRowHeight(row("a", "notice"), 40, 0)).toBe(2)
     expect(estimateRowHeight(row("a", "revert"), 40, 0)).toBe(5)
+  })
+
+  test("sizes the task block of a sub-agent by its prompt, up to the lines it shows, and the closing line at two", () => {
+    // Title, description, the gap and the padding make five; the prompt adds its wrapped lines.
+    expect(estimateRowHeight(row("a", "delegation"), 13, 10)).toBe(6)
+    expect(estimateRowHeight(row("a", "delegation"), 13, 25)).toBe(8)
+    // A prompt of exactly the lines the block shows does not fold, and has no hint under it.
+    expect(estimateRowHeight(row("a", "delegation"), 13, 10 * DELEGATION_PROMPT_LINES)).toBe(
+      DELEGATION_PROMPT_LINES + 5,
+    )
+    expect(estimateRowHeight(row("a", "handback"), 40, 0)).toBe(2)
+  })
+
+  test("sizes a task block that folds by what it draws: the cut prompt and the hint under it, or the whole prompt", () => {
+    const task = row("a", "delegation")
+    // Folded: the lines it shows and the `…` line, then the gap and the line of the hint.
+    expect(estimateRowHeight(task, 13, 10_000)).toBe(DELEGATION_PROMPT_LINES + 1 + 5 + 2)
+    expect(estimateRowHeight(task, 13, 10_000, false)).toBe(DELEGATION_PROMPT_LINES + 1 + 5 + 2)
+    // Open: every line of the prompt, and the hint that closes it.
+    expect(estimateRowHeight(task, 13, 10_000, true)).toBe(1000 + 5 + 2)
+    expect(estimateRowHeight(task, 13, 10 * (DELEGATION_PROMPT_LINES + 1), true)).toBe(
+      DELEGATION_PROMPT_LINES + 1 + 5 + 2,
+    )
+    // A prompt that fits is the same open or not, and draws no hint.
+    expect(estimateRowHeight(task, 13, 10, true)).toBe(6)
+    expect(estimateRowHeight(task, 13, 25, true)).toBe(8)
+  })
+})
+
+describe("the key a row folds under", () => {
+  test("a reasoning or tool row is keyed by its part, and the task block of a sub-agent view by its own fold id", () => {
+    expect(foldRowKey("prt_1")).toBe("part:prt_1")
+    expect(delegationFoldID("msg_1")).toBe("delegation:msg_1")
+    expect(foldRowKey(delegationFoldID("msg_1"))).toBe("delegation:msg_1")
+  })
+
+  test("a part id that merely contains the prefix is still a part", () => {
+    expect(foldRowKey("prt_delegation:1")).toBe("part:prt_delegation:1")
   })
 })
 

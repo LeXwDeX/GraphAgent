@@ -290,20 +290,20 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDefinition[] = [
     titleKey: "command.app.debug.title",
     descriptionKey: "command.app.debug.description",
     category: "debug",
-    scope: HSA,
+    scope: HS,
   },
   {
     id: "app.console",
     titleKey: "command.app.console.title",
     descriptionKey: "command.app.console.description",
     category: "debug",
-    scope: HSA,
+    scope: HS,
   },
   {
     id: "app.heap_snapshot",
     titleKey: "command.app.heap_snapshot.title",
     descriptionKey: "command.app.heap_snapshot.description",
     category: "debug",
-    scope: HSA,
+    scope: HS,
   },
 ]

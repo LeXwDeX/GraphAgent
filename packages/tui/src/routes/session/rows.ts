@@ -9,11 +9,26 @@ import { createSignal } from "solid-js"
  * become one row. `revision` changes when the row's content changes, which
  * invalidates its cached measured height.
  */
-export type RowKind = "user" | "text" | "reasoning" | "tool" | "meta" | "revert" | "notice"
+export type RowKind =
+  | "user"
+  | "text"
+  | "reasoning"
+  | "tool"
+  | "meta"
+  | "revert"
+  | "notice"
+  /** A sub-agent view's first user message, drawn as the task its parent delegated (#1033 3.4). */
+  | "delegation"
+  /** The line that closes the record of a sub-agent that has finished (#1033 3.4). */
+  | "handback"
 
 export interface Row {
   key: string
   messageID: string
+  /**
+   * The part the row draws, and the id the row folds under in `SessionViewState`. The task block of a sub-agent view
+   * has no part: it folds under `delegationFoldID`, which is its key too.
+   */
   partID?: string
   kind: RowKind
   revision: number
@@ -31,6 +46,32 @@ export interface Row {
 export const WINDOW_MIN_ROWS = 2000
 export const PART_OVERSCAN = 6
 export const TAIL_ALWAYS = 4
+
+/**
+ * Lines of the delegated prompt that the task block of a sub-agent view shows before it folds into `…`. The reader
+ * opens the rest by click or `view.expand.toggle`; `/copy` and `/export` write it whole either way.
+ */
+export const DELEGATION_PROMPT_LINES = 8
+
+/** Rows the hint under a prompt that folds takes: the gap above it and its own line. */
+const DELEGATION_HINT_ROWS = 2
+
+const DELEGATION_FOLD_PREFIX = "delegation:"
+
+/**
+ * The id the task block of a sub-agent view folds under in `SessionViewState`, and the key and `partID` of its row.
+ * The block is drawn from a user message, so there is no part id to use; no part id starts with the prefix.
+ */
+export const delegationFoldID = (messageID: string) => `${DELEGATION_FOLD_PREFIX}${messageID}`
+
+/**
+ * The key of the row that folds under `partID` in `SessionViewState`, which is the row `pinnedKeys` keeps mounted
+ * while it is open. A reasoning or tool row is keyed `part:<partID>`; the task block of a sub-agent view folds under
+ * its own key.
+ */
+export function foldRowKey(partID: string) {
+  return partID.startsWith(DELEGATION_FOLD_PREFIX) ? partID : `part:${partID}`
+}
 
 /** Whether a transcript of `rowCount` rows is windowed; shorter ones mount every row. */
 export const isWindowed = (rowCount: number) => rowCount >= WINDOW_MIN_ROWS
@@ -219,6 +260,16 @@ export function estimateRowHeight(row: Row, width: number, chars: number, expand
   switch (row.kind) {
     case "user":
       return lines + 3
+    case "delegation": {
+      // The title, the description and the gap before the prompt, and the padding above and below, make five. A
+      // prompt that runs past DELEGATION_PROMPT_LINES folds into those lines and a `…` line, unless the reader
+      // opened it; either way the hint that opens or closes it stands under the prompt.
+      const folds = lines > DELEGATION_PROMPT_LINES
+      const prompt = folds && !expanded ? DELEGATION_PROMPT_LINES + 1 : lines
+      return prompt + 5 + (folds ? DELEGATION_HINT_ROWS : 0)
+    }
+    case "handback":
+      return 2
     case "text":
       return lines + 1
     case "reasoning":
