@@ -19,18 +19,23 @@
  *
  * Every `Dag` command runs in one IMMEDIATE transaction since PR3a, so a hold
  * parks a command at its entry, ahead of its guard and its transaction (see the
- * fixture's module comment).
+ * fixture's module comment). Since PR3b every write a runner makes about its own
+ * workflow also carries its lease token, which the last group of cases pins: what
+ * the guard cannot tell (a zombie's write that is a legal transition, or the very
+ * attempt the new holder took over), the token does.
  */
 
 import { describe, expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Schema, Scope, Stream } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Schema, Scope, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import * as TestConsole from "effect/testing/TestConsole"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EngineProcess, runnerAlive } from "@/session/engine-process"
+import { SessionID } from "@/session/schema"
+import { isRecord } from "@/util/record"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import {
   PARENT_SESSION_ID,
@@ -43,6 +48,8 @@ import {
   pollOnTestClock,
   withEngineRunner,
   type DualRunner,
+  type PublishView,
+  type Runner,
 } from "./fixture/dual-runner"
 
 const it = testEffect(Layer.empty)
@@ -62,6 +69,10 @@ const knownRace = <A, E>(name: string, body: Effect.Effect<A, E, Scope.Scope>, c
       ),
     30_000,
   )
+
+/** The arguments of the `Dag` command a hold parked: `data.args` of the fixture's command-entry hold. */
+const commandArgs = (publish: PublishView): ReadonlyArray<unknown> =>
+  isRecord(publish.data) && Array.isArray(publish.data.args) ? publish.data.args : []
 
 const stateOf = (dual: DualRunner, dagID: string, nodeID = "n1") =>
   Effect.gen(function* () {
@@ -302,8 +313,9 @@ describe("races between two runners (#1029)", () => {
   // after it wakes, a tick after the write that is already on its way, so it
   // is the guard that refuses the write here. What the guard cannot tell, a
   // write with no attempt identity that finds the node in a status it may
-  // legally leave (R2 only queued it), is the fence token's: PR3b, which also
-  // asserts that R1 drops its runtime entry.
+  // legally leave (R2 only queued it), is the fence token's: PR3b, in the group
+  // of cases at the end of this file, which also assert that R1 drops its runtime
+  // entry.
   it.live("race 2: a zombie R1's late NodeStarted must not overwrite the attempt R2 started", () =>
     Effect.gen(function* () {
       const dual = yield* makeDualRunner()
@@ -346,7 +358,7 @@ describe("races between two runners (#1029)", () => {
   // inside the same IMMEDIATE transaction that publishes it
   // (`DagMessages.guard`), so there is no guard-to-publish window to land in.
   // NodeStarted had no such second check before PR3a, which is why the start
-  // half was the known race. Pinned here so restructuring the guards (PR3b)
+  // half was the known race. Pinned here so that restructuring the guards
   // cannot lose it.
   it.live("race 2: a completion of a superseded attempt is rejected and the new attempt survives", () =>
     Effect.gen(function* () {
@@ -418,5 +430,295 @@ describe("races between two runners (#1029)", () => {
       )
     }),
     "test",
+  )
+})
+
+/**
+ * ADR-0008 decisions 4 and 5 (PR3b). Every write a runner's DagLoop makes about a
+ * workflow it drives carries the token of its runtime entry, and the fence in
+ * front of the transaction refuses a token the lease no longer names. The guard
+ * inside the transaction cannot do that job alone: it judges the node (its
+ * status, its attempt identity), and a zombie's write is often one the node may
+ * legally take, because the new holder has not touched the node yet, or took it
+ * over with the very attempt the zombie started.
+ *
+ * Each case stalls R1 at the command's entry (`hold`, ahead of the transaction),
+ * moves the lease to R2, and lets R1's write go on. What R1's write finds is the
+ * state R2 left; what the test waits for is the fence's answer
+ * (`Runner.fenced`), not a sleep.
+ */
+describe("a runner that lost the lease: its writes are refused and it drops the workflow (#1029, ADR-0008 decisions 4 and 5)", () => {
+  /** The first write of `runner` that the fence refused, once there is one. */
+  const refusedWrite = (runner: Runner, message: string) =>
+    pollWithTimeout(
+      Effect.sync(() => runner.fenced.find((write) => write.outcome === "refused")),
+      message,
+    )
+
+  /** Whether the dag registration of the parent session names a workflow in `runner`'s exclusive registry. */
+  const dagOwner = (runner: Runner) =>
+    Effect.map(runner.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }), (claimed) =>
+      Option.isSome(claimed) ? claimed.value.owner.id : undefined,
+    )
+
+  /** R1 gave the workflow up: its runtime entry is gone, so its dag registration is too. */
+  const droppedBy = (runner: Runner) =>
+    pollWithTimeout(
+      Effect.map(dagOwner(runner), (owner) => (owner === undefined ? true : undefined)),
+      `${runner.name} kept the runtime entry of the workflow it lost`,
+    )
+
+  const claimAsR2 = (dual: DualRunner, dagID: string) =>
+    Effect.gen(function* () {
+      yield* dual.expireLease(dagID)
+      const claimed = yield* dual.r2.lease.claim({
+        dagID,
+        runnerID: dual.r2.identity.id,
+        now: yield* Clock.currentTimeMillis,
+      })
+      expect(claimed?.epoch).toBe(2)
+    })
+
+  const completed = (dual: DualRunner, dagID: string) =>
+    pollWithTimeout(
+      dual.r2.store
+        .getWorkflow(dagID)
+        .pipe(Effect.map((current) => (current?.status === "completed" ? true : undefined))),
+      `${dagID} did not complete`,
+    )
+
+  it.live("every write a runner makes about its workflow carries its token, and an intent write carries none", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual, { nodes: [node("n1"), node("n2", ["n1"])] })
+      // A user's pause and resume are intent writes: no token, whoever holds the lease.
+      yield* dual.r1.dag.pause(dagID)
+      yield* dual.r1.dag.resume(dagID)
+
+      yield* Deferred.succeed(gate.release, "n1 output")
+      const second = yield* dual.r1.nextPrompt("R1 did not start the child prompt of n2")
+      yield* Deferred.succeed(second.release, "n2 output")
+      yield* completed(dual, dagID)
+
+      // admission, start and settlement of both nodes, then the workflow's own completion.
+      const token = { runnerID: dual.r1.identity.id, epoch: 1 }
+      expect(dual.r1.fenced).toEqual([
+        { dagID, token, outcome: "committed" },
+        { dagID, token, outcome: "committed" },
+        { dagID, token, outcome: "committed" },
+        { dagID, token, outcome: "committed" },
+        { dagID, token, outcome: "committed" },
+        { dagID, token, outcome: "committed" },
+        { dagID, token, outcome: "committed" },
+      ])
+      expect(dual.r2.fenced).toEqual([])
+    }),
+  )
+
+  // The case the guard cannot tell. R2 adopted the workflow and went as far as its
+  // own NodeStarted, which it holds: the node is `queued`, a status the zombie's
+  // start may legally leave, and its attempt identity (the replan count) is still
+  // the one R1 admitted. Without the token R1's start lands, the node points at
+  // R1's child, and R2's own start is then the one the guard refuses.
+  it.live("NodeStarted: a node R2 only queued is not started by R1's late write", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      yield* dual.r1.init
+      const r1Start = yield* dual.r1.hold((publish) => publish.type === "dag.node.started")
+      const dagID = yield* dual.r1.dag.create({
+        projectID: PROJECT_ID,
+        sessionID: PARENT_SESSION_ID,
+        title: "queued start",
+        config: { name: "queued-start", nodes: [node("n1")] },
+      })
+      yield* awaitWithTimeout(r1Start.reached, "R1 never reached its NodeStarted", "5 seconds")
+      yield* dual.expireLease(dagID)
+      const r2Start = yield* dual.r2.hold((publish) => publish.type === "dag.node.started")
+      yield* dual.r2.init
+      yield* awaitWithTimeout(r2Start.reached, "R2 never reached its NodeStarted", "5 seconds")
+      expect((yield* stateOf(dual, dagID)).node?.status).toBe("queued")
+      expect(yield* dual.leaseRow(dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
+
+      yield* r1Start.release
+      yield* refusedWrite(dual.r1, "R1's late NodeStarted was never refused")
+
+      const { node: row, log } = yield* stateOf(dual, dagID)
+      expect(row?.status).toBe("queued")
+      expect(row?.childSessionId).toBeNull()
+      expect(log).not.toContain("dag.node.started")
+      expect(log).not.toContain("dag.node.failed")
+      // R1 ends the attempt it can no longer settle (it cancels its child) and drops the workflow.
+      yield* pollWithTimeout(
+        Effect.sync(() => (dual.r1.cancelled.includes("ses_r1_child_1") ? true : undefined)),
+        "R1 did not cancel the child of the attempt it lost",
+      )
+      yield* droppedBy(dual.r1)
+
+      // R2 carries on: its start lands now and its attempt is the one that settles the node.
+      yield* r2Start.release
+      const attempt = yield* dual.r2.nextPrompt("R2 did not start its own attempt of n1")
+      expect((yield* stateOf(dual, dagID)).node?.childSessionId).toBe(attempt.sessionID)
+      yield* Deferred.succeed(attempt.release, "r2 output")
+      yield* completed(dual, dagID)
+      expect((yield* stateOf(dual, dagID)).node?.output).toBe("r2 output")
+    }),
+  )
+
+  // R1 decides to admit the next node and stalls at the write. R2 takes the lease
+  // and has not touched n2 (it is `pending`), so the admission is a legal
+  // transition for the guard. R1 has to leave n2 to the holder: no `queued` event
+  // for a node it does not own.
+  it.live("NodeQueued: R1's late admission of the next node is refused and the node is left to the holder", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual, { nodes: [node("n1"), node("n2", ["n1"])] })
+      const admission = yield* dual.r1.hold(
+        (publish) => publish.type === "dag.node.queued" && commandArgs(publish)[1] === "n2",
+      )
+      yield* Deferred.succeed(gate.release, "n1 output")
+      yield* awaitWithTimeout(admission.reached, "R1 never reached its admission of n2", "5 seconds")
+      yield* claimAsR2(dual, dagID)
+      const before = (yield* dual.log(dagID)).length
+
+      yield* admission.release
+      yield* refusedWrite(dual.r1, "R1's late NodeQueued was never refused")
+
+      // Nothing at all: not a queued node, not a failure.
+      expect((yield* dual.log(dagID)).slice(before)).toEqual([])
+      expect((yield* dual.r2.store.getNode(dagID, "n2"))?.status).toBe("pending")
+      expect(dual.r1.created).toEqual([gate.sessionID])
+      yield* droppedBy(dual.r1)
+    }),
+  )
+
+  // R1's deadline watcher found the node overdue and stalls at the escalation. The
+  // node is still R1's attempt as far as the guard can see (running, R1's child,
+  // the replan count it carries), but the workflow is R2's: an escalation wakes the
+  // parent, and the parent hears it from the holder.
+  it.effect("NodeTimeoutEscalated: R1's watcher escalates a node whose workflow is R2's, and is refused", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID } = yield* driveOnR1(dual, { nodes: [{ ...node("n1"), worker_config: { timeout_ms: 5_000 } }] })
+      const escalation = yield* dual.r1.hold((publish) => publish.type === "dag.node.timeout_escalated")
+      yield* TestClock.adjust("6 seconds")
+      yield* escalation.reached
+      yield* claimAsR2(dual, dagID)
+      const before = (yield* dual.log(dagID)).length
+
+      yield* escalation.release
+      yield* pollOnTestClock(
+        Effect.sync(() => dual.r1.fenced.find((write) => write.outcome === "refused")),
+        "R1's late NodeTimeoutEscalated was never refused",
+      )
+
+      expect((yield* dual.log(dagID)).slice(before)).toEqual([])
+      expect((yield* dual.r2.store.getNode(dagID, "n1"))?.status).toBe("running")
+      yield* pollOnTestClock(
+        Effect.map(dagOwner(dual.r1), (owner) => (owner === undefined ? true : undefined)),
+        "R1 kept the runtime entry of the workflow it lost",
+      )
+    }),
+  )
+
+  // An adoption writes before its runtime entry exists: the node-level reconciliation
+  // judges the node it found running and fails it ("execution ownership lost"), then
+  // pauses the workflow. Those are runner writes under the claim's token, so an
+  // adopter that lost its claim half-way (R1 took the lease back while R2 was about
+  // to write) judges nothing more.
+  it.live("adoption: a runner whose claim was taken before its reconciliation wrote leaves the workflow alone", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID } = yield* driveOnR1(dual)
+      yield* dual.expireLease(dagID)
+      // R2 claims the workflow and decides the running node is lost: parked at the command's entry.
+      const judgement = yield* dual.r2.hold((publish) => publish.type === "dag.node.failed")
+      const starting = yield* dual.r2.init.pipe(Effect.forkScoped)
+      yield* awaitWithTimeout(judgement.reached, "R2 never judged the node it found running", "5 seconds")
+      expect(yield* dual.leaseRow(dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
+      // R1 takes the lease back before R2's write.
+      yield* dual.expireLease(dagID)
+      expect(
+        (yield* dual.r1.lease.claim({
+          dagID,
+          runnerID: dual.r1.identity.id,
+          now: yield* Clock.currentTimeMillis,
+        }))?.epoch,
+      ).toBe(3)
+      const before = (yield* dual.log(dagID)).length
+
+      yield* judgement.release
+      yield* Fiber.join(starting)
+      yield* refusedWrite(dual.r2, "R2's late judgement of the node was never refused")
+
+      // No failure, no pause: nothing of R2's adoption reached the workflow, and R1's lease is untouched.
+      expect((yield* dual.log(dagID)).slice(before)).toEqual([])
+      expect((yield* stateOf(dual, dagID)).node?.status).toBe("running")
+      expect(yield* dual.leaseRow(dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 3 })
+    }),
+  )
+
+  // A replan that carries a new timeout for a running node re-times it: R1's loop
+  // writes the new deadline (`nodeExtendTimeout`) from the WorkflowReplanned handler.
+  // R1 stalls at that write, R2 takes the workflow, and the deadline it moves is a
+  // deadline of R2's now. The guard cannot tell: the node is R1's attempt as far as
+  // it can see.
+  it.effect("NodeExtendTimeout: R1's re-timing of a node whose workflow is R2's now is refused", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID } = yield* driveOnR1(dual, { nodes: [{ ...node("n1"), worker_config: { timeout_ms: 5_000 } }] })
+      // The watcher finds the node overdue; its escalation stays parked, so the re-time below is the write that lands first.
+      const escalation = yield* dual.r1.hold((publish) => publish.type === "dag.node.timeout_escalated")
+      yield* TestClock.adjust("6 seconds")
+      yield* escalation.reached
+      const retime = yield* dual.r1.hold((publish) => publish.type === "dag.node.deadline_extended")
+      yield* dual.r1.dag.replan(dagID, { nodes: [{ ...node("n1"), worker_config: { timeout_ms: 60_000 } }] })
+      yield* retime.reached
+      yield* claimAsR2(dual, dagID)
+      const before = (yield* dual.log(dagID)).length
+
+      yield* retime.release
+      yield* escalation.release
+      yield* pollOnTestClock(
+        Effect.sync(() =>
+          dual.r1.fenced.filter((write) => write.outcome === "refused").length >= 2 ? true : undefined,
+        ),
+        "R1's late re-timing and escalation were not both refused",
+      )
+
+      expect((yield* dual.log(dagID)).slice(before)).toEqual([])
+      expect((yield* dual.r2.store.getNode(dagID, "n1"))?.status).toBe("running")
+      yield* pollOnTestClock(
+        Effect.map(dagOwner(dual.r1), (owner) => (owner === undefined ? true : undefined)),
+        "R1 kept the runtime entry of the workflow it lost",
+      )
+    }),
+  )
+
+  // The same attempt, two drivers. R2 took the workflow and settles the very child
+  // R1 started (same session, same replan count), so the attempt identity cannot
+  // tell the two writers apart. R1 answers first.
+  it.live("NodeCompleted: the attempt R2 took over is settled by R2, not by the zombie that started it", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual)
+      const settlement = yield* dual.r1.hold((publish) => publish.type === "dag.node.completed")
+      yield* Deferred.succeed(gate.release, "r1 output")
+      yield* awaitWithTimeout(settlement.reached, "R1 never reached its settlement of n1", "5 seconds")
+      yield* claimAsR2(dual, dagID)
+
+      yield* settlement.release
+      yield* refusedWrite(dual.r1, "R1's late NodeCompleted was never refused")
+      expect((yield* stateOf(dual, dagID)).log).not.toContain("dag.node.completed")
+      expect((yield* stateOf(dual, dagID)).node?.status).toBe("running")
+
+      // R2 settles the same attempt and its answer is the one the node keeps.
+      yield* dual.r2.dag.nodeCompleted(dagID, "n1", "r2 output", { replanAttempts: 0, childSessionID: gate.sessionID })
+      const { node: row, log } = yield* stateOf(dual, dagID)
+      expect(row?.status).toBe("completed")
+      expect(row?.output).toBe("r2 output")
+      expect(log.filter((type) => type === "dag.node.completed")).toHaveLength(1)
+      expect(log).not.toContain("dag.node.failed")
+      yield* droppedBy(dual.r1)
+    }),
   )
 })

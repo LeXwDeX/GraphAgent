@@ -186,7 +186,6 @@ const instanceRef = { directory: DIRECTORY, worktree: DIRECTORY, project: { id: 
 function startDelivery(input: {
   readonly scope: Scope.Scope
   readonly store: DagStore.Interface
-  readonly dag: Dag.Interface
   readonly sessions: Session.Interface
   readonly prompts: SessionPrompt.Interface
   readonly status: SessionStatus.Interface
@@ -201,7 +200,6 @@ function startDelivery(input: {
     projectID: PROJECT_ID,
     scope: input.scope,
     store: input.store,
-    dag: input.dag,
     sessions: input.sessions,
     prompts: input.prompts,
     status: input.status,
@@ -219,7 +217,6 @@ function services() {
   return Effect.gen(function* () {
     return {
       store: yield* DagStore.Service,
-      dag: yield* Dag.Service,
       sessions: yield* Session.Service,
       prompts: yield* SessionPrompt.Service,
       status: yield* SessionStatus.Service,

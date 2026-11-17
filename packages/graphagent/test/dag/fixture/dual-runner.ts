@@ -27,6 +27,14 @@
  *     operation, so a stalled process renews nothing). `runner.lease` is the same
  *     primitives without the stall point, for a test to inspect or drive the
  *     table; `leaseRow` reads it raw, whatever the workflow's status.
+ *   - Fence: every runner write of a runner's DagLoop carries the lease token of
+ *     its runtime entry (ADR-0008 decision 4), and the fence in front of the
+ *     command's transaction answers it. `runner.fenced` records each answer (the
+ *     write committed, was refused because the lease no longer names the token,
+ *     or got past the fence and was rejected by the guard), so a test waits for a
+ *     zombie's refusal on that signal and not on a sleep. Intent writes carry no
+ *     token and are not in it. The record sits behind the hold below: a write
+ *     parked at the command's entry is not in it yet.
  *   - Stall / zombie: `runner.hold(...)` parks every matching durable write of
  *     ONE runner until released. Every `Dag` command runs in one IMMEDIATE
  *     transaction (`DagTransact`, ADR-0008 decision 3), and parking inside it
@@ -66,7 +74,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { asc, eq, sql } from "drizzle-orm"
-import { Context, Deferred, Effect, Exit, Layer, Option, Queue, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Queue, Scope } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import { DagLease } from "@graphagent/core/dag/lease"
@@ -185,6 +193,17 @@ export interface LeaseCall {
   readonly answer: DagLease.Lease | boolean | undefined
 }
 
+/**
+ * One write of a runner's DagLoop that carried a lease token (ADR-0008 decision 4: a runner write), as the
+ * fence in front of its transaction answered it. Intent writes carry no token and are not recorded.
+ */
+export interface FencedWrite {
+  readonly dagID: string
+  readonly token: DagLease.Token
+  /** "committed": the transaction ran to its end. "refused": the lease no longer names the token (`StaleRunnerError`). "rejected": the fence let it through and the guard (or the body) failed. */
+  readonly outcome: "committed" | "refused" | "rejected"
+}
+
 /** A parked publisher: `reached` fires when a publish is parked, `release` lets it go on. */
 export interface Hold {
   readonly reached: Effect.Effect<void>
@@ -210,6 +229,13 @@ export interface Runner {
    * (`failLease`), is not in it; `lease` calls are not either.
    */
   readonly leaseCalls: ReadonlyArray<LeaseCall>
+  /**
+   * The writes this runner's DagLoop made under its lease token, in the order their
+   * transactions ended, with the fence's answer. What a test waits on to know a
+   * zombie's write was refused (or accepted) without sleeping for it. The hold of
+   * `hold` sits ahead of this record: a parked write is not in it yet.
+   */
+  readonly fenced: ReadonlyArray<FencedWrite>
   /** The exclusive registry this runner's DagLoop registers its workflows in (a dag registration keeps goals off the parent session). */
   readonly exclusive: ExclusiveRegistry.Interface
   /** Child sessions this runner created, in order. */
@@ -437,6 +463,46 @@ function gatedDag(gate: Gate) {
   )
 }
 
+/**
+ * The runner's `DagTransact` with a record of every write that carried a lease
+ * token (a runner write), appended to `writes` once its transaction ended. The
+ * record sits outside the transaction: it adds nothing to what the fence reads
+ * or writes, and it is how a test sees that a zombie's write was refused.
+ */
+function recordedTransact(writes: FencedWrite[]) {
+  return Layer.effect(
+    DagTransact.Service,
+    Effect.gen(function* () {
+      const real = yield* DagTransact.Service
+      return DagTransact.Service.of({
+        transact: (dagID, token, body) => {
+          const run = real.transact(dagID, token, body)
+          if (token === undefined) return run
+          return run.pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                const failure = Exit.isFailure(exit)
+                  ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+                  : undefined
+                if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) return
+                writes.push({
+                  dagID,
+                  token,
+                  outcome: Exit.isSuccess(exit)
+                    ? "committed"
+                    : failure instanceof DagTransact.StaleRunnerError
+                      ? "refused"
+                      : "rejected",
+                })
+              }),
+            ),
+          )
+        },
+      })
+    }),
+  )
+}
+
 /** The runner's bridge with the stall point in front of every durable publish. */
 function gatedBridge(gate: Gate) {
   return Layer.effect(
@@ -528,6 +594,7 @@ interface GraphInput {
   readonly identity: RunnerIdentity
   readonly faults: Map<LeaseOperation, number>
   readonly leaseCalls: LeaseCall[]
+  readonly fenced: FencedWrite[]
   readonly created: string[]
   readonly cancelled: string[]
   readonly prompts: Queue.Queue<PromptGate>
@@ -549,8 +616,11 @@ function runnerGraph(input: GraphInput) {
   const messages = input.mailbox ? DagMessages.layer.pipe(Layer.provide(database)) : Layer.empty
   // The write fence the commands run in, on this runner's own connection. It reads the real lease
   // primitives: it is part of the command, not an operation of the loop, so it has no stall point.
+  // It records the writes that carry a token (`Runner.fenced`).
   const fenceLease = DagLease.layer.pipe(Layer.provide(database))
-  const transact = DagTransact.layer.pipe(Layer.provide(Layer.merge(database, fenceLease)))
+  const transact = recordedTransact(input.fenced).pipe(
+    Layer.provide(DagTransact.layer.pipe(Layer.provide(Layer.merge(database, fenceLease)))),
+  )
   const dag = gatedDag(input.gate).pipe(
     Layer.provide(
       Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(messages), Layer.provide(transact)),
@@ -669,6 +739,7 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
     const gate = makeGate()
     const faults = new Map<LeaseOperation, number>()
     const leaseCalls: LeaseCall[] = []
+    const fenced: FencedWrite[] = []
     const created: string[] = []
     const cancelled: string[] = []
     const prompts = yield* Queue.unbounded<PromptGate>()
@@ -678,6 +749,7 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
       gate,
       faults,
       leaseCalls,
+      fenced,
       created,
       cancelled,
       prompts,
@@ -711,6 +783,7 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
       loop: loopService,
       lease,
       leaseCalls,
+      fenced,
       exclusive: service(ExclusiveRegistry.Service),
       created,
       cancelled,

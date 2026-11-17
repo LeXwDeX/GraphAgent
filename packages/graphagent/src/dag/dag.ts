@@ -827,11 +827,15 @@ export const layer = Layer.effect(
     // production layers always provide it, and the many harnesses that mock this
     // layer's dependencies run the body as it stands. PR4b makes it required,
     // with the removal of the old paths.
+    //
+    // A runner write carries its lease token (ADR-0008 decision 4): the runner
+    // port provides it around the call (`DagTransact.Fence`) and `underFence`
+    // hands it to the transaction's fence. An intent write finds none.
     const transact = <A, E, R>(
       dagID: string,
       body: Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> =>
-      Option.isSome(transactService) ? transactService.value.transact(dagID, undefined, body) : body
+      Option.isSome(transactService) ? DagTransact.underFence(transactService.value, dagID, body) : body
     // A command that changes workflow state: the in-process lock queues it, then
     // one transaction carries its guard and its publish.
     const command =

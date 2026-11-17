@@ -456,7 +456,7 @@ describe("a runner re-reads its lease before it creates a child session (ADR-000
   )
 
   it.effect(
-    "a runner that lost the lease creates no child session and writes no failure, and evicts the workflow",
+    "a runner that lost the lease admits no node, creates no child session and writes no failure, and evicts the workflow",
     () =>
       Effect.gen(function* () {
         const dual = yield* makeDualRunner()
@@ -473,20 +473,21 @@ describe("a runner re-reads its lease before it creates a child session (ADR-000
         })
         const before = (yield* dual.log(dagID)).length
 
-        // n1 finishes and R1's scheduler goes on to n2: the check right before its child session finds the lease gone.
+        // n1 finishes and R1's scheduler goes on to n2: its admission is a write under R1's token, and the fence
+        // refuses it (ADR-0008 decision 4), which is also what makes R1 drop the workflow.
         yield* Deferred.succeed(gate.release, "n1 output")
         yield* pollOnTestClock(
           Effect.map(registered, (still) => (still ? undefined : true)),
-          "R1 did not evict the workflow after its spawn found the lease gone",
+          "R1 did not evict the workflow after its admission was refused",
         )
 
         expect(dual.r1.created).toEqual([gate.sessionID])
+        expect(dual.r1.fenced.filter((write) => write.outcome === "refused")).toHaveLength(1)
+        // Nothing of n2 reached the log (not even the admission), and it is not R1's failure either.
         const added = (yield* dual.log(dagID)).slice(before).map((event) => event.type)
-        expect(added).toContain("dag.node.queued")
-        expect(added).not.toContain("dag.node.started")
-        expect(added).not.toContain("dag.node.failed")
-        // n2 is left queued for the holder; R1 took nothing back.
-        expect((yield* dual.r2.store.getNode(dagID, "n2"))?.status).toBe("queued")
+        expect(added).toEqual([])
+        // n2 is left untouched for the holder; R1 took nothing back.
+        expect((yield* dual.r2.store.getNode(dagID, "n2"))?.status).toBe("pending")
         expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
       }),
   )
@@ -772,6 +773,145 @@ describe("RunnerLease over a scripted lease", () => {
         expect(evicted).toEqual(["dag-a", "dag-a"])
       }),
   )
+
+  describe("refused: a write under the entry's token that the write fence refused (ADR-0008 decision 5)", () => {
+    /** `held` reads, counted: the fiber `refused` forks has made its decision once it has read. */
+    const counted = (answer: (dagID: string) => Effect.Effect<DagLease.Lease | undefined>) => {
+      const reads: string[] = []
+      const { leases } = scripted({})
+      return {
+        reads,
+        leases: {
+          ...leases,
+          held: (dagID: string) => Effect.sync(() => void reads.push(dagID)).pipe(Effect.andThen(() => answer(dagID))),
+        } satisfies DagLease.Interface,
+      }
+    }
+
+    it.effect(
+      "evicts the entry that carries the token, from a fiber of its own, when another runner holds the lease",
+      () =>
+        Effect.gen(function* () {
+          const { leases, reads } = counted(() => Effect.succeed(lease("dag-a", 4, "11:other")))
+          const evicted: string[] = []
+          const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+          yield* runnerLease.refused("dag-a", token(3))
+
+          yield* until(() => evicted.length === 1, "a refused write did not evict the entry whose lease was taken")
+          expect(evicted).toEqual(["dag-a"])
+          expect(reads).toEqual(["dag-a"])
+        }),
+    )
+
+    it.effect("evicts when the same runner holds the row at a later epoch: the token is the pair", () =>
+      Effect.gen(function* () {
+        const { leases } = counted(() => Effect.succeed(lease("dag-a", 5)))
+        const evicted: string[] = []
+        const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+        yield* runnerLease.refused("dag-a", token(3))
+
+        yield* until(() => evicted.length === 1, "a refused write did not evict the entry of an older epoch")
+      }),
+    )
+
+    it.effect(
+      "leaves an entry alone that does not carry the token: an adoption in flight, or an entry that replaced it",
+      () =>
+        Effect.gen(function* () {
+          const { leases, reads } = counted(() => Effect.succeed(lease("dag-a", 4, "11:other")))
+          const evicted: string[] = []
+          const runnerLease = yield* started(leases, entries({ "dag-b": token(3), "dag-a": token(4) }), evicted)
+
+          // No entry at all for the workflow (the claim has not published one yet), and an entry of a later epoch.
+          yield* runnerLease.refused("dag-none", token(3))
+          yield* runnerLease.refused("dag-a", token(3))
+
+          // Neither reads the lease: there is nothing to decide.
+          expect(reads).toEqual([])
+          expect(evicted).toEqual([])
+        }),
+    )
+
+    it.effect(
+      "leaves the entry of a workflow that ended to its terminal handler: no lease to read is not a takeover",
+      () =>
+        Effect.gen(function* () {
+          const { leases, reads } = counted(() => Effect.succeed(undefined))
+          const evicted: string[] = []
+          const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+          yield* runnerLease.refused("dag-a", token(3))
+
+          yield* until(() => reads.length === 1, "the refused write's decision never read the lease")
+          expect(evicted).toEqual([])
+        }),
+    )
+
+    it.effect("leaves the entry alone when the row still names its token: the refusal was not a loss", () =>
+      Effect.gen(function* () {
+        const { leases, reads } = counted(() => Effect.succeed(lease("dag-a", 3)))
+        const evicted: string[] = []
+        const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+        yield* runnerLease.refused("dag-a", token(3))
+
+        yield* until(() => reads.length === 1, "the refused write's decision never read the lease")
+        expect(evicted).toEqual([])
+      }),
+    )
+
+    it.effect("a lease that cannot be read is not a lost lease: no eviction, and the next refusal looks again", () =>
+      Effect.gen(function* () {
+        let failures = 1
+        const { leases, reads } = counted(() =>
+          failures-- > 0
+            ? Effect.die(new Error("SQLITE_BUSY: database is locked"))
+            : Effect.succeed(lease("dag-a", 4, "11:other")),
+        )
+        const evicted: string[] = []
+        const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+        yield* runnerLease.refused("dag-a", token(3))
+        yield* until(() => reads.length === 1, "the first refused write never read the lease")
+        expect(evicted).toEqual([])
+
+        yield* runnerLease.refused("dag-a", token(3))
+        yield* until(() => evicted.length === 1, "the second refused write did not evict")
+        expect(reads).toHaveLength(2)
+      }),
+    )
+
+    it.effect(
+      "refusals that arrive while an eviction is in flight start one eviction, and the next one may start another",
+      () =>
+        Effect.gen(function* () {
+          const proceed = yield* Deferred.make<void>()
+          const { leases, reads } = counted(() =>
+            Deferred.await(proceed).pipe(Effect.as(lease("dag-a", 4, "11:other"))),
+          )
+          const evicted: string[] = []
+          const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+          // One refusal per fiber of the entry, all before the first decision is made.
+          yield* runnerLease.refused("dag-a", token(3))
+          yield* until(() => reads.length === 1, "the first refused write never started its decision")
+          yield* runnerLease.refused("dag-a", token(3))
+          yield* runnerLease.refused("dag-a", token(3))
+          yield* Deferred.succeed(proceed, undefined)
+          yield* until(() => evicted.length === 1, "the eviction never ran")
+
+          expect(reads).toHaveLength(1)
+          expect(evicted).toEqual(["dag-a"])
+
+          // The first eviction is over: a refusal after it is a new decision (the stub keeps the entry in the table).
+          yield* runnerLease.refused("dag-a", token(3))
+          yield* until(() => evicted.length === 2, "a refusal after the eviction was swallowed by the guard")
+          expect(reads).toHaveLength(2)
+        }),
+    )
+  })
 
   it.effect("it renews every entry once per period and evicts the ones whose lease it lost", () =>
     Effect.gen(function* () {

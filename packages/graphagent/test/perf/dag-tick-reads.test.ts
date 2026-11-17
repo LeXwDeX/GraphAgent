@@ -277,7 +277,6 @@ const deliveryEffect = Effect.gen(function* () {
     database: yield* Database.Service,
     // The tick only reads the two ledgers; delivery paths are unreachable
     // here (no inbox, no idle trigger), so their services stay unused.
-    dag: undefined as never,
     sessions: undefined as never,
     prompts: undefined as never,
     status: undefined as never,

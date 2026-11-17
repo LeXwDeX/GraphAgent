@@ -90,6 +90,8 @@ export interface Entry {
   readonly runtime: WorkflowRuntime
   readonly evalLock: Semaphore.Semaphore
   readonly fibers: ReadonlyMap<string, unknown>
+  /** The entry's runner port: what delivery writes about the workflow (`orchestrator_unresponsive`) carries the entry's lease token (ADR-0008 decision 4). */
+  readonly port: Dag.Interface
 }
 
 export interface Environment {
@@ -97,7 +99,6 @@ export interface Environment {
   readonly projectID: string
   readonly scope: Scope.Scope
   readonly store: DagStore.Interface
-  readonly dag: Dag.Interface
   readonly sessions: Session.Interface
   readonly prompts: SessionPrompt.Interface
   readonly status: SessionStatus.Interface
@@ -200,7 +201,6 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     projectID,
     scope,
     store,
-    dag,
     sessions,
     prompts,
     status,
@@ -529,7 +529,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
               // SAME permit: releasing the lock between the check and the
               // fail lets a terminal-event handler spawn new ready nodes in
               // the window, and the stale verdict would then kill a
-              // progressing workflow. evalLock→workflowLock nesting is the
+              // progressing workflow. The fail is the entry's runner write: it
+              // goes through the entry's port. evalLock→workflowLock nesting is the
               // established order here (checkCompletion inside evalLock
               // takes the same KeyedMutex); dag.ts never acquires evalLock,
               // so no reverse ordering exists.
@@ -553,7 +554,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
                     !entry.runtime.hasRunningMatching((id) => entry.fibers.has(id)) &&
                     entry.runtime.getReadyNodes().length === 0 &&
                     !entry.runtime.isComplete()
-                  if (shouldFail) yield* dag.fail(dagID, "orchestrator_unresponsive").pipe(Effect.ignore)
+                  if (shouldFail) yield* entry.port.fail(dagID, "orchestrator_unresponsive").pipe(Effect.ignore)
                 }),
               )
             }
