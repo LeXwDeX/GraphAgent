@@ -27,7 +27,6 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { Project } from "@graphagent/core/project"
 import { AbsolutePath } from "@graphagent/core/schema"
-import { DagEvent } from "@graphagent/schema/dag-event"
 import { DagReconciler } from "@/dag/runtime/reconciler"
 import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 import type { RunnerLease } from "@/dag/runtime/runner-lease"
@@ -154,7 +153,7 @@ const harness = Effect.gen(function* () {
     evictMoved: [] as string[],
     claim: [] as string[],
     abandon: [] as Array<DagLease.Token | undefined>,
-    published: [] as string[],
+    /** The orphans that were terminalized, by the one command that does it (`Dag.failOrphan`), and the token it ran under. */
     failed: [] as Array<{ readonly dagID: string; readonly token: DagLease.Token; readonly reason: string }>,
   }
   // What a test changes about the scripted collaborators.
@@ -168,8 +167,11 @@ const harness = Effect.gen(function* () {
     /** Runs before the nodes of a `pending` workflow are read, which the observation does after it read the ownership. */
     beforeGetNodes: Effect.Effect<void>
     beforeHeld: Effect.Effect<void>
-    /** Runs inside the orphan's `WorkflowStarted` publish, where the first-wave handler of the loop would pick the event up. */
-    whilePublishing: Effect.Effect<void>
+    /**
+     * Runs inside the orphan's terminalization, where the first-wave handler of the loop picks up the
+     * `WorkflowStarted` that the command commits.
+     */
+    whileFailing: Effect.Effect<void>
     /** The instance's clock watch, which `RunnerLease` keeps in the loop; a test that gives none runs without one. */
     noteClock: ((at: number) => boolean) | undefined
   } = {
@@ -180,7 +182,7 @@ const harness = Effect.gen(function* () {
     afterGetWorkflow: Effect.void,
     beforeGetNodes: Effect.void,
     beforeHeld: Effect.void,
-    whilePublishing: Effect.void,
+    whileFailing: Effect.void,
     noteClock: undefined,
   }
 
@@ -212,14 +214,6 @@ const harness = Effect.gen(function* () {
     runnerID: RUNNER,
     directory: DIRECTORY,
     entries,
-    events: {
-      // The publish is generic in its event, and the stub only records which one: the cast is the stub's shape.
-      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      publish: ((definition: { readonly type: string }) =>
-        Effect.sync(() => void calls.published.push(definition.type)).pipe(
-          Effect.andThen(Effect.suspend(() => script.whilePublishing)),
-        )) as never,
-    },
     lease: {
       claim: (dagID) =>
         Effect.sync(() => {
@@ -230,8 +224,9 @@ const harness = Effect.gen(function* () {
       evict: (dagID) => Effect.sync(() => void calls.evictLost.push(dagID)),
     },
     portFor: (_dagID, held) => ({
-      fail: (dagID, reason) =>
-        Effect.suspend(() => script.fail).pipe(
+      failOrphan: (dagID, reason) =>
+        Effect.suspend(() => script.whileFailing).pipe(
+          Effect.andThen(Effect.suspend(() => script.fail)),
           Effect.tap(() => Effect.sync(() => void calls.failed.push({ dagID, token: held, reason }))),
         ),
     }),
@@ -263,14 +258,13 @@ const instance = {
 const scenario = <A, E, R>(body: Effect.Effect<A, E, R>) =>
   seed.pipe(Effect.andThen(body), Effect.provideService(InstanceRef, instance))
 
-/** What a verdict left behind: nothing was adopted, failed, claimed, evicted or published. */
+/** What a verdict left behind: nothing was adopted, failed, claimed or evicted. */
 const untouched = (calls: Effect.Success<typeof harness>["calls"]) => {
   expect(calls.adopt).toEqual([])
   expect(calls.failUnusable).toEqual([])
   expect(calls.evictLost).toEqual([])
   expect(calls.evictMoved).toEqual([])
   expect(calls.claim).toEqual([])
-  expect(calls.published).toEqual([])
   expect(calls.failed).toEqual([])
 }
 
@@ -646,7 +640,9 @@ describe("the clock watch (ADR-0008 decision 2): every observation feeds it", ()
 describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () => {
   const old = ReconcileDecide.ORPHAN_PENDING_GRACE_MS + 1_000
 
-  it.live("is claimed, started and failed under the claim, which is then given back", () =>
+  // One command under the claim does the whole terminalization, `WorkflowStarted` included: the reconciler has no bus
+  // to publish on (it is given none), so no event of the orphan is written outside the fence.
+  it.live("is claimed and failed by one command under the claim, which is then given back", () =>
     scenario(
       Effect.gen(function* () {
         const { reconciler, calls } = yield* harness
@@ -655,16 +651,15 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
         expect(yield* reconciler.reconcile("wf-orphan")).toEqual({ _tag: "terminalize-orphan" })
 
         expect(calls.claim).toEqual(["wf-orphan"])
-        expect(calls.published).toEqual([DagEvent.WorkflowStarted.type])
         expect(calls.failed).toEqual([{ dagID: "wf-orphan", token: token(1), reason: DagReconciler.ORPHAN_REASON }])
         expect(calls.abandon).toEqual([token(1)])
       }),
     ),
   )
 
-  // The first-wave handler of the loop calls `reconcileAfter` for every `WorkflowStarted`, and the orphan path publishes
-  // one of its own to legalize pending -> running -> failed. It must not adopt the orphan mid-way (a zero-node orphan
-  // would be completed instead of failed): the call waits for the flight of the terminalization and finds the failure.
+  // The first-wave handler of the loop calls `reconcileAfter` for every `WorkflowStarted`, and the command that fails the
+  // orphan commits one of its own to legalize pending -> running -> failed. It must not adopt the orphan (a zero-node
+  // orphan would be completed instead of failed): the call waits for the flight of the terminalization and finds the failure.
   it.live("raises the first wave of its own WorkflowStarted, which waits for it and finds the workflow failed", () =>
     scenario(
       Effect.gen(function* () {
@@ -672,7 +667,7 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
         const { db } = yield* Database.Service
         yield* workflow("wf-orphan", { status: "pending", ageMs: old, nodes: ["pending"] })
         const raised: Array<Fiber.Fiber<ReconcileDecide.Action>> = []
-        script.whilePublishing = reconciler.reconcileAfter("wf-orphan").pipe(
+        script.whileFailing = reconciler.reconcileAfter("wf-orphan").pipe(
           Effect.forkChild({ startImmediately: true }),
           Effect.tap((fiber) => Effect.sync(() => void raised.push(fiber))),
           Effect.asVoid,
@@ -726,7 +721,7 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
   )
 
   it.live(
-    "is not terminalized when its claim is refused: nothing is published, and there is nothing to give back",
+    "is not terminalized when its claim is refused: no command is issued, and there is nothing to give back",
     () =>
       scenario(
         Effect.gen(function* () {
@@ -737,7 +732,6 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
           expect(yield* reconciler.reconcile("wf-refused")).toEqual({ _tag: "terminalize-orphan" })
 
           expect(calls.claim).toEqual(["wf-refused"])
-          expect(calls.published).toEqual([])
           expect(calls.failed).toEqual([])
           expect(calls.abandon).toEqual([undefined])
         }),
@@ -1251,8 +1245,10 @@ describe("reconcileAfter: a trigger that brings news is answered by an evaluatio
       scenario(
         Effect.gen(function* () {
           const { reconciler, calls, script, entries } = yield* harness
+          // A round lists the newest workflow first (`listByStatus` orders by `time_created`, descending), and it is to
+          // park on wf-slow: wf-moved is the older, whatever the millisecond of the clock does between the two inserts.
           yield* workflow("wf-slow")
-          yield* workflow("wf-moved")
+          yield* workflow("wf-moved", { ageMs: 5_000 })
           // The session of wf-moved has moved away: the row is stamped for another directory, and this instance still has
           // its entry.
           const { db } = yield* Database.Service

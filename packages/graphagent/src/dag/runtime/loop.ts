@@ -192,6 +192,9 @@ const serviceLayer = Layer.effect(
           entries: runtimes,
           evict: (dagID, entry, stillLost) => evictEntry?.(dagID, entry, stillLost) ?? Effect.void,
           round: (input) => reconciler?.round(input) ?? Effect.void,
+          // A lease found lost (a renewal, a spawn's re-read) is news for the reconciler (Amendment 3, 4b-C): it
+          // evicts the entry when another holder shows, and leaves one of a workflow that ended to its terminal handler.
+          reconcile: (dagID) => reconciler?.reconcileAfter(dagID) ?? Effect.void,
         })
         // ADR-0008 decision 5: runner writes go through the port of the entry (or of the claim, before its
         // entry exists). A refused token drops the workflow: nothing to drop while there is no entry yet,
@@ -1253,11 +1256,12 @@ const serviceLayer = Layer.effect(
 
         // ADR-0008 decision 6: this instance's reconciler. Startup and the renewal tick run its rounds (`reconcile`;
         // the tick's in a fiber of its own, so the renewals never wait for it), and the event triggers below (a first
-        // wave, a replan with no entry, a session move) call `reconcileAfter`, which re-evaluates behind an
-        // evaluation under way instead of joining it. Every adoption runs in an evaluation, which is single-flight
-        // per workflow. It also disposes of the orphan `pending` rows an older version left behind (`Dag.create` is
-        // one transaction now): after a grace period, claim, then fail them. It reads every observation's clock into
-        // the instance's clock watch, which the lease owns (decision 2).
+        // wave, a replan with no entry, a session move) and a lease found lost (the renewal, a spawn's re-read: wired
+        // into `runnerLease` above) call `reconcileAfter`, which re-evaluates behind an evaluation under way instead
+        // of joining it. Every adoption runs in an evaluation, which is single-flight per workflow. It also disposes of
+        // the orphan `pending` rows an older version left behind (`Dag.create` is one transaction now): after a grace
+        // period, claim, then fail them in one command. It reads every observation's clock into the instance's clock
+        // watch, which the lease owns (decision 2).
         const evictMoved = DagReconciler.movedEvictor({
           entries: runtimes,
           store,
@@ -1276,7 +1280,6 @@ const serviceLayer = Layer.effect(
           runnerID,
           directory: ctx.directory,
           entries: runtimes,
-          events,
           lease: runnerLease,
           noteClock: runnerLease.noteClock,
           portFor,

@@ -3,12 +3,10 @@
 
 export * as DagReconciler from "./reconciler"
 
-import { Cause, Clock, DateTime, Deferred, Effect, Exit, Fiber, Option } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option } from "effect"
 import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
 import { DagLease } from "@graphagent/core/dag/lease"
 import type { DagStore } from "@graphagent/core/dag/store"
-import type { EventV2 } from "@graphagent/core/event"
-import { DagEvent } from "@graphagent/schema/dag-event"
 import type { Dag } from "../dag"
 import { DagLocation } from "../location"
 import { ReconcileDecide } from "./reconcile-decide"
@@ -108,15 +106,14 @@ export interface Input<E extends RunnerLease.Evictable> {
   readonly directory: string
   /** The instance's runtime entries. Read only here; evictions go through `lease.evict` and `evictMoved`. */
   readonly entries: ReadonlyMap<string, E>
-  readonly events: Pick<EventV2.Interface, "publish">
   readonly lease: Pick<RunnerLease.Interface<E>, "claim" | "abandon" | "evict">
   /**
    * The instance's clock watch (`RunnerLease.Interface.noteClock`): each observation feeds it its reading of the clock
    * and takes its verdict. Without one an observation is `afterClockJump` only when its caller says so (`Round`).
    */
   readonly noteClock?: (at: number) => boolean
-  /** The `Dag` service bound to a claim's token (ADR-0008 decision 5): the orphan is failed through it. */
-  readonly portFor: (dagID: string, token: DagLease.Token) => Pick<Dag.Interface, "fail">
+  /** The `Dag` service bound to a claim's token (ADR-0008 decision 5): the orphan is failed through it, in one command. */
+  readonly portFor: (dagID: string, token: DagLease.Token) => Pick<Dag.Interface, "failOrphan">
   /**
    * Take the workflow over: the loop's `recoverWorkflow`, which keeps its own guards, ends as a no-op when its claim is
    * refused, and reads the row again once it holds the claim (the row given here is the observation's, older than that).
@@ -168,7 +165,7 @@ type Entered =
   | { readonly _tag: "leader"; readonly slot: Flight }
 
 export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interface {
-  const { store, leases, runnerID, directory, entries, events, lease, portFor } = input
+  const { store, leases, runnerID, directory, entries, lease, portFor } = input
   const { adopt, failUnusable, evictMoved, noteClock } = input
   // The evaluation under way, per workflow: at most one, registered and ended by its owner.
   const flights = new Map<string, Flight>()
@@ -227,16 +224,18 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
 
   /**
    * ADR-0008 decision 6, row 8: an orphan `pending` workflow is claimed, then
-   * terminalized by the legal pending -> running -> failed sequence (the
-   * projector accepts `WorkflowFailed` only from running or stepping, so a bare
-   * fail would be dropped). Failed, not cancelled: that is the interrupted-create
-   * semantics, and the reason persists in the durable event; cancelled is
-   * reserved for an explicit user or agent cancel. The sequence runs inside the
-   * workflow's flight, which is what keeps its `WorkflowStarted` (a real event on
-   * the bus) from being adopted mid-way, as a zero-node orphan would be completed
-   * instead of failed: the first-wave handler calls `reconcileAfter`, which waits
-   * for this flight to end and finds the workflow failed. The bare
-   * `WorkflowStarted` publish is not fenced (ADR-0008 Amendment 1; left to PR4b).
+   * terminalized by one runner command (`Dag.failOrphan`, Amendment 3, 4b-C): the
+   * legal pending -> running -> failed sequence (the projector accepts
+   * `WorkflowFailed` only from running or stepping, so a bare fail would be
+   * dropped) in a single fenced transaction. Failed, not cancelled: that is the
+   * interrupted-create semantics, and the reason persists in the durable event;
+   * cancelled is reserved for an explicit user or agent cancel. The reconciler
+   * publishes nothing itself: the `WorkflowStarted` that legalizes the leg is part
+   * of the command, so no event is written outside the fence, and nothing can
+   * observe the workflow in between, `running` with every node still `pending`.
+   * The sequence still runs inside the workflow's flight: the first-wave handler
+   * calls `reconcileAfter` for the `WorkflowStarted` the command commits, which
+   * waits for this flight to end and finds the workflow failed.
    */
   const terminalizeOrphan = Effect.fn("DagReconciler.terminalizeOrphan")(function* (dagID: string) {
     if (entries.has(dagID)) return
@@ -247,9 +246,8 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
       const token = yield* lease.claim(dagID)
       if (!token) return
       claimed = token
-      yield* events.publish(DagEvent.WorkflowStarted, { dagID: dagID as never, timestamp: yield* DateTime.now })
       // A rejection (a concurrent transition made it obsolete) ends the evaluation as a defect, which `round` logs.
-      yield* portFor(dagID, token).fail(dagID, ORPHAN_REASON).pipe(Effect.orDie)
+      yield* portFor(dagID, token).failOrphan(dagID, ORPHAN_REASON).pipe(Effect.orDie)
       yield* Effect.logWarning("DagLoop terminalized orphan pending workflow", { dagID })
     }).pipe(
       // The workflow ended: nothing renews the lease, so it is given back.

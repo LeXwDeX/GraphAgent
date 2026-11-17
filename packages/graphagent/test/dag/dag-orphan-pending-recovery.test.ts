@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
-import { sql } from "drizzle-orm"
+import { asc, eq, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { EventV2 } from "@graphagent/core/event"
+import { EventTable } from "@graphagent/core/event/sql"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { DagEvent } from "@graphagent/schema/dag-event"
@@ -175,6 +176,17 @@ describe("DagLoop orphan pending recovery", () => {
           const dagID = DagEvent.DagID.create()
           yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 2)
           yield* backdate(database, dagID)
+          const logged = database.db
+            .select({ type: EventTable.type })
+            .from(EventTable)
+            .where(eq(EventTable.aggregate_id, dagID))
+            .orderBy(asc(EventTable.seq))
+            .all()
+            .pipe(
+              Effect.orDie,
+              Effect.map((rows) => rows.map((row) => row.type.replace(/\.\d+$/, ""))),
+            )
+          const created = (yield* logged).length
 
           const failures: Array<{ reason: string }> = []
           const unsubscribe = yield* events.listen((event) =>
@@ -197,10 +209,16 @@ describe("DagLoop orphan pending recovery", () => {
           expect(wf?.status).toBe("failed")
           expect((yield* store.getNodes(dagID)).map((n) => n.status)).toEqual(["skipped", "skipped"])
           expect(failures).toContainEqual(expect.objectContaining({ reason: ORPHAN_REASON }))
-          // The WorkflowStarted published for the terminalization leg must not
-          // be adopted: the first-wave handler waits for the orphan's evaluation
-          // (reconcileAfter) and finds the workflow failed, so no node is
-          // scheduled on a dead workflow.
+          // ADR-0008 Amendment 3, 4b-C: the terminalization is one command, so the log holds the two legs back to back
+          // and then the nodes it ends. The WorkflowStarted for the legalizing leg is committed together with the
+          // failure, so the first-wave handler (reconcileAfter) finds the workflow failed and no node is scheduled
+          // on a dead workflow.
+          expect((yield* logged).slice(created)).toEqual([
+            DagEvent.WorkflowStarted.type,
+            DagEvent.WorkflowFailed.type,
+            DagEvent.NodeSkipped.type,
+            DagEvent.NodeSkipped.type,
+          ])
           expect(promptCalls).toEqual([])
         }),
       ),
