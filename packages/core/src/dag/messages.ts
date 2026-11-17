@@ -6,12 +6,11 @@ export * as DagMessages from "./messages"
 import { randomUUID } from "node:crypto"
 import { resolve as resolvePath } from "node:path"
 import { sql } from "drizzle-orm"
-import { EffectDrizzleQueryError } from "drizzle-orm/effect-core/errors"
 import { Context, Effect, Layer, PubSub, Stream } from "effect"
-import { SqlError } from "effect/sql/SqlError"
 import { Database } from "../database/database"
 import { LayerNode } from "../effect/layer-node"
 import { Identifier } from "../id/id"
+import { DagTransact } from "./transact"
 
 export interface Caller {
   projectID: string
@@ -694,49 +693,39 @@ export const layer = Layer.effect(
       fenceWorkflow: (workflowID, reason, commit) =>
         Effect.suspend(() => {
           const changes: Change[] = []
-          return db
-            .transaction(
-              (tx) =>
-                Effect.gen(function* () {
-                  const result = yield* commit
-                  const finalReason = typeof reason === "function" ? reason(result) : reason
-                  const boxes = yield* tx.all<Mailbox>(
-                    sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.workflow_id = ${workflowID} AND b.closed_reason IS NULL`,
+          return DagTransact.immediate(db, (tx) =>
+            Effect.gen(function* () {
+              const result = yield* commit
+              const finalReason = typeof reason === "function" ? reason(result) : reason
+              const boxes = yield* tx.all<Mailbox>(
+                sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.workflow_id = ${workflowID} AND b.closed_reason IS NULL`,
+              )
+              const wf = yield* workflow(tx, workflowID)
+              for (const box of boxes) {
+                const n = box.node_id ? yield* node(tx, workflowID, box.node_id) : undefined
+                // A session-level box has no attempt to invalidate. Close it
+                // only on an explicit terminal reason; a no-op commit (for
+                // example a concurrently moved workflow) must leave a live
+                // parent mailbox open.
+                const invalidAttempt =
+                  box.node_id !== null &&
+                  (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== box.attempt_id)
+                if (finalReason || invalidAttempt)
+                  yield* close(
+                    tx,
+                    [box],
+                    finalReason ??
+                      (n && attempt(n) !== box.attempt_id
+                        ? "attempt_replaced"
+                        : cancelledNode(n)
+                          ? "cancelled"
+                          : "closed"),
+                    changes,
                   )
-                  const wf = yield* workflow(tx, workflowID)
-                  for (const box of boxes) {
-                    const n = box.node_id ? yield* node(tx, workflowID, box.node_id) : undefined
-                    // A session-level box has no attempt to invalidate. Close it
-                    // only on an explicit terminal reason; a no-op commit (for
-                    // example a concurrently moved workflow) must leave a live
-                    // parent mailbox open.
-                    const invalidAttempt =
-                      box.node_id !== null &&
-                      (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== box.attempt_id)
-                    if (finalReason || invalidAttempt)
-                      yield* close(
-                        tx,
-                        [box],
-                        finalReason ??
-                          (n && attempt(n) !== box.attempt_id
-                            ? "attempt_replaced"
-                            : cancelledNode(n)
-                              ? "cancelled"
-                              : "closed"),
-                        changes,
-                      )
-                  }
-                  return result
-                }).pipe(Effect.tap(() => afterCommit(changes))),
-              { behavior: "immediate" },
-            )
-            .pipe(
-              Effect.catch((error) =>
-                error instanceof SqlError || error instanceof EffectDrizzleQueryError
-                  ? Effect.die(error)
-                  : Effect.fail(error),
-              ),
-            )
+              }
+              return result
+            }).pipe(Effect.tap(() => afterCommit(changes))),
+          )
         }),
       resolve: (caller, workflowID, nodeID) =>
         transaction((tx) =>
@@ -1053,73 +1042,63 @@ export const layer = Layer.effect(
       guard: (caller, input, commit) =>
         Effect.suspend(() => {
           const changes: Change[] = []
-          return db
-            .transaction(
-              (tx) =>
-                Effect.gen(function* () {
-                  const wf = yield* workflow(tx, input.workflowID)
-                  const sender = wf && (yield* owner(tx, caller, wf))
-                  if (!wf || !sender) return reject("unauthorized")
-                  const n = yield* node(tx, wf.id, input.nodeID)
-                  if (
-                    !n ||
-                    !liveNode(n) ||
-                    attempt(n) !== input.attemptID ||
-                    (sender.kind === "node" && sender.nodeID !== n.id)
+          return DagTransact.immediate(db, (tx) =>
+            Effect.gen(function* () {
+              const wf = yield* workflow(tx, input.workflowID)
+              const sender = wf && (yield* owner(tx, caller, wf))
+              if (!wf || !sender) return reject("unauthorized")
+              const n = yield* node(tx, wf.id, input.nodeID)
+              if (
+                !n ||
+                !liveNode(n) ||
+                attempt(n) !== input.attemptID ||
+                (sender.kind === "node" && sender.nodeID !== n.id)
+              )
+                return reject("stale_attempt")
+              const childSession = yield* session(tx, n.child_session_id!)
+              if (
+                !boundChild(wf, n, childSession) &&
+                !(!childSession && sender.kind === "main" && input.failureReason && input.close !== false)
+              )
+                return reject("unauthorized")
+              if (!liveWorkflow(wf.status)) return reject("closed")
+              const endpoint = child(n)
+              const box = yield* mailbox(tx, endpoint)
+              if (box.closed_reason) return reject("closed")
+              if (input.expectedAcceptedRevision !== undefined && box.revision !== input.expectedAcceptedRevision)
+                return reject("stale_input")
+              const frozen = input.snapshotID
+                ? yield* tx.get<StoredSnapshot>(
+                    sql`SELECT * FROM agent_input_snapshot WHERE id = ${input.snapshotID} AND mailbox_id = ${box.id}`,
                   )
-                    return reject("stale_attempt")
-                  const childSession = yield* session(tx, n.child_session_id!)
-                  if (
-                    !boundChild(wf, n, childSession) &&
-                    !(!childSession && sender.kind === "main" && input.failureReason && input.close !== false)
-                  )
-                    return reject("unauthorized")
-                  if (!liveWorkflow(wf.status)) return reject("closed")
-                  const endpoint = child(n)
-                  const box = yield* mailbox(tx, endpoint)
-                  if (box.closed_reason) return reject("closed")
-                  if (input.expectedAcceptedRevision !== undefined && box.revision !== input.expectedAcceptedRevision)
-                    return reject("stale_input")
-                  const frozen = input.snapshotID
-                    ? yield* tx.get<StoredSnapshot>(
-                        sql`SELECT * FROM agent_input_snapshot WHERE id = ${input.snapshotID} AND mailbox_id = ${box.id}`,
-                      )
-                    : undefined
-                  const checkSnapshot = !input.failureReason || input.requireCurrentInput === true
-                  if (
-                    checkSnapshot &&
-                    ((!frozen && (box.revision > 0 || input.snapshotID !== undefined)) ||
-                      (frozen && frozen.revision !== box.revision))
-                  )
-                    return reject("stale_input")
-                  if (checkSnapshot && frozen && !frozen.associated) return reject("unassociated")
-                  if (checkSnapshot && frozen?.stop_reason && frozen.stop_reason !== "budget_exhausted")
-                    return reject("stopped")
-                  // close:false claims the result without closing the channel, so it publishes nothing.
-                  if (input.close === false) {
-                    const claimed = yield* tx.get<{ id: string }>(
-                      sql`UPDATE agent_mailbox SET closed_reason = NULL WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING id`,
-                    )
-                    if (!claimed) return reject("stale_input")
-                    return success(yield* commit)
-                  }
-                  const claimed = yield* tx.get<{ change_seq: number }>(
-                    sql`UPDATE agent_mailbox SET closed_reason = ${input.failureReason ?? "completed"}, change_seq = change_seq + 1 WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING change_seq`,
-                  )
-                  if (!claimed) return reject("stale_input")
-                  if (input.failureReason) yield* undeliverable(tx, box.id, input.failureReason)
-                  changes.push(change(box, box.session_directory, "closed", claimed.change_seq))
-                  return success(yield* commit)
-                }).pipe(Effect.tap(() => afterCommit(changes))),
-              { behavior: "immediate" },
-            )
-            .pipe(
-              Effect.catch((error) =>
-                error instanceof SqlError || error instanceof EffectDrizzleQueryError
-                  ? Effect.die(error)
-                  : Effect.fail(error),
-              ),
-            )
+                : undefined
+              const checkSnapshot = !input.failureReason || input.requireCurrentInput === true
+              if (
+                checkSnapshot &&
+                ((!frozen && (box.revision > 0 || input.snapshotID !== undefined)) ||
+                  (frozen && frozen.revision !== box.revision))
+              )
+                return reject("stale_input")
+              if (checkSnapshot && frozen && !frozen.associated) return reject("unassociated")
+              if (checkSnapshot && frozen?.stop_reason && frozen.stop_reason !== "budget_exhausted")
+                return reject("stopped")
+              // close:false claims the result without closing the channel, so it publishes nothing.
+              if (input.close === false) {
+                const claimed = yield* tx.get<{ id: string }>(
+                  sql`UPDATE agent_mailbox SET closed_reason = NULL WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING id`,
+                )
+                if (!claimed) return reject("stale_input")
+                return success(yield* commit)
+              }
+              const claimed = yield* tx.get<{ change_seq: number }>(
+                sql`UPDATE agent_mailbox SET closed_reason = ${input.failureReason ?? "completed"}, change_seq = change_seq + 1 WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING change_seq`,
+              )
+              if (!claimed) return reject("stale_input")
+              if (input.failureReason) yield* undeliverable(tx, box.id, input.failureReason)
+              changes.push(change(box, box.session_directory, "closed", claimed.change_seq))
+              return success(yield* commit)
+            }).pipe(Effect.tap(() => afterCommit(changes))),
+          )
         }),
       closeSession: (sessionID, reason) =>
         transaction((tx, changes) =>
