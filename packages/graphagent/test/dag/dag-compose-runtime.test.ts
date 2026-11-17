@@ -517,3 +517,148 @@ describe("DagLoop compose expansion", () => {
     ),
   )
 })
+
+const failedNode = (store: DagStore.Interface, dagID: string, id: string, message: string) =>
+  pollWithTimeout(
+    store.getNode(dagID, id).pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+    message,
+  )
+
+describe("DagLoop compose join admission", () => {
+  it.live("refuses a join node whose required item has no result before any model is asked, and carries on", () =>
+    runLoopTest(({ dag, loop, store, records, harness }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* start(dag, route())
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        // `auditor` is an agent whose work is required, so its item is a required item; the block is optional, and
+        // so is the child that runs the item: its failure does not fail the workflow, it is the join node that finds it.
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("security", "auditor")]))
+        const taken = yield* take(records, 2, "the children did not start")
+        yield* dag.nodeFailed(dagID, "survey--security", "the audit crashed", "exec_failed")
+        yield* Deferred.succeed(named(taken, child("official")).release, research("official says"))
+
+        const refused = yield* failedNode(store, dagID, "survey", "the join node was not refused")
+        expect(refused.errorClass).toBe("compose_required_missing")
+        expect(refused.errorReason).toContain('"security" (survey--security: failed)')
+        // It never started: no session, no run registered for it, and no prompt for a model.
+        expect(refused.childSessionId).toBeNull()
+        expect(harness.starts.map((spec) => spec.owner.nodeID)).not.toContain("survey")
+        // Its dependent is next, and gets the failure where it would have got the join.
+        const report = yield* awaitWithTimeout(Queue.take(records), "the downstream node did not start")
+        expect(report.title).toBe("report")
+        expect(report.text).toContain("Compose join did not run")
+        expect(report.text).toContain("security")
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+        yield* Deferred.succeed(report.release, "done")
+        yield* pollWithTimeout(
+          store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
+          "the workflow did not complete",
+        )
+        expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
+      }),
+    ),
+  )
+
+  it.live("refuses a join node none of whose children has a result with compose_no_results, and carries on", () =>
+    runLoopTest(({ dag, loop, store, records, harness }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* start(dag, route())
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("code", "explore")]))
+        yield* take(records, 2, "the children did not start")
+        yield* dag.nodeFailed(dagID, "survey--official", "the source was unreachable", "exec_failed")
+        yield* dag.nodeFailed(dagID, "survey--code", "the search timed out", "exec_failed")
+
+        const refused = yield* failedNode(store, dagID, "survey", "the join node was not refused")
+        expect(refused.errorClass).toBe("compose_no_results")
+        expect(refused.errorReason).toContain("survey--official: failed")
+        expect(refused.errorReason).toContain("survey--code: failed")
+        expect(harness.starts.map((spec) => spec.owner.nodeID)).not.toContain("survey")
+        const report = yield* awaitWithTimeout(Queue.take(records), "the downstream node did not start")
+        expect(report.title).toBe("report")
+        expect(report.text).toContain("no item produced a result")
+        yield* Deferred.succeed(report.release, "done")
+        yield* pollWithTimeout(
+          store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
+          "the workflow did not complete",
+        )
+        expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
+      }),
+    ),
+  )
+
+  it.live("refuses the join node of a degraded expansion when its fallback worker fails", () =>
+    runLoopTest(({ dag, loop, store, records, harness }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* start(dag, route())
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        // The plan is valid for the schema the split node was given; by the time it is expanded, `researcher` is private.
+        harness.catalog = [
+          ...agents().filter((entry) => entry.name !== "researcher" && entry.name !== "surveyor"),
+          agent("researcher", { contract: { visibility: "private", output: { artifact: "research_findings" } } }),
+          agent("surveyor", {
+            contract: {
+              role: "composer",
+              output: { artifact: "survey_report" },
+              compose: compose("fan_out", ["researcher", "explore"], "explore"),
+            },
+          }),
+        ]
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("code", "explore")]))
+        const fallback = yield* awaitWithTimeout(Queue.take(records), "the fallback worker did not start")
+        expect(fallback.title).toBe(child("fallback"))
+        yield* dag.nodeFailed(dagID, "survey--fallback", "the worker gave up", "exec_failed")
+
+        const refused = yield* failedNode(store, dagID, "survey", "the join node was not refused")
+        expect(refused.errorClass).toBe("compose_no_results")
+        expect(refused.errorReason).toContain("the fallback worker produced no result")
+        expect(harness.starts.map((spec) => spec.owner.nodeID)).not.toContain("survey")
+        const report = yield* awaitWithTimeout(Queue.take(records), "the downstream node did not start")
+        expect(report.title).toBe("report")
+        yield* Deferred.succeed(report.release, "done")
+        yield* pollWithTimeout(
+          store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
+          "the workflow did not complete",
+        )
+      }),
+    ),
+  )
+
+  it.live(
+    "fails the workflow when the join node of a required block is refused, since it takes the block's semantics",
+    () =>
+      runLoopTest(({ dag, loop, store, records, harness }) =>
+        Effect.gen(function* () {
+          yield* loop.init()
+          const dagID = yield* start(dag, route({ required: true }))
+          const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+          // Both items may be left out, so both children are optional and the scheduler lets the join node become ready.
+          yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("code", "explore")]))
+          yield* take(records, 2, "the children did not start")
+          yield* dag.nodeFailed(dagID, "survey--official", "the source was unreachable", "exec_failed")
+          yield* dag.nodeFailed(dagID, "survey--code", "the search timed out", "exec_failed")
+
+          const refused = yield* failedNode(store, dagID, "survey", "the join node was not refused")
+          expect(refused).toMatchObject({ errorClass: "compose_no_results", required: true })
+          yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+            "the workflow did not fail",
+          )
+          // The refused join node is the one node that failed, and its dependent never ran.
+          const rows = new Map((yield* store.getNodes(dagID)).map((row) => [row.id, row]))
+          expect(
+            [...rows.values()]
+              .filter((row) => row.status === "failed")
+              .map((row) => row.id)
+              .sort(),
+          ).toEqual(["survey", "survey--code", "survey--official"])
+          expect(rows.get("report")).toMatchObject({ status: "skipped", errorReason: "workflow_failed" })
+          expect(harness.starts.map((spec) => spec.owner.nodeID)).not.toContain("survey")
+          expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
+        }),
+      ),
+  )
+})

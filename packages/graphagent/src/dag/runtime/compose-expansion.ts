@@ -27,6 +27,11 @@ import { DagValidation } from "../validation"
  * takes the failure semantics of its own `required`. What decides all of this is
  * `DagCompose.planExpansion`; this module only reads the state it needs, writes
  * the result and reports.
+ *
+ * The other end of the expansion is `admitJoin`: when the join node it left
+ * behind becomes ready, it is checked against what its children produced before
+ * any model is asked, and a join node with nothing it needs fails the way a slot
+ * does, with its own `required` deciding what that costs.
  */
 
 /** The error class a slot fails with when neither the expansion nor the fallback fits the graph. */
@@ -124,6 +129,48 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
   if (isTransitionRejection(second.failure)) return
   const { reason, errorClass } = refusal(second.failure)
   yield* giveUp(reason, errorClass)
+})
+
+export interface JoinInput {
+  /** The runner's writes: the entry's port, so a lost lease refuses them. */
+  readonly port: Pick<Dag.Interface, "nodeFailed">
+  readonly dagID: string
+  /** The join node as persisted: the definition that carries `join`. */
+  readonly node: NodeConfig
+  /** The workflow's rows of this scheduling round. */
+  readonly nodes: readonly DagStore.NodeRow[]
+  /** What the round read of the node, so a parent's replan or cancel in between wins. */
+  readonly attempt: NodeExecutionAttempt
+}
+
+/**
+ * The join node's admission check (#1158): resolves `true` when the node may go
+ * on to be spawned, and `false` when it was refused here, which is a durable
+ * failure of the node with `compose_required_missing` or `compose_no_results`.
+ * A refused join node never reaches a model. A write that a stale attempt or a
+ * lost lease refused leaves the node pending and also resolves `false`, so a
+ * round that no longer owns the node does not spawn it. A node with no `join`
+ * is not one this applies to, and passes.
+ *
+ * The children are read by the node ids the join record holds. A recovery
+ * rewrites that record together with the join node it replaces (`planRecovery`),
+ * so the ids name the attempts that count and a superseded one is not read as if
+ * it were current.
+ */
+export const admitJoin = Effect.fn("DagComposeExpansion.admitJoin")(function* (input: JoinInput) {
+  const { port, dagID, node, nodes, attempt } = input
+  if (node.join === undefined) return true
+  const rows = new Map(nodes.map((row) => [row.id, row]))
+  const verdict = DagCompose.checkJoin(node.join, (id) => rows.get(id))
+  if (verdict.kind === "run") return true
+  yield* Effect.logWarning("DAG compose join refused: its children left nothing it needs", {
+    dagID,
+    nodeID: node.id,
+    errorClass: verdict.errorClass,
+    reason: verdict.reason,
+  })
+  yield* port.nodeFailed(dagID, node.id, verdict.reason, "exec_failed", attempt, verdict.errorClass).pipe(Effect.ignore)
+  return false
 })
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))

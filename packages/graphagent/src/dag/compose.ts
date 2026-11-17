@@ -20,12 +20,14 @@
  *
  * Expanding a stored plan is here too, as pure functions (`planExpansion`,
  * `degrade`): the plan's children, the join node that replaces the slot, and the
- * degraded path when a plan cannot be expanded. The scheduler's admission seam,
- * next to the `fan_out` expansion of ADR-0004 (`DagComposeExpansion`), reads the
- * stored state, calls them and writes the result with `Dag.extend`. The join
- * admission checks, nested expansion, recovery, cancellation and budget are still
- * to come (#1158 PR3b-2); until they land the submission gate below keeps such a
- * graph from being submitted.
+ * degraded path when a plan cannot be expanded. So is the join node's admission
+ * check (`checkJoin`): whether the children left it anything to join. The
+ * scheduler's admission seam, next to the `fan_out` expansion of ADR-0004
+ * (`DagComposeExpansion`), reads the stored state, calls them and writes the
+ * result, with `Dag.extend` for an expansion and a node failure for a refused
+ * join. Nested expansion, cancellation and budget are still to come (#1158
+ * PR3b-2); until they land the submission gate below keeps such a graph from
+ * being submitted.
  */
 
 import { AgentArtifact } from "@/agent/artifact"
@@ -828,6 +830,84 @@ function joinInput(join: Join): string {
     ),
     'A key that holds an artifact is that item\'s result. A key that holds text starting with "Dependency" says the item failed, was skipped or was aborted, and why: the item is not covered.',
   ].join("\n")
+}
+
+// ============================================================================
+// The join node's admission check
+// ============================================================================
+
+/** The error class of a join node refused because the work of a required item is missing. */
+export const REQUIRED_MISSING = "compose_required_missing"
+/** The error class of a join node refused because none of its items produced anything. */
+export const NO_RESULTS = "compose_no_results"
+
+/** What the check reads of an item's child: its row as the store keeps it. */
+export interface JoinChild {
+  readonly status: string
+  readonly output: unknown
+}
+
+export type JoinVerdict =
+  | { readonly kind: "run" }
+  | {
+      readonly kind: "refuse"
+      readonly errorClass: typeof REQUIRED_MISSING | typeof NO_RESULTS
+      /** Reads as the tail of `Dependency "<join>" failed: ...`, which is what a dependent is given. */
+      readonly reason: string
+    }
+
+/** A child produced something when it completed with an output; a null one is the scheduler's "completed without output". */
+function produced(child: JoinChild | undefined): boolean {
+  return child?.status === "completed" && child.output !== null && child.output !== undefined
+}
+
+/** One item and what became of its child, as the reason a join node is refused names it. */
+function outcome(item: Join["items"][number], child: JoinChild | undefined): string {
+  const state = child === undefined ? "gone" : child.status === "completed" ? "completed without output" : child.status
+  return `"${item.id}" (${item.node}: ${state})`
+}
+
+/**
+ * Whether a join node may run, decided before any model call from what its
+ * children left behind. `child` finds the row of an item's child by node id; a
+ * child counts when it completed with an output, so a failed, skipped, aborted,
+ * cancelled or vanished one does not.
+ *
+ * - A required item whose child has nothing refuses the join node with
+ *   `compose_required_missing`. Only a required item of an optional block can
+ *   get here: in a required block the scheduler already failed the workflow at
+ *   that child, and the join node never became ready.
+ * - A join node none of whose children has anything refuses with
+ *   `compose_no_results`. The fallback worker of a degraded expansion is the
+ *   only child then, and is not an item the plan could have left out, so its
+ *   failure takes this path too.
+ *
+ * Either way the node fails with its own `required` deciding what that costs: an
+ * optional join node hands its dependents the failure as their placeholder, and a
+ * required one fails the workflow. The first check wins when both would refuse.
+ */
+export function checkJoin(join: Join, child: (node: string) => JoinChild | undefined): JoinVerdict {
+  const missing = join.items.filter((item) => !produced(child(item.node)))
+  const list = (items: readonly Join["items"][number][]) =>
+    items.map((item) => outcome(item, child(item.node))).join(", ")
+  const required = missing.filter((item) => item.required)
+  if (required.length > 0)
+    return {
+      kind: "refuse",
+      errorClass: REQUIRED_MISSING,
+      reason: `Compose join did not run: required ${required.length === 1 ? "item" : "items"} ${list(required)} produced no result`,
+    }
+  if (missing.length < join.items.length) return { kind: "run" }
+  return {
+    kind: "refuse",
+    errorClass: NO_RESULTS,
+    reason:
+      join.items.length === 0
+        ? "Compose join did not run: the expansion has no item to join"
+        : join.degraded !== undefined
+          ? `Compose join did not run: the fallback worker produced no result: ${list(missing)}`
+          : `Compose join did not run: no item produced a result: ${list(missing)}`,
+  }
 }
 
 // ============================================================================

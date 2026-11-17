@@ -160,6 +160,19 @@ export function planRecovery(
       ),
       ...(condition !== undefined ? { condition } : {}),
       ...(node.fan_out !== undefined ? { fan_out: mapID(node.fan_out) } : {}),
+      // #1158: a compose slot names its split node, and a join node names the split node and the child of each item.
+      // A node is recovered together with every node that depends on it, so a recovered split node or child brings
+      // its slot or join node along and both records have to name the attempts that now count.
+      ...(node.expand !== undefined ? { expand: mapID(node.expand) } : {}),
+      ...(node.join !== undefined
+        ? {
+            join: {
+              ...node.join,
+              plan: mapID(node.join.plan),
+              items: node.join.items.map((item) => ({ ...item, node: mapID(item.node) })),
+            },
+          }
+        : {}),
       prompt_template: {
         ...node.prompt_template,
         input: {

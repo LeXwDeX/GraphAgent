@@ -150,10 +150,12 @@ const scenario = (setup: Setup) =>
       const row = rows.find((candidate) => candidate.id === "survey")
       return { workflow, rows, config, row }
     })
-    const expand = (port: Pick<Dag.Interface, "extend" | "nodeFailed"> = dag) =>
+    // `slotID` is the slot as a recovery renamed it; the block's own id otherwise.
+    const expand = (port: Pick<Dag.Interface, "extend" | "nodeFailed"> = dag, slotID = "survey") =>
       Effect.gen(function* () {
-        const { workflow, rows, config, row } = yield* read
-        const slot = config?.nodes.find((candidate) => candidate.id === "survey")
+        const { workflow, rows, config } = yield* read
+        const slot = config?.nodes.find((candidate) => candidate.id === slotID)
+        const row = rows.find((candidate) => candidate.id === slotID)
         if (!slot || !row || !workflow) throw new Error("the slot is gone")
         yield* DagComposeExpansion.expand({
           port,
@@ -574,5 +576,329 @@ describe("what a required slot does when its expansion cannot be made", () => {
         expect(row).toMatchObject({ status: "failed", errorClass: "compose_capacity", required: true })
         expect(config?.nodes.find((node) => node.id === "survey")?.required).toBe(true)
       }),
+  )
+})
+
+/** What the scheduler does with a node that runs: queued, started, and then settled by its worker. */
+const settle = (
+  dag: Dag.Interface,
+  dagID: string,
+  id: string,
+  outcome: { readonly output: unknown } | { readonly failed: string },
+) =>
+  Effect.gen(function* () {
+    yield* dag.nodeQueued(dagID, id, DEADLINE())
+    yield* dag.nodeStarted(dagID, id, `ses_${id}`, DEADLINE())
+    if ("output" in outcome) yield* dag.nodeCompleted(dagID, id, outcome.output)
+    else yield* dag.nodeFailed(dagID, id, outcome.failed, "exec_failed")
+  })
+
+/** The join node's admission check, as the scheduler calls it for a node that has become ready. */
+const admit = (dag: Dag.Interface, dagID: string, options: { node?: string; staleSeq?: boolean } = {}) =>
+  Effect.gen(function* () {
+    const id = options.node ?? "survey"
+    const workflow = yield* dag.store.getWorkflow(dagID)
+    const rows = yield* dag.store.getNodes(dagID)
+    const node = parseWorkflowConfig(workflow?.config ?? "")?.nodes.find((candidate) => candidate.id === id)
+    const row = rows.find((candidate) => candidate.id === id)
+    if (!node || !row || !workflow) throw new Error("the node is gone")
+    return yield* DagComposeExpansion.admitJoin({
+      port: dag,
+      dagID,
+      node,
+      nodes: rows,
+      attempt: {
+        replanAttempts: row.replanAttempts,
+        nodeSeq: options.staleSeq ? row.seq + 1 : row.seq,
+        graphRev: workflow.graphRev,
+      },
+    })
+  })
+
+describe("the join node's admission check over a real Dag service", () => {
+  it.live("fails a join node whose required item has no result with compose_required_missing, and only that node", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { output: "official says" })
+      // The block is optional, so the child of its required item is optional too: its failure does not fail the workflow.
+      yield* settle(dag, dagID, "survey--security", { failed: "the audit crashed" })
+      expect((yield* read).workflow?.status).toBe("running")
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const { rows, workflow } = yield* read
+      const byRow = new Map(rows.map((row) => [row.id, row]))
+      expect(byRow.get("survey")).toMatchObject({
+        status: "failed",
+        errorClass: "compose_required_missing",
+        childSessionId: null,
+        required: false,
+      })
+      expect(byRow.get("survey")?.errorReason).toContain('"security" (survey--security: failed)')
+      expect(byRow.get("survey")?.errorReason).not.toContain('"official"')
+      // The failure is the join node's alone: its dependent waits for the scheduler, and the workflow carries on.
+      expect(byRow.get("report")?.status).toBe("pending")
+      expect(workflow?.status).toBe("running")
+    }),
+  )
+
+  it.live("lets a join node through when only items that may be left out have no result, and writes nothing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--security", { output: "security says" })
+      const before = yield* read
+      expect(yield* admit(dag, dagID)).toBe(true)
+      expect((yield* read).rows).toEqual(before.rows)
+    }),
+  )
+
+  it.live("fails a join node none of whose children has a result with compose_no_results", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const row = (yield* read).rows.find((candidate) => candidate.id === "survey")
+      expect(row).toMatchObject({ status: "failed", errorClass: "compose_no_results" })
+      expect(row?.errorReason).toContain("survey--official: failed")
+      expect(row?.errorReason).toContain("survey--code: failed")
+    }),
+  )
+
+  it.live("fails the join node of a degraded expansion when its fallback worker has no result", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([]) } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--fallback", { failed: "the worker gave up" })
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const row = (yield* read).rows.find((candidate) => candidate.id === "survey")
+      expect(row).toMatchObject({ status: "failed", errorClass: "compose_no_results" })
+      expect(row?.errorReason).toContain("the fallback worker produced no result")
+    }),
+  )
+
+  it.live("takes a required join node's failure for the workflow's: a required block fails its dependents", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        survey: { required: true },
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      // Skippable items of a required block are optional children: the scheduler lets the join node become ready.
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+      expect(yield* admit(dag, dagID)).toBe(false)
+      const { rows } = yield* read
+      expect(rows.find((candidate) => candidate.id === "survey")).toMatchObject({
+        status: "failed",
+        errorClass: "compose_no_results",
+        required: true,
+      })
+    }),
+  )
+
+  it.live("leaves a join node pending, and does not let it run, when the attempt it checked has gone stale", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+      yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+      // A round that read the node before a parent's replan reshaped it: the refusal is not written.
+      expect(yield* admit(dag, dagID, { staleSeq: true })).toBe(false)
+      expect((yield* read).rows.find((candidate) => candidate.id === "survey")).toMatchObject({
+        status: "pending",
+        errorClass: null,
+      })
+    }),
+  )
+
+  it.live("has nothing to check on a node that is no join node", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      const before = yield* read
+      expect(yield* admit(dag, dagID, { node: "report" })).toBe(true)
+      expect((yield* read).rows).toEqual(before.rows)
+    }),
+  )
+})
+
+describe("recovering a compose node over a real Dag service", () => {
+  /** Stops the run the way a failure of the workflow does, and recovers the nodes; the plan says what was replaced. */
+  const stopAndRecover = (dag: Dag.Interface, dagID: string, nodeIDs: string[]) =>
+    Effect.gen(function* () {
+      yield* dag.fail(dagID, "the run was stopped")
+      const workflow = yield* dag.store.getWorkflow(dagID)
+      if (!workflow) throw new Error("the workflow is gone")
+      const recovered = yield* dag.recover(dagID, { nodeIDs, expectedGraphRev: workflow.graphRev })
+      const attempt = (logical: string) => {
+        const found = recovered.replacements.find((entry) => entry.logical === logical)
+        if (!found) throw new Error(`${logical} was not replaced`)
+        return found.current
+      }
+      return { recovered, attempt }
+    })
+
+  it.live(
+    "reads the plan of the recovered split node: the slot is pointed at it and expands instead of degrading",
+    () =>
+      Effect.gen(function* () {
+        // The split node failed and the run was stopped before the slot was expanded.
+        const { dag, dagID, read, expand } = yield* scenario({ split: { failed: "the model gave up" } })
+        const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--split"])
+        const splitID = attempt("survey--split")
+        const slotID = attempt("survey")
+        expect(byID((yield* read).config?.nodes).get(slotID)?.expand).toBe(splitID)
+
+        yield* settle(dag, dagID, splitID, {
+          output: JSON.stringify(plan([item("official", "researcher"), item("code", "explore")])),
+        })
+        yield* expand(dag, slotID)
+        const { config, rows } = yield* read
+        const nodes = byID(config?.nodes)
+        const joinNode = nodes.get(slotID)
+        // Read against the failed attempt, which is what the slot named before, the plan would have been "the split node failed".
+        expect(joinNode?.join?.degraded).toBeUndefined()
+        expect(joinNode?.join?.plan).toBe(splitID)
+        expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual([`${slotID}--official`, `${slotID}--code`])
+        for (const entry of joinNode?.join?.items ?? []) expect(nodes.get(entry.node)?.depends_on).toEqual([splitID])
+        expect(rows.find((row) => row.id === slotID)?.dependsOn).toEqual([`${slotID}--official`, `${slotID}--code`])
+      }),
+  )
+
+  it.live("points the join node at the recovered child, so its check reads the attempt that counts", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { output: "official says" })
+      yield* settle(dag, dagID, "survey--security", { failed: "the audit crashed" })
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--security"])
+      const childID = attempt("survey--security")
+      const joinID = attempt("survey")
+      const joinNode = byID((yield* read).config?.nodes).get(joinID)
+      expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual(["survey--official", childID])
+      expect(joinNode?.depends_on).toEqual(["survey--official", childID])
+
+      // The recovered child produces its result: the recovered join node finds it where the failed attempt was.
+      yield* settle(dag, dagID, childID, { output: "security says" })
+      expect(yield* admit(dag, dagID, { node: joinID })).toBe(true)
+      expect((yield* dag.store.getNode(dagID, joinID))?.status).toBe("pending")
+    }),
+  )
+
+  it.live("points the join node at every recovered attempt when the split node is recovered", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand()
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--split"])
+      const joinNode = byID((yield* read).config?.nodes).get(attempt("survey"))
+      expect(joinNode?.join?.plan).toBe(attempt("survey--split"))
+      expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual([
+        attempt("survey--official"),
+        attempt("survey--code"),
+      ])
+      // Both of the children the join node now reads are rows of the current graph.
+      const current = new Set((yield* dag.store.getCurrentNodes(dagID)).map((row) => row.id))
+      for (const id of [joinNode?.join?.plan ?? "", ...(joinNode?.join?.items.map((entry) => entry.node) ?? [])])
+        expect(current.has(id), id).toBe(true)
+    }),
+  )
+
+  it.live(
+    "does not read a superseded attempt: with the old child's failure left in place, the join node still runs",
+    () =>
+      Effect.gen(function* () {
+        const { dag, dagID, expand } = yield* scenario({
+          split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+        })
+        yield* expand()
+        yield* settle(dag, dagID, "survey--official", { failed: "the source was unreachable" })
+        yield* settle(dag, dagID, "survey--code", { failed: "the search timed out" })
+        const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--official", "survey--code"])
+        yield* settle(dag, dagID, attempt("survey--official"), { output: "official says" })
+        yield* settle(dag, dagID, attempt("survey--code"), { failed: "the search timed out again" })
+        // The superseded attempts failed too, but only the recovered ones count: one has a result.
+        expect((yield* dag.store.getNode(dagID, "survey--official"))?.status).toBe("failed")
+        expect(yield* admit(dag, dagID, { node: attempt("survey") })).toBe(true)
+      }),
+  )
+})
+
+describe("what a replan may do to the marks of a compose node over a real Dag service", () => {
+  it.live("refuses a replacement of the join node that drops its join record, and changes nothing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      const before = yield* read
+      const joinNode = byID(before.config?.nodes).get("survey")
+      if (!joinNode) throw new Error("the join node is gone")
+      const { join: _join, ...restated } = joinNode
+      const failure = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(failure.message).toContain('Node "survey" carries join')
+      expect(failure.message).toContain("cannot change or clear it")
+      const after = yield* read
+      expect(after.config).toEqual(before.config)
+      expect(after.workflow?.graphRev).toBe(before.workflow?.graphRev)
+    }),
+  )
+
+  it.live("lets a replacement that keeps the join record as it is through", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      const joinNode = byID((yield* read).config?.nodes).get("survey")
+      if (!joinNode) throw new Error("the join node is gone")
+      const result = yield* dag.extend(dagID, [{ ...joinNode, name: "survey: joined" }])
+      expect(result.replace).toContain("survey")
+      const after = byID((yield* read).config?.nodes).get("survey")
+      expect(after?.name).toBe("survey: joined")
+      expect(after?.join).toEqual(joinNode.join)
+    }),
+  )
+
+  it.live("refuses a replacement of a slot that has not been expanded and lacks its marker", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      const before = yield* read
+      const slot = byID(before.config?.nodes).get("survey")
+      if (!slot?.expand) throw new Error("the slot is gone")
+      const { expand: _expand, ...restated } = slot
+      const failure = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(failure.message).toContain('Node "survey" carries expand')
+      expect((yield* read).config).toEqual(before.config)
+    }),
+  )
+
+  it.live("holds a running join node by the admitted-field guard, and a restart of it by the compose one", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ split: { plan: plan([item("official", "researcher")]) } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--official", { output: "official says" })
+      yield* dag.nodeQueued(dagID, "survey", DEADLINE())
+      yield* dag.nodeStarted(dagID, "survey", "ses_survey", DEADLINE())
+      const before = yield* read
+      const joinNode = byID(before.config?.nodes).get("survey")
+      if (!joinNode) throw new Error("the join node is gone")
+      const { join: _join, ...restated } = joinNode
+      const held = yield* dag.extend(dagID, [restated]).pipe(Effect.flip)
+      expect(held.message).toContain("changes admitted execution fields without restart: join")
+      const restarted = yield* dag.extend(dagID, [{ ...restated, restart: true }]).pipe(Effect.flip)
+      expect(restarted.message).toContain('Node "survey" carries join')
+      expect((yield* read).config).toEqual(before.config)
+    }),
   )
 })

@@ -552,6 +552,21 @@ const serviceLayer = Layer.effect(
               return
             }
 
+            // #1158: the join node an expansion left behind is checked before any model is asked. Its children
+            // must have left it something to join, and one that finds a required item missing, or nothing at
+            // all, fails here with its own `required` deciding what that costs (an optional one hands its
+            // dependents the failure as their placeholder).
+            if (nodeConfig.join !== undefined) {
+              const mayRun = yield* DagComposeExpansion.admitJoin({
+                port,
+                dagID,
+                node: nodeConfig,
+                nodes: nodesSnapshot,
+                attempt: admissionAttempt,
+              })
+              if (!mayRun) continue
+            }
+
             const promptParts: { type: "text"; text: string }[] = []
 
             let resolvedMapping: Record<string, unknown> = {}

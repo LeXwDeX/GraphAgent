@@ -180,7 +180,9 @@ export interface NodeConfig {
    * (`DagComposeExpansion`, in the loop's admission seam). The Workflow Authoring
    * Check still refuses to submit a graph with a slot until the rest of the
    * feature lands (`DagCompose.gate`). Written by the compiler (`DagCompose`),
-   * never by an author; no model-writable node schema has the field. */
+   * never by an author; no model-writable node schema has the field. A recovery
+   * points it at the recovered split node, and a replan can neither change nor
+   * clear it (`ReplanDefinition.changedEngineOwnedFields`). */
   expand?: string
   /** #1158: what the join node of an expanded slot joins. Written at expansion,
    * in the same extend that replaces the slot, so the join's admission check and
@@ -188,7 +190,9 @@ export interface NodeConfig {
    * split node the plan came from, per item the child node that runs it, its agent
    * and whether the item's work is required (the child's own `required` also
    * depends on the block, so it is not that), and the reason when the plan was not
-   * expanded and one fallback worker took the whole task. Never authored. */
+   * expanded and one fallback worker took the whole task. Never authored. A
+   * recovery points `plan` and every `node` at the attempts that now count, and a
+   * replan can neither change nor clear it, as with `expand`. */
   join?: {
     plan: string
     items: { id: string; node: string; agent: string; required: boolean }[]
@@ -1566,6 +1570,23 @@ export const layer = Layer.effect(
 
       const nodeStatusById = new Map(nodes.map((n) => [n.id, n.status]))
       const definitionErrors: string[] = []
+      // #1158: `expand` and `join` are the engine's marks on a compose node, and no definition a caller writes in can
+      // carry them, so restating such a node drops them. A running or queued node is held by the admitted-field guard
+      // below; a pending node is replaced and a restarted one is redefined, which is where a mark would be lost and
+      // the node would go on as an ordinary one (a slot spawned as authored, a join node no longer checked).
+      for (const next of normalizedFragment.nodes) {
+        if (next.cancel) continue
+        const status = nodeStatusById.get(next.id)
+        if (status === undefined || isNodeTerminalStatus(status as NodeStatus)) continue
+        if (!next.restart && (status === NodeStatus.RUNNING || status === NodeStatus.QUEUED)) continue
+        const current = cfgById.get(next.id)
+        if (!current) continue
+        const marks = ReplanDefinition.changedEngineOwnedFields(current, next)
+        if (marks.length === 0) continue
+        definitionErrors.push(
+          `Node "${next.id}" carries ${marks.join(", ")}, which the engine wrote when it set up a compose expansion; a replan cannot change or clear it. Cancel the node (cancel: true) and add a replacement under a new id`,
+        )
+      }
       for (const next of normalizedFragment.nodes) {
         if (next.cancel || next.restart) continue
         const status = nodeStatusById.get(next.id)
