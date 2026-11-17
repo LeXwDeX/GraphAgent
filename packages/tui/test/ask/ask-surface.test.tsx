@@ -356,15 +356,7 @@ describe("question ask surface", () => {
     const request = multiQuestion(rootSessionID)
     request.expiresAt = clock.time + 3_000
     const app = await renderAppPanel(
-      () => (
-        <QuestionPrompt
-          request={request}
-          currentSessionID={rootSessionID}
-          rootSessionID={rootSessionID}
-          position={1}
-          total={2}
-        />
-      ),
+      () => <QuestionPrompt request={request} currentSessionID={rootSessionID} position={1} total={2} />,
       {
         width: 100,
         height: 40,
@@ -415,32 +407,27 @@ describe("question ask surface", () => {
     }
   })
 
-  test("hides the free-text answer for a subagent question", async () => {
+  test("a main-session question seen from a sub-agent view keeps its free-text answer and names the main session", async () => {
     await using tmp = await shellState()
     const calls: ReplyCall[] = []
     const app = await renderAppPanel(
       () => (
-        <QuestionPrompt
-          request={question(childSessionID)}
-          currentSessionID={rootSessionID}
-          rootSessionID={rootSessionID}
-          position={1}
-          total={1}
-        />
+        <QuestionPrompt request={question(rootSessionID)} currentSessionID={childSessionID} position={1} total={1} />
       ),
       {
         width: 100,
         height: 40,
         state: tmp.path,
-        setup: (context) => seed(context, [session(rootSessionID), session(childSessionID, rootSessionID)]),
+        setup: (context) =>
+          seed(context, [session(rootSessionID, undefined, "发布准备"), session(childSessionID, rootSessionID)]),
         handler: replyHandler(calls),
       },
     )
     try {
       const frame = app.captureCharFrame()
-      expect(frame).toContain("explore · 扫描破坏性变更 提问")
+      expect(frame).toContain("发布准备 提问")
       expect(frame).toContain("staging")
-      expect(frame).not.toContain("自己输入答案")
+      expect(frame).toContain("自己输入答案")
 
       app.mockInput.pressEscape()
       await settle(app)

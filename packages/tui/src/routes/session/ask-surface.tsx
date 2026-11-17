@@ -47,7 +47,6 @@ export function AskSurface(props: AskSurfaceProps) {
       <QuestionPrompt
         request={props.ask.request}
         currentSessionID={props.currentSessionID}
-        rootSessionID={props.rootSessionID}
         position={props.position}
         total={props.total}
         directory={sync.session.get(props.ask.sessionID)?.directory}

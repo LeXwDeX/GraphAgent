@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { createTuiNotifications } from "../../src/attention/notify"
+import { createTuiNotifications, type SubagentReminders } from "../../src/attention/notify"
 import { setLanguage } from "../../src/i18n"
+import type { ToastOptions } from "../../src/ui/toast"
 import type { Event, PermissionRequest, QuestionRequest, Session } from "@graphagent/sdk"
 
-function setup() {
+function setup(subagent?: SubagentReminders) {
   const notifications: {
     title?: string
     message: string
@@ -24,6 +25,8 @@ function setup() {
   const sessions: Record<string, Session> = {
     session: session("session", "Demo session"),
     subagent: session("subagent", "Subagent session", "session"),
+    agented: { ...session("agented", "Agented session", "session"), agent: "build" },
+    plain: session("plain", "Plain session", "session"),
     abort: session("abort", "Abort session"),
     timeout: session("timeout", "Timeout session"),
   }
@@ -52,6 +55,7 @@ function setup() {
         return { ok: true, notification: true, sound: true }
       },
     },
+    subagent,
   })
 
   return {
@@ -275,5 +279,221 @@ describe("internal attention notifications", () => {
     harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1") })
 
     expect(harness.notifications).toEqual([])
+  })
+})
+
+/** The footer and the route as the reminders see them: the toasts shown, the sessions entered, the session on screen. */
+function reminders(viewing?: string) {
+  const toasts: ToastOptions[] = []
+  const opened: string[] = []
+  let current = viewing
+  const value: SubagentReminders = {
+    toast: { show: (options) => void toasts.push(options) },
+    viewing: () => current,
+    task: (sessionID) => (sessionID === "subagent" ? { kind: "explore" } : undefined),
+    open: (sessionID) => void opened.push(sessionID),
+  }
+  return {
+    value,
+    toasts,
+    opened,
+    view(sessionID?: string) {
+      current = sessionID
+    },
+  }
+}
+
+const busy = (sessionID: string): Event => ({
+  id: `busy-${sessionID}`,
+  type: "session.status",
+  properties: { sessionID, status: { type: "busy" } },
+})
+const idle = (sessionID: string): Event => ({
+  id: `idle-${sessionID}`,
+  type: "session.status",
+  properties: { sessionID, status: { type: "idle" } },
+})
+const failed = (sessionID: string, name: "UnknownError" | "MessageAbortedError" = "UnknownError"): Event => ({
+  id: `error-${sessionID}`,
+  type: "session.error",
+  properties: { sessionID, error: { name, data: { message: "boom" } } },
+})
+
+describe("sub-agent reminders", () => {
+  test("a sub-agent that finishes while the user is elsewhere leaves a toast that goes into it", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("subagent"))
+    harness.emit(idle("subagent"))
+
+    expect(footer.toasts).toHaveLength(1)
+    expect(footer.toasts[0]).toMatchObject({
+      text: "explore finished",
+      level: "info",
+      dedupeKey: "subagent.done.subagent",
+    })
+    // Clicking it is the way in: `openSubAgent` of the app, with the session this toast is about.
+    footer.toasts[0]?.onActivate?.()
+    expect(footer.opened).toEqual(["subagent"])
+    // The sound and the no-system-notification rule stay as they were.
+    expect(harness.notifications).toEqual([
+      {
+        title: "Subagent session",
+        message: "Session done",
+        notification: false,
+        sound: { name: "subagent_done", when: "always" },
+      },
+    ])
+  })
+
+  test("says the Chinese text when the interface is Chinese", () => {
+    setLanguage("zh-CN")
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("subagent"))
+    harness.emit(idle("subagent"))
+    harness.emit({ id: "event-3", type: "permission.asked", properties: permission("permission-1", "subagent") })
+    harness.emit(busy("subagent"))
+    harness.emit(failed("subagent"))
+
+    expect(footer.toasts.map((toast) => [toast.text, toast.level])).toEqual([
+      ["explore 已完成", "info"],
+      ["explore 需要权限 · /agents", "warning"],
+      ["explore 失败", "error"],
+    ])
+  })
+
+  test("a failed sub-agent leaves an error toast, and its idle afterwards is not a second reminder", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("subagent"))
+    harness.emit(failed("subagent"))
+    harness.emit(idle("subagent"))
+
+    expect(footer.toasts).toHaveLength(1)
+    expect(footer.toasts[0]).toMatchObject({
+      text: "explore failed",
+      level: "error",
+      dedupeKey: "subagent.failed.subagent",
+    })
+    footer.toasts[0]?.onActivate?.()
+    expect(footer.opened).toEqual(["subagent"])
+    expect(harness.notifications.map((each) => each.sound.name)).toEqual(["error"])
+  })
+
+  test("a sub-agent that asks for permission leaves a warning toast, once per request", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1", "subagent") })
+    harness.emit({ id: "event-2", type: "permission.asked", properties: permission("permission-1", "subagent") })
+
+    expect(footer.toasts).toHaveLength(1)
+    expect(footer.toasts[0]).toMatchObject({
+      text: "explore needs permission · /agents",
+      level: "warning",
+      dedupeKey: "subagent.permission.subagent",
+    })
+    footer.toasts[0]?.onActivate?.()
+    expect(footer.opened).toEqual(["subagent"])
+    expect(harness.notifications).toEqual([
+      {
+        title: "Subagent session",
+        message: "Permission needs input",
+        notification: false,
+        sound: { name: "permission", when: "always" },
+      },
+    ])
+  })
+
+  test("the sub-agent the user is looking at leaves no toast, and the sound still plays", () => {
+    const footer = reminders("subagent")
+    const harness = setup(footer.value)
+
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1", "subagent") })
+    harness.emit(busy("subagent"))
+    harness.emit(idle("subagent"))
+    harness.emit(busy("subagent"))
+    harness.emit(failed("subagent"))
+
+    expect(footer.toasts).toEqual([])
+    expect(harness.notifications.map((each) => each.sound.name)).toEqual(["permission", "subagent_done", "error"])
+
+    // Once the user leaves it, the next reminder comes.
+    footer.view("session")
+    harness.emit({ id: "event-2", type: "permission.asked", properties: permission("permission-2", "subagent") })
+    expect(footer.toasts).toHaveLength(1)
+  })
+
+  test("home counts as elsewhere", () => {
+    const footer = reminders(undefined)
+    const harness = setup(footer.value)
+
+    harness.emit(busy("subagent"))
+    harness.emit(idle("subagent"))
+
+    expect(footer.toasts.map((toast) => toast.text)).toEqual(["explore finished"])
+  })
+
+  test("a stopped main agent aborts its sub-agents without a failure toast for each", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("subagent"))
+    harness.emit(failed("subagent", "MessageAbortedError"))
+
+    expect(footer.toasts).toEqual([])
+    expect(harness.notifications.map((each) => each.message)).toEqual(["Session aborted"])
+  })
+
+  test("a main session never leaves a sub-agent toast", () => {
+    const footer = reminders("subagent")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("session"))
+    harness.emit(idle("session"))
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1") })
+    harness.emit(busy("abort"))
+    harness.emit(failed("abort"))
+
+    expect(footer.toasts).toEqual([])
+    expect(harness.notifications).toHaveLength(3)
+  })
+
+  test("a sub-agent's question is a sound and nothing else: sub-agents have no question tool to leave a toast for", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1", "subagent") })
+
+    expect(footer.toasts).toEqual([])
+    expect(harness.notifications.map((each) => each.sound.name)).toEqual(["question"])
+  })
+
+  test("names a sub-agent without a Task link by its own agent, or plainly", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("agented"))
+    harness.emit(idle("agented"))
+    harness.emit(busy("plain"))
+    harness.emit(idle("plain"))
+
+    expect(footer.toasts.map((toast) => [toast.text, toast.dedupeKey])).toEqual([
+      ["build finished", "subagent.done.agented"],
+      ["agent finished", "subagent.done.plain"],
+    ])
+  })
+
+  test("without reminders a sub-agent only plays its sound", () => {
+    const harness = setup()
+
+    harness.emit(busy("subagent"))
+    harness.emit(idle("subagent"))
+
+    expect(harness.notifications).toHaveLength(1)
   })
 })

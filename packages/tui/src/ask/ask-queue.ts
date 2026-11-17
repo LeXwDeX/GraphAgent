@@ -108,8 +108,9 @@ function askOrderKey(id: string) {
 }
 
 /**
- * Pending requests for a root session and all of its descendants. The viewed
- * session may be the root or any descendant; both resolve to the same queue.
+ * Pending requests for a root session and all of its descendants: their permission requests and the root's own
+ * questions. Sub-agents have no `question` tool (it is root-only), so no question of a descendant is ever queued.
+ * The viewed session may be the root or any descendant; both resolve to the same queue.
  */
 export function collectAskQueue(data: AskQueueData, sessionID: string): AskRequest[] {
   if (!sessionID) return []
@@ -117,7 +118,9 @@ export function collectAskQueue(data: AskQueueData, sessionID: string): AskReque
   const requests: AskRequest[] = []
   for (const id of sessionTree(data.session, rootSessionID)) {
     for (const request of data.permission[id] ?? []) requests.push({ kind: "permission", sessionID: id, request })
-    for (const request of data.question[id] ?? []) requests.push({ kind: "question", sessionID: id, request })
+  }
+  for (const request of data.question[rootSessionID] ?? []) {
+    requests.push({ kind: "question", sessionID: rootSessionID, request })
   }
   return requests.sort((left, right) => {
     const a = askOrderKey(askRequestID(left))
@@ -143,10 +146,10 @@ export function askQueue(sessionID: string | Accessor<string>): Accessor<readonl
 }
 
 /**
- * Source label shown before permission and question titles when the request
- * comes from a session other than the one being viewed. Task-index entries
- * describe the subagent (`explore · scan for destructive changes`); otherwise
- * the session title is used.
+ * Source label shown before the title of a request that comes from a session
+ * other than the one being viewed. Task-index entries describe the subagent
+ * (`explore · scan for destructive changes`); otherwise the session title is
+ * used (a main session's own question, seen from a sub-agent view).
  */
 export function askSourceLabel(
   data: AskSourceData,

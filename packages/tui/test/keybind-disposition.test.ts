@@ -296,8 +296,8 @@ describe("keybind disposition", () => {
   })
 
   test("keeps the curated definition and command counts", () => {
-    expect(definitionNames).toHaveLength(162)
-    expect(Object.keys(commandMap)).toHaveLength(143)
+    expect(definitionNames).toHaveLength(163)
+    expect(Object.keys(commandMap)).toHaveLength(144)
   })
 
   test("pins the definitions that have no command mapping", () => {
@@ -356,7 +356,12 @@ describe("disposition table", () => {
 
   test("pins the changed and new definitions of the v2 plan", () => {
     const named = (disposition: string) => definitionNames.filter((name) => table[name].disposition === disposition)
-    expect(named("new")).toEqual(["session_drawer_toggle", "view_expand_toggle", "session_dagmode_toggle"])
+    expect(named("new")).toEqual([
+      "session_drawer_toggle",
+      "view_expand_toggle",
+      "session_dagmode_toggle",
+      "subagent_relay",
+    ])
     expect(named("change")).toEqual([
       "help_show",
       "session_rename",

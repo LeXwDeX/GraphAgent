@@ -3,7 +3,10 @@
 
 import type { Event } from "@graphagent/sdk"
 import type { AttentionSoundName } from "../config"
-import { t } from "../i18n"
+import type { TaskIndexEntry } from "../context/session-summary"
+import { t, type MessageKey } from "../i18n"
+import { subagentKind } from "../session/subagents"
+import type { ToastOptions } from "../ui/toast"
 
 type SessionError = Extract<Event, { type: "session.error" }>["properties"]["error"]
 
@@ -14,16 +17,45 @@ type NotifyInput = {
   sound: { name: AttentionSoundName; when: "always" }
 }
 
+/**
+ * What a sub-agent reminder needs beyond the sound (#1033 6). Without it a sub-agent session only plays its sound,
+ * as before.
+ */
+export type SubagentReminders = {
+  toast: { show(options: ToastOptions): void }
+  /** The session on screen: the sub-agent the user is looking at needs no reminder. */
+  viewing(): string | undefined
+  /** The parent's Task link of a child session, for the kind the reminder names. */
+  task(sessionID: string): Pick<TaskIndexEntry, "kind"> | undefined
+  /** Goes into a sub-agent session; `openSubAgent` is the one way in. */
+  open(sessionID: string): void
+}
+
 type NotificationsInput = {
   event: {
     on<T extends Event["type"]>(type: T, handler: (event: Extract<Event, { type: T }>) => void): () => void
   }
   sessions: {
-    get(sessionID: string): { title?: string; parentID?: string } | undefined
+    get(sessionID: string): { title?: string; parentID?: string; agent?: string } | undefined
   }
   attention: {
     notify(input: NotifyInput): Promise<unknown>
   }
+  subagent?: SubagentReminders
+}
+
+type SubagentReminder = "permission" | "done" | "failed"
+
+const REMINDER_TEXT: Record<SubagentReminder, MessageKey> = {
+  permission: "subagent.toast.permission",
+  done: "subagent.toast.done",
+  failed: "subagent.toast.failed",
+}
+
+const REMINDER_LEVEL: Record<SubagentReminder, ToastOptions["level"]> = {
+  permission: "warning",
+  done: "info",
+  failed: "error",
 }
 
 function sessionErrorMessage(error: SessionError) {
@@ -37,7 +69,10 @@ function sessionErrorMessage(error: SessionError) {
 
 /**
  * Built-in session attention notifications: pending questions and permissions,
- * completed turns, and session errors. Subagent sessions only play a sound.
+ * completed turns, and session errors. Subagent sessions play a sound and never
+ * raise a system notification; when the caller passes `subagent`, a finished,
+ * failed or permission-asking sub-agent that is not on screen also leaves a
+ * footer toast that goes into it.
  * Returns the disposer that unsubscribes every event handler.
  */
 export function createTuiNotifications(input: NotificationsInput): () => void {
@@ -54,6 +89,21 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       message,
       notification: isSubagent ? false : { when: "blurred" },
       sound: { name: sound, when: "always" },
+    })
+  }
+
+  function remind(sessionID: string | undefined, reminder: SubagentReminder) {
+    const reminders = input.subagent
+    if (!reminders || !sessionID) return
+    const session = input.sessions.get(sessionID)
+    if (session?.parentID === undefined) return
+    if (reminders.viewing() === sessionID) return
+    const kind = subagentKind({ title: session.title ?? "", agent: session.agent }, reminders.task(sessionID))
+    reminders.toast.show({
+      text: t(REMINDER_TEXT[reminder], { kind }),
+      level: REMINDER_LEVEL[reminder],
+      dedupeKey: `subagent.${reminder}.${sessionID}`,
+      onActivate: () => reminders.open(sessionID),
     })
   }
 
@@ -76,6 +126,7 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       if (permissions.has(event.properties.id)) return
       permissions.add(event.properties.id)
       notify(event.properties.sessionID, t("attention.permission"), "permission")
+      remind(event.properties.sessionID, "permission")
     }),
     input.event.on("permission.replied", (event) => {
       permissions.delete(event.properties.requestID)
@@ -96,6 +147,7 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       }
       const session = input.sessions.get(sessionID)
       notify(sessionID, t("attention.done"), session?.parentID ? "subagent_done" : "done")
+      remind(sessionID, "done")
     }),
     input.event.on("session.error", (event) => {
       const sessionID = event.properties.sessionID
@@ -103,6 +155,8 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
       if (!active.has(sessionID)) return
       errored.add(sessionID)
       notify(sessionID, sessionErrorMessage(event.properties.error), "error")
+      // An abort is the user's own doing, and stopping the main agent aborts every sub-agent under it.
+      if (event.properties.error?.name !== "MessageAbortedError") remind(sessionID, "failed")
     }),
   ]
 
