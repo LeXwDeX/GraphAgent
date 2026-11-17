@@ -7,6 +7,13 @@ import * as TestClock from "effect/testing/TestClock"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Dag } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Database } from "@graphagent/core/database/database"
+import { transactLayer } from "./fixture/transact"
+
+// The store and the bus are doubles; `Dag` still runs each command in the real transaction, over an in-memory
+// database that only the transaction uses. A mock read that sleeps inside the critical section stands for a
+// database read that takes too long, which is what the lock timeout guards against.
+const transact = transactLayer(Database.layerFromPath(":memory:"))
 
 // getWorkflow mock that sleeps past the lock timeout on the first call only, so
 // a first guarded command exceeds WORKFLOW_LOCK_TIMEOUT while any subsequent
@@ -38,7 +45,7 @@ const lockTimeoutLayer = (getWorkflow: () => Effect.Effect<unknown>) => {
     } as never),
   )
   return Layer.mergeAll(
-    Dag.layer.pipe(Layer.provide(events), Layer.provide(store)),
+    Dag.layer.pipe(Layer.provide(events), Layer.provide(store), Layer.provide(transact)),
     TestClock.layer(),
   )
 }
@@ -73,7 +80,7 @@ describe("Dag.Service workflow lock", () => {
         publishMany: () => Effect.succeed([]),
       } as never),
     )
-    const layer = Dag.layer.pipe(Layer.provide(events), Layer.provide(store))
+    const layer = Dag.layer.pipe(Layer.provide(events), Layer.provide(store), Layer.provide(transact))
 
     await Effect.runPromise(
       Effect.gen(function* () {

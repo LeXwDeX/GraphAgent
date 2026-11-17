@@ -20,6 +20,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { renderStatus } from "@/tool/workflow/render"
 import { nodeSafetyWakeLine, workflowSafetyWakeLine } from "@/dag/runtime/delivery"
 import { isRecord } from "@/util/record"
+import { transactLayer } from "./fixture/transact"
 
 /**
  * #1031 M7: a safety denial is durable node evidence, not a lifecycle
@@ -44,7 +45,7 @@ const harness = (() => {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   return Layer.mergeAll(database, events, bridge, store, projector, dag)
 })()
 
