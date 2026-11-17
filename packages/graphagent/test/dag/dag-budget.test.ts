@@ -32,6 +32,7 @@ import { SessionInbox } from "@/session/inbox"
 import { EngineProcess } from "@/session/engine-process"
 import { SessionID, MessageID, PartID } from "@/session/schema"
 import { pollWithTimeout } from "../lib/effect"
+import { transactLayer } from "./fixture/transact"
 
 const dagID = DagEvent.DagID.make("dag_budget")
 const parent = SessionID.make("ses_budget")
@@ -113,7 +114,7 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
         ).pipe(Layer.provide(rawBridge))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const failPause = options.failPauseForBudget ?? 0
   const requeueOutcomes = options.requeueOutcomes ?? []
   const resumeOutcomes = options.resumeOutcomes ?? []

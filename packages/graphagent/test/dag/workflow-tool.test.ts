@@ -34,6 +34,8 @@ import { ProviderTest } from "../fake/provider"
 import { makeNodeRow } from "./fixtures"
 import { tmpdirScoped } from "../fixture/fixture"
 import { Permission } from "@/permission"
+import { Database } from "@graphagent/core/database/database"
+import { transactLayer } from "./fixture/transact"
 
 const projectID = ProjectV2.ID.make("project_test")
 let workflowSpecDirectory = ""
@@ -606,7 +608,10 @@ function recordingDagMethod<K extends keyof Dag.Interface>(name: K, method: Dag.
   }) as unknown as Dag.Interface[K]
 }
 
-const dagBase = Dag.layer.pipe(Layer.provide(store), Layer.provide(events))
+// The store and the bus are doubles, but `Dag` still runs every command in the real transaction, over an
+// in-memory database that only the transaction uses.
+const database = Database.layerFromPath(":memory:")
+const dagBase = Dag.layer.pipe(Layer.provide(store), Layer.provide(events), Layer.provide(transactLayer(database)))
 const dag = Layer.effect(
   Dag.Service,
   Effect.gen(function* () {

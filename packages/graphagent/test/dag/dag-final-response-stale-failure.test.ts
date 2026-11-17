@@ -21,6 +21,7 @@ import { MessageID, PartID, SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt, mockSessionPromptWithStub } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -40,7 +41,16 @@ function services() {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const messages = DagMessages.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
-  const dependencies = Layer.mergeAll(database, events, bridge, store, messages, projector, AgentScheduler.defaultLayer)
+  const dependencies = Layer.mergeAll(
+    database,
+    events,
+    bridge,
+    store,
+    messages,
+    projector,
+    transactLayer(database),
+    AgentScheduler.defaultLayer,
+  )
   return Layer.merge(dependencies, Dag.layer.pipe(Layer.provide(dependencies)))
 }
 const it = testEffect(services())

@@ -22,6 +22,7 @@ import { DagLocation } from "@/dag/location"
 import { planRecovery, staleUpstreamNodes, staleUpstreamNote } from "@/dag/recovery-plan"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { tmpdir } from "../fixture/fixture"
+import { transactLayer } from "./fixture/transact"
 
 const projectID = Project.ID.make("project-retarget")
 const sessionID = Session.ID.make("ses_retarget_parent")
@@ -32,7 +33,7 @@ function retargetLayer() {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   return Layer.mergeAll(database, events, bridge, store, projector, dag)
 }
 

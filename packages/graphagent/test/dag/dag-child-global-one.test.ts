@@ -30,6 +30,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 // Issue #1021 acceptance: with the process-wide child-run limit at ONE, a
 // workflow still completes. A node's slot is a single reservation that spans
@@ -110,7 +111,7 @@ function harness() {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(
     database,
     events,

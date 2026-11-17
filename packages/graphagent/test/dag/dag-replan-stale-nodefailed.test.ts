@@ -24,6 +24,7 @@ import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 interface PromptGate {
   readonly title: string
@@ -132,7 +133,7 @@ function loopLayer(input: {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const dag = Layer.effect(
     Dag.Service,
     Effect.gen(function* () {

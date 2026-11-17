@@ -36,6 +36,7 @@ import { mockSessionPrompt } from "../lib/child-runs"
 import { reportPartKind, tableSession } from "../lib/dag-session-tables"
 import { pollWithTimeout } from "../lib/effect"
 import { makeNodeRow } from "./fixtures"
+import { transactLayer } from "./fixture/transact"
 
 const DIRECTORY = process.cwd()
 const PROJECT_ID = "project-1"
@@ -160,7 +161,7 @@ function graph(control: Control) {
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const transcript = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const automation = ExclusiveRegistry.layer.pipe(Layer.provide(status))
   const session = tableSession({
     onGet: () => {

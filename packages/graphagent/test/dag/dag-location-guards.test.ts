@@ -81,6 +81,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const PROJECT_ID = "project-1"
 // #948 requires execution directories to exist. Keep this harness on real
@@ -285,7 +286,7 @@ function twoInstanceLayer(input: TwoInstanceInput) {
   // publishing Moved through the bridge converges the workflow stamps in the
   // same durable transaction, exactly as production.
   const sessionProjector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(
     database,
     events,

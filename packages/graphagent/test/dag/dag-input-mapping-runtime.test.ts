@@ -37,6 +37,7 @@ import { awaitWithTimeout as awaitUntil, it, pollWithTimeout as pollUntil } from
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 /**
  * Every wait in this file returns as soon as the state it waits for is reached,
@@ -93,7 +94,7 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const titles = new Map<string, string>()
   const permissions = new Map<string, PermissionV1.Ruleset>()

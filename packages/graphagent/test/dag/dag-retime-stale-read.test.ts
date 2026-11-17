@@ -17,6 +17,7 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
+import { transactLayer } from "./fixture/transact"
 
 // ============================================================================
 // Ticket B — spurious T8 (stale-read budget consumption), method-A.
@@ -61,7 +62,7 @@ const harness = (() => {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   return Layer.mergeAll(database, events, bridge, store, projector, dag)
 })()
 

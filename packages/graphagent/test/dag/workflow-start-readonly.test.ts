@@ -37,6 +37,7 @@ import { runWorkflow } from "@/tool/workflow/run"
 import type { RunParams } from "@/tool/workflow/schema"
 import { Worktree } from "@/worktree"
 import { TestConfig } from "../fixture/config"
+import { transactLayer } from "./fixture/transact"
 
 const roots: string[] = []
 const projectID = "project-readonly-1"
@@ -91,7 +92,7 @@ function runtime(tier?: "allow" | "ask" | "readonly") {
   const bridge = EventV2Bridge.defaultLayer.pipe(Layer.provide(Layer.merge(database, events)))
   const dag = Layer.provideMerge(
     Dag.layer,
-    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridge),
+    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridge, transactLayer(database)),
   )
   const config = TestConfig.layer({ dagGlobal: () => Effect.succeed(tier ? { permission: tier } : {}) })
   return Layer.mergeAll(dag, DagControl.layer.pipe(Layer.provide(dag)), config)
