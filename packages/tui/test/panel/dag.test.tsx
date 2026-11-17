@@ -2,15 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import type { DagNode, DagWorkflowSummary, GlobalEvent, Session } from "@graphagent/sdk"
+import type {
+  DagNode,
+  DagWorkflowQuality,
+  DagWorkflowSummary,
+  GlobalEvent,
+  Session,
+  SessionDagMode,
+} from "@graphagent/sdk"
 import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import type { Ticker } from "../../src/context/ticker"
+import { DEFAULT_THEME } from "../../src/context/theme"
+import { formatDagTokens } from "../../src/dag/mode"
 import { setLanguage } from "../../src/i18n"
+import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth } from "../../src/ui/width"
 import { probeStoreWrites } from "../fixture/store-write-probe"
 import { directory, json } from "../fixture/tui-sdk"
-import { sessionFixture, waitFor } from "../routes/dag-mode-harness"
+import { dagModeStatus, sessionFixture, waitFor } from "../routes/dag-mode-harness"
 import { createCounters } from "../perf/counters"
 import { mountSessionShell } from "../routes/session-shell"
 
@@ -104,12 +114,22 @@ function pipeline(workflow = WF): DagNode[] {
 }
 
 /** The workflow summaries and node tables the fake server answers with, and a record of the table reads. */
-function dagServer(input: { summaries?: Record<string, DagWorkflowSummary[]>; tables?: Record<string, DagNode[]> }) {
+function dagServer(input: {
+  summaries?: Record<string, DagWorkflowSummary[]>
+  tables?: Record<string, DagNode[]>
+  /** The mode snapshot the session answers with, or "fail" for a server that cannot; the harness default when unset. */
+  mode?: SessionDagMode | "fail"
+}) {
   const server = {
     summaries: input.summaries ?? { [ROOT]: [summaryOf(WF, "依赖升级验证", "running")] },
     tables: input.tables ?? { [WF]: pipeline() },
+    mode: input.mode,
     reads: [] as string[],
     handler: (url: URL) => {
+      const mode = url.pathname.match(/^\/session\/([^/]+)\/dag-mode$/)
+      if (mode && server.mode !== undefined) {
+        return server.mode === "fail" ? new Response("nope", { status: 500 }) : json(server.mode)
+      }
       const summary = url.pathname.match(/^\/dag\/session\/([^/]+)\/summary$/)
       if (summary) return json(server.summaries[summary[1]] ?? [])
       const table = url.pathname.match(/^\/dag\/([^/]+)\/nodes$/)
@@ -1247,6 +1267,601 @@ describe("how it looks", () => {
           // The failed node starts selected and its long reason is cut to one row, not wrapped onto two.
           expect(lines.filter((line) => line.includes("一条相当长的失败原因")).length).toBe(1)
           expect(lines.find((line) => line.includes("一条相当长的失败原因"))).toContain("…")
+        } finally {
+          await shell.dispose()
+        }
+      })
+    }
+  }
+})
+
+// ── DAG mode in the panel (#1032 7) ────────────────────────────────────────────────────────────────────────────
+
+const palette = () => resolveTheme(DEFAULT_THEMES[DEFAULT_THEME], "dark")
+
+/** The color a piece of text is drawn in: the foreground of the first span that holds it. */
+function colorOf(frame: Awaited<ReturnType<Shell["spans"]>>, needle: string) {
+  for (const line of frame.lines) {
+    for (const span of line.spans) if (span.text.includes(needle)) return span.fg
+  }
+  return undefined
+}
+
+const modeSessions = [
+  sessionFixture(ROOT, { dagMode: "on" }),
+  sessionFixture(CHILD, { parentID: ROOT }),
+  sessionFixture(NODE_SESSION, { parentID: ROOT }),
+]
+
+/** A session with 1.2M of a 5M budget used, `running` slots busy of twelve (three by default), nodes capped at 100. */
+const snapshot = (extra: Partial<SessionDagMode["budget"]> = {}, running = 3) =>
+  dagModeStatus({
+    mode: "on",
+    budget: { tokens: 5_000_000, used: 1_200_000, usedCacheRead: 0, warnRatio: 0.8, ...extra },
+    limits: { concurrency: 12, maxTotalNodes: 100, running },
+  })
+
+function quality(extra: Partial<DagWorkflowQuality> = {}): DagWorkflowQuality {
+  return {
+    reviewBound: true,
+    reviews: 2,
+    raised: 7,
+    fixed: 5,
+    refuted: 2,
+    stillOpen: 0,
+    skepticRefutations: 1,
+    rounds: 4,
+    quietRounds: 2,
+    completeness: { covered: 5, total: 6, unlisted: 0 },
+    ...extra,
+  }
+}
+
+const frameLines = (frame: string) => rowsOf(frame).map((line) => line.replace(/^│\s?/, "").replace(/\s*│$/, ""))
+
+describe("the mode line above the workflow", () => {
+  test("says the mode, the slots of the whole process, the node cap and the tokens against the budget", async () => {
+    const server = dagServer({ mode: snapshot() })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      const lines = frameLines(frame)
+      const mode = lines.findIndex((line) => line.includes("DAG 模式：开"))
+      expect(mode).toBeGreaterThan(-1)
+      expect(lines[mode]).toContain("DAG 模式：开 · 运行 3/12（全进程） · 节点上限 100 · token 1.2M/5M")
+      // It is the first line of the summary: the bar comes after it.
+      expect(lines.findIndex((line) => /^[━─╌! ]+$/.test(line))).toBeGreaterThan(mode)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says off when the session's mode is off, and keeps the figures", async () => {
+    const server = dagServer({ mode: snapshot() })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("DAG 模式：关 · 运行 3/12（全进程） · 节点上限 100 · token 1.2M/5M")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("takes the tokens from the workflows' summaries once they report them, and follows their events", async () => {
+    // The snapshot is read after the summary and its slot count is the later report, so it counts the same five;
+    // the tokens differ on purpose: the summary's stand for the session's usage, the snapshot's figure is older.
+    const server = dagServer({
+      mode: snapshot({}, 5),
+      summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running", { tokens: 4_000_000, concurrencyRunning: 5 })] },
+    })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("运行 5/12（全进程） · 节点上限 100 · token 4M/5M")
+
+      shell.events.emit(
+        summaryPush([summaryOf(WF, "依赖升级验证", "running", { tokens: 4_500_000, concurrencyRunning: 2 })]),
+      )
+      await shell.settle()
+      expect(await shell.frame()).toContain("运行 2/12（全进程） · 节点上限 100 · token 4.5M/5M")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("follows the slots of the whole process when another session's workflows move them", async () => {
+    const server = dagServer({
+      mode: snapshot(),
+      summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running", { tokens: 4_000_000, concurrencyRunning: 3 })] },
+    })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("运行 3/12（全进程）")
+
+      // Only the other session's own summary says so; this session's workflows keep their old figure of three.
+      shell.events.emit(
+        summaryPush(
+          [summaryOf("wf_elsewhere", "别处的工作流", "running", { concurrencyRunning: 8 })],
+          "ses_dag_elsewhere",
+        ),
+      )
+      await shell.settle()
+      expect(await shell.frame()).toContain("运行 8/12（全进程） · 节点上限 100 · token 4M/5M")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("colors the tokens by the band of the budget, and nothing else on the line", async () => {
+    const at = async (tokens: number) => {
+      const server = dagServer({
+        mode: snapshot({ tokens: 1000, used: tokens }),
+        summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running", { tokens })] },
+      })
+      const shell = await mountDag({ server, sessions: modeSessions })
+      try {
+        await openLoaded(shell)
+        const frame = await shell.spans()
+        return {
+          tokens: colorOf(frame, `token ${formatDagTokens(tokens)}/${formatDagTokens(1000)}`),
+          mode: colorOf(frame, "DAG 模式：开"),
+        }
+      } finally {
+        await shell.dispose()
+      }
+    }
+    const quiet = await at(100)
+    expect(quiet.tokens?.equals(palette().textMuted)).toBe(true)
+    const warn = await at(850)
+    expect(warn.tokens?.equals(palette().warning)).toBe(true)
+    const exhausted = await at(1000)
+    expect(exhausted.tokens?.equals(palette().error)).toBe(true)
+    expect(exhausted.mode?.equals(palette().error)).toBe(false)
+  })
+
+  test("without a budget the tokens say there is none", async () => {
+    const server = dagServer({ mode: snapshot({ tokens: null }) })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("节点上限 100 · token 1.2M（未设预算）")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("when the snapshot cannot be read it says the mode, which is the session's own, and nothing it does not know", async () => {
+    const server = dagServer({ mode: "fail" })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("DAG 模式：开")
+      expect(frame).not.toContain("全进程")
+      expect(frame).not.toContain("节点上限")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    const server = dagServer({ mode: snapshot() })
+    const shell = await mountDag({ server, sessions: modeSessions, language: "en", width: 100 })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain(
+        "DAG mode: on · running 3/12 (process-wide) · node cap 100 · tokens 1.2M/5M",
+      )
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("reads nothing but the one snapshot, and writes nothing", async () => {
+    const server = dagServer({ mode: snapshot() })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      expect(shell.requested.filter((entry) => entry.endsWith("/dag-mode"))).toHaveLength(1)
+      expect(shell.writes()).toEqual([])
+    } finally {
+      await shell.dispose()
+    }
+  })
+})
+
+describe("the review quality row", () => {
+  const withQuality = (value: DagWorkflowQuality | null | undefined, id = WF, title = "依赖升级验证") =>
+    summaryOf(id, title, "running", value === undefined ? {} : { quality: value })
+
+  test("says reviews, what is still open and how complete the acceptance items are, under the counts", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withQuality(quality())] } })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      const row = lines.findIndex((line) => line.includes("审核 2 次 · 遗留 0 项 · 完整性 5/6"))
+      expect(row).toBeGreaterThan(-1)
+      expect(row).toBeGreaterThan(lines.findIndex((line) => line.includes("完成 · 第")))
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("is not there for a workflow without a review decision", async () => {
+    for (const value of [null, undefined]) {
+      const server = dagServer({ summaries: { [ROOT]: [withQuality(value)] } })
+      const shell = await mountDag({ server })
+      try {
+        await openLoaded(shell)
+        expect(await shell.frame()).not.toContain("审核")
+      } finally {
+        await shell.dispose()
+      }
+    }
+  })
+
+  test("belongs to the workflow on show: switching tabs changes it, and a pushed summary updates it", async () => {
+    const server = dagServer({
+      summaries: {
+        [ROOT]: [
+          withQuality(quality({ reviews: 3, stillOpen: 1 })),
+          withQuality(quality({ reviews: 6, completeness: null }), WF2, "文档整理"),
+        ],
+      },
+      tables: { [WF]: pipeline(), [WF2]: [wire("docs", "completed", {}, WF2)] },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("审核 3 次 · 遗留 1 项 · 完整性 5/6")
+
+      await press(shell, "right")
+      await waitFor(() => shell.sync().dag.nodes(WF2) !== undefined)
+      await shell.settle()
+      const second = await shell.frame()
+      expect(second).toContain("审核 6 次 · 遗留 0 项")
+      expect(second).not.toContain("完整性")
+
+      shell.events.emit(
+        summaryPush([
+          withQuality(quality({ reviews: 3, stillOpen: 1 })),
+          withQuality(quality({ reviews: 7 }), WF2, "文档整理"),
+        ]),
+      )
+      await shell.settle()
+      expect(await shell.frame()).toContain("审核 7 次 · 遗留 0 项 · 完整性 5/6")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withQuality(quality())] } })
+    const shell = await mountDag({ server, language: "en" })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("reviews 2 · open 0 · complete 5/6")
+    } finally {
+      await shell.dispose()
+    }
+  })
+})
+
+describe("what the work did not cover", () => {
+  /** A table in which one node of each kind of gap sits among the ones that are fine. */
+  function gaps(workflow = WF): DagNode[] {
+    return [
+      wire("resolve", "completed", {}, workflow),
+      wire("e2e", "failed", { depends_on: ["resolve"], error_reason: "ripgrep 下载超时（504）" }, workflow),
+      wire("docs", "skipped", { depends_on: ["resolve"] }, workflow),
+      wire("lint", "failed", { depends_on: ["resolve"], error_class: "cancelled" }, workflow),
+      wire("perf", "aborted", { depends_on: ["resolve"] }, workflow),
+      wire("unit", "pending", { depends_on: ["e2e"] }, workflow),
+    ]
+  }
+
+  const covered = (count: number | undefined, table = gaps()) =>
+    dagServer({
+      summaries: {
+        [ROOT]: [summaryOf(WF, "依赖升级验证", "running", count === undefined ? {} : { coverageCount: count })],
+      },
+      tables: { [WF]: table },
+    })
+
+  test("lists the failed, skipped, cancelled and aborted nodes with the reason, in the summary above the rows", async () => {
+    const shell = await mountDag({ server: covered(4), height: 40 })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      const title = lines.findIndex((line) => line.includes("覆盖与截断（4）"))
+      expect(title).toBeGreaterThan(-1)
+      const block = lines.slice(title + 1, title + 5)
+      expect(block.some((line) => line.includes("✗ e2e") && line.includes("ripgrep 下载超时（504）"))).toBe(true)
+      expect(block.some((line) => line.includes("⊘ docs"))).toBe(true)
+      expect(block.some((line) => line.includes("⊘ lint"))).toBe(true)
+      expect(block.some((line) => line.includes("↯ perf"))).toBe(true)
+      // It sits with the summary, above the rows, so it is on screen when the panel opens; nothing that is fine is in it.
+      expect(title).toBeGreaterThan(lines.findIndex((line) => line.includes("完成 · 第")))
+      expect(title).toBeLessThan(lines.findIndex((line) => line.includes("第 1 波")))
+      expect(block.some((line) => line.includes("resolve") || line.includes("unit"))).toBe(false)
+      // Four entries, four nodes: nothing is left over to account for.
+      expect(lines.join("\n")).not.toContain("不对应节点")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("accounts for the entries that are not nodes: the count is the server's, the list is what the nodes say", async () => {
+    const shell = await mountDag({ server: covered(7), height: 40 })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("覆盖与截断（7）")
+      expect(frame).toContain("另有 3 项不对应节点")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says both remainders on one line when a long list and entries that are not nodes come together", async () => {
+    const many = [
+      wire("resolve", "completed"),
+      ...Array.from({ length: 6 }, (_, index) => wire(`gap-${index}`, "skipped", { depends_on: ["resolve"] })),
+    ]
+    const shell = await mountDag({ server: covered(9, many), height: 40 })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      expect(lines.filter((line) => line.includes("… 还有 2 个 · 另有 3 项不对应节点"))).toHaveLength(1)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a count with no node to show for it still says so", async () => {
+    const shell = await mountDag({ server: covered(2, [wire("resolve", "completed")]), height: 40 })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("覆盖与截断（2）")
+      expect(frame).toContain("另有 2 项不对应节点")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("is not there when the count is zero or the server does not report one", async () => {
+    for (const count of [0, undefined]) {
+      const shell = await mountDag({ server: covered(count), height: 40 })
+      try {
+        await openLoaded(shell)
+        expect(await shell.frame()).not.toContain("覆盖与截断")
+      } finally {
+        await shell.dispose()
+      }
+    }
+  })
+
+  test("goes when the count falls to zero, and comes when a push raises it", async () => {
+    const shell = await mountDag({ server: covered(4), height: 40 })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("覆盖与截断（4）")
+      shell.events.emit(summaryPush([summaryOf(WF, "依赖升级验证", "running", { coverageCount: 0 })]))
+      await shell.settle()
+      expect(await shell.frame()).not.toContain("覆盖与截断")
+      shell.events.emit(summaryPush([summaryOf(WF, "依赖升级验证", "running", { coverageCount: 5 })]))
+      await shell.settle()
+      expect(await shell.frame()).toContain("覆盖与截断（5）")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("shows a bounded list and says how many more there are", async () => {
+    const many = [
+      wire("resolve", "completed"),
+      ...Array.from({ length: 12 }, (_, index) =>
+        wire(`gap-${String(index).padStart(2, "0")}`, "skipped", { depends_on: ["resolve"] }),
+      ),
+    ]
+    const shell = await mountDag({ server: covered(12, many), height: 60 })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("覆盖与截断（12）")
+      expect(frame).toContain("… 还有 8 个")
+      expect(frame).toContain("gap-03")
+      // The rows below list every node; the block has the four first and the number of the rest.
+      expect(frameLines(frame).filter((line) => /^\s*⊘ gap-\d+\s*$/.test(line))).toHaveLength(4)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a reason from the server has no escapes or line breaks in it", async () => {
+    const table = [wire("bad\u001b[2Jname", "failed", { error_reason: "one\ntwo\u001b]0;pwned\u0007" })]
+    const shell = await mountDag({ server: covered(1, table), height: 40 })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/)
+      expect(frame).toContain("badname")
+      expect(frame).toContain("one two")
+      expect(frame).not.toContain("pwned")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    const shell = await mountDag({ server: covered(6), height: 40, language: "en", width: 100 })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("Coverage and cut-offs (6)")
+      expect(frame).toContain("2 more not tied to a node")
+    } finally {
+      await shell.dispose()
+    }
+  })
+})
+
+describe("a budget that ran out", () => {
+  const exhausted = (status: string, extra: Partial<DagWorkflowSummary> = {}) =>
+    dagServer({
+      mode: snapshot({ tokens: 1000, used: 1000 }),
+      summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", status, { tokens: 1000, ...extra })] },
+    })
+
+  test("a paused workflow keeps the label of a pause and says the budget is gone", async () => {
+    const shell = await mountDag({ server: exhausted("paused"), sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("[已暂停]")
+      expect(frame).toContain("token 预算已耗尽，因预算暂停的工作流会在预算调高后恢复")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says it only of a pause that is not a checkpoint, and only once the budget is gone", async () => {
+    const checkpoint = await mountDag({
+      server: exhausted("paused", { checkpointPending: true }),
+      sessions: modeSessions,
+    })
+    try {
+      await openLoaded(checkpoint)
+      expect(await checkpoint.frame()).not.toContain("token 预算已耗尽")
+    } finally {
+      await checkpoint.dispose()
+    }
+
+    const running = await mountDag({ server: exhausted("running"), sessions: modeSessions })
+    try {
+      await openLoaded(running)
+      expect(await running.frame()).not.toContain("token 预算已耗尽")
+    } finally {
+      await running.dispose()
+    }
+
+    const plenty = dagServer({
+      mode: snapshot({ tokens: 1000, used: 100 }),
+      summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "paused", { tokens: 100 })] },
+    })
+    const normal = await mountDag({ server: plenty, sessions: modeSessions })
+    try {
+      await openLoaded(normal)
+      expect(await normal.frame()).not.toContain("token 预算已耗尽")
+    } finally {
+      await normal.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    const shell = await mountDag({
+      server: exhausted("paused"),
+      sessions: modeSessions,
+      language: "en",
+      width: 120,
+      height: 40,
+    })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("Budget exhausted: paused workflows resume once it is raised")
+    } finally {
+      await shell.dispose()
+    }
+  })
+})
+
+describe("DAG mode in the panel: how it looks", () => {
+  /**
+   * A workflow with the additions on it: usage and quality, and with `gaps` the coverage block too. The panel is
+   * ten rows high at 80 by 24, so the smaller sizes take the one without the block.
+   */
+  function full(gaps = true) {
+    return dagServer({
+      mode: snapshot({ tokens: 1_000_000, used: 850_000 }),
+      summaries: {
+        [ROOT]: [
+          summaryOf(WF, "依赖升级验证", "running", {
+            tokens: 850_000,
+            concurrencyRunning: 3,
+            ...(gaps ? { coverageCount: 3 } : {}),
+            quality: quality(),
+          }),
+        ],
+      },
+      tables: {
+        [WF]: [
+          wire("resolve", "completed", { started_at: NOW - 600_000, completed_at: NOW - 598_000 }),
+          wire("e2e", "failed", {
+            depends_on: ["resolve"],
+            error_reason: "ripgrep 下载超时（504）",
+            started_at: NOW - 540_000,
+            completed_at: NOW - 300_000,
+          }),
+          wire("docs", "skipped", { depends_on: ["resolve"] }),
+          wire("unit", "running", { depends_on: ["resolve"], started_at: NOW - 100_000 }),
+        ],
+      },
+    })
+  }
+
+  async function look(options: Omit<Parameters<typeof mountDag>[0] & object, "server" | "sessions">, gaps = true) {
+    const shell = await mountDag({ ...options, server: full(gaps), sessions: modeSessions })
+    await openLoaded(shell)
+    const frame = await shell.frame()
+    await shell.dispose()
+    // Every addition is on screen before the frame is taken as the one to keep.
+    expect(frame).toContain(options.language === "en" ? "DAG mode: on" : "DAG 模式：开")
+    expect(frame).toContain(options.language === "en" ? "reviews 2" : "审核 2 次")
+    if (gaps) expect(frame).toContain(options.language === "en" ? "Coverage and cut-offs (3)" : "覆盖与截断（3）")
+    return frame
+  }
+
+  test("80 by 24, in Chinese", async () => {
+    expect(await look({ width: 80, height: 24 }, false)).toMatchSnapshot()
+  })
+
+  test("120 by 40, in Chinese", async () => {
+    expect(await look({ width: 120, height: 40 })).toMatchSnapshot()
+  })
+
+  test("80 by 24, in English", async () => {
+    expect(await look({ width: 80, height: 24, language: "en" }, false)).toMatchSnapshot()
+  })
+
+  test("120 by 40, in English", async () => {
+    expect(await look({ width: 120, height: 40, language: "en" })).toMatchSnapshot()
+  })
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const ambiguousWidth of [1, 2] as const) {
+      test(`nothing it adds is laid out wider than 80 columns, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        const shell = await mountDag({
+          server: full(),
+          sessions: modeSessions,
+          width: 80,
+          height: 40,
+          language,
+          ambiguousWidth,
+        })
+        try {
+          await openLoaded(shell)
+          const lines = rowsOf(await shell.frame()).filter((line) => line.startsWith("│") && line.endsWith("│"))
+          expect(lines.length).toBeGreaterThan(8)
+          for (const line of lines) {
+            const inner = line.slice(1, -1).trimEnd()
+            expect({ line, fits: cellWidth(inner, ambiguousWidth) <= 80 - 3 }).toEqual({ line, fits: true })
+          }
+          // The mode line is one row: cut with an ellipsis where it does not fit, never wrapped.
+          expect(lines.filter((line) => /DAG (模式|mode)/.test(line))).toHaveLength(1)
         } finally {
           await shell.dispose()
         }
