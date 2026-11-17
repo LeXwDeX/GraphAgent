@@ -3,10 +3,11 @@
 
 export * as DagSupervisionSweep from "./supervision-sweep"
 
-import { Cause, Context, Effect, Fiber, Layer, Scope } from "effect"
+import { Cause, Clock, Context, Effect, Fiber, Layer, Scope } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Database } from "@graphagent/core/database/database"
 import { Logging } from "@graphagent/core/observability/logging"
+import { DagLease } from "@graphagent/core/dag/lease"
 import { DagStore } from "@graphagent/core/dag/store"
 import { WorkflowNodeTable } from "@graphagent/core/dag/sql"
 import { ProjectTable } from "@graphagent/core/project/sql"
@@ -19,6 +20,7 @@ import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
 import { InstanceRef } from "@/effect/instance-ref"
 import { childAbort } from "./child-failure-reason"
+import { RunnerLease } from "./runner-lease"
 
 /**
  * Host-level deadline-supervision sweep — the fallback retry for the
@@ -38,13 +40,33 @@ import { childAbort } from "./child-failure-reason"
  * InstanceState scope: its repeating fiber is forked into the LAYER scope
  * at construction and lives for the process lifetime. It must therefore
  * never depend on ambient per-instance context (InstanceRef) — its fiber's
- * context is the layer-build context, which has none. Ownership is decided
- * from the durable rows alone: this process's Database owns every workflow
- * row it can read. Same-host races (a live watcher, the DagLoop) are
- * serialized by the workflow's in-process lock; a second host sharing the
- * DB is handled by the durable guardNode status read plus the projector's
- * conditional UPDATE (only the first NodeFailed folds a non-terminal row) —
- * double settles collapse to one.
+ * context is the layer-build context, which has none.
+ *
+ * It does NOT own every row it can read (ADR-0008 decision 7 and the PR4b
+ * ruling of Issue #1029). Several engine processes can open one database,
+ * and the runner that drives a workflow holds its lease (`dag_runner`). The
+ * sweep reads that table (`DagLease.held`) and never writes it: it holds no
+ * lease and carries no token. Its two writes rest on different grounds.
+ *
+ *  - Workspace failure (failUnusableWorkspaces) acts only on a workflow with
+ *    no live lease: no row, or a row that has run out (`expires_at <= now`,
+ *    the boundary at which DagLease.claim lets another runner take over). A
+ *    live lease is left alone whoever holds it, this process included: the
+ *    holder's own reconcile round judges the execution location of a
+ *    workflow it drives (decision 6, row 4). That round is started by the
+ *    tick that renews the lease, so a holder that keeps its lease live keeps
+ *    judging; one whose fibers died stops renewing, and once its lease has
+ *    run out the row is this sweep's. The case this pass exists for, nobody
+ *    driving the row, still has no live lease: an instance that is torn down
+ *    gives its leases back in its exit finalizer, and a process that died
+ *    stops renewing, so its lease runs out within the TTL.
+ *  - The node-timeout settle (sweepOnce) is a durable-fact write, not a
+ *    runner write, and reads no lease. The attempt identity it carries
+ *    (replanAttempts, childSessionID) bounds it. Same-host races (a live
+ *    watcher, the DagLoop) are serialized by the workflow's in-process lock;
+ *    a second host sharing the DB is handled by the durable guardNode status
+ *    read plus the projector's conditional UPDATE (only the first NodeFailed
+ *    folds a non-terminal row) — double settles collapse to one.
  *
  * False-positive safety: a LIVE watcher escalates on
  * escalateIntervalMs == max(1s, timeout_ms ?? 10min) and nodeTimeoutEscalated
@@ -131,11 +153,15 @@ export const escalateIntervalDurable = (
 const serviceLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const { db } = yield* Database.Service
+    const database = yield* Database.Service
+    const { db } = database
     const store = yield* DagStore.Service
     const dag = yield* Dag.Service
     const promptSvc = yield* SessionPrompt.Service
     const automation = yield* ExclusiveRegistry.Service
+    // ADR-0008 decision 7: the lease table is only read here (`held`). Resolved as the DagLoop resolves it: the
+    // graph's own DagLease, else one over this database, so a graph that mocks the rest still reads the real table.
+    const { leases } = yield* RunnerLease.resolve(database)
     const scope = yield* Scope.Scope
 
     // nodeKey -> {extensions, flatTicks}: the counter value last observed and
@@ -188,6 +214,27 @@ const serviceLayer = Layer.effect(
     })
 
     /**
+     * ADR-0008 decision 7: whether `dagID` has a live lease, held by whoever.
+     * The clock is read first and the row after it, as the reconciler reads
+     * them: a suspension between the two can only make a lease look younger
+     * than it is, never expired early. `expires_at <= now` is the boundary at
+     * which DagLease.claim lets another runner take the lease over, so it is
+     * also the one at which this sweep stops leaving the row alone.
+     */
+    const hasLiveLease = Effect.fnUntraced(function* (dagID: string) {
+      const now = yield* Clock.currentTimeMillis
+      const lease = yield* leases.held(dagID)
+      if (lease === undefined || lease.expiresAt <= now) return false
+      yield* Effect.logDebug("DagSupervisionSweep skipped a workflow whose lease is live", {
+        dagID,
+        runnerID: lease.runnerID,
+        epoch: lease.epoch,
+        expiresInMs: lease.expiresAt - now,
+      })
+      return true
+    })
+
+    /**
      * #948: the host-level sweep is the only actor that sees workflows whose
      * owning instance is gone. Terminalize every non-terminal row whose
      * durable execution location is missing or invalid, so a removed
@@ -196,6 +243,10 @@ const serviceLayer = Layer.effect(
      * `failUnrecoverable` is idempotent and legalizes the pending/paused legs.
      * Wake delivery stays with the owning DagLoop (the durable wake row is
      * re-armed once) and converges through the normal drain.
+     *
+     * A row with a live lease is left to its holder (ADR-0008 decision 7; the
+     * header says why the cases this pass exists for still reach it). Only a
+     * row with an unusable location pays for the lease read.
      */
     const failUnusableWorkspaces = Effect.fnUntraced(function* () {
       const workflows = yield* store.listWorkflows().pipe(
@@ -211,6 +262,19 @@ const serviceLayer = Layer.effect(
         if (isTerminalWorkflowStatusValue(wf.status)) continue
         const location = DagLocation.resolveExecution(wf)
         if (location._tag === "ok") continue
+        // A live lease is left to its holder. A lease that cannot be read is not "no lease" (a database failure is
+        // a defect, never an `undefined`): leave the row and look again at the next tick.
+        const leftToHolder = yield* hasLiveLease(wf.id).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("DagSupervisionSweep lease read failed — leaving the workflow to the next tick", {
+                  dagID: wf.id,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as(true)),
+          ),
+        )
+        if (leftToHolder) continue
         const outcome = yield* withWorkflowLocation(
           wf.id,
           dag.failUnrecoverable(wf.id, DagLocation.executionFailureReason(location)),
@@ -464,12 +528,16 @@ const serviceLayer = Layer.effect(
   }),
 )
 
-/** The bare effect layer — bring your own Database/Dag/SessionPrompt. Tests compose this against their mocks; production uses `defaultLayer`. */
+/**
+ * The bare effect layer — bring your own Database/Dag/SessionPrompt. Tests compose this against their mocks; production uses `defaultLayer`.
+ * DagLease is the one dependency that may be left out: without it the sweep reads the lease table of the Database it is given.
+ */
 export const layerWithoutDeps = serviceLayer
 
 export const layer = serviceLayer.pipe(
   Layer.provide(Database.defaultLayer),
   Layer.provide(DagStore.defaultLayer),
+  Layer.provide(DagLease.defaultLayer),
   Layer.provide(Dag.defaultLayer),
   Layer.provide(SessionPrompt.defaultLayer),
   Layer.provide(ExclusiveRegistry.defaultLayer),
@@ -480,6 +548,7 @@ export const defaultLayer = layer
 export const node = LayerNode.make(serviceLayer, [
   Database.node,
   DagStore.node,
+  DagLease.node,
   Dag.node,
   SessionPrompt.node,
   ExclusiveRegistry.node,

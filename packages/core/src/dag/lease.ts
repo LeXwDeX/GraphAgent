@@ -67,8 +67,8 @@ export interface Interface {
    * starts at epoch 1 and a refresh by the holder keeps its epoch. Refused
    * (`undefined`, nothing written) while another runner's lease is live.
    *
-   * Keeps the admission guarantee of `DagStore.tryClaimAdoption` (#270): it is
-   * refused when the workflow row is gone or terminal, even for the holder.
+   * This is also the #270 admission (ADR-0008): it is refused when the
+   * workflow row is gone or terminal, even for the holder.
    */
   readonly claim: (input: {
     readonly dagID: string
