@@ -8,6 +8,12 @@ import { afterAll } from "bun:test"
 // Capture the real MCP SDK Client before any test file mocks the package.
 import "./fixture/mcp-real-client"
 
+// Pin the interface language: CLI copy goes through t(), and English assertions
+// must not depend on the developer machine locale.
+process.env.LC_ALL = "en_US.UTF-8"
+process.env.LANG = "en_US.UTF-8"
+delete process.env.LC_MESSAGES
+
 // Set XDG env vars FIRST, before any src/ imports
 const dir = path.join(os.tmpdir(), "opencode-test-data-" + process.pid)
 await fs.mkdir(dir, { recursive: true })

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { cliZhCN } from "./cli"
+
 /**
  * Simplified Chinese message table. Every key added here must also exist in
  * `en.ts` with the same placeholder set; `test/i18n.test.ts` enforces both.
@@ -72,17 +74,16 @@ export const zhCN = {
   "shell.footer.trust": "⚠ {count} 条项目命令未信任 · /trust",
   "drawer.command.show": "打开侧边栏",
   "drawer.command.hide": "关闭侧边栏",
+  "drawer.session.branch": "分支 {branch}",
+  "drawer.context.usage": "{used} / {limit} tokens",
+  "drawer.lsp": "LSP {id}",
+  "drawer.services": "服务",
+  "drawer.mcp.connectedCount": "MCP 已连接 {count} 个",
+  "drawer.mcp.failed": "MCP 未连接：{names}",
+  "drawer.closeHint": "{key} 关闭",
   "drawer.context": "上下文",
-  "drawer.context.tokens": "{tokens} tokens",
-  "drawer.context.used": "{percent}% 已用",
   "drawer.cost": "费用",
-  "drawer.cost.spent": "已花费 {amount}",
   "drawer.todo": "待办",
-  "drawer.files": "修改的文件",
-  "drawer.lsp.disabled": "LSP 已禁用",
-  "drawer.lsp.waiting": "读取文件后启用 LSP",
-  "drawer.mcp.summary": "（{active} 个活跃{errors}）",
-  "drawer.mcp.errors": "，{count} 个错误",
   "drawer.mcp.connected": "已连接",
   "drawer.mcp.disabled": "已禁用",
   "drawer.mcp.needsAuth": "需要认证",
@@ -694,6 +695,7 @@ export const zhCN = {
   "command.app.console.description": "显示或隐藏控制台",
   "command.app.heap_snapshot.title": "堆快照",
   "command.app.heap_snapshot.description": "写入堆快照文件",
+  ...cliZhCN,
 } as const
 
 export type MessageKey = keyof typeof zhCN

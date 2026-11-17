@@ -159,7 +159,6 @@ const viaNode = Effect.fn("TaskNodePermissions.viaNode")(function* (info: Agent.
   const workflow = makeWorkflowRow({ directory: instance.directory, projectId: instance.project.id })
   const dagLayer = Layer.mock(Dag.Service, {
     store: {
-      tryClaimAdoption: () => Effect.succeed(true),
       getWorkflow: () => Effect.succeed(workflow),
     } as unknown as DagStore.Interface,
     nodeQueued: () => Effect.void,

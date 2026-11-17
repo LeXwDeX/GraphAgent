@@ -22,6 +22,13 @@ function eventID() {
   return EventV2.ID.create()
 }
 
+/**
+ * Events published only on GlobalBus that this directory's stream still
+ * carries: instance disposal, and `pr.watch.updated` (#1036), which the
+ * process-level PR watch poller emits outside any instance context.
+ */
+const GLOBAL_BUS_TYPES: ReadonlySet<string> = new Set(["server.instance.disposed", "pr.watch.updated"])
+
 function eventResponse(events: EventV2.Interface) {
   return Effect.gen(function* () {
     const instance = yield* InstanceState.context
@@ -44,10 +51,11 @@ function eventResponse(events: EventV2.Interface) {
         directory?: string
         payload: { id?: string; type?: string; properties?: unknown }
       }) => {
-        if (event.directory !== instance.directory || event.payload.type !== "server.instance.disposed") return
+        const type = event.payload.type
+        if (event.directory !== instance.directory || type === undefined || !GLOBAL_BUS_TYPES.has(type)) return
         Queue.offerUnsafe(queue, {
           id: event.payload.id ?? eventID(),
-          type: "server.instance.disposed",
+          type,
           properties: event.payload.properties ?? {},
         })
       }

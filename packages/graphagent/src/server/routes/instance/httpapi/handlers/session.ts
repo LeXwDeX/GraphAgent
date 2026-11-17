@@ -26,6 +26,9 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { Goal } from "@/goal/goal"
+import { PrWatchProgress } from "@/pr-watch/progress"
+import { ReminderClock } from "@/reminder/clock"
+import { Database } from "@graphagent/core/database/database"
 import { SessionHooks, type SessionHookCommand } from "@/hook/session-hooks"
 import { SettingsHook, type HookEvent } from "@/hook"
 import { MessageID, PartID, SessionID } from "@/session/schema"
@@ -54,6 +57,7 @@ import {
   SummarizePayload,
   UpdatePayload,
   SessionHookAddPayload,
+  SessionReminder,
 } from "../groups/session"
 import {
   BtwBusyError,
@@ -106,6 +110,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
     const goalSvc = yield* Goal.Service
+    const { db } = yield* Database.Service
+    const reminders = yield* ReminderClock.Service
     const sessionHooks = yield* SessionHooks.Service
     const settingsHooks = yield* SettingsHook.Service
     const summary = yield* SessionSummary.Service
@@ -179,6 +185,33 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // 404 keeps the response schema honest: a 200 body always carries Goal.
       if (!state) return yield* Effect.fail(notFound(`No goal for session: ${ctx.params.sessionID}`))
       return Goal.toPublic(state)
+    })
+
+    const prWatch = Effect.fn("SessionHttpApi.prWatch")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      return { entries: yield* PrWatchProgress.list(db, ctx.params.sessionID) }
+    })
+
+    const reminder = Effect.fn("SessionHttpApi.reminder")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      const live = yield* reminders.list(ctx.params.sessionID)
+      // `list` returns only live reminders; the guard keeps the wire
+      // vocabulary honest if the store ever widens.
+      const entries: Array<typeof SessionReminder.Type> = []
+      for (const info of live) {
+        const status = info.status
+        if (status !== "scheduled" && status !== "due") continue
+        entries.push({
+          id: info.id,
+          sessionID: ctx.params.sessionID,
+          text: info.text,
+          fireAt: info.fireAt,
+          everyMs: info.everyMs,
+          status,
+          createdAt: info.createdAt,
+        })
+      }
+      return { entries }
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -641,6 +674,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("children", children)
       .handle("todo", todo)
       .handle("goal", goal)
+      .handle("prWatch", prWatch)
+      .handle("reminder", reminder)
       .handle("hookAdd", hookAdd)
       .handle("hookList", hookList)
       .handle("hookRemove", hookRemove)

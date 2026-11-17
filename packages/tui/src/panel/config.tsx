@@ -10,7 +10,7 @@ import { useSync } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { useThinkingMode } from "../context/thinking"
 import { getLanguage, setLanguage, t } from "../i18n"
-import { useDrawer } from "../shell/drawer"
+import { drawerMode, useDrawer } from "../shell/drawer"
 import { dagBandMode } from "../shell/status-band"
 import { useToast } from "../ui/toast"
 import { usePanelHost } from "./host"
@@ -245,7 +245,7 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
         { value: "auto", label: t("panel.config.drawer.auto") },
         { value: "always", label: t("panel.config.drawer.always") },
       ],
-      onChange: (next) => kv.set("drawer_mode", next),
+      onChange: (next) => drawer.setMode(drawerMode(next)),
     },
     {
       id: "conceal-code",

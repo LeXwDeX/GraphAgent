@@ -40,7 +40,7 @@ duplicate-output folding.
 
 ## External DCP compatibility
 
-When folding is opted in via `compaction.dynamic: true`, OpenCode defers its built-in folding only when the
+When folding is opted in via `compaction.dynamic: true`, GraphAgent defers its built-in folding only when the
 server-plugin loader identifies the exact package `@lexwdex-org/opencode-dcp` and that load leaves an active
 context-folding hook registered:
 
@@ -60,7 +60,7 @@ With the default configuration (`compaction.dynamic` unset or false), the built-
 DCP state; an inactive or empty DCP return only means the external-DCP retreat does not apply, and diagnostics report
 `enabled: false` with `skipReason: "disabled"`, not `"external-dcp"`.
 
-The first model request that observes an active known DCP while folding is opted in, in each OpenCode instance, emits
+The first model request that observes an active known DCP while folding is opted in, in each GraphAgent instance, emits
 one migration warning. Further sessions in that instance do not repeat it; a restarted instance may warn once again.
 The warning contains only the known package identity, source kind, and the disable-or-remove/restart action, and states
 that removing the plugin alone does not enable built-in folding: `compaction.dynamic: true` must also be set.
@@ -71,7 +71,7 @@ of the overlapping implementations explicitly.
 
 ## Diagnostics
 
-Every OpenCode AI SDK, OpenCode Native, and Core runner request reports an allow-listed aggregate record: policy
+Every AI SDK, native, and Core runner request reports an allow-listed aggregate record: policy
 version, runtime, request purpose, resolved enable source/state, external-DCP state, application state, duplicate and
 folded counts, exclusions, budget estimates, and skip reason. Unavailable numeric or boolean values are the literal
 `unknown`, never synthetic zero. Messages, tool arguments, paths, fingerprints, plugin specs, and secrets are not log

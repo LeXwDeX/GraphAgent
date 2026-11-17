@@ -19,8 +19,8 @@ import { ReconcileDecide } from "./reconcile-decide"
  *     other live runner drives it, and another runner's live lease ends the
  *     adoption right there. The claim is also the admission of #270: a
  *     workflow that is gone or terminal is refused. Right before the entry is
- *     published `confirm` reads the lease again, which is what the old
- *     `DagStore.tryClaimAdoption` did for the window after the reconciliation.
+ *     published `confirm` reads the lease again, which is the #270 admission
+ *     for the window after the reconciliation.
  *     An adoption that ends without an entry gives its claim back (`abandon`),
  *     so the next runner does not wait out a TTL for a workflow nobody drives.
  *     So does a workflow that ended: once its entry is dropped nothing renews

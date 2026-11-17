@@ -136,7 +136,7 @@ describe("the DAG mode line of the drawer", () => {
       )
       const at = (needle: string) => lines.findIndex((line) => line.includes(needle))
       expect(at("费用")).toBeGreaterThan(-1)
-      expect(at("DAG 模式")).toBeGreaterThan(at("已花费"))
+      expect(at("DAG 模式")).toBeGreaterThan(at("$0.00"))
       expect(at("DAG 模式")).toBeLessThan(at("目标"))
     } finally {
       await harness.dispose()

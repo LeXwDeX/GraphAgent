@@ -3,7 +3,7 @@ import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
 import { Global } from "@graphagent/core/global"
-import { APP_NAME } from "@graphagent/core/brand"
+import { t } from "@graphagent/tui/i18n"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -15,37 +15,39 @@ interface UninstallArgs {
   force: boolean
 }
 
+// `id` is the fixed English name the `--keep-<id>` flags derive from; only
+// `label` is translated.
 interface RemovalTargets {
-  directories: Array<{ path: string; label: string; keep: boolean }>
+  directories: Array<{ id: "data" | "cache" | "config" | "state"; path: string; label: string; keep: boolean }>
   binary: string | null
 }
 
 export const UninstallCommand = {
   command: "uninstall",
-  describe: `uninstall ${APP_NAME} and remove all related files`,
+  describe: t("cli.uninstall.describe"),
   builder: (yargs: Argv) =>
     yargs
       .option("keep-config", {
         alias: "c",
         type: "boolean",
-        describe: "keep configuration files",
+        describe: t("cli.uninstall.option.keepConfig"),
         default: false,
       })
       .option("keep-data", {
         alias: "d",
         type: "boolean",
-        describe: "keep session data and snapshots",
+        describe: t("cli.uninstall.option.keepData"),
         default: false,
       })
       .option("dry-run", {
         type: "boolean",
-        describe: "show what would be removed without removing",
+        describe: t("cli.uninstall.option.dryRun"),
         default: false,
       })
       .option("force", {
         alias: "f",
         type: "boolean",
-        describe: "skip confirmation prompts",
+        describe: t("cli.uninstall.option.force"),
         default: false,
       }),
 
@@ -53,10 +55,10 @@ export const UninstallCommand = {
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
-    prompts.intro("Uninstall GraphAgent")
+    prompts.intro(t("cli.uninstall.intro"))
 
     const method = await Installation.method()
-    prompts.log.info(`Installation method: ${method}`)
+    prompts.log.info(t("cli.uninstall.method", { method }))
 
     const targets = await collectRemovalTargets(args, method)
 
@@ -64,33 +66,35 @@ export const UninstallCommand = {
 
     if (!args.force && !args.dryRun) {
       const confirm = await prompts.confirm({
-        message: "Are you sure you want to uninstall?",
+        active: t("cli.common.yes"),
+        inactive: t("cli.common.no"),
+        message: t("cli.uninstall.confirm"),
         initialValue: false,
       })
       if (!confirm || prompts.isCancel(confirm)) {
-        prompts.outro("Cancelled")
+        prompts.outro(t("cli.uninstall.cancelled"))
         return
       }
     }
 
     if (args.dryRun) {
-      prompts.log.warn("Dry run - no changes made")
-      prompts.outro("Done")
+      prompts.log.warn(t("cli.uninstall.dryRun"))
+      prompts.outro(t("cli.uninstall.done"))
       return
     }
 
     await executeUninstall(method, targets)
 
-    prompts.outro("Done")
+    prompts.outro(t("cli.uninstall.done"))
   },
 }
 
 async function collectRemovalTargets(args: UninstallArgs, method: Installation.Method): Promise<RemovalTargets> {
   const directories: RemovalTargets["directories"] = [
-    { path: Global.Path.data, label: "Data", keep: args.keepData },
-    { path: Global.Path.cache, label: "Cache", keep: false },
-    { path: Global.Path.config, label: "Config", keep: args.keepConfig },
-    { path: Global.Path.state, label: "State", keep: false },
+    { id: "data", path: Global.Path.data, label: t("cli.uninstall.label.data"), keep: args.keepData },
+    { id: "cache", path: Global.Path.cache, label: t("cli.uninstall.label.cache"), keep: false },
+    { id: "config", path: Global.Path.config, label: t("cli.uninstall.label.config"), keep: args.keepConfig },
+    { id: "state", path: Global.Path.state, label: t("cli.uninstall.label.state"), keep: false },
   ]
 
   const binary = method === "curl" ? process.execPath : null
@@ -99,7 +103,7 @@ async function collectRemovalTargets(args: UninstallArgs, method: Installation.M
 }
 
 async function showRemovalSummary(targets: RemovalTargets) {
-  prompts.log.message("The following will be removed:")
+  prompts.log.message(t("cli.uninstall.summary"))
 
   for (const dir of targets.directories) {
     const exists = await fs
@@ -110,14 +114,19 @@ async function showRemovalSummary(targets: RemovalTargets) {
 
     const size = await getDirectorySize(dir.path)
     const sizeStr = formatSize(size)
-    const status = dir.keep ? UI.Style.TEXT_DIM + "(keeping)" : ""
+    const status = dir.keep ? UI.Style.TEXT_DIM + t("cli.uninstall.keeping") : ""
     const prefix = dir.keep ? "○" : "✓"
+    const entry = t("cli.uninstall.labeled", { label: dir.label, value: shortenPath(dir.path) })
 
-    prompts.log.info(`  ${prefix} ${dir.label}: ${shortenPath(dir.path)} ${UI.Style.TEXT_DIM}(${sizeStr})${status}`)
+    prompts.log.info(`  ${prefix} ${entry} ${UI.Style.TEXT_DIM}(${sizeStr})${status}`)
   }
 
   if (targets.binary) {
-    prompts.log.info(`  ✓ Binary: ${shortenPath(targets.binary)}`)
+    const entry = t("cli.uninstall.labeled", {
+      label: t("cli.uninstall.label.binary"),
+      value: shortenPath(targets.binary),
+    })
+    prompts.log.info(`  ✓ ${entry}`)
   }
 }
 
@@ -127,7 +136,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
 
   for (const dir of targets.directories) {
     if (dir.keep) {
-      prompts.log.step(`Skipping ${dir.label} (--keep-${dir.label.toLowerCase()})`)
+      prompts.log.step(t("cli.uninstall.skipping", { label: dir.label, flag: `--keep-${dir.id}` }))
       continue
     }
 
@@ -137,19 +146,19 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
       .catch(() => false)
     if (!exists) continue
 
-    spinner.start(`Removing ${dir.label}...`)
+    spinner.start(t("cli.uninstall.removing", { label: dir.label }))
     const err = await fs.rm(dir.path, { recursive: true, force: true }).catch((e) => e)
     if (err) {
-      spinner.error(`Failed to remove ${dir.label}`)
-      errors.push(`${dir.label}: ${err.message}`)
+      spinner.error(t("cli.uninstall.removeFailed", { label: dir.label }))
+      errors.push(t("cli.uninstall.labeled", { label: dir.label, value: err.message }))
       continue
     }
-    spinner.stop(`Removed ${dir.label}`)
+    spinner.stop(t("cli.uninstall.removed", { label: dir.label }))
   }
 
   if (method === "curl" && targets.binary) {
     UI.empty()
-    prompts.log.message("To finish removing the binary, run:")
+    prompts.log.message(t("cli.uninstall.binaryHint"))
     prompts.log.info(`  rm "${targets.binary}"`)
 
     const binDir = path.dirname(targets.binary)
@@ -160,14 +169,14 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
 
   if (errors.length > 0) {
     UI.empty()
-    prompts.log.warn("Some operations failed:")
+    prompts.log.warn(t("cli.uninstall.someFailed"))
     for (const err of errors) {
       prompts.log.error(`  ${err}`)
     }
   }
 
   UI.empty()
-  prompts.log.success("Thank you for using GraphAgent!")
+  prompts.log.success(t("cli.uninstall.thanks"))
 }
 
 async function getDirectorySize(dir: string): Promise<number> {

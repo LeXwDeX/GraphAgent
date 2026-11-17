@@ -6,7 +6,7 @@ import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal } from "@graphagent
 import { TextareaRenderable, type Renderable } from "@opentui/core"
 import { setLanguage } from "../src/i18n"
 import { cellWidth } from "../src/ui/width"
-import { captureFrame, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
+import { captureFrame, runApp, waitFor, waitForFrame, PROMPT_MARK, type Setup } from "./fixture/run-app"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -119,7 +119,7 @@ test("the band takes the row above the prompt and the prompt stays where it was"
   let where: number
   let above: string
   try {
-    await waitForFrame(bare.setup, (frame) => frame.includes("ctrl+p commands"), "the prompt hint")
+    await waitForFrame(bare.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
     const frame = await settled(bare.setup)
     where = composerFirst(frame)
     above = rowsOf(frame)[where - 1]
@@ -171,7 +171,7 @@ test("a goal adds a second row under the workflow row, still above the prompt", 
 test("a goal alone takes one row and no workflow row", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p commands"), "the prompt hint")
+    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
     app.events.emit(goalEvent(mainID, GOAL))
     await waitForFrame(app.setup, (frame) => frame.includes("◎ 目标"), "the goal row")
     const frame = await settled(app.setup)
@@ -190,7 +190,7 @@ test("home shows no band, whatever the sessions hold", async () => {
   const served = workflows({ [mainID]: [ALPHA] })
   const app = await runApp({ sessions, args: {}, width: 120, height: 30, handler: served.handler })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p commands"), "the home prompt")
+    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the home prompt")
     app.events.emit(goalEvent(mainID, GOAL))
     const frame = await settled(app.setup)
     expect(frame).not.toContain("依赖升级验证")
@@ -314,7 +314,7 @@ test("hidden keeps the workflow row away, always shows an empty one", async () =
     handler: served.handler,
   })
   try {
-    await waitForFrame(hidden.setup, (frame) => frame.includes("ctrl+p commands"), "the prompt hint")
+    await waitForFrame(hidden.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
     const frame = await settled(hidden.setup)
     expect(frame).not.toContain("依赖升级验证")
     expect(served.reads).toEqual([])

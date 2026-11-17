@@ -33,6 +33,7 @@ import { interactiveMarkable, nonInteractiveMarkable, type LocalFetchMark } from
 import { askedPermission, locationHeaders, permissionAnswerer } from "./run/permission-answer"
 import { sessionTree } from "./run/permission-tree"
 import { MessageID } from "@/session/schema"
+import { t } from "@graphagent/tui/i18n"
 
 type ModelInput = Parameters<Client["session"]["prompt"]>[0]["model"]
 
@@ -141,21 +142,21 @@ async function toolError(part: ToolPart) {
     const next = toolInlineInfo(part)
     inline({
       icon: "✗",
-      title: `${next.title} failed`,
+      title: t("cli.run.toolFailed", { title: next.title }),
       ...(next.description && { description: next.description }),
     })
     return
   } catch {
     inline({
       icon: "✗",
-      title: `${part.tool} failed`,
+      title: t("cli.run.toolFailed", { title: part.tool }),
     })
   }
 }
 
 export const RunCommand = effectCmd({
   command: "run [message..]",
-  describe: `run ${APP_NAME} with a message`,
+  describe: t("cli.run.describe", { app: APP_NAME }),
   // For --dir, load instance for the resolved target dir.
   // The handler also chdirs (preserving the legacy order: chdir → file resolution).
   directory: (args) => (args.dir ? path.resolve(process.cwd(), args.dir) : process.cwd()),
@@ -163,70 +164,70 @@ export const RunCommand = effectCmd({
   builder: (yargs: Argv) =>
     yargs
       .positional("message", {
-        describe: "message to send",
+        describe: t("cli.run.option.message"),
         type: "string",
         array: true,
         default: [],
       })
       .option("command", {
-        describe: "the command to run, use message for args",
+        describe: t("cli.run.option.command"),
         type: "string",
       })
       .option("continue", {
         alias: ["c"],
-        describe: "continue the last session",
+        describe: t("cli.run.option.continue"),
         type: "boolean",
       })
       .option("session", {
         alias: ["s"],
-        describe: "session id to continue",
+        describe: t("cli.run.option.session"),
         type: "string",
       })
       .option("fork", {
-        describe: "fork the session before continuing (requires --continue or --session)",
+        describe: t("cli.run.option.fork"),
         type: "boolean",
       })
       .option("dag-mode", {
-        describe: "DAG mode for the new session (cannot be combined with --session)",
+        describe: t("cli.run.option.dagMode"),
         type: "string",
         choices: ["on", "off"] as const,
       })
       .option("model", {
         type: "string",
         alias: ["m"],
-        describe: "model to use in the format of provider/model",
+        describe: t("cli.run.option.model"),
       })
       .option("agent", {
         type: "string",
-        describe: "agent to use",
+        describe: t("cli.run.option.agent"),
       })
       .option("format", {
         type: "string",
         choices: ["default", "json"],
         default: "default",
-        describe: "format: default (formatted) or json (raw JSON events)",
+        describe: t("cli.run.option.format"),
       })
       .option("file", {
         alias: ["f"],
         type: "string",
         array: true,
-        describe: "file(s) to attach to message",
+        describe: t("cli.run.option.file"),
       })
       .option("title", {
         type: "string",
-        describe: "title for the session (uses truncated prompt if no value provided)",
+        describe: t("cli.run.option.title"),
       })
       .option("dir", {
         type: "string",
-        describe: "directory to run in",
+        describe: t("cli.run.option.dir"),
       })
       .option("variant", {
         type: "string",
-        describe: "model variant (provider-specific reasoning effort, e.g., high, max, minimal)",
+        describe: t("cli.run.option.variant"),
       })
       .option("thinking", {
         type: "boolean",
-        describe: "show thinking blocks",
+        describe: t("cli.run.option.thinking"),
       })
       .option("mini", {
         type: "boolean",
@@ -237,42 +238,42 @@ export const RunCommand = effectCmd({
         type: "boolean",
         default: true,
         hidden: true,
-        describe: "replay interactive session history on resume and after resize (use --no-replay to disable)",
+        describe: t("cli.run.option.replay"),
       })
       .option("replay-limit", {
         type: "number",
         hidden: true,
-        describe: "cap visible interactive replay to the newest N messages",
+        describe: t("cli.run.option.replayLimit"),
       })
       .option("dangerously-skip-permissions", {
         type: "boolean",
-        describe: "auto-approve permissions that are not explicitly denied (dangerous!)",
+        describe: t("cli.run.option.dangerouslySkipPermissions"),
         default: false,
       })
       .option("init", {
         type: "boolean",
-        describe: "run Setup hooks for one-time initialization, then continue the run",
+        describe: t("cli.run.option.init"),
         default: false,
       })
       .option("maintenance", {
         type: "boolean",
-        describe: "run Setup hooks for maintenance, then continue the run",
+        describe: t("cli.run.option.maintenance"),
         default: false,
       })
       .option("init-only", {
         type: "boolean",
-        describe: "run Setup and startup SessionStart hooks, then exit without starting a conversation",
+        describe: t("cli.run.option.initOnly"),
         default: false,
       })
       .option("demo", {
         type: "boolean",
         default: false,
         hidden: true,
-        describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately",
+        describe: t("cli.run.option.demo"),
       })
       .option("trust-project", {
         type: "boolean",
-        describe: "trust every project-layer entry for this run without writing trust.json",
+        describe: t("cli.run.option.trustProject"),
       }),
   handler: Effect.fn("Cli.run")(function* (args) {
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
@@ -294,7 +295,7 @@ export const RunCommand = effectCmd({
       }
       const dieInteractive = (error: unknown): never => {
         if (error instanceof Error && error.message === INTERACTIVE_INPUT_ERROR) {
-          die(error.message)
+          die(t("cli.run.error.miniNeedsInput"))
         }
 
         throw error
@@ -305,52 +306,52 @@ export const RunCommand = effectCmd({
         .join(" ")
 
       if (interactive && args.command) {
-        die("--mini cannot be used with --command")
+        die(t("cli.run.error.miniWithCommand"))
       }
 
       // yargs' `conflicts` treats the `--mini` default as provided, which would
       // reject every plain `run --trust-project`; check the resolved values instead.
       if (interactive && args["trust-project"]) {
-        die("--trust-project cannot be used with --mini")
+        die(t("cli.run.error.trustProjectWithMini"))
       }
 
       if (interactive && args._?.[0] !== "mini") {
-        die("--mini must be used without the run subcommand")
+        die(t("cli.run.error.miniSubcommand"))
       }
 
       if (args.demo && !interactive) {
-        die("--demo requires --mini")
+        die(t("cli.run.error.requiresMini", { flag: "--demo" }))
       }
 
       if (args.init && args.maintenance) {
-        die("--init and --maintenance are mutually exclusive")
+        die(t("cli.run.error.initAndMaintenance"))
       }
 
       if (interactive && (args.init || args.maintenance || args["init-only"])) {
-        die("--init, --maintenance and --init-only require a non-interactive run")
+        die(t("cli.run.error.setupNeedsNonInteractive"))
       }
 
       if (args["init-only"] && (args.session || args.continue || args.fork || args.command)) {
-        die("--init-only cannot be combined with --session, --continue, --fork or --command")
+        die(t("cli.run.error.initOnlyConflicts"))
       }
 
       if (interactive && args.format === "json") {
-        die("--mini cannot be used with --format json")
+        die(t("cli.run.error.miniWithJson"))
       }
 
       if (args["replay-limit"] !== undefined && !interactive) {
-        die("--replay-limit requires --mini")
+        die(t("cli.run.error.requiresMini", { flag: "--replay-limit" }))
       }
 
       if (
         args["replay-limit"] !== undefined &&
         (!Number.isInteger(args["replay-limit"]) || args["replay-limit"] <= 0)
       ) {
-        die("--replay-limit must be a positive integer")
+        die(t("cli.run.error.replayLimitPositive"))
       }
 
       if (interactive && !process.stdout.isTTY) {
-        die("--mini requires a TTY stdout")
+        die(t("cli.run.error.miniNeedsTty"))
       }
 
       if (interactive) {
@@ -372,7 +373,7 @@ export const RunCommand = effectCmd({
           process.chdir(path.isAbsolute(args.dir) ? args.dir : path.join(root, args.dir))
           return process.cwd()
         } catch {
-          UI.error("Failed to change directory to " + args.dir)
+          UI.error(t("cli.run.error.changeDirectory", { dir: args.dir }))
           process.exit(1)
         }
       })()
@@ -384,7 +385,7 @@ export const RunCommand = effectCmd({
         for (const filePath of list) {
           const resolvedPath = path.resolve(directory ?? root, filePath)
           if (!(await Filesystem.exists(resolvedPath))) {
-            UI.error(`File not found: ${filePath}`)
+            UI.error(t("cli.run.error.fileNotFound", { file: filePath }))
             process.exit(1)
           }
 
@@ -404,12 +405,12 @@ export const RunCommand = effectCmd({
       const initialInput = resolveRunInput(rawMessage, piped)
 
       if (args.fork && !args.continue && !args.session) {
-        UI.error("--fork requires --continue or --session")
+        UI.error(t("cli.run.error.forkNeedsSession"))
         process.exit(1)
       }
 
       if (args["dag-mode"] && args.session) {
-        UI.error("--dag-mode cannot be used with --session")
+        UI.error(t("cli.run.error.dagModeWithSession"))
         process.exit(1)
       }
 
@@ -443,7 +444,7 @@ export const RunCommand = effectCmd({
             .catch(() => undefined)
 
           if (!current?.data) {
-            UI.error("Session not found")
+            UI.error(t("cli.run.error.sessionNotFound"))
             process.exit(1)
           }
 
@@ -512,7 +513,11 @@ export const RunCommand = effectCmd({
           return
         }
         if (args["dag-mode"])
-          UI.println(UI.Style.TEXT_DIM + `DAG mode ${args["dag-mode"]} for this session` + UI.Style.TEXT_NORMAL)
+          UI.println(
+            UI.Style.TEXT_DIM +
+              t(args["dag-mode"] === "on" ? "cli.run.dagMode.on" : "cli.run.dagMode.off") +
+              UI.Style.TEXT_NORMAL,
+          )
 
         return {
           id,
@@ -540,10 +545,14 @@ export const RunCommand = effectCmd({
         })
         const id = result.data?.id
         if (!id) {
-          throw new Error("Failed to create session")
+          throw new Error(t("cli.run.error.sessionCreateFailed"))
         }
         if (args["dag-mode"])
-          UI.println(UI.Style.TEXT_DIM + `DAG mode ${args["dag-mode"]} for this session` + UI.Style.TEXT_NORMAL)
+          UI.println(
+            UI.Style.TEXT_DIM +
+              t(args["dag-mode"] === "on" ? "cli.run.dagMode.on" : "cli.run.dagMode.off") +
+              UI.Style.TEXT_NORMAL,
+          )
 
         localSessionIDs.add(id)
         ClientSessions.touch({ sessionID: id, directory })
@@ -561,19 +570,11 @@ export const RunCommand = effectCmd({
           agentSvc.get(name).pipe(Effect.provideService(InstanceRef, localInstance)),
         )
         if (!entry) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" not found. Falling back to default agent`,
-          )
+          UI.println(UI.Style.TEXT_WARNING_BOLD + "!", UI.Style.TEXT_NORMAL, t("cli.run.agentNotFound", { name }))
           return undefined
         }
         if (entry.mode === "subagent") {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
-          )
+          UI.println(UI.Style.TEXT_WARNING_BOLD + "!", UI.Style.TEXT_NORMAL, t("cli.run.agentIsSubagent", { name }))
           return undefined
         }
         return name
@@ -587,7 +588,7 @@ export const RunCommand = effectCmd({
         const localSelectedAgent = await pickAgent()
         const sess = await session(sdk, localSelectedAgent)
         if (!sess?.id) {
-          UI.error("Session not found")
+          UI.error(t("cli.run.error.sessionNotFound"))
           process.exit(1)
         }
         const sessionID = sess.id
@@ -651,7 +652,7 @@ export const RunCommand = effectCmd({
                 { requestID, reply },
                 location ? { headers: locationHeaders(location) } : undefined,
               )
-              if (result.error) warn(`permission request ${requestID} could not be answered`)
+              if (result.error) warn(t("cli.run.permissionUnanswered", { id: requestID }))
             },
           })
           // A node that runs in another directory (isolated in a worktree, or bound to one) asks
@@ -663,7 +664,7 @@ export const RunCommand = effectCmd({
             const request = askedPermission(event.payload.properties)
             if (!request) return
             answer(request, { directory: event.directory, workspace: event.workspace }).catch((cause) =>
-              warn(`permission request ${request.id} could not be answered: ${formatRunError(cause)}`),
+              warn(t("cli.run.permissionUnansweredBecause", { id: request.id, reason: formatRunError(cause) })),
             )
           }
           GlobalBus.on("event", onBus)
@@ -741,7 +742,7 @@ export const RunCommand = effectCmd({
                   if (emit("reasoning", { part })) continue
                   const text = part.text.trim()
                   if (!text) continue
-                  const line = `Thinking: ${text}`
+                  const line = t("cli.run.thinking", { text })
                   if (process.stdout.isTTY) {
                     UI.empty()
                     UI.println(`${UI.Style.TEXT_DIM}\u001b[3m${line}\u001b[0m${UI.Style.TEXT_NORMAL}`)
@@ -793,7 +794,7 @@ export const RunCommand = effectCmd({
 
         if (!interactive) {
           if (args.init || args.maintenance || args["init-only"]) {
-            if (!settingsHook) return die("Setup hooks are unavailable in this run")
+            if (!settingsHook) return die(t("cli.run.error.setupHooksUnavailable"))
             await Effect.runPromise(
               settingsHook
                 .trigger({ event: "Setup", trigger: args.maintenance ? "maintenance" : "init" }, { sessionID })
@@ -804,11 +805,7 @@ export const RunCommand = effectCmd({
           // exits without starting a conversation.
           if (args["init-only"]) return undefined
           if (dagPermission === "ask")
-            UI.println(
-              UI.Style.TEXT_WARNING_BOLD + "!",
-              UI.Style.TEXT_NORMAL +
-                'dag.permission is "ask": a workflow node or task agent that edits, runs a command or calls an MCP tool needs approval, and a non-interactive run rejects those requests',
-            )
+            UI.println(UI.Style.TEXT_WARNING_BOLD + "!", UI.Style.TEXT_NORMAL + t("cli.run.dagPermissionAsk"))
           const model = pick(args.model)
           let subscription!: AbortController
           let completed!: Promise<string | undefined | void>

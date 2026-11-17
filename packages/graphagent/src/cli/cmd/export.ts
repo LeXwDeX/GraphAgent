@@ -7,6 +7,7 @@ import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { EOL } from "os"
 import { Effect } from "effect"
+import { t } from "@graphagent/tui/i18n"
 
 function redact(kind: string, id: string, value: string) {
   return value.trim() ? `[redacted:${kind}:${id}]` : value
@@ -221,15 +222,15 @@ function sanitize(data: { info: Session.Info; messages: SessionV1.WithParts[] })
 
 export const ExportCommand = effectCmd({
   command: "export [sessionID]",
-  describe: "export session data as JSON",
+  describe: t("cli.export.describe"),
   builder: (yargs) =>
     yargs
       .positional("sessionID", {
-        describe: "session id to export",
+        describe: t("cli.export.arg.sessionID"),
         type: "string",
       })
       .option("sanitize", {
-        describe: "redact sensitive transcript and file data",
+        describe: t("cli.export.option.sanitize"),
         type: "boolean",
       }),
   handler: Effect.fn("Cli.export")(function* (args) {
@@ -255,17 +256,17 @@ export const sessionExport = Effect.fn("Cli.export.session")(function* (sessionI
 const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; sanitize?: boolean }) {
   const svc = yield* Session.Service
   let sessionID = args.sessionID ? SessionID.make(args.sessionID) : undefined
-  process.stderr.write(`Exporting session: ${sessionID ?? "latest"}\n`)
+  process.stderr.write(t("cli.export.exporting", { session: sessionID ?? t("cli.export.latest") }) + "\n")
 
   if (!sessionID) {
     UI.empty()
-    prompts.intro("Export session", { output: process.stderr })
+    prompts.intro(t("cli.export.intro"), { output: process.stderr })
 
     const sessions = yield* svc.list()
 
     if (sessions.length === 0) {
-      prompts.log.error("No sessions found", { output: process.stderr })
-      prompts.outro("Done", { output: process.stderr })
+      prompts.log.error(t("cli.export.noSessions"), { output: process.stderr })
+      prompts.outro(t("cli.export.done"), { output: process.stderr })
       return
     }
 
@@ -273,7 +274,7 @@ const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; 
 
     const selectedSession = yield* Effect.promise(() =>
       prompts.autocomplete({
-        message: "Select session to export",
+        message: t("cli.export.select"),
         maxItems: 10,
         options: sessions.map((session) => ({
           label: session.title,
@@ -290,7 +291,7 @@ const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; 
 
     sessionID = selectedSession
 
-    prompts.outro("Exporting session...", { output: process.stderr })
+    prompts.outro(t("cli.export.outro"), { output: process.stderr })
   }
 
   // Match legacy try/catch — catches both typed failures and defects
@@ -300,5 +301,5 @@ const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; 
 
     process.stdout.write(JSON.stringify(args.sanitize ? sanitize(exportData) : exportData, null, 2))
     process.stdout.write(EOL)
-  }).pipe(Effect.catchCause(() => fail(`Session not found: ${sessionID!}`)))
+  }).pipe(Effect.catchCause(() => fail(t("cli.export.notFound", { sessionID: sessionID! }))))
 })

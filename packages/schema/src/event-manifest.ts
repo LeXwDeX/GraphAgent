@@ -15,6 +15,7 @@ import { McpEvent } from "./mcp-event"
 import { ModelsDev } from "./models-dev"
 import { Permission } from "./permission"
 import { PermissionV1 } from "./permission-v1"
+import { PrWatchEvent } from "./pr-watch-event"
 import { Project } from "./project"
 import { ProjectDirectories } from "./project-directories"
 import { ProjectTrust } from "./project-trust"
@@ -83,6 +84,7 @@ export const Definitions = Event.inventory(
   ...WorktreeEvent.Definitions,
   ...ServerEvent.Definitions,
   ...LifecycleEvent.Definitions,
+  ...PrWatchEvent.Definitions,
 )
 export const Latest = Event.latest(Definitions)
 export { Durable }

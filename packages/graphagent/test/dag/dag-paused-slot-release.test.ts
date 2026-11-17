@@ -78,7 +78,6 @@ function makeHarness(options: Options = {}) {
   const bump = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1)
 
   const store: Partial<DagStore.Interface> = {
-    tryClaimAdoption: () => Effect.succeed(true),
     getWorkflow: (dagID) =>
       Effect.sync(() => {
         bump(reads, dagID)

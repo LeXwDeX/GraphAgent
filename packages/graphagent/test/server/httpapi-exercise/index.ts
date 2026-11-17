@@ -1079,6 +1079,74 @@ const scenarios: Scenario[] = [
       check(!("pausedReason" in body), "pausedReason should be absent when goal is active")
     }),
   http.protected
+    .get("/session/{sessionID}/pr-watch", "session.prWatch")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "PR watch session" })
+        const now = Date.now()
+        yield* ctx.prWatch({
+          id: "watch_httpapi_live",
+          sessionID: session.id,
+          url: "https://github.com/acme/widgets/pull/7",
+          number: 7,
+          phase: "watching",
+          head: "abc123",
+          updatedAt: now,
+        })
+        // Ended more than 10 minutes ago: outside the read window.
+        yield* ctx.prWatch({
+          id: "watch_httpapi_old",
+          sessionID: session.id,
+          url: "https://github.com/acme/widgets/pull/6",
+          number: 6,
+          phase: "cancelled",
+          updatedAt: now - 11 * 60_000,
+        })
+        return { session }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/pr-watch", { sessionID: ctx.state.session.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      array(body.entries)
+      check(body.entries.length === 1, "only the live watch is inside the 10-minute window")
+      const [entry] = body.entries
+      object(entry)
+      check(entry.watchID === "watch_httpapi_live", "entry should be the seeded live watch")
+      check(entry.sessionID === ctx.state.session.id, "entry should name the registering session")
+      check(entry.phase === "watching" && entry.provider === "github" && entry.number === 7, "entry fields")
+      check(entry.head === "abc123", "head comes from the durable row")
+      check(!("delivery" in entry), "a watching row owes no notice")
+    }),
+  http.protected
+    .get("/session/{sessionID}/reminder", "session.reminder")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Reminder session" })
+        const fireAt = Date.now() + 60 * 60_000
+        const reminder = yield* ctx.reminder(session.id, "cover reminder countdown", fireAt)
+        return { session, fireAt, reminder }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/reminder", { sessionID: ctx.state.session.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      array(body.entries)
+      check(body.entries.length === 1, "one pending reminder")
+      const [entry] = body.entries
+      object(entry)
+      check(entry.id === ctx.state.reminder.id, "reminder id should match")
+      check(entry.fireAt === ctx.state.fireAt, "fireAt should be the scheduled time")
+      check(entry.status === "scheduled" && entry.everyMs === null, "a one-shot scheduled reminder")
+      check(entry.text === "cover reminder countdown", "text should match")
+    }),
+  http.protected
     .get("/session/{sessionID}/goal", "session.goal.absent")
     .seeded((ctx) => ctx.session({ title: "Goalless session" }))
     .at((ctx) => ({

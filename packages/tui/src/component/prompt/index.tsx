@@ -51,14 +51,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTicker } from "../../context/ticker-context"
 import { useArgs } from "../../context/args"
-import {
-  EscapePriority,
-  GRAPHAGENT_BASE_MODE,
-  useBindings,
-  useCommandShortcut,
-  useLeaderActive,
-  useGraphagentKeymap,
-} from "../../keymap"
+import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings, useLeaderActive, useGraphagentKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -229,8 +222,6 @@ export function Prompt(props: PromptProps) {
   const btw = useBtwOptional()
   const stash = usePromptStash()
   const keymap = useGraphagentKeymap()
-  const agentShortcut = useCommandShortcut("agent.cycle")
-  const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
@@ -1894,7 +1885,8 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
-        <box width="100%" flexDirection="row" justifyContent="space-between">
+        {/* The status row keeps its line when it has nothing to show, so the prompt does not change height. */}
+        <box width="100%" minHeight={1} flexDirection="row" justifyContent="space-between">
           <Switch>
             <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "stopping"}>
               <box flexDirection="column">
@@ -2092,24 +2084,14 @@ export function Prompt(props: PromptProps) {
                 )}
               </Show>
               <Switch>
-                <Match when={store.mode === "normal"}>
-                  <Switch>
-                    <Match when={usage()}>
-                      {(item) => (
-                        <text fg={theme.textMuted} wrapMode="none">
-                          {[item().context, item().cost].filter(Boolean).join(" · ")}
-                        </text>
-                      )}
-                    </Match>
-                    <Match when={true}>
-                      <text fg={theme.text}>
-                        {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
-                      </text>
-                    </Match>
-                  </Switch>
-                  <text fg={theme.text}>
-                    {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
-                  </text>
+                {/* The agent-cycle and command-palette keys are the footer's hints (F1); the prompt does not repeat
+                    them (#1032 PR6). */}
+                <Match when={store.mode === "normal" ? usage() : undefined}>
+                  {(item) => (
+                    <text fg={theme.textMuted} wrapMode="none">
+                      {[item().context, item().cost].filter(Boolean).join(" · ")}
+                    </text>
+                  )}
                 </Match>
                 <Match when={store.mode === "shell"}>
                   <text fg={theme.text}>

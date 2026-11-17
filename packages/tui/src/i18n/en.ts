@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { cliEn } from "./cli"
 import type { MessageKey } from "./zh-CN"
 
 /**
@@ -77,17 +78,16 @@ export const en: Record<MessageKey, string> = {
   "shell.footer.trust": "⚠ {count} project commands untrusted · /trust",
   "drawer.command.show": "Show drawer",
   "drawer.command.hide": "Hide drawer",
+  "drawer.session.branch": "branch {branch}",
+  "drawer.context.usage": "{used} / {limit} tokens",
+  "drawer.lsp": "LSP {id}",
+  "drawer.services": "Services",
+  "drawer.mcp.connectedCount": "MCP {count} connected",
+  "drawer.mcp.failed": "MCP not connected: {names}",
+  "drawer.closeHint": "{key} close",
   "drawer.context": "Context",
-  "drawer.context.tokens": "{tokens} tokens",
-  "drawer.context.used": "{percent}% used",
   "drawer.cost": "Cost",
-  "drawer.cost.spent": "{amount} spent",
   "drawer.todo": "Todo",
-  "drawer.files": "Modified files",
-  "drawer.lsp.disabled": "LSPs are disabled",
-  "drawer.lsp.waiting": "LSPs will activate as files are read",
-  "drawer.mcp.summary": "({active} active{errors})",
-  "drawer.mcp.errors": ", {count} error(s)",
   "drawer.mcp.connected": "Connected",
   "drawer.mcp.disabled": "Disabled",
   "drawer.mcp.needsAuth": "Needs auth",
@@ -364,8 +364,7 @@ export const en: Record<MessageKey, string> = {
   "dagmode.prefill.cancelNode": "Please cancel node {name} (workflow {id}).",
   "dagmode.prefill.extendTimeout": "Please extend the timeout of node {name} (workflow {id}).",
   "dagmode.prefill.relay": "Please relay this to the agent of node {name} (workflow {id}):",
-  "dagmode.prefill.coverage":
-    'Please check the coverage of workflow "{title}" ({id}) and fill in what is not covered.',
+  "dagmode.prefill.coverage": 'Please check the coverage of workflow "{title}" ({id}) and fill in what is not covered.',
   "dagmode.prefill.audit": "Please add one more adversarial review round for the current change.",
   "dagmode.prefill.narrow": 'Please narrow the scope of workflow "{title}" to only:',
   "dagmode.prefill.cancelAll":
@@ -423,9 +422,12 @@ export const en: Record<MessageKey, string> = {
   "trust.title.changed": "Project commands changed",
   "trust.title.imported": "Imported project commands",
   "trust.title.manage": "Project trust",
-  "trust.summary.first": "This project includes {count} commands that run on your computer. None of them will run until you confirm.",
-  "trust.summary.changed": "Since you last confirmed, {count} project commands were added or changed. They stay paused until you confirm; everything else keeps running.",
-  "trust.summary.imported": "This import added or rewrote {count} project commands. They stay paused until you confirm; everything else keeps running.",
+  "trust.summary.first":
+    "This project includes {count} commands that run on your computer. None of them will run until you confirm.",
+  "trust.summary.changed":
+    "Since you last confirmed, {count} project commands were added or changed. They stay paused until you confirm; everything else keeps running.",
+  "trust.summary.imported":
+    "This import added or rewrote {count} project commands. They stay paused until you confirm; everything else keeps running.",
   "trust.summary.manage": "This project has {count} executable entries.",
   "trust.noProject": "There is no project layer here.",
   "trust.empty": "No executable entries.",
@@ -484,7 +486,8 @@ export const en: Record<MessageKey, string> = {
   "trust.hint.trust": "Trust checked and continue",
   "trust.hint.decline": "Decline all",
   "trust.hint.revoke": "Revoke trust",
-  "trust.footnote": "Trust is stored only on this computer (trust.json in the user state directory), never in the project. If an entry changes later, you will be asked again.",
+  "trust.footnote":
+    "Trust is stored only on this computer (trust.json in the user state directory), never in the project. If an entry changes later, you will be asked again.",
   "trust.failed": "Failed to submit trust decisions: {message}",
   "panel.model.title": "Select model",
   "panel.model.group.favorites": "Favorites",
@@ -708,4 +711,5 @@ export const en: Record<MessageKey, string> = {
   "command.app.console.description": "Show or hide the console",
   "command.app.heap_snapshot.title": "Heap snapshot",
   "command.app.heap_snapshot.description": "Write a heap snapshot file",
+  ...cliEn,
 }
