@@ -126,8 +126,6 @@ panel/settings.tsx	prop	Page down
 panel/settings.tsx	prop	Page up
 panel/settings.tsx	prop	Previous row
 panel/settings.tsx	prop	Previous tab
-routes/session/drawer.tsx	jsx-attr	LSP
-routes/session/drawer.tsx	jsx-attr	MCP
 routes/session/index.tsx	jsx-attr	# ${}: blocked
 routes/session/index.tsx	jsx-attr	# Questions
 routes/session/index.tsx	jsx-attr	# Todos

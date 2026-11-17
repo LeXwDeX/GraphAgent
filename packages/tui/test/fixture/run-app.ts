@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync } from "node:fs"
 import { mock } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
@@ -149,6 +150,8 @@ export async function runApp(options: {
     events,
     commands: () => sent.filter((item) => item.path.endsWith("/command")),
     writes: () => sent.filter((item) => !item.path.endsWith("/attention")),
+    /** The kv file as it is on disk now. */
+    kv: (): Record<string, unknown> => JSON.parse(readFileSync(`${tmp.path}/kv.json`, "utf8")),
     async stop() {
       try {
         if (!setup.renderer.isDestroyed) {

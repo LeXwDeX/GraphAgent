@@ -99,7 +99,7 @@ test("an open drawer covers the main area and leaves every composer row as it wa
     expect(before.at(-2)!.length).toBeGreaterThan(140 - DRAWER_WIDTH)
 
     app.setup.mockInput.pressKey("b", { ctrl: true })
-    await waitForFrame(app.setup, (frame) => frame.includes("LSP"), "the drawer")
+    await waitForFrame(app.setup, (frame) => frame.includes("上下文"), "the drawer")
     const after = composerRows(await settled(app.setup))
     expect(after).toEqual(before)
 
@@ -112,7 +112,7 @@ test("an open drawer covers the main area and leaves every composer row as it wa
     expect(drawer!.y + drawer!.height).toBeLessThanOrEqual(textareas(app.setup)[0].y)
 
     app.setup.mockInput.pressKey("b", { ctrl: true })
-    await waitForFrame(app.setup, (frame) => !frame.includes("LSP"), "the drawer closed")
+    await waitForFrame(app.setup, (frame) => !frame.includes("上下文"), "the drawer closed")
     expect(composerRows(await settled(app.setup))).toEqual(before)
   } finally {
     clearDrafts(app.setup)
