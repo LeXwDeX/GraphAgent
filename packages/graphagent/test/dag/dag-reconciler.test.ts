@@ -2,15 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Issue #1029, PR4a: the shell of the reconciler (ADR-0008 decision 6) over a
- * real database and scripted collaborators. `decide` has its own table
+ * Issue #1029, PR4a and PR4b: the shell of the reconciler (ADR-0008 decision 6)
+ * over a real database and scripted collaborators. `decide` has its own table
  * (`dag-reconcile-decide.test.ts`); the cases here are what the shell does with
  * a verdict: what it reads to make the observation (and in which order), which
- * collaborator each action calls (and which it does not), the reservation the
- * orphan terminalization holds, the single flight of `reconcile`, the clock watch
- * every observation feeds, and the order and the resilience of a round. The loop
- * and two runners over one database are in `dag-runner-lease.test.ts` ("the
- * reconcile tick") and `dag-runner-races.test.ts` (race 3).
+ * collaborator each action calls (and which it does not), the flight the orphan
+ * terminalization runs in, the single flight of `reconcile`, `reconcileAfter`
+ * (the trigger that brings news and is answered by an evaluation that began after
+ * it), the clock watch every observation feeds, and the order and the resilience
+ * of a round. The loop and two runners over one database are in
+ * `dag-runner-lease.test.ts` ("the reconcile tick") and `dag-runner-races.test.ts`
+ * (race 3).
  */
 
 import { describe, expect } from "bun:test"
@@ -141,9 +143,9 @@ const harness = Effect.gen(function* () {
   const real = yield* DagStore.Service
   const leases = yield* DagLease.Service
   const entries = new Map<string, Entry>()
-  const recovering = new Set<string>()
   const calls = {
     getWorkflow: 0,
+    getNodes: 0,
     /** What an observation reads, in the order it reads it: the clock, then the lease row, then the workflow row. */
     reads: [] as Array<"clock" | "held" | "workflow">,
     adopt: [] as string[],
@@ -154,8 +156,6 @@ const harness = Effect.gen(function* () {
     abandon: [] as Array<DagLease.Token | undefined>,
     published: [] as string[],
     failed: [] as Array<{ readonly dagID: string; readonly token: DagLease.Token; readonly reason: string }>,
-    /** Whether the orphan's reservation was held at the moment each of these ran. */
-    reserved: [] as boolean[],
   }
   // What a test changes about the scripted collaborators.
   const script: {
@@ -163,7 +163,13 @@ const harness = Effect.gen(function* () {
     fail: Effect.Effect<void, Error>
     adopt: Effect.Effect<void>
     beforeGetWorkflow: Effect.Effect<void>
+    /** Runs once the workflow row is read: an evaluation that parks here concludes from what the row said at that moment. */
+    afterGetWorkflow: Effect.Effect<void>
+    /** Runs before the nodes of a `pending` workflow are read, which the observation does after it read the ownership. */
+    beforeGetNodes: Effect.Effect<void>
     beforeHeld: Effect.Effect<void>
+    /** Runs inside the orphan's `WorkflowStarted` publish, where the first-wave handler of the loop would pick the event up. */
+    whilePublishing: Effect.Effect<void>
     /** The instance's clock watch, which `RunnerLease` keeps in the loop; a test that gives none runs without one. */
     noteClock: ((at: number) => boolean) | undefined
   } = {
@@ -171,7 +177,10 @@ const harness = Effect.gen(function* () {
     fail: Effect.void,
     adopt: Effect.void,
     beforeGetWorkflow: Effect.void,
+    afterGetWorkflow: Effect.void,
+    beforeGetNodes: Effect.void,
     beforeHeld: Effect.void,
+    whilePublishing: Effect.void,
     noteClock: undefined,
   }
 
@@ -182,7 +191,15 @@ const harness = Effect.gen(function* () {
         Effect.suspend(() => {
           calls.getWorkflow++
           calls.reads.push("workflow")
-          return script.beforeGetWorkflow.pipe(Effect.andThen(real.getWorkflow(id)))
+          return script.beforeGetWorkflow.pipe(
+            Effect.andThen(real.getWorkflow(id)),
+            Effect.tap(() => script.afterGetWorkflow),
+          )
+        }),
+      getNodes: (id) =>
+        Effect.suspend(() => {
+          calls.getNodes++
+          return script.beforeGetNodes.pipe(Effect.andThen(real.getNodes(id)))
         }),
     },
     leases: {
@@ -195,15 +212,13 @@ const harness = Effect.gen(function* () {
     runnerID: RUNNER,
     directory: DIRECTORY,
     entries,
-    recovering,
     events: {
       // The publish is generic in its event, and the stub only records which one: the cast is the stub's shape.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       publish: ((definition: { readonly type: string }) =>
-        Effect.sync(() => {
-          calls.published.push(definition.type)
-          calls.reserved.push(recovering.size > 0)
-        })) as never,
+        Effect.sync(() => void calls.published.push(definition.type)).pipe(
+          Effect.andThen(Effect.suspend(() => script.whilePublishing)),
+        )) as never,
     },
     lease: {
       claim: (dagID) =>
@@ -216,8 +231,7 @@ const harness = Effect.gen(function* () {
     },
     portFor: (_dagID, held) => ({
       fail: (dagID, reason) =>
-        Effect.sync(() => void calls.reserved.push(recovering.has(dagID))).pipe(
-          Effect.andThen(script.fail),
+        Effect.suspend(() => script.fail).pipe(
           Effect.tap(() => Effect.sync(() => void calls.failed.push({ dagID, token: held, reason }))),
         ),
     }),
@@ -230,7 +244,7 @@ const harness = Effect.gen(function* () {
       return script.noteClock?.(at) ?? false
     },
   })
-  return { reconciler, calls, script, entries, recovering }
+  return { reconciler, calls, script, entries }
 })
 
 /** A test of a reconciler of this instance: the project, the session and the directory it works in. */
@@ -632,25 +646,52 @@ describe("the clock watch (ADR-0008 decision 2): every observation feeds it", ()
 describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () => {
   const old = ReconcileDecide.ORPHAN_PENDING_GRACE_MS + 1_000
 
-  it.live(
-    "is claimed, started and failed under the claim, which is then given back, with its slot reserved throughout",
-    () =>
-      scenario(
-        Effect.gen(function* () {
-          const { reconciler, calls, recovering } = yield* harness
-          yield* workflow("wf-orphan", { status: "pending", ageMs: old, nodes: ["pending", "pending"] })
+  it.live("is claimed, started and failed under the claim, which is then given back", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls } = yield* harness
+        yield* workflow("wf-orphan", { status: "pending", ageMs: old, nodes: ["pending", "pending"] })
 
-          expect(yield* reconciler.reconcile("wf-orphan")).toEqual({ _tag: "terminalize-orphan" })
+        expect(yield* reconciler.reconcile("wf-orphan")).toEqual({ _tag: "terminalize-orphan" })
 
-          expect(calls.claim).toEqual(["wf-orphan"])
-          expect(calls.published).toEqual([DagEvent.WorkflowStarted.type])
-          expect(calls.failed).toEqual([{ dagID: "wf-orphan", token: token(1), reason: DagReconciler.ORPHAN_REASON }])
-          expect(calls.abandon).toEqual([token(1)])
-          // The first-wave handler must not adopt the orphan between its WorkflowStarted and its failure.
-          expect(calls.reserved).toEqual([true, true])
-          expect(recovering.size).toBe(0)
-        }),
-      ),
+        expect(calls.claim).toEqual(["wf-orphan"])
+        expect(calls.published).toEqual([DagEvent.WorkflowStarted.type])
+        expect(calls.failed).toEqual([{ dagID: "wf-orphan", token: token(1), reason: DagReconciler.ORPHAN_REASON }])
+        expect(calls.abandon).toEqual([token(1)])
+      }),
+    ),
+  )
+
+  // The first-wave handler of the loop calls `reconcileAfter` for every `WorkflowStarted`, and the orphan path publishes
+  // one of its own to legalize pending -> running -> failed. It must not adopt the orphan mid-way (a zero-node orphan
+  // would be completed instead of failed): the call waits for the flight of the terminalization and finds the failure.
+  it.live("raises the first wave of its own WorkflowStarted, which waits for it and finds the workflow failed", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        const { db } = yield* Database.Service
+        yield* workflow("wf-orphan", { status: "pending", ageMs: old, nodes: ["pending"] })
+        const raised: Array<Fiber.Fiber<ReconcileDecide.Action>> = []
+        script.whilePublishing = reconciler.reconcileAfter("wf-orphan").pipe(
+          Effect.forkChild({ startImmediately: true }),
+          Effect.tap((fiber) => Effect.sync(() => void raised.push(fiber))),
+          Effect.asVoid,
+        )
+        // The failure as the real command makes it, which the first wave reads afterwards.
+        script.fail = db
+          .run(sql`UPDATE workflow SET status = 'failed' WHERE id = 'wf-orphan'`)
+          .pipe(Effect.orDie, Effect.asVoid)
+
+        expect(yield* reconciler.reconcile("wf-orphan")).toEqual({ _tag: "terminalize-orphan" })
+
+        expect(raised).toHaveLength(1)
+        expect(yield* Fiber.join(raised[0])).toEqual({ _tag: "noop" })
+        // Two evaluations (the orphan's, then the first wave's), and nothing was adopted.
+        expect(calls.getWorkflow).toBe(2)
+        expect(calls.adopt).toEqual([])
+        expect(calls.claim).toEqual(["wf-orphan"])
+      }),
+    ),
   )
 
   it.live("is not touched within the grace period, or when a node has progressed", () =>
@@ -689,7 +730,7 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
     () =>
       scenario(
         Effect.gen(function* () {
-          const { reconciler, calls, script, recovering } = yield* harness
+          const { reconciler, calls, script } = yield* harness
           yield* workflow("wf-refused", { status: "pending", ageMs: old, nodes: ["pending"] })
           script.claim = undefined
 
@@ -699,25 +740,21 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
           expect(calls.published).toEqual([])
           expect(calls.failed).toEqual([])
           expect(calls.abandon).toEqual([undefined])
-          expect(recovering.size).toBe(0)
         }),
       ),
   )
 
-  // The verdict is made from an observation, and an adoption can publish its entry or reserve the slot in between.
-  it.live("is not started again when an adoption took the slot, or published its entry, since the observation", () =>
+  // The verdict is made from an observation, and an adoption can publish its entry in between.
+  it.live("is not started again when an adoption published its entry since the observation", () =>
     scenario(
       Effect.gen(function* () {
-        const { reconciler, calls, recovering, entries, script } = yield* harness
+        const { reconciler, calls, entries, script } = yield* harness
         yield* workflow("wf-busy", {
           status: "pending",
           ageMs: ReconcileDecide.ORPHAN_PENDING_GRACE_MS + 1_000,
           nodes: ["pending"],
         })
 
-        recovering.add("wf-busy")
-        expect(yield* reconciler.reconcile("wf-busy")).toEqual({ _tag: "terminalize-orphan" })
-        recovering.delete("wf-busy")
         // The observation reads the entries first, then the row: an entry that appears during the read is not in it.
         script.beforeGetWorkflow = Effect.sync(() => void entries.set("wf-busy", entryOf("busy", token(1))))
         expect(yield* reconciler.reconcile("wf-busy")).toEqual({ _tag: "terminalize-orphan" })
@@ -728,11 +765,11 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
   )
 
   it.live(
-    "gives its claim back and frees its slot when the failure is rejected, which ends the evaluation as a defect",
+    "gives its claim back and ends its flight when the failure is rejected, which ends the evaluation as a defect",
     () =>
       scenario(
         Effect.gen(function* () {
-          const { reconciler, calls, script, recovering } = yield* harness
+          const { reconciler, calls, script } = yield* harness
           yield* workflow("wf-rejected", { status: "pending", ageMs: old, nodes: ["pending"] })
           script.fail = Effect.fail(new Error("the transition is not legal any more"))
 
@@ -740,7 +777,10 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
 
           expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
           expect(calls.abandon).toEqual([token(1)])
-          expect(recovering.size).toBe(0)
+          // The flight is over: the next call evaluates for itself, and gets the same orphan to dispose of.
+          script.fail = Effect.void
+          expect(yield* reconciler.reconcile("wf-rejected")).toEqual({ _tag: "terminalize-orphan" })
+          expect(calls.claim).toEqual(["wf-rejected", "wf-rejected"])
         }),
       ),
   )
@@ -887,6 +927,358 @@ describe("reconcile is single-flight", () => {
         expect(yield* reconciler.reconcile("wf-failing")).toEqual({ _tag: "adopt" })
       }),
     ),
+  )
+})
+
+describe("reconcileAfter: a trigger that brings news is answered by an evaluation that began after it", () => {
+  type Script = Effect.Success<typeof harness>["script"]
+  type Calls = Effect.Success<typeof harness>["calls"]
+
+  /** The evaluations park after they read the workflow row, one gate each in the order they read it; later ones go through. */
+  const parkAfterRead = (script: Script, gates: ReadonlyArray<Deferred.Deferred<void>>) => {
+    let next = 0
+    script.afterGetWorkflow = Effect.suspend(() => (next < gates.length ? Deferred.await(gates[next++]) : Effect.void))
+  }
+  /** Wait until the evaluations have read the workflow row `count` times in all. */
+  const reads = (calls: Calls, count: number) =>
+    pollWithTimeout(
+      Effect.sync(() => (calls.getWorkflow >= count ? true : undefined)),
+      `the evaluations read the workflow ${calls.getWorkflow} times, not ${count}`,
+    )
+  const fork = <A, E>(effect: Effect.Effect<A, E>) => Effect.forkChild(effect, { startImmediately: true })
+  const died = <A>(exit: Exit.Exit<A, unknown>) => Exit.isFailure(exit) && Cause.hasDies(exit.cause)
+
+  it.live("with nothing under way it is `reconcile`: it evaluates at once and leaves no flight behind", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls } = yield* harness
+        yield* workflow("wf-idle")
+
+        expect(yield* reconciler.reconcileAfter("wf-idle")).toEqual({ _tag: "adopt" })
+        expect(calls.getWorkflow).toBe(1)
+        expect(calls.adopt).toEqual(["wf-idle"])
+
+        // Nothing is left to join or to wait for: every later call evaluates for itself.
+        expect(yield* reconciler.reconcileAfter("wf-idle")).toEqual({ _tag: "adopt" })
+        expect(yield* reconciler.reconcile("wf-idle")).toEqual({ _tag: "adopt" })
+        expect(calls.getWorkflow).toBe(3)
+      }),
+    ),
+  )
+
+  // The evaluation under way read the workflow as ended and concludes `noop`; an extend has reopened it since, and its
+  // WorkflowReplanned finds no entry. Joining would hand it the stale `noop` and leave the workflow to the next tick.
+  it.live(
+    "a workflow that was reopened while an evaluation judged it ended is adopted by the call that came with it",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, script } = yield* harness
+          const { db } = yield* Database.Service
+          yield* workflow("wf-reopened", { status: "completed" })
+          const gate = yield* Deferred.make<void>()
+          parkAfterRead(script, [gate])
+
+          const tick = yield* fork(reconciler.reconcile("wf-reopened"))
+          yield* reads(calls, 1)
+          yield* db.run(sql`UPDATE workflow SET status = 'running' WHERE id = 'wf-reopened'`).pipe(Effect.orDie)
+          const replanned = yield* fork(reconciler.reconcileAfter("wf-reopened"))
+          // It neither takes the verdict of the evaluation under way nor evaluates beside it.
+          expect(calls.getWorkflow).toBe(1)
+          yield* Deferred.succeed(gate, undefined)
+
+          expect(yield* Fiber.join(tick)).toEqual({ _tag: "noop" })
+          expect(yield* Fiber.join(replanned)).toEqual({ _tag: "adopt" })
+          expect(calls.getWorkflow).toBe(2)
+          expect(calls.adopt).toEqual(["wf-reopened"])
+        }),
+      ),
+  )
+
+  it.live("`reconcile` in the same situation takes the verdict of the evaluation under way, as the tick does", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        const { db } = yield* Database.Service
+        yield* workflow("wf-joined", { status: "completed" })
+        const gate = yield* Deferred.make<void>()
+        parkAfterRead(script, [gate])
+
+        const first = yield* fork(reconciler.reconcile("wf-joined"))
+        yield* reads(calls, 1)
+        yield* db.run(sql`UPDATE workflow SET status = 'running' WHERE id = 'wf-joined'`).pipe(Effect.orDie)
+        const second = yield* fork(reconciler.reconcile("wf-joined"))
+        yield* Deferred.succeed(gate, undefined)
+
+        expect([yield* Fiber.join(first), yield* Fiber.join(second)]).toEqual([{ _tag: "noop" }, { _tag: "noop" }])
+        expect(calls.getWorkflow).toBe(1)
+        expect(calls.adopt).toEqual([])
+        // The next round is the one that looks again.
+        expect(yield* reconciler.reconcile("wf-joined")).toEqual({ _tag: "adopt" })
+      }),
+    ),
+  )
+
+  it.live("calls that arrive during the same wait share one re-evaluation", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        yield* workflow("wf-shared")
+        const gate = yield* Deferred.make<void>()
+        parkAfterRead(script, [gate])
+
+        const tick = yield* fork(reconciler.reconcile("wf-shared"))
+        yield* reads(calls, 1)
+        const triggers = [
+          yield* fork(reconciler.reconcileAfter("wf-shared")),
+          yield* fork(reconciler.reconcileAfter("wf-shared")),
+          yield* fork(reconciler.reconcileAfter("wf-shared")),
+        ]
+        yield* Deferred.succeed(gate, undefined)
+
+        expect(yield* Fiber.join(tick)).toEqual({ _tag: "adopt" })
+        for (const trigger of triggers) expect(yield* Fiber.join(trigger)).toEqual({ _tag: "adopt" })
+        // The evaluation under way, and one more for the three: two observations, two adoptions.
+        expect(calls.getWorkflow).toBe(2)
+        expect(calls.adopt).toEqual(["wf-shared", "wf-shared"])
+      }),
+    ),
+  )
+
+  it.live(
+    "a call that arrives during the re-evaluation does not join it, which began before: it waits for the next",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, script } = yield* harness
+          yield* workflow("wf-again")
+          const first = yield* Deferred.make<void>()
+          const second = yield* Deferred.make<void>()
+          parkAfterRead(script, [first, second])
+
+          const tick = yield* fork(reconciler.reconcile("wf-again"))
+          yield* reads(calls, 1)
+          const early = yield* fork(reconciler.reconcileAfter("wf-again"))
+          // The evaluation under way ends, and the re-evaluation reads the row and parks with what it read.
+          yield* Deferred.succeed(first, undefined)
+          yield* Fiber.join(tick)
+          yield* reads(calls, 2)
+          const late = yield* fork(reconciler.reconcileAfter("wf-again"))
+          expect(calls.getWorkflow).toBe(2)
+          yield* Deferred.succeed(second, undefined)
+
+          expect(yield* Fiber.join(early)).toEqual({ _tag: "adopt" })
+          expect(yield* Fiber.join(late)).toEqual({ _tag: "adopt" })
+          // One evaluation for the call that came late, which no earlier read could answer.
+          expect(calls.getWorkflow).toBe(3)
+        }),
+      ),
+  )
+
+  it.live("the evaluation under way failing does not take the re-evaluation with it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        yield* workflow("wf-fails")
+        const gate = yield* Deferred.make<void>()
+        parkAfterRead(script, [gate])
+        let attempts = 0
+        script.adopt = Effect.suspend(() => (++attempts === 1 ? Effect.die(new Error("recovery failed")) : Effect.void))
+
+        const tick = yield* fork(Effect.exit(reconciler.reconcile("wf-fails")))
+        yield* reads(calls, 1)
+        const trigger = yield* fork(reconciler.reconcileAfter("wf-fails"))
+        yield* Deferred.succeed(gate, undefined)
+
+        expect(died(yield* Fiber.join(tick))).toBe(true)
+        expect(yield* Fiber.join(trigger)).toEqual({ _tag: "adopt" })
+        expect(calls.adopt).toEqual(["wf-fails", "wf-fails"])
+      }),
+    ),
+  )
+
+  it.live("the evaluation under way being interrupted does not take the re-evaluation with it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        yield* workflow("wf-cut")
+        parkAfterRead(script, [yield* Deferred.make<void>()])
+
+        const tick = yield* fork(reconciler.reconcile("wf-cut"))
+        yield* reads(calls, 1)
+        const trigger = yield* fork(reconciler.reconcileAfter("wf-cut"))
+        yield* Fiber.interrupt(tick)
+
+        expect(yield* Fiber.join(trigger)).toEqual({ _tag: "adopt" })
+        // The interrupted evaluation never got to adopt; the re-evaluation did, once.
+        expect(calls.getWorkflow).toBe(2)
+        expect(calls.adopt).toEqual(["wf-cut"])
+      }),
+    ),
+  )
+
+  it.live("the call that leads the re-evaluation being interrupted leaves the calls that follow it an answer", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        yield* workflow("wf-led")
+        const gate = yield* Deferred.make<void>()
+        parkAfterRead(script, [gate])
+
+        const tick = yield* fork(reconciler.reconcile("wf-led"))
+        yield* reads(calls, 1)
+        const leader = yield* fork(reconciler.reconcileAfter("wf-led"))
+        const follower = yield* fork(reconciler.reconcileAfter("wf-led"))
+        yield* Fiber.interrupt(leader)
+        yield* Deferred.succeed(gate, undefined)
+
+        expect(yield* Fiber.join(follower)).toEqual({ _tag: "adopt" })
+        yield* Fiber.join(tick)
+        // One re-evaluation for the follower, which took the lead; none for the leader that was cut off.
+        expect(calls.getWorkflow).toBe(2)
+        expect(calls.adopt).toEqual(["wf-led", "wf-led"])
+      }),
+    ),
+  )
+
+  it.live("a re-evaluation that fails fails the calls that share it, and is not remembered", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, script } = yield* harness
+        yield* workflow("wf-shared-failure")
+        const gate = yield* Deferred.make<void>()
+        parkAfterRead(script, [gate])
+        let attempts = 0
+        script.adopt = Effect.suspend(() => (++attempts === 2 ? Effect.die(new Error("recovery failed")) : Effect.void))
+
+        const tick = yield* fork(reconciler.reconcile("wf-shared-failure"))
+        yield* reads(calls, 1)
+        const leader = yield* fork(Effect.exit(reconciler.reconcileAfter("wf-shared-failure")))
+        const follower = yield* fork(Effect.exit(reconciler.reconcileAfter("wf-shared-failure")))
+        yield* Deferred.succeed(gate, undefined)
+
+        yield* Fiber.join(tick)
+        expect(died(yield* Fiber.join(leader))).toBe(true)
+        expect(died(yield* Fiber.join(follower))).toBe(true)
+        expect(calls.getWorkflow).toBe(2)
+
+        expect(yield* reconciler.reconcileAfter("wf-shared-failure")).toEqual({ _tag: "adopt" })
+        expect(calls.adopt).toHaveLength(3)
+      }),
+    ),
+  )
+
+  it.live(
+    "the tick joins whichever evaluation is under way and is never made to wait for a trigger's re-evaluation",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, script } = yield* harness
+          yield* workflow("wf-ticked")
+          const first = yield* Deferred.make<void>()
+          const second = yield* Deferred.make<void>()
+          parkAfterRead(script, [first, second])
+          const done = { joiner: false, tick: false }
+
+          const early = yield* fork(reconciler.reconcile("wf-ticked"))
+          yield* reads(calls, 1)
+          const trigger = yield* fork(reconciler.reconcileAfter("wf-ticked"))
+          // A tick that arrives while the trigger waits joins the evaluation under way, not the re-evaluation behind it.
+          const joiner = yield* fork(
+            reconciler.reconcile("wf-ticked").pipe(Effect.tap(() => Effect.sync(() => void (done.joiner = true)))),
+          )
+          yield* Deferred.succeed(first, undefined)
+          yield* reads(calls, 2)
+          yield* pollWithTimeout(
+            Effect.sync(() => (done.joiner ? true : undefined)),
+            "the tick was held up by the re-evaluation",
+          )
+          // One that arrives during the re-evaluation joins that one: no evaluation of its own.
+          const tick = yield* fork(
+            reconciler.reconcile("wf-ticked").pipe(Effect.tap(() => Effect.sync(() => void (done.tick = true)))),
+          )
+          expect(calls.getWorkflow).toBe(2)
+          yield* Deferred.succeed(second, undefined)
+
+          yield* Fiber.join(early)
+          yield* Fiber.join(joiner)
+          expect(yield* Fiber.join(trigger)).toEqual({ _tag: "adopt" })
+          expect(yield* Fiber.join(tick)).toEqual({ _tag: "adopt" })
+          expect(done.tick).toBe(true)
+          expect(calls.getWorkflow).toBe(2)
+        }),
+      ),
+  )
+
+  // The last stretch of an observation that the harness can park is the nodes of a `pending` workflow, which are read
+  // after the ownership was: the evaluation has concluded that the directory owns the workflow and the entry may stay.
+  it.live(
+    "a session that moved away while an evaluation judged its entry renewable is evicted by the call that came with the move",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, script, entries } = yield* harness
+          const { db } = yield* Database.Service
+          yield* workflow("wf-away", { status: "pending", nodes: ["pending"] })
+          const leases = yield* DagLease.Service
+          const claimed = yield* leases.claim({ dagID: "wf-away", runnerID: RUNNER, now: Date.now() })
+          entries.set("wf-away", entryOf("away", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 }))
+          const gate = yield* Deferred.make<void>()
+          script.beforeGetNodes = Deferred.await(gate)
+
+          const tick = yield* fork(reconciler.reconcile("wf-away"))
+          yield* pollWithTimeout(
+            Effect.sync(() => (calls.getNodes > 0 ? true : undefined)),
+            "the evaluation never reached the nodes",
+          )
+          // The session moves: the projection re-stamps the workflow, and the Moved handler calls `reconcileAfter`.
+          yield* db.run(sql`UPDATE workflow SET directory = '/somewhere/else' WHERE id = 'wf-away'`).pipe(Effect.orDie)
+          const moved = yield* fork(reconciler.reconcileAfter("wf-away"))
+          expect(calls.evictMoved).toEqual([])
+          yield* Deferred.succeed(gate, undefined)
+
+          // The evaluation under way read the stamp as it was: the entry stays. The one that came with the move does not.
+          expect(yield* Fiber.join(tick)).toEqual({ _tag: "renew" })
+          expect(yield* Fiber.join(moved)).toEqual({ _tag: "evict", reason: "not-owned" })
+          expect(calls.evictMoved).toEqual(["wf-away"])
+        }),
+      ),
+  )
+
+  it.live(
+    "workflows do not wait for each other: a round that is parked on one does not hold a trigger for another",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, script, entries } = yield* harness
+          // A round lists the newest workflow first (`listByStatus` orders by `time_created`, descending), and it is to
+          // park on wf-slow: wf-moved is the older, whatever the millisecond of the clock does between the two inserts.
+          yield* workflow("wf-slow")
+          yield* workflow("wf-moved", { ageMs: 5_000 })
+          // The session of wf-moved has moved away: the row is stamped for another directory, and this instance still has
+          // its entry.
+          const { db } = yield* Database.Service
+          yield* db.run(sql`UPDATE workflow SET directory = '/somewhere/else' WHERE id = 'wf-moved'`).pipe(Effect.orDie)
+          entries.set("wf-moved", entryOf("moved", token(1)))
+          // The round is in progress, parked on the first workflow it looks at.
+          const gate = yield* Deferred.make<void>()
+          let parked = false
+          script.beforeGetWorkflow = Effect.suspend(() => {
+            if (parked) return Effect.void
+            parked = true
+            return Deferred.await(gate)
+          })
+          const round = yield* fork(reconciler.round({ afterClockJump: false }))
+          yield* reads(calls, 1)
+
+          // Its Moved is handled now, not at the next round.
+          expect(yield* reconciler.reconcileAfter("wf-moved")).toEqual({ _tag: "evict", reason: "not-owned" })
+          expect(calls.evictMoved).toEqual(["wf-moved"])
+
+          yield* Deferred.succeed(gate, undefined)
+          yield* Fiber.join(round)
+        }),
+      ),
   )
 })
 

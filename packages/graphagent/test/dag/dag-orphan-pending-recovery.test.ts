@@ -198,7 +198,9 @@ describe("DagLoop orphan pending recovery", () => {
           expect((yield* store.getNodes(dagID)).map((n) => n.status)).toEqual(["skipped", "skipped"])
           expect(failures).toContainEqual(expect.objectContaining({ reason: ORPHAN_REASON }))
           // The WorkflowStarted published for the terminalization leg must not
-          // be adopted: no node may be scheduled on a dead workflow.
+          // be adopted: the first-wave handler waits for the orphan's evaluation
+          // (reconcileAfter) and finds the workflow failed, so no node is
+          // scheduled on a dead workflow.
           expect(promptCalls).toEqual([])
         }),
       ),

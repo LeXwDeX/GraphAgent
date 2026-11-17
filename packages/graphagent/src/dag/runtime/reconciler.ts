@@ -24,19 +24,31 @@ import type { RunnerLease } from "./runner-lease"
  *   3. acts: an eviction, a claim and an adoption, the terminalization of an
  *      orphan, or nothing.
  *
- * `reconcile(dagID)` is single-flight: concurrent calls for one workflow share one
- * evaluation, so a trigger that arrives while another is mid-adoption joins it
- * instead of racing it. `round` reconciles every non-terminal workflow, orphans
- * first. The renewal tick of `RunnerLease` starts one per period, in a fiber of its
- * own and never two at once (and startup runs one, awaited), so a round that waits
- * for a worktree removal, the lifecycle lock or a user hook delays no renewal.
+ * An evaluation is single-flight: at most one is under way per workflow, so no two
+ * adoptions, evictions or terminalizations of one workflow run at once, which is
+ * what the in-process `recovering` reservation of the loop used to stand for.
+ * `round` reconciles every non-terminal workflow, orphans first. The renewal tick
+ * of `RunnerLease` starts one per period, in a fiber of its own and never two at
+ * once (and startup runs one, awaited), so a round that waits for a worktree
+ * removal, the lifecycle lock or a user hook delays no renewal.
+ *
+ * Two entries, for two kinds of caller. `reconcile(dagID)` is for a caller that asks
+ * "what is the state now" on its own schedule, the startup round and the tick:
+ * concurrent calls for one workflow share one evaluation, a call that arrives while
+ * one is under way takes its verdict. `reconcileAfter(dagID)` is for a caller that
+ * brings news, an event whose change was committed after the evaluation under way
+ * read what it read (a first wave, a replan with no entry, a session move). Joining
+ * would hand it a verdict from before its own event: a `noop` for a workflow that
+ * was terminal when the evaluation looked and has been reopened since, a `renew`
+ * for an entry whose session has moved away. It waits for the evaluation under way
+ * to end, however that ends, and evaluates once more; the calls that arrive in the
+ * same wait share that one re-evaluation. With nothing under way it is `reconcile`.
  *
  * What the shell does not decide: the adoption is `recoverWorkflow` (a claim, then
- * the node-level reconciliation, then the runtime entry) and still has its
- * in-process `recovering` reservation; the unusable-workspace failure is
- * `failUnusableWorkspace`. Both stay in the loop and are passed in. The other
- * triggers (a first wave, a replan with no entry, a session move) still call
- * `recoverWorkflow` themselves; they become calls of `reconcile` in PR4b.
+ * the row read again, then the node-level reconciliation, then the runtime entry)
+ * and the unusable-workspace failure is `failUnusableWorkspace`. Both stay in the
+ * loop and are passed in. Every path that creates a runtime entry comes through an
+ * adoption, and every adoption through an evaluation.
  *
  * Time. The clock is read once per observation, before the lease row, and a
  * lease is judged expired or live against that reading. A process that is
@@ -75,6 +87,14 @@ export interface Round {
 export interface Interface {
   /** Evaluate one workflow and act on the verdict; concurrent calls for one `dagID` collapse into one evaluation. */
   readonly reconcile: (dagID: string, round?: Round) => Effect.Effect<ReconcileDecide.Action>
+  /**
+   * `reconcile` for a trigger that brings news (an event whose change was committed after the evaluation under way read
+   * its state): the verdict it returns comes from an evaluation that began after the call. With nothing under way this
+   * is `reconcile`; otherwise the call waits for the evaluation under way to end, however it ends (a verdict, a failure,
+   * an interruption), and evaluates once more. The calls that arrive during the same wait share that one re-evaluation,
+   * and a call that arrives during it waits for the next.
+   */
+  readonly reconcileAfter: (dagID: string, round?: Round) => Effect.Effect<ReconcileDecide.Action>
   /** Reconcile every non-terminal workflow, one at a time: `pending` first (orphans), then the others. A failing workflow is logged and skipped. */
   readonly round: (round: Round) => Effect.Effect<void>
 }
@@ -88,8 +108,6 @@ export interface Input<E extends RunnerLease.Evictable> {
   readonly directory: string
   /** The instance's runtime entries. Read only here; evictions go through `lease.evict` and `evictMoved`. */
   readonly entries: ReadonlyMap<string, E>
-  /** The in-process adoption reservations of the loop. An orphan's terminalization holds one: its `WorkflowStarted` must not be adopted. */
-  readonly recovering: Set<string>
   readonly events: Pick<EventV2.Interface, "publish">
   readonly lease: Pick<RunnerLease.Interface<E>, "claim" | "abandon" | "evict">
   /**
@@ -99,7 +117,10 @@ export interface Input<E extends RunnerLease.Evictable> {
   readonly noteClock?: (at: number) => boolean
   /** The `Dag` service bound to a claim's token (ADR-0008 decision 5): the orphan is failed through it. */
   readonly portFor: (dagID: string, token: DagLease.Token) => Pick<Dag.Interface, "fail">
-  /** Take the workflow over: the loop's `recoverWorkflow`, which keeps its own guards and ends as a no-op when its claim is refused. */
+  /**
+   * Take the workflow over: the loop's `recoverWorkflow`, which keeps its own guards, ends as a no-op when its claim is
+   * refused, and reads the row again once it holds the claim (the row given here is the observation's, older than that).
+   */
   readonly adopt: (workflow: DagStore.WorkflowRow) => Effect.Effect<void>
   /** The durable failure of a workflow whose execution location cannot be used (#948). */
   readonly failUnusable: (
@@ -126,10 +147,34 @@ interface Seen<E> {
   readonly entry: E | undefined
 }
 
+/**
+ * What an evaluation tells the calls that took part in it: its verdict, `none` when it was interrupted before it had
+ * one (they look again), or its failure. The same shape serves the evaluation under way (a flight) and the
+ * re-evaluation that `reconcileAfter` calls wait for (a slot).
+ */
+type Flight = Deferred.Deferred<Option.Option<ReconcileDecide.Action>>
+
+/** How a call took part in the evaluation of one workflow, as the step that it entered by decided: see `fly`. */
+type Entered =
+  /** Nothing was under way: this call registered the flight, evaluates, and ends the flight. */
+  | { readonly _tag: "owner"; readonly flight: Flight }
+  /** An evaluation is under way and its verdict answers for this call (`reconcile`). */
+  | { readonly _tag: "joined"; readonly flight: Flight }
+  /** An evaluation is under way; this call only waits for it to end, whatever it concludes, and then looks again. */
+  | { readonly _tag: "behind"; readonly flight: Flight }
+  /** A re-evaluation is already waiting for the one under way, and its verdict answers for this call too. */
+  | { readonly _tag: "follower"; readonly slot: Flight }
+  /** This call is the one that re-evaluates, behind the one under way, for itself and for the calls that follow it. */
+  | { readonly _tag: "leader"; readonly slot: Flight }
+
 export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interface {
-  const { store, leases, runnerID, directory, entries, recovering, events, lease, portFor } = input
+  const { store, leases, runnerID, directory, entries, events, lease, portFor } = input
   const { adopt, failUnusable, evictMoved, noteClock } = input
-  const flights = new Map<string, Deferred.Deferred<Option.Option<ReconcileDecide.Action>>>()
+  // The evaluation under way, per workflow: at most one, registered and ended by its owner.
+  const flights = new Map<string, Flight>()
+  // The re-evaluation that `reconcileAfter` calls wait for, per workflow: created by the first of them while a flight is
+  // under way, dropped in the step in which its leader registers the flight that is the re-evaluation.
+  const trailing = new Map<string, Flight>()
 
   const observe = Effect.fn("DagReconciler.observe")(function* (dagID: string, round: Round) {
     // The clock first, and into the clock watch straight away: see the module comment.
@@ -186,15 +231,15 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
    * projector accepts `WorkflowFailed` only from running or stepping, so a bare
    * fail would be dropped). Failed, not cancelled: that is the interrupted-create
    * semantics, and the reason persists in the durable event; cancelled is
-   * reserved for an explicit user or agent cancel. The slot is reserved for the
-   * whole sequence: its `WorkflowStarted` is a real event on the bus, and the
-   * first-wave handler must not adopt the orphan mid-way (a zero-node orphan
-   * would be completed instead of failed). The bare `WorkflowStarted` publish is
-   * not fenced (ADR-0008 Amendment 1; left to PR4b).
+   * reserved for an explicit user or agent cancel. The sequence runs inside the
+   * workflow's flight, which is what keeps its `WorkflowStarted` (a real event on
+   * the bus) from being adopted mid-way, as a zero-node orphan would be completed
+   * instead of failed: the first-wave handler calls `reconcileAfter`, which waits
+   * for this flight to end and finds the workflow failed. The bare
+   * `WorkflowStarted` publish is not fenced (ADR-0008 Amendment 1; left to PR4b).
    */
   const terminalizeOrphan = Effect.fn("DagReconciler.terminalizeOrphan")(function* (dagID: string) {
-    if (entries.has(dagID) || recovering.has(dagID)) return
-    recovering.add(dagID)
+    if (entries.has(dagID)) return
     let claimed: DagLease.Token | undefined
     yield* Effect.gen(function* () {
       // Failing the orphan is a runner write (decision 4): the runner holds the lease first, and a live
@@ -209,7 +254,6 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
     }).pipe(
       // The workflow ended: nothing renews the lease, so it is given back.
       Effect.onExit(() => lease.abandon(dagID, claimed)),
-      Effect.ensuring(Effect.sync(() => recovering.delete(dagID))),
     )
   })
 
@@ -251,37 +295,128 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
     return action
   })
 
+  // The three ways to enter. Each is one synchronous step, so that nothing can come between looking at the flights and
+  // registering a flight (or a slot) of one's own; everything a call does after that runs under `fly`.
+  const register = (dagID: string) => {
+    const flight: Flight = Deferred.makeUnsafe()
+    flights.set(dagID, flight)
+    return flight
+  }
+  // `reconcile`: the evaluation under way answers.
+  const joinOrOwn = (dagID: string) =>
+    Effect.sync((): Entered => {
+      const under = flights.get(dagID)
+      return under === undefined ? { _tag: "owner", flight: register(dagID) } : { _tag: "joined", flight: under }
+    })
+  // `reconcileAfter`: the evaluation under way does not answer; a re-evaluation behind it does.
+  const afterOrOwn = (dagID: string) =>
+    Effect.sync((): Entered => {
+      if (!flights.has(dagID)) return { _tag: "owner", flight: register(dagID) }
+      const waiting = trailing.get(dagID)
+      if (waiting !== undefined) return { _tag: "follower", slot: waiting }
+      const slot: Flight = Deferred.makeUnsafe()
+      trailing.set(dagID, slot)
+      return { _tag: "leader", slot }
+    })
+  // The leader's turn, over and over until it is its own: while a flight is under way the leader stays behind it, and in
+  // the step in which there is none it registers its own and gives up the slot, so a call that arrives from then on
+  // waits for the next re-evaluation, not for this one (whose reads begin after this step, not before it).
+  const leadOrWait = (dagID: string, slot: Flight) =>
+    Effect.sync((): Entered => {
+      const under = flights.get(dagID)
+      if (under !== undefined) return { _tag: "behind", flight: under }
+      if (trailing.get(dagID) === slot) trailing.delete(dagID)
+      return { _tag: "owner", flight: register(dagID) }
+    })
+
+  /** What a flight or a slot tells the calls that waited for it, once its owner (or its leader) is done. */
+  const conclude = (
+    map: Map<string, Flight>,
+    dagID: string,
+    flight: Flight,
+    exit: Exit.Exit<Option.Option<ReconcileDecide.Action>>,
+  ) =>
+    Effect.sync(() => {
+      // The identity check: a flight that was ended is never the one a later call registered.
+      if (map.get(dagID) === flight) map.delete(dagID)
+      Deferred.doneUnsafe(
+        flight,
+        Exit.isSuccess(exit)
+          ? Effect.succeed(exit.value)
+          : Cause.hasInterruptsOnly(exit.cause)
+            ? Effect.succeed(Option.none<ReconcileDecide.Action>())
+            : Effect.failCause(exit.cause),
+      )
+    })
+
+  /**
+   * One call's part in the evaluation of `dagID`, as the step that it entered by (`enter`) decided: evaluate (owner),
+   * take the verdict of the flight or of the slot (joined, follower), stay behind a flight until it is over (behind,
+   * which has no verdict to give, so `none`), or re-evaluate for the slot (leader). `none` means "look again". The
+   * flight and the slot are registered by the acquire step, which cannot be interrupted, and ended by the release
+   * step, which always runs once they were: a call that is cut off anywhere leaves nothing that nobody ends.
+   */
+  const fly = (
+    dagID: string,
+    round: Round,
+    enter: Effect.Effect<Entered>,
+  ): Effect.Effect<Option.Option<ReconcileDecide.Action>> =>
+    Effect.acquireUseRelease(
+      enter,
+      (entered) => {
+        switch (entered._tag) {
+          case "owner":
+            return Effect.map(evaluate(dagID, round), Option.some)
+          case "joined":
+            return Deferred.await(entered.flight)
+          case "follower":
+            return Deferred.await(entered.slot)
+          case "behind":
+            // Whatever the flight concluded, it is not an answer for this call, and its failure is not this call's.
+            return Deferred.await(entered.flight).pipe(
+              Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.void)),
+              Effect.as(Option.none<ReconcileDecide.Action>()),
+            )
+          default:
+            // The leader: the re-evaluation that the slot stands for.
+            return lead(dagID, round, entered.slot)
+        }
+      },
+      (entered, exit) => {
+        switch (entered._tag) {
+          case "owner":
+            return conclude(flights, dagID, entered.flight, exit)
+          case "leader":
+            return conclude(trailing, dagID, entered.slot, exit)
+          default:
+            return Effect.void
+        }
+      },
+    )
+
+  const lead = (dagID: string, round: Round, slot: Flight): Effect.Effect<Option.Option<ReconcileDecide.Action>> =>
+    Effect.gen(function* () {
+      for (;;) {
+        const answer = yield* fly(dagID, round, leadOrWait(dagID, slot))
+        if (Option.isSome(answer)) return answer
+      }
+    })
+
   const reconcile = Effect.fn("DagReconciler.reconcile")(function* (dagID: string, round: Round = NO_JUMP) {
     for (;;) {
-      const flight = flights.get(dagID)
-      if (flight === undefined) break
-      // Joined: the evaluation under way answers for this call too.
-      const joined = yield* Deferred.await(flight)
-      if (Option.isSome(joined)) return joined.value
-      // It was interrupted before it concluded: look again, this call may be the one to evaluate.
+      // `none`: the evaluation that was joined was interrupted before it concluded. Look again, this call may be the
+      // one to evaluate.
+      const answer = yield* fly(dagID, round, joinOrOwn(dagID))
+      if (Option.isSome(answer)) return answer.value
     }
-    // The flight is registered by the acquire step, which cannot be interrupted, and ended by the release step,
-    // which always runs once it was registered: a call that is cut off anywhere leaves no flight that nobody ends.
-    return yield* Effect.acquireUseRelease(
-      Effect.sync(() => {
-        const flight = Deferred.makeUnsafe<Option.Option<ReconcileDecide.Action>>()
-        flights.set(dagID, flight)
-        return flight
-      }),
-      () => evaluate(dagID, round),
-      (flight, exit) =>
-        Effect.sync(() => {
-          flights.delete(dagID)
-          Deferred.doneUnsafe(
-            flight,
-            Exit.isSuccess(exit)
-              ? Effect.succeed(Option.some(exit.value))
-              : Cause.hasInterruptsOnly(exit.cause)
-                ? Effect.succeed(Option.none())
-                : Effect.failCause(exit.cause),
-          )
-        }),
-    )
+  })
+
+  const reconcileAfter = Effect.fn("DagReconciler.reconcileAfter")(function* (dagID: string, round: Round = NO_JUMP) {
+    for (;;) {
+      // `none`: the leader of the re-evaluation was interrupted before it concluded. Look again.
+      const answer = yield* fly(dagID, round, afterOrOwn(dagID))
+      if (Option.isSome(answer)) return answer.value
+    }
   })
 
   const sweep = Effect.fn("DagReconciler.round")(function* (round: Round) {
@@ -298,7 +433,7 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
     }
   })
 
-  return { reconcile, round: sweep }
+  return { reconcile, reconcileAfter, round: sweep }
 }
 
 /**
