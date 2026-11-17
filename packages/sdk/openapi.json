@@ -4296,6 +4296,134 @@
         ]
       }
     },
+    "/session/{sessionID}/pr-watch": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.prWatch",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PR/MR watches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrWatchList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BadRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "List the session's PR/MR watches that are live or ended within the last 10 minutes, newest first. Each entry has the shape of the pr.watch.updated event payload.",
+        "summary": "Get session PR watches",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.session.prWatch({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/reminder": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.reminder",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending reminders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReminderList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BadRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "List the session's reminders that can still fire or are owed, soonest first, with the time each fires at.",
+        "summary": "Get session reminders",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.session.reminder({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/session/{sessionID}/hook": {
       "post": {
         "tags": ["session"],
@@ -8673,6 +8801,9 @@
             "$ref": "#/components/schemas/EventSessionTurnSettled"
           },
           {
+            "$ref": "#/components/schemas/EventPrWatchUpdated"
+          },
+          {
             "$ref": "#/components/schemas/EventServerInstanceDisposed"
           }
         ]
@@ -8718,6 +8849,61 @@
         "items": {
           "type": "string"
         }
+      },
+      "PrWatchDelivery": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": ["pending", "delivered"]
+          },
+          "deliveredAt": {
+            "type": "number"
+          },
+          "noticeMessageID": {
+            "type": "string"
+          },
+          "noReply": {
+            "type": "boolean"
+          }
+        },
+        "required": ["state"],
+        "additionalProperties": false
+      },
+      "PrWatchChecks": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pending": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "passed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": ["total", "pending", "failed", "passed"],
+        "additionalProperties": false
+      },
+      "PrWatchOutcome": {
+        "type": "string",
+        "enum": ["success", "failure", "merged", "closed", "review", "deadline"]
+      },
+      "PrWatchPhase": {
+        "type": "string",
+        "enum": ["watching", "delivering", "succeeded", "failed", "expired", "cancelled"]
       },
       "QuestionTool": {
         "type": "object",
@@ -10795,6 +10981,132 @@
           }
         },
         "required": ["type", "text"],
+        "additionalProperties": false
+      },
+      "SessionReminderList": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionReminder"
+            }
+          }
+        },
+        "required": ["entries"],
+        "additionalProperties": false
+      },
+      "SessionReminder": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "sessionID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "text": {
+            "type": "string"
+          },
+          "fireAt": {
+            "type": "number"
+          },
+          "everyMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["scheduled", "due"]
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": ["id", "sessionID", "text", "fireAt", "everyMs", "status", "createdAt"],
+        "additionalProperties": false
+      },
+      "PrWatchList": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrWatchEntry"
+            }
+          }
+        },
+        "required": ["entries"],
+        "additionalProperties": false
+      },
+      "PrWatchEntry": {
+        "type": "object",
+        "properties": {
+          "sessionID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "watchID": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "enum": ["github", "gitlab"]
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "phase": {
+            "$ref": "#/components/schemas/PrWatchPhase"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/PrWatchOutcome"
+          },
+          "checks": {
+            "$ref": "#/components/schemas/PrWatchChecks"
+          },
+          "head": {
+            "type": "string"
+          },
+          "review": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "deadlineAt": {
+            "type": "number"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/PrWatchDelivery"
+          }
+        },
+        "required": [
+          "sessionID",
+          "watchID",
+          "url",
+          "provider",
+          "number",
+          "phase",
+          "startedAt",
+          "updatedAt",
+          "deadlineAt"
+        ],
         "additionalProperties": false
       },
       "Session": {
@@ -13177,6 +13489,27 @@
                 },
                 "additionalProperties": false
               },
+              "compose": {
+                "type": "object",
+                "properties": {
+                  "max_children": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 12
+                  },
+                  "max_depth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3
+                  },
+                  "max_subtree_nodes": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 80
+                  }
+                },
+                "additionalProperties": false
+              },
               "safety": {
                 "type": "object",
                 "properties": {
@@ -14304,6 +14637,84 @@
               }
             },
             "required": ["directory"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventPrWatchUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["pr.watch.updated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "watchID": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string",
+                "enum": ["github", "gitlab"]
+              },
+              "number": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "phase": {
+                "$ref": "#/components/schemas/PrWatchPhase"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/PrWatchOutcome"
+              },
+              "checks": {
+                "$ref": "#/components/schemas/PrWatchChecks"
+              },
+              "head": {
+                "type": "string"
+              },
+              "review": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": "number"
+              },
+              "updatedAt": {
+                "type": "number"
+              },
+              "deadlineAt": {
+                "type": "number"
+              },
+              "delivery": {
+                "$ref": "#/components/schemas/PrWatchDelivery"
+              }
+            },
+            "required": [
+              "sessionID",
+              "watchID",
+              "url",
+              "provider",
+              "number",
+              "phase",
+              "startedAt",
+              "updatedAt",
+              "deadlineAt"
+            ],
             "additionalProperties": false
           }
         },
