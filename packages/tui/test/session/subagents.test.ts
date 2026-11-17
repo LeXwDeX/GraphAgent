@@ -6,16 +6,18 @@ import { createSummary, type SessionSummary } from "../../src/context/session-su
 import { setLanguage } from "../../src/i18n"
 import { childSessions } from "../../src/session/siblings"
 import {
+  SUBAGENT_MARKER_GLYPH,
   delegatedPrompt,
   subagentDescription,
   subagentElapsed,
   subagentKind,
+  subagentMarker,
+  subagentMarkerToken,
   subagentRelayText,
   subagentRows,
-  subagentState,
   subagentTitle,
   subagentTrail,
-  type SubagentLookup,
+  type SubagentRowSource,
   type SubagentSessionInfo,
 } from "../../src/session/subagents"
 
@@ -30,43 +32,64 @@ function session(id: string, extra: Partial<SubagentSessionInfo> & { time?: Suba
 function lookup(
   tasks: Record<string, { kind?: string; description?: string }> = {},
   summaries: Record<string, SessionSummary> = {},
-): SubagentLookup {
+): SubagentRowSource {
   return { task: (id) => tasks[id], summary: (id) => summaries[id] }
 }
 
 describe("kind and description", () => {
-  test("the session's own agent comes first, then the Task input, then the title, then a plain agent", () => {
-    expect(subagentKind({ title: "scan (@review subagent)", agent: "build" }, { kind: "explore" })).toBe("build")
-    expect(subagentKind({ title: "scan (@review subagent)" }, { kind: "explore" })).toBe("explore")
-    expect(subagentKind({ title: "scan (@review subagent)" }, {})).toBe("review")
-    expect(subagentKind({ title: "scan" })).toBe("agent")
-    expect(subagentKind({ title: "scan", agent: "  " }, { kind: "" })).toBe("agent")
+  // The top bar and the list read both from here, so these are the rules of both.
+  test("kind comes from the session, then the parent's Task input, then the title, then plain agent", () => {
+    const titled = { title: "scan (@general subagent)" }
+    expect(subagentKind({ ...titled, agent: "explore" }, { kind: "plan" })).toBe("explore")
+    expect(subagentKind(titled, { kind: "plan" })).toBe("plan")
+    expect(subagentKind(titled)).toBe("general")
+    expect(subagentKind({ title: "scan (@code-explorer subagent)" })).toBe("code-explorer")
+    expect(subagentKind({ title: "scan (DAG node)" })).toBe("agent")
+    expect(subagentKind({ title: "" })).toBe("agent")
+    // Blank values do not count as an answer.
+    expect(subagentKind({ ...titled, agent: "  " }, { kind: "" })).toBe("general")
+    // A remote string cannot restyle the terminal.
+    expect(subagentKind({ title: "scan", agent: "ex\u001b[31mplore\u0007" })).toBe("explore")
   })
 
-  test("the description is the Task input, else the title without its sub-agent tail", () => {
-    expect(subagentDescription({ title: "from the title (@explore subagent)" }, { description: "from the task" })).toBe(
+  test("description comes from the Task input, else from the title without its subagent tail", () => {
+    expect(subagentDescription({ title: "title text (@explore subagent)" }, { description: "from the task" })).toBe(
       "from the task",
     )
-    expect(subagentDescription({ title: "from the title (@explore subagent)" })).toBe("from the title")
-    expect(subagentDescription({ title: "DAG node title" }, {})).toBe("DAG node title")
-  })
-
-  test("a name from the server loses its escapes and line breaks", () => {
-    expect(subagentKind({ title: "x", agent: "ex\u001b[31mplore\n" })).toBe("explore")
+    expect(subagentDescription({ title: "scan the repo (@explore subagent)" })).toBe("scan the repo")
+    expect(subagentDescription({ title: "scan the repo (@code-explorer subagent)" }, { description: " " })).toBe(
+      "scan the repo",
+    )
+    expect(subagentDescription({ title: "build step (DAG node)" })).toBe("build step (DAG node)")
+    expect(subagentDescription({ title: "(@explore subagent)" })).toBe("")
+    expect(subagentDescription({ title: "x" }, { description: "two\nlines" })).toBe("two lines")
     expect(subagentDescription({ title: "x" }, { description: "scan\nall\u0007 files" })).toBe("scan all files")
   })
 })
 
-describe("the three states", () => {
-  test("busy and retrying are running; an error makes a finished one failed; the rest is done", () => {
-    expect(subagentState({ status: "busy" })).toBe("running")
-    expect(subagentState({ status: "retry" })).toBe("running")
-    expect(subagentState({ status: "busy", error: "earlier" })).toBe("running")
-    expect(subagentState({ status: "idle", error: "boom" })).toBe("failed")
-    expect(subagentState({ status: "idle" })).toBe("done")
-    // The server lists only busy sessions after a restart: no status means idle.
-    expect(subagentState({ status: "unknown" })).toBe("done")
-    expect(subagentState(undefined)).toBe("done")
+describe("the marker", () => {
+  test("follows the summary: running while busy or retrying, failed with an error, done when idle", () => {
+    expect(subagentMarker({ status: "busy" })).toBe("running")
+    expect(subagentMarker({ status: "retry" })).toBe("running")
+    // An error left from an earlier turn does not hide that the session runs again.
+    expect(subagentMarker({ status: "busy", error: "boom" })).toBe("running")
+    expect(subagentMarker({ status: "retry", error: "boom" })).toBe("running")
+    expect(subagentMarker({ status: "idle", error: "boom" })).toBe("failed")
+    expect(subagentMarker({ status: "idle" })).toBe("done")
+  })
+
+  test("is none while no status was ever reported, which is every session after a restart", () => {
+    expect(subagentMarker({ status: "unknown" })).toBeUndefined()
+    expect(subagentMarker(undefined)).toBeUndefined()
+    // A failure that is known is not hidden by the status being unknown.
+    expect(subagentMarker({ status: "unknown", error: "boom" })).toBe("failed")
+  })
+
+  test("is one glyph and one theme token each; a finished one is the grey success token, not a brand color", () => {
+    expect(SUBAGENT_MARKER_GLYPH).toEqual({ running: "●", failed: "✗", done: "✓" })
+    expect(subagentMarkerToken("running")).toBe("primary")
+    expect(subagentMarkerToken("failed")).toBe("error")
+    expect(subagentMarkerToken("done")).toBe("success")
   })
 })
 
@@ -91,13 +114,15 @@ describe("rows", () => {
   test("a cold start has no tool count and takes the time from the session", () => {
     const cold = Object.fromEntries(sessions.map((each) => [each.id, createSummary(each)]))
     const [row] = subagentRows(sessions, "root", lookup({}, cold))
-    expect(row).toMatchObject({ id: "a", state: "done", retrying: false, startedAt: 10, endedAt: 12 })
+    expect(row).toMatchObject({ id: "a", retrying: false, startedAt: 10, endedAt: 12 })
+    expect(row.marker).toBeUndefined()
     expect(row.toolCalls).toBeUndefined()
   })
 
   test("without any summary the session's own created and updated times stand in", () => {
     const [row] = subagentRows(sessions, "root", lookup())
-    expect(row).toMatchObject({ state: "done", startedAt: 10, endedAt: 12 })
+    expect(row).toMatchObject({ startedAt: 10, endedAt: 12 })
+    expect(row.marker).toBeUndefined()
     expect(row.toolCalls).toBeUndefined()
   })
 
@@ -110,14 +135,14 @@ describe("rows", () => {
   test("a running one has no end: the clock ends it", () => {
     const busy: SessionSummary = { ...createSummary(sessions[2], { type: "busy" }), toolCalls: 4 }
     const [row] = subagentRows(sessions, "root", lookup({}, { a: busy }))
-    expect(row).toMatchObject({ state: "running", toolCalls: 4, startedAt: 10 })
+    expect(row).toMatchObject({ marker: "running", toolCalls: 4, startedAt: 10 })
     expect(row.endedAt).toBeUndefined()
   })
 
   test("retrying shows as running, with the flag the text reads", () => {
     const retry: SessionSummary = createSummary(sessions[2], { type: "retry", attempt: 2, message: "slow", next: 0 })
     const [row] = subagentRows(sessions, "root", lookup({}, { a: retry }))
-    expect(row).toMatchObject({ state: "running", retrying: true })
+    expect(row).toMatchObject({ marker: "running", retrying: true })
   })
 
   test("a failed one keeps its last activity as the end", () => {
@@ -127,7 +152,7 @@ describe("rows", () => {
       lastActivityAt: 90,
     }
     const row = subagentRows(sessions, "root", lookup({}, { b: failed })).find((each) => each.id === "b")
-    expect(row).toMatchObject({ state: "failed", endedAt: 90 })
+    expect(row).toMatchObject({ marker: "failed", endedAt: 90 })
   })
 
   test("take kind and description from the Task link, the agent, then the title", () => {
@@ -153,7 +178,7 @@ describe("the trail of a row", () => {
       id: "a",
       kind: "explore",
       description: "scan",
-      state: "done",
+      marker: "done",
       retrying: false,
       toolCalls: 12,
       ...done,
@@ -166,6 +191,12 @@ describe("the trail of a row", () => {
     expect(subagentTrail(row(), 0)).toBe("done · tools 12 · 14s")
   })
 
+  test("writes a dash for a state that is not known, as for a count", () => {
+    expect(subagentTrail(row({ marker: undefined, toolCalls: undefined }), 0)).toBe("— · 工具 — · 14s")
+    setLanguage("en")
+    expect(subagentTrail(row({ marker: undefined }), 0)).toBe("— · tools 12 · 14s")
+  })
+
   test("writes a dash, never a zero, where the count is not known", () => {
     expect(subagentTrail(row({ toolCalls: undefined }), 0)).toBe("已完成 · 工具 — · 14s")
     expect(subagentTrail(row({ toolCalls: undefined }), 0)).not.toContain("0 ·")
@@ -174,14 +205,14 @@ describe("the trail of a row", () => {
   })
 
   test("counts a running one to now and ends a finished one at its last activity", () => {
-    const running = row({ state: "running", endedAt: undefined, startedAt: 1_000 })
+    const running = row({ marker: "running", endedAt: undefined, startedAt: 1_000 })
     expect(subagentElapsed(running, 66_000)).toBe("1m 5s")
     expect(subagentTrail(running, 66_000)).toBe("运行中 · 工具 12 · 1m 5s")
     expect(subagentElapsed(row(), 999_999)).toBe("14s")
-    expect(subagentTrail(row({ state: "running", retrying: true, endedAt: undefined }), 6_000)).toBe(
+    expect(subagentTrail(row({ marker: "running", retrying: true, endedAt: undefined }), 6_000)).toBe(
       "重试中 · 工具 12 · 5s",
     )
-    expect(subagentTrail(row({ state: "failed" }), 0)).toBe("失败 · 工具 12 · 14s")
+    expect(subagentTrail(row({ marker: "failed" }), 0)).toBe("失败 · 工具 12 · 14s")
   })
 })
 

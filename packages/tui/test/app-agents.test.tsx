@@ -5,7 +5,8 @@ import { afterEach, expect, test } from "bun:test"
 import { TextareaRenderable, type Renderable } from "@opentui/core"
 import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk"
 import { setLanguage } from "../src/i18n"
-import { PROMPT_MARK, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
+import { cellWidth } from "../src/ui/width"
+import { PROMPT_MARK, captureFrame, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -17,6 +18,7 @@ const rootID = "ses_agents_root"
 const alphaID = "ses_agents_a"
 const bravoID = "ses_agents_b"
 const charlieID = "ses_agents_c"
+const nodeID = "ses_agents_node"
 
 afterEach(() => {
   setLanguage("zh-CN")
@@ -46,7 +48,7 @@ const assistant: AssistantMessage = {
   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 }
 
-function taskPart(childID: string, description: string): ToolPart {
+function taskPart(childID: string, description: string, background = false): ToolPart {
   return {
     id: `prt_${childID}`,
     sessionID: rootID,
@@ -59,7 +61,7 @@ function taskPart(childID: string, description: string): ToolPart {
       input: { description, subagent_type: "explore" },
       output: "done",
       title: description,
-      metadata: { sessionID: childID },
+      metadata: { sessionID: childID, ...(background ? { background: true } : {}) },
       time: { start: 10, end: 11 },
     },
   }
@@ -79,8 +81,8 @@ function server() {
           info: assistant,
           parts: [
             taskPart(alphaID, "Inspect alpha"),
-            taskPart(bravoID, "Inspect bravo"),
-            taskPart(charlieID, "Inspect charlie"),
+            taskPart(bravoID, "Inspect bravo", true),
+            taskPart(charlieID, "Inspect charlie", true),
           ],
         },
       ])
@@ -139,6 +141,17 @@ function sessionEvent(type: "busy" | "idle", sessionID: string): GlobalEvent {
   }
 }
 
+function errorEvent(sessionID: string): GlobalEvent {
+  return {
+    directory,
+    payload: {
+      id: `evt_agents_error_${sessionID}`,
+      type: "session.error",
+      properties: { sessionID, error: { name: "UnknownError", data: { message: "boom" } } },
+    },
+  }
+}
+
 function permissionEvent(sessionID: string): GlobalEvent {
   return {
     directory,
@@ -180,8 +193,9 @@ test("/agents lists the sub-agents of the main session in walking order and load
     const order = ["Inspect alpha", "Inspect bravo", "Inspect charlie"].map((text) => frame.indexOf(text))
     expect(order).toEqual([...order].sort((left, right) => left - right))
     expect(order.every((position) => position > 0)).toBe(true)
-    // Nothing was ever reported busy, so each reads as done, with no tool count and the time the session has.
-    expect(frame).toContain("已完成 · 工具 — ·")
+    // No status was ever reported: no state to say, no tool count, and the time the session has.
+    expect(frame).toContain("— · 工具 — ·")
+    expect(frame).not.toContain("已完成")
     expect(frame).not.toContain("工具 0")
     // The list was made from what the app already held: not one sub-agent session was loaded for it.
     expect(fake.childReads()).toEqual([])
@@ -218,7 +232,7 @@ test("enter in the list goes into the chosen sub-agent, which only then is loade
     await waitFor(() => fake.childReads().includes(bravoID))
     const frame = await waitForFrame(
       app.setup,
-      (value) => !value.includes(PROMPT_MARK) && !value.includes("explore · Inspect bravo"),
+      (value) => !value.includes(PROMPT_MARK) && !value.includes("筛选…"),
       "the sub-agent view",
     )
     // A sub-agent view has no input; the one the user chose is the only session that was loaded.
@@ -307,14 +321,15 @@ test("the list opens in a sub-agent view too, and asking from there ends in the 
 
 // ── reminders ───────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The row of the frame that holds `text`, and where in it: what a click on that text needs. */
+/** The row of the frame that holds `text`, and the terminal column it starts at: what a click on that text needs. */
 function locate(frame: string, text: string) {
   const rows = frame.split("\n")
   const row = rows.findIndex((line) => line.includes(text))
-  return { row, column: row < 0 ? -1 : rows[row].indexOf(text) }
+  // Wide characters before the text (the notice of a sub-agent footer is mostly Chinese) take two columns each.
+  return { row, column: row < 0 ? -1 : cellWidth(rows[row].slice(0, rows[row].indexOf(text))) }
 }
 
-test("a sub-agent that finishes while the user is in the main session leaves a toast that goes into it", async () => {
+test("a background sub-agent that finishes while the user is in the main session leaves a toast that goes into it", async () => {
   const fake = server()
   const app = await runApp({
     sessions: tree,
@@ -338,6 +353,52 @@ test("a sub-agent that finishes while the user is in the main session leaves a t
     await waitFor(() => fake.childReads().includes(charlieID))
     await waitForFrame(app.setup, (value) => !value.includes(PROMPT_MARK), "the sub-agent view")
     expect(app.writes()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("a sub-agent that is waited for, or a DAG node, leaves no toast when it finishes or fails, but one when it asks", async () => {
+  const fake = server()
+  const app = await runApp({
+    sessions: [
+      ...tree,
+      sessionFixture(nodeID, {
+        parentID: rootID,
+        title: "Inspect lockfile (DAG node)",
+        time: { created: 30, updated: 31 },
+      }),
+    ],
+    args: { sessionID: rootID },
+    width: 120,
+    height: 30,
+    handler: fake.handler,
+  })
+  try {
+    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitFor(() => fake.messageReads.includes(rootID))
+    for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
+
+    // Alpha is one the main agent waits for; the node has no Task link at all. Both end, and one more fails.
+    for (const id of [alphaID, nodeID]) {
+      app.events.emit(sessionEvent("busy", id))
+      app.events.emit(sessionEvent("idle", id))
+    }
+    app.events.emit(sessionEvent("busy", alphaID))
+    app.events.emit(errorEvent(alphaID))
+    for (let pass = 0; pass < 10; pass++) await app.setup.renderOnce()
+    const quiet = await captureFrame(app.setup)
+    expect(quiet).not.toContain("已完成")
+    expect(quiet).not.toContain("失败")
+
+    // A permission request is for the user whichever way the sub-agent runs: the toast comes, and it was the first.
+    app.events.emit(permissionEvent(nodeID))
+    const frame = await waitForFrame(app.setup, (value) => value.includes("agent 需要权限 · /agents"), "the reminder")
+    expect(frame).not.toContain("已完成")
+    const { row, column } = locate(frame, "agent 需要权限 · /agents")
+    await app.setup.mockMouse.click(column + 2, row)
+    await waitFor(() => fake.childReads().includes(nodeID))
   } finally {
     clearDrafts(app.setup)
     await app.stop()
@@ -389,14 +450,15 @@ test("the sub-agent the user is looking at leaves no toast", async () => {
 
     app.events.emit(sessionEvent("busy", charlieID))
     app.events.emit(sessionEvent("idle", charlieID))
-    // Another sub-agent that is not on screen does leave one: the reminder works, it is only quiet for this one.
-    app.events.emit(sessionEvent("busy", alphaID))
-    app.events.emit(sessionEvent("idle", alphaID))
+    // Another background sub-agent that is not on screen does leave one: the reminder works, it is only quiet for this
+    // one. Its toast would have come second, so the click below also shows the first never was.
+    app.events.emit(sessionEvent("busy", bravoID))
+    app.events.emit(sessionEvent("idle", bravoID))
     const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成"), "the other reminder")
     expect(frame.split("explore 已完成").length - 1).toBe(1)
     const { row, column } = locate(frame, "explore 已完成")
     await app.setup.mockMouse.click(column + 2, row)
-    await waitFor(() => fake.childReads().includes(alphaID))
+    await waitFor(() => fake.childReads().includes(bravoID))
   } finally {
     clearDrafts(app.setup)
     await app.stop()

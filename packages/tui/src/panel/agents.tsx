@@ -15,7 +15,8 @@ import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
 import {
   delegatedPrompt,
-  SUBAGENT_GLYPH,
+  SUBAGENT_MARKER_GLYPH,
+  subagentMarkerToken,
   subagentRelayText,
   subagentRows,
   subagentTitle,
@@ -50,15 +51,21 @@ function SecondTick() {
   return null
 }
 
-/** The state of a row as one static glyph; the color and the glyph both tell the three states apart. */
+/**
+ * The state of a row as one static glyph, in the color the top bar gives the same state. A row whose state is not
+ * known (every session after a restart, until it reports one) has a blank where the glyph would be.
+ */
 function StateGlyph(props: { row: () => SubagentRow | undefined }) {
   const { theme } = useTheme()
-  const state = () => props.row()?.state ?? "done"
-  const color = () => (state() === "running" ? theme.primary : state() === "failed" ? theme.error : theme.textMuted)
+  const marker = () => props.row()?.marker
   return (
-    <text fg={color()} wrapMode="none">
-      {`${SUBAGENT_GLYPH[state()]} `}
-    </text>
+    <Show when={marker()} fallback={<text wrapMode="none">{"  "}</text>}>
+      {(shown) => (
+        <text fg={theme[subagentMarkerToken(shown())]} wrapMode="none">
+          {`${SUBAGENT_MARKER_GLYPH[shown()]} `}
+        </text>
+      )}
+    </Show>
   )
 }
 
@@ -102,17 +109,17 @@ export function AgentsPanel() {
   })
   const byID = createMemo(() => new Map(rows().map((row) => [row.id, row])))
   const rowOf = (id: string) => byID().get(id)
-  const ticking = createMemo(() => rows().some((row) => row.state === "running"))
+  const ticking = createMemo(() => rows().some((row) => row.marker === "running"))
 
   /** What a row says of its sub-agent: the state, the tool count and the time. A clock is read only for a running one. */
-  const stateText = (row: SubagentRow) => subagentTrail(row, row.state === "running" ? now() : 0)
+  const stateText = (row: SubagentRow) => subagentTrail(row, row.marker === "running" ? now() : 0)
 
   // A row is one string, name then state, laid out by `cellWidth` so that it fits the panel whichever width the
   // terminal gives East Asian ambiguous glyphs. The states line up in a column as wide as the widest of them, and the
   // name is cut to what is left of the row.
   const stateWidth = createMemo(() => Math.max(0, ...rows().map((row) => cellWidth(stateText(row), ambiguousWidth()))))
   const nameWidth = createMemo(() => {
-    const marker = cellWidth(`${SUBAGENT_GLYPH.running} `, ambiguousWidth())
+    const marker = cellWidth(`${SUBAGENT_MARKER_GLYPH.running} `, ambiguousWidth())
     const room = dimensions().width - SHELL_WIDTH - POINTER_WIDTH - marker - NAME_GAP - stateWidth()
     return Math.max(MIN_NAME_WIDTH, room)
   })

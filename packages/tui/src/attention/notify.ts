@@ -18,15 +18,18 @@ type NotifyInput = {
 }
 
 /**
- * What a sub-agent reminder needs beyond the sound (#1033 6). Without it a sub-agent session only plays its sound,
+ * What a sub-agent reminder needs beyond the sound (#1033 4, 6). Without it a sub-agent session only plays its sound,
  * as before.
  */
 export type SubagentReminders = {
   toast: { show(options: ToastOptions): void }
   /** The session on screen: the sub-agent the user is looking at needs no reminder. */
   viewing(): string | undefined
-  /** The parent's Task link of a child session, for the kind the reminder names. */
-  task(sessionID: string): Pick<TaskIndexEntry, "kind"> | undefined
+  /**
+   * The parent's Task link of a child session: its kind, for the text of the reminder, and whether it runs in the
+   * background. A session with no link (a DAG node's) is a sub-agent that does not.
+   */
+  task(sessionID: string): Pick<TaskIndexEntry, "kind" | "background"> | undefined
   /** Goes into a sub-agent session; `openSubAgent` is the one way in. */
   open(sessionID: string): void
 }
@@ -70,9 +73,11 @@ function sessionErrorMessage(error: SessionError) {
 /**
  * Built-in session attention notifications: pending questions and permissions,
  * completed turns, and session errors. Subagent sessions play a sound and never
- * raise a system notification; when the caller passes `subagent`, a finished,
- * failed or permission-asking sub-agent that is not on screen also leaves a
- * footer toast that goes into it.
+ * raise a system notification. When the caller passes `subagent`, a sub-agent
+ * that is not on screen also leaves a footer toast that goes into it: when it
+ * asks for permission, whichever way it runs, and when a background one
+ * finishes or fails. The others report to the main agent, which is what the user
+ * is waiting on, and DAG nodes have their own progress display.
  * Returns the disposer that unsubscribes every event handler.
  */
 export function createTuiNotifications(input: NotificationsInput): () => void {
@@ -98,7 +103,9 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
     const session = input.sessions.get(sessionID)
     if (session?.parentID === undefined) return
     if (reminders.viewing() === sessionID) return
-    const kind = subagentKind({ title: session.title ?? "", agent: session.agent }, reminders.task(sessionID))
+    const task = reminders.task(sessionID)
+    if (reminder !== "permission" && task?.background !== true) return
+    const kind = subagentKind({ title: session.title ?? "", agent: session.agent }, task)
     reminders.toast.show({
       text: t(REMINDER_TEXT[reminder], { kind }),
       level: REMINDER_LEVEL[reminder],

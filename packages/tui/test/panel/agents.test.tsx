@@ -16,6 +16,7 @@ import { setLanguage } from "../../src/i18n"
 import { AgentsPanel } from "../../src/panel/agents"
 import type { PanelHostApi } from "../../src/panel/host"
 import { childSessions } from "../../src/session/siblings"
+import { SUBAGENT_MARKER_GLYPH, subagentMarkerToken } from "../../src/session/subagents"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth } from "../../src/ui/width"
 import { json, type FetchHandler } from "../fixture/tui-sdk"
@@ -292,7 +293,13 @@ describe("what the list shows", () => {
       const spans = await harness.spans()
       expect(colorOf(spans, "●")?.equals(palette().primary)).toBe(true)
       expect(colorOf(spans, "✗")?.equals(palette().error)).toBe(true)
-      expect(colorOf(spans, "✓")?.equals(palette().textMuted)).toBe(true)
+      // A finished one is the success token, which the theme makes grey: not the brand color of a running one.
+      expect(colorOf(spans, "✓")?.equals(palette().success)).toBe(true)
+      expect(palette().success.equals(palette().primary)).toBe(false)
+      // The top bar draws the same glyphs from the same map, so the two cannot drift apart.
+      for (const marker of ["running", "failed", "done"] as const) {
+        expect(colorOf(spans, SUBAGENT_MARKER_GLYPH[marker])?.equals(palette()[subagentMarkerToken(marker)])).toBe(true)
+      }
       // The glyph is the row's own: running, failed and done each draw theirs on their own row.
       expect(rowWith(frame, TITLE_SCAN)).toContain("●")
       expect(rowWith(frame, TITLE_REVIEW)).toContain("✗")
@@ -316,16 +323,68 @@ describe("what the list shows", () => {
     }
   })
 
-  test("after a cold start the tool count is a dash and the time is the session's own, never a zero", async () => {
+  test("after a cold start the state and the tool count are dashes and the time is the session's own, never a zero", async () => {
     const harness = await mount({ seed: (ctx) => coldStart(ctx), ticker: fakeTicker(at(95)).ticker })
     try {
       const frame = await harness.frame()
-      // Nothing was ever reported busy, so all three read as done; none has a count.
-      expect(rowWith(frame, TITLE_REVIEW)).toContain("已完成 · 工具 — · 1m 0s")
-      expect(rowWith(frame, TITLE_BUILD)).toContain("已完成 · 工具 — · 14s")
-      expect(rowWith(frame, TITLE_SCAN)).toContain("已完成 · 工具 — · 8s")
+      // No status was ever reported, so the top bar would draw no marker for any of them, and neither does the list:
+      // it does not guess that they are done. The time is there, and no count says 0.
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("— · 工具 — · 1m 0s")
+      expect(rowWith(frame, TITLE_BUILD)).toContain("— · 工具 — · 14s")
+      expect(rowWith(frame, TITLE_SCAN)).toContain("— · 工具 — · 8s")
       expect(frame).not.toMatch(/工具 0/)
-      expect(frame).not.toContain("运行中")
+      expect(frame).not.toMatch(/[●✓✗]/)
+      expect(frame).not.toMatch(/运行中|已完成|失败/)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says the same in English after a cold start", async () => {
+    const harness = await mount({ language: "en", seed: (ctx) => coldStart(ctx), ticker: fakeTicker(at(95)).ticker })
+    try {
+      const frame = await harness.frame()
+      expect(rowWith(frame, TITLE_BUILD)).toContain("— · tools — · 14s")
+      expect(frame).not.toMatch(/[●✓✗]/)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a failure that is known is drawn even while the status is not", async () => {
+    const harness = await mount({
+      ticker: fakeTicker(at(95)).ticker,
+      seed: (ctx) => {
+        coldStart(ctx)
+        // An `error` event reached a session whose status the data layer never had.
+        ctx.sync.set("summary", REVIEW, { ...createSummary(tree().find((each) => each.id === REVIEW)!), error: "boom" })
+      },
+    })
+    try {
+      const frame = await harness.frame()
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("✗")
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("失败 · 工具 — · 1m 0s")
+      expect(rowWith(frame, TITLE_BUILD)).not.toMatch(/[●✓✗]/)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a sub-agent that runs again after a failure is running, not failed", async () => {
+    const harness = await mount({
+      ticker: fakeTicker(at(95)).ticker,
+      seed: (ctx) => {
+        coldStart(ctx)
+        const review = tree().find((each) => each.id === REVIEW)!
+        // The error of the earlier turn is still on the summary, as the data layer keeps it.
+        ctx.sync.set("summary", REVIEW, { ...createSummary(review, { type: "busy" }), error: "earlier", toolCalls: 2 })
+      },
+    })
+    try {
+      const frame = await harness.frame()
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("●")
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("运行中 · 工具 2 ·")
+      expect(frame).not.toContain("✗")
     } finally {
       await harness.dispose()
     }

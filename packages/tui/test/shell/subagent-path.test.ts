@@ -2,17 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect, test } from "bun:test"
+import { SUBAGENT_MARKER_GLYPH } from "../../src/session/subagents"
 import {
   DESCRIPTION_SEPARATOR,
   MAX_CHAIN_DEPTH,
   PATH_SEPARATOR,
-  SUBAGENT_MARKER_GLYPH,
   layoutSubagentPath,
   sameSubagentView,
-  subagentDescription,
-  subagentKind,
-  subagentMarker,
-  subagentMarkerToken,
   subagentView,
   type SubagentLookup,
   type SubagentPathInput,
@@ -162,46 +158,8 @@ test("a layout is made for every width that holds the current segment, so the pa
   }
 })
 
-test("kind comes from the session, then the parent's Task input, then the title, then plain agent", () => {
-  const titled = { title: "scan (@general subagent)" }
-  expect(subagentKind({ ...titled, agent: "explore" }, { kind: "plan" })).toBe("explore")
-  expect(subagentKind(titled, { kind: "plan" })).toBe("plan")
-  expect(subagentKind(titled)).toBe("general")
-  expect(subagentKind({ title: "scan (@code-explorer subagent)" })).toBe("code-explorer")
-  expect(subagentKind({ title: "scan (DAG node)" })).toBe("agent")
-  expect(subagentKind({ title: "" })).toBe("agent")
-  // Blank values do not count as an answer.
-  expect(subagentKind({ ...titled, agent: "  " }, { kind: "" })).toBe("general")
-  // A remote string cannot restyle the terminal.
-  expect(subagentKind({ title: "scan", agent: "ex\u001b[31mplore\u0007" })).toBe("explore")
-})
-
-test("description comes from the Task input, else from the title without its subagent tail", () => {
-  expect(subagentDescription({ title: "title text (@explore subagent)" }, { description: "from the task" })).toBe(
-    "from the task",
-  )
-  expect(subagentDescription({ title: "scan the repo (@explore subagent)" })).toBe("scan the repo")
-  expect(subagentDescription({ title: "scan the repo (@code-explorer subagent)" }, { description: " " })).toBe(
-    "scan the repo",
-  )
-  expect(subagentDescription({ title: "build step (DAG node)" })).toBe("build step (DAG node)")
-  expect(subagentDescription({ title: "(@explore subagent)" })).toBe("")
-  expect(subagentDescription({ title: "x" }, { description: "two\nlines" })).toBe("two lines")
-})
-
-test("the marker follows the summary: running while busy or retrying, failed with an error, done when idle", () => {
-  expect(subagentMarker({ status: "busy" })).toBe("running")
-  expect(subagentMarker({ status: "retry" })).toBe("running")
-  // An error left from an earlier turn does not hide that the session runs again.
-  expect(subagentMarker({ status: "busy", error: "boom" })).toBe("running")
-  expect(subagentMarker({ status: "idle", error: "boom" })).toBe("failed")
-  expect(subagentMarker({ status: "idle" })).toBe("done")
-  expect(subagentMarker({ status: "unknown" })).toBeUndefined()
-  expect(subagentMarker(undefined)).toBeUndefined()
-  expect(subagentMarkerToken("running")).toBe("primary")
-  expect(subagentMarkerToken("failed")).toBe("error")
-  expect(subagentMarkerToken("done")).toBe("success")
-})
+// The kind, the description and the marker are decided in `session/subagents.ts`, and tested in
+// `test/session/subagents.test.ts`; what follows is how the path takes them.
 
 function lookupOf(
   sessions: Record<string, { parentID?: string; title?: string; agent?: string }>,

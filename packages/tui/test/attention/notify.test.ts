@@ -25,6 +25,8 @@ function setup(subagent?: SubagentReminders) {
   const sessions: Record<string, Session> = {
     session: session("session", "Demo session"),
     subagent: session("subagent", "Subagent session", "session"),
+    foreground: session("foreground", "Foreground session", "session"),
+    node: session("node", "Inspect lockfile (DAG node)", "session"),
     agented: { ...session("agented", "Agented session", "session"), agent: "build" },
     plain: session("plain", "Plain session", "session"),
     abort: session("abort", "Abort session"),
@@ -282,6 +284,12 @@ describe("internal attention notifications", () => {
   })
 })
 
+/** The parent's Task links, as the data layer keeps them: one background sub-agent, one that is waited for. */
+const links: Record<string, { kind: string; background: boolean }> = {
+  subagent: { kind: "explore", background: true },
+  foreground: { kind: "explore", background: false },
+}
+
 /** The footer and the route as the reminders see them: the toasts shown, the sessions entered, the session on screen. */
 function reminders(viewing?: string) {
   const toasts: ToastOptions[] = []
@@ -290,7 +298,7 @@ function reminders(viewing?: string) {
   const value: SubagentReminders = {
     toast: { show: (options) => void toasts.push(options) },
     viewing: () => current,
-    task: (sessionID) => (sessionID === "subagent" ? { kind: "explore" } : undefined),
+    task: (sessionID) => links[sessionID],
     open: (sessionID) => void opened.push(sessionID),
   }
   return {
@@ -477,15 +485,76 @@ describe("sub-agent reminders", () => {
     const footer = reminders("session")
     const harness = setup(footer.value)
 
-    harness.emit(busy("agented"))
-    harness.emit(idle("agented"))
-    harness.emit(busy("plain"))
-    harness.emit(idle("plain"))
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1", "agented") })
+    harness.emit({ id: "event-2", type: "permission.asked", properties: permission("permission-2", "plain") })
 
     expect(footer.toasts.map((toast) => [toast.text, toast.dedupeKey])).toEqual([
-      ["build finished", "subagent.done.agented"],
-      ["agent finished", "subagent.done.plain"],
+      ["build needs permission · /agents", "subagent.permission.agented"],
+      ["agent needs permission · /agents", "subagent.permission.plain"],
     ])
+  })
+
+  test("a sub-agent that is not a background one leaves no toast when it finishes or fails, only its sound", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("foreground"))
+    harness.emit(idle("foreground"))
+    harness.emit(busy("foreground"))
+    harness.emit(failed("foreground"))
+
+    expect(footer.toasts).toEqual([])
+    expect(harness.notifications.map((each) => [each.sound.name, each.notification])).toEqual([
+      ["subagent_done", false],
+      ["error", false],
+    ])
+  })
+
+  test("a DAG node session leaves no toast when it finishes or fails: it has no Task link, so no background", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("node"))
+    harness.emit(idle("node"))
+    harness.emit(busy("node"))
+    harness.emit(failed("node"))
+
+    expect(footer.toasts).toEqual([])
+    expect(harness.notifications.map((each) => each.sound.name)).toEqual(["subagent_done", "error"])
+  })
+
+  test("a background sub-agent that fails leaves its toast, and one that is waited for does not", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit(busy("foreground"))
+    harness.emit(failed("foreground"))
+    harness.emit(busy("subagent"))
+    harness.emit(failed("subagent"))
+
+    expect(footer.toasts.map((toast) => toast.dedupeKey)).toEqual(["subagent.failed.subagent"])
+  })
+
+  test("a permission request leaves a toast whichever way the sub-agent runs", () => {
+    const footer = reminders("session")
+    const harness = setup(footer.value)
+
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1", "foreground") })
+    harness.emit({ id: "event-2", type: "permission.asked", properties: permission("permission-2", "node") })
+    harness.emit({ id: "event-3", type: "permission.asked", properties: permission("permission-3", "subagent") })
+
+    expect(footer.toasts.map((toast) => [toast.text, toast.level, toast.dedupeKey])).toEqual([
+      ["explore needs permission · /agents", "warning", "subagent.permission.foreground"],
+      ["agent needs permission · /agents", "warning", "subagent.permission.node"],
+      ["explore needs permission · /agents", "warning", "subagent.permission.subagent"],
+    ])
+    // Each toast goes into the sub-agent that asked.
+    for (const toast of footer.toasts) toast.onActivate?.()
+    expect(footer.opened).toEqual(["foreground", "node", "subagent"])
+    // And the one the user is looking at is quiet, whichever way it runs.
+    footer.view("node")
+    harness.emit({ id: "event-4", type: "permission.asked", properties: permission("permission-4", "node") })
+    expect(footer.toasts).toHaveLength(3)
   })
 
   test("without reminders a sub-agent only plays its sound", () => {
