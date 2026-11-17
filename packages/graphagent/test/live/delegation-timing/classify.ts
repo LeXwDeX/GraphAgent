@@ -516,6 +516,36 @@ function sedScripts(args: readonly string[]): string[] {
   return first === undefined ? [] : [first]
 }
 
+/**
+ * A sed script without its regular expressions and replacement texts: `/regex/` addresses and the
+ * two delimited parts of `s<d>regex<d>replacement<d>` are dropped, so only command letters and
+ * flags remain. A linear scan, with backslash escapes skipped, so no input can make it backtrack.
+ */
+function stripSedRegexes(script: string): string {
+  let out = ""
+  const skipDelimited = (start: number, delimiter: string): number => {
+    let i = start
+    while (i < script.length && script[i] !== delimiter) i += script[i] === "\\" ? 2 : 1
+    return i + 1
+  }
+  for (let i = 0; i < script.length; ) {
+    const char = script[i] ?? ""
+    if (char === "/") {
+      i = skipDelimited(i + 1, "/")
+      continue
+    }
+    const delimiter = script[i + 1] ?? ""
+    if (char === "s" && delimiter !== "" && !/[\w\s;}]/.test(delimiter)) {
+      out += "s"
+      i = skipDelimited(skipDelimited(i + 2, delimiter), delimiter)
+      continue
+    }
+    out += char
+    i++
+  }
+  return out
+}
+
 function scriptReachesOutside(words: readonly string[]): boolean {
   const command = words[0] ?? ""
   const args = words.slice(1)
@@ -524,7 +554,7 @@ function scriptReachesOutside(words: readonly string[]): boolean {
     // Drop the regex parts (/.../ and s/.../.../), then any command letter that reads, writes or runs.
     return sedScripts(args).some((script) =>
       /[rRwWe]/.test(
-        script.replace(/s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1/g, "s").replace(/\/(?:\\.|[^/])*\//g, ""),
+        stripSedRegexes(script),
       ),
     )
   }
