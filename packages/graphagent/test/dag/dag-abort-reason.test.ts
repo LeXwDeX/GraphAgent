@@ -43,6 +43,7 @@ const paths: ReadonlyArray<readonly [ChildAbortReason, ChildAbortActor]> = [
   ["shutdown", "runtime-scope"],
   ["parent-session-deleted", "parent-session"],
   ["location-moved", "dag-location"],
+  ["lease-lost", "dag-lease"],
   ["recovery", "recovery"],
   ["admission-rejected", "dag-loop"],
   ["admission-error", "dag-loop"],

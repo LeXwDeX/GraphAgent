@@ -1,0 +1,17 @@
+import { expect, test } from "bun:test"
+import { buildInvoice } from "../src/billing/invoice"
+
+const lines = [{ sku: "mug", unitCents: 1200, quantity: 2 }]
+
+test("tax is added on top of the subtotal", () => {
+  const invoice = buildInvoice(lines, "DE")
+  expect(invoice.subtotalCents).toBe(2400)
+  expect(invoice.taxCents).toBe(456)
+  expect(invoice.totalCents).toBe(2856)
+})
+
+test("a ten percent discount reduces the taxable amount", () => {
+  const invoice = buildInvoice(lines, "DE", 10)
+  expect(invoice.discountCents).toBe(240)
+  expect(invoice.totalCents).toBe(2570)
+})

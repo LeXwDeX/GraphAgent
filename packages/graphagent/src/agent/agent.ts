@@ -366,8 +366,9 @@ export const layer = Layer.effect(
             // Serves background review; multi-lens review runs through the DAG's
             // review lanes, so it is never a composer's dispatch target.
             contract: { role: "worker", visibility: "private" },
-            // B-1 through B-4: it only reads (a command allowlist, no file tools), it reviews work that is already
-            // finished, it takes minutes, and its result is one findings report (#1357).
+            // B-2 and B-3: it only reads (a command allowlist, no file tools) and its result is one findings report,
+            // about work that is already finished. The declaration stands in for the user's parallel-work signal
+            // (B-1) for this agent; a call can still pass `background: false` (#1357).
             execution: "background",
           },
           auditor: {

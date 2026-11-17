@@ -1,0 +1,17 @@
+import { findUserByEmail } from "../api/userStore"
+import { verifyPassword } from "./password"
+import { createSession, type Session } from "./session"
+
+export type LoginResult =
+  | { ok: true; session: Session }
+  | { ok: false; reason: "UNKNOWN_USER" | "INVALID_CREDENTIALS" }
+
+/** Checks the credentials and opens a session for the user. */
+export function login(email: string, password: string): LoginResult {
+  const user = findUserByEmail(email.trim().toLowerCase())
+  if (!user) return { ok: false, reason: "UNKNOWN_USER" }
+  if (!verifyPassword(password, user.passwordHash, user.salt)) {
+    return { ok: false, reason: "INVALID_CREDENTIALS" }
+  }
+  return { ok: true, session: createSession(user.id) }
+}

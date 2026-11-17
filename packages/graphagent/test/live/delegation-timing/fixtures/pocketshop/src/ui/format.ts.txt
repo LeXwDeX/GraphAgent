@@ -1,0 +1,6 @@
+import leftPad from "left-pad"
+
+/** Pads an order number to six digits for display. */
+export function orderNumber(n: number): string {
+  return `#${leftPad(String(n), 6, "0")}`
+}

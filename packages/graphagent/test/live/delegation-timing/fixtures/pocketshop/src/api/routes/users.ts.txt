@@ -1,0 +1,20 @@
+import { findUserById, type User } from "../userStore"
+import { isRes, requireAuth, type Req, type Res } from "../middleware"
+
+export function getMe(req: Req): Res {
+  const session = requireAuth(req)
+  if (isRes(session)) return session
+  const user = findUserById(session.userId)
+  if (!user) return { status: 404, json: { error: "NOT_FOUND" } }
+  return { status: 200, json: { id: user.id, email: user.email, role: user.role } }
+}
+
+export function updateMe(req: Req): Res {
+  const session = requireAuth(req)
+  if (isRes(session)) return session
+  const user = findUserById(session.userId)
+  if (!user) return { status: 404, json: { error: "NOT_FOUND" } }
+  // Copies every field of the request body onto the stored user.
+  Object.assign(user, req.body as Partial<User>)
+  return { status: 200, json: { id: user.id, email: user.email, role: user.role } }
+}

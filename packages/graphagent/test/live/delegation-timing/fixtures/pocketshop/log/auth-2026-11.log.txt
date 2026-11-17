@@ -1,0 +1,9 @@
+2026-11-09T08:12:44Z INFO  login ok user=u_101
+2026-11-09T08:15:02Z INFO  login ok user=u_102
+2026-11-12T09:01:02Z INFO  deploy: merged PR #42 auth-refactor
+2026-11-12T09:03:11Z WARN  login failed reason=INVALID_CREDENTIALS user=u_102
+2026-11-12T09:03:40Z WARN  login failed reason=INVALID_CREDENTIALS user=u_102
+2026-11-12T09:05:23Z WARN  login failed reason=INVALID_CREDENTIALS user=u_101
+2026-11-12T09:07:58Z WARN  login failed reason=INVALID_CREDENTIALS user=u_103
+2026-11-12T09:11:16Z WARN  login failed reason=INVALID_CREDENTIALS user=u_101
+2026-11-13T10:02:09Z WARN  login failed reason=INVALID_CREDENTIALS user=u_102

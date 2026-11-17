@@ -10,7 +10,7 @@ import { isRecord } from "@/util/record"
  * Code-level execution mode of a task call (#1357, Appendix A of #1057): foreground (the caller waits) or
  * background (the run is detached and its result comes back as a later message).
  *
- * The prompt criteria in the task tool description (F-1 to F-4, B-1 to B-4; `packages/graphagent/CONTEXT.md`) stay
+ * The prompt criteria in the task tool description (F-1 to F-4, B-1 to B-3; `packages/graphagent/CONTEXT.md`) stay
  * what guides the model's own `background` argument. This module decides what the runtime does with a call, in one
  * place and in one order:
  *

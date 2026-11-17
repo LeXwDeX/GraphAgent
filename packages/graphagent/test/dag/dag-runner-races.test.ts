@@ -8,8 +8,9 @@
  * A "known race" asserts the behavior the fix PR must deliver, so today its
  * body fails. It is registered with `test.failing`: the suite stays green while
  * the race exists, and goes red ("expected to fail, but passed") the moment a
- * fix lands. That is the signal to turn it into a plain `it.live`. To see the
- * real assertion failure instead, run with `DAG_RACES_STRICT=1`:
+ * fix lands. That is the signal to turn it into a plain test, as PR2 did for
+ * race 1. To see the real assertion failure instead, run with
+ * `DAG_RACES_STRICT=1`:
  *
  *   DAG_RACES_STRICT=1 bun test test/dag/dag-runner-races.test.ts
  *
@@ -33,6 +34,7 @@ import {
   makeDualRunner,
   makeRunnerIdentity,
   node,
+  pollOnTestClock,
   withEngineRunner,
   type DualRunner,
 } from "./fixture/dual-runner"
@@ -55,17 +57,6 @@ const knownRace = <A, E>(name: string, body: Effect.Effect<A, E, Scope.Scope>, c
     30_000,
   )
 
-/** `pollWithTimeout` for tests on the TestClock, where sleeping never ends: it advances the clock between checks. */
-const pollOnTestClock = <A>(check: Effect.Effect<A | undefined>, message: string) =>
-  Effect.gen(function* () {
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const found = yield* check
-      if (found !== undefined) return found
-      yield* TestClock.adjust("20 millis")
-    }
-    return yield* Effect.fail(new Error(message))
-  })
-
 const stateOf = (dual: DualRunner, dagID: string, nodeID = "n1") =>
   Effect.gen(function* () {
     const row = yield* dual.r2.store.getNode(dagID, nodeID)
@@ -76,9 +67,11 @@ const stateOf = (dual: DualRunner, dagID: string, nodeID = "n1") =>
 /**
  * R1 stalls right before its NodeStarted publish: `guardNode` passed, `n1` is
  * durably queued and R1's child session exists, nothing else is out. R2 then
- * starts, adopts the queued node and starts its own attempt of it. Without a
- * lease nothing says how long R1 stalled; once there is one, the TestClock has
- * to pass its TTL between the stall and R2's start.
+ * starts, claims the lease, adopts the queued node and starts its own attempt
+ * of it. R2 may only claim once R1's lease ran out, so the stall outlasts the
+ * TTL: it is modeled on the lease row (`expireLease`) and not on the clock,
+ * because the parked write holds the workflow lock and a TestClock jump of
+ * that size would time it out before it could wake up.
  */
 const stalledBeforeStart = (dual: DualRunner) =>
   Effect.gen(function* () {
@@ -92,6 +85,7 @@ const stalledBeforeStart = (dual: DualRunner) =>
     })
     yield* awaitWithTimeout(stalled.reached, "R1 never reached its NodeStarted publish", "5 seconds")
     expect((yield* dual.r2.store.getNode(dagID, "n1"))?.status).toBe("queued")
+    yield* dual.expireLease(dagID)
     yield* dual.r2.init
     const attempt = yield* dual.r2.nextPrompt("R2 did not start its own attempt of n1")
     return { dagID, stalled, attempt }
@@ -163,6 +157,8 @@ describe("dual-runner fixture", () => {
       expect(dual.r1.created).toEqual(["ses_r1_child_1"])
       expect(dual.r2.created).toEqual(["ses_r2_child_1"])
       expect(log.filter((type) => type === "dag.node.started")).toHaveLength(1)
+      // R2 could start because R1's lease ran out: it took the lease over.
+      expect(yield* dual.leaseRow(dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
       yield* stalled.release
     }),
   )
@@ -210,19 +206,19 @@ describe("runner identity", () => {
 
 describe("races between two runners (#1029)", () => {
   // Race 1. A second runner that starts on the same directory recovers every
-  // non-terminal workflow of it. `reconcileWorkflow` runs before
+  // non-terminal workflow of it. `reconcileWorkflow` used to run before
   // `tryClaimAdoption` (which only compares the status), and it settles any
   // `running` node whose child is not finished as "execution ownership lost":
   // it cancels the child, fails the node and pauses the workflow. That the
-  // node is in fact being driven by another live process is never asked. It is
-  // deterministic, not a timing window.
+  // node is in fact being driven by another live process was never asked. It
+  // was deterministic, not a timing window.
   //
-  // Expected: R2's startup leaves R1's workflow alone and builds no runtime
-  // entry for it. The loop's entry table is private, so that is asserted by its
-  // effects: nothing failed, paused, cancelled or started.
-  // Fixed by PR2 (`lease.claim` ahead of `reconcileWorkflow`).
-  knownRace(
-    "race 1: a starting R2 must not fail and pause the node R1 is driving",
+  // Fixed by PR2: a runner claims the workflow's lease before it reconciles,
+  // and R1's lease is live, so R2's startup defers. R2 leaves R1's workflow
+  // alone and builds no runtime entry for it; the loop's entry table is
+  // private, so that is asserted by its effects: nothing failed, paused,
+  // cancelled or started, and the lease still names R1.
+  it.live("race 1: a starting R2 must not fail and pause the node R1 is driving", () =>
     Effect.gen(function* () {
       const dual = yield* makeDualRunner()
       const { dagID, gate } = yield* driveOnR1(dual)
@@ -238,6 +234,7 @@ describe("races between two runners (#1029)", () => {
       // R2 behaves as a non-owner: it cancelled none of R1's work and started none of its own.
       expect(dual.r2.cancelled).toEqual([])
       expect(dual.r2.created).toEqual([])
+      expect(yield* dual.leaseRow(dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
 
       // R1 carries on and finishes the workflow.
       yield* Deferred.succeed(gate.release, "r1 output")
@@ -260,9 +257,12 @@ describe("races between two runners (#1029)", () => {
   //
   // Expected: the late write is refused, `child_session_id` stays R2's, and R1
   // aborts its stale attempt instead of running it (it also drops its entry).
-  // Fixed by PR3b (the fence token on every runner write, `StaleRunnerError`
-  // evicting the runner). The eviction itself is asserted there, once the lease
-  // API exposes which runner holds a workflow.
+  // Since PR2 R1 does evict itself, at its first renewal after it wakes, but
+  // that is a tick away and the parked write is already on its way: only the
+  // fence token on every runner write refuses it. R1's lease ran out while it
+  // was stalled (`expireLease`) and R2 took it over, so the arrangement holds
+  // as PR2 left it. Fixed by PR3b (the token and `StaleRunnerError`, which
+  // evicts the runner at the write).
   knownRace(
     "race 2: a zombie R1's late NodeStarted must not overwrite the attempt R2 started",
     Effect.gen(function* () {
@@ -339,14 +339,17 @@ describe("races between two runners (#1029)", () => {
   // evidence is the false takeover the design rules out ("no preemption in
   // the first round after a jump; the owner renews").
   //
-  // The lease does not exist yet, so this is the minimal form: R2 must not
-  // preempt a live R1 after the jump, and R1's write must still be accepted
-  // when it wakes. It fails today for race 1's reason.
-  // Full assertions land with `DagLease` (PR1, PR2) and the reconcile tick
-  // (PR4a): R1's renewal succeeds with an unchanged epoch; and when the stall
-  // really outlasts the TTL and R2 takes over, R1's first write is refused and
-  // produces no further side effect (the zombie half is race 2's shape).
-  // Fixed by PR4a.
+  // This is the minimal form: R2 must not preempt a live R1 after the jump,
+  // and R1's write must still be accepted when it wakes. R1's stall includes
+  // its renewals (`freeze()` parks the lease operations too), so the jump
+  // leaves its lease expired and, since PR2, R2's claim takes it over: the
+  // false takeover the design rules out. It still fails, now for that reason:
+  // PR2 has the lease but not the clock rule.
+  // Full assertions land with the reconcile tick (PR4a): R1's renewal succeeds
+  // with an unchanged epoch; and when the stall really outlasts the TTL and R2
+  // takes over, R1's first write is refused and produces no further side
+  // effect (the zombie half is race 2's shape).
+  // Fixed by PR4a (the clock rule: no preemption in the round after a jump).
   knownRace(
     "race 3: a wall-clock jump during R1's stall must not make R2 take over a live R1",
     Effect.gen(function* () {

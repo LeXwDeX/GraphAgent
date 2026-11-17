@@ -1,6 +1,6 @@
 # Task Delegation Context
 
-Task delegation moves one self-contained piece of work into a child session so the main agent can keep its own context focused. The classification below governs model-driven delegation: whether the main agent waits for the result in the same turn (foreground) or continues without it and receives the result as a later message (background). A user-issued command may instead select background through its command definition.
+Task delegation moves one self-contained piece of work into a child session so the main agent can keep its own context focused. The classification below governs model-driven delegation: whether the main agent waits for the result in the same turn (foreground) or does not wait and receives the result as a later message (background). A user-issued command may instead select background through its command definition.
 
 ## Glossary
 
@@ -22,21 +22,24 @@ _Avoid_: Code reviewer (does not distinguish the built-in agent from a user-defi
 
 ## Choosing foreground or background
 
-Foreground when any of these holds:
+Foreground is the default. Always foreground when any of these holds:
 
 - **F-1:** The work needs the user's input or confirmation.
 - **F-2:** It changes session or context state shared with the main agent, so ordering matters.
 - **F-3:** The result is the direct input to the main agent's next step.
-- **F-4:** It is quick and cheap (seconds); the background notification and context overhead outweigh the gain.
+- **F-4:** It is a quick lookup the main agent can answer directly; the background notification and context overhead outweigh the gain.
 
 Background only when all of these hold:
 
-- **B-1:** The result does not block the main agent's next step.
-- **B-2:** The work only reads, or writes files the main agent will not touch.
-- **B-3:** It is long-running or of uncertain duration (minutes).
-- **B-4:** Its result fits in one message.
+- **B-1:** The user signals parallel work: they say they will keep working on something else while this is done ("meanwhile", "at the same time", "I'll keep working on ...", "no need to wait"), or they ask for background. The main agent then delegates with `background: true` instead of doing the work itself in this turn.
+- **B-2:** The agent only reads, or writes files neither the main agent nor the user will touch.
+- **B-3:** Its result fits in one message.
 
-When neither list applies cleanly, default to foreground. The criteria live in the `task` tool description (`packages/graphagent/src/tool/task.txt`, "Choosing foreground or background"); they guide the model's own `background` argument, and the runtime does not infer a classification from the work itself.
+Delegate first: once background is chosen, the main agent does not read files or run commands beforehand to investigate the work. It passes on the user's request and what it already knows, and the agent gathers its own context. The main agent then carries on with any foreground work the user also asked for; if none is left, it replies briefly and ends its turn. The result arrives as a message.
+
+Reviews, audits, and test or type-check runs of finished work are good background work; research that decides the main agent's next edit is not. When neither list applies cleanly, default to foreground.
+
+The criteria live in the `task` tool description (`packages/graphagent/src/tool/task.txt`, "Choosing foreground or background"); they guide the model's own `background` argument, and the runtime does not infer a classification from the work itself. A real-model evaluation shaped this wording (the original duration condition was dropped and the user's parallel signal became the trigger). While the evaluation harness still ran read-only shell commands, the final wording did not stably meet the background gate (72%–83% of the scenarios that should go to the background, against a gate of 5/6); on the final harness, which never runs the shell, it met all gates (88.9%). A code-level execution mode (#1357, below) removes the dependence on wording and model variance. Results: Amendments 1 and 2 in `docs/adr/0003-task-execution-classification.md`.
 
 ### Declared execution mode
 
@@ -56,10 +59,10 @@ The built-in `review` agent declares `background`; a call can still pass `backgr
 
 | Work | Classification | Basis |
 | --- | --- | --- |
-| `/review` | Background, read-only | B-1 through B-4; the command declares `execution: "background"` and the `review` agent holds read-only permissions and declares `background` too. |
-| `task` → `explore` | Either; commonly foreground | Often F-3 when the result decides the next edit; background only when B-1 through B-4 all hold. |
-| `task` → `general` | Either; a writing run must also satisfy B-2 | A background writer may only touch files the main agent will not touch. |
-| `watch_pr`, workflow, async hook | Background (unchanged) | B-1 through B-4. |
+| `/review` | Background, read-only | Selected by the command definition (`execution: "background"`) and by the `review` agent's own declaration, not by model classification; the `review` agent holds read-only permissions (B-2) and returns one report (B-3). |
+| `task` → `explore` | Either; commonly foreground | Often F-3 when the result decides the next edit; background only when B-1 through B-3 all hold. |
+| `task` → `general` | Either; a writing run must also satisfy B-2 | A background writer may only touch files neither the main agent nor the user will touch. |
+| `watch_pr`, workflow, async hook | Background (unchanged) | They stay background as before and are not decided by the `task` criteria. |
 | Synchronous hook, compaction, goal | Foreground | F-2: each changes shared session state with ordering semantics. |
 | Long-running shell command | Background candidate | Not covered by this decision; tracked separately. |
 
@@ -67,7 +70,7 @@ The built-in `review` agent declares `background`; a call can still pass `backgr
 
 - Foreground is the default. Backgrounding removes the result from the current turn and pays a notification and context cost.
 - Never run two writers on the same files.
-- Never background a task and then wait for it with sleep or polling; end the turn and let the result arrive as a message.
+- Never background a task and then wait for it with sleep or polling; if nothing else is left, end the turn and let the result arrive as a message.
 - A background delegation is only useful when its result can be summarized in one message for the user.
 - A task run started by the agent does not survive session cancellation. A user-issued background command survives Esc but is force-cancelled when its session is deleted. Other background tools keep their own cancellation semantics.
 - A command-defined `execution` applies only to a user-issued interactive run. A non-interactive turn or hook follow-up runs every task call in the foreground, whatever the argument, the command or the agent asks for.
@@ -76,4 +79,4 @@ The built-in `review` agent declares `background`; a call can still pass `backgr
 
 ## Related decisions
 
-- `docs/adr/0003-task-execution-classification.md` records the prompt-first decision, the criteria, the `/review` behavior change, and (Amendment 2) the code-level execution mode.
+- `docs/adr/0003-task-execution-classification.md` records the prompt-first decision, the criteria, the `/review` behavior change, (Amendment 1) the evaluation-driven revision of the criteria, and (Amendment 2) the code-level execution mode.
