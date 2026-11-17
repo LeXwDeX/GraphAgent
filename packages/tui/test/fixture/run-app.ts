@@ -46,6 +46,12 @@ export async function captureFrame(setup: Setup): Promise<string> {
   throw new Error("renderer stayed busy while capturing a frame")
 }
 
+/**
+ * Text that only the prompt draws: its agent and model line. The key hints that used to mark it are the footer's
+ * alone since #1032 PR6, and the footer writes the agent name in lower case.
+ */
+export const PROMPT_MARK = "Build · "
+
 export async function waitForFrame(setup: Setup, predicate: (frame: string) => boolean, label: string, timeout = 5000) {
   const start = Date.now()
   for (;;) {

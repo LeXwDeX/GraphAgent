@@ -18,6 +18,7 @@ import { usePathFormatter } from "../../context/path-format"
 import { PanelShell, type PanelHint } from "../../panel/shell"
 import { t } from "../../i18n"
 import { askSourceLabel } from "../../ask/ask-queue"
+import { diffView } from "./diff-view"
 
 type PermissionStage = "options" | "reject"
 type PermissionChoice = "once" | "always" | "reject" | "relay"
@@ -38,11 +39,8 @@ function EditBody(props: { request: PermissionRequest }) {
     return typeof value === "string" ? value : ""
   })
 
-  const view = createMemo(() => {
-    const diffStyle = config.diff_style
-    if (diffStyle === "stacked") return "unified"
-    return dimensions().width > 120 ? "split" : "unified"
-  })
+  // The permission diff sits in the bottom zone, which spans the terminal; it keeps the shared threshold.
+  const view = createMemo(() => diffView(config.diff_style, dimensions().width))
 
   const ft = createMemo(() => filetype(filepath()))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))

@@ -126,6 +126,7 @@ import {
 } from "./rows"
 import { createRowTable } from "./row-table"
 import { toggleExpand } from "./expand"
+import { diffView, sessionContentWidth } from "./diff-view"
 import {
   completedOutput,
   editShowsBlock,
@@ -339,7 +340,7 @@ export function Main() {
   const dimensions = useTerminalDimensions()
   const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   // The drawer overlays the main area instead of shrinking it.
-  const contentWidth = createMemo(() => dimensions().width - 4)
+  const contentWidth = createMemo(() => sessionContentWidth(dimensions().width))
 
   // The transcript is a flat row table. Windowing, scroll commands and height
   // estimates all read this table instead of mounted render nodes, so an
@@ -3004,12 +3005,7 @@ function Edit(props: ToolProps) {
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
 
-  const view = createMemo(() => {
-    const diffStyle = ctx.tui.diff_style
-    if (diffStyle === "stacked") return "unified"
-    // Default to "auto" behavior
-    return ctx.width > 120 ? "split" : "unified"
-  })
+  const view = createMemo(() => diffView(ctx.tui.diff_style, ctx.width))
 
   const ft = createMemo(() => filetype(stringValue(props.input.filePath)))
 
@@ -3060,11 +3056,7 @@ function ApplyPatch(props: ToolProps) {
 
   const files = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
-  const view = createMemo(() => {
-    const diffStyle = ctx.tui.diff_style
-    if (diffStyle === "stacked") return "unified"
-    return ctx.width > 120 ? "split" : "unified"
-  })
+  const view = createMemo(() => diffView(ctx.tui.diff_style, ctx.width))
 
   function Diff(p: { diff: string; filePath: string }) {
     return (
