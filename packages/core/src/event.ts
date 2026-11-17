@@ -67,6 +67,12 @@ export interface BatchEvent {
 }
 
 export interface Interface {
+  /**
+   * `subscribe`, `all` and `listen` are notified after the OUTERMOST enclosing
+   * transaction commits (at once when there is none), in publish order, and a
+   * transaction that rolls back delivers nothing: the same rule for `publishMany`
+   * and `replay`.
+   */
   readonly publish: <D extends Definition>(
     definition: D,
     data: Data<D>,
@@ -436,11 +442,11 @@ export const layerWith = (options?: LayerOptions) =>
                   version: definition.durable.version,
                 },
               }
-              yield* notify(event as Payload)
+              yield* deliver([event as Payload])
               return event
             }
           }
-          yield* notify(event as Payload)
+          yield* deliver([event as Payload])
           return event
         })
       }
@@ -478,6 +484,20 @@ export const layerWith = (options?: LayerOptions) =>
           yield* PubSub.publish(pubsub.all, event)
         })
       }
+
+      // Delivery to `subscribe`, `all` and `listen` follows the OUTERMOST
+      // commit (#1029 PR3a, ADR-0008 decision 3), the route `onCommitted`
+      // observers and the mailbox `changed` stream already take. The client
+      // registers the callback on the innermost transaction level, a released
+      // savepoint hands its callbacks to the enclosing level, and a level that
+      // rolls back drops them, so an event published inside a transaction that
+      // is rolled back is delivered to nobody. What one transaction publishes
+      // arrives in publish order once it has committed. Outside any
+      // transaction the callback runs at once, as `notify` did, and a failing
+      // listener fan-out is logged instead of failing a publish that already
+      // committed.
+      const deliver = (events: ReadonlyArray<Payload>) =>
+        events.length === 0 ? Effect.void : db.$client.afterCommit(Effect.forEach(events, notify, { discard: true }))
 
       function publish<D extends Definition>(definition: D, data: Data<D>, options?: PublishOptions) {
         return Effect.gen(function* () {
@@ -598,9 +618,7 @@ export const layerWith = (options?: LayerOptions) =>
               },
             } as Payload
           })
-          for (const payload of payloads) {
-            yield* notify(payload)
-          }
+          yield* deliver(payloads)
           return payloads
         })
       }
@@ -628,14 +646,16 @@ export const layerWith = (options?: LayerOptions) =>
               strictOwner: options?.strictOwner,
             })
             if (committed && options?.publish) {
-              yield* notify({
-                ...payload,
-                durable: {
-                  aggregateID: committed.aggregateID,
-                  seq: committed.seq,
-                  version: definition.durable.version,
+              yield* deliver([
+                {
+                  ...payload,
+                  durable: {
+                    aggregateID: committed.aggregateID,
+                    seq: committed.seq,
+                    version: definition.durable.version,
+                  },
                 },
-              })
+              ])
             }
           }
         })
