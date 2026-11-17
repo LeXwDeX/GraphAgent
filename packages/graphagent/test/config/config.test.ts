@@ -9,6 +9,8 @@ import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import { Config } from "@/config/config"
 import { ConfigManaged } from "@/config/managed"
+import { DagCompose } from "@/dag/compose"
+import { AppLayer } from "@/effect/app-runtime"
 import { ConfigParse } from "../../src/config/parse"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"
 
@@ -1907,6 +1909,28 @@ describe("DAG settings: policy keys are global-only, model tiers are project-sco
           expect((yield* Config.use.get()).dag?.compose).toEqual(compose)
           expect((yield* Config.use.dagGlobal()).compose).toEqual(compose)
         }),
+      ),
+    )
+
+    // The workflow tool reads the limits from the application's own Config service on every authoring call, so
+    // a change in the global file is hot. Load them the way the application does: through AppLayer.
+    it.effect("AppLayer loads the limits from the global layer, where the workflow tool reads them", () =>
+      withConfigTree(
+        { global: { dag: { compose } } },
+        Effect.gen(function* () {
+          const dag = yield* Config.Service.use((config) => config.dagGlobal())
+          expect(DagCompose.limits(dag)).toEqual({ maxChildren: 8, maxDepth: 3, maxSubtreeNodes: 60 })
+        }).pipe(Effect.provide(AppLayer)),
+      ),
+    )
+
+    it.effect("AppLayer reports the defaults when nothing is set", () =>
+      withConfigTree(
+        { global: { dag: { concurrency: 7 } } },
+        Effect.gen(function* () {
+          const dag = yield* Config.Service.use((config) => config.dagGlobal())
+          expect(DagCompose.limits(dag)).toEqual({ maxChildren: 6, maxDepth: 2, maxSubtreeNodes: 40 })
+        }).pipe(Effect.provide(AppLayer)),
       ),
     )
 

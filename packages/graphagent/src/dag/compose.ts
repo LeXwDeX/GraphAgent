@@ -13,16 +13,22 @@
  * - the composer catalog, derived from the effective agent catalog,
  * - the plan schema of one composer, a pure function the runtime reuses to check
  *   a plan again when it expands it (the catalog may have changed since),
- * - the split and join prompts.
+ * - the split and join prompts,
+ * - the compile step: a composer node becomes a split node `<id>--split` (the
+ *   composer, asked for the plan) and an expansion slot `<id>` that carries the
+ *   `expand` marker and is already the definition of the join node that replaces it.
  *
  * Reading a plan and writing its children (the degraded paths, the join
  * admission checks, replay, recovery, cancellation, budget) belongs to the
- * scheduler's admission seam, next to the `fan_out` expansion of ADR-0004.
+ * scheduler's admission seam, next to the `fan_out` expansion of ADR-0004. Until
+ * that lands the submission gate below keeps such a graph from being submitted.
  */
 
+import { AgentArtifact } from "@/agent/artifact"
 import { AgentContract } from "@/agent/contract"
 import { isRecord } from "@/util/record"
 import type { DagConfig } from "./config"
+import type { NodeConfig } from "./dag"
 import { validateAgainstSchema } from "./runtime/schema-validator"
 
 // ============================================================================
@@ -333,13 +339,13 @@ function readPlan(value: unknown): Plan | undefined {
       id,
       agent,
       instruction,
-      ...(Array.isArray(scope) ? { scope: scope.filter((entry) => typeof entry === "string") } : {}),
+      ...(Array.isArray(scope) ? { scope: scope.filter((part) => typeof part === "string") } : {}),
       ...(typeof required === "boolean" ? { required } : {}),
       ...(typeof split === "boolean" ? { split } : {}),
     })
   }
   const notPlanned = Array.isArray(value.not_planned)
-    ? value.not_planned.filter((entry) => typeof entry === "string")
+    ? value.not_planned.filter((part) => typeof part === "string")
     : []
   return { rationale: value.rationale, items, not_planned: notPlanned }
 }
@@ -400,6 +406,185 @@ export function joinContract(composer: Composer): string {
       ? `Return the ${composer.artifact} artifact. Do not ask the user questions from this child session.`
       : "Do not ask the user questions from this child session.",
   ].join("\n\n")
+}
+
+// ============================================================================
+// Compile: a composer node becomes a split node and an expansion slot
+// ============================================================================
+
+/** A reason a composer node cannot be submitted, written for a validation diagnostic. */
+export interface Problem {
+  /** The node or block id. */
+  readonly node: string
+  readonly path: string
+  readonly message: string
+  readonly hint: string
+}
+
+export interface Compiled {
+  readonly nodes: NodeConfig[]
+  readonly problems: Problem[]
+}
+
+/** The id of the split node that plans the expansion of the slot `slotID`. */
+export function splitID(slotID: string): string {
+  return `${slotID}--split`
+}
+
+/**
+ * A node that expands: a compose block's node, or a hand-written node whose worker
+ * is a composer. A block of another kind that names a composer as its worker
+ * override is not one: that is an ordinary worker choice, and `compose` is the block
+ * that plans.
+ */
+function composerNode(node: NodeConfig, catalog: Catalog): boolean {
+  if (node.expand !== undefined || node.generated_helper === "split") return false
+  // A replan fragment names a live node to restart or cancel; that is not the node's definition.
+  if (node.restart === true || node.cancel === true) return false
+  return node.block === "compose" || (node.block === undefined && isComposer(catalog, node.worker_type))
+}
+
+/**
+ * Compiles every composer node of an already block-compiled or hand-written graph
+ * into its split node and expansion slot, and reports the composer nodes it cannot
+ * compile (the node is then returned as it was). Without a catalog (the portable
+ * profile) nothing can be resolved and every node is returned as it was.
+ *
+ * The slot keeps the node's own id, so everything bound to it stays bound. It is
+ * the join node already written: the composer, the join prompt, the artifact the
+ * composer declares, `required` and `report_to_parent` as authored, and `expand`
+ * naming the split node whose plan replaces it at admission. It depends on the
+ * split node alone, because the children it will wait for are not known yet.
+ */
+export function compileNodes(nodes: readonly NodeConfig[], catalog: Catalog | undefined, limits: Limits): Compiled {
+  if (catalog === undefined) return { nodes: [...nodes], problems: [] }
+  const compiled: NodeConfig[] = []
+  const problems: Problem[] = []
+  for (const node of nodes) {
+    if (!composerNode(node, catalog)) {
+      compiled.push(node)
+      continue
+    }
+    const checked = checkNode(node, catalog)
+    if ("problem" in checked) {
+      problems.push(checked.problem)
+      compiled.push(node)
+      continue
+    }
+    compiled.push(...splitAndSlot(node, checked.composer, limits))
+  }
+  return { nodes: compiled, problems }
+}
+
+function checkNode(node: NodeConfig, catalog: Catalog): { composer: Composer } | { problem: Problem } {
+  const block = node.block === "compose"
+  const subject = block ? `compose block "${node.id}"` : `node "${node.id}"`
+  const refuse = (message: string, hint: string): { problem: Problem } => ({
+    problem: {
+      node: node.id,
+      path: block ? `config.blocks[${node.id}].worker_type` : `nodes[${node.id}].worker_type`,
+      message: `${subject}: ${message}`,
+      hint,
+    },
+  })
+  const resolution = resolve(catalog, node.worker_type)
+  if (!resolution.available)
+    return refuse(
+      resolution.reason,
+      'worker_type must name an agent whose contract declares role "composer" and whose dispatch list holds public, read-only agents',
+    )
+  if (node.prompt_template.inline === undefined)
+    return refuse(
+      `composer "${node.worker_type}" cannot run with a prompt asset (prompt_template.id): its prompts are built from the node's inline prompt`,
+      "Give the node an inline prompt_template, or use a compose block",
+    )
+  if (node.fan_out !== undefined || node.review !== undefined)
+    return refuse(
+      `composer "${node.worker_type}" cannot carry ${node.fan_out !== undefined ? "fan_out" : "review"}: it plans read-only work`,
+      "Remove the field; fan_out belongs to a coding writer and review to a review worker",
+    )
+  return { composer: resolution.composer }
+}
+
+function splitAndSlot(node: NodeConfig, composer: Composer, limits: Limits): NodeConfig[] {
+  const planID = splitID(node.id)
+  const inline = node.prompt_template.inline ?? ""
+  const { input } = node.prompt_template
+  const shared = {
+    worker_type: composer.name,
+    // A composer only produces data (D4): its nodes never write, whatever the agent's own rules say.
+    workspace_writes: "deny" as const,
+    ...(node.worker_config ? { worker_config: { ...node.worker_config } } : {}),
+    ...(node.workspace !== undefined ? { workspace: node.workspace } : {}),
+    ...(node.isolation !== undefined ? { isolation: node.isolation } : {}),
+    ...(node.model ? { model: { ...node.model } } : {}),
+    ...(node.block ? { block: node.block } : {}),
+  }
+  const split: NodeConfig = {
+    ...shared,
+    id: planID,
+    name: `${node.name}: plan the expansion`,
+    depends_on: [...node.depends_on],
+    // A split that fails must not fail the workflow: the slot still runs, and degrades.
+    required: false,
+    report_to_parent: false,
+    prompt_template: {
+      inline: `${inline}\n\n${splitContract(composer, limits, topPosition(limits))}`,
+      ...(input ? { input: { ...input } } : {}),
+    },
+    ...(node.input_mapping ? { input_mapping: { ...node.input_mapping } } : {}),
+    ...(node.condition !== undefined ? { condition: node.condition } : {}),
+    ...(node.skip_ok !== undefined ? { skip_ok: node.skip_ok } : {}),
+    output_schema: planSchema(composer, limits),
+    generated_helper: "split",
+  }
+  const artifact = composer.artifact === undefined ? undefined : AgentArtifact.schema(composer.artifact)
+  const outputSchema = node.output_schema ?? artifact
+  const slot: NodeConfig = {
+    ...shared,
+    id: node.id,
+    name: node.name,
+    depends_on: [planID],
+    ...(node.required !== undefined ? { required: node.required } : {}),
+    ...(node.report_to_parent !== undefined ? { report_to_parent: node.report_to_parent } : {}),
+    ...(node.skip_ok !== undefined ? { skip_ok: node.skip_ok } : {}),
+    prompt_template: {
+      inline: `${inline}\n\n${joinContract(composer)}`,
+      ...(input ? { input: { ...input } } : {}),
+    },
+    // The prompt keeps the bindings the node was written with; their sources are upstream of the split node.
+    input_mapping: node.input_mapping
+      ? { ...node.input_mapping }
+      : Object.fromEntries(node.depends_on.map((dependency) => [dependency, dependency])),
+    ...(outputSchema ? { output_schema: { ...outputSchema } } : {}),
+    expand: planID,
+  }
+  return [split, slot]
+}
+
+// ============================================================================
+// The submission gate (goes away with the runtime expansion)
+// ============================================================================
+
+/**
+ * The scheduler cannot expand a slot yet (#1158 PR3b), so a graph that holds a
+ * compose block or a composer node must not be submitted: it would run the
+ * half-built join node as an ordinary node. The Workflow Authoring Check calls
+ * this for every graph it prepares, and the runtime expansion removes the call
+ * together with this function.
+ */
+export function gate(nodes: readonly NodeConfig[]): Problem[] {
+  return nodes
+    .filter((node) => node.expand !== undefined || (node.block === "compose" && node.generated_helper === undefined))
+    .map((node) => {
+      const block = node.block === "compose"
+      return {
+        node: node.id,
+        path: block ? `config.blocks[${node.id}]` : `nodes[${node.id}]`,
+        message: `compose 的运行时展开尚未启用（#1158 PR3b）: ${block ? "compose block" : "composer node"} "${node.id}" cannot be submitted yet, because the engine cannot expand it while the workflow runs`,
+        hint: "Use explore and plan blocks instead, or fan the work out by hand with run.extend",
+      }
+    })
 }
 
 export * as DagCompose from "./compose"
