@@ -117,9 +117,22 @@ const SUBAGENT_IDS = [
   "app.exit",
   "graphagent.status",
   "help.show",
-  "app.console",
-  "app.debug",
-  "app.heap_snapshot",
+]
+
+/** What #1033 3.3 allows in a sub-agent view, by the name the user types: nothing that changes the child session. */
+const SUBAGENT_SLASH_NAMES = [
+  "new",
+  "sessions",
+  "copy",
+  "export",
+  "agents",
+  "config",
+  "theme",
+  "status",
+  "help",
+  "sidebar",
+  "dag",
+  "exit",
 ]
 
 describe("builtin scope snapshots", () => {
@@ -138,6 +151,63 @@ describe("builtin scope snapshots", () => {
   test("subagent", () => {
     const { registry, dispose } = builtins()
     expect(ids(registry, "subagent")).toEqual(SUBAGENT_IDS)
+    dispose()
+  })
+
+  test("subagent is exactly the twelve commands #1033 3.3 allows, each a slash command", () => {
+    const { registry, dispose } = builtins()
+    const listed = registry.list("subagent")
+    // Every entry can be typed or picked by a name; no keymap-only or debug entry slipped in.
+    expect(listed.every((item) => item.slash)).toBe(true)
+    expect(new Set(listed.map((item) => item.slash?.name))).toEqual(new Set(SUBAGENT_SLASH_NAMES))
+    expect(listed).toHaveLength(SUBAGENT_SLASH_NAMES.length)
+    dispose()
+  })
+
+  test("a sub-agent view reaches no command that changes or asks the child session, by name or by alias", () => {
+    const { registry, dispose } = builtins()
+    const reachable = new Set(
+      registry.list("subagent").flatMap((item) => [item.slash?.name, ...(item.slash?.aliases ?? [])]),
+    )
+    for (const name of [
+      "rename",
+      "fork",
+      "undo",
+      "redo",
+      "compact",
+      "summarize",
+      "move",
+      "btw",
+      "model",
+      "agent",
+      "mcp",
+      "skills",
+      "connect",
+      "warp",
+      "editor",
+      "dag-mode",
+      "timeline",
+      "permissions",
+      "trust",
+      "hooks",
+      "diff",
+    ]) {
+      expect(reachable.has(name)).toBe(false)
+    }
+    dispose()
+  })
+
+  test("a server command, whatever its name, is not offered in a sub-agent view and typing it sends nothing", () => {
+    const { registry, dispose } = builtins()
+    const unregister = [
+      registry.register(serverCommandSpec({ name: "dag-mode", description: "Switch the DAG mode" }, () => {})!),
+      registry.register(serverCommandSpec({ name: "review" }, () => {})!),
+    ]
+    expect(ids(registry, "subagent")).toEqual(SUBAGENT_IDS)
+    for (const input of ["/dag-mode on", "/rename x", "/review", "/fork", "/undo"]) {
+      expect(resolveSlashInput(registry, "subagent", input)).toEqual({ kind: "message" })
+    }
+    for (const remove of unregister) remove()
     dispose()
   })
 

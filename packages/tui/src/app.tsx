@@ -47,6 +47,7 @@ import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
 import { AgentPanel } from "./panel/agent"
+import { AgentsPanel } from "./panel/agents"
 import { BtwPanel } from "./panel/btw"
 import { ConfigPanel } from "./panel/config"
 import { HelpPanel } from "./panel/help"
@@ -70,7 +71,7 @@ import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
-import { openSubAgent, returnToParent } from "./session/navigate"
+import { returnToParent, useOpenSubAgent } from "./session/navigate"
 import { siblingPosition, siblingSessions } from "./session/siblings"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
@@ -388,7 +389,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const promptRef = usePromptRef()
   const commands = useCommands()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
-  const disposeNotifications = createTuiNotifications({ event, sessions: sync.session, attention })
+  const openSubAgent = useOpenSubAgent()
+  const disposeNotifications = createTuiNotifications({
+    event,
+    sessions: sync.session,
+    attention,
+    subagent: {
+      toast,
+      viewing: () => (route.data.type === "session" ? route.data.sessionID : undefined),
+      task: (sessionID) => sync.data.taskIndex[sessionID],
+      open: openSubAgent,
+    },
+  })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
   const dagIndicator = useDagIndicator()
@@ -417,7 +429,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       ...view,
       onOpen: (sessionID: string) =>
         sync.session.get(sessionID)?.parentID
-          ? openSubAgent(sessionID, { route, sync, toast })
+          ? openSubAgent(sessionID)
           : route.navigate({ type: "session", sessionID }),
     }
   })
@@ -673,6 +685,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <ModelPanel providerID={providerID} onConnectProvider={connectProvider} onVariant={() => openVariant()} />
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
+  // `/agents` lists the sub-agents of the root session in a main session and in a sub-agent view alike.
+  const openSubagentList = () => openPanel("agents", () => <AgentsPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
   const openTrustPanel = (mode: TrustPanelMode, imported?: readonly string[]) =>
     openPanel("trust", () => <TrustPanel mode={mode} imported={imported} />)
@@ -715,6 +729,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "workspace.list": openWorkspaceList,
     "model.list": () => openModelList(),
     "agent.list": openAgentList,
+    "agent.subagents": openSubagentList,
     "mcp.list": openMcpList,
     "trust.open": () => openTrustPanel("manage", sync.trust.importedReview?.ids),
     "provider.connect": connectProvider,

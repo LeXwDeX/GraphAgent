@@ -3,47 +3,22 @@
 
 import type { Session } from "@graphagent/sdk"
 import type { SessionSummary, TaskIndexEntry } from "../context/session-summary"
+import {
+  SUBAGENT_MARKER_GLYPH,
+  subagentDescription,
+  subagentKind,
+  subagentMarker,
+  type SubagentMarker,
+} from "../session/subagents"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { remoteLine } from "../util/remote-text"
 
 /**
  * The path a sub-agent view shows in the top bar (#1033 2): the sessions above the viewed one, root first, then the
  * sub-agent itself as `<marker><kind> · <description>`. Everything here is pure: the data comes in through
- * `SubagentLookup`, the widths through `cellWidth`.
+ * `SubagentLookup`, the widths through `cellWidth`. The kind, the description and the marker come from
+ * `session/subagents.ts`, the one place that decides them, so the list of sub-agents names them the same way.
  */
-
-/** The state of the viewed sub-agent, drawn as one static glyph. */
-export type SubagentMarker = "running" | "failed" | "done"
-
-export const SUBAGENT_MARKER_GLYPH: Record<SubagentMarker, string> = {
-  running: "●",
-  failed: "✗",
-  done: "✓",
-}
-
-type SubagentMarkerToken = "primary" | "error" | "success"
-
-const MARKER_TOKENS: Record<SubagentMarker, SubagentMarkerToken> = {
-  running: "primary",
-  failed: "error",
-  done: "success",
-}
-
-/** Theme token that colors the marker; the glyph tells the states apart as well as the color. */
-export function subagentMarkerToken(marker: SubagentMarker): SubagentMarkerToken {
-  return MARKER_TOKENS[marker]
-}
-
-/** Marker of a session summary: running while busy or retrying, failed with an error, done once idle. */
-export function subagentMarker(
-  summary: Pick<SessionSummary, "status" | "error"> | undefined,
-): SubagentMarker | undefined {
-  if (!summary) return undefined
-  if (summary.status === "busy" || summary.status === "retry") return "running"
-  if (summary.error) return "failed"
-  if (summary.status === "idle") return "done"
-  return undefined
-}
 
 export type SubagentAncestor = {
   id: string
@@ -66,23 +41,6 @@ export type SubagentLookup = {
 
 /** Most sessions walked up from the viewed one; a parent loop or a runaway chain stops here. */
 export const MAX_CHAIN_DEPTH = 16
-
-/** The task tool titles a child session `<description> (@<agent> subagent)`. */
-const TITLE_SUFFIX = /\s*\(@([^\s)]+) subagent\)\s*$/
-
-/** Kind of agent: the session's own agent, the parent's Task input, the title, then a plain `agent`. */
-export function subagentKind(session: Pick<Session, "title" | "agent">, task?: Pick<TaskIndexEntry, "kind">): string {
-  const fromTitle = TITLE_SUFFIX.exec(session.title)?.[1]
-  return remoteLine(session.agent ?? "") || remoteLine(task?.kind ?? "") || remoteLine(fromTitle ?? "") || "agent"
-}
-
-/** What the sub-agent was asked to do: the Task input, else the title without its `(@x subagent)` tail. */
-export function subagentDescription(
-  session: Pick<Session, "title">,
-  task?: Pick<TaskIndexEntry, "description">,
-): string {
-  return remoteLine(task?.description ?? "") || remoteLine(session.title.replace(TITLE_SUFFIX, ""))
-}
 
 /** The view of `sessionID` as a sub-agent; nothing for a session without a parent or one that is not loaded. */
 export function subagentView(lookup: SubagentLookup, sessionID: string): SubagentView | undefined {

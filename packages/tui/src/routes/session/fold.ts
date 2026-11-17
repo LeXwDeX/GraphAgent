@@ -13,7 +13,7 @@ import {
   stringValue,
   toolDisplay,
 } from "../../util/tool-display"
-import type { ViewFlag } from "./rows"
+import { DELEGATION_PROMPT_LINES, type ViewFlag } from "./rows"
 import { toolAttention } from "./tool-attention"
 
 /**
@@ -109,6 +109,15 @@ export function toolFailed(state: ToolPart["state"]) {
  */
 export function reasoningFolds(text: string, thinking: ThinkingMode) {
   return thinking === "hide" && Boolean(reasoningSummary(text.replace("[REDACTED]", "")).body)
+}
+
+/**
+ * Whether the prompt a sub-agent view opens with runs past what its task block shows before it folds, which is
+ * `DELEGATION_PROMPT_LINES` lines or the characters those lines take at `width`, the content width of the transcript.
+ * It is the test the tool outputs fold by, so the block, a click and `view.expand.toggle` agree on it.
+ */
+export function delegationFolds(text: string, width: number) {
+  return outputOverflows(text, DELEGATION_PROMPT_LINES, outputCharCap(DELEGATION_PROMPT_LINES, width))
 }
 
 /** Tools that draw a block without a fold once their metadata is there; a failed call of one is a block, not a row. */

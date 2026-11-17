@@ -125,6 +125,22 @@ describe("mergeStatus", () => {
   })
 })
 
+describe("mergeStatus: when a run ends", () => {
+  test("a run that stops ends when the stop is seen, not at its last tool call", () => {
+    const running = { ...mergeStatus(createSummary(session), "ses_a", { type: "busy" }, 1_000), lastActivityAt: 1_000 }
+    expect(running.lastActivityAt).toBe(1_000)
+    expect(mergeStatus(running, "ses_a", { type: "idle" }, 61_000).lastActivityAt).toBe(61_000)
+    // A retry is still the same run, and a stop seen twice does not move the end.
+    expect(
+      mergeStatus(running, "ses_a", { type: "retry", attempt: 1, message: "x", next: 0 }, 61_000).lastActivityAt,
+    ).toBe(1_000)
+    const ended = mergeStatus(running, "ses_a", { type: "idle" }, 61_000)
+    expect(mergeStatus(ended, "ses_a", { type: "idle" }, 90_000).lastActivityAt).toBe(61_000)
+    // Without the time it was seen, the end stays where the summary had it.
+    expect(mergeStatus(running, "ses_a", { type: "idle" }).lastActivityAt).toBe(1_000)
+  })
+})
+
 describe("mergeToolPart", () => {
   test("counts unique tool parts and records the current tool", () => {
     const seen = new Set<string>()

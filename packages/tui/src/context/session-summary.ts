@@ -79,15 +79,25 @@ export function mergeSession(previous: SessionSummary | undefined, session: Sess
 const running = (status: SessionSummaryStatus) => status === "busy" || status === "retry"
 
 /**
- * Applies a status change. A session that starts running again from a stop begins a new run, so the error of an
- * earlier run no longer describes it: a sub-agent that failed and then succeeds must not keep its failure mark.
+ * Applies a status change observed at `at`. A session that starts running again from a stop begins a new run, so the
+ * error of an earlier run no longer describes it: a sub-agent that failed and then succeeds must not keep its failure
+ * mark. A run that stops ends at `at`: the time it spent writing its last answer, with no tool call or session update
+ * to mark it, is part of the run.
  */
-export function mergeStatus(previous: SessionSummary | undefined, id: string, status: SessionStatus): SessionSummary {
+export function mergeStatus(
+  previous: SessionSummary | undefined,
+  id: string,
+  status: SessionStatus,
+  at?: number,
+): SessionSummary {
   const base: SessionSummary = previous ?? { id, status: "unknown", lastActivityAt: 0 }
   const next = summaryStatus(status)
   // The store merges a written summary into the stored one, so the error is cleared by an explicit `undefined`
   // rather than by leaving the key out.
   if (running(next) && !running(base.status)) return { ...base, status: next, error: undefined }
+  if (!running(next) && running(base.status) && at !== undefined) {
+    return { ...base, status: next, lastActivityAt: Math.max(base.lastActivityAt, at) }
+  }
   return { ...base, status: next }
 }
 

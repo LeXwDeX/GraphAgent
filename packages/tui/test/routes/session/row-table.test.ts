@@ -11,8 +11,11 @@ import { createRowTable, type RowTable } from "../../../src/routes/session/row-t
 import {
   createSessionViewState,
   createTextFacts,
+  delegationFoldID,
+  foldRowKey,
   rowRevision,
   type Row,
+  type SessionViewState,
   type TextFactsCache,
 } from "../../../src/routes/session/rows"
 import { hideToolDetails } from "../../../src/routes/session/tool-attention"
@@ -712,4 +715,174 @@ describe("the summary of the last assistant message", () => {
         expect(shapeOf(rig.table())).toEqual(rig.reference())
       },
     ))
+})
+
+describe("the record of a sub-agent", () => {
+  /** A table over a two-message record with the two inputs a sub-agent view gives it. */
+  function record<T>(
+    run: (rig: {
+      table: () => RowTable
+      view: SessionViewState
+      setDelegation: (value: { messageID: string; description: string } | undefined) => void
+      setHandback: (value: number | undefined) => void
+    }) => T,
+    entries: Entry[] = [
+      { info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_u", "scan the changelog\nread only")] },
+      { info: assistantMessage("msg_a", 2), parts: [text("msg_a", "prt_a", "found two")] },
+    ],
+  ) {
+    return createRoot((dispose) => {
+      try {
+        const [delegation, setDelegation] = createSignal<{ messageID: string; description: string } | undefined>({
+          messageID: "msg_u",
+          description: "scan",
+        })
+        const [handback, setHandback] = createSignal<number | undefined>()
+        const view = createSessionViewState()
+        const table = createRowTable({
+          messages: () => entries.map((entry) => entry.info),
+          parts: (messageID) => entries.find((entry) => entry.info.id === messageID)?.parts ?? [],
+          readPartText: (part) => ("text" in part ? part.text : ""),
+          view,
+          showDetails: () => true,
+          lastAssistantID: () => undefined,
+          revertMessageID: () => undefined,
+          revertRevision: () => 0,
+          reverted: () => false,
+          delegation,
+          handback,
+        })
+        return run({ table, view, setDelegation, setHandback })
+      } finally {
+        dispose()
+      }
+    })
+  }
+
+  test("the delegated user message is one task row, with its own key, and keeps its message", () =>
+    record(({ table }) => {
+      const rows = table().rows
+      const task = rows.find((row) => row.kind === "delegation")
+      expect(task).toMatchObject({ key: "delegation:msg_u", messageID: "msg_u", kind: "delegation" })
+      // It stands where the user row would, and there is no user row besides it.
+      expect(rows[0]).toBe(task!)
+      expect(rows.some((row) => row.kind === "user")).toBe(false)
+      // The height estimate reads the same text the user row would have: its longest line.
+      expect(table().chars.get("delegation:msg_u")).toBe("scan the changelog".length)
+      expect(table().chars.has("user:msg_u")).toBe(false)
+    }))
+
+  test("the task row folds under its own key, which is its partID, and a pinned row is found by it", () =>
+    record(({ table }) => {
+      const task = table().rows[0]
+      expect(task.partID).toBe("delegation:msg_u")
+      expect(task.partID).toBe(task.key)
+      expect(task.partID).toBe(delegationFoldID("msg_u"))
+      // The key `pinnedKeys` pins for the flag of a part is the key of the row that folds under it.
+      expect(foldRowKey(task.partID!)).toBe(task.key)
+      const answer = table().rows.find((row) => row.kind === "text")!
+      expect(foldRowKey(answer.partID!)).toBe(answer.key)
+    }))
+
+  test("opening the task block moves its revision, closing it gives the revision back", () =>
+    record(({ table, view }) => {
+      const closed = table().rows[0]
+      view.set(delegationFoldID("msg_u"), "expanded", true)
+      const open = table().rows[0]
+      expect(open).not.toBe(closed)
+      expect(open.revision).not.toBe(closed.revision)
+      expect(open).toMatchObject({ key: closed.key, partID: closed.partID, kind: "delegation" })
+
+      view.set(delegationFoldID("msg_u"), "expanded", false)
+      expect(table().rows[0].revision).toBe(closed.revision)
+    }))
+
+  test("a block that is opened elsewhere in the transcript leaves the task row as it was", () =>
+    record(({ table, view }) => {
+      const before = table().rows
+      view.set("prt_a", "expanded", true)
+      view.set("prt_somewhere_else", "errorExpanded", true)
+      const after = table().rows
+      for (const [index, row] of before.entries()) expect(after[index]).toBe(row)
+    }))
+
+  test("only the flag of the delegated message opens the task row", () =>
+    record(({ table, view, setDelegation }) => {
+      const closed = table().rows[0].revision
+      view.set(delegationFoldID("msg_other"), "expanded", true)
+      expect(table().rows[0].revision).toBe(closed)
+      // Without a task block the message is a user row, which folds under nothing, whatever the flag says.
+      setDelegation(undefined)
+      view.set(delegationFoldID("msg_u"), "expanded", true)
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      expect(table().rows[0].partID).toBeUndefined()
+    }))
+
+  test("the revision moves with the description, which can wrap, and with the prompt", () =>
+    record(({ table, setDelegation }) => {
+      const before = table().rows[0].revision
+      setDelegation({ messageID: "msg_u", description: "scan every changelog for breaking changes" })
+      expect(table().rows[0].revision).not.toBe(before)
+      setDelegation({ messageID: "msg_u", description: "scan" })
+      expect(table().rows[0].revision).toBe(before)
+    }))
+
+  test("a row that did not change keeps its identity when the description does", () =>
+    record(({ table, setDelegation }) => {
+      const answer = table().rows.find((row) => row.kind === "text")!
+      setDelegation({ messageID: "msg_u", description: "something else" })
+      expect(table().rows.find((row) => row.kind === "text")).toBe(answer)
+    }))
+
+  test("without a delegation, or for another message, every user message stays a user row", () =>
+    record(({ table, setDelegation }) => {
+      setDelegation(undefined)
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      setDelegation({ messageID: "msg_other", description: "scan" })
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+    }))
+
+  test("only a user message with a row can be the task: nothing is invented for an empty one", () =>
+    record(
+      ({ table }) => {
+        expect(table().rows.some((row) => row.kind === "delegation")).toBe(false)
+      },
+      [
+        { info: userMessage("msg_u", 1), parts: [] },
+        { info: assistantMessage("msg_a", 2), parts: [text("msg_a", "prt_a", "found two")] },
+      ],
+    ))
+
+  test("the closing row is the last one, only when the agent is done, and it carries the revision it is given", () =>
+    record(({ table, setHandback }) => {
+      expect(table().rows.some((row) => row.kind === "handback")).toBe(false)
+      setHandback(7)
+      const rows = table().rows
+      expect(rows.at(-1)).toMatchObject({
+        key: "handback:ses_table",
+        messageID: "msg_a",
+        kind: "handback",
+        revision: 7,
+      })
+      expect(rows.filter((row) => row.kind === "handback")).toHaveLength(1)
+      setHandback(8)
+      expect(table().rows.at(-1)?.revision).toBe(8)
+      setHandback(undefined)
+      expect(table().rows.some((row) => row.kind === "handback")).toBe(false)
+    }))
+
+  test("a record with no rows has no closing row either", () =>
+    record(({ table, setHandback }) => {
+      setHandback(7)
+      expect(table().rows).toEqual([])
+    }, []))
+
+  test("the closing row does not take the place of the message it follows", () =>
+    record(({ table, setHandback }) => {
+      const before = table().rows
+      setHandback(7)
+      const after = table().rows
+      expect(after.slice(0, -1)).toEqual(before)
+      for (const [index, row] of before.entries()) expect(after[index]).toBe(row)
+    }))
 })
