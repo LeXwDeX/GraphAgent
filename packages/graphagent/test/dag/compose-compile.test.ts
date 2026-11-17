@@ -708,4 +708,12 @@ describe("compose on the model-facing wire", () => {
       decode({ params: { ...draft, config: { ...draft.config, blocks: [{ id: "x", kind: "synthesise" }] } } }),
     ).toThrow()
   })
+
+  it("is described on the kind it names, which is where the model is told what it is", () => {
+    const description = kind().description
+    expect(description).toContain("compose")
+    expect(description).toContain("worker_type")
+    expect(description).toContain("composer")
+    expect(description).toContain("read-only")
+  })
 })

@@ -90,9 +90,11 @@ describe("workflow provider-facing schema", () => {
     // stay a small fraction of the old inline graph schema.
     expect(total).toBeLessThan(21_898)
     expect(total).toBeLessThan(12_000)
-    expect(Buffer.byteLength(schema)).toBeLessThan(9_000)
+    // #1158: 9_000 and 3_000 grew by 100 B each for the description on the `compose` block kind, the one place the
+    // model is told what that block is (the skills carry no word of it).
+    expect(Buffer.byteLength(schema)).toBeLessThan(9_100)
     const draft = JSON.stringify(branchByOperation(JSON.parse(schema) as JsonSchemaNode, "draft")[0])
-    expect(Buffer.byteLength(draft)).toBeLessThan(3_000)
+    expect(Buffer.byteLength(draft)).toBeLessThan(3_100)
   })
 
   test("every action group and operation stays representable after OpenAI transformation", () => {

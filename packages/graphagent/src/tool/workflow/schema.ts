@@ -91,11 +91,13 @@ const CompactPrompt = Schema.Struct({
 // every authoring schema field must be representable on the wire.
 export const CompactBlock = Schema.Struct({
   id: Schema.String,
-  // The authoring list itself, so a kind cannot be added to one and forgotten in the other. `compose` (#1158) is
-  // a block whose `worker_type` names a composer: it plans, and the engine runs the plan as read-only workers while
-  // the workflow runs. The engine's own marks on a compose node (`expand`, `join`, `compose_subtree`,
-  // `generated_helper`) have no field on this wire or in any authoring schema.
-  kind: Schema.Literals(DagBlocks.WORKFLOW_BLOCK_KINDS),
+  // The authoring list itself, so a kind cannot be added to one and forgotten in the other. The description is
+  // the one place the model is told what `compose` (#1158) is; the skills carry no word of it. The engine's own
+  // marks on a compose node (`expand`, `join`, `compose_subtree`, `generated_helper`) have no field on this wire
+  // or in any authoring schema.
+  kind: Schema.Literals(DagBlocks.WORKFLOW_BLOCK_KINDS).annotate({
+    description: "compose: worker_type (required) is a composer agent; its plan runs as read-only workers",
+  }),
   depends_on: Schema.optional(Schema.Array(Schema.String)),
   instruction: Schema.optional(Schema.String),
   worker_type: Schema.optional(Schema.String),
