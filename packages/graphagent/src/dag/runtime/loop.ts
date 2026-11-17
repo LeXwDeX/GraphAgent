@@ -83,6 +83,7 @@ import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
 import { RunnerLease } from "./runner-lease"
 import { RunnerPort } from "./runner-port"
+import { DagReconciler } from "./reconciler"
 import { settleTerminalWorkflowWorktree, workflowWorktreeSettlementPending } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
 
@@ -185,12 +186,16 @@ const serviceLayer = Layer.effect(
         const recovering = new Set<string>()
         // ADR-0008: this instance's runner leases. Made before any fiber is
         // forked below, so its release at exit runs after they are interrupted.
-        let evictEntry: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
+        // The eviction and the reconciler are made below, once what they need exists; the first tick is a period away.
+        let evictEntry: ((dagID: string, entry: WorkflowEntry) => Effect.Effect<void>) | undefined
+        // ADR-0008 decision 6: the renewal tick runs the instance's reconcile round.
+        let reconciler: DagReconciler.Interface | undefined
         const runnerLease = yield* RunnerLease.make({
           leases,
           runnerID,
           entries: runtimes,
-          evict: (dagID, entry) => evictEntry(dagID, entry),
+          evict: (dagID, entry) => evictEntry?.(dagID, entry) ?? Effect.void,
+          round: (input) => reconciler?.round(input) ?? Effect.void,
         })
         // ADR-0008 decision 5: runner writes go through the port of the entry (or of the claim, before its
         // entry exists). A refused token drops the workflow: nothing to drop while there is no entry yet,
@@ -1264,69 +1269,36 @@ const serviceLayer = Layer.effect(
           )
         })
 
-        // Orphan-pending recovery: a pending workflow with no non-pending node
-        // is a create sequence that crashed mid-way — Dag.create publishes
-        // WorkflowCreated + NodeRegistered + WorkflowStarted in separate
-        // transactions, so a crash between them leaves a row whose start event
-        // never arrives. PENDING→RUNNING is its only legal transition
-        // (core/dag/core/types.ts), so nothing else can ever move it — without
-        // this sweep the workflow hangs in pending forever. Terminalize via the
-        // legal pending→running→failed sequence: the projector accepts
-        // WorkflowFailed only from running/stepping (core/dag/projector.ts), so
-        // a bare fail would be silently dropped. Failed (not cancelled) matches
-        // the interrupted-create semantics and persists the reason in the
-        // durable WorkflowFailed event; cancelled is reserved for explicit
-        // user/agent cancels (see the checkCompletion attribution comment).
-        const recoverOrphanPending = Effect.fn("DagLoop.recoverOrphanPending")(function* (wf: DagStore.WorkflowRow) {
-          // Same cross-instance guard as recoverWorkflow, through the same
-          // execution-location authority: only the instance whose DIRECTORY
-          // owns the workflow may dispose of the orphan.
-          // An owner-less (empty-directory) row has no owner under
-          // ownsWorkflow (fail-closed by design), so no instance would ever
-          // terminalize it. This sweep is the one place that must still
-          // dispose of such an orphan: the row is provably an abandoned
-          // create sequence, and leaving it pending forever is the zombie
-          // #948 removes.
-          if (wf.directory !== "" && !(yield* DagLocation.ownsWorkflow(wf.id, ctx.directory))) return
-          const dagID = wf.id
-          if (runtimes.has(dagID) || recovering.has(dagID)) return
-          // Reserve the adoption slot for the whole terminalization sequence:
-          // the WorkflowStarted leg is a real event on the bus, and the
-          // WorkflowStarted handler must not adopt the orphan mid-sequence
-          // (a zero-node orphan would be checkCompleted straight to
-          // "completed" instead of being failed with the recovery reason).
-          // Effect.ensuring releases the slot even when a fiber interrupt cuts
-          // the sequence — a finally block does not survive interruption.
-          recovering.add(dagID)
-          let claimed: DagLease.Token | undefined
-          yield* Effect.gen(function* () {
-            const location = DagLocation.resolveExecution(wf)
-            if (location._tag !== "ok") {
-              yield* failUnusableWorkspace(wf, location)
-              return
-            }
-            const nodes = yield* store.getNodes(dagID)
-            // Defensive no-miss-kill criterion: any non-pending node proves the
-            // workflow was adopted and progressed — it is mid-flight, not
-            // orphaned. All-pending rows can only be interrupted creates, since
-            // create() completes its start event within the same process.
-            if (!nodes.every((node) => node.status === "pending")) return
-            // ADR-0008 decision 4: terminalizing the orphan is a runner write, so the runner holds the
-            // workflow's lease first (a live lease of another runner means somebody drives it).
-            const token = yield* runnerLease.claim(dagID)
-            if (!token) return
-            claimed = token
-            yield* events.publish(DagEvent.WorkflowStarted, { dagID: dagID as never, timestamp: yield* DateTime.now })
-            // port.fail guards running→failed, persists the reason in the durable
-            // WorkflowFailed event, and terminalizes every pending node via
-            // NodeSkipped — no node is ever scheduled.
-            yield* portFor(dagID, token).fail(dagID, "orphan pending workflow recovered at startup")
-            yield* Effect.logWarning("DagLoop terminalized orphan pending workflow", { dagID })
-          }).pipe(
-            // The workflow ended: nothing renews the lease, so it is given back.
-            Effect.onExit(() => runnerLease.abandon(dagID, claimed)),
-            Effect.ensuring(Effect.sync(() => recovering.delete(dagID))),
-          )
+        // ADR-0008 decision 6: this instance's reconciler. Startup and the renewal tick run its rounds; the
+        // other triggers below (a first wave, a replan with no entry, a session move) still adopt through
+        // recoverWorkflow themselves (PR4b). It also disposes of the orphan `pending` rows an older version
+        // left behind (`Dag.create` is one transaction now): after a grace period, claim, then fail them.
+        const evictMoved = DagReconciler.movedEvictor({
+          entries: runtimes,
+          store,
+          abort: (dagID, nodeID, childSessionID) =>
+            abortChild(
+              dagID,
+              nodeID,
+              childSessionID,
+              "dag.loop.locationMoved",
+              childAbort("location-moved", "dag-location"),
+            ).pipe(Effect.ignore),
+        })
+        reconciler = DagReconciler.make({
+          store,
+          leases,
+          runnerID,
+          directory: ctx.directory,
+          entries: runtimes,
+          recovering,
+          events,
+          lease: runnerLease,
+          portFor,
+          // The scope is the instance's, as it is for the startup scan: a round runs in the renewal fiber.
+          adopt: (wf) => recoverWorkflow(wf).pipe(Effect.provideService(Scope.Scope, stateScope), Effect.orDie),
+          failUnusable: failUnusableWorkspace,
+          evictMoved,
         })
 
         yield* events.subscribe(DagEvent.WorkflowStarted).pipe(
@@ -1334,10 +1306,11 @@ const serviceLayer = Layer.effect(
             Effect.gen(function* () {
               const dagID = evt.data.dagID as string
               // Adoption-in-flight reservations (recoverWorkflow and the
-              // orphan-pending sweep) must suppress this handler too: the
-              // orphan sweep publishes WorkflowStarted only to legalize its
-              // pending→running→failed terminalization, and adopting the
-              // orphan mid-sequence would start scheduling on a dead workflow.
+              // reconciler's orphan terminalization) must suppress this
+              // handler too: the orphan path publishes WorkflowStarted only to
+              // legalize its pending→running→failed terminalization, and
+              // adopting the orphan mid-sequence would start scheduling on a
+              // dead workflow.
               //
               // H1 (DAG-LOC-01): the handler also reserves the slot for
               // ITSELF — two concurrent WorkflowStarted events (e.g. a
@@ -1349,7 +1322,7 @@ const serviceLayer = Layer.effect(
               // synchronously right after the guard — no yield between the
               // check and the add, so the second event's guard sees the
               // reservation — and release via Effect.ensuring, exactly
-              // mirroring recoverWorkflow / recoverOrphanPending. The latch
+              // mirroring recoverWorkflow / the reconciler's terminalizeOrphan. The latch
               // also supersedes the WorkflowReplanned no-entry re-adoption
               // race: a replan arriving mid-adoption drops out of
               // recoverWorkflow instead of overwriting this entry, and the
@@ -1360,7 +1333,7 @@ const serviceLayer = Layer.effect(
               yield* Effect.gen(function* () {
                 const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
                 if (!wf) return
-                // Status guard: the orphan-pending sweep publishes WorkflowStarted
+                // Status guard: the reconciler's orphan path publishes WorkflowStarted
                 // only to legalize the pending→running leg of its terminalization
                 // sequence. By the time the event reaches this handler the row is
                 // already failed — adopting it would rebuild a runtime and start
@@ -2292,39 +2265,12 @@ const serviceLayer = Layer.effect(
               const sessionID = evt.data.sessionID as string
               // Map iteration is mutation-safe for deletions of visited entries —
               // only entries of THIS session are deleted, each inside its own
-              // evalLock. Evict only entries the re-stamp moved AWAY from this
-              // instance (ownsWorkflow re-reads the durable row).
+              // evalLock (movedEvictor). Evict only entries the re-stamp moved
+              // AWAY from this instance (ownsWorkflow re-reads the durable row).
               for (const [dagID, entry] of runtimes) {
                 if (entry.parentSessionID !== sessionID) continue
                 if (yield* DagLocation.ownsWorkflow(dagID, ctx.directory)) continue
-                yield* entry.evalLock.withPermits(1)(
-                  Effect.gen(function* () {
-                    for (const [nodeID, fiber] of entry.fibers) {
-                      const node = yield* store.getNode(dagID, nodeID)
-                      yield* abortChild(
-                        dagID,
-                        nodeID,
-                        node?.childSessionId ?? null,
-                        "dag.loop.locationMoved",
-                        childAbort("location-moved", "dag-location"),
-                      ).pipe(Effect.ignore)
-                      yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
-                      const watcher = entry.watchers.get(nodeID)
-                      if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
-                    }
-                    entry.fibers.clear()
-                    entry.watchers.clear()
-                    runtimes.delete(dagID)
-                    // The dag exclusive-registry registration is deliberately kept:
-                    // it is keyed by (session, workflow), not by directory, and
-                    // the lease service is process-wide. The workflow is still
-                    // live, the new owner's adoption re-registers the same key
-                    // idempotently, and unregistering here could land AFTER that
-                    // adoption and strip the lease from a running workflow. The
-                    // terminal handlers release it (this instance through its
-                    // no-entry, project-scoped path).
-                  }),
-                )
+                yield* evictMoved(dagID, entry)
               }
               // New owner: the re-stamp moved ownership HERE.
               if (yield* DagLocation.ownsSession(sessionID, ctx.directory)) {
@@ -2353,27 +2299,11 @@ const serviceLayer = Layer.effect(
 
         // Install all live event handlers before spawning recovery watchers so
         // a child that settles immediately cannot leave the runtime stale.
-        // Orphan-pending sweep first: the WorkflowStarted it publishes for the
-        // terminalization leg is rejected by the handler's status guard above
-        // (the row is already failed once the event arrives), never adopted.
-        const pendingWfs = yield* store.listByStatus("pending").pipe(Effect.orDie)
-        for (const wf of pendingWfs) {
-          yield* recoverOrphanPending(wf).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("DagLoop orphan pending recovery failed for workflow", { dagID: wf.id, cause }),
-            ),
-          )
-        }
-        const runningWfs = yield* store.listByStatus("running").pipe(Effect.orDie)
-        const pausedWfs = yield* store.listByStatus("paused").pipe(Effect.orDie)
-        const steppingWfs = yield* store.listByStatus("stepping").pipe(Effect.orDie)
-        for (const wf of [...runningWfs, ...pausedWfs, ...steppingWfs]) {
-          yield* recoverWorkflow(wf).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("DagLoop recovery failed for workflow", { dagID: wf.id, cause }),
-            ),
-          )
-        }
+        // The first reconcile round: orphan `pending` rows first (the
+        // WorkflowStarted of their terminalization is rejected by the
+        // handler's status guard above, never adopted), then every
+        // running/paused/stepping workflow is adopted or left to its holder.
+        yield* reconciler.round({ afterClockJump: false })
         // Re-scan after recovery adopted the durable rows: the construction
         // scan ran before adoption, so this is where paused reminders become
         // deliverable against the reconciled runtimes.

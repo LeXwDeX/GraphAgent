@@ -7,6 +7,7 @@ import { Cause, Clock, Context, Effect, Fiber, Layer, Option, Scope, Semaphore }
 import { DagLease } from "@graphagent/core/dag/lease"
 import { Database } from "@graphagent/core/database/database"
 import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
+import { ReconcileDecide } from "./reconcile-decide"
 
 /**
  * The runtime side of the runner lease for one DagLoop instance (Issue #1029,
@@ -43,9 +44,18 @@ import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
  *     the runner port calls, `runner-port.ts`) is the third way to learn of the
  *     loss, after the renewal and the spawn's re-read: it evicts the same way.
  *
+ * The same fiber runs the instance's reconcile round after the renewals
+ * (`round`, ADR-0008 decision 6, `reconciler.ts`) and measures the clock-jump
+ * rule for it (decision 2). A tick is one reading of the clock at its start; when
+ * that is more than two periods after the previous tick's (a suspended machine, a
+ * long stall), the round of that tick and the round of the next one are told
+ * `afterClockJump`, and `decide` leaves another runner's expired lease alone:
+ * everything on the machine saw the same jump, so the lease ran out because
+ * nobody could renew it. The first tick is measured from the start of the fiber.
+ * Renewal is not held back: the owner renews, whatever the clock did.
+ *
  * Time comes from the `Clock` and the runner is `Identity`, so a test can drive
- * two runners in one process on a TestClock. Not here: the reconcile tick that
- * adds the clock-jump rule (PR4a).
+ * two runners in one process on a TestClock.
  */
 
 /**
@@ -125,6 +135,14 @@ export interface Interface<E extends Held = Held> {
    *     it could not be read (transient, as for a renewal; the next tick looks).
    */
   readonly refused: (dagID: string, token: DagLease.Token) => Effect.Effect<void>
+  /**
+   * The reconciler read the lease row and found that it no longer names the
+   * entry's token (ADR-0008 decision 6, row 3): the lease is lost, evict the
+   * entry as a renewal that finds the same does. Awaited, which `verify` and
+   * `refused` cannot be: the reconciler runs in no fiber the eviction interrupts.
+   * An entry that is gone when it takes the entry's lock is left alone.
+   */
+  readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
 }
 
 /**
@@ -170,8 +188,17 @@ export function make<E extends Held>(input: {
   readonly runnerID: string
   readonly entries: ReadonlyMap<string, E>
   readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
+  /**
+   * The reconcile round of the instance (ADR-0008 decision 6), run by the renewal
+   * tick right after the renewals, told whether this tick or the one before it
+   * follows a clock jump. It runs in the tick's fiber, so a round that outlasts
+   * the TTL less one period would delay the next renewal past the lease's expiry:
+   * its work has to be bounded. A round that fails is logged and the fiber carries
+   * on.
+   */
+  readonly round?: (input: { readonly afterClockJump: boolean }) => Effect.Effect<void>
 }): Effect.Effect<Interface<E>, never, Scope.Scope> {
-  const { leases, runnerID, entries, evict } = input
+  const { leases, runnerID, entries, evict, round } = input
   return Effect.gen(function* () {
     const scope = yield* Scope.Scope
     const release = (dagID: string, token: DagLease.Token, message: string) =>
@@ -218,8 +245,26 @@ export function make<E extends Held>(input: {
       }
       for (const [dagID, entry] of lost) yield* evictLost(dagID, entry)
     })
+    // The clock-jump rule: one reading per tick, and the verdict outlives the tick by one round.
+    let previousTickAt = yield* Clock.currentTimeMillis
+    let previousJumped = false
+    const tick = Effect.gen(function* () {
+      const tickAt = yield* Clock.currentTimeMillis
+      const jumped = ReconcileDecide.clockJumped(previousTickAt, tickAt, DagLease.RENEWAL_PERIOD_MS)
+      const afterClockJump = jumped || previousJumped
+      previousTickAt = tickAt
+      previousJumped = jumped
+      yield* renewAll
+      if (round !== undefined)
+        yield* absorb(
+          round({ afterClockJump }),
+          undefined,
+          "DagLoop could not run its reconcile round; retrying at the next tick",
+          {},
+        )
+    })
     yield* Effect.sleep(DagLease.RENEWAL_PERIOD_MS).pipe(
-      Effect.andThen(renewAll),
+      Effect.andThen(tick),
       Effect.forever,
       Effect.forkScoped({ startImmediately: true }),
     )
@@ -264,6 +309,9 @@ export function make<E extends Held>(input: {
           if (lease === "unreadable" || lease === undefined || DagLease.holds(lease, token)) return
           yield* evictLost(dagID, entry)
         }).pipe(Effect.ensuring(Effect.sync(() => void evicting.delete(entry))), Effect.forkIn(scope), Effect.asVoid)
+      }),
+      evict: Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E) {
+        yield* evictLost(dagID, entry)
       }),
     }
   })
