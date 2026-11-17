@@ -147,7 +147,21 @@ const scenarios: Scenario[] = [
     .inProject({ git: false })
     .at((ctx) => ({ path: "/vcs/apply", headers: ctx.headers(), body: { patch: "" } }))
     .status(400, undefined, "status"),
-  http.protected.get("/command", "command.list").json(200, array, "status"),
+  http.protected.get("/command", "command.list").json(
+    200,
+    (body) => {
+      array(body)
+      // #1357: a command declares how its subtask runs; the boolean #1057 added is replaced by `execution`.
+      const review = body.find((item) => isRecord(item) && item.name === "review")
+      object(review)
+      check(review.execution === "background", "command list should carry the review execution mode")
+      check(review.background === undefined, "command list should not carry the retired background flag")
+      const init = body.find((item) => isRecord(item) && item.name === "init")
+      object(init)
+      check(init.execution === undefined, "a command that declares nothing should omit the execution field")
+    },
+    "status",
+  ),
   http.protected.get("/agent", "app.agents").json(
     200,
     (body) => {
@@ -179,6 +193,15 @@ const scenarios: Scenario[] = [
       const build = body.find((item) => isRecord(item) && item.name === "build")
       object(build)
       check(build.contract === undefined, "an agent without a declared contract should omit the contract field")
+      // #1357: the execution mode an agent declares is part of the public agent shape. The agents that return one
+      // read-only report about finished work declare the background; every other agent leaves it out.
+      for (const name of ["review", "auditor"]) {
+        const reporter = body.find((item) => isRecord(item) && item.name === name)
+        object(reporter)
+        check(reporter.execution === "background", `agent list should carry the ${name} execution mode`)
+      }
+      check(build.execution === undefined, "an agent that declares no execution mode should omit the field")
+      check(explore.execution === undefined, "explore should leave the execution mode to the call")
     },
     "status",
   ),

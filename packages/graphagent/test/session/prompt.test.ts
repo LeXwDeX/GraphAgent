@@ -3447,6 +3447,112 @@ backgroundUnix(
   30_000,
 )
 
+// #1357 through the whole tool path: the model leaves the argument out and the agent's own declaration puts the run
+// in the background; the model asks for the background on an interactive agent and is refused in words it can act on.
+backgroundUnix(
+  "a task call that says nothing runs detached when the agent declares the background (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      yield* ChildResults.init({
+        inbox: yield* SessionInbox.Service,
+        database: yield* Database.Service,
+        scope: yield* Scope.Scope,
+      })
+      const chat = yield* sessions.create({
+        title: "task-declared-background",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("task", {
+        description: "review the change",
+        prompt: "audit the retry path",
+        subagent_type: "review",
+      })
+      const childRequest = (hit: { body: Record<string, unknown> }) =>
+        decodeRecords(hit.body.messages)
+          .filter((message) => message.role === "user")
+          .some((message) => JSON.stringify(message.content).includes("audit the retry path"))
+      yield* llm.textMatch(childRequest, "FINDING: the retry path drops the last error")
+      yield* llm.textMatch((hit) => !childRequest(hit), "review started")
+      yield* llm.text("findings acknowledged")
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        parts: [{ type: "text", text: "look the retry path over" }],
+      })
+
+      const kids = yield* sessions.children(chat.id)
+      expect(kids).toHaveLength(1)
+      const childID = kids[0]?.id
+      if (!childID) throw new Error("review child session missing")
+      const job = yield* jobs.wait({ id: childID, timeout: 30_000 })
+      expect(job.info?.status).toBe("completed")
+      // The model wrote no background argument; the agent's declaration decided, and a model-made call does not survive Esc.
+      expect(job.info?.metadata).toMatchObject({
+        background: true,
+        initiator: "agent",
+        execution: "background",
+        executionSource: "agent",
+      })
+      expect(job.info?.metadata?.survivesSessionCancel).toBeUndefined()
+      const tool = (yield* sessions.messages({ sessionID: chat.id }))
+        .flatMap((message) => message.parts)
+        .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task")
+      expect(tool?.state.input).not.toHaveProperty("background")
+      expect(tool?.state.status === "completed" ? tool.state.output : "").toContain("Background task started")
+    }),
+  30_000,
+)
+
+backgroundUnix(
+  "an explicit background request for an interactive agent is refused with the rule and the way out (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "task-refused-background",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("task", {
+        description: "plan the change",
+        prompt: "draft a plan",
+        subagent_type: "plan",
+        background: true,
+      })
+      yield* llm.text("understood, I will wait for it")
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        parts: [{ type: "text", text: "have the planner draft it in the background" }],
+      })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const tool = messages
+        .flatMap((message) => message.parts)
+        .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task")
+      expect(tool?.state.status).toBe("error")
+      const failure = tool?.state.status === "error" ? tool.state.error : ""
+      expect(failure).toContain('"plan" agent cannot run in the background')
+      expect(failure).toContain("F-1")
+      expect(failure).toContain("background=false")
+      // Refused before anything was created: no child session, and the model got its answer in the same turn.
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+      expect(
+        messages.some((message) =>
+          message.parts.some((part) => part.type === "text" && part.text.includes("understood")),
+        ),
+      ).toBe(true)
+    }),
+  30_000,
+)
+
 backgroundUnix(
   "a user background command runs its subtask detached and presents the result as findings (#1057)",
   () =>
@@ -3486,6 +3592,19 @@ backgroundUnix(
         initiator: "user",
         command: "review",
         survivesSessionCancel: true,
+        execution: "background",
+        executionSource: "command",
+      })
+      // #1357: the decision is recorded once, in the call's part, and the part is what a replay reads. The runtime
+      // does not dress the command's declaration up as an argument the caller never passed.
+      const recordedPart = (yield* sessions.messages({ sessionID: chat.id }))
+        .flatMap((message) => message.parts)
+        .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task")
+      expect(recordedPart?.state.input).not.toHaveProperty("background")
+      expect(recordedPart?.state.status === "completed" ? recordedPart.state.metadata : undefined).toMatchObject({
+        execution: "background",
+        executionSource: "command",
+        background: true,
       })
 
       const delivered = yield* pollWithTimeout(
@@ -3546,7 +3665,11 @@ backgroundUnix(
       expect(tool.state.output).toContain("FINDING: the retry path drops the last error")
       // The run was awaited by the tool call: no background job, and the
       // hook-followup caller is not the user.
-      expect(tool.state.metadata).toMatchObject({ initiator: "agent" })
+      expect(tool.state.metadata).toMatchObject({
+        initiator: "agent",
+        execution: "foreground",
+        executionSource: "command",
+      })
       expect(tool.state.metadata?.background).toBeUndefined()
       expect(tool.state.metadata?.survivesSessionCancel).toBeUndefined()
       expect(
@@ -3554,6 +3677,158 @@ backgroundUnix(
           message.parts.some((part) => part.type === "text" && part.metadata?.backgroundResult !== undefined),
         ),
       ).toBe(false)
+    }),
+  30_000,
+)
+
+// #1357: a command that declares nothing leaves the decision to the agent it runs, and a command that declares the
+// foreground outranks the agent. Both ride on the review agent, which declares the background.
+const reviewCommands = (url: string) => ({
+  ...providerCfg(url),
+  command: {
+    "agent-review": {
+      description: "Review, mode left to the agent",
+      template: "You are a code reviewer. Review the changes: $ARGUMENTS",
+      agent: "review",
+      subtask: true,
+    },
+    "inline-review": {
+      description: "Review, always waited for",
+      template: "You are a code reviewer. Review the changes: $ARGUMENTS",
+      agent: "review",
+      subtask: true,
+      execution: "foreground" as const,
+    },
+  },
+})
+
+const reviewerRequest = (hit: { body: Record<string, unknown> }) =>
+  decodeRecords(hit.body.messages)
+    .filter((message) => message.role === "user")
+    .some((message) => JSON.stringify(message.content).includes("You are a code reviewer"))
+
+backgroundUnix(
+  "a user command that declares nothing runs detached when its agent declares the background (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(reviewCommands)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      yield* ChildResults.init({
+        inbox: yield* SessionInbox.Service,
+        database: yield* Database.Service,
+        scope: yield* Scope.Scope,
+      })
+      const chat = yield* sessions.create({
+        title: "agent-declared-background",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.textMatch(reviewerRequest, "FINDING: the cache key ignores the tenant")
+      yield* llm.textMatch((hit) => !reviewerRequest(hit), "review started")
+      yield* llm.text("findings presented")
+
+      yield* prompt.command({ sessionID: chat.id, command: "agent-review", arguments: "" })
+
+      const kids = yield* sessions.children(chat.id)
+      expect(kids).toHaveLength(1)
+      const childID = kids[0]?.id
+      if (!childID) throw new Error("review child session missing")
+      const job = yield* jobs.wait({ id: childID, timeout: 30_000 })
+      expect(job.info?.status).toBe("completed")
+      expect(job.info?.metadata).toMatchObject({
+        background: true,
+        initiator: "user",
+        command: "agent-review",
+        survivesSessionCancel: true,
+        execution: "background",
+        executionSource: "agent",
+      })
+      // The result still comes back as the user's findings: the command is what the user ran, whoever declared the mode.
+      const delivered = yield* pollWithTimeout(
+        sessions.messages({ sessionID: chat.id }).pipe(
+          Effect.orDie,
+          Effect.map((messages) =>
+            messages
+              .flatMap((message) => message.parts)
+              .find(
+                (part): part is SessionV1.TextPart =>
+                  part.type === "text" && part.metadata?.backgroundResult?.command === "agent-review",
+              ),
+          ),
+        ),
+        "background command report",
+        "10 seconds",
+      )
+      expect(delivered.text).toContain("FINDING: the cache key ignores the tenant")
+    }),
+  30_000,
+)
+
+backgroundUnix(
+  "a user command that declares the foreground waits for the review although its agent declares the background (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(reviewCommands)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "command-declared-foreground",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.textMatch(reviewerRequest, "FINDING: the cache key ignores the tenant")
+      yield* llm.textMatch((hit) => !reviewerRequest(hit), "review summarized")
+
+      yield* prompt.command({ sessionID: chat.id, command: "inline-review", arguments: "" })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const tool = messages
+        .filter((message) => message.info.role === "assistant")
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "task")
+      if (tool?.type !== "tool") throw new Error("task tool part missing")
+      expect(tool.state.status === "error" ? tool.state.error : tool.state.status).toBe("completed")
+      if (tool.state.status !== "completed") return
+      expect(tool.state.output).toContain("FINDING: the cache key ignores the tenant")
+      expect(tool.state.metadata).toMatchObject({
+        initiator: "user",
+        command: "inline-review",
+        execution: "foreground",
+        executionSource: "command",
+      })
+      expect(tool.state.metadata?.background).toBeUndefined()
+      expect(tool.state.metadata?.survivesSessionCancel).toBeUndefined()
+    }),
+  30_000,
+)
+
+backgroundUnix(
+  "a noninteractive turn runs a command inline even when the agent it runs declares the background (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(reviewCommands)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "headless-agent-declared",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.textMatch(reviewerRequest, "FINDING: the cache key ignores the tenant")
+      yield* llm.textMatch((hit) => !reviewerRequest(hit), "review summarized")
+
+      yield* prompt.command({ sessionID: chat.id, command: "agent-review", arguments: "", hookMode: "noninteractive" })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const tool = messages
+        .filter((message) => message.info.role === "assistant")
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "task")
+      if (tool?.type !== "tool") throw new Error("task tool part missing")
+      expect(tool.state.status).toBe("completed")
+      if (tool.state.status !== "completed") return
+      expect(tool.state.output).toContain("FINDING: the cache key ignores the tenant")
+      expect(tool.state.metadata).toMatchObject({ initiator: "agent", execution: "foreground" })
+      expect(tool.state.metadata?.background).toBeUndefined()
     }),
   30_000,
 )

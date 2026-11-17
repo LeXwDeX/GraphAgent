@@ -3,6 +3,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
 import type { InstanceContext } from "@/project/instance-context"
 import { Effect, Layer, Context, Schema } from "effect"
+import { ConfigExecutionV1 } from "@graphagent/core/v1/config/execution"
 import { Config } from "@/config/config"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
@@ -31,7 +32,12 @@ export const Info = Schema.Struct({
   // Some command templates are lazy promises from MCP prompt resolution.
   template: Schema.Unknown,
   subtask: Schema.optional(Schema.Boolean),
-  background: Schema.optional(Schema.Boolean),
+  /**
+   * How the subtask this command starts runs when the user issues it (#1357). It replaces the boolean `background`
+   * of #1057 and ranks below the task call's own argument and above the agent's declaration. A headless turn or a
+   * hook followup runs the command in the foreground whatever it declares.
+   */
+  execution: Schema.optional(ConfigExecutionV1.Mode),
   hints: Schema.Array(Schema.String),
 }).annotate({ identifier: "Command" })
 
@@ -127,7 +133,7 @@ export const layer = Layer.effect(
           return PROMPT_REVIEW.replace("${path}", ctx.worktree)
         },
         subtask: true,
-        background: true,
+        execution: "background",
         hints: hints(PROMPT_REVIEW),
       }
       commands[Default.GOAL] = {
@@ -196,7 +202,7 @@ export const layer = Layer.effect(
             return command.template
           },
           subtask: command.subtask,
-          background: command.background,
+          execution: command.execution,
           hints: hints(command.template),
         }
       }

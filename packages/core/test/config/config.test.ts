@@ -1238,3 +1238,63 @@ it.effect("refresh reads new permission files and keeps the active cache on inva
     (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
   ),
 )
+
+// Issue #1357: agents and commands declare how a task call to them runs. The command's boolean `background` of
+// #1057 still loads and migrates to `execution`.
+describe("ConfigV1 execution declarations", () => {
+  const decode = Schema.decodeUnknownSync(ConfigV1.Info)
+  const decodeAgent = (agent: unknown) => decode({ agent }).agent
+
+  it.effect("accepts the three modes on a command and keeps an unset one unset", () =>
+    Effect.sync(() => {
+      for (const execution of ["foreground", "background", "auto"] as const) {
+        expect(decode({ command: { check: { template: "run", execution } } }).command?.check?.execution).toBe(execution)
+      }
+      expect(decode({ command: { check: { template: "run" } } }).command?.check).toEqual({ template: "run" })
+    }),
+  )
+
+  it.effect("migrates the legacy background boolean of a command to execution", () =>
+    Effect.sync(() => {
+      expect(decode({ command: { check: { template: "run", background: true } } }).command?.check).toEqual({
+        template: "run",
+        execution: "background",
+      })
+      // false is the same as leaving it out: the command declares nothing.
+      expect(decode({ command: { check: { template: "run", background: false } } }).command?.check).toEqual({
+        template: "run",
+      })
+    }),
+  )
+
+  it.effect("lets an explicit execution win over the legacy background boolean", () =>
+    Effect.sync(() => {
+      expect(
+        decode({ command: { check: { template: "run", background: true, execution: "foreground" } } }).command?.check,
+      ).toEqual({ template: "run", execution: "foreground" })
+      expect(
+        decode({ command: { check: { template: "run", background: false, execution: "background" } } }).command?.check,
+      ).toEqual({ template: "run", execution: "background" })
+    }),
+  )
+
+  it.effect("rejects an execution mode that is not one of the three, on a command and on an agent", () =>
+    Effect.sync(() => {
+      for (const execution of ["sometimes", true, 1, null]) {
+        expect(() => decode({ command: { check: { template: "run", execution } } })).toThrow()
+        expect(() => decodeAgent({ worker: { execution } })).toThrow()
+      }
+    }),
+  )
+
+  it.effect("accepts the three modes on an agent and keeps the field out of its options", () =>
+    Effect.sync(() => {
+      for (const execution of ["foreground", "background", "auto"] as const) {
+        const worker = decodeAgent({ worker: { description: "x", execution } })?.["worker"]
+        expect(worker?.execution).toBe(execution)
+        expect(worker?.options).not.toHaveProperty("execution")
+      }
+      expect(decodeAgent({ worker: { description: "x" } })?.["worker"]?.execution).toBeUndefined()
+    }),
+  )
+})

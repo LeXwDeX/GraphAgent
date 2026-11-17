@@ -930,6 +930,103 @@ Nested command template`,
   }),
 )
 
+// Issue #1357: `execution` replaces the command's boolean `background` of #1057; old configuration still loads.
+it.instance("migrates the legacy background flag of a configured command to execution", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeProjectConfigEffect(test.directory, {
+      command: {
+        legacy_on: { template: "check", background: true },
+        legacy_off: { template: "check", background: false },
+        explicit: { template: "check", execution: "foreground" },
+        both: { template: "check", background: true, execution: "foreground" },
+      },
+    })
+    const config = yield* Config.use.get()
+    expect(config.command?.["legacy_on"]).toEqual({ template: "check", execution: "background" })
+    // false is the same as no declaration.
+    expect(config.command?.["legacy_off"]).toEqual({ template: "check" })
+    expect(config.command?.["explicit"]).toEqual({ template: "check", execution: "foreground" })
+    expect(config.command?.["both"]).toEqual({ template: "check", execution: "foreground" })
+  }),
+)
+
+it.instance("loads the execution mode of a command and of an agent from their markdown frontmatter", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".agents", "commands", "modern.md"),
+      `---
+description: Modern command
+execution: background
+---
+Run the checks`,
+    )
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".agents", "commands", "legacy.md"),
+      `---
+description: Legacy command
+background: true
+---
+Run the checks`,
+    )
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".agents", "agents", "runner.md"),
+      `---
+description: Runs checks
+mode: subagent
+execution: background
+---
+You run checks.`,
+    )
+
+    const config = yield* Config.use.get()
+
+    expect(config.command?.["modern"]).toEqual({
+      description: "Modern command",
+      template: "Run the checks",
+      execution: "background",
+    })
+    expect(config.command?.["legacy"]).toEqual({
+      description: "Legacy command",
+      template: "Run the checks",
+      execution: "background",
+    })
+    expect(config.agent?.["runner"]?.execution).toBe("background")
+    expect(config.agent?.["runner"]?.options).not.toHaveProperty("execution")
+  }),
+)
+
+it.instance("rejects an execution mode that is not foreground, background or auto", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeProjectConfigEffect(test.directory, {
+      command: { check: { template: "check", execution: "sometimes" } },
+    })
+    const exit = yield* Config.use.get().pipe(Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(JSON.stringify(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined)).toContain("execution")
+  }),
+)
+
+it.instance("rejects a markdown agent whose execution mode is not foreground, background or auto", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".agents", "agents", "broken.md"),
+      `---
+description: Broken
+mode: subagent
+execution: sometimes
+---
+You are broken.`,
+    )
+    const exit = yield* Config.use.get().pipe(Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(JSON.stringify(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined)).toContain("execution")
+  }),
+)
+
 it.instance("updates config and writes to project settings", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

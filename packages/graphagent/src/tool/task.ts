@@ -9,6 +9,7 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { AgentContract } from "../agent/contract"
 import { ResultContract } from "../agent/result-contract"
+import { TaskExecution } from "./task-execution"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
@@ -51,15 +52,25 @@ export interface TaskPromptOps {
 export interface TaskOrigin {
   readonly initiator: "user" | "agent"
   readonly command?: string
+  /**
+   * What the command layer declares for this call (#1357): the `execution` of the command that drives it, or
+   * `foreground` when the turn must deliver the command inline whatever the command declares (a headless turn, a
+   * hook followup). It ranks between the call's own `background` argument and the agent's declaration.
+   */
+  readonly commandExecution?: TaskExecution.Declared
 }
 
-/** Reads a task origin from a value that carries `initiator` (and optionally `command`). */
+/** Reads a task origin from a value that carries `initiator` (and optionally `command`, `commandExecution`). */
 function readOrigin(value: unknown): TaskOrigin | undefined {
   if (!isRecord(value)) return undefined
   if (value.initiator !== "user" && value.initiator !== "agent") return undefined
+  const execution = value.commandExecution
   return {
     initiator: value.initiator,
     ...(typeof value.command === "string" ? { command: value.command } : {}),
+    ...(execution === "foreground" || execution === "background" || execution === "auto"
+      ? { commandExecution: execution }
+      : {}),
   }
 }
 
@@ -316,6 +327,16 @@ export const TaskTool = Tool.define(
         }),
       )
 
+    // The decision the part of this very call already records, when the tool is entered a second time for it.
+    // Nothing writes a decision before the first entry, so a fresh call reads nothing here.
+    const recordedDecision = Effect.fn("TaskTool.recordedDecision")(function* (ctx: Tool.Context) {
+      if (ctx.callID === undefined) return undefined
+      const parts = yield* MessageV2.parts(ctx.messageID).pipe(Effect.provideService(Database.Service, database))
+      const part = parts.find((item) => item.type === "tool" && item.callID === ctx.callID)
+      if (part?.type !== "tool" || part.state.status === "pending") return undefined
+      return TaskExecution.recorded(part.state.metadata)
+    })
+
     // A background task is cancelled by the main agent through its child run:
     // the run ends cancelled first (so no result is delivered for it), then the
     // job that carries it. Foreground tasks and tasks of other conversations are
@@ -408,7 +429,6 @@ export const TaskTool = Tool.define(
       const prompt: string = params.prompt
       const subagentType: string = params.subagent_type
       const cfg = yield* config.get()
-      const runInBackground = params.background === true
       // #1057: a user-issued background command survives ESC and is presented
       // back as its findings; an agent-started task is ordinary background work.
       const origin = taskOriginOf(ctx.extra)
@@ -440,6 +460,16 @@ export const TaskTool = Tool.define(
           ),
         )
       }
+      // How this call runs is decided here, once, before any session or run exists (#1357): a hard constraint
+      // refuses an explicit background request outright, and no declaration can send a constrained agent there.
+      // A call entered again for a part that already records its decision (a replay, a recovery) reads that record
+      // instead of resolving against a catalog that may have changed since.
+      const settled = yield* recordedDecision(ctx)
+      const resolution: TaskExecution.Resolution = settled
+        ? { type: "resolved", ...settled }
+        : TaskExecution.resolve({ agent: next, param: params.background, command: origin?.commandExecution })
+      if (resolution.type === "refused") return yield* Effect.fail(new Error(resolution.message))
+      const runInBackground = resolution.mode === "background"
       // An agent that declares an artifact owes its final answer in that shape (#1158). Resolved before any
       // session exists, so a declaration the catalog cannot honor fails the call cleanly.
       const declared = ResultContract.resolve(next)
@@ -583,6 +613,9 @@ export const TaskTool = Tool.define(
         model,
         initiator,
         ...(command === undefined ? {} : { command }),
+        // The decision, recorded once. `background` below says what the run is now: a foreground run that is
+        // promoted keeps the decision it was given and gains `promoted`.
+        ...TaskExecution.record(resolution),
         ...(runInBackground ? { background: true } : {}),
         ...(runInBackground && initiator === "user" ? { survivesSessionCancel: true } : {}),
       }
@@ -793,6 +826,8 @@ export const TaskTool = Tool.define(
             title: description,
             metadata: {
               ...metadata,
+              // The input joined a task that is already running in the background: no run of its own was decided.
+              ...TaskExecution.record({ mode: "background", source: "running" }),
               background: true,
               jobId: nextSession.id,
             },
