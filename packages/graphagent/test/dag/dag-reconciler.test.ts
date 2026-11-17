@@ -1251,8 +1251,10 @@ describe("reconcileAfter: a trigger that brings news is answered by an evaluatio
       scenario(
         Effect.gen(function* () {
           const { reconciler, calls, script, entries } = yield* harness
+          // A round lists the newest workflow first (`listByStatus` orders by `time_created`, descending), and it is to
+          // park on wf-slow: wf-moved is the older, whatever the millisecond of the clock does between the two inserts.
           yield* workflow("wf-slow")
-          yield* workflow("wf-moved")
+          yield* workflow("wf-moved", { ageMs: 5_000 })
           // The session of wf-moved has moved away: the row is stamped for another directory, and this instance still has
           // its entry.
           const { db } = yield* Database.Service
