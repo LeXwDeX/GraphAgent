@@ -366,6 +366,10 @@ export const en: Record<MessageKey, string> = {
   "dagmode.panel.hint.detail": "Details",
   "dagmode.panel.hint.enter": "Sub-agent",
   "dagmode.panel.hint.expand": "Expand",
+  "dagmode.panel.hint.unfold": "Unfold",
+  "dagmode.panel.hint.fold": "Fold",
+  "dagmode.panel.fold.child": "(1 child)",
+  "dagmode.panel.fold.children": "({n} children)",
   "dagmode.panel.request.title": "Ask the main agent",
   "dagmode.prefill.inspect":
     'Please check the current state of workflow "{title}" ({id}) and report progress; if any node failed, tell me why.',
