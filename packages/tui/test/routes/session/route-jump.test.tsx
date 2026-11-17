@@ -10,8 +10,8 @@ import { json } from "../../fixture/tui-sdk"
 import { mountRoute, sessionFixture, waitFor, type MountOptions } from "../dag-mode-harness"
 
 // A session route can name a message (#1058 7: the toast of a finished background run brings the user to the report the
-// server added). The view carries the jump out once the session is loaded, takes the request off the route, and a
-// message that draws nothing takes the jump to the end of the transcript.
+// server added, drawn as its result card). The view carries the jump out once the session is loaded, takes the request
+// off the route, and a message that draws nothing takes the jump to the end of the transcript.
 
 const ROOT = "ses_jump_root"
 const CHILD = "ses_jump_child"
@@ -49,7 +49,7 @@ function transcript(sessionID: string): MessageEntry[] {
   for (let index = 0; index < 20; index++) answer(`Answer ${index}\nsecond line\nthird line\nfourth line`)
   ask(`${MID}: what did the review find?`)
   for (let index = 20; index < 40; index++) answer(`Answer ${index}\nsecond line\nthird line\nfourth line`)
-  // What the server adds when a background run ends: a user message whose only text is synthetic, which draws nothing.
+  // A user message whose only text is synthetic and carries no `backgroundResult`: it draws nothing.
   const report = id(ordinal)
   expect(report).toBe(REPORT_ID)
   const synthetic: Part = {
@@ -62,8 +62,68 @@ function transcript(sessionID: string): MessageEntry[] {
   return entries
 }
 
-async function mountJump(extra: Partial<MountOptions> = {}) {
-  const messages = transcript(ROOT)
+const CARD = "CARD-REVIEW"
+const CARD_ID = id(21)
+
+/**
+ * A long transcript with the report of a finished background run in its middle, as the server writes it: a user
+ * message whose synthetic text carries `metadata.backgroundResult`, drawn as the run's result card.
+ */
+function cardTranscript(sessionID: string): MessageEntry[] {
+  const entries: MessageEntry[] = []
+  let ordinal = 0
+  const question = id(ordinal)
+  entries.push({
+    info: userMessage(question, sessionID, ordinal),
+    parts: [textPart(question, sessionID, `prt_${question}`, `${HEAD}: where do we start?`)],
+  })
+  ordinal++
+  const answer = (text: string) => {
+    const messageID = id(ordinal)
+    entries.push({
+      info: assistantMessage(messageID, sessionID, question, ordinal),
+      parts: [textPart(messageID, sessionID, `prt_${messageID}`, text)],
+    })
+    ordinal++
+  }
+  for (let index = 0; index < 20; index++) answer(`Answer ${index}\nsecond line\nthird line\nfourth line`)
+  const report = id(ordinal)
+  expect(report).toBe(CARD_ID)
+  const result: Part = {
+    ...textPart(
+      report,
+      sessionID,
+      `prt_${report}`,
+      [
+        `<task id="${CHILD}" state="completed">`,
+        `<summary>Background task completed: ${CARD}</summary>`,
+        "<task_result>",
+        "The review found nothing.",
+        "</task_result>",
+        "</task>",
+      ].join("\n"),
+    ),
+    synthetic: true,
+    metadata: {
+      backgroundResult: {
+        childSessionID: CHILD,
+        initiator: "agent",
+        title: CARD,
+        status: "completed",
+        startedAt: 1_000,
+        endedAt: 66_000,
+      },
+    },
+  }
+  entries.push({ info: userMessage(report, sessionID, ordinal), parts: [result] })
+  ordinal++
+  for (let index = 20; index < 40; index++) answer(`Answer ${index}\nsecond line\nthird line\nfourth line`)
+  answer(`${TAIL}: the review found nothing.`)
+  return entries
+}
+
+async function mountJump(extra: Partial<MountOptions> = {}, build: (sessionID: string) => MessageEntry[] = transcript) {
+  const messages = build(ROOT)
   expect(messages[21]?.info.id).toBe(MID_ID)
   return mountRoute({
     route: { type: "session", sessionID: ROOT },
@@ -147,6 +207,28 @@ test("a message that draws nothing takes the jump to the end of the transcript",
     await harness.waitForFrame((frame) => frame.includes(HEAD) && !frame.includes(TAIL), "the head again")
     harness.route().navigate({ type: "session", sessionID: ROOT, messageID: "msg_jump_missing" })
     await harness.waitForFrame(atEnd, "the end once more")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("the report of a background run lands on its result card", async () => {
+  const harness = await mountJump({}, cardTranscript)
+  const atCard = (frame: string) => frame.includes(CARD) && !frame.includes(HEAD) && !frame.includes(TAIL)
+  try {
+    await harness.waitForFrame((frame) => frame.includes(TAIL), "the end of the transcript")
+    toTop(harness)
+    await harness.waitForFrame((frame) => frame.includes(HEAD) && !frame.includes(TAIL), "the head of the transcript")
+
+    harness.route().navigate({ type: "session", sessionID: ROOT, messageID: CARD_ID })
+    await harness.waitForFrame(atCard, "the result card")
+    expect(plain(harness)).toEqual({ type: "session", sessionID: ROOT })
+
+    // Asked for again from the end, it lands on the card again.
+    toEnd(harness)
+    await harness.waitForFrame(atEnd, "the end again")
+    harness.route().navigate({ type: "session", sessionID: ROOT, messageID: CARD_ID })
+    await harness.waitForFrame(atCard, "the result card, a second time")
   } finally {
     await harness.dispose()
   }

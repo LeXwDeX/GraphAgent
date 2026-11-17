@@ -158,14 +158,15 @@ const HEAD_TEXT = "HEAD-QUESTION"
 const TAIL_TEXT = "TAIL-ANSWER"
 
 /**
- * The fake server's side for a main session with a long transcript: a question at the head, the Task calls, the report
- * of bravo's run (a message that draws nothing, as the real one does), then answers up to the last one. Long enough
- * that the head and the last answer are never on screen together.
+ * The fake server's side for a main session with a long transcript: a question at the head, the Task calls, answers,
+ * the report of bravo's run (drawn as its result card) in the middle, then answers up to the last one. Long enough that
+ * the head, the card and the last answer are never on screen together. Messages are ordered by id: the answers before
+ * the report are `msg_agents_q_*`, the ones after it `msg_agents_z_*`.
  */
 function longServer() {
   const messageReads: string[] = []
   const answers = Array.from({ length: 30 }, (_, index) => {
-    const id = `msg_agents_z_${String(index).padStart(2, "0")}`
+    const id = `msg_agents_${index < 15 ? "q" : "z"}_${String(index).padStart(2, "0")}`
     const text = `${index === 29 ? `${TAIL_TEXT}: nothing is left.` : `Answer ${index}`}\nsecond line\nthird line\nfourth line`
     return {
       info: assistantMessage(id, rootID, "msg_agents_000", 20 + index),
@@ -479,7 +480,7 @@ test("a background run that ends while the user is in the main session leaves a 
   }
 })
 
-test("a click on the toast takes the main session's transcript to the report, which is its end; a later report keeps the toast, and a click on it does it again", async () => {
+test("a click on the toast takes the main session's transcript to the report's card; a later report keeps the toast, and a click on it goes where that report is", async () => {
   const fake = longServer()
   const app = await runApp({
     sessions: tree,
@@ -496,6 +497,8 @@ test("a click on the toast takes the main session's transcript to the report, wh
     // The reader has gone back to the head of the transcript when the report arrives.
     const atHead = (frame: string) => frame.includes(HEAD_TEXT) && !frame.includes(TAIL_TEXT)
     const atEnd = (frame: string) => frame.includes(TAIL_TEXT) && !frame.includes(HEAD_TEXT)
+    const atCard = (frame: string) =>
+      frame.includes("Inspected.") && !frame.includes(HEAD_TEXT) && !frame.includes(TAIL_TEXT)
     const toast = "explore 已完成 · ⏎ 查看"
     app.setup.mockInput.pressKey("g", { ctrl: true })
     await waitForFrame(app.setup, atHead, "the head of the transcript")
@@ -503,10 +506,11 @@ test("a click on the toast takes the main session's transcript to the report, wh
     const first = await waitForFrame(app.setup, (value) => value.includes(toast) && atHead(value), "the reminder")
     const place = locate(first, toast)
     await app.setup.mockMouse.click(place.column + 2, place.row)
-    await waitForFrame(app.setup, atEnd, "the end of the transcript, where the click took the reader")
+    await waitForFrame(app.setup, atCard, "the result card, where the click took the reader")
 
-    // The reader goes back to the head. The same sub-agent reports again: one toast, which stays for another while, and
-    // the click on it takes the reader to the end again.
+    // The reader goes back to the head. The same sub-agent reports again: one toast, which stays for another while. Only
+    // the part of this report has arrived, not its message, so it has no card yet and the click takes the reader to
+    // the end of the transcript, where it will be.
     app.setup.mockInput.pressKey("g", { ctrl: true })
     await waitForFrame(app.setup, atHead, "the head of the transcript again")
     app.events.emit(resultEvent(bravoID, "completed", 301))

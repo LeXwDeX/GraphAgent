@@ -747,9 +747,10 @@ export function Main() {
     if (messageID) scrollToMessageID(messageID)
   }
 
-  // Brings a message into view, at the top of the viewport. A message that draws nothing has no place of its own (a
-  // synthetic one, such as the report the server adds when a background run ends, has no row): what it brought is
-  // at the end of the transcript, so that is where the jump goes.
+  // Brings a message into view, at the top of the viewport. The report the server adds when a background run ends is
+  // drawn as its result card, which carries the message's id (`BackgroundResultCard`), so the jump lands on the card.
+  // A message that draws nothing has no place of its own (other synthetic text has no row): what it brought is at the
+  // end of the transcript, so that is where the jump goes.
   function jumpToMessage(messageID: string) {
     if (windowed()) {
       if (scrollToMessageID(messageID)) return
@@ -2410,6 +2411,9 @@ function BackgroundResultCard(props: { part: TextPart }) {
         const closing = createMemo(() => layout(""))
         return (
           <box
+            // The jump to the report (the toast of a finished run) finds the card by its message: that message draws
+            // no user block of its own, its text being synthetic.
+            id={props.part.messageID}
             ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
             marginTop={1}
             border={["left"]}
