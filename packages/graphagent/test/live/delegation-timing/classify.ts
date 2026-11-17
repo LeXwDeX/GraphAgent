@@ -528,7 +528,7 @@ function stripSedRegexes(script: string): string {
     while (i < script.length && script[i] !== delimiter) i += script[i] === "\\" ? 2 : 1
     return i + 1
   }
-  for (let i = 0; i < script.length; ) {
+  for (let i = 0; i < script.length;) {
     const char = script[i] ?? ""
     if (char === "/") {
       i = skipDelimited(i + 1, "/")
@@ -552,11 +552,7 @@ function scriptReachesOutside(words: readonly string[]): boolean {
   if (command === "rg" || command === "ag") return args.some((word) => /^--pre(-glob)?(=|$)/.test(word))
   if (command === "sed") {
     // Drop the regex parts (/.../ and s/.../.../), then any command letter that reads, writes or runs.
-    return sedScripts(args).some((script) =>
-      /[rRwWe]/.test(
-        stripSedRegexes(script),
-      ),
-    )
+    return sedScripts(args).some((script) => /[rRwWe]/.test(stripSedRegexes(script)))
   }
   if (command === "awk" || command === "gawk" || command === "mawk") {
     // The program is the first operand (or a -f file, which is a path checked elsewhere).
