@@ -9,14 +9,19 @@
  * database file, each claiming as its own `pid:nonce`.
  *
  * Everything here runs on the TestClock, because the lease is a matter of time
- * (TTL 90 s, renewal every 30 s). Two things to keep in mind when reading:
+ * (TTL 90 s, renewal every 30 s). Things to keep in mind when reading:
  *   - a stalled process is `runner.freeze()`: it parks the lease operations too,
  *     so a frozen runner renews nothing while the clock moves on;
  *   - a renewal is a background tick, so a test waits for its effect with
  *     `pollOnTestClock` (which moves the clock by a few milliseconds per round)
- *     and compares with inequalities, not with the exact tick time.
- * The last group has no database at all: it runs `RunnerLease` over a scripted
- * `DagLease` and a plain table of entries, one rule per test.
+ *     and compares with inequalities, not with the exact tick time;
+ *   - nothing here sleeps for a background fiber: a test waits for something the
+ *     fiber publishes (the lease row, `runner.leaseCalls`, the exclusive
+ *     registry, the child cancellations), and for what a loop decided NOT to do
+ *     it waits for the decision that ends the path (a refused claim, an
+ *     eviction) before it looks.
+ * The last two groups have no database at all: they run `RunnerLease` over a
+ * scripted `DagLease` and a plain table of entries, one rule per test.
  */
 
 import { describe, expect } from "bun:test"
@@ -35,6 +40,7 @@ import {
   node,
   pollOnTestClock,
   type DualRunner,
+  type Runner,
 } from "./fixture/dual-runner"
 
 const it = testEffect(Layer.empty)
@@ -44,9 +50,6 @@ const PERIOD = `${DagLease.RENEWAL_PERIOD_MS} millis`
 const PAST_TTL = "2 minutes"
 
 const now = Clock.currentTimeMillis
-
-/** Let the runners' background fibers run: a real tick of the event loop, which the TestClock does not give. */
-const drain = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 25)))
 
 const rowOf = (dual: DualRunner, dagID: string) =>
   dual
@@ -70,6 +73,23 @@ const completed = (dual: DualRunner, dagID: string) =>
       .getWorkflow(dagID)
       .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? true : undefined))),
     `${dagID} did not complete`,
+  )
+
+/**
+ * Wait for the first lease claim of `dagID` that the runner's loop made after
+ * its first `seen` lease calls, and answer it. A claim is where an adoption
+ * decides: once it has been refused, the adoption has nothing left to do.
+ */
+const claimAfter = (runner: Runner, dagID: string, seen: number) =>
+  pollOnTestClock(
+    Effect.sync(() => runner.leaseCalls.slice(seen).find((call) => call.operation === "claim" && call.dagID === dagID)),
+    `${runner.name} made no lease claim for ${dagID}`,
+  )
+
+/** Which workflow the registry of `runner` names as the dag owner of the parent session (the first one registered), if any. */
+const dagOwner = (runner: Runner) =>
+  Effect.map(runner.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }), (claimed) =>
+    Option.isSome(claimed) ? claimed.value.owner.id : undefined,
   )
 
 describe("claiming (ADR-0008 decision 6: the claim comes first)", () => {
@@ -115,10 +135,12 @@ describe("claiming (ADR-0008 decision 6: the claim comes first)", () => {
       const { dagID } = yield* driveOnR1(dual)
       yield* dual.r2.init
       const events = yield* dual.log(dagID)
+      const seen = dual.r2.leaseCalls.length
 
-      // R2's WorkflowReplanned handler finds no entry and tries to recover the workflow.
+      // R2's WorkflowReplanned handler finds no entry and tries to recover the workflow:
+      // its claim is refused by R1's live lease, which is where the adoption ends.
       yield* dual.r2.dag.extend(dagID, [node("m")])
-      yield* drain
+      expect((yield* claimAfter(dual.r2, dagID, seen)).answer).toBeUndefined()
 
       const added = (yield* dual.log(dagID)).slice(events.length).map((event) => event.type)
       expect(added).not.toContain("dag.node.failed")
@@ -274,8 +296,12 @@ describe("renewal (ADR-0008 decision 2)", () => {
 
       yield* Deferred.succeed(first.gate.release, "done")
       yield* completed(dual, first.dagID)
-      // The terminal event handler drops the runtime entry.
-      yield* drain
+      // The terminal event handler drops the runtime entry and then the workflow's registration:
+      // from then on the registry names the second workflow as the dag owner of the parent session.
+      yield* pollOnTestClock(
+        Effect.map(dagOwner(dual.r1), (owner) => (owner === secondID ? true : undefined)),
+        "R1 did not finish with the workflow that ended",
+      )
       const ended = yield* rowOf(dual, first.dagID)
       const running = yield* rowOf(dual, secondID)
 
@@ -347,8 +373,9 @@ describe("a runner that lost its lease evicts the workflow (ADR-0008 decision 2)
       expect(yield* dual.log(dagID)).toEqual(events)
       expect(dual.r1.created).toEqual([gate.sessionID])
       // It dropped the entry and does not adopt the workflow again: a replan on R1 finds no entry, and R2's lease is live.
+      const seen = dual.r1.leaseCalls.length
       yield* dual.r1.dag.extend(dagID, [node("m")])
-      yield* drain
+      expect((yield* claimAfter(dual.r1, dagID, seen)).answer).toBeUndefined()
       expect(dual.r1.created).toEqual([gate.sessionID])
       // And it does not take the lease back: that is R2's.
       expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
@@ -362,6 +389,50 @@ describe("a runner that lost its lease evicts the workflow (ADR-0008 decision 2)
       )
       expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 3 })
     }),
+  )
+
+  it.effect(
+    "it cancels the child its own attempt created, not the one the node row names after the new holder restarted the node",
+    () =>
+      Effect.gen(function* () {
+        const R2_CHILD = "ses_r2_child_1"
+        const dual = yield* makeDualRunner()
+        const { dagID, gate } = yield* driveOnR1(dual)
+        expect(yield* dagOwner(dual.r1)).toBe(dagID)
+
+        // R1 stalls past its TTL. R2 takes the lease over and restarts n1 as an attempt with a child session of its own.
+        const frozen = yield* dual.r1.freeze()
+        yield* TestClock.adjust(PAST_TTL)
+        expect(yield* dual.r2.lease.claim({ dagID, runnerID: dual.r2.identity.id, now: yield* now })).toMatchObject({
+          epoch: 2,
+        })
+        yield* dual.r2.dag.nodeRestarted(dagID, "n1", gate.sessionID)
+        yield* dual.r2.dag.nodeStarted(dagID, "n1", R2_CHILD)
+        // The row names R2's child now, which is what R1's eviction must not go by.
+        expect((yield* dual.r2.store.getNode(dagID, "n1"))?.childSessionId).toBe(R2_CHILD)
+        const events = yield* dual.log(dagID)
+
+        // R1 wakes up, its renewal finds the lease gone and it evicts the workflow.
+        yield* frozen.release
+        yield* pollOnTestClock(
+          Effect.map(dagOwner(dual.r1), (owner) => (owner === undefined ? true : undefined)),
+          "R1 did not evict the workflow it lost",
+        )
+
+        // It cancelled the child of its own attempt with the eviction's reason, and nothing else...
+        const evicted = dual.r1.childRuns.cancelled.filter(
+          (entry) => entry.by.kind === "engine" && entry.by.reason === "lease-lost",
+        )
+        expect(evicted.map((entry) => entry.id)).toEqual([gate.sessionID])
+        expect(dual.r1.cancelled).toContain(gate.sessionID)
+        // ...R2's child was left alone: neither its run cancelled nor `SessionPrompt.cancel` called on it, and that
+        // call is the one that reaches the admission seam which marks a session's input snapshot stopped and drops its mailbox.
+        expect(dual.r1.childRuns.cancelled.map((entry) => entry.id)).not.toContain(R2_CHILD)
+        expect(dual.r1.cancelled).not.toContain(R2_CHILD)
+        // R1 wrote nothing, and the node is still R2's attempt.
+        expect(yield* dual.log(dagID)).toEqual(events)
+        expect((yield* dual.r2.store.getNode(dagID, "n1"))?.childSessionId).toBe(R2_CHILD)
+      }),
   )
 })
 
@@ -526,6 +597,18 @@ describe("RunnerLease over a scripted lease", () => {
     return scope ? Effect.provideService(effect, Scope.Scope, scope) : effect
   }
 
+  /**
+   * Wait on the TestClock for what a background fiber of the runner lease has
+   * to record before a test looks at its effects. A tick records its calls as
+   * it goes and ends with its evictions, and the next tick only starts once the
+   * one before has ended, so a call counted in tick N means tick N-1 is over.
+   */
+  const until = (done: () => boolean, message: string) =>
+    pollOnTestClock(
+      Effect.sync(() => (done() ? true : undefined)),
+      message,
+    )
+
   it.effect("claim asks for the lease as this runner, at the clock's time, and hands back its token", () =>
     Effect.gen(function* () {
       yield* TestClock.adjust("5 seconds")
@@ -591,19 +674,21 @@ describe("RunnerLease over a scripted lease", () => {
         const entry = { token: token(3) }
         const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
 
+        // The lease holds: nothing forks, nothing is evicted.
         expect(yield* runnerLease.verify("dag-a", entry)).toBe(true)
-        yield* drain
         expect(evicted).toEqual([])
 
         // Another runner took the lease over.
         held.set("dag-a", lease("dag-a", 4, "11:other"))
         expect(yield* runnerLease.verify("dag-a", entry)).toBe(false)
-        yield* drain
+        yield* until(() => evicted.length === 1, "verify did not evict the entry whose lease another runner took")
         expect(evicted).toEqual(["dag-a"])
 
         // The workflow is gone or terminal: no lease to hold, the same verdict.
         held.set("dag-a", undefined)
         expect(yield* runnerLease.verify("dag-a", entry)).toBe(false)
+        yield* until(() => evicted.length === 2, "verify did not evict the entry of a workflow that ended")
+        expect(evicted).toEqual(["dag-a", "dag-a"])
       }),
   )
 
@@ -613,12 +698,12 @@ describe("RunnerLease over a scripted lease", () => {
       const evicted: string[] = []
       yield* started(leases, entries({ "dag-a": token(1), "dag-lost": token(2), "dag-b": token(3) }), evicted)
 
+      // Not a period yet: the renewal fiber is still asleep.
       yield* TestClock.adjust(`${DagLease.RENEWAL_PERIOD_MS - 1} millis`)
-      yield* drain
       expect(calls.renew).toEqual([])
 
       yield* TestClock.adjust("1 millis")
-      yield* drain
+      yield* until(() => evicted.length === 1, "the first tick did not evict the workflow whose lease was lost")
       expect(calls.renew).toEqual([
         { dagID: "dag-a", token: token(1), now: DagLease.RENEWAL_PERIOD_MS },
         { dagID: "dag-lost", token: token(2), now: DagLease.RENEWAL_PERIOD_MS },
@@ -628,7 +713,7 @@ describe("RunnerLease over a scripted lease", () => {
 
       // The evicted workflow stays in the table here (the loop drops it in `evict`), so it is asked again.
       yield* TestClock.adjust(PERIOD)
-      yield* drain
+      yield* until(() => evicted.length === 2, "the second tick did not run")
       expect(calls.renew).toHaveLength(6)
     }),
   )
@@ -643,13 +728,11 @@ describe("RunnerLease over a scripted lease", () => {
       yield* started(leases, entries({ "dag-a": token(1) }), evicted)
 
       yield* TestClock.adjust(PERIOD)
-      yield* drain
-      expect(calls.renew).toHaveLength(1)
-      expect(evicted).toEqual([])
+      yield* until(() => calls.renew.length === 1, "the first tick did not renew")
 
+      // The second tick can only start after the first one ended, and that one died without evicting.
       yield* TestClock.adjust(PERIOD)
-      yield* drain
-      expect(calls.renew).toHaveLength(2)
+      yield* until(() => calls.renew.length === 2, "the second tick did not renew")
       expect(evicted).toEqual([])
     }),
   )
@@ -661,8 +744,7 @@ describe("RunnerLease over a scripted lease", () => {
       yield* started(leases, entries({ "dag-a": token(1), "dag-b": token(2) }), [], scope)
 
       yield* TestClock.adjust(PERIOD)
-      yield* drain
-      expect(calls.renew).toHaveLength(2)
+      yield* until(() => calls.renew.length === 2, "the tick did not renew both entries")
       expect(calls.release).toEqual([])
 
       yield* Scope.close(scope, Exit.void)
@@ -670,9 +752,9 @@ describe("RunnerLease over a scripted lease", () => {
         ["dag-a", token(1)],
         ["dag-b", token(2)],
       ])
-      // The renewal fiber is gone: time passing renews nothing more.
+      // The renewal fiber is gone: three periods go by and nothing wakes to renew
+      // (`adjust` runs every fiber it wakes to its next suspension before it returns).
       yield* TestClock.adjust(`${DagLease.RENEWAL_PERIOD_MS * 3} millis`)
-      yield* drain
       expect(calls.renew).toHaveLength(2)
     }),
   )
@@ -694,14 +776,24 @@ describe("RunnerLease over a scripted lease", () => {
 })
 
 describe("RunnerLease.evictor", () => {
-  /** An entry with a fiber and a watcher per node, all alive until the evictor interrupts them. */
-  const entryOf = (...nodeIDs: string[]) =>
+  const own = RunnerLease.attached
+
+  /**
+   * An entry with a fiber and a watcher per node, all alive until the evictor
+   * interrupts them. `children` is what each node's attempt recorded of its
+   * child session: a function that answers it (or `undefined` while the attempt
+   * has none), or `null` for a fiber nobody recorded anything for.
+   */
+  const entryOf = (children: Record<string, (() => string | undefined) | null>) =>
     Effect.gen(function* () {
       const fibers = new Map<string, Fiber.Fiber<unknown, unknown>>()
       const watchers = new Map<string, Fiber.Fiber<unknown, unknown>>()
-      for (const nodeID of nodeIDs) {
-        fibers.set(nodeID, yield* Effect.forkScoped(Effect.never))
+      const attemptChild: RunnerLease.Evictable["attemptChild"] = new WeakMap()
+      for (const [nodeID, child] of Object.entries(children)) {
+        const fiber = yield* Effect.forkScoped(Effect.never)
+        fibers.set(nodeID, fiber)
         watchers.set(nodeID, yield* Effect.forkScoped(Effect.never))
+        if (child !== null) attemptChild.set(fiber, child)
       }
       return {
         token: { runnerID: "10:test", epoch: 1 },
@@ -709,6 +801,7 @@ describe("RunnerLease.evictor", () => {
         evalLock: Semaphore.makeUnsafe(1),
         fibers,
         watchers,
+        attemptChild,
       }
     })
 
@@ -719,7 +812,6 @@ describe("RunnerLease.evictor", () => {
   ) =>
     RunnerLease.evictor({
       entries: table,
-      childOf: (_dagID, nodeID) => Effect.succeed(`ses_${nodeID}`),
       abort: (_dagID, nodeID, childSessionID) =>
         Effect.sync(() => void log.aborted.push(`${nodeID}:${childSessionID}`)),
       unregister: (_entry, dagID) => unregister ?? Effect.sync(() => void log.unregistered.push(dagID)),
@@ -732,7 +824,7 @@ describe("RunnerLease.evictor", () => {
     "aborts the children, interrupts the fibers and watchers, drops the entry and gives up the registration, once",
     () =>
       Effect.gen(function* () {
-        const entry = yield* entryOf("n1", "n2")
+        const entry = yield* entryOf({ n1: own("ses_n1"), n2: own("ses_n2") })
         const fibers = [...entry.fibers.values(), ...entry.watchers.values()]
         const table = new Map([["dag-a", entry]])
         const log = { aborted: [] as string[], unregistered: [] as string[] }
@@ -753,9 +845,29 @@ describe("RunnerLease.evictor", () => {
       }),
   )
 
+  it.effect(
+    "aborts what each fiber's own attempt recorded, as it stands at eviction, and nothing for a fiber without a child",
+    () =>
+      Effect.gen(function* () {
+        let created: string | undefined
+        // n1 has its child. n2's attempt still waits for its permit. n3's attempt creates its child after its fiber was
+        // registered and before the eviction. n4's fiber has no record at all.
+        const entry = yield* entryOf({ n1: own("ses_n1"), n2: () => undefined, n3: () => created, n4: null })
+        created = "ses_n3"
+        const fibers = [...entry.fibers.values()]
+        const log = { aborted: [] as string[], unregistered: [] as string[] }
+
+        yield* evictorOver(new Map([["dag-a", entry]]), log)("dag-a", entry)
+
+        expect(log.aborted).toEqual(["n1:ses_n1", "n3:ses_n3"])
+        // A fiber without a child is interrupted all the same.
+        for (const fiber of fibers) expect(yield* interrupted(fiber)).toBe(true)
+      }),
+  )
+
   it.effect("leaves an entry alone that the table no longer holds", () =>
     Effect.gen(function* () {
-      const entry = yield* entryOf("n1")
+      const entry = yield* entryOf({ n1: own("ses_n1") })
       const log = { aborted: [] as string[], unregistered: [] as string[] }
 
       yield* evictorOver(new Map(), log)("dag-a", entry)
@@ -769,7 +881,7 @@ describe("RunnerLease.evictor", () => {
 
   it.effect("a registration that cannot be given up does not fail the eviction", () =>
     Effect.gen(function* () {
-      const entry = yield* entryOf("n1")
+      const entry = yield* entryOf({ n1: own("ses_n1") })
       const table = new Map([["dag-a", entry]])
       const log = { aborted: [] as string[], unregistered: [] as string[] }
 

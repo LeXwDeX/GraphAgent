@@ -502,50 +502,56 @@ describe("spawnNode lease re-check (ADR-0008 decision 2)", () => {
     return { calls, held }
   }
 
+  /** Spawn, wait for the attempt to end, and answer the child session the attempt recorded as its own. */
   const run = (harness: ReturnType<typeof makeHarness>, input: NodeSpawnInput) =>
     Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const result = yield* spawnNode(workflowSchedule(), input)
           yield* Fiber.await(result.fiber).pipe(Effect.timeout("5 seconds"))
+          return result.childSessionID()
         }),
-      ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
+      ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<string | undefined>,
     )
 
   it("creates the child session when the lease is held at both checks", async () => {
     const harness = makeHarness(() => "running")
     const lease = scripted(true)
 
-    await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
+    const child = await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
 
     expect(harness.createCalls()).toBe(1)
     expect(harness.events.find((event) => event.type === "nodeCompleted")).toBeDefined()
     // The fence ahead of the workspace checks and the read right before the child session.
     expect(lease.calls.value).toBe(2)
+    // The attempt recorded the child it created: what a runner that loses the lease cancels (ADR-0008).
+    expect(child).toBe("ses_child")
   })
 
   it("creates no child session and writes no node event when the lease is gone at the fence", async () => {
     const harness = makeHarness(() => "running")
     const lease = scripted(false)
 
-    await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
+    const child = await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
 
     expect(harness.createCalls()).toBe(0)
     expect(harness.events).toEqual([])
     expect(harness.started).toEqual([])
     expect(harness.failUnrecoverableReasons).toEqual([])
     expect(lease.calls.value).toBe(1)
+    expect(child).toBeUndefined()
   })
 
   it("creates no child session when the lease is lost while the attempt is being prepared", async () => {
     const harness = makeHarness(() => "running")
     const lease = scripted(true, false)
 
-    await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
+    const child = await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
 
     expect(harness.createCalls()).toBe(0)
     expect(harness.events).toEqual([])
     expect(harness.started).toEqual([])
     expect(lease.calls.value).toBe(2)
+    expect(child).toBeUndefined()
   })
 })

@@ -34,7 +34,8 @@ import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
  *   - A spawn re-reads the lease right before it creates a child session
  *     (`verify`); a lost lease ends the spawn and evicts the workflow.
  *   - `evictor` is the eviction itself: what an instance does with the entry of
- *     a workflow whose lease it lost.
+ *     a workflow whose lease it lost. It cancels the children its own attempts
+ *     created and no other (`Evictable.attemptChild`).
  *
  * Time comes from the `Clock` and the runner is `Identity`, so a test can drive
  * two runners in one process on a TestClock. Not here: the write fence that
@@ -60,7 +61,21 @@ export interface Evictable extends Held {
   readonly evalLock: Semaphore.Semaphore
   readonly fibers: Map<string, Fiber.Fiber<unknown, unknown>>
   readonly watchers: Map<string, Fiber.Fiber<unknown, unknown>>
+  /**
+   * The child session each fiber of `fibers` drives, as the attempt recorded it
+   * itself (a spawn's `NodeSpawnResult.childSessionID`; a recovered continuation
+   * records the child it attached to). Keyed by fiber, so a fiber that is
+   * replaced or dropped takes its record with it. Eviction cancels what is
+   * recorded here and nothing else: the node row names the child of whichever
+   * attempt wrote last, and once another runner took the lease over and
+   * restarted the node that is the new holder's child, which an evicted runner
+   * must not touch.
+   */
+  readonly attemptChild: WeakMap<Fiber.Fiber<unknown, unknown>, () => string | undefined>
 }
+
+/** The `attemptChild` record of an attempt that continues a child session which already exists: the child is known from the start. */
+export const attached = (childSessionID: string) => (): string | undefined => childSessionID
 
 export interface Interface<E extends Held = Held> {
   /**
@@ -209,17 +224,18 @@ export function make<E extends Held>(input: {
 
 /**
  * ADR-0008 decision 2: a runner that lost the lease of a workflow stops driving
- * it. It aborts the children, interrupts the fibers and watchers, drops the
- * entry and gives up the parent session's dag registration, which belongs to
- * the runner that drives the workflow now. Nothing is written for the workflow:
- * the new holder decides its outcome. The body runs under the entry's
- * `evalLock`, so it is serialized with the entry's event handlers.
+ * it. It aborts the children its own attempts created, interrupts the fibers and
+ * watchers, drops the entry and gives up the parent session's dag registration,
+ * which belongs to the runner that drives the workflow now. Nothing is written
+ * for the workflow: the new holder decides its outcome. The children are those
+ * the entry itself recorded (`Evictable.attemptChild`), never the node row's
+ * current value, which can already name an attempt of the new holder. The body
+ * runs under the entry's `evalLock`, so it is serialized with the entry's event
+ * handlers.
  */
 export const evictor = <E extends Evictable>(input: {
   readonly entries: Map<string, E>
-  /** The child session of a node's current attempt, if it has one. */
-  readonly childOf: (dagID: string, nodeID: string) => Effect.Effect<string | null>
-  readonly abort: (dagID: string, nodeID: string, childSessionID: string | null) => Effect.Effect<void>
+  readonly abort: (dagID: string, nodeID: string, childSessionID: string) => Effect.Effect<void>
   readonly unregister: (entry: E, dagID: string) => Effect.Effect<void>
 }) =>
   Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E) {
@@ -228,7 +244,9 @@ export const evictor = <E extends Evictable>(input: {
         // Already gone: a terminal event or a move dropped it first.
         if (input.entries.get(dagID) !== entry) return false
         for (const [nodeID, fiber] of entry.fibers) {
-          yield* input.abort(dagID, nodeID, yield* input.childOf(dagID, nodeID))
+          // A spawn that has not created its child yet has nothing to cancel: interrupting its fiber ends it.
+          const childSessionID = entry.attemptChild.get(fiber)?.()
+          if (childSessionID !== undefined) yield* input.abort(dagID, nodeID, childSessionID)
           yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
         }
         for (const watcher of entry.watchers.values()) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)

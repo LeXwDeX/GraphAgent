@@ -173,6 +173,14 @@ export interface HoldOptions {
 
 export type LeaseOperation = "claim" | "renew" | "release" | "held"
 
+/** One lease operation of a runner's DagLoop that ran to its end, and what it answered. */
+export interface LeaseCall {
+  readonly operation: LeaseOperation
+  readonly dagID: string
+  /** `claim` and `held` answer the lease (or `undefined` when there is none); `renew` and `release` whether they applied. */
+  readonly answer: DagLease.Lease | boolean | undefined
+}
+
 /** A parked publisher: `reached` fires when a publish is parked, `release` lets it go on. */
 export interface Hold {
   readonly reached: Effect.Effect<void>
@@ -190,6 +198,14 @@ export interface Runner {
   readonly loop: DagLoop.Interface
   /** The lease primitives of this runner's graph, without the stall point: for a test to inspect or drive the table. */
   readonly lease: DagLease.Interface
+  /**
+   * The lease operations this runner's DagLoop ran to their end, in order, with
+   * their answers: what a test waits on to know the loop reached a decision (a
+   * claim that was refused, a renewal that went through) instead of sleeping
+   * for it. A call that was parked and never let go, or that was made to fail
+   * (`failLease`), is not in it; `lease` calls are not either.
+   */
+  readonly leaseCalls: ReadonlyArray<LeaseCall>
   /** The exclusive registry this runner's DagLoop registers its workflows in (a dag registration keeps goals off the parent session). */
   readonly exclusive: ExclusiveRegistry.Interface
   /** Child sessions this runner created, in order. */
@@ -395,16 +411,21 @@ function gatedBridge(gate: Gate) {
  * The runner's lease primitives with the stall point in front of every
  * operation: a frozen process claims, renews and releases nothing. `faults`
  * arms a number of upcoming calls of an operation that die like a database
- * failure does (a defect, never a `false`). `handle.lease` receives the
- * primitives without either.
+ * failure does (a defect, never a `false`). Every call that ran to its end is
+ * appended to `calls` with its answer. `handle.lease` receives the primitives
+ * without the stall point, the faults and the record.
  */
-function gatedLease(gate: Gate, faults: Map<LeaseOperation, number>, handle: GraphInput["handle"]) {
+function gatedLease(gate: Gate, faults: Map<LeaseOperation, number>, calls: LeaseCall[], handle: GraphInput["handle"]) {
   return Layer.effect(
     DagLease.Service,
     Effect.gen(function* () {
       const real = yield* DagLease.Service
       handle.lease = real
-      const through = <A>(operation: LeaseOperation, dagID: string, effect: Effect.Effect<A>) =>
+      const through = <A extends LeaseCall["answer"]>(
+        operation: LeaseOperation,
+        dagID: string,
+        effect: Effect.Effect<A>,
+      ) =>
         gate.before({ type: `dag.lease.${operation}`, data: { dagID } }, Effect.succeed(false)).pipe(
           Effect.andThen(
             Effect.suspend(() => {
@@ -414,6 +435,7 @@ function gatedLease(gate: Gate, faults: Map<LeaseOperation, number>, handle: Gra
               return Effect.die(new Error(`injected ${operation} failure: database is locked`))
             }),
           ),
+          Effect.tap((answer) => Effect.sync(() => void calls.push({ operation, dagID, answer }))),
         )
       return DagLease.Service.of({
         claim: (input) => through("claim", input.dagID, real.claim(input)),
@@ -450,6 +472,7 @@ interface GraphInput {
   readonly gate: Gate
   readonly identity: RunnerIdentity
   readonly faults: Map<LeaseOperation, number>
+  readonly leaseCalls: LeaseCall[]
   readonly created: string[]
   readonly cancelled: string[]
   readonly prompts: Queue.Queue<PromptGate>
@@ -473,7 +496,7 @@ function runnerGraph(input: GraphInput) {
   // As in production the shared inbox is part of the graph the loop is built in.
   const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   // The loop claims and renews through the lease of its own graph, as the runner it names.
-  const lease = gatedLease(input.gate, input.faults, input.handle).pipe(
+  const lease = gatedLease(input.gate, input.faults, input.leaseCalls, input.handle).pipe(
     Layer.provide(DagLease.layer.pipe(Layer.provide(database))),
   )
   const identity = Layer.succeed(RunnerLease.Identity, input.identity)
@@ -580,11 +603,21 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
   Effect.gen(function* () {
     const gate = makeGate()
     const faults = new Map<LeaseOperation, number>()
+    const leaseCalls: LeaseCall[] = []
     const created: string[] = []
     const cancelled: string[] = []
     const prompts = yield* Queue.unbounded<PromptGate>()
     const handle: GraphInput["handle"] = {}
-    const { layer, childRuns } = runnerGraph({ ...input, gate, faults, created, cancelled, prompts, handle })
+    const { layer, childRuns } = runnerGraph({
+      ...input,
+      gate,
+      faults,
+      leaseCalls,
+      created,
+      cancelled,
+      prompts,
+      handle,
+    })
 
     // Each runner builds in its own root memo map: nothing is shared between the two graphs.
     const scope = yield* Scope.make()
@@ -612,6 +645,7 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
       dag: bound(Dag.Service),
       loop: loopService,
       lease,
+      leaseCalls,
       exclusive: service(ExclusiveRegistry.Service),
       created,
       cancelled,

@@ -131,6 +131,8 @@ interface WorkflowEntry {
   graphRev: number
   fibers: Map<string, Fiber.Fiber<unknown, unknown>>
   watchers: Map<string, Fiber.Fiber<unknown, unknown>>
+  /** ADR-0008: the child session each fiber of `fibers` drives, recorded by its own attempt where the fiber is registered. Eviction cancels these (`RunnerLease.Evictable`). */
+  attemptChild: WeakMap<Fiber.Fiber<unknown, unknown>, () => string | undefined>
   /** Accepted messages preserve an existing running attempt through recovery. */
   messageContinuations: Set<string>
   /** DAG-03/F2: a replan-verdict veto whose durable pause could not be
@@ -795,6 +797,7 @@ const serviceLayer = Layer.effect(
                   if (!admitted) return
                   entry.fibers.set(nodeID, result.fiber)
                   entry.watchers.set(nodeID, result.watcherFiber)
+                  entry.attemptChild.set(result.fiber, result.childSessionID)
                 }),
               ),
               Effect.provideService(Dag.Service, dag),
@@ -915,11 +918,11 @@ const serviceLayer = Layer.effect(
         })
 
         // ADR-0008 decision 2: a lost runner lease evicts the entry and writes
-        // nothing for the workflow (runner-lease.ts).
+        // nothing for the workflow (runner-lease.ts). It cancels the children the
+        // entry's own attempts recorded (`attemptChild`); the node row may
+        // already name an attempt of the runner that took the lease over.
         evictEntry = RunnerLease.evictor({
           entries: runtimes,
-          childOf: (dagID, nodeID) =>
-            store.getNode(dagID, nodeID).pipe(Effect.map((node) => node?.childSessionId ?? null)),
           abort: (dagID, nodeID, childSessionID) =>
             abortChild(dagID, nodeID, childSessionID, "dag.loop.leaseLost", childAbort("lease-lost", "dag-lease")).pipe(
               Effect.ignore,
@@ -1021,6 +1024,8 @@ const serviceLayer = Layer.effect(
             const fiber = yield* continuation.pipe(Effect.forkIn(stateScope))
             ownedFiber = fiber
             entry.fibers.set(nodeID, fiber)
+            // It continues the child session this attempt already runs in; that is the one eviction cancels.
+            entry.attemptChild.set(fiber, RunnerLease.attached(node.childSessionId))
             const watcher =
               entry.watchers.get(nodeID) ??
               (yield* makeDeadlineWatcher({
@@ -1202,6 +1207,7 @@ const serviceLayer = Layer.effect(
               graphRev: currentWorkflow?.graphRev ?? wf.graphRev,
               fibers: new Map(),
               watchers: new Map(),
+              attemptChild: new WeakMap(),
               messageContinuations: new Set(recovery.continuations ?? []),
               vetoHold: checkpointState === "held",
             }
@@ -1373,6 +1379,7 @@ const serviceLayer = Layer.effect(
                   graphRev: wf.graphRev,
                   fibers: new Map(),
                   watchers: new Map(),
+                  attemptChild: new WeakMap(),
                   messageContinuations: new Set(),
                   vetoHold: false,
                 }

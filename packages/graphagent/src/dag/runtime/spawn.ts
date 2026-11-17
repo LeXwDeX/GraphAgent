@@ -186,7 +186,19 @@ export interface NodeSpawnResult {
   fiber: Fiber.Fiber<unknown, unknown>
   /** Deadline watcher fiber — rebuilt by the replan handler when the deadline is extended. */
   watcherFiber: Fiber.Fiber<unknown, unknown>
+  /**
+   * The child session this attempt created, read when asked: it exists only
+   * once the attempt holds a permit, so it is `undefined` before that and for an
+   * attempt that never gets one. It is the attempt's own record of its child.
+   * The node row names the child of whichever attempt wrote last, which after a
+   * runner lease takeover is the new holder's (ADR-0008): a runner that stops
+   * driving a workflow cancels what this answers, never what the row says.
+   */
+  childSessionID: () => string | undefined
 }
+
+/** `NodeSpawnResult.childSessionID` of a spawn that ends without an attempt. */
+const noChild = (): string | undefined => undefined
 
 export interface DeadlineWatcherInput {
   dagID: string
@@ -532,6 +544,7 @@ export function spawnNode(
         return {
           fiber: yield* Effect.forkIn(scope)(Effect.void),
           watcherFiber: yield* Effect.forkIn(scope)(Effect.void),
+          childSessionID: noChild,
         }
       })
 
@@ -685,7 +698,7 @@ export function spawnNode(
     if (!admitted) {
       const fiber = yield* Effect.forkIn(scope)(Effect.void)
       const watcherFiber = yield* Effect.forkIn(scope)(Effect.void)
-      return { fiber, watcherFiber }
+      return { fiber, watcherFiber, childSessionID: noChild }
     }
     if (input.onAdmitted) yield* input.onAdmitted
 
@@ -1807,6 +1820,6 @@ export function spawnNode(
       ),
     )
 
-    return { fiber, watcherFiber }
+    return { fiber, watcherFiber, childSessionID: () => childSessionID }
   })
 }
