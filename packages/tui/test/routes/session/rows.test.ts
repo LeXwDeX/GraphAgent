@@ -8,6 +8,7 @@ import {
   createRowMeasurements,
   createSessionViewState,
   createTextFacts,
+  DELEGATION_PROMPT_LINES,
   estimateRowHeight,
   firstVisible,
   isWindowed,
@@ -108,6 +109,15 @@ describe("estimateRowHeight", () => {
     expect(estimateRowHeight(row("a", "meta"), 40, 0)).toBe(2)
     expect(estimateRowHeight(row("a", "notice"), 40, 0)).toBe(2)
     expect(estimateRowHeight(row("a", "revert"), 40, 0)).toBe(5)
+  })
+
+  test("sizes the task block of a sub-agent by its prompt, up to the lines it shows, and the closing line at two", () => {
+    // Title, description, the gap and the padding make five; the prompt adds its wrapped lines.
+    expect(estimateRowHeight(row("a", "delegation"), 13, 10)).toBe(6)
+    expect(estimateRowHeight(row("a", "delegation"), 13, 25)).toBe(8)
+    // A long prompt is folded after DELEGATION_PROMPT_LINES lines and an ellipsis line: no taller than that.
+    expect(estimateRowHeight(row("a", "delegation"), 13, 10_000)).toBe(DELEGATION_PROMPT_LINES + 1 + 5)
+    expect(estimateRowHeight(row("a", "handback"), 40, 0)).toBe(2)
   })
 })
 
