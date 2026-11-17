@@ -404,3 +404,88 @@ These PRs put new code in new files. `loop.ts` and `dag.ts` only lose lines.
 - Replacing the pid probe of `runnerAlive` with heartbeats.
 - Policies that decide who may recover a workflow, such as the lead workflows
   of #1292, attach to `decide` as further rows, not as new recovery paths.
+
+## Amendment 1 (PR3b, #1029)
+
+What PR3b adds to this ADR and where it departs from it. The text above stays as
+written; where it conflicts with this section, this section wins.
+
+### Decisions 3 and 4: the token travels in fiber context, not in arguments
+
+- The text above says only that runner writes carry the token of the runtime
+  entry, not how it reaches `transact`. No `Dag` command gained a token
+  argument.
+- Core adds a fiber-level reference, `DagTransact.Fence`
+  (`packages/core/src/dag/transact.ts`, a `Context.Reference` with no token by
+  default), and `underFence(service, dagID, body)` hands it to the transaction's
+  fence. `transact(dagID, token, body)` keeps its signature.
+- The `Fence` is cleared as soon as it has been handed over: the transaction
+  body and any fiber it forks see no token, so a pause or a budget requeue
+  issued from an observer is still an intent write.
+- The only entry point on the runtime side is the new file
+  `src/dag/runtime/runner-port.ts`. `RunnerPort.make({ dag, token, lost })`
+  returns a `Dag.Interface` proxy that provides the `Fence` for 12 runner
+  commands only (the 11 of decision 4 plus `pauseForCheckpoint`) and passes
+  reads, intent writes, and `failUnrecoverable` through unchanged.
+- Trade-off: no command signature and none of the many `Layer.mock(Dag.Service)`
+  fixtures have to change. The cost is that the token travels implicitly in the
+  fiber context and the compiler does not check that it is present; the
+  guarantee rests on the port being the only entry point plus a static guard
+  test (`test/dag/dag-runner-port.test.ts`).
+- Classification: `pauseForCheckpoint` is in neither the runner-write list nor
+  the intent-write list of decision 4. It depends on the runner's own scheduling
+  state, so it is a runner write. `pause` and `extend` also have call sites in
+  `DagControl`, and `settleCompletion` has one in the host sweep; the port binds
+  only the runner's call sites.
+
+### Decision 5: handling a refusal
+
+- The port is the only place that handles `StaleRunnerError`. It first starts
+  `RunnerLease.refused(dagID, token)`, which reuses the evictor (child-session
+  abort reason `lease-lost`), and then fails with the existing transition
+  rejection `InvalidTransitionError`.
+- The eviction runs in a fiber of its own and the port does not wait for it: the
+  refused write may come from a fiber the eviction interrupts, or from one that
+  holds the `evalLock` the eviction takes.
+- A caller does not mistake the rejection for a node failure. The refused
+  transaction rolls back as a whole and leaves no event.
+- The read-only work that `nodeCompleted` and `nodeFailed` do before their
+  transaction (the node guard; for `nodeCompleted`, also the git fingerprint)
+  comes ahead of the fence, so a runner that lost its lease finishes that work
+  before it is refused. That is acceptable.
+
+### Decisions 2 and 5: no eviction on a terminal workflow (a departure)
+
+- The text above has the runner evict on every refusal by the fence. `refused`
+  does not evict when the lease row cannot be read together with its workflow
+  (the workflow is terminal or deleted).
+- Why: the fence reads the holder through a join with the workflow row, so a
+  terminal workflow has no holder. An eviction that got there first would make
+  the `WorkflowTerminal` handler skip the terminal worktree settlement and the
+  terminal wake.
+- Result: a late runner write to a terminal workflow is refused by the fence and
+  downgraded to a transition rejection. PR2's `verify` still evicts on a
+  terminal workflow; bringing the two into line is left to PR4b.
+
+### Decisions 2 and 6: the rest of decision 2, and orphan recovery
+
+- An isolated node reads `leaseHeld` once more before it commits, writes its
+  patch, and removes its worktree. If the lease is lost, the attempt ends there
+  with no commit and no removal.
+- Orphan `pending` recovery (`recoverOrphanPending`) claims the lease first,
+  then fails the workflow through the port, and gives the lease back at the end.
+  It leaves a workflow alone while another runner holds a live lease.
+
+### Decision 3: unfenced writes that bypass `Dag` commands (left to PR4b)
+
+- The bare `WorkflowStarted` that orphan `pending` recovery publishes.
+- The `WorkflowWorktreeSettled` published when a worktree completes.
+- The captured-output receipts of spawn and recovery (bound by the attempt
+  identity guard, but not by the lease).
+- The `NodeSafetyDenied` published by the child-session tool guard.
+
+### Decision 8: line counts of `loop.ts` and `dag.ts`
+
+- The text above says that `loop.ts` and `dag.ts` only lose lines. PR3b's wiring
+  could not avoid growing them: `loop.ts` by a net 25 lines, `dag.ts` by a net
+  4. The logic itself lives in `runner-port.ts` and `runner-lease.ts`.

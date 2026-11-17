@@ -46,9 +46,10 @@ import type { Dag } from "../dag"
  *     (`pauseForBudget`, `requeueNodes`, `resume`);
  *   - durable-fact writes, no token: `failUnrecoverable`; and the writes of the
  *     host sweep, which holds no lease.
- * `pause`, `extend` and `fail` appear in both lists: the runner's own use of them
- * (the recovery pause, fan-out planning, an orphan `pending` workflow and
- * `orchestrator_unresponsive`) goes through the port, a user's does not.
+ * `pause` and `extend` appear in both lists: the runner's own use of them (the
+ * recovery pause, fan-out planning) goes through the port, a user's does not.
+ * `fail` has only runner callers (an orphan `pending` workflow and
+ * `orchestrator_unresponsive`).
  */
 
 /**
