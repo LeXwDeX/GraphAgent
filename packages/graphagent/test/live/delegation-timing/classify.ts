@@ -498,8 +498,47 @@ function placeWords(words: readonly string[]): readonly string[] {
   return places
 }
 
+/**
+ * Scripts and options of PATTERN_FIRST commands that reach past their operands: sed's r/R/w/W/e
+ * commands (and the `w`/`e` flags of `s`), awk's environment, getline, redirections, pipes and
+ * system(), and rg's `--pre` preprocessor. A script is otherwise text, so these are checked here.
+ */
+/** sed's scripts: every `-e`/`--expression` value, or else its first operand. */
+function sedScripts(args: readonly string[]): string[] {
+  const scripts: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] ?? ""
+    if (word === "-e" || word === "--expression") scripts.push(args[++i] ?? "")
+    else if (word.startsWith("--expression=")) scripts.push(word.slice("--expression=".length))
+  }
+  if (scripts.length > 0) return scripts
+  const first = args.find((word) => !word.startsWith("-"))
+  return first === undefined ? [] : [first]
+}
+
+function scriptReachesOutside(words: readonly string[]): boolean {
+  const command = words[0] ?? ""
+  const args = words.slice(1)
+  if (command === "rg" || command === "ag") return args.some((word) => /^--pre(-glob)?(=|$)/.test(word))
+  if (command === "sed") {
+    // Drop the regex parts (/.../ and s/.../.../), then any command letter that reads, writes or runs.
+    return sedScripts(args).some((script) =>
+      /[rRwWe]/.test(
+        script.replace(/s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1/g, "s").replace(/\/(?:\\.|[^/])*\//g, ""),
+      ),
+    )
+  }
+  if (command === "awk" || command === "gawk" || command === "mawk") {
+    // The program is the first operand (or a -f file, which is a path checked elsewhere).
+    const program = args.find((word) => !word.startsWith("-"))
+    return program !== undefined && /\b(system|getline|ENVIRON|close|fflush)\b|[>|]/.test(program)
+  }
+  return false
+}
+
 function reachesOutside(words: readonly string[], bound: ReadonlySet<string>): boolean {
   if (ENV_READERS.has(words[0] ?? "")) return true
+  if (scriptReachesOutside(words)) return true
   return placeWords(words).some((word) => {
     const expanded = [...word.replaceAll("$(...)", "").matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*|.)/g)]
     // Positional and special parameters ($1, $?, $#) carry no environment; a named variable does,
@@ -531,7 +570,9 @@ export function classifyShell(command: string): ShellKind {
     (kind, segment) =>
       worst(
         kind,
-        segment.redirectsToFile ? "edit" : reachesOutside(segment.words, bound) ? "exec" : wordsKind(segment.words),
+        segment.redirectsToFile
+          ? "edit"
+          : worst(wordsKind(segment.words), reachesOutside(segment.words, bound) ? "exec" : "read"),
       ),
     "read",
   )

@@ -561,6 +561,14 @@ describe("a read-only shell call stays in the workspace", () => {
       "grep -f /etc/passwd src",
       "grep -n login /etc/passwd",
       "sed -n 1p ../secret.txt",
+      "sed -n '1r /etc/passwd' README.md",
+      "sed 's/a/b/w out.txt' README.md",
+      "sed -n '1w /tmp/x' README.md",
+      "sed -e '1e id' README.md",
+      "awk '{print ENVIRON[\"HOME\"]}' README.md",
+      "awk '{ while ((getline line < \"/etc/passwd\") > 0) print line }' README.md",
+      "awk '{print > \"out.txt\"}' README.md",
+      "rg --pre cat token src",
     ]) {
       expect(classifyShell(command), command).toBe("exec")
     }
@@ -576,6 +584,10 @@ describe("a read-only shell call stays in the workspace", () => {
       "rg -n '/auth/(login|logout)' src",
       "grep -rn -e '/api/' -e '~user' src",
       "sed -n '/^export/p' src/utils/date.ts",
+      "sed -n '1,40p' src/auth/login.ts",
+      "sed -n '/route/,/end/p' src/api/server.ts",
+      "awk '{print $1}' src/api/routes.txt",
+      "awk 'NR<=20' README.md",
     ]) {
       expect(classifyShell(command), command).toBe("read")
     }
