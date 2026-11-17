@@ -1317,7 +1317,6 @@ script/generate.ts
 script/hooks
 script/raw-changelog.ts
 script/release
-script/sign-windows.ps1
 script/upgrade-opentui.ts
 script/version.ts
 tsconfig.json

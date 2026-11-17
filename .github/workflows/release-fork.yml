@@ -1,7 +1,7 @@
 # ============================================================================
 # 📦 Release · Fork Build
 # ----------------------------------------------------------------------------
-# Purpose : Build GraphAgent CLI binaries (linux / macos / windows) for the
+# Purpose : Build GraphAgent CLI binaries (linux / macos) for the
 #           LeXwDeX/GraphAgent fork. Stripped-down version of upstream
 #           publish.yml — removes repo guard, Blacksmith runners, code
 #           signing, npm publish, and Tauri desktop.
@@ -15,15 +15,15 @@
 #                            built binaries + SHA256SUMS attached. The default
 #                            is false so an ordinary dispatch exercises
 #                            the complete candidate path without publishing.
-#           platforms      — comma-separated subset of linux,macos,windows
-#                            to build. Leave blank to build all three.
+#           platforms      — comma-separated subset of linux,macos
+#                            to build. Leave blank to build both.
 # Jobs    : package-templates — package latest reference templates from the
 #                               opencode-dag-config repo into a release asset
-#           build-cli — 3-OS matrix, bundles ripgrep + single-file binary
+#           build-cli — 2-OS matrix, bundles ripgrep + single-file binary
 #           prepare-release — always assembles and verifies a release candidate
 #           publish-release — optional, creates the GitHub Release
 #           register  — no-op for push triggers, just registers in Actions UI
-# Output  : Artifacts: graphagent-{linux,macos,windows}.{tar.gz,zip} +
+# Output  : Artifacts: graphagent-{linux,macos}.{tar.gz,zip} +
 #           dag-templates.tar.gz + SHA256SUMS
 # ============================================================================
 
@@ -39,7 +39,7 @@ on:
         type: boolean
         default: false
       platforms:
-        description: "Platforms to build, comma-separated (linux,macos,windows). Leave blank for all."
+        description: "Platforms to build, comma-separated (linux,macos). Leave blank for all."
         required: false
         type: string
   # Also run on push to main so the workflow registers in Actions UI
@@ -182,8 +182,6 @@ jobs:
             name: linux
           - runner: '["macos-latest"]'
             name: macos
-          - runner: '["self-hosted","Windows","X64","azure-win"]'
-            name: windows
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 45
     defaults:
@@ -204,8 +202,8 @@ jobs:
         with:
           # Development CI runs on Azure Pipelines, whose Azure DevOps Cache@2
           # store (key `bun | OS | arch | bun.lock`) is a separate cache
-          # system. No GitHub Actions workflow saves Linux or Windows bun
-          # caches, so there is no {OS}-bun-{hash} key race to avoid; macOS is
+          # system. No GitHub Actions workflow saves Linux bun caches, so
+          # there is no {OS}-bun-{hash} key race to avoid; macOS is
           # the only GitHub-hosted build in this repository.
           save-cache: ${{ matrix.name == 'macos' }}
 
@@ -216,9 +214,6 @@ jobs:
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         run: |
           snapshot_path="$RUNNER_TEMP/models-dev-api.json"
-          if command -v cygpath &>/dev/null; then
-            snapshot_path="$(cygpath -m "$snapshot_path")"
-          fi
           for attempt in 1 2 3; do
             if curl -fsSL --max-time 30 https://models.dev/api.json -o "$snapshot_path"; then
               echo "models.dev snapshot downloaded (attempt $attempt)"
@@ -246,9 +241,6 @@ jobs:
           mkdir -p dag-templates-src
           tar -xzf dag-templates-artifact/dag-templates.tar.gz -C dag-templates-src
           templates_dir="$GITHUB_WORKSPACE/dag-templates-src"
-          if command -v cygpath &>/dev/null; then
-            templates_dir="$(cygpath -m "$templates_dir")"
-          fi
           echo "DAG_TEMPLATES_DIR=$templates_dir" >> "$GITHUB_ENV"
 
       - name: Build CLI
@@ -269,7 +261,6 @@ jobs:
         run: |
           for dir in packages/graphagent/dist/graphagent-*/; do
             cli="$dir/bin/graphagent"
-            if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
             actual="$("$cli" --version)"
             if [[ "$actual" != "${{ needs.version.outputs.version }}" ]]; then
               echo "Unexpected CLI version: $actual" >&2
@@ -359,7 +350,6 @@ jobs:
           }
           require_archive linux "graphagent-linux-*.tar.gz"
           require_archive macos "graphagent-darwin-*.zip"
-          require_archive windows "graphagent-windows-*.zip"
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 "${assets[@]}" > SHA256SUMS
           elif command -v sha256sum >/dev/null 2>&1; then

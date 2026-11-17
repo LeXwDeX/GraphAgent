@@ -42,11 +42,11 @@ import { mockSessionPrompt } from "../lib/child-runs"
  * Every wait in this file returns as soon as the state it waits for is reached,
  * so a generous bound costs nothing when things go well and only decides how
  * long a real failure takes to report. The helpers' own bounds (2 s to await,
- * 5 s to poll) are tight for the self-hosted Windows runner that Windows E2E
- * runs this file on: it stalls for several seconds at times, in tests that take
- * about 0.2 s elsewhere and in ones that touch no file at all (one failed run
- * waited out `implementation did not start` and `verify did not start`, another
- * `producer did not commit its file`).
+ * 5 s to poll) were tight for the self-hosted Windows runner that used to run
+ * this file in Windows E2E (retired in #1364): it stalled for several seconds
+ * at times, in tests that take about 0.2 s elsewhere and in ones that touch no
+ * file at all (one failed run waited out `implementation did not start` and
+ * `verify did not start`, another `producer did not commit its file`).
  */
 const STALL_TOLERANCE = "20 seconds"
 const awaitWithTimeout = <A, E, R>(self: Effect.Effect<A, E, R>, message: string) =>
