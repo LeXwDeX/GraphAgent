@@ -1173,8 +1173,8 @@ describe("a nested plan the graph has no room for", () => {
 })
 
 describe("the room that siblings share", () => {
-  const three = (kinds: boolean[]) =>
-    plan(kinds.map((split, index) => item("abc".charAt(index), "explore", split ? { split: true } : {})))
+  // The smallest quota the user's config accepts is 10 nodes.
+  const tight = { compose: { max_subtree_nodes: 10 } }
 
   it.live(
     "gives the first nested slot to be expanded the room it asks for, and degrades the next one that does not fit",
@@ -1182,31 +1182,41 @@ describe("the room that siblings share", () => {
       Effect.gen(function* () {
         const { dag, dagID, read, expand } = yield* scenario({
           composer: "mapper",
-          globalDag: { compose: { max_subtree_nodes: 8 } },
-          split: { plan: three([true, true, false]) },
+          globalDag: tight,
+          split: {
+            plan: plan([
+              item("a", "explore", { split: true }),
+              item("b", "explore", { split: true }),
+              item("c", "explore"),
+            ]),
+          },
         })
-        const limit = { ...DagCompose.DEFAULT_LIMITS, maxSubtreeNodes: 8 }
+        const limit = { ...DagCompose.DEFAULT_LIMITS, maxSubtreeNodes: 10 }
         yield* expand()
-        yield* settle(dag, dagID, "survey--a--split", {
-          output: JSON.stringify(plan([item("a1", "explore"), item("a2", "explore")])),
-        })
+        const four = ["a1", "a2", "a3", "a4"].map((id) => item(id, "explore"))
+        yield* settle(dag, dagID, "survey--a--split", { output: JSON.stringify(plan(four)) })
         yield* settle(dag, dagID, "survey--b--split", {
           output: JSON.stringify(plan([item("b1", "explore"), item("b2", "explore")])),
         })
-        // Three items and two nested split nodes are written: 5 of the 8. `b` keeps a node for itself, which leaves 2.
-        expect(positionFor(yield* read, "survey--a", limit)).toEqual({ depth: 2, remainingNodes: 2 })
+        // Three items and two nested split nodes are written: 5 of the 10. `b` keeps a node for itself, which leaves 4.
+        expect(positionFor(yield* read, "survey--a", limit)).toEqual({ depth: 2, remainingNodes: 4 })
         yield* expand(dag, "survey--a")
-        // `a` took its two items. `b` finds one node left, which is not enough for its two.
+        // `a` took its four items. `b` finds one node left, which is not enough for its two.
         expect(positionFor(yield* read, "survey--b", limit)).toEqual({ depth: 2, remainingNodes: 1 })
         yield* expand(dag, "survey--b")
         const { config } = yield* read
         const nodes = byID(config?.nodes)
         expect(nodes.get("survey--a")?.join?.degraded).toBeUndefined()
-        expect(nodes.get("survey--a")?.depends_on).toEqual(["survey--a--a1", "survey--a--a2"])
+        expect(nodes.get("survey--a")?.depends_on).toEqual([
+          "survey--a--a1",
+          "survey--a--a2",
+          "survey--a--a3",
+          "survey--a--a4",
+        ])
         expect(nodes.get("survey--b")?.join?.degraded).toContain("room for 1 more nodes")
         expect(nodes.get("survey--b")?.depends_on).toEqual(["survey--b--fallback"])
         // The fallback fits because its place was kept: the subtree is exactly as large as its quota, not larger.
-        expect(generated(config)).toHaveLength(8)
+        expect(generated(config)).toHaveLength(10)
       }),
   )
 
@@ -1214,20 +1224,28 @@ describe("the room that siblings share", () => {
     Effect.gen(function* () {
       const { read, expand } = yield* scenario({
         composer: "mapper",
-        globalDag: { compose: { max_subtree_nodes: 5 } },
-        split: { plan: three([true, true, false]) },
+        globalDag: { compose: { max_children: 12, max_subtree_nodes: 10 } },
+        // Eight items leave 2 of the 10: one nested plan is paid for, and `a` is served before `b`.
+        split: {
+          plan: plan([
+            item("a", "explore", { split: true }),
+            item("b", "explore", { split: true }),
+            ...["c", "d", "e", "f", "g", "h"].map((id) => item(id, "explore")),
+          ]),
+        },
       })
       yield* expand()
       const { config } = yield* read
       const nodes = byID(config?.nodes)
-      const written = [...nodes.keys()].filter((id) => id.startsWith("survey--") && id !== "survey--split").sort()
-      // `a` was served, `b` asked for room that was gone.
-      expect(written).toEqual(["survey--a", "survey--a--split", "survey--b", "survey--c"])
+      expect(nodes.get("survey--a")?.expand).toBe("survey--a--split")
+      expect(nodes.has("survey--b--split")).toBe(false)
       expect(nodes.get("survey--b")?.expand).toBeUndefined()
-      const reason = "the subtree has no room left for a nested plan under dag.compose.max_subtree_nodes 5"
+      const reason = "the subtree has no room left for a nested plan under dag.compose.max_subtree_nodes 10"
       expect(nodes.get("survey--b")?.prompt_template.inline).toContain(reason)
       expect(nodes.get("survey")?.join?.items.find((entry) => entry.id === "b")).toMatchObject({ unsplit: reason })
       expect(nodes.get("survey")?.prompt_template.inline).toContain(reason)
+      // Eight items and one nested split node: nine of the ten.
+      expect(generated(config)).toHaveLength(9)
     }),
   )
 
@@ -1358,6 +1376,40 @@ describe("a nested plan after a recovery", () => {
       const ids = (done.config?.nodes ?? []).map((node) => node.id)
       expect(new Set(ids).size).toBe(ids.length)
       expect(generated(done.config)).toHaveLength(beforeCount + 2)
+    }),
+  )
+
+  it.live("points the join node above at a recovered nested join, which reads the recovered child it was missing", () =>
+    Effect.gen(function* () {
+      const { dag, dagID, read, expand } = yield* scenario({ composer: "mapper", split: { plan: nestedPlan } })
+      yield* expand()
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      yield* expand(dag, "survey--big")
+      yield* settle(dag, dagID, "survey--small", { output: "small says" })
+      yield* settle(dag, dagID, "survey--big--leaf1", { output: "leaf1 says" })
+      yield* settle(dag, dagID, "survey--big--leaf2", { failed: "the search timed out" })
+      const before = yield* read
+      const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--big--leaf2"])
+      const leafID = attempt("survey--big--leaf2")
+      const innerID = attempt("survey--big")
+      const outerID = attempt("survey")
+      const recovered = yield* read
+      const nodes = byID(recovered.config?.nodes)
+      // The nested join reads the recovered leaf where the failed one was, and is still part of the same subtree.
+      expect(nodes.get(innerID)).toMatchObject({
+        depends_on: ["survey--big--leaf1", leafID],
+        compose_subtree: { root: "survey", depth: 2 },
+        join: { plan: "survey--big--split" },
+      })
+      expect(nodes.get(innerID)?.join?.items.map((entry) => entry.node)).toEqual(["survey--big--leaf1", leafID])
+      // The join node above reads the recovered nested join as its item, and the item is still a nested one.
+      expect(nodes.get(outerID)?.depends_on).toEqual([innerID, "survey--small"])
+      expect(nodes.get(outerID)?.join?.items[0]).toMatchObject({ id: "big", node: innerID, nested: true })
+      expect(nodes.get(outerID)?.input_mapping).toMatchObject({ [innerID]: innerID })
+      expect(nodes.get(outerID)?.input_mapping).not.toHaveProperty("survey--big")
+      expect(nodes.get(outerID)?.prompt_template.inline).toContain(`"${innerID}": item "big", split again`)
+      // Nothing was added to the subtree: every node the recovery replaced was replaced by one.
+      expect(generated(recovered.config)).toHaveLength(generated(before.config).length)
     }),
   )
 })

@@ -215,10 +215,11 @@ export interface NodeConfig {
    * that listed the item. The expansion reads both from the persisted graph alone
    * (`DagCompose.positionOf`): the slot's own mark is its depth, and the marked
    * nodes of the current graph are what `dag.compose.max_subtree_nodes` has been
-   * spent on. A replay after a crash, a recovery or a sibling's expansion therefore
-   * writes the same ids and definitions. Written by the expansion, never by an
-   * author; no model-writable node schema has the field. A replan can neither
-   * change nor clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+   * spent on. Planning the same persisted graph again, after a crash or a recovery,
+   * therefore writes the same ids and definitions, and siblings share the quota in
+   * the order they are expanded. Written by the expansion, never by an author; no
+   * model-writable node schema has the field. A replan can neither change nor
+   * clear it (`ReplanDefinition.changedEngineOwnedFields`). */
   compose_subtree?: { root: string; depth: number }
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
