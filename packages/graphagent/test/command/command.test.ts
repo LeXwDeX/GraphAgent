@@ -40,7 +40,13 @@ const real = testEffect(realLayers)
 function commandLayer(
   commands: Record<
     string,
-    { template: string; description?: string; agent?: string; subtask?: boolean; background?: boolean }
+    {
+      template: string
+      description?: string
+      agent?: string
+      subtask?: boolean
+      execution?: "foreground" | "background" | "auto"
+    }
   > = {},
   skills: Skill.Info[] = [],
 ) {
@@ -83,7 +89,16 @@ const withBackgroundCommand = testEffect(
     "deep-check": {
       description: "Configured background check",
       template: "Check $ARGUMENTS",
-      background: true,
+      execution: "background",
+    },
+    "quick-check": {
+      description: "Configured foreground check",
+      template: "Check $ARGUMENTS",
+      execution: "foreground",
+    },
+    "plain-check": {
+      description: "Configured check without a declaration",
+      template: "Check $ARGUMENTS",
     },
   }),
 )
@@ -179,22 +194,26 @@ describe("legacy command registry", () => {
         source: "command",
         agent: "review",
         subtask: true,
-        background: true,
+        execution: "background",
       })
+      // #1357: the declaration is `execution`; the boolean it replaced is not part of the registry any more.
+      expect(command).not.toHaveProperty("background")
     }),
   )
 
-  withBackgroundCommand.instance("keeps the background flag of a configured command", () =>
+  withBackgroundCommand.instance("keeps the execution declaration of a configured command", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service
 
       expect(yield* commands.get("deep-check")).toMatchObject({
         name: "deep-check",
         description: "Configured background check",
-        background: true,
+        execution: "background",
         source: "command",
       })
-      expect((yield* commands.get("review"))?.background).toBe(true)
+      expect((yield* commands.get("quick-check"))?.execution).toBe("foreground")
+      expect((yield* commands.get("plain-check"))?.execution).toBeUndefined()
+      expect((yield* commands.get("review"))?.execution).toBe("background")
     }),
   )
 

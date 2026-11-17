@@ -247,6 +247,65 @@ it.instance("review agent asks for external directories and allows whitelisted e
   }),
 )
 
+// #1357: `review` returns one report about finished work through a command allowlist and no file tool, so it declares
+// the background. `auditor` reports the same way, but its shell is `bash: allow`: it is read-only by its prompt, not by
+// its rules, and does not declare. Every other built-in leaves the choice to the call. A declaration is a default:
+// configuration can change it.
+it.instance("only review declares the background by default", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    const declared = Object.fromEntries(
+      agents.filter((agent) => agent.native).map((agent) => [agent.name, agent.execution]),
+    )
+    expect(declared).toMatchObject({ review: "background" })
+    expect(
+      Object.entries(declared)
+        .filter(([, execution]) => execution !== undefined)
+        .map(([name]) => name),
+    ).toEqual(["review"])
+    expect(declared["auditor"]).toBeUndefined()
+  }),
+)
+
+it.instance(
+  "agent configuration overrides a built-in declaration and declares one for a custom agent",
+  () =>
+    Effect.gen(function* () {
+      const review = yield* load((svc) => svc.get("review"))
+      const custom = yield* load((svc) => svc.get("custom-runner"))
+      const explore = yield* load((svc) => svc.get("explore"))
+      expect(review?.execution).toBe("foreground")
+      expect(custom?.execution).toBe("background")
+      expect(explore?.execution).toBe("auto")
+      // A declaration is a field of its own: it is not left behind in the free-form options.
+      expect(custom?.options).not.toHaveProperty("execution")
+    }),
+  {
+    config: {
+      agent: {
+        review: { execution: "foreground" },
+        explore: { execution: "auto" },
+        "custom-runner": { description: "Runs checks", mode: "subagent", execution: "background" },
+      },
+    },
+  },
+)
+
+it.instance("agent frontmatter declares the execution mode next to the contract", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* Effect.promise(() =>
+      Bun.write(
+        path.join(test.directory, ".agents", "agents", "frontmatter-runner.md"),
+        `---\ndescription: Runs checks\nmode: subagent\nexecution: background\n---\nRun the checks.\n`,
+      ),
+    )
+    const config = yield* Config.Service
+    yield* config.invalidate().pipe(Effect.orDie)
+    expect((yield* load((svc) => svc.get("frontmatter-runner")))?.execution).toBe("background")
+  }),
+)
+
 it.instance(
   "reference config does not create subagents",
   () =>

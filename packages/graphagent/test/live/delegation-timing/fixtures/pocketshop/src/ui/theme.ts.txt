@@ -1,0 +1,6 @@
+export const theme = {
+  text: "#1b1b1f",
+  surface: "#f2f2f5",
+  accent: "#3b6cf6",
+  danger: "#d7263d",
+} as const

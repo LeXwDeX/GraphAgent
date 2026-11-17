@@ -1,6 +1,8 @@
 # Install
 
-Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
+Prebuilt CLI binaries (Linux / macOS, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
+
+From v2.0 no native Windows build is published and Windows integration tests no longer run. On Windows, install WSL, then follow the Linux instructions inside it.
 
 Built-in application updating is disabled in CLI and TUI. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `graphagent upgrade` and `POST /global/upgrade` report that updates are disabled.
 

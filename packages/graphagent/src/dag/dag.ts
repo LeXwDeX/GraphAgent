@@ -9,6 +9,7 @@ import { DagEvent } from "@graphagent/schema/dag-event"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import type { BatchEvent } from "@graphagent/core/event"
 import { Database } from "@graphagent/core/database/database"
@@ -806,6 +807,7 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const store = yield* DagStore.Service
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
+    const transactService = yield* Effect.serviceOption(DagTransact.Service)
     const withMailbox = <A, E, R>(
       dagID: string,
       reason: string | undefined | ((result: A) => string | undefined),
@@ -819,6 +821,23 @@ export const layer = Layer.effect(
         workflowLocks
           .withLock(dagID)(Effect.suspend(() => body(lockWitness)))
           .pipe(Effect.timeout(WORKFLOW_LOCK_TIMEOUT))
+    // ADR-0008 decision 3: the guard and the publish of a write run in ONE
+    // IMMEDIATE transaction (`DagTransact`), so nothing can change the workflow
+    // between them. The service is optional for now, like `DagMessages`: the
+    // production layers always provide it, and the many harnesses that mock this
+    // layer's dependencies run the body as it stands. PR4b makes it required,
+    // with the removal of the old paths.
+    const transact = <A, E, R>(
+      dagID: string,
+      body: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> =>
+      Option.isSome(transactService) ? transactService.value.transact(dagID, undefined, body) : body
+    // A command that changes workflow state: the in-process lock queues it, then
+    // one transaction carries its guard and its publish.
+    const command =
+      (dagID: string) =>
+      <A, E, R>(body: (lock: WorkflowLock) => Effect.Effect<A, E, R>) =>
+        withWorkflowLock(dagID)((lock) => transact(dagID, body(lock)))
 
     const guardWorkflow = Effect.fn("Dag.guardWorkflow")(function* (dagID: string, target: WorkflowStatus) {
       const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
@@ -1367,10 +1386,10 @@ export const layer = Layer.effect(
     ) {
       // The authoritative reads, outcome, and terminal event (plus its
       // read-model projection) must share one durable SQLite immediate
-      // transaction. fenceWorkflow owns that transaction; a nested
+      // transaction. The command's `transact` owns that transaction; a nested
       // events.publish uses a savepoint on the same connection, so a recover
       // in another process cannot advance the graph between the reads and the
-      // terminal write. Without a mailbox service (unit harnesses), the same
+      // terminal write. Without the service (unit harnesses), the same
       // decision runs unfenced.
       const terminalize = Effect.gen(function* () {
         const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
@@ -1417,17 +1436,11 @@ export const layer = Layer.effect(
         })
         return { status: "completed" as const }
       })
-      const fenced = Option.isSome(mailboxService)
-        ? mailboxService.value.fenceWorkflow(
-            dagID,
-            (result) =>
-              result.status === "completed" || result.status === "failed" ? result.status : undefined,
-            terminalize,
-          )
-        : terminalize
-      return yield* fenced.pipe(
-        Effect.catchIf(isTransitionRejection, () => Effect.succeed({ status: "ignored" as const })),
-      )
+      return yield* withMailbox(
+        dagID,
+        (result) => (result.status === "completed" || result.status === "failed" ? result.status : undefined),
+        terminalize,
+      ).pipe(Effect.catchIf(isTransitionRejection, () => Effect.succeed({ status: "ignored" as const })))
     })
 
     const _replan = Effect.fn("Dag._replan")(function* (
@@ -1915,8 +1928,10 @@ export const layer = Layer.effect(
       }).filter((diagnostic) => diagnostic.severity === "error")
       if (diagnostics.length > 0) return yield* Effect.fail(new StructuralValidationError({ diagnostics }))
 
-      // Hashing is outside the workflow mutex. Both workflow and node sequence
-      // fences are rechecked in the durable batch before any projection changes.
+      // Hashing is outside the workflow mutex and the transaction. The workflow
+      // is re-read inside the transaction that publishes the batch, and both the
+      // workflow and node sequence fences are rechecked in the durable batch
+      // before any projection changes.
       for (const id of plan.reused) {
         const node = nodes.find((candidate) => candidate.id === id)!
         yield* verifyOutputFileRef(node.capturedOutput).pipe(
@@ -1928,7 +1943,7 @@ export const layer = Layer.effect(
           ),
         )
       }
-      return yield* withWorkflowLock(dagID)((_lock) =>
+      return yield* command(dagID)((_lock) =>
         Effect.gen(function* () {
           const current = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
           if (!current || current.seq !== workflow.seq || current.graphRev !== input.expectedGraphRev) {
@@ -2249,19 +2264,24 @@ export const layer = Layer.effect(
           }),
         )
       })
+      // The completion fingerprint (git) above ran before this point: the
+      // transaction holds the write reservation and takes database work only.
       if (Option.isNone(messages) || !workflow?.directory || !node.childSessionId) {
-        yield* commit
+        yield* transact(dagID, commit)
         return
       }
-      const guarded = yield* messages.value.guard(
-        { projectID: workflow.projectId, directory: workflow.directory, sessionID: workflow.sessionId },
-        {
-          workflowID: dagID,
-          nodeID,
-          attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
-          snapshotID: attempt?.inputSnapshotID ?? node.capturedSnapshotID ?? undefined,
-        },
-        commit,
+      const guarded = yield* transact(
+        dagID,
+        messages.value.guard(
+          { projectID: workflow.projectId, directory: workflow.directory, sessionID: workflow.sessionId },
+          {
+            workflowID: dagID,
+            nodeID,
+            attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
+            snapshotID: attempt?.inputSnapshotID ?? node.capturedSnapshotID ?? undefined,
+          },
+          commit,
+        ),
       )
       if (!guarded.ok) {
         if (guarded.reason === "stale_input" || guarded.reason === "unassociated")
@@ -2307,21 +2327,24 @@ export const layer = Layer.effect(
         )
       })
       if (Option.isNone(messages) || !workflow?.directory || !node.childSessionId || node.status !== "running") {
-        yield* commit
+        yield* transact(dagID, commit)
         return
       }
-      const guarded = yield* messages.value.guard(
-        { projectID: workflow.projectId, directory: workflow.directory, sessionID: workflow.sessionId },
-        {
-          workflowID: dagID,
-          nodeID,
-          attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
-          failureReason: trigger,
-          snapshotID: attempt?.inputSnapshotID,
-          requireCurrentInput: trigger === "verdict_fail",
-          expectedAcceptedRevision: attempt?.expectedAcceptedRevision,
-        },
-        commit,
+      const guarded = yield* transact(
+        dagID,
+        messages.value.guard(
+          { projectID: workflow.projectId, directory: workflow.directory, sessionID: workflow.sessionId },
+          {
+            workflowID: dagID,
+            nodeID,
+            attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
+            failureReason: trigger,
+            snapshotID: attempt?.inputSnapshotID,
+            requireCurrentInput: trigger === "verdict_fail",
+            expectedAcceptedRevision: attempt?.expectedAcceptedRevision,
+          },
+          commit,
+        ),
       )
       if (!guarded.ok) {
         if (guarded.reason === "stale_input" || guarded.reason === "unassociated")
@@ -2621,23 +2644,24 @@ export const layer = Layer.effect(
     return Service.of({
       create,
       store,
-      pause: (dagID, reason) => withWorkflowLock(dagID)((lock) => pause(lock, dagID, reason)),
-      pauseForBudget: (dagID) => withWorkflowLock(dagID)((lock) => pauseForBudget(lock, dagID)),
-      requeueNodes: (dagID, nodeIDs, reason) =>
-        withWorkflowLock(dagID)((lock) => requeueNodes(lock, dagID, nodeIDs, reason)),
+      pause: (dagID, reason) => command(dagID)((lock) => pause(lock, dagID, reason)),
+      pauseForBudget: (dagID) => command(dagID)((lock) => pauseForBudget(lock, dagID)),
+      requeueNodes: (dagID, nodeIDs, reason) => command(dagID)((lock) => requeueNodes(lock, dagID, nodeIDs, reason)),
       pauseForCheckpoint: (dagID, checkpointSeq) =>
-        withWorkflowLock(dagID)((lock) => pauseForCheckpoint(lock, dagID, checkpointSeq)),
+        command(dagID)((lock) => pauseForCheckpoint(lock, dagID, checkpointSeq)),
       // D12: resume/step are the two engine transitions that can lift a pause,
       // so both consult the injectable ResumeGuard before publishing. The
       // guard runs under the workflow lock, after the state-machine check, and
       // only on the public path — failUnrecoverable's internal resume bypasses
-      // it deliberately (terminalizing is not resuming execution).
+      // it deliberately (terminalizing is not resuming execution). The policy
+      // reads config and usage, not just the database, so it runs before the
+      // transaction; the transition guard and the publish run inside it.
       resume: (dagID) =>
         withWorkflowLock(dagID)((lock) =>
           Effect.gen(function* () {
             const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
             yield* ResumeGuard.check(workflow)
-            yield* resume(lock, dagID)
+            yield* transact(dagID, resume(lock, dagID))
           }),
         ),
       step: (dagID) =>
@@ -2645,16 +2669,15 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             const workflow = yield* guardWorkflow(dagID, WorkflowStatus.STEPPING)
             yield* ResumeGuard.check(workflow)
-            return yield* step(lock, dagID)
+            return yield* transact(dagID, step(lock, dagID))
           }),
         ),
-      cancel: (dagID) => withWorkflowLock(dagID)((lock) => withMailbox(dagID, "cancelled", cancel(lock, dagID))),
+      cancel: (dagID) => command(dagID)((lock) => withMailbox(dagID, "cancelled", cancel(lock, dagID))),
       complete: (dagID, options) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
-      fail: (dagID, reason) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
+        command(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
+      fail: (dagID, reason) => command(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
       failUnrecoverable: (dagID, reason) =>
-        withWorkflowLock(dagID)((lock) =>
+        command(dagID)((lock) =>
           // An `ignored` outcome means the workflow moved or terminalized
           // concurrently: the transaction must not close a live mailbox.
           withMailbox(
@@ -2663,8 +2686,7 @@ export const layer = Layer.effect(
             failUnrecoverable(lock, dagID, reason),
           ),
         ),
-      settleCompletion: (dagID, options) =>
-        withWorkflowLock(dagID)((lock) => settleCompletion(lock, dagID, options)),
+      settleCompletion: (dagID, options) => command(dagID)((lock) => settleCompletion(lock, dagID, options)),
       // The witness convention exists to type-proof internal guarded calls;
       // external critical sections (worktree settlement) cannot hold a witness,
       // so the timeout is folded into a defect here instead.
@@ -2673,18 +2695,15 @@ export const layer = Layer.effect(
           Effect.catchTag("TimeoutError", (error) => Effect.die(error)),
         ),
       replan: (dagID, fragment) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
+        command(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
       extend: (dagID, nodes, fence) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence))),
+        command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence))),
       recover,
-      retarget: (dagID, input) =>
-        withWorkflowLock(dagID)((lock) =>
-          withMailbox(dagID, undefined, retarget(lock, dagID, input)),
-        ),
+      retarget: (dagID, input) => command(dagID)((lock) => withMailbox(dagID, undefined, retarget(lock, dagID, input))),
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
-        withWorkflowLock(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
+        command(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
       nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead, targetFingerprint, worktree) =>
-        withWorkflowLock(dagID)((lock) =>
+        command(dagID)((lock) =>
           nodeStarted(
             lock,
             dagID,
@@ -2708,23 +2727,19 @@ export const layer = Layer.effect(
           nodeFailed(lock, dagID, nodeID, reason, trigger, attempt, errorClass, worktree),
         ),
       nodeSkipped: (dagID, nodeID, reason, attempt) =>
-        withWorkflowLock(dagID)((lock) =>
-          withMailbox(dagID, undefined, nodeSkipped(lock, dagID, nodeID, reason, attempt)),
-        ),
+        command(dagID)((lock) => withMailbox(dagID, undefined, nodeSkipped(lock, dagID, nodeID, reason, attempt))),
       nodeCancelled: (dagID, nodeID, reason) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, nodeCancelled(lock, dagID, nodeID, reason))),
+        command(dagID)((lock) => withMailbox(dagID, undefined, nodeCancelled(lock, dagID, nodeID, reason))),
       nodeRestarted: (dagID, nodeID, childSessionID) =>
-        withWorkflowLock(dagID)((lock) =>
-          withMailbox(dagID, undefined, nodeRestarted(lock, dagID, nodeID, childSessionID)),
-        ),
+        command(dagID)((lock) => withMailbox(dagID, undefined, nodeRestarted(lock, dagID, nodeID, childSessionID))),
       nodeTimeoutEscalated: (dagID, nodeID, childSessionID, timeoutExtensions, staleDeadlineMs, attempt) =>
-        withWorkflowLock(dagID)((lock) =>
+        command(dagID)((lock) =>
           nodeTimeoutEscalated(lock, dagID, nodeID, childSessionID, timeoutExtensions, staleDeadlineMs, attempt),
         ),
       nodeExtendTimeout: (dagID, nodeID, newDeadlineMs, attempt) =>
-        withWorkflowLock(dagID)((lock) => nodeExtendTimeout(lock, dagID, nodeID, newDeadlineMs, attempt)),
+        command(dagID)((lock) => nodeExtendTimeout(lock, dagID, nodeID, newDeadlineMs, attempt)),
       extendTimeout: (dagID, nodeID, timeoutMs) =>
-        withWorkflowLock(dagID)((lock) => extendTimeout(lock, dagID, nodeID, timeoutMs)),
+        command(dagID)((lock) => extendTimeout(lock, dagID, nodeID, timeoutMs)),
     })
   }),
 )
@@ -2735,6 +2750,13 @@ export const defaultLayer = layer.pipe(
   Layer.provide(DagProjector.defaultLayer),
   Layer.provide(Database.defaultLayer),
   Layer.provide(DagMessages.defaultLayer),
+  Layer.provide(DagTransact.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [EventV2Bridge.node, DagStore.node, DagProjector.node, DagMessages.node])
+export const node = LayerNode.make(layer, [
+  EventV2Bridge.node,
+  DagStore.node,
+  DagProjector.node,
+  DagMessages.node,
+  DagTransact.node,
+])

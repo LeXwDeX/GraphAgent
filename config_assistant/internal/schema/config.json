@@ -259,6 +259,15 @@
         },
         "contract": {
           "$ref": "#/$defs/AgentContract"
+        },
+        "execution": {
+          "type": "string",
+          "enum": [
+            "foreground",
+            "background",
+            "auto"
+          ],
+          "description": "How a task call to this agent runs by default: \"foreground\" waits for the result, \"background\" detaches the run and delivers the result later, \"auto\" (default) leaves it to the call. The call's own background argument and a command's execution take precedence over it. An interactive agent (its own rules name and allow question or plan_exit) always runs in the foreground, and so does every call in a non-interactive turn (opencode run, a hook follow-up)."
         }
       }
     },
@@ -845,8 +854,18 @@
               "subtask": {
                 "type": "boolean"
               },
+              "execution": {
+                "type": "string",
+                "enum": [
+                  "foreground",
+                  "background",
+                  "auto"
+                ],
+                "description": "How the subtask this command starts runs when the user issues it: \"foreground\" waits for the result, \"background\" detaches the run and delivers the result later, \"auto\" (default) leaves it to the agent the command runs. Only meaningful with subtask; a non-interactive turn or a hook follow-up always runs the command in the foreground."
+              },
               "background": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "@deprecated Use the execution field instead: true is \"background\", false is \"foreground\"."
               }
             },
             "required": [

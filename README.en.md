@@ -54,7 +54,7 @@ The `agent` tool carries observation and messages between the main agent and DAG
 
 `/review` uses the built-in read-only `review` agent: it can read files, search, query LSP, and run read-only git and forge commands; it cannot edit files, spawn sub-tasks, or run commands that mutate files. The command runs in the background by default and hands its findings back to the main agent, which relays them.
 
-The `task` tool decides foreground versus background from prompt criteria, not from a code heuristic. Foreground when the work needs the user's input or confirmation, changes state shared with the main agent, is the direct input to the next step, or takes seconds. Background only when it does not block the next step, only reads or writes files the main agent will not touch, takes minutes, and its result fits in one message.
+The `task` tool decides foreground versus background from prompt criteria, not from a code heuristic. Foreground is the default, and always applies when the work needs the user's input or confirmation, changes state shared with the main agent, is the direct input to the next step, or is a quick lookup the main agent can answer directly. Background applies only when all of these hold: you say you will keep working on something else meanwhile ("at the same time", "no need to wait") or ask for background; the delegated work is read-only or writes files neither you nor the main agent will touch; its result fits in one message. The main agent then delegates before investigating anything itself and carries on with any foreground work you also asked for; if none is left, it replies briefly and ends its turn. The result arrives later as a message. An agent or command can declare its execution mode (`execution`), and the declaration takes precedence over the prompt criteria; interactive agents always run in the foreground. Rationale and evaluation results are in [ADR 0003](./docs/adr/0003-task-execution-classification.md).
 
 ### Reasoning shaping
 
@@ -112,7 +112,7 @@ A set of context-management features: limits on tool output length, a cap on too
 
 ## Quick start
 
-Prebuilt binaries (Linux, macOS, Windows, with SHA256SUMS) are on the [Releases](https://github.com/LeXwDeX/GraphAgent/releases) page. Unpack one, put `graphagent` on your PATH and run it in your project directory. The `oc` installer script in this repo goes away in v2.1, when installing and upgrading move into the main program (see the roadmap). GraphAgent is not published to npm, brew or scoop, and the upstream `opencode-ai` package installs upstream opencode, not GraphAgent.
+Prebuilt binaries (Linux, macOS, with SHA256SUMS) are on the [Releases](https://github.com/LeXwDeX/GraphAgent/releases) page. Unpack one, put `graphagent` on your PATH and run it in your project directory. From v2.0 no native Windows build is published and Windows integration tests no longer run. On Windows, install WSL, then set up and use GraphAgent inside it the Linux way. The `oc` installer script in this repo goes away in v2.1, when installing and upgrading move into the main program (see the roadmap). GraphAgent is not published to npm, brew or scoop, and the upstream `opencode-ai` package installs upstream opencode, not GraphAgent.
 
 To run from source you need the Bun version pinned in `package.json` (`packageManager`) and the Node version in `.node-version`:
 
@@ -176,7 +176,7 @@ v2.0's remaining work is tracked on the [milestone](https://github.com/LeXwDeX/G
 - Workflow tool interface convergence, workflow-level worktrees, event-driven mailboxes and durable reconciliation.
 - Agent contracts and a composer: built-in research, architecture design and prototyping agents, composed inside a DAG.
 - PR watching rebuilt as an event source; `/remind` persistent reminders; background task display and a read-only child-agent view.
-- The v2.0.0 release: version derivation, breaking-change list, migration guides in Chinese and English, and three-platform smoke tests.
+- The v2.0.0 release: version derivation, breaking-change list, migration guides in Chinese and English, and Linux and macOS smoke tests.
 - v2.1: install and upgrade move into the main program. It looks up new versions on GitHub and upgrades itself, so the `oc` script is gone. Release packaging changes with it, so installing on macOS no longer asks for a password. Configuration can also be read from a GitHub repository ([#1281](https://github.com/LeXwDeX/GraphAgent/issues/1281)).
 
 These are plans. The milestone has the actual status.

@@ -1,0 +1,27 @@
+import type { Req, Res } from "./middleware"
+import { postLogin, postLogout } from "./routes/auth"
+import { createOrder, listOrders, refundOrder } from "./routes/orders"
+import { getMe, updateMe } from "./routes/users"
+
+type Handler = (req: Req) => Res
+
+export const routes: Record<string, Handler> = {
+  "POST /login": postLogin,
+  "POST /logout": postLogout,
+  "GET /orders": listOrders,
+  "POST /orders": createOrder,
+  "POST /orders/:id/refund": refundOrder,
+  "GET /users/me": getMe,
+  "PUT /users/me": updateMe,
+}
+
+export function handle(method: string, path: string, req: Req): Res {
+  const handler = routes[`${method} ${path}`]
+  if (!handler) return { status: 404, json: { error: "NOT_FOUND" } }
+  return handler(req)
+}
+
+if (import.meta.main) {
+  const port = Number(process.env.PORT ?? 3000)
+  console.log(`pocketshop listening on ${port}`)
+}

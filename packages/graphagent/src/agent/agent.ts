@@ -1,5 +1,6 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { ConfigAgentV1 } from "@graphagent/core/v1/config/agent"
+import { ConfigExecutionV1 } from "@graphagent/core/v1/config/execution"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Config } from "@/config/config"
 import { watchTrustState } from "@/project/trust/subscribe"
@@ -84,6 +85,12 @@ export const Info = Schema.Struct({
    * `AgentContract.effective` fills in.
    */
   contract: Schema.optional(ConfigAgentV1.Contract),
+  /**
+   * How a task call to this agent runs by default (#1357). A declaration, not a decision: the call's own
+   * `background` argument and a command's declaration outrank it, and the hard constraints outrank all of them
+   * (`TaskExecution.resolve`). Omitted is `auto`: the call decides.
+   */
+  execution: Schema.optional(ConfigExecutionV1.Mode),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -359,6 +366,10 @@ export const layer = Layer.effect(
             // Serves background review; multi-lens review runs through the DAG's
             // review lanes, so it is never a composer's dispatch target.
             contract: { role: "worker", visibility: "private" },
+            // B-2 and B-3: it only reads (a command allowlist, no file tools) and its result is one findings report,
+            // about work that is already finished. The declaration stands in for the user's parallel-work signal
+            // (B-1) for this agent; a call can still pass `background: false` (#1357).
+            execution: "background",
           },
           auditor: {
             name: "auditor",
@@ -395,6 +406,9 @@ export const layer = Layer.effect(
             native: true,
             // A review lane that is missing cannot be treated as if it never ran.
             contract: { role: "worker", visibility: "public", failure: "fail" },
+            // No `execution` declaration on purpose (#1357): it verifies finished work and reports one finding set,
+            // but its shell is `bash: allow` (see the permission note above), so it is read-only by its prompt and
+            // not by its rules, and B-2 cannot be shown in code. The call decides, like for any other worker.
           },
           compaction: {
             name: "compaction",
@@ -480,6 +494,7 @@ export const layer = Layer.effect(
           item.options = mergeDeep(item.options, value.options ?? {})
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
           item.contract = AgentContract.merge(item.contract, value.contract)
+          if (value.execution !== undefined) item.execution = value.execution
         }
 
         // Ensure Truncate.GLOB is allowed unless explicitly configured

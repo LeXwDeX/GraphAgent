@@ -41,6 +41,7 @@ import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, L
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionV1 as SessionV1Events } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
+import { DagLease } from "@graphagent/core/dag/lease"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { WorkflowTable, WorkflowNodeTable } from "@graphagent/core/dag/sql"
@@ -206,14 +207,15 @@ interface TwoInstanceInput {
     readonly calls: { value: number }
   }
   /**
-   * Optional deterministic park on DagStore.tryClaimAdoption (the #270 atomic
-   * admission fence). Each claim bumps `calls`; the first `skip` claims pass
-   * through unparked (e.g. the adoption claim), every later claim sets
+   * Optional deterministic park on DagLease.held (the loop's lease re-reads:
+   * the #270 admission of an adoption, and the fence right before a child
+   * session exists, ADR-0008). Each read bumps `calls`; the first `skip` reads
+   * pass through unparked (the adoption's), every later read sets
    * `parked.value = true` and parks on `wait` before delegating — letting a
    * probe interleave Session.remove between the passed admission and the
    * in-flight spawn's child-session creation (the deletion-race probe C7).
    */
-  readonly parkAdoptionClaim?: {
+  readonly parkSpawnLease?: {
     readonly wait: Promise<void>
     readonly parked: { value: boolean }
     readonly calls: { value: number }
@@ -226,8 +228,7 @@ function twoInstanceLayer(input: TwoInstanceInput) {
   const events = EventV2.layer.pipe(Layer.provide(database))
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const realStore = DagStore.layer.pipe(Layer.provide(database))
-  const needsStoreWrapper =
-    Boolean(input.failGetWorkflow) || Boolean(input.parkGetNodes) || Boolean(input.parkAdoptionClaim)
+  const needsStoreWrapper = Boolean(input.failGetWorkflow) || Boolean(input.parkGetNodes)
   const store = needsStoreWrapper
     ? Layer.effect(
         DagStore.Service,
@@ -251,21 +252,33 @@ function twoInstanceLayer(input: TwoInstanceInput) {
                 gate.parked.value = true
                 return Effect.promise(() => gate.wait).pipe(Effect.flatMap(() => real.getNodes(id)))
               }),
-            tryClaimAdoption: (id) =>
-              Effect.suspend(() => {
-                const gate = input.parkAdoptionClaim
-                if (!gate) return real.tryClaimAdoption(id)
-                gate.calls.value++
-                if (gate.calls.value <= gate.skip) return real.tryClaimAdoption(id)
-                gate.parked.value = true
-                return Effect.promise(() => gate.wait).pipe(Effect.flatMap(() => real.tryClaimAdoption(id)))
-              }),
           })
         }),
       ).pipe(Layer.provide(realStore))
     : realStore
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  // Every instance claims and re-reads through this one lease service; only a
+  // probe that parks a read needs a wrapper, otherwise the loop builds its own.
+  const parkSpawnLease = input.parkSpawnLease
+  const lease = parkSpawnLease
+    ? Layer.effect(
+        DagLease.Service,
+        Effect.gen(function* () {
+          const real = yield* DagLease.Service
+          return DagLease.Service.of({
+            ...real,
+            held: (id) =>
+              Effect.suspend(() => {
+                parkSpawnLease.calls.value++
+                if (parkSpawnLease.calls.value <= parkSpawnLease.skip) return real.held(id)
+                parkSpawnLease.parked.value = true
+                return Effect.promise(() => parkSpawnLease.wait).pipe(Effect.flatMap(() => real.held(id)))
+              }),
+          })
+        }),
+      ).pipe(Layer.provide(DagLease.layer.pipe(Layer.provide(database))))
+    : Layer.empty
   // The session projector runs the SessionEvent.Moved projection (session row
   // + workflow directory re-stamp — the #269 atomic-adoption transition), so
   // publishing Moved through the bridge converges the workflow stamps in the
@@ -282,6 +295,7 @@ function twoInstanceLayer(input: TwoInstanceInput) {
     dag,
     status,
     AgentScheduler.defaultLayer,
+    lease,
   )
   const childTitles = new Map<string, string>()
   const created: string[] = []
@@ -491,7 +505,7 @@ function runTwoInstanceGuardTest<A>(
       readonly released: { value: boolean }
       readonly calls: { value: number }
     }
-    readonly parkAdoptionClaim?: {
+    readonly parkSpawnLease?: {
       readonly wait: Promise<void>
       readonly parked: { value: boolean }
       readonly calls: { value: number }
@@ -601,7 +615,7 @@ function runTwoInstanceGuardTest<A>(
           failGetWorkflow: options.failGetWorkflow,
           parkGetNodes: options.parkGetNodes,
           parkWakeDelivery: options.parkWakeDelivery,
-          parkAdoptionClaim: options.parkAdoptionClaim,
+          parkSpawnLease: options.parkSpawnLease,
         }),
       ),
       Effect.provideService(InstanceRef, {
@@ -2018,14 +2032,14 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
     })
     await Effect.runPromise(
       runTwoInstanceGuardTest(
-        { parkAdoptionClaim: { wait, parked, calls, skip: 1 } },
+        { parkSpawnLease: { wait, parked, calls, skip: 1 } },
         ({ dag, database, initA, cancelsA, childPromptsA }) =>
           Effect.gen(function* () {
             yield* initA
-            // A ready-node workflow: the adoption claim (skipped by the gate) runs
-            // first, then spawnReady admits the node and the SECOND claim — the
-            // window-2 spawn-admission fence — parks just before the child session
-            // would materialize.
+            // A ready-node workflow: the adoption's lease read (skipped by the
+            // gate) runs first, then spawnReady admits the node and the SECOND
+            // read — the window-2 spawn-admission fence — parks just before the
+            // child session would materialize.
             const dagID = yield* dag.create({
               projectID: PROJECT_ID,
               sessionID: SES_A,
@@ -2034,21 +2048,21 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             })
             yield* pollWithTimeout(
               Effect.sync(() => (parked.value ? true : undefined)),
-              "the spawn admission claim never parked",
+              "the spawn admission check never parked",
             )
             // Deletion committed AFTER the ownership/admission check passed: drop
             // the workflow row directly (FK cascade wipes the nodes) WITHOUT
             // publishing SessionV1.Event.Deleted, so no in-memory sweep interrupts
-            // the parked admission — the fence must hold purely because the atomic
-            // claim re-reads the row.
+            // the parked admission — the fence must hold purely because the lease
+            // read joins the workflow row.
             yield* database.db
               .delete(WorkflowTable)
               .where(eq(WorkflowTable.id, dagID as never))
               .run()
               .pipe(Effect.orDie)
-            // Release: the claim conditional UPDATE matches no row (cascade already
-            // removed it) → the spawn aborts BEFORE sessions.create — nothing a
-            // deleted workflow may run survives the admission window.
+            // Release: the lease read finds no workflow (cascade already removed
+            // it) → the spawn aborts BEFORE sessions.create — nothing a deleted
+            // workflow may run survives the admission window.
             release()
             yield* Effect.sleep("400 millis")
             // Fenced: no post-deletion spawn survived — no child prompt ran and no

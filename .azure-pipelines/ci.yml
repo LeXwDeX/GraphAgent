@@ -3,7 +3,6 @@
 # ----------------------------------------------------------------------------
 # Purpose : Private-host scan, session function-length ratchet, lint, typecheck,
 #           DAG core gate, unit/HttpAPI/generated-code tests on Linux
-#           (Windows DAG tests run in GitHub Actions)
 # Trigger : Push to `main`, PRs targeting `main`, manual run
 # Jobs    : Typecheck               — private-host scan, its unit test,
 #                                     session function-length ratchet, lint,
@@ -19,7 +18,6 @@
 # Gate    : Typecheck and Unit Tests (linux) are the merge
 #           gates. Every PR and every main push runs the full suite; there is
 #           no result reuse. Fork PRs build only after a member comments.
-#           Windows DAG tests are a GitHub Actions check on the self-hosted runner.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute with
 #           no reserved parallel jobs: ubuntu-24.04-8-core (8 vCPU, 32 GB).
 # Release : GitHub Actions release-fork.yml; .azure-pipelines/release.yml is

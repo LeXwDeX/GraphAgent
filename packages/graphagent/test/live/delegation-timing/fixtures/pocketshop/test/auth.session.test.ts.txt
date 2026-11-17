@@ -1,0 +1,18 @@
+import { expect, test } from "bun:test"
+import { createSession, revokeSession, validateSession } from "../src/auth"
+
+test("a fresh session validates", () => {
+  const session = createSession("u_101", 1_000)
+  expect(validateSession(session.id, 2_000)?.userId).toBe("u_101")
+})
+
+test("an expired session is dropped", () => {
+  const session = createSession("u_101", 0)
+  expect(validateSession(session.id, 10_000_000)).toBeUndefined()
+})
+
+test("a revoked session no longer validates", () => {
+  const session = createSession("u_102")
+  revokeSession(session.id)
+  expect(validateSession(session.id)).toBeUndefined()
+})

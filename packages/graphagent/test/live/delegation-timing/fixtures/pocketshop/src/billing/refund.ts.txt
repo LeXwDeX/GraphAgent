@@ -1,0 +1,13 @@
+import { buildInvoice, type Invoice, type LineItem } from "./invoice"
+
+export interface Refund {
+  reason: string
+  invoice: Invoice
+  refundedCents: number
+}
+
+/** Refunds the full invoice total of an order. */
+export function refund(lines: LineItem[], country: string, reason: string): Refund {
+  const invoice = buildInvoice(lines, country)
+  return { reason, invoice, refundedCents: invoice.totalCents }
+}

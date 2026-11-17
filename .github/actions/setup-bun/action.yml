@@ -26,7 +26,6 @@ runs:
           case "$RUNNER_OS" in
             macOS)   OS=darwin ;;
             Linux)   OS=linux ;;
-            Windows) OS=windows ;;
           esac
           echo "url=https://github.com/oven-sh/bun/releases/download/bun-v${V}/bun-${OS}-x64-baseline.zip" >> "$GITHUB_OUTPUT"
         fi
@@ -64,7 +63,6 @@ runs:
     # guarantee one, so expose the copy bundled with the pinned Node's npm
     # instead of depending on runner state. No network, no global install.
     - name: Provide node-gyp from the pinned Node
-      if: runner.os != 'Windows'
       shell: bash
       run: |
         # Derive from the node binary: npm output redacts UUID-like path segments.
@@ -81,15 +79,7 @@ runs:
         echo "node-gyp $(node "$gyp" --version) from $gyp"
 
     - name: Install dependencies
-      run: |
-        # Workaround for patched peer variants
-        # e.g. ./patches/ for standard-openapi
-        # https://github.com/oven-sh/bun/issues/28147
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          bun install --frozen-lockfile --linker hoisted ${{ inputs.install-flags }}
-        else
-          bun install --frozen-lockfile ${{ inputs.install-flags }}
-        fi
+      run: bun install --frozen-lockfile ${{ inputs.install-flags }}
       shell: bash
 
     - name: Save Bun dependencies

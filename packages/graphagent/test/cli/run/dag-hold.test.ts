@@ -994,3 +994,163 @@ test("runs no timer once the initial request settles", async () => {
   await consumed
 })
 
+// A grace verdict (#1029): the idle poll saw a completed workflow with its report receipt while the turn's active
+// latch was set, so the hold waits for the wake admission to make the session busy, and `pollEvents` turns that wait
+// into one delayed synthetic idle. The admission announces itself with events before the busy status (the wake's user
+// message, then its parts), and the initial request settles around the same time. Neither is the delayed re-check,
+// and neither may spend the grace. Where the settle edge lands among those events is a matter of milliseconds in
+// production, so these tests queue the stream up front and let the consumer settle the request while it handles a
+// named event: the order is fixed by the stream, not by sleeps, and the only clock left is the delayed re-check's own
+// timer, which the tests that wait for it keep short through `interval`.
+describe("a grace waits for its delayed re-check", () => {
+  /** Fails with `message` if `promise` has not settled within `ms`; only a failing test ever waits that long. */
+  async function within<A>(promise: Promise<A>, message: string, ms = 5_000): Promise<A> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), ms)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  const heartbeatEvent = (id: string) => ({ id, type: "server.heartbeat", properties: {} }) as unknown as Event
+
+  /** `pollEvents` as the run loop drives it, reduced to what the grace depends on: `onEvent` plays the loop body. */
+  function consume(
+    feed: Feed,
+    request: { pending: boolean },
+    interval: number,
+    onEvent: (event: Event, kick: DagHold.DagHoldRecheck) => void,
+  ) {
+    const kick: DagHold.DagHoldRecheck = { pending: false }
+    const ids: string[] = []
+    const done = (async () => {
+      for await (const event of DagHold.pollEvents(
+        feed,
+        "parent",
+        () => {},
+        () => request.pending,
+        interval,
+        kick,
+      )) {
+        ids.push(event.id)
+        onEvent(event, kick)
+      }
+    })()
+    return { ids, done }
+  }
+
+  test.each([
+    ["on the verdict's own turn", "evt_idle"],
+    ["on the admission's first event", "evt_wake_user"],
+  ])("the request settling %s is not the delayed re-check", async (_when, settlesAt) => {
+    const feed = new Feed()
+    const request = { pending: true }
+    const { ids, done } = consume(feed, request, 60_000, (event, kick) => {
+      // The idle verdict was a grace: the run loop arms the signal while the generator is suspended at its yield.
+      if (event.id === "evt_idle") kick.pending = true
+      // The prompt response arrives while the loop handles this event.
+      if (event.id === settlesAt) request.pending = false
+    })
+    feed.push(statusEvent("evt_idle", "parent", "idle"))
+    feed.push(userMessageEvent("evt_wake_user", "parent"))
+    feed.push(statusEvent("evt_busy", "parent", "busy"))
+    feed.close()
+    await within(done, "the stream never ended")
+    // A synthetic idle at the settle edge would sit between the events it follows and the busy status.
+    expect(ids).toEqual(["evt_idle", "evt_wake_user", "evt_busy"])
+  })
+
+  test("a settle edge a grace deferred still gets one delayed re-check", async () => {
+    const feed = new Feed()
+    const request = { pending: true }
+    const fired = Promise.withResolvers<void>()
+    const { ids, done } = consume(feed, request, 20, (event, kick) => {
+      if (event.id === "evt_idle") kick.pending = true
+      if (event.id === "evt_wake_user") request.pending = false
+      if (event.id === "dag-hold-poll") fired.resolve()
+    })
+    feed.push(statusEvent("evt_idle", "parent", "idle"))
+    feed.push(userMessageEvent("evt_wake_user", "parent"))
+    // A sentinel behind the user message: a synthetic idle fired at the settle edge would land between them.
+    feed.push(heartbeatEvent("evt_after"))
+    // No admission ever turns the session busy: the grace ends with its delayed re-check, which is not lost.
+    await within(fired.promise, "the delayed re-check never fired")
+    expect(ids).toEqual(["evt_idle", "evt_wake_user", "evt_after", "dag-hold-poll"])
+    feed.close()
+    await within(done, "the stream never ended")
+  })
+
+  test("an unrelated event inside a grace does not lose the delayed re-check", async () => {
+    const feed = new Feed()
+    const fired = Promise.withResolvers<void>()
+    const { ids, done } = consume(feed, { pending: false }, 20, (event, kick) => {
+      if (event.id === "evt_idle") kick.pending = true
+      if (event.id === "dag-hold-poll") fired.resolve()
+    })
+    feed.push(statusEvent("evt_idle", "parent", "idle"))
+    // A heartbeat is neither a wake nor a status change: the re-check stays armed through it.
+    feed.push(heartbeatEvent("evt_heartbeat"))
+    await within(fired.promise, "the delayed re-check was lost")
+    expect(ids).toEqual(["evt_idle", "evt_heartbeat", "dag-hold-poll"])
+    feed.close()
+    await within(done, "the stream never ended")
+  })
+
+  test("the wake turn the grace waits for is handled before the loop breaks", async () => {
+    // Turn one starts a workflow that terminalizes inside it. The idle poll sees it completed with its report
+    // receipt visible while the turn's active latch is set: a grace verdict. The wake turn then finds it quiescent.
+    const rows: Snapshot[] = [
+      [wf("W1", "running")],
+      [wf("W1", "completed", false)],
+      [wf("W1", "completed", false)],
+      [wf("W1", "completed", false)],
+    ]
+    let cursor = 0
+    const hold = DagHold.createDagHold(() => Promise.resolve(rows[cursor++]))
+    const feed = new Feed()
+    const request = { pending: true }
+    const kick: DagHold.DagHoldRecheck = { pending: false }
+    const seen: string[] = []
+    const decisions: DagHold.DagHoldDecision[] = []
+    // The run loop: the hold samples on busy and idle, a grace verdict arms the signal, and a verdict other than
+    // hold ends the loop once the initial request has settled.
+    const done = (async () => {
+      for await (const event of DagHold.pollEvents(
+        feed,
+        "parent",
+        () => {},
+        () => request.pending,
+        60_000,
+        kick,
+      )) {
+        seen.push(event.id)
+        // The prompt response arrives while the loop handles the admission's first event.
+        if (event.id === "evt_wake_user") request.pending = false
+        if (event.type !== "session.status" || event.properties.sessionID !== "parent") continue
+        if (event.properties.status.type === "busy") await hold.onBusy()
+        if (event.properties.status.type === "idle") {
+          const decision = await hold.onIdle()
+          decisions.push(decision)
+          if (hold.needsRecheck()) kick.pending = true
+          if (decision !== "hold" && !request.pending) break
+        }
+      }
+    })()
+    feed.push(statusEvent("evt_busy_1", "parent", "busy"))
+    feed.push(statusEvent("evt_idle_1", "parent", "idle"))
+    feed.push(userMessageEvent("evt_wake_user", "parent"))
+    feed.push(statusEvent("evt_busy_2", "parent", "busy"))
+    feed.push(statusEvent("evt_idle_2", "parent", "idle"))
+    await within(done, "the loop never ended")
+    // A spent grace would end the loop on a synthetic idle right after the user message, before the wake turn.
+    expect(seen).toEqual(["evt_busy_1", "evt_idle_1", "evt_wake_user", "evt_busy_2", "evt_idle_2"])
+    expect(decisions).toEqual(["hold", "break"])
+    feed.close()
+  })
+})

@@ -1076,6 +1076,7 @@ export type Agent = {
   }
   steps?: number
   contract?: AgentContract
+  execution?: "foreground" | "background" | "auto"
 }
 
 export type AgentContract = {
@@ -1113,7 +1114,7 @@ export type Command = {
   source?: "command" | "mcp" | "skill"
   template: string
   subtask?: boolean
-  background?: boolean
+  execution?: "foreground" | "background" | "auto"
   hints: Array<string>
 }
 
@@ -1357,6 +1358,7 @@ export type Config = {
       model?: string
       variant?: string
       subtask?: boolean
+      execution?: "foreground" | "background" | "auto"
       background?: boolean
     }
   }
@@ -1571,6 +1573,7 @@ export type AgentConfig = {
   maxSteps?: number
   permission?: PermissionConfig
   contract?: AgentContract
+  execution?: "foreground" | "background" | "auto"
   [key: string]: unknown
 }
 

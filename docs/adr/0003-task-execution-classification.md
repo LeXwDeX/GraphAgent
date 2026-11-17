@@ -4,6 +4,7 @@
 - **Date:** 2026-11-14
 - **Issue:** #1057 (delivery: #1301, #1302, and the documentation PR that adds this ADR)
 - **Supersedes:** none
+- **Amended:** 2026-11-17, Amendment 1 (criteria revised after a real-model evaluation), Amendment 2 (code-level execution mode)
 
 ## Context
 
@@ -43,6 +44,12 @@ the only holder of the existing `survivesSessionCancel` flag.
    - B-2: the work only reads, or writes files the main agent will not touch.
    - B-3: it is long-running or of uncertain duration (minutes).
    - B-4: its result fits in one message.
+
+   Amended (2026-11-17): a real-model evaluation led to revised criteria (B-3 removed, B-1
+   replaced by a trigger based on the user's parallel signal, a delegate-first rule added); the
+   list above is the original decision, and Amendment 1 below gives the current criteria and the
+   ID mapping.
+
 3. **Code supplies command declarations, not classification.** A command definition may set
    `background: true` (`packages/core/src/v1/config/command.ts`, exported in
    `schema/config.json`). When a user-issued interactive command with that flag runs as a subtask,
@@ -149,3 +156,218 @@ release-note entry for this decision is:
 - **No new user-visible transcript surface for child sessions.** The main agent remains the
   relay.
 - **No permission widening for review.** The agent stays read-only.
+
+## Amendment 1 (2026-11-17): evaluation-driven revision of the criteria
+
+The criteria shipped in #1301 were measured against a real model and then revised. This amendment
+replaces the criteria in Decision 2; Decisions 1 and 3 through 7 stand. The F-n and B-n IDs in the
+rest of this document are the original numbering. The revised IDs are the ones used in
+`packages/graphagent/CONTEXT.md` and are mapped under "Revised criteria" below. The final wording
+(the one now in `task.txt`) did not stably meet the evaluation's background gate; the follow-up is
+#1357 (see "Consequences and risks" below).
+
+### Evaluation
+
+Plan 6 of #1057 added a real-model evaluation in
+`packages/graphagent/test/live/delegation-timing/`. It is a script, not part of any test run, and
+it does not load the test preload (which clears standard provider credential variables):
+
+```sh
+cd packages/graphagent
+GRAPHAGENT_LIVE_EVAL_CONFIG=<path to graphagent.json> bun run test/live/delegation-timing/run.ts
+```
+
+Each model runs 20 deterministic scenarios (a fixture project plus a scripted user request), three
+rounds by default, each scenario capped at 8 model steps: 8 F scenarios whose work must not be
+backgrounded, 6 B scenarios (independent, read-only, slow work the user does not wait for) that
+should be delegated in the background, and 6 A scenarios where either choice is accepted. A model
+family passes with no foreground violation (backgrounding in an F scenario, or editing after an
+injected `/review` result), at least 5/6 background hits on the B scenarios, and at least 85%
+accuracy over all runs. Only the DeepSeek family was evaluated; no QWEN or GLM model was
+configured. Counts below are summed over three rounds (F: 8 × 3, B: 6 × 3, all: 20 × 3).
+
+| Wording                                           | F violations | B background hits | Accuracy      | Gates                            |
+| ------------------------------------------------- | ------------ | ----------------- | ------------- | -------------------------------- |
+| Original (#1301)                                  | 0/24         | 3/18 (16.7%)      | 45/60 (75.0%) | B and accuracy fail              |
+| Revision 1                                        | 0/24         | 12/18 (66.7%)     | 54/60 (90.0%) | B fails                          |
+| Revision 2                                        | 0/24         | 15/18 (83.3%)     | 57/60 (95.0%) | all pass (B exactly at the gate) |
+| Revision 2 + review correction (final wording)    | 0/24         | 14/18 (77.8%)     | 56/60 (93.3%) | B fails                          |
+| Final wording + no-preparation clause (withdrawn) | 0/24         | 13/18 (72.2%)     | 55/60 (91.7%) | B fails                          |
+| Final wording, final harness (shell never runs)   | 0/24         | 16/18 (88.9%)     | 58/60 (96.7%) | all pass                         |
+
+Among the batches run while the harness still executed read-only shell commands, only Revision 2
+reached all three gates, with the background gate met exactly; the two later ones, including the
+final wording, fall below it. The last batch ran the final wording on the final harness, which
+never runs the shell (a read-only shell call is denied and the model is pointed to the read tools,
+because whether a command line is harmless cannot be proven from its text). It met all three gates.
+The conditions differ: without the shell the model cannot start the work itself through a quick
+command before delegating, which may favour background delegation, so the batches are not directly
+comparable and the earlier variation stands.
+
+The transcripts of the original wording showed three causes. In the B scenarios the model rarely
+considered delegating: it read for 5 to 9 steps and then ran the tests itself. "Takes minutes"
+cannot be judged in a small repository. And when the model did decide to background, it often
+investigated first and ended up doing the work itself.
+
+### Revisions
+
+Plan 6 allows at most two revision iterations of the `task.txt` wording; both were used. Two
+changes were measured afterwards: a review correction, which stayed in the wording, and a
+supplementary trial, which was withdrawn.
+
+- **Revision 1: the user's parallel signal.** The background trigger became the user's own
+  signal: they say they will keep working on something else meanwhile ("meanwhile", "at the same
+  time", "I'll keep working on ...", "no need to wait") or ask for background. The model then
+  delegates with `background: true` instead of doing the work in the same turn, provided the agent
+  only reads or writes files neither the main agent nor the user will touch and its result fits in
+  one message. The "takes minutes" condition (original B-3) was removed. Test and type-check runs
+  of finished work joined reviews and audits as good background work. The foreground conditions
+  kept their substance, and "quick (seconds)" became "a quick lookup the main agent can answer
+  directly".
+- **Revision 2: delegate first.** Once background is chosen, the main agent no longer reads files
+  or runs commands beforehand to investigate the work. It passes on the user's request and what it
+  already knows, the agent gathers its own context, and the main agent replies briefly and ends
+  its turn (the turn-ending part was corrected afterwards, see below).
+- **Review correction: continue foreground work after delegating.** PR review pointed out that
+  "reply briefly and end your turn" drops the foreground part of a request that asks for both, for
+  example a background review plus a foreground edit, and that it contradicts the existing rule to
+  end the turn only when nothing else is left. The wording now tells the main agent to carry on
+  with any foreground work the user also asked for, and to reply briefly and end its turn only if
+  none is left; the result still arrives as a message. This is the final wording: F 0/24, B 14/18
+  (77.8%), accuracy 93.3%.
+- **No-preparation trial (withdrawn).** On top of the correction, a clause was tried that tells
+  the main agent not to do preparation work, such as installing dependencies, before delegating. It
+  did not help (F 0/24, B 13/18 (72.2%), accuracy 91.7%), so it was withdrawn and is not in the
+  final wording.
+
+### Revised criteria
+
+Foreground is the default and always applies when any of F-1 through F-4 holds; background only
+when all of B-1 through B-3 hold. The wording is in `packages/graphagent/src/tool/task.txt` and
+`packages/graphagent/CONTEXT.md`. Mapping from the original IDs:
+
+| Original                                                       | Revised        | Change                                                                                     |
+| -------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------ |
+| F-1, F-2, F-3                                                  | F-1, F-2, F-3  | Unchanged.                                                                                 |
+| F-4: quick and cheap (seconds)                                 | F-4            | Now "a quick lookup the main agent can answer directly"; no duration threshold.            |
+| B-1: the result does not block the next step                   | B-1            | Replaced by the trigger: the user's parallel signal or an explicit request for background. |
+| B-2: only reads, or writes files the main agent will not touch | B-2            | Also covers files the user will touch.                                                     |
+| B-3: long-running or of uncertain duration (minutes)           | removed        | The model could not judge duration in small repositories.                                  |
+| B-4: its result fits in one message                            | B-3            | Renumbered.                                                                                |
+| none                                                           | delegate first | New rule, applies once background is chosen.                                               |
+
+F-3 still sends work whose result the next step needs to the foreground, which is what the old
+B-1 expressed from the other side.
+
+### Consequences and risks
+
+- The background gate was not stably met. The foreground gate held in every batch (0/24), and
+  accuracy passed its gate from Revision 1 on (90.0% to 95.0% against 85%). B hits were 15/18 for
+  Revision 2, 14/18 for the final wording and 13/18 for the withdrawn trial (72.2% to 83.3%),
+  against a gate of 5/6; only the Revision 2 batch reached it, and exactly.
+- The misses repeat in the same scenarios. In b6 (the user writes documentation while the main
+  agent runs the full test suite and type check and lists the failures by cause), all three rounds
+  failed in most batches: the model ran `bun install` or the tests itself instead of delegating.
+  b2 (review of uncommitted billing changes) and b5 (test-gap inventory) failed only occasionally.
+- Prompt wording alone therefore does not reliably put background-suitable work in the
+  background. Under Plan 6 of #1057 the prompt iteration stops here. A code-level execution mode
+  is tracked in #1357 (Appendix A of #1057): agents and commands declare an `execution` mode, and
+  hard constraints take precedence.
+- The evidence covers one model family. QWEN and GLM were not configured, so the final wording
+  has not been evaluated on them.
+- All six B scenarios contain an explicit user signal. The result shows how reliably the model
+  acts on the signal, not whether it would background suitable work without one; without a signal
+  or an explicit request, `task.txt` says to use foreground.
+- None of the 20 scenarios asks for foreground work in the same request as the delegated work, so
+  the evaluation does not exercise the review correction directly; it shows only that the
+  foreground and accuracy gates held with it.
+- Delegating first moves context gathering from the main agent to the child agent. The delegation
+  message carries the user's request and what the main agent already knows.
+- The product change is the `task.txt` wording only: no runtime code, schema, or persisted state.
+  Rollback is restoring the original wording, which failed two of the three gates (background and
+  accuracy); the final wording fails only the background gate.
+
+### Acceptance
+
+- `task.txt`, `packages/graphagent/CONTEXT.md`, `README.md`, `README.en.md`, and this amendment
+  describe the same criteria and the same turn-end rule: after delegating, continue any foreground
+  work the user also asked for, and end the turn only when none is left.
+- Foreground gate (no F violation): met, 0/24 with every wording measured.
+- Accuracy gate (at least 85%): met with the final wording, 93.3% (96.7% on the final harness).
+- Background gate (at least 5/6 B hits): met on the final harness (16/18, 88.9%), not stably met
+  while the harness ran shell reads (72.2% to 83.3%). The code-level execution mode of #1357
+  makes the result independent of wording and model variance.
+
+## Amendment 2 (2026-11-17): code-level execution mode
+
+Decision 1 kept a code-level classifier out of the product and left it as a fallback (Appendix A of
+#1057), and Amendment 1 left the background gate to #1357. The final wording met every gate on the
+final harness, which never runs the shell (16/18 background hits, 88.9%), but it did not stably meet
+the background gate while the harness ran read-only shell commands (72.2% to 83.3% against 5/6). The
+result therefore rests on the wording and on model variance, and #1357 adds the fallback: a
+code-level execution mode that makes it independent of both. Decisions 1 and 3 are amended as
+follows; the criteria (Decision 2, as revised by Amendment 1) and the remaining decisions stand. The
+F-n and B-n IDs below are the revised ones of Amendment 1.
+
+1. **Declarations.** An agent (`agent.<name>.execution`, or `execution:` in its frontmatter) and a
+   command (`command.<name>.execution`) may declare `foreground`, `background` or `auto`. The default
+   is `auto`, which declares nothing. `execution` is a field of its own, not part of the agent
+   `contract`. It replaces the boolean `background` that Decision 3 put on commands, and keeps its
+   meaning: a configured `background: true` still loads and reads as `execution: "background"`, and
+   `background: false` as `execution: "foreground"`; an explicit `execution` wins. The command list
+   and the agent list carry `execution` in their HTTP shape.
+2. **Resolution.** `TaskExecution.resolve` (`packages/graphagent/src/tool/task-execution.ts`) decides
+   every `task` call before a session or run exists, in this order: hard constraint, the call's
+   `background` argument, the command's declaration, the agent's declaration, foreground. `auto` is
+   skipped like an absent declaration. An agent that declares `background` can still be awaited with
+   `background: false`. A user command's declaration reaches the call through the task origin, not as
+   an argument nobody wrote.
+3. **Non-interactive turns.** One rule of the turn sits above that order. A non-interactive turn
+   (`opencode run`, a hook follow-up) has no user waiting for a later message, so every `task` call
+   in it runs in the foreground, whatever the argument, the command or the agent asks for. This is
+   Decision 3 extended from commands to every task call. `SessionTools` hands the task tool the
+   turn's mode (`extra.noninteractive`). The call is not refused, since it is satisfiable: that
+   includes an explicit `background: true` for a constrained agent, which is refused only in an
+   interactive turn. The source is recorded as `noninteractive`, a value of its own: `constraint`
+   says an agent cannot be backgrounded, and here the turn cannot wait, which is no fault of the
+   agent.
+4. **Hard constraints.** F-1: an interactive agent, one whose own effective rules name `question` or
+   `plan_exit` and allow it (the built-in `build` and `plan`, or any agent a user opts in; a blanket
+   `*` allow is not an opt-in). Child sessions never own the human dialog, so F-1 classifies the
+   agent rather than guarding a deadlock. F-2: the built-in `compaction` agent rewrites the shared
+   context. An explicit `background: true` for such an agent is refused before any session or run
+   exists, with an error that names the rule and says to run in the foreground. A declaration cannot
+   move it to the background: the call resolves to foreground. `title` and `summary` are one-shot
+   internal generators, not delegation targets, and the worker agents can be backgrounded, so none
+   of them is covered.
+5. **Built-in declarations.** `review` declares `background`: it reads through a command allowlist
+   with no file tool (B-2) and reports one findings set about finished work (B-3). For this agent
+   the declaration takes the place of the user's parallel-work signal (B-1), and a call can still
+   pass `background: false`. `auditor` does not declare: its shell is `bash: allow`, so it is
+   read-only by its prompt and not by its rules, and B-2 cannot be shown in code. The other
+   built-ins leave the choice to the call.
+6. **Recorded once.** The resolved mode and the layer that settled it are written to the call's
+   metadata (`execution`, `executionSource`) when the call starts, next to `initiator` and
+   `background`. A run promoted to the background keeps its decision and gains `promoted`; input
+   appended to a task that is already running records `running`. A call entered again for a part that
+   already records a decision reads that record. Nothing resolves a started call a second time.
+7. **Prompt.** The criteria in `task.txt` stay and still guide the model's own `background` argument.
+   One added line says a declared mode takes precedence over them.
+
+Consequences and risks:
+
+- Two inputs decide now, and they do not conflict: an explicit argument outranks declarations,
+  declarations outrank the criteria, and hard constraints outrank all of them in an interactive turn.
+- A bare `task` call to `review` now runs detached in an interactive turn, without the user's
+  parallel-work signal that the prompt criteria ask for (B-1). A model that needs the result for its
+  next step has to pass `background: false`; `task.txt` says so.
+- In a non-interactive turn nothing runs in the background, so the model's own `background: true` is
+  ignored there as well, and a harness that runs with `hookMode: "noninteractive"` cannot observe
+  background delegation. The delegation-timing evaluation sends its requests without a `hookMode`,
+  so it is unaffected.
+- F-1 reads the effective rules, so a user who names `question` as allowed for an agent takes it out
+  of the background without any other change. F-2 is a name list; a user-defined agent that rewrites
+  shared state has no way to ask for the same treatment.
+
+Non-goals: no inference of a classification from the work itself; no change to `watch_pr`, workflows
+or async hooks; the evaluation rerun against the new rules is outside this change.

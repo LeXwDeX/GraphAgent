@@ -1,0 +1,13 @@
+// Percentage tax rates by ISO country code.
+const RATES: Record<string, number> = {
+  US: 7.25,
+  DE: 19,
+  FR: 20,
+  JP: 10,
+  GB: 20,
+}
+
+/** Tax rate in percent; unknown countries are taxed at 0. */
+export function taxRateFor(country: string): number {
+  return RATES[country.toUpperCase()] ?? 0
+}

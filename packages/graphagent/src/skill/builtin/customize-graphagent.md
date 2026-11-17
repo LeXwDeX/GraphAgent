@@ -268,8 +268,14 @@ frontmatter.
 `mode` is one of `"primary"`, `"subagent"`, `"all"`.
 
 Allowed top-level frontmatter fields: `name, model, variant, description, mode,
-hidden, color, steps, options, permission, disable, temperature, top_p`. Any
-unknown field is silently routed into `options`.
+hidden, color, steps, options, permission, disable, temperature, top_p,
+execution`. Any unknown field is silently routed into `options`.
+
+`execution` is how a `task` call to the agent runs by default: `"foreground"`
+(wait for the result), `"background"` (detach it, the result arrives later) or
+`"auto"` (default: the call decides). The call's own `background` argument and a
+command's `execution` take precedence. Interactive agents (their own rules allow
+`question` or `plan_exit`) and non-interactive runs always use the foreground.
 
 To disable a built-in agent: `agent: { build: { disable: true } }`, or in a
 file, `disable: true` in frontmatter.
@@ -305,7 +311,7 @@ model: anthropic/claude-sonnet-4-6
 
 - `template` is the command body — everything below the frontmatter — and is required: it is the prompt GraphAgent runs when the command is invoked. Do not also put a `template:` key in the frontmatter.
 - `$ARGUMENTS` is replaced with everything the user typed after the command; `$1`, `$2`, … pull individual positional arguments.
-- Optional: `description`, `agent`, `model`, `variant`, `subtask`.
+- Optional: `description`, `agent`, `model`, `variant`, `subtask`, `execution`. `execution` (`foreground`, `background` or `auto`) says how the subtask runs when the user issues the command; it replaces the old `background` boolean.
 
 ## MCP servers
 

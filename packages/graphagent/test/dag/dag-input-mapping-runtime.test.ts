@@ -33,10 +33,26 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
-import { awaitWithTimeout, it, pollWithTimeout } from "../lib/effect"
+import { awaitWithTimeout as awaitUntil, it, pollWithTimeout as pollUntil } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+
+/**
+ * Every wait in this file returns as soon as the state it waits for is reached,
+ * so a generous bound costs nothing when things go well and only decides how
+ * long a real failure takes to report. The helpers' own bounds (2 s to await,
+ * 5 s to poll) were tight for the self-hosted Windows runner that used to run
+ * this file in Windows E2E (retired in #1364): it stalled for several seconds
+ * at times, in tests that take about 0.2 s elsewhere and in ones that touch no
+ * file at all (one failed run waited out `implementation did not start` and
+ * `verify did not start`, another `producer did not commit its file`).
+ */
+const STALL_TOLERANCE = "20 seconds"
+const awaitWithTimeout = <A, E, R>(self: Effect.Effect<A, E, R>, message: string) =>
+  awaitUntil(self, message, STALL_TOLERANCE)
+const pollWithTimeout = <A, E, R>(self: Effect.Effect<A | undefined, E, R>, message: string | (() => string)) =>
+  pollUntil(self, message, STALL_TOLERANCE)
 
 interface PromptRecord {
   readonly title: string
@@ -374,12 +390,22 @@ describe("DagLoop input_mapping execution boundary", () => {
               const second = yield* awaitWithTimeout(Queue.take(records), "second source did not start")
               const producer = [first, second].find((record) => record.title === "producer")!
               yield* Deferred.succeed(producer.release, source)
+              // A capture that fails ends the node as failed: say so at once and with its reason, and let a timeout
+              // say what the node was doing, instead of leaving "did not commit" to mean either.
+              let seen = "no row"
               const row = yield* pollWithTimeout(
-                store
-                  .getNode(dagID, "producer")
-                  .pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
-                "producer did not commit its file",
+                store.getNode(dagID, "producer").pipe(
+                  Effect.map((row) => {
+                    seen = row?.status ?? "no row"
+                    return row?.status === "completed" || row?.status === "failed" ? row : undefined
+                  }),
+                ),
+                () => `producer did not commit its file (node ${seen})`,
               )
+              if (row.status !== "completed")
+                throw new Error(
+                  `producer ${row.status} instead of committing its file: ${row.errorReason ?? "no reason"}`,
+                )
               const ref = row.capturedOutput
               expect(isManagedOutputFileRef(ref)).toBe(true)
               if (!isManagedOutputFileRef(ref)) throw new Error("missing managed receipt")

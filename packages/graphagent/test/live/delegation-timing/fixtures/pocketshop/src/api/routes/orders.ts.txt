@@ -1,0 +1,34 @@
+import { buildInvoice, type LineItem } from "../../billing/invoice"
+import { refund } from "../../billing/refund"
+import { isRes, requireAuth, type Req, type Res } from "../middleware"
+
+interface Order {
+  id: string
+  userId: string
+  lines: LineItem[]
+  country: string
+}
+
+const orders = new Map<string, Order>()
+
+export function listOrders(req: Req): Res {
+  const session = requireAuth(req)
+  if (isRes(session)) return session
+  const mine = [...orders.values()].filter((order) => order.userId === session.userId)
+  return { status: 200, json: mine }
+}
+
+export function createOrder(req: Req): Res {
+  const session = requireAuth(req)
+  if (isRes(session)) return session
+  const body = req.body as { lines: LineItem[]; country: string; coupon?: number }
+  const order: Order = { id: crypto.randomUUID(), userId: session.userId, lines: body.lines, country: body.country }
+  orders.set(order.id, order)
+  return { status: 201, json: { order, invoice: buildInvoice(order.lines, order.country, body.coupon ?? 0) } }
+}
+
+export function refundOrder(req: Req): Res {
+  const order = orders.get(req.params.id)
+  if (!order) return { status: 404, json: { error: "NOT_FOUND" } }
+  return { status: 200, json: refund(order.lines, order.country, "customer request") }
+}

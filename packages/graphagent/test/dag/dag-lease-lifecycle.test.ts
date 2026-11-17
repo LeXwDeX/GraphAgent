@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
+import { sql } from "drizzle-orm"
 import { Deferred, Effect, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
@@ -21,7 +22,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
-import { ExclusiveRegistry } from "@/session/engine-process"
+import { EngineProcess, ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
@@ -339,7 +340,7 @@ describe("DagLoop lease lifecycle — startup wake sweep (GOAL-FP-01-01)", () =>
 describe("DagLoop lease lifecycle — terminal event release (GOAL-FP-01-03)", () => {
   it("a workflow that terminalizes without a successful wake delivery releases its dag lease", async () => {
     await Effect.runPromise(
-      runLeaseTest(({ dag, loop, store, goal, status, automation, childPrompts }) =>
+      runLeaseTest(({ dag, loop, store, goal, status, automation, database, childPrompts }) =>
         Effect.gen(function* () {
           const sid = SessionID.make(PARENT_SESSION)
 
@@ -359,6 +360,13 @@ describe("DagLoop lease lifecycle — terminal event release (GOAL-FP-01-03)", (
           // Adoption (WorkflowStarted) registered the dag lease for the parent.
           const child = yield* takeWithin(childPrompts, "implement did not start")
           expect(Option.isSome(yield* automation.claim(sid, { kind: "dag" }))).toBe(true)
+
+          // It also claimed the workflow's runner lease (ADR-0008) as this process: the graph
+          // gives the loop neither a lease service nor an identity, so these are the defaults.
+          expect(yield* database.db.get(sql`SELECT runner_id, epoch FROM dag_runner WHERE dag_id = ${dagID}`)).toEqual({
+            runner_id: EngineProcess.runner.id,
+            epoch: 1,
+          })
 
           // Complete the node → workflow terminalizes → terminal event handler.
           yield* Deferred.succeed(child.release, "done")
