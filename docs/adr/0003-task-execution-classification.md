@@ -193,9 +193,16 @@ configured. Counts below are summed over three rounds (F: 8 × 3, B: 6 × 3, all
 | Revision 2                                        | 0/24         | 15/18 (83.3%)     | 57/60 (95.0%) | all pass (B exactly at the gate) |
 | Revision 2 + review correction (final wording)    | 0/24         | 14/18 (77.8%)     | 56/60 (93.3%) | B fails                          |
 | Final wording + no-preparation clause (withdrawn) | 0/24         | 13/18 (72.2%)     | 55/60 (91.7%) | B fails                          |
+| Final wording, final harness (shell never runs)   | 0/24         | 16/18 (88.9%)     | 58/60 (96.7%) | all pass                         |
 
-Only the Revision 2 batch reached all three gates, with the background gate met exactly. The two
-later batches, including the final wording, fall below the background gate.
+Among the batches run while the harness still executed read-only shell commands, only Revision 2
+reached all three gates, with the background gate met exactly; the two later ones, including the
+final wording, fall below it. The last batch ran the final wording on the final harness, which
+never runs the shell (a read-only shell call is denied and the model is pointed to the read tools,
+because whether a command line is harmless cannot be proven from its text). It met all three gates.
+The conditions differ: without the shell the model cannot start the work itself through a quick
+command before delegating, which may favour background delegation, so the batches are not directly
+comparable and the earlier variation stands.
 
 The transcripts of the original wording showed three causes. In the B scenarios the model rarely
 considered delegating: it read for 5 to 9 steps and then ran the tests itself. "Takes minutes"
@@ -286,6 +293,7 @@ B-1 expressed from the other side.
   describe the same criteria and the same turn-end rule: after delegating, continue any foreground
   work the user also asked for, and end the turn only when none is left.
 - Foreground gate (no F violation): met, 0/24 with every wording measured.
-- Accuracy gate (at least 85%): met with the final wording, 93.3%.
-- Background gate (at least 5/6 B hits): not stably met. The final wording measured 14/18
-  (77.8%), and the last three batches ranged from 72.2% to 83.3%. Moved to #1357.
+- Accuracy gate (at least 85%): met with the final wording, 93.3% (96.7% on the final harness).
+- Background gate (at least 5/6 B hits): met on the final harness (16/18, 88.9%), not stably met
+  while the harness ran shell reads (72.2% to 83.3%). The code-level execution mode of #1357
+  makes the result independent of wording and model variance.

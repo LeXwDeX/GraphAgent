@@ -39,7 +39,7 @@ Delegate first: once background is chosen, the main agent does not read files or
 
 Reviews, audits, and test or type-check runs of finished work are good background work; research that decides the main agent's next edit is not. When neither list applies cleanly, default to foreground.
 
-The criteria live in the `task` tool description (`packages/graphagent/src/tool/task.txt`, "Choosing foreground or background"); the runtime does not classify calls. A real-model evaluation shaped this wording (the original duration condition was dropped and the user's parallel signal became the trigger). The final wording did not stably meet the evaluation's background gate (72%–83% of the scenarios that should go to the background, against a gate of 5/6), so a code-level execution mode is tracked in #1357. Results: Amendment 1 in `docs/adr/0003-task-execution-classification.md`.
+The criteria live in the `task` tool description (`packages/graphagent/src/tool/task.txt`, "Choosing foreground or background"); the runtime does not classify calls. A real-model evaluation shaped this wording (the original duration condition was dropped and the user's parallel signal became the trigger). While the evaluation harness still ran read-only shell commands, the final wording did not stably meet the background gate (72%–83% of the scenarios that should go to the background, against a gate of 5/6); on the final harness, which never runs the shell, it met all gates (88.9%). A code-level execution mode (#1357) removes the dependence on wording and model variance. Results: Amendment 1 in `docs/adr/0003-task-execution-classification.md`.
 
 ## Default classification
 
