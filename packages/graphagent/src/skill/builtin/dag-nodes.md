@@ -158,7 +158,7 @@ changes sequentially; review converges on its diff.
 | `input_mapping`    | no       | Map upstream node outputs into template variables |
 | `report_to_parent` | no       | If true, the parent wakes when this node completes or fails |
 | `worker_config`    | no       | `{ timeout_ms }` bounds the node from slot acquisition to completion (default 10 minutes); queued time does not count |
-| `workspace_writes` | no       | `"allow"`/`"deny"`. Deny withholds edit, write, apply_patch; shell keeps agent permission, so reviewers can test. Default deny for `review`/`review-*` and `auditor`, else allow |
+| `workspace_writes` | no       | `"allow"`/`"deny"`. Deny withholds edit, write, apply_patch; shell keeps agent permission, so reviewers can test. Default deny for `review`/`review-*`, `auditor`, `researcher`, `architect`, composers; else allow |
 | `output_schema`    | no       | JSON Schema for the node result; the final answer must be exactly one matching JSON value |
 | `restart`          | no       | (replan only) Re-spawn this running node with the new prompt |
 | `cancel`           | no       | (replan only) Cancel this node |
