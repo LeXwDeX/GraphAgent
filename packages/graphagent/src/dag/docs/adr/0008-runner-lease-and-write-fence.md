@@ -937,6 +937,46 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
 - `loop.ts` grows by 38 lines (2317 to 2355): the routine has its comments, and `settleWorkflowTerminal` moved up
   ahead of the reconciler's construction.
 
+### Decision 3: `DagTransact` is required (4b-E)
+
+The last part of PR4b makes the transaction of decision 3 a dependency that `Dag.layer` cannot go without. Until now
+`Dag.layer` read `DagTransact.Service` with `Effect.serviceOption`, and without it `transact` ran the command's body as
+it stood: no `BEGIN IMMEDIATE`, no fence, and the window between the guard and the publish that decision 3 closes. The
+production layers always provided the service. The case without it was a harness that built `Dag.layer` out of mocked
+dependencies, so that harness ran a `Dag` that does not ship.
+
+- `dag.ts` takes the service with `yield* DagTransact.Service`, and `transact` is `DagTransact.underFence` for every
+  command. The type of `Dag.layer` names the dependency, so a graph that leaves it out no longer type-checks.
+  `Dag.defaultLayer` and `Dag.node` already provided it and are unchanged. `DagMessages` stays optional; it is not part of
+  4b-E.
+- Deleted: the `Option` branch, the "optional for now" comment, and the sentence of the terminal-settlement comment that
+  said the same decision ran unfenced without the service. `runner-port.ts` and the other runtime files had no branch for
+  a missing transaction. `dag.ts` loses 5 lines (2795 to 2790).
+- Every test graph that builds `Dag.layer` provides a real `DagTransact` over the database that its store and event bus
+  use: `transactLayer(database)` of the shared `test/dag/fixture/transact.ts`, or `DagTransact.defaultLayer` where the
+  graph is made of default layers. There is no stand-in that runs the body outside a transaction; it would put the
+  removed path back into the tests. A graph whose store and bus are `Layer.mock` doubles had no database at all. It gets
+  an in-memory one that only the transaction uses, and its commands still run on the doubles.
+- The loop graphs now run under a real fence. `RunnerLease.resolve` builds a `DagLease` over the graph's database when none
+  is provided, so every `DagLoop` in a test claims real leases and its runner port stamps each runner write with the token.
+  In a graph without `DagTransact` nothing consumed that token. The fence checks it now, and every such test passes
+  unchanged.
+- Deleted test: "a command without the transaction service runs as it did before (no transaction, a window)" in
+  `dag-transact.test.ts`, with the harness option that built that graph. Its subject is the path that no longer exists.
+- Tests a real transaction could expose. A body that waits holds SQLite's write reservation, and every other statement
+  on that connection queues behind it, so a test that parks a command's body on a latch while another fiber needs the
+  database would time out. Every graph above was searched for that shape (a bus `publish`, a store read, or a projector
+  that waits inside a command) and run. None needed a rewrite: the stops of these tests are on event subscriptions and
+  `listen` callbacks (delivered after the outermost commit), on child prompts, on the loop's own reads, and on the
+  delivery's `markWakeBatchReported`, all outside a command's body. The one test group that does wait inside the body is
+  `dag-workflow-lock.test.ts`, whose mock `getWorkflow` sleeps past `WORKFLOW_LOCK_TIMEOUT` inside the critical section.
+  It stands for a database read that takes too long, nothing else uses the in-memory connection of its graph, and it
+  keeps its assertions. It now also covers one more thing: the interruption by the lock timeout rolls the transaction
+  back, so the next command can begin its own.
+- The mixed graph of `dag-settle-cross-connection.test.ts` (store and bus on the default in-memory database, the mailbox
+  on a file) stays as it was; `DagTransact.defaultLayer` joins the store's database.
+- No assertion was loosened, and no test other than the one above was deleted.
+
 ### Decision 8: line counts of `loop.ts` (4b-A)
 
 - `loop.ts` loses 114 lines (2428 to 2314): the duplicate first-wave adoption, the
