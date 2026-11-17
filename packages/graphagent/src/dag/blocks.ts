@@ -421,7 +421,8 @@ const REQUIRED_BY_DEFAULT = new Set<WorkflowBlockKind>(["plan", "verify", "synth
  * lanes and arbitration must use one of these; anything else is treated as
  * write-capable. Mirrors the isolation validation's static catalog so a block
  * compile and a persisted graph agree. The built-in read-only workers
- * `researcher` and `architect` (#1158) are profiles like `explore`. */
+ * `researcher` and `architect` (#1158) are profiles like `explore`, and so are
+ * the built-in composers `surveyor` and `mapper`, which only plan and join. */
 const READ_ONLY_PROFILES = new Set([
   "plan",
   "explore",
@@ -431,6 +432,8 @@ const READ_ONLY_PROFILES = new Set([
   "verification",
   "researcher",
   "architect",
+  "surveyor",
+  "mapper",
 ])
 
 export function isReadOnlyProfile(workerType: string) {
@@ -444,11 +447,14 @@ export function isReviewWorker(workerType: string) {
   return workerType === "review" || workerType.startsWith("review-")
 }
 
-/** The `researcher` (#1158) has no shell and no file tool, so, like the auditor, it
- * can never write the workspace. `explore` and `architect` keep a shell and are
- * not listed: they are read-only profiles that still run with writes allowed. */
+const READ_ONLY_WORKERS = new Set(["auditor", "researcher", "surveyor", "mapper"])
+
+/** The `researcher` and the built-in composers `surveyor` and `mapper` (#1158) have no
+ * shell and no file tool, so, like the auditor, they can never write the workspace.
+ * `explore` and `architect` keep a shell and are not listed: they are read-only
+ * profiles that still run with writes allowed. */
 export function isReadOnlyWorker(workerType: string) {
-  return isReviewWorker(workerType) || workerType === "auditor" || workerType === "researcher"
+  return isReviewWorker(workerType) || READ_ONLY_WORKERS.has(workerType)
 }
 
 /** The effective workspace-write policy of a node. An explicit

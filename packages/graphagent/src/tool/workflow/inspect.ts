@@ -7,6 +7,8 @@ import type { NodeRow } from "@graphagent/core/dag/store"
 import type { Config } from "@/config/config"
 import { Dag } from "@/dag/dag"
 import { DagBlocks } from "@/dag/blocks"
+import { DagCompose } from "@/dag/compose"
+import { DagComposeStatus } from "@/dag/compose-status"
 import { DagCoverage } from "@/dag/coverage"
 import { DagValidation } from "@/dag/validation"
 import { verifyOutputFileRef } from "@/dag/runtime/output-ref"
@@ -119,7 +121,8 @@ export const inspectWorkflow = (context: InspectContext, params: InspectParams):
         ),
       )
       const usage = summaries.find((summary) => summary.id === workflow.id)
-      const userMaxTotalNodes = context.config ? (yield* context.config.dagGlobal()).max_total_nodes : undefined
+      const userDag = context.config ? yield* context.config.dagGlobal() : undefined
+      const userMaxTotalNodes = userDag?.max_total_nodes
       return renderStatus({
         workflow,
         nodes,
@@ -128,6 +131,13 @@ export const inspectWorkflow = (context: InspectContext, params: InspectParams):
         latestRetarget,
         childRuns,
         coverage,
+        // #1158: how each compose block was expanded, read from the same persisted graph as the coverage above, against
+        // the limits the user's global `dag.compose` sets (a project file cannot).
+        compose: DagComposeStatus.summaries({
+          config: Dag.parseWorkflowConfig(workflow.config),
+          nodes,
+          limits: DagCompose.limits(userDag),
+        }),
         constraints: constraintsOf({
           status: workflow.status,
           config: Dag.parseWorkflowConfig(workflow.config),
