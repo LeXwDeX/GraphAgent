@@ -907,7 +907,13 @@ describe("moving around the panel", () => {
       await shell.registry().run("dag.open", { args: "", origin: "palette" })
       await waitFor(() => topID(shell) === "dag", 10_000)
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
-      expect(await shell.frame()).toContain("依赖升级验证")
+      // The node table can be loaded before the panel has drawn it; on a slow runner read until it shows (#1397).
+      let frame = await shell.frame()
+      for (const start = Date.now(); !frame.includes("依赖升级验证") && Date.now() - start < 10_000; ) {
+        await Bun.sleep(20)
+        frame = await shell.frame()
+      }
+      expect(frame).toContain("依赖升级验证")
     } finally {
       await shell.dispose()
     }

@@ -26,8 +26,13 @@ async function renderLogo(size: { width: number; height: number }, state: string
     size,
   )
   await settled
-  await app.renderOnce()
-  await app.renderOnce()
+  // Every case draws something (the wordmark or the one-line mark). On a slow runner the frame can still be blank
+  // after a fixed number of renders, so render until it is not, with a bound (#1397).
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await app.renderOnce()
+    if (attempt >= 1 && app.captureCharFrame().trim() !== "") break
+    if (attempt >= 1) await Bun.sleep(10)
+  }
   return app
 }
 
