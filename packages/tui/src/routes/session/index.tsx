@@ -680,27 +680,27 @@ export function Main() {
     send: (update, signal) => sdk.client.session.attention(update, { signal }),
   })
   createEffect(() => attention.select(route.sessionID))
-  createEffect(() => {
+  // The parent whose background view this session holds, set only while it is a background sub-agent. The Task
+  // link lives in the summary layer (`taskIndex`, kept by the parent's tool events), so this holds when the
+  // parent's own messages are not loaded, or were evicted from the hydrated cache.
+  const backgroundParentID = createMemo(() => {
     const current = session()
     const parentID = current?.parentID
-    const viewing =
-      parentID &&
-      (sync.data.message[parentID] ?? []).some((message) =>
-        (sync.data.part[message.id] ?? []).some(
-          (part) =>
-            part.type === "tool" &&
-            part.tool === "task" &&
-            part.state.status !== "pending" &&
-            part.state.metadata?.background === true &&
-            (part.state.metadata?.sessionID ?? part.state.metadata?.sessionId) === current.id,
-        ),
-      )
-    backgroundAttention.select(viewing ? parentID : undefined, !!viewing)
+    return parentID && sync.data.taskIndex[current.id]?.background === true ? parentID : undefined
   })
-  const reportActivity = () => attention.activity()
-  renderer.keyInput.on("keypress", reportActivity)
+  // Every switch of session, siblings included, closes the previous lease before the next one opens, so the old
+  // view keeps no heartbeat. A session that is not a background sub-agent holds no lease at all.
+  createEffect(
+    on([() => route.sessionID, backgroundParentID], ([, parentID]) => {
+      backgroundAttention.select(undefined)
+      if (parentID) backgroundAttention.select(parentID, true)
+    }),
+  )
+  // An interceptor ahead of all others, not a `keypress` listener: the keymap consumes the keys it binds (left and
+  // right between sub-agents, the page keys, esc) before later listeners run, and those are user activity too.
+  const offActivity = keymap.intercept("key", () => attention.activity(), { priority: 1_000 })
   onCleanup(() => {
-    renderer.keyInput.off("keypress", reportActivity)
+    offActivity()
     void attention.close()
     void backgroundAttention.close()
   })
