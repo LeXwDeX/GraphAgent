@@ -22,3 +22,6 @@ Choosing foreground or background:
   that decides your next edit is not.
 - Never run two writers on the same files. Never background a task and then wait for it with
   sleep or polling; if nothing else is left, end your turn and the result will arrive as a message.
+- A declared execution mode of an agent or command takes precedence over these criteria: pass
+  background=false to wait for an agent that runs in the background by default. Interactive agents
+  always run in the foreground and refuse background=true.

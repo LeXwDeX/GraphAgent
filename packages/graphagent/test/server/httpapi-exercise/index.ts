@@ -147,7 +147,21 @@ const scenarios: Scenario[] = [
     .inProject({ git: false })
     .at((ctx) => ({ path: "/vcs/apply", headers: ctx.headers(), body: { patch: "" } }))
     .status(400, undefined, "status"),
-  http.protected.get("/command", "command.list").json(200, array, "status"),
+  http.protected.get("/command", "command.list").json(
+    200,
+    (body) => {
+      array(body)
+      // #1357: a command declares how its subtask runs; the boolean #1057 added is replaced by `execution`.
+      const review = body.find((item) => isRecord(item) && item.name === "review")
+      object(review)
+      check(review.execution === "background", "command list should carry the review execution mode")
+      check(review.background === undefined, "command list should not carry the retired background flag")
+      const init = body.find((item) => isRecord(item) && item.name === "init")
+      object(init)
+      check(init.execution === undefined, "a command that declares nothing should omit the execution field")
+    },
+    "status",
+  ),
   http.protected.get("/agent", "app.agents").json(
     200,
     (body) => {
@@ -179,6 +193,17 @@ const scenarios: Scenario[] = [
       const build = body.find((item) => isRecord(item) && item.name === "build")
       object(build)
       check(build.contract === undefined, "an agent without a declared contract should omit the contract field")
+      // #1357: the execution mode an agent declares is part of the public agent shape. Only review, which reports on
+      // finished work through a read-only command allowlist, declares the background; every other agent, auditor
+      // included (its shell is not command-level read-only), leaves it out.
+      const review = body.find((item) => isRecord(item) && item.name === "review")
+      object(review)
+      check(review.execution === "background", "agent list should carry the review execution mode")
+      for (const name of ["auditor", "build", "explore"]) {
+        const undeclared = body.find((item) => isRecord(item) && item.name === name)
+        object(undeclared)
+        check(undeclared.execution === undefined, `${name} should leave the execution mode to the call`)
+      }
     },
     "status",
   ),

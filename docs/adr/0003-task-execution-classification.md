@@ -4,7 +4,7 @@
 - **Date:** 2026-11-14
 - **Issue:** #1057 (delivery: #1301, #1302, and the documentation PR that adds this ADR)
 - **Supersedes:** none
-- **Amended:** 2026-11-17, Amendment 1 (criteria revised after a real-model evaluation)
+- **Amended:** 2026-11-17, Amendment 1 (criteria revised after a real-model evaluation), Amendment 2 (code-level execution mode)
 
 ## Context
 
@@ -297,3 +297,77 @@ B-1 expressed from the other side.
 - Background gate (at least 5/6 B hits): met on the final harness (16/18, 88.9%), not stably met
   while the harness ran shell reads (72.2% to 83.3%). The code-level execution mode of #1357
   makes the result independent of wording and model variance.
+
+## Amendment 2 (2026-11-17): code-level execution mode
+
+Decision 1 kept a code-level classifier out of the product and left it as a fallback (Appendix A of
+#1057), and Amendment 1 left the background gate to #1357. The final wording met every gate on the
+final harness, which never runs the shell (16/18 background hits, 88.9%), but it did not stably meet
+the background gate while the harness ran read-only shell commands (72.2% to 83.3% against 5/6). The
+result therefore rests on the wording and on model variance, and #1357 adds the fallback: a
+code-level execution mode that makes it independent of both. Decisions 1 and 3 are amended as
+follows; the criteria (Decision 2, as revised by Amendment 1) and the remaining decisions stand. The
+F-n and B-n IDs below are the revised ones of Amendment 1.
+
+1. **Declarations.** An agent (`agent.<name>.execution`, or `execution:` in its frontmatter) and a
+   command (`command.<name>.execution`) may declare `foreground`, `background` or `auto`. The default
+   is `auto`, which declares nothing. `execution` is a field of its own, not part of the agent
+   `contract`. It replaces the boolean `background` that Decision 3 put on commands, and keeps its
+   meaning: a configured `background: true` still loads and reads as `execution: "background"`, and
+   `background: false` as `execution: "foreground"`; an explicit `execution` wins. The command list
+   and the agent list carry `execution` in their HTTP shape.
+2. **Resolution.** `TaskExecution.resolve` (`packages/graphagent/src/tool/task-execution.ts`) decides
+   every `task` call before a session or run exists, in this order: hard constraint, the call's
+   `background` argument, the command's declaration, the agent's declaration, foreground. `auto` is
+   skipped like an absent declaration. An agent that declares `background` can still be awaited with
+   `background: false`. A user command's declaration reaches the call through the task origin, not as
+   an argument nobody wrote.
+3. **Non-interactive turns.** One rule of the turn sits above that order. A non-interactive turn
+   (`opencode run`, a hook follow-up) has no user waiting for a later message, so every `task` call
+   in it runs in the foreground, whatever the argument, the command or the agent asks for. This is
+   Decision 3 extended from commands to every task call. `SessionTools` hands the task tool the
+   turn's mode (`extra.noninteractive`). The call is not refused, since it is satisfiable: that
+   includes an explicit `background: true` for a constrained agent, which is refused only in an
+   interactive turn. The source is recorded as `noninteractive`, a value of its own: `constraint`
+   says an agent cannot be backgrounded, and here the turn cannot wait, which is no fault of the
+   agent.
+4. **Hard constraints.** F-1: an interactive agent, one whose own effective rules name `question` or
+   `plan_exit` and allow it (the built-in `build` and `plan`, or any agent a user opts in; a blanket
+   `*` allow is not an opt-in). Child sessions never own the human dialog, so F-1 classifies the
+   agent rather than guarding a deadlock. F-2: the built-in `compaction` agent rewrites the shared
+   context. An explicit `background: true` for such an agent is refused before any session or run
+   exists, with an error that names the rule and says to run in the foreground. A declaration cannot
+   move it to the background: the call resolves to foreground. `title` and `summary` are one-shot
+   internal generators, not delegation targets, and the worker agents can be backgrounded, so none
+   of them is covered.
+5. **Built-in declarations.** `review` declares `background`: it reads through a command allowlist
+   with no file tool (B-2) and reports one findings set about finished work (B-3). For this agent
+   the declaration takes the place of the user's parallel-work signal (B-1), and a call can still
+   pass `background: false`. `auditor` does not declare: its shell is `bash: allow`, so it is
+   read-only by its prompt and not by its rules, and B-2 cannot be shown in code. The other
+   built-ins leave the choice to the call.
+6. **Recorded once.** The resolved mode and the layer that settled it are written to the call's
+   metadata (`execution`, `executionSource`) when the call starts, next to `initiator` and
+   `background`. A run promoted to the background keeps its decision and gains `promoted`; input
+   appended to a task that is already running records `running`. A call entered again for a part that
+   already records a decision reads that record. Nothing resolves a started call a second time.
+7. **Prompt.** The criteria in `task.txt` stay and still guide the model's own `background` argument.
+   One added line says a declared mode takes precedence over them.
+
+Consequences and risks:
+
+- Two inputs decide now, and they do not conflict: an explicit argument outranks declarations,
+  declarations outrank the criteria, and hard constraints outrank all of them in an interactive turn.
+- A bare `task` call to `review` now runs detached in an interactive turn, without the user's
+  parallel-work signal that the prompt criteria ask for (B-1). A model that needs the result for its
+  next step has to pass `background: false`; `task.txt` says so.
+- In a non-interactive turn nothing runs in the background, so the model's own `background: true` is
+  ignored there as well, and a harness that runs with `hookMode: "noninteractive"` cannot observe
+  background delegation. The delegation-timing evaluation sends its requests without a `hookMode`,
+  so it is unaffected.
+- F-1 reads the effective rules, so a user who names `question` as allowed for an agent takes it out
+  of the background without any other change. F-2 is a name list; a user-defined agent that rewrites
+  shared state has no way to ask for the same treatment.
+
+Non-goals: no inference of a classification from the work itself; no change to `watch_pr`, workflows
+or async hooks; the evaluation rerun against the new rules is outside this change.
