@@ -200,13 +200,23 @@ export const {
       /**
        * The DAG mode snapshot of the root session of the tree the route is in (`GET /session/:id/dag-mode`): the
        * effective budget and its warning ratio, and the process's limits (#1032 7). Read when the tree is entered
-       * with DAG mode on or a workflow in it (or becomes so), and again when the session's budget changes or the
-       * stream reconnects; the usage between reads comes from the workflow summaries, and the mode itself from the
-       * session, so nothing polls. A session that has neither never reads it.
+       * with DAG mode on or a workflow in it (or becomes so), and again when the session's budget changes, the
+       * global `dag` configuration changes (`config.updated`) or the stream reconnects; the usage between reads
+       * comes from the workflow summaries, and the mode itself from the session, so nothing polls. A session that
+       * has neither never reads it.
        */
       dagMode: {
         [rootSessionID: string]: SessionDagMode
       }
+      /**
+       * The DAG slots running in the whole server process, as the latest report of any source says: a workflow
+       * summary that carries `concurrencyRunning` (event or read), or a mode snapshot's `limits.running`, whichever
+       * arrived last. The count belongs to the process, but a summary event carries it only for the session it is
+       * about, so the figures of the session shown go stale while another session's workflows move the slots; the
+       * status band and the `/dag` panel's mode line read this one instead. Undefined until a source has said. It has
+       * no read of its own: the summary and snapshot reads refresh it, and a reconnect runs those again.
+       */
+      dagRunning?: number
       /**
        * What the user did in the `/dag` panel, per session tree (keyed by its root session): the workflow
        * they picked and the ones they opened. Memory only, never sent or persisted, so a reconnect has
@@ -270,6 +280,7 @@ export const {
       dag: {},
       dagNodes: {},
       dagMode: {},
+      dagRunning: undefined,
       dag_focus: {},
       turn_settled: {},
       summary: {},
@@ -775,10 +786,34 @@ export const {
           .map((session) =>
             sdk.client.dag
               .summary({ sessionID: session.id }, { headers: locationHeaders({ workspace }) })
-              .then((x) => setStore("dag", session.id, reconcile(x.data ?? [])))
+              .then((x) =>
+                batch(() => {
+                  setStore("dag", session.id, reconcile(x.data ?? []))
+                  noteDagSummaries(x.data ?? [])
+                }),
+              )
               .catch(() => {}),
           ),
       )
+    }
+
+    /**
+     * Keep the process-wide slot count a report carried (#1032 7). The latest report wins wherever it came from:
+     * the count is the process's, not the session's, and a summary event carries it only for the session it is
+     * about. A report without the figure leaves what is held.
+     */
+    function noteDagRunning(running: number | undefined) {
+      if (running !== undefined) setStore("dagRunning", running)
+    }
+
+    /** The slot count of a batch of summaries: the publisher stamps the same figure on each of them. */
+    function noteDagSummaries(summaries: readonly Pick<DagWorkflowSummary, "concurrencyRunning">[]) {
+      noteDagRunning(summaries.find((summary) => summary.concurrencyRunning !== undefined)?.concurrencyRunning)
+    }
+
+    /** The roots whose mode snapshot is held or being read: what a refresh has to cover. */
+    function dagModeRoots() {
+      return [...new Set([...Object.keys(store.dagMode), ...dagModeReads.keys()])]
     }
 
     /**
@@ -798,11 +833,15 @@ export const {
               .dagMode({ sessionID }, { headers: locationHeaders({ workspace }) })
               .then((response) => {
                 if (disposed || dagModeReads.get(sessionID) !== read) return
-                if (!response.data) {
+                const snapshot = response.data
+                if (!snapshot) {
                   TuiLog.write("error", "Loading the DAG mode failed", { sessionID, status: response.response?.status })
                   return
                 }
-                setStore("dagMode", sessionID, reconcile(response.data))
+                batch(() => {
+                  setStore("dagMode", sessionID, reconcile(snapshot))
+                  noteDagRunning(snapshot.limits.running)
+                })
               })
               .catch((error) => {
                 TuiLog.write("error", "Loading the DAG mode failed", { sessionID, error: String(error) })
@@ -1186,6 +1225,8 @@ export const {
           // store-node identity: a no-op summary must not remount expanded
           // sidebar rows and re-trigger their signature-guarded fetches.
           setStore("dag", event.properties.sessionID, reconcile(event.properties.summaries))
+          // The slot count is the process's: any session's event is the newest report of it.
+          noteDagSummaries(event.properties.summaries)
           if (event.properties.summaries.length > 0) wantDagMode()
           break
 
@@ -1562,7 +1603,12 @@ export const {
         sessionIDs.map((sessionID) =>
           sdk.client.dag
             .summary({ sessionID }, { headers: locationHeaders({ workspace }) })
-            .then((x) => setStore("dag", sessionID, reconcile(x.data ?? [])))
+            .then((x) =>
+              batch(() => {
+                setStore("dag", sessionID, reconcile(x.data ?? []))
+                noteDagSummaries(x.data ?? [])
+              }),
+            )
             .catch(() => {}),
         ),
       ).then(() => undefined)
@@ -1679,9 +1725,13 @@ export const {
         resyncHandlers.delete(fn)
       }
     }
-    onResync(guardedRefreshDagSummaries)
-    // #1032 7: the mode snapshot of every root the user entered is read again; the answers are states, not events.
-    onResync(() => fetchDagMode(Object.keys(store.dagMode)))
+    // #1032 7: the summaries and the mode snapshots are read again together, the answers being states, not events.
+    // Only then does the route ask for what it still lacks: a first read that failed left no snapshot to refresh,
+    // and a workflow that appeared during the disconnect turns a tree that wanted none into one that wants it.
+    onResync(async () => {
+      await Promise.all([guardedRefreshDagSummaries(), fetchDagMode(dagModeRoots())])
+      if (!disposed) wantDagMode()
+    })
     // #1032: every shown workflow reads its table again, from an empty buffer.
     // A shown workflow with no feed yet is one whose interest the worker never
     // confirmed: declaring it again would be a no-op, so the reconnect registers
@@ -1702,6 +1752,15 @@ export const {
     onResync(refreshLifecycle)
     onResync(refreshGoals)
     onResync(refreshTrust)
+
+    // #1032 7: a global config write that leaves the instance alone reaches the TUI as `config.updated` and as
+    // nothing else (`useEvent` leaves it out, and no session event follows), so this listens on the emitter itself.
+    // A change to `dag` can move the snapshot's limits and the effective budget: every snapshot held or being read
+    // is read again, and the new answer replaces a read that was out before the change.
+    const unsubscribeConfig = sdk.event.on("event", (event) => {
+      if (disposed || event.payload.type !== "config.updated") return
+      if (event.payload.properties.keys.includes("dag")) void fetchDagMode(dagModeRoots())
+    })
 
     const unsubscribeReconnect = sdk.event.on("reconnected", () => {
       // Deltas that arrived before the disconnect cannot be reconciled with a
@@ -1734,6 +1793,7 @@ export const {
       submissionAccepted.clear()
       unsubscribeStream()
       unsubscribeLifecycle()
+      unsubscribeConfig()
       unsubscribeReconnect()
     })
 

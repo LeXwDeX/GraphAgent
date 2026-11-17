@@ -1005,6 +1005,21 @@ describe("the usage", () => {
     }
   })
 
+  test("follows the slots of the whole process when a session outside the tree moves them", async () => {
+    const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      await row0(harness, (text) => text.includes("全进程并发 3/12"), "the usage")
+      // Only the other session's own summary says so; the workflows of this tree keep their old figure of three.
+      harness.events.emit(summaryEvent(otherID, [flow("dag_other", "running", { concurrencyRunning: 7 })]))
+      const line = await row0(harness, (text) => text.includes("全进程并发 7/12"), "the slots of the whole process")
+      expect(line).toContain("全进程并发 7/12 · 620 tok · 预算 62%")
+      expect(modeReads(harness)).toBe(1)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test("colors the budget by its band, and takes the color back when the usage falls", async () => {
     const { harness } = await mountEntered(usageWorld(620), { sessions: modeSessions, dagMode: () => budgeted() })
     try {

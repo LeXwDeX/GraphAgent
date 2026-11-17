@@ -627,8 +627,9 @@ export function SessionStatusBand() {
   })
 
   // DAG mode (F4 7.1), all of it derived from what the data layer holds: the mode is the session's own field, the
-  // usage follows the workflows' summaries over the mode snapshot, and the wait follows the checkpoints, the root
-  // session's status and how its latest turn ended.
+  // usage follows the workflows' summaries over the mode snapshot (the slots of the whole process being the latest
+  // report of any session), and the wait follows the checkpoints, the root session's status and how its latest turn
+  // ended.
   const modeMark = createMemo(() => {
     const root = rootID()
     const on = root !== undefined && sync.session.get(root)?.dagMode === "on"
@@ -641,7 +642,7 @@ export function SessionStatusBand() {
     const root = rootID()
     return root === undefined
       ? undefined
-      : dagUsage({ snapshot: sync.data.dagMode[root], workflows: sync.data.dag[root] })
+      : dagUsage({ snapshot: sync.data.dagMode[root], workflows: sync.data.dag[root], running: sync.data.dagRunning })
   })
   const waiting = createMemo(() => {
     const root = rootID()

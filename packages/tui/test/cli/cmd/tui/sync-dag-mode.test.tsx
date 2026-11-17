@@ -80,6 +80,13 @@ function global(type: string, properties: Record<string, unknown>): GlobalEvent 
 const updated = (info: Row) => global("session.updated", { info })
 const summarized = (sessionID: string, summaries: DagWorkflowSummary[]) =>
   global("dag.workflow.summary.updated", { sessionID, summaries })
+/** The hot-read notice of a global config write: it names the top-level keys that changed. */
+const configUpdated = (keys: string[]) => global("config.updated", { keys })
+/** A workflow whose summary says how many DAG slots the whole process is running. */
+const reporting = (running: number, id = "wf-1"): DagWorkflowSummary => ({
+  ...workflow(id),
+  concurrencyRunning: running,
+})
 
 /** A deferred answer: the read waits until the test lets it go. */
 function gate() {
@@ -98,21 +105,31 @@ interface Server {
   readonly answers: Record<string, () => SessionDagMode | Promise<SessionDagMode> | Response>
   /** The workflows each session owns, as `GET /dag/session/:id/summary` answers. */
   readonly summaries: Record<string, DagWorkflowSummary[]>
+  /** Session ids, in the order their summaries were asked for. */
+  readonly summaryReads: string[]
+  /** While set, every summary answer waits for it. */
+  summaryHold?: Promise<void>
 }
 
 function serve(rows: Row[]): Server {
   const reads: string[] = []
+  const summaryReads: string[] = []
   const answers: Server["answers"] = {}
   const summaries: Server["summaries"] = {}
   const byID = new Map(rows.map((item) => [item.id, item]))
-  return {
+  const server: Server = {
     reads,
     answers,
     summaries,
+    summaryReads,
     handler: (url) => {
       if (url.pathname === "/session") return json(rows)
       const summary = url.pathname.match(/^\/dag\/session\/([^/]+)\/summary$/)
-      if (summary) return json(summaries[summary[1]] ?? [])
+      if (summary) {
+        summaryReads.push(summary[1])
+        const answer = () => json(summaries[summary[1]] ?? [])
+        return server.summaryHold ? server.summaryHold.then(answer) : answer()
+      }
       const mode = url.pathname.match(/^\/session\/([^/]+)\/dag-mode$/)
       if (mode) {
         reads.push(mode[1])
@@ -126,6 +143,7 @@ function serve(rows: Row[]): Server {
       return undefined
     },
   }
+  return server
 }
 
 async function withMount(
@@ -471,6 +489,279 @@ describe("tui sync dag mode snapshot: what keeps it current", () => {
       } finally {
         probe.dispose()
       }
+    })
+  })
+})
+
+// A global write to the `dag` configuration (the default budget, the concurrency, the node cap) reaches the TUI as
+// `config.updated` and nothing else: no session changes with it, so the snapshots held are read again on the notice.
+describe("tui sync dag mode snapshot: the global dag configuration", () => {
+  test("a change to dag reads every snapshot held again and takes the answers", async () => {
+    await withMount(
+      TREE,
+      async ({ emit, server, sdk, sync }) => {
+        await sync.session.activate("ses_new")
+        await wait(() => sync.data.dagMode.ses_new !== undefined)
+        await sync.session.activate("ses_old")
+        await wait(() => sync.data.dagMode.ses_old !== undefined)
+        server.reads.length = 0
+
+        server.answers.ses_new = () => status({ limits: { concurrency: 8, maxTotalNodes: 50, running: 1 } })
+        server.answers.ses_old = () => status({ budget: { tokens: 4000, used: 100, usedCacheRead: 0, warnRatio: 0.8 } })
+        emit(configUpdated(["dag"]))
+        sdk.frameClock.flushNow()
+        await wait(
+          () =>
+            sync.data.dagMode.ses_new?.limits.concurrency === 8 && sync.data.dagMode.ses_old?.budget.tokens === 4000,
+        )
+        expect(server.reads.toSorted()).toEqual(["ses_new", "ses_old"])
+      },
+      (server) => {
+        server.summaries.ses_old = [workflow()]
+      },
+    )
+  })
+
+  test("a change to any other key reads nothing", async () => {
+    await withMount(TREE, async ({ emit, server, sdk, sync }) => {
+      await sync.session.activate("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      server.reads.length = 0
+
+      emit(configUpdated(["language"]))
+      emit(configUpdated([]))
+      sdk.frameClock.flushNow()
+      await Bun.sleep(60)
+      expect(server.reads).toEqual([])
+    })
+  })
+
+  test("a snapshot still on its way is read again too, and the answer from before the change is dropped", async () => {
+    const slow = gate()
+    let calls = 0
+    await withMount(
+      TREE,
+      async ({ emit, server, sdk, sync }) => {
+        await sync.session.activate("ses_new")
+        // The first read is still out when the configuration changes: nothing is held yet.
+        await wait(() => server.reads.length === 1)
+        expect(sync.data.dagMode.ses_new).toBeUndefined()
+        emit(configUpdated(["dag"]))
+        sdk.frameClock.flushNow()
+        await wait(() => sync.data.dagMode.ses_new?.budget.tokens === 2000)
+
+        // Now the answer given before the change arrives, with the budget the old configuration made.
+        slow.open()
+        await Bun.sleep(60)
+        expect(sync.data.dagMode.ses_new?.budget.tokens).toBe(2000)
+        expect(server.reads).toEqual(["ses_new", "ses_new"])
+      },
+      (server) => {
+        server.answers.ses_new = async () => {
+          calls += 1
+          if (calls === 1) {
+            await slow.opened
+            return status({ budget: { tokens: 1000, used: 100, usedCacheRead: 0, warnRatio: 0.8 } })
+          }
+          return status({ budget: { tokens: 2000, used: 100, usedCacheRead: 0, warnRatio: 0.8 } })
+        }
+      },
+    )
+  })
+
+  test("with no snapshot held or on its way a change to dag reads nothing: a plain view costs no request", async () => {
+    await withMount(TREE, async ({ emit, server, sdk, sync }) => {
+      await sync.session.activate("ses_old")
+      emit(configUpdated(["dag"]))
+      sdk.frameClock.flushNow()
+      await Bun.sleep(60)
+      expect(server.reads).toEqual([])
+      expect(sync.data.dagMode).toEqual({})
+    })
+  })
+})
+
+// What the reconnect has to bring back: the snapshots held, and also the one the route's tree wants but has not got.
+describe("tui sync dag mode snapshot: what a reconnect fills in", () => {
+  test("the current root whose first read failed is read again", async () => {
+    await withMount(
+      TREE,
+      async ({ reconnect, server, sync }) => {
+        await sync.session.activate("ses_new")
+        await wait(() => server.reads.length === 1)
+        await Bun.sleep(40)
+        // The failed read left nothing held, so there is no snapshot for the reconnect to refresh.
+        expect(sync.data.dagMode.ses_new).toBeUndefined()
+
+        server.answers.ses_new = () => status()
+        reconnect()
+        await wait(() => sync.data.dagMode.ses_new !== undefined)
+        expect(server.reads).toEqual(["ses_new", "ses_new"])
+      },
+      (server) => {
+        server.answers.ses_new = () => new Response("nope", { status: 500 })
+      },
+    )
+  })
+
+  test("the current root that gained a workflow while the stream was down is read", async () => {
+    await withMount(TREE, async ({ reconnect, server, sync }) => {
+      await sync.session.activate("ses_old")
+      await Bun.sleep(40)
+      expect(server.reads).toEqual([])
+
+      // The summary event went with the stream; the summaries the reconnect reads again are what show the workflow.
+      server.summaries.ses_old = [workflow()]
+      reconnect()
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      expect(server.reads).toEqual(["ses_old"])
+    })
+  })
+
+  test("a workflow that appeared in a tree the route is not in reads nothing", async () => {
+    await withMount(TREE, async ({ reconnect, server, sync }) => {
+      await sync.session.activate("ses_old")
+      await Bun.sleep(40)
+
+      server.summaries.ses_new = [workflow()]
+      reconnect()
+      await wait(() => (sync.data.dag.ses_new?.length ?? 0) > 0)
+      await Bun.sleep(40)
+      expect(server.reads).toEqual([])
+    })
+  })
+
+  test("reconnects in a row still ask for the summaries once while the first refresh is out", async () => {
+    const hold = gate()
+    await withMount(TREE, async ({ reconnect, server, sync }) => {
+      await sync.session.activate("ses_old")
+      const tracked = Object.keys(sync.data.dag).toSorted()
+      server.summaryReads.length = 0
+
+      server.summaryHold = hold.opened
+      reconnect()
+      reconnect()
+      await wait(() => server.summaryReads.length === tracked.length)
+      await Bun.sleep(40)
+      expect(server.summaryReads.toSorted()).toEqual(tracked)
+
+      // The refresh that ends lets the next reconnect ask again.
+      hold.open()
+      await Bun.sleep(60)
+      server.summaryReads.length = 0
+      reconnect()
+      await wait(() => server.summaryReads.length === tracked.length)
+    })
+  })
+})
+
+// The slots running in the whole process are one figure, but a summary event carries it only for the session it is
+// about: the store keeps the latest report of any source, so a session that is shown does not keep a stale count.
+describe("tui sync dag mode snapshot: the slots of the whole process", () => {
+  test("nothing is known until a report says, and a plain tree costs none", async () => {
+    await withMount(TREE, async ({ server, sync }) => {
+      expect(sync.data.dagRunning).toBeUndefined()
+      await sync.session.activate("ses_old")
+      await Bun.sleep(40)
+      expect(server.reads).toEqual([])
+      expect(sync.data.dagRunning).toBeUndefined()
+    })
+  })
+
+  test("another session's summary event brings the count, and the summaries the root holds stay as they are", async () => {
+    await withMount(TREE, async ({ emit, sdk, sync }) => {
+      await sync.session.activate("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      // The snapshot read counted three slots busy.
+      expect(sync.data.dagRunning).toBe(3)
+
+      emit(summarized("ses_old", [reporting(5)]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagRunning === 5)
+      expect(sync.data.dag.ses_new).toEqual([])
+    })
+  })
+
+  test("a summary without the figure leaves the count alone, and a zero is a report", async () => {
+    await withMount(TREE, async ({ emit, sdk, sync }) => {
+      await sync.session.activate("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      emit(summarized("ses_old", [reporting(5)]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagRunning === 5)
+
+      emit(summarized("ses_old", [workflow(), workflow("wf-2")]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dag.ses_old?.length === 2)
+      expect(sync.data.dagRunning).toBe(5)
+
+      emit(summarized("ses_old", []))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dag.ses_old?.length === 0)
+      expect(sync.data.dagRunning).toBe(5)
+
+      emit(summarized("ses_old", [reporting(0)]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagRunning === 0)
+    })
+  })
+
+  test("the latest report wins: an event after a snapshot, a snapshot after an event", async () => {
+    await withMount(TREE, async ({ emit, server, sdk, sync }) => {
+      await sync.session.activate("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      expect(sync.data.dagRunning).toBe(3)
+
+      emit(summarized("ses_old", [reporting(5)]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagRunning === 5)
+
+      // A change to the dag configuration reads the snapshot again, and its count is the newest.
+      server.answers.ses_new = () => status({ limits: { concurrency: 12, maxTotalNodes: 100, running: 1 } })
+      emit(configUpdated(["dag"]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagRunning === 1)
+      expect(sync.data.dagMode.ses_new?.limits.running).toBe(1)
+
+      emit(summarized("ses_old", [reporting(2)]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagRunning === 2)
+    })
+  })
+
+  test("entering a tree takes the count from its summaries, and the snapshot asked for after them takes over", async () => {
+    const slow = gate()
+    await withMount(
+      TREE,
+      async ({ sync }) => {
+        await sync.session.activate("ses_old")
+        // The summaries read at entry have said four; the snapshot, asked for after them, is still out.
+        expect(sync.data.dagRunning).toBe(4)
+        slow.open()
+        await wait(() => sync.data.dagRunning === 3)
+      },
+      (server) => {
+        server.summaries.ses_old = [reporting(4)]
+        server.answers.ses_old = async () => {
+          await slow.opened
+          return status()
+        }
+      },
+    )
+  })
+
+  test("the summaries a reconnect reads again bring it too", async () => {
+    await withMount(TREE, async ({ reconnect, server, sync }) => {
+      await sync.session.activate("ses_old")
+      await Bun.sleep(40)
+      expect(sync.data.dagRunning).toBeUndefined()
+
+      // The bootstrap read the newest tree's summaries; a session of it has a workflow by now.
+      server.summaries.ses_new_child = [reporting(6)]
+      reconnect()
+      await wait(() => sync.data.dagRunning === 6)
+      // The route's own tree has none, so nothing else was read.
+      expect(server.reads).toEqual([])
     })
   })
 })

@@ -306,14 +306,17 @@ export function DagPanel(props: { state?: DagPanelState }) {
   })
 
   // DAG mode (F4 7.1), all of it read from what the data layer holds: the mode is the session's own field, the
-  // usage follows the workflow summaries over the mode snapshot, quality and coverage are the shown workflow's own.
+  // usage follows the workflow summaries over the mode snapshot (the slots of the whole process being the latest
+  // report of any session), quality and coverage are the shown workflow's own.
   const snapshot = createMemo(() => {
     const root = rootID()
     return root === undefined ? undefined : sync.data.dagMode[root]
   })
   const usage = createMemo(() => {
     const root = rootID()
-    return root === undefined ? undefined : dagUsage({ snapshot: snapshot(), workflows: sync.data.dag[root] })
+    return root === undefined
+      ? undefined
+      : dagUsage({ snapshot: snapshot(), workflows: sync.data.dag[root], running: sync.data.dagRunning })
   })
   const modeLine = createMemo(() => {
     const root = rootID()

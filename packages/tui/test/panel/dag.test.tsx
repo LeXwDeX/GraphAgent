@@ -1293,12 +1293,12 @@ const modeSessions = [
   sessionFixture(NODE_SESSION, { parentID: ROOT }),
 ]
 
-/** A session with 1.2M of a 5M budget used, three slots busy of twelve, and nodes capped at 100. */
-const snapshot = (extra: Partial<SessionDagMode["budget"]> = {}) =>
+/** A session with 1.2M of a 5M budget used, `running` slots busy of twelve (three by default), nodes capped at 100. */
+const snapshot = (extra: Partial<SessionDagMode["budget"]> = {}, running = 3) =>
   dagModeStatus({
     mode: "on",
     budget: { tokens: 5_000_000, used: 1_200_000, usedCacheRead: 0, warnRatio: 0.8, ...extra },
-    limits: { concurrency: 12, maxTotalNodes: 100, running: 3 },
+    limits: { concurrency: 12, maxTotalNodes: 100, running },
   })
 
 function quality(extra: Partial<DagWorkflowQuality> = {}): DagWorkflowQuality {
@@ -1349,8 +1349,10 @@ describe("the mode line above the workflow", () => {
   })
 
   test("takes the tokens from the workflows' summaries once they report them, and follows their events", async () => {
+    // The snapshot is read after the summary and its slot count is the later report, so it counts the same five;
+    // the tokens differ on purpose: the summary's stand for the session's usage, the snapshot's figure is older.
     const server = dagServer({
-      mode: snapshot(),
+      mode: snapshot({}, 5),
       summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running", { tokens: 4_000_000, concurrencyRunning: 5 })] },
     })
     const shell = await mountDag({ server, sessions: modeSessions })
@@ -1363,6 +1365,30 @@ describe("the mode line above the workflow", () => {
       )
       await shell.settle()
       expect(await shell.frame()).toContain("运行 2/12（全进程） · 节点上限 100 · token 4.5M/5M")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("follows the slots of the whole process when another session's workflows move them", async () => {
+    const server = dagServer({
+      mode: snapshot(),
+      summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running", { tokens: 4_000_000, concurrencyRunning: 3 })] },
+    })
+    const shell = await mountDag({ server, sessions: modeSessions })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("运行 3/12（全进程）")
+
+      // Only the other session's own summary says so; this session's workflows keep their old figure of three.
+      shell.events.emit(
+        summaryPush(
+          [summaryOf("wf_elsewhere", "别处的工作流", "running", { concurrencyRunning: 8 })],
+          "ses_dag_elsewhere",
+        ),
+      )
+      await shell.settle()
+      expect(await shell.frame()).toContain("运行 8/12（全进程） · 节点上限 100 · token 4M/5M")
     } finally {
       await shell.dispose()
     }

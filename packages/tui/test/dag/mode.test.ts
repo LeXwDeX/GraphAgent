@@ -131,6 +131,30 @@ describe("dagUsage: what the session's workflows have used", () => {
     expect(dagUsage({ snapshot: snapshot(), workflows: [{ concurrencyRunning: 0 }] })?.running).toBe(0)
   })
 
+  test("the process's latest report beats the session's own summaries and the snapshot", () => {
+    // Another session's event moved the slots after this session's workflows last reported.
+    expect(dagUsage({ snapshot: snapshot(), workflows: [{ concurrencyRunning: 7 }], running: 9 })?.running).toBe(9)
+    expect(dagUsage({ snapshot: snapshot(), workflows: [{ tokens: 1 }], running: 9 })?.running).toBe(9)
+    expect(dagUsage({ snapshot: snapshot(), running: 9 })?.running).toBe(9)
+    // A zero is a report here too, and leaves the cap and the budget to the snapshot.
+    expect(dagUsage({ snapshot: snapshot(), workflows: [{ concurrencyRunning: 7 }], running: 0 })).toMatchObject({
+      running: 0,
+      cap: 12,
+      budget: 5_000_000,
+    })
+  })
+
+  test("without the process's report the order is the summaries' figure, then the snapshot's", () => {
+    expect(
+      dagUsage({ snapshot: snapshot(), workflows: [{ concurrencyRunning: 7 }], running: undefined })?.running,
+    ).toBe(7)
+    expect(dagUsage({ snapshot: snapshot(), running: undefined })?.running).toBe(3)
+  })
+
+  test("the process's figure alone is something to show, and invents no cap", () => {
+    expect(dagUsage({ running: 2 })).toEqual({ running: 2, tier: "normal" })
+  })
+
   test("without a snapshot only the workflows' own figures show, and no cap or budget is invented", () => {
     expect(dagUsage({ workflows: [{ tokens: 4200, concurrencyRunning: 2 }] })).toEqual({
       running: 2,

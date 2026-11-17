@@ -78,21 +78,29 @@ export interface DagUsageInput {
   readonly snapshot?: DagModeSnapshot
   /** The workflows the session itself owns (the budget is the main session's, not its sub-agents'). */
   readonly workflows?: readonly Pick<DagWorkflowSummary, "tokens" | "concurrencyRunning">[]
+  /**
+   * The slots running in the whole process, as the latest report of any source says: any session's workflow
+   * summary or any snapshot read. The count belongs to the process, but a summary event carries it only for the
+   * session it is about, so the session's own summaries can hold an older figure than another session's event
+   * just brought. When given it is the newest figure there is, and it wins over both other sources.
+   */
+  readonly running?: number
 }
 
 /**
  * The usage to show. The workflows' summaries are newer than the snapshot: while any of them reports its tokens
  * their sum stands for the session's usage (the same sum the server's snapshot is made of), the snapshot's figure
- * only before that. The slot count follows the first summary that carries one, else the snapshot. The cap and the
- * budget only the snapshot knows. Undefined while nothing at all is known.
+ * only before that. The slot count is the process's latest report (`running`) when the caller has one, else the
+ * first of the session's own summaries that carries one, else the snapshot's. The cap and the budget only the
+ * snapshot knows. Undefined while nothing at all is known.
  */
 export function dagUsage(input: DagUsageInput): DagUsage | undefined {
   const { snapshot, workflows } = input
   const reporting = workflows?.filter((workflow) => workflow.tokens !== undefined) ?? []
   const tokens =
     reporting.length > 0 ? reporting.reduce((sum, workflow) => sum + (workflow.tokens ?? 0), 0) : snapshot?.budget.used
-  const running = workflows?.find((workflow) => workflow.concurrencyRunning !== undefined)?.concurrencyRunning
-  const slots = running ?? snapshot?.limits.running
+  const reported = workflows?.find((workflow) => workflow.concurrencyRunning !== undefined)?.concurrencyRunning
+  const slots = input.running ?? reported ?? snapshot?.limits.running
   const cap = snapshot?.limits.concurrency
   if (tokens === undefined && slots === undefined && cap === undefined) return undefined
 
