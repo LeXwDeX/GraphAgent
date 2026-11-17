@@ -100,15 +100,33 @@ const completed = (dual: DualRunner, dagID: string) =>
   )
 
 /**
- * Wait for the first lease claim of `dagID` that the runner's loop made after
- * its first `seen` lease calls, and answer it. A claim is where an adoption
- * decides: once it has been refused, the adoption has nothing left to do.
+ * Wait until the runner's loop has read the lease of `dagID` `count` times after its first `seen` lease calls, and
+ * answer the reads. A workflow that a trigger hands to the reconciler is judged from that read (decision 6): another
+ * runner's live lease ends the evaluation right there, with no claim made at all.
  */
-const claimAfter = (runner: Runner, dagID: string, seen: number) =>
+const heldAfter = (runner: Runner, dagID: string, seen: number, count = 1) =>
   pollOnTestClock(
-    Effect.sync(() => runner.leaseCalls.slice(seen).find((call) => call.operation === "claim" && call.dagID === dagID)),
-    `${runner.name} made no lease claim for ${dagID}`,
+    Effect.sync(() => {
+      const reads = runner.leaseCalls.slice(seen).filter((call) => call.operation === "held" && call.dagID === dagID)
+      return reads.length >= count ? reads : undefined
+    }),
+    `${runner.name} read the lease of ${dagID} fewer than ${count} times`,
   )
+
+/**
+ * Replan twice on a runner that has no runtime entry for `dagID` and whose reconciler leaves the workflow to another
+ * runner's live lease. A trigger waits for the evaluation under way (`reconcileAfter`), so the first evaluation is
+ * over, and has claimed nothing, once the second has begun: the two reads of the lease are the proof, and the answers
+ * of both are returned.
+ */
+const replanLeftAlone = (runner: Runner, dagID: string, ids: readonly [string, string]) =>
+  Effect.gen(function* () {
+    const seen = runner.leaseCalls.length
+    yield* runner.dag.extend(dagID, [node(ids[0])])
+    yield* heldAfter(runner, dagID, seen, 1)
+    yield* runner.dag.extend(dagID, [node(ids[1])])
+    return yield* heldAfter(runner, dagID, seen, 2)
+  })
 
 /** Which workflow the registry of `runner` names as the dag owner of the parent session (the first one registered), if any. */
 const dagOwner = (runner: Runner) =>
@@ -159,12 +177,15 @@ describe("claiming (ADR-0008 decision 6: the claim comes first)", () => {
       const { dagID } = yield* driveOnR1(dual)
       yield* dual.r2.init
       const events = yield* dual.log(dagID)
-      const seen = dual.r2.leaseCalls.length
 
-      // R2's WorkflowReplanned handler finds no entry and tries to recover the workflow:
-      // its claim is refused by R1's live lease, which is where the adoption ends.
-      yield* dual.r2.dag.extend(dagID, [node("m")])
-      expect((yield* claimAfter(dual.r2, dagID, seen)).answer).toBeUndefined()
+      // R2's WorkflowReplanned handler finds no entry and hands the workflow to its reconciler: R1's live lease
+      // is what the evaluation reads, and where it ends. R2 claims nothing.
+      const reads = yield* replanLeftAlone(dual.r2, dagID, ["m", "m-again"])
+      expect(reads.map((read) => read.answer)).toMatchObject([
+        { runnerID: dual.r1.identity.id },
+        { runnerID: dual.r1.identity.id },
+      ])
+      expect(dual.r2.leaseCalls.filter((call) => call.operation === "claim")).toEqual([])
 
       const added = (yield* dual.log(dagID)).slice(events.length).map((event) => event.type)
       expect(added).not.toContain("dag.node.failed")
@@ -397,9 +418,12 @@ describe("a runner that lost its lease evicts the workflow (ADR-0008 decision 2)
       expect(yield* dual.log(dagID)).toEqual(events)
       expect(dual.r1.created).toEqual([gate.sessionID])
       // It dropped the entry and does not adopt the workflow again: a replan on R1 finds no entry, and R2's lease is live.
-      const seen = dual.r1.leaseCalls.length
-      yield* dual.r1.dag.extend(dagID, [node("m")])
-      expect((yield* claimAfter(dual.r1, dagID, seen)).answer).toBeUndefined()
+      const reads = yield* replanLeftAlone(dual.r1, dagID, ["m", "m-again"])
+      expect(reads.map((read) => read.answer)).toMatchObject([
+        { runnerID: dual.r2.identity.id },
+        { runnerID: dual.r2.identity.id },
+      ])
+      expect(dual.r1.leaseCalls.filter((call) => call.operation === "claim")).toHaveLength(1)
       expect(dual.r1.created).toEqual([gate.sessionID])
       // And it does not take the lease back: that is R2's.
       expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
@@ -778,9 +802,8 @@ describe("the reconcile tick (ADR-0008 decision 6)", () => {
     }),
   )
 
-  // The triggers that PR4b turns into calls of `reconcile` still adopt through `recoverWorkflow`, which keeps the
-  // #948 guard of its own: the startup round never gets there with a location it cannot use (row 4 fails it first),
-  // so this is the case that pins it.
+  // The event triggers are calls of `reconcileAfter` as well, and the observation they end in judges the location (row
+  // 4) before anything is claimed: a workflow whose workspace is gone is failed, not adopted, whoever raised it.
   it.effect("a replan that finds no entry fails a workflow whose workspace is gone, instead of adopting it", () =>
     Effect.gen(function* () {
       const dual = yield* makeDualRunner()

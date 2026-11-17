@@ -5,10 +5,10 @@
 // Regression: SessionEvent.Moved of a session that owns a RUNNING workflow,
 // with both the old and the new directory instances live. The old owner evicts
 // its runtime entry (cancelling the child, interrupting the fiber); the new
-// owner must adopt the workflow through the ordinary recovery path — reconcile
-// the dead attempt with attempt identity and park the workflow for the parent —
-// instead of leaving the durable row running with a dead node and a pending
-// dependent that nothing ever schedules again.
+// owner must adopt the workflow through the reconciler — reconcile the dead
+// attempt with attempt identity and park the workflow for the parent — instead
+// of leaving the durable row running with a dead node and a pending dependent
+// that nothing ever schedules again.
 import { afterAll, describe, expect, it } from "bun:test"
 import { sql } from "drizzle-orm"
 import { DateTime, Deferred, Effect, Layer, Option, Queue } from "effect"
