@@ -645,6 +645,22 @@ describe("moving around the panel", () => {
       await waitFor(() => depth(shell) === 0)
       expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })
       await waitFor(() => shell.sync().dag.nodes(WF) === undefined)
+      // The session was not retrying, so the way in says nothing.
+      expect(shell.toast().currentToast).toBeNull()
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("enter on a node whose session is retrying goes to it and says why in the footer", async () => {
+    const shell = await mountDag()
+    try {
+      await openLoaded(shell)
+      shell.sync().set("session_status", NODE_SESSION, { type: "retry", attempt: 2, message: "rate limited", next: 0 })
+      await press(shell, "return")
+      await waitFor(() => depth(shell) === 0)
+      expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })
+      expect(shell.toast().currentToast).toMatchObject({ level: "warning", text: "子 agent 正在重试：rate limited" })
     } finally {
       await shell.dispose()
     }
