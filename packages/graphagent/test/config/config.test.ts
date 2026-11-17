@@ -1894,6 +1894,98 @@ describe("DAG settings: policy keys are global-only, model tiers are project-sco
     ),
   )
 
+  // #1158: the composer expansion limits bound what a workflow may spend, so they
+  // are global policy like `concurrency` and `max_total_nodes`: a project file
+  // cannot widen them, and the loader says so once per file and key.
+  describe("dag.compose (#1158)", () => {
+    const compose = { max_children: 8, max_depth: 3, max_subtree_nodes: 60 }
+
+    it.effect("loads the three limits from the global layer", () =>
+      withConfigTree(
+        { global: { dag: { compose } } },
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).dag?.compose).toEqual(compose)
+          expect((yield* Config.use.dagGlobal()).compose).toEqual(compose)
+        }),
+      ),
+    )
+
+    it.effect("is absent until set: the readers fill in the defaults", () =>
+      withConfigTree(
+        { global: { dag: { concurrency: 7 } } },
+        Effect.gen(function* () {
+          expect((yield* Config.use.dagGlobal()).compose).toBeUndefined()
+        }),
+      ),
+    )
+
+    it.effect("ignores dag.compose from the project config file and warns once per file", () =>
+      withConfigTree(
+        {
+          global: { dag: { compose: { max_children: 4 } } },
+          project: { dag: { compose: { max_children: 12, max_depth: 3, max_subtree_nodes: 80 } } },
+        },
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          // The user's own value stays; nothing of the project's reaches the merged section.
+          expect((yield* Config.use.dagGlobal()).compose).toEqual({ max_children: 4 })
+          expect((yield* Config.use.get()).dag?.compose).toEqual({ max_children: 4 })
+          const logs = JSON.stringify(yield* logLines)
+          expect(logs).toContain(warning)
+          expect(logs).toContain(path.join(test.directory, ".agents", "settings.json"))
+          expect(logs).toContain("dag.compose")
+          const before = occurrences(logs, "dag.compose")
+          yield* reloadInstance({ directory: test.directory })
+          expect((yield* Config.use.dagGlobal()).compose).toEqual({ max_children: 4 })
+          expect(occurrences(JSON.stringify(yield* logLines), "dag.compose")).toBe(before)
+        }),
+      ),
+    )
+
+    it.effect("ignores dag.compose from .agents project directories", () =>
+      withConfigTree(
+        { local: { dag: { compose: { max_depth: 1 } } } },
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).dag).toBeUndefined()
+          const logs = JSON.stringify(yield* logLines)
+          expect(logs).toContain(warning)
+          expect(logs).toContain(path.join(".agents", "settings.local.json"))
+          expect(logs).toContain("dag.compose")
+        }),
+      ),
+    )
+
+    // The documented range of each key; the ends are valid, one step outside is not.
+    const ranges = [
+      { key: "max_children", low: 2, high: 12 },
+      { key: "max_depth", low: 1, high: 3 },
+      { key: "max_subtree_nodes", low: 10, high: 80 },
+    ] as const
+    for (const { key, low, high } of ranges) {
+      for (const value of [low, high]) {
+        it.effect(`accepts ${key} ${value}`, () =>
+          withConfigTree(
+            { global: { dag: { compose: { [key]: value } } } },
+            Effect.gen(function* () {
+              expect((yield* Config.use.dagGlobal()).compose).toEqual({ [key]: value })
+            }),
+          ),
+        )
+      }
+      for (const value of [low - 1, high + 1, (low + high) / 2 + 0.5, "x"]) {
+        it.effect(`rejects ${key} ${JSON.stringify(value)} instead of coercing it`, () =>
+          withConfigTree(
+            { global: { dag: { compose: { [key]: value } } } },
+            Effect.gen(function* () {
+              const exit = yield* Config.use.get().pipe(Effect.exit)
+              expect(Exit.isFailure(exit)).toBe(true)
+            }),
+          ),
+        )
+      }
+    }
+  })
+
   it.effect("treats GRAPHAGENT_CONFIG as the global layer", () =>
     Effect.gen(function* () {
       const file = yield* tmpdirScoped()
