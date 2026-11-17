@@ -17,9 +17,13 @@
  *     and compares with inequalities, not with the exact tick time;
  *   - nothing here sleeps for a background fiber: a test waits for something the
  *     fiber publishes (the lease row, `runner.leaseCalls`, the exclusive
- *     registry, the child cancellations), and for what a loop decided NOT to do
- *     it waits for the decision that ends the path (a refused claim, an
- *     eviction) before it looks.
+ *     registry, the child cancellations, the child prompt a runner starts), and
+ *     for what a loop decided NOT to do it waits for the decision that ends the
+ *     path (a refused claim, an eviction) before it looks;
+ *   - a wait is bounded in real time, not in rounds of the clock: what a runner's
+ *     fibers do on the way (an adoption) takes real time, which a round of the
+ *     TestClock does not wait for. A wait that gives up says what the runner did
+ *     (`describeRunner`), to tell a slow runner from one that was refused.
  * The last two groups have no database at all: they run `RunnerLease` over a
  * scripted `DagLease` and a plain table of entries, one rule per test.
  *
@@ -46,6 +50,7 @@ import { testEffect } from "../lib/effect"
 import {
   PARENT_SESSION_ID,
   PROJECT_ID,
+  describeRunner,
   driveOnR1,
   makeDualRunner,
   node,
@@ -556,15 +561,20 @@ describe("a workflow that ended gives its lease back (ADR-0008)", () => {
         const row = yield* dual.leaseRow(dagID)
         return row !== undefined && row.expiresAt <= (yield* now) ? row : undefined
       }),
-      `the lease of ${dagID} was not given back`,
+      describeRunner(dual, dual.r1, dagID).pipe(
+        Effect.map((state) => `the lease of ${dagID} was not given back\n  ${state}`),
+      ),
     )
 
   /** A runner that adopted the workflow: it holds the lease at the epoch after R1's, and drives the node it was reopened with. */
   const adoptedByR2 = (dual: DualRunner, dagID: string) =>
     Effect.gen(function* () {
-      yield* pollOnTestClock(
-        Effect.sync(() => (dual.r2.created.length > 0 ? true : undefined)),
-        "R2 did not adopt the reopened workflow: it started no child session",
+      // As `driveOnR1` waits for R1: on the child prompt R2 starts, not on rounds of the clock. What R2 does on the
+      // way takes real time that a round does not wait for, and a loaded machine makes it longer.
+      yield* dual.r2.nextPrompt(
+        describeRunner(dual, dual.r2, dagID).pipe(
+          Effect.map((state) => `R2 did not adopt the reopened workflow: it started no child prompt\n  ${state}`),
+        ),
       )
       const row = yield* rowOf(dual, dagID)
       expect(row).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
