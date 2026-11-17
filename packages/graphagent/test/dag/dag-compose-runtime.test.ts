@@ -648,7 +648,7 @@ describe("DagLoop compose join admission", () => {
             store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
             "the workflow did not fail",
           )
-          // The refused join node is the one node that failed, and its dependent never ran.
+          // The two children failed first, the refused join node is the last node that failed, and its dependent never ran.
           const rows = new Map((yield* store.getNodes(dagID)).map((row) => [row.id, row]))
           expect(
             [...rows.values()]
