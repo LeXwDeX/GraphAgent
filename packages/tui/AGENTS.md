@@ -76,7 +76,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
 - `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
   - Task 行（`routes/session/index.tsx` 的 `Task`，#1058）：标题行是 `{agent} Task — {描述}` 加发起者与前后台标记（读 `taskIndex[child]`，没有链接时读 Task part 的 metadata）；后台运行的状态行由 `backgroundStatus` 决定，每个状态一条固定文案和一个颜色 token，`unknown` 与前台行一样；前台行文案不变，但全部走 `t()`，键在 `subagent.row.*`，后台行的键在 `background.row.*`。已结束的行耗时是结果上报的起止之差，不读时钟。
-- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`；`pr/` 已有 `state.ts`、`reminder.ts`（F6）。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
+- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`、`fold.ts`（`dagFold`：由节点的 `expanded_from`、波次和已展开的槽算出工作流的可见行顺序，见 6.4）；`pr/` 已有 `state.ts`、`reminder.ts`（F6）。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
 - `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，`i/N`、`←→`、`<leader>down` 共用）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；子 agent 的 `kind`、描述、状态标记（符号与颜色 token）和 `/agents` 的行模型 `subagents.ts`（顶栏、面板、提醒共用的唯一实现）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）；后台 Task 的状态 `background.ts`（`backgroundStatus` 按“服务端上报的结果 > 运行所属 job 的状态 > 子会话摘要”取值，先匹配者胜，后来的来源不改写先来的；`queued` 是推断：job 在跑而子会话没跑过一轮、没调过工具，服务端不上报排队；三处都没有说法时为 `unknown`。`backgroundElapsed` 对进行中的运行取 `now - startedAt`，对已结束的取结果上报的起止之差，不知道时返回空，不取负值）。
@@ -295,6 +295,13 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - 等待主 agent：任一工作流 `checkpointPending` 且（根会话空闲，或其最近一个回合以 `error` 结束，读 `turn_settled`）。
   - 预算 toast 只有服务端 `DagBudget` 发出的那一份（`tui.toast.show`）；TUI 不为档位变化、快照加载或重连刷新自弹 toast，只按档位着色（#1032 D6）。服务端 toast 的消息已以标题开头时只显示一次（`ui/toast.tsx` 的 `serverToastText`）。
   - `/dag` 面板的对应部分：summary 区第一行是模式行（`DAG 模式：开/关 · 运行 x/y（全进程） · 节点上限 n · token 用量/预算`，token 段按预算档位着色，放不下时截断不换行）；计数行之后是该工作流的质量行（`quality` 的 `reviews`、`stillOpen`、`completeness`，按工作流计数，`null` 时没有）、预算耗尽时对暂停的工作流（非检查点）说明恢复条件、以及 `coverageCount > 0` 时的“覆盖与截断”块（至多 4 个失败、跳过、取消、中止的节点及原因，其余只计数；服务端的计数还含不对应节点的条目，单独说明，不新增服务端读口）。
+- `/dag` 面板折叠展开生成的子节点（#1158 PR5）：折叠规则只在 `dag/fold.ts` 的 `dagFold` 里定义，面板只画它给出的行。
+  - 归属与画法：compose 展开生成的节点带 `expanded_from`（线上字段名，`DagNodeRow` 原样保留）；被在场节点的 `expanded_from` 指到的节点是展开槽（slot，展开后即同 id 的 join 节点）。子孙画在槽下，不在自己的波位置：波列留空，缩进（每层 2 格）写在名称格里，状态符号仍占一列；`▸`/`▾` 列只在工作流里有槽时才预留，没有标记的工作流渲染与此前逐字节相同；`expanded_from` 过期（指向的槽不在场）的节点按顶层画。
+  - 折叠状态：默认折叠，已展开的槽里的嵌套槽同样折叠。状态放在组件外，同 `DagPanelState.expanded`（`unfolded`、`toggleUnfolded`），键为 `nodeKey(workflowID, slotID)`。槽行折叠与展开时都显示槽自己（join）的状态和直接子节点数（`dagmode.panel.fold.child` 与 `.children` 两个键，英文单复数分开）。
+  - 按键：槽行上 `space` 折叠或展开，经 `DetailPanel` 的 `onToggle` 与 `DetailRow.toggleLabel`（有 `toggleLabel` 的行按 `space` 调 `onToggle`，选中时显示 `space` 提示；其他行不变）；`⏎` 行为不变。选中的节点被折起时，选中移到可见的祖先槽（`dagFold` 的 `hidden`）。
+  - 提示行让位：槽行上折叠提示取代 `o` 详情提示（键本身仍可用）；窄于 120 列（`SLOT_REQUEST_HINT_WIDTH`）时 `i` 提示也让位，仍保留关闭提示。
+  - 进度条、计数与当前波仍按全部节点算，不论折叠；行上的波号不重排，整波折在槽下时，摘要里的波次可能没有对应的可见行。
+  - 只读：折叠与展开只改视图，`dag.*` 写请求与 `session.command` 均为 0；`test/panel/dag.test.tsx` 的 `the panel is read-only` 用例覆盖。
 - 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，按下面的优先级取第一行，没有更高的行时才显示目标行；宽终端有 PR 警示行和 DAG 行时目标行让位给抽屉（`DrawerGoal` 始终显示根会话的目标）。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。缺目标文字或缺状态的目标体（`isGoalShown` 为假，含服务端把“没有目标”回成 null 的情形）不画行、不占高度，也不抛错：行布局里抛出的错误会让状态带所有行停止更新。
 - PR 行与提醒行（F6，#1036 2）：数据来自 `usePrTracker()` 的 `items(root)`、`reminder(root)`（根会话；没有 provider 时没有 PR、没有提醒）。状态带不算 PR 状态与时间，只排版 tracker 给出的结果，也不订阅任何时钟。纯布局都在 `shell/pr-line.tsx`（`layoutPrRow`、`layoutReminderRow`、`prTailText`、`prOpenUrl`、`chooseBandRows`），测试在 `test/shell/pr-line.test.ts`。
   - 选行：优先级 PR 警示 > DAG > PR（非警示，只在没有 DAG 行时）> 目标 > 提醒，至多 2 行，窄终端（< 100 列）只取第一行；画不出内容（宽度为 0）的行不占行。有 DAG 行且 PR 都非警示时，PR 不单独成行，`prTailMark` 的短标记（≤ 14 列，`textMuted`）作为不让位的一组接在 DAG 行行尾（`/dag` 提示之后），与模式标记一样只在最后一级（超出规格的极窄终端）让位；`dag_band=always` 的“没有工作流”行同样带它。有 PR 警示且有 DAG 行时，宽终端是 PR 警示行加 DAG 行，窄终端只有 PR 警示行；被警示挤出窄状态带的工作流不再向 `sync.dag.watch` 声明。`/dag` 面板打开与 `dag_band` 只管 DAG 行，PR 行和提醒行与目标行一样不受影响。
@@ -398,7 +405,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 只读视图的定义是：TUI 在该视图里没有任何路径产生会改变对应对象的写请求。
 
-- DAG（`/dag` 面板、状态带、抽屉）：不调用任何 `dag.*` 写接口。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn '"message"' packages/tui/src/dag` 为空。测试：在 SDK mock 下完成全部可达操作（选择、展开、`⏎`、`i`、切标签、点击状态带、开关抽屉）后，`dag.*` 写请求与 `session.command` 均为 0。唯一的写入口是主会话视图里 `<leader>d`，它恰好发一次 `session.command`（`/dag-mode on|off`），状态以服务端为准，TUI 不自存模式状态。
+- DAG（`/dag` 面板、状态带、抽屉）：不调用任何 `dag.*` 写接口。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn '"message"' packages/tui/src/dag` 为空。测试：在 SDK mock 下完成全部可达操作（选择、展开、`space` 折叠/展开子树、`⏎`、`i`、切标签、点击状态带、开关抽屉）后，`dag.*` 写请求与 `session.command` 均为 0。唯一的写入口是主会话视图里 `<leader>d`，它恰好发一次 `session.command`（`/dag-mode on|off`），状态以服务端为准，TUI 不自存模式状态。
 - 子 agent 视图（判定口径 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断；用户消息块不可点击（点击不打开操作列表，选中文本照常可复制）；任务块的提示词折叠时，点击只展开或收起它（视图状态，不发请求，有选中文本时不翻转）。测试：触发所有可达操作（点击消息、命令面板里每个不离开视图的命令、会话键、`←→`、滚轮、`esc`，`test/app-subagent-readonly.test.tsx`）后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
 - PR 行：点击只调用 `open` 打开 PR URL（只放行 `http`、`https`），不复制、不产生写请求（mock 计数 0）。
 - "请主 agent 处理"= 预填主会话输入框，不提交（见 6.7）。任何停止、取消、重试、调超时都只能这样表达。

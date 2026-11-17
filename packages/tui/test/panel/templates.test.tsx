@@ -461,6 +461,63 @@ test("settings panel cycles choice and toggle rows", async () => {
   }
 })
 
+test("detail panel answers space on a row with a toggle label, and says so while that row is selected", async () => {
+  await using tmp = await shellState()
+  const toggles: string[] = []
+  const rows: DetailRow<string>[] = [
+    { id: "slot", cells: ["分组"], value: "slot", toggleLabel: "展开子节点" },
+    { id: "plain", cells: ["普通"], value: "plain" },
+  ]
+  const app = await renderPanel(
+    () => (
+      <PanelSurface
+        spec={{
+          render: () => <DetailPanel title="折叠" rows={rows} onToggle={(row) => toggles.push(row.id)} hints={[]} />,
+        }}
+      />
+    ),
+    { width: 120, height: 40, state: tmp.path },
+  )
+
+  try {
+    expect(app.captureCharFrame()).toContain("space 展开子节点")
+    app.mockInput.pressKey(" ")
+    await Bun.sleep(50)
+    expect(toggles).toEqual(["slot"])
+
+    app.mockInput.pressArrow("down")
+    await Bun.sleep(50)
+    await app.renderOnce()
+    // A row with neither a check lead nor a label leaves the key alone, and has no hint for it.
+    expect(app.captureCharFrame()).not.toContain("space")
+    app.mockInput.pressKey(" ")
+    await Bun.sleep(50)
+    expect(toggles).toEqual(["slot"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("detail panel leaves space alone without onToggle, label or not", async () => {
+  await using tmp = await shellState()
+  const rows: DetailRow<string>[] = [{ id: "slot", cells: ["分组"], value: "slot", toggleLabel: "展开子节点" }]
+  const app = await renderPanel(
+    () => <PanelSurface spec={{ render: () => <DetailPanel title="折叠" rows={rows} hints={[]} /> }} />,
+    { width: 120, height: 40, state: tmp.path },
+  )
+
+  try {
+    // No handler to call: nothing to offer either.
+    expect(app.captureCharFrame()).not.toContain("space")
+    app.mockInput.pressKey(" ")
+    await Bun.sleep(30)
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("分组")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("detail panel selects rows and activates them", async () => {
   await using tmp = await shellState()
   const selects: string[] = []

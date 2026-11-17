@@ -277,3 +277,219 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in English 1`] = `
                                                                                                                         
 "
 `;
+
+exports[`how it looks a compose expansion folded, 80 by 24, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 代码审查                                                     │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）        │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━━━━━━ ───── ─────                                      │
+│ 3/7 完成 · 第 3/5 波 · 1 运行中 · 1 失败 · 2 排队 · 已用 10m 0s              │
+│                                                                              │
+│   第 1 波  ✓   scope          10s                                            │
+│   第 2 波  ✓   review--split  10s                                            │
+│ › 第 4 波  ○ ▸ review            （3 个子节点）                              │
+│ 等待第 4 波                                                                  │
+│   第 5 波  ○   ship                                                          │
+│ up 上移 · down 下移 · space 展开子节点 · enter 展开 · escape 关闭            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`how it looks a compose expansion folded, 120 by 40, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 代码审查                                                                                        /dag │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）                                                │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━━━━━━ ───── ─────                                                                              │
+│ 3/7 完成 · 第 3/5 波 · 1 运行中 · 1 失败 · 2 排队 · 已用 10m 0s                                                      │
+│                                                                                                                      │
+│   第 1 波  ✓   scope          10s                                                                                    │
+│   第 2 波  ✓   review--split  10s                                                                                    │
+│ › 第 4 波  ○ ▸ review            （3 个子节点）                                                                      │
+│ 等待第 4 波                                                                                                          │
+│   第 5 波  ○   ship                                                                                                  │
+│ up 上移 · down 下移 · space 展开子节点 · enter 展开 · i 请主 agent 处理 · escape 关闭                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;
+
+exports[`how it looks a compose expansion folded, 80 by 24, in English 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Workflow [Running] 代码审查                                                  │
+│ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no bud… │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━━━━━━ ───── ─────                                      │
+│ 3/7 done · wave 3/5 · 1 running · 1 failed · 2 queued · elapsed 10m 0s       │
+│                                                                              │
+│   Wave 1  ✓   scope          10s                                             │
+│   Wave 2  ✓   review--split  10s                                             │
+│ › Wave 4  ○ ▸ review            (3 children)                                 │
+│ Waiting for wave 4                                                           │
+│   Wave 5  ○   ship                                                           │
+│ up Previous · down Next · space Unfold · enter Expand · escape Close         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`how it looks a compose expansion unfolded, 80 by 24, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 代码审查                                                     │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）        │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━━━━━━ ───── ─────                                      │
+│ 3/7 完成 · 第 3/5 波 · 1 运行中 · 1 失败 · 2 排队 · 已用 10m 0s              │
+│                                                                              │
+│   第 1 波  ✓   scope           10s                                           │
+│   第 2 波  ✓   review--split   10s                                           │
+│ › 第 4 波  ○ ▾ review             （3 个子节点）                             │
+│ 等待第 4 波                                                                  │
+│            ✓     review--api   1m 20s                                        │
+│            ✗     review--core  3m 0s                                         │
+│ up 上移 · down 下移 · space 折叠子节点 · enter 展开 · escape 关闭            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`how it looks a compose expansion unfolded, 120 by 40, in English 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Workflow [Running] 代码审查                                                                                     /dag │
+│ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no budget)                                      │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━━━━━━ ───── ─────                                                                              │
+│ 3/7 done · wave 3/5 · 1 running · 1 failed · 2 queued · elapsed 10m 0s                                               │
+│                                                                                                                      │
+│   Wave 1  ✓   scope           10s                                                                                    │
+│   Wave 2  ✓   review--split   10s                                                                                    │
+│ › Wave 4  ○ ▾ review             (3 children)                                                                        │
+│ Waiting for wave 4                                                                                                   │
+│           ✓     review--api   1m 20s                                                                                 │
+│           ✗     review--core  3m 0s                                                                                  │
+│           ●     review--docs  9m 40s                                                                                 │
+│   Wave 5  ○   ship                                                                                                   │
+│ up Previous · down Next · space Fold · enter Expand · i Ask main agent · escape Close                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;
+
+exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 代码审查                                                                                        /dag │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）                                                │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ━━━━━━━━━━ ───── ───── ─────                                                                  │
+│ 5/9 完成 · 第 4/7 波 · 1 运行中 · 3 排队 · 已用 10m 0s                                                               │
+│                                                                                                                      │
+│   第 1 波  ✓   scope                    10s                                                                          │
+│   第 2 波  ✓   review--split            10s                                                                          │
+│   第 6 波  ○ ▾ review                      （3 个子节点）                                                            │
+│            ✓     review--api            1m 20s                                                                       │
+│            ✓     review--docs--split    10s                                                                          │
+│ ›          ○   ▾ review--docs              （2 个子节点）                                                            │
+│ 等待第 5 波                                                                                                          │
+│            ✓       review--docs--intro  50s                                                                          │
+│            ●       review--docs--refs   9m 30s                                                                       │
+│   第 7 波  ○   ship                                                                                                  │
+│ up 上移 · down 下移 · space 折叠子节点 · enter 展开 · i 请主 agent 处理 · escape 关闭                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;

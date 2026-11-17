@@ -105,9 +105,16 @@ export function planRecovery(
   const reused = new Set(
     current.filter((node) => !affected.has(node.id) && node.status === "completed").map((node) => node.id),
   )
+  // #1158: a node an expansion generated names the slot that generated it (`expanded_from`), and recovery renames a slot
+  // together with the join node it became. A node that recovery reuses is otherwise left as it is, but this name
+  // follows the slot, so no node in the new graph names an attempt that no longer counts.
+  const followSlot = (node: NodeConfig): NodeConfig =>
+    node.expanded_from === undefined || mapID(node.expanded_from) === node.expanded_from
+      ? node
+      : { ...node, expanded_from: mapID(node.expanded_from) }
   const updatedNodes = activeConfig.map((node): NodeConfig => {
     const replacement = replacements.find((item) => item.previous === node.id)
-    if (!replacement) return node
+    if (!replacement) return followSlot(node)
     const old = currentByID.get(node.id)!
     // #945: reused upstream outputs carry the fingerprint they were produced
     // from. A mismatch with the current target is explicit stale evidence.
@@ -176,6 +183,7 @@ export function planRecovery(
       ...(condition !== undefined ? { condition } : {}),
       ...(node.fan_out !== undefined ? { fan_out: mapID(node.fan_out) } : {}),
       ...(node.expand !== undefined ? { expand: mapID(node.expand) } : {}),
+      ...(node.expanded_from !== undefined ? { expanded_from: mapID(node.expanded_from) } : {}),
       ...(node.join !== undefined
         ? {
             join: {

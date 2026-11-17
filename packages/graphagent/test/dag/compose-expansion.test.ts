@@ -119,6 +119,17 @@ describe("expanding a legal plan", () => {
     }
   })
 
+  it("names the slot that generated each child, and none on the author's own nodes or the join node the slot becomes", () => {
+    const nodes = expanded({ output })
+    for (const child of nodes.slice(0, 3)) expect(child.expanded_from, child.id).toBe("survey")
+    // The slot is the author's: it carries no generating slot, and neither does the join node that replaces it.
+    expect(find(nodes, "survey").expanded_from).toBeUndefined()
+    expect(slotOf(route()).expanded_from).toBeUndefined()
+    expect(route().find((node) => node.id === "survey--split")?.expanded_from).toBeUndefined()
+    // The mark is not part of the plan: planning the same state again writes it the same way.
+    expect(expanded({ output }).map((node) => node.expanded_from)).toEqual(nodes.map((node) => node.expanded_from))
+  })
+
   it("gives each child the artifact schema its agent declares, and none to one that declares none", () => {
     const [official, code, security] = expanded({ output })
     expect(official?.output_schema).toEqual(AgentArtifact.schema("research_findings"))
@@ -517,6 +528,46 @@ describe("a recursive composer's split items", () => {
   it("marks the fallback worker too, with the slot's own subtree", () => {
     const fallback = find(degraded({ worker: "mapper", output: plan([]) }).nodes, "survey--fallback")
     expect(fallback.compose_subtree).toEqual({ root: "survey", depth: 1 })
+  })
+
+  it("names the outer slot on the nested split node and slot, and the nested slot on what it expands into", () => {
+    const nodes = mapped()
+    // The author's slot made this plan, nested pair included, so it is what generated all of it.
+    expect(nodes.filter((node) => node.expanded_from === "survey").map((node) => node.id)).toEqual([
+      "survey--big--split",
+      "survey--big",
+      "survey--small",
+    ])
+    expect(find(nodes, "survey").expanded_from).toBeUndefined()
+    // The nested slot expands in turn: its children name it, and the join node it becomes keeps the mark it had.
+    const nested = find(nodes, "survey--big")
+    const result = DagCompose.planExpansion({
+      slot: nested,
+      composer: composerOf("mapper"),
+      limits,
+      source: completed(plan([item("deep", "explore"), item("flat", "explore")])),
+      existingNodeIDs: new Set(["survey--big--split"]),
+      position: DagCompose.positionOf(nested, [{ node: nested, status: "pending" }], limits),
+    })
+    if (result.kind !== "expand") throw new Error("expected an expansion")
+    expect(find(result.nodes, "survey--big--deep").expanded_from).toBe("survey--big")
+    expect(find(result.nodes, "survey--big--flat").expanded_from).toBe("survey--big")
+    expect(find(result.nodes, "survey--big")).toMatchObject({
+      expanded_from: "survey",
+      compose_subtree: { root: "survey", depth: 2 },
+      join: { plan: "survey--big--split" },
+    })
+    expect(find(result.nodes, "survey--big").expand).toBeUndefined()
+  })
+
+  it("names the slot that degraded on the fallback worker, a nested slot's included", () => {
+    const top = degraded({ worker: "mapper", output: plan([]) }).nodes
+    expect(find(top, "survey--fallback").expanded_from).toBe("survey")
+    // The top-level slot became a join node: the author's own node, with no generating slot of its own.
+    expect(find(top, "survey").expanded_from).toBeUndefined()
+    const nested = DagCompose.degrade(find(mapped(), "survey--big"), composerOf("mapper"), "the plan has no items")
+    expect(find(nested.nodes, "survey--big--fallback").expanded_from).toBe("survey--big")
+    expect(find(nested.nodes, "survey--big").expanded_from).toBe("survey")
   })
 
   it("is the same on every planning of the same persisted state", () => {

@@ -582,7 +582,7 @@ describe("what holds an expansion slot back", () => {
 // The engine's own marks on a compose node. None of them is a field a model can write, in any schema it writes by:
 // the tool's wire, the strict authoring schemas that decode the files it hands over, or a draft it asks the tool to
 // write for it.
-const ENGINE_MARKS = ["expand", "join", "compose_subtree", "generated_helper"] as const
+const ENGINE_MARKS = ["expand", "join", "compose_subtree", "expanded_from", "generated_helper"] as const
 
 /** Every property name that appears anywhere in a JSON schema, at any depth. */
 function propertyNames(schema: unknown): Set<string> {
@@ -608,6 +608,7 @@ describe("the engine's marks on a compose node are not model-writable", () => {
     expand: "a--split",
     join: { plan: "a--split", items: [] },
     compose_subtree: { root: "a", depth: 1 },
+    expanded_from: "a",
     generated_helper: "split",
   }
 
