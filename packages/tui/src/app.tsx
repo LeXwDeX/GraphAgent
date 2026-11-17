@@ -598,7 +598,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     bottomZone.host.push({ id, render, onClose })
   }
   const openBtwPanel = (sessionID: string) =>
-    openPanel("btw", () => <BtwPanel sessionID={sessionID} />, () => btw.dismiss(sessionID))
+    openPanel(
+      "btw",
+      () => <BtwPanel sessionID={sessionID} />,
+      () => btw.dismiss(sessionID),
+    )
   // #1023: a side question opens its answer panel without touching the prompt
   // queue. The panel is non-modal; Escape closes it and marks the session
   // dismissed without cancelling the request, so a later `/btw` reopens it.
@@ -1100,10 +1104,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
   })
 
+  // A sub-agent session has the drawer too (#1032 5.1): its sections follow the viewed session, the goal is the root's.
   const drawerContent = createMemo(() => {
     if (route.data.type !== "session") return
     if (!drawer.visible()) return
-    if (sync.session.get(route.data.sessionID)?.parentID) return
     return <SessionDrawer sessionID={route.data.sessionID} />
   })
 
@@ -1146,6 +1150,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           bottomZone={<BottomZone state={bottomZone} />}
           dimmed={bottomZone.dimmed}
           drawer={drawerContent()}
+          onDrawerBackdrop={drawerContent() ? () => drawer.close() : undefined}
         >
           <Switch>
             <Match when={route.data.type === "home"}>

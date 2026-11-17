@@ -934,7 +934,6 @@ export function Main() {
       title: drawer.visible() ? t("drawer.command.hide") : t("drawer.command.show"),
       value: "session.drawer.toggle",
       category: "Session",
-      enabled: !session()?.parentID,
       run: () => {
         drawer.toggle()
       },
@@ -1478,7 +1477,7 @@ export function Main() {
 
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
-    enabled: () => drawer.visible() && !session()?.parentID,
+    enabled: () => drawer.visible(),
     priority: EscapePriority.drawer,
     bindings: [{ key: "escape", desc: t("drawer.command.hide"), group: "Session", cmd: () => drawer.close() }],
   }))
