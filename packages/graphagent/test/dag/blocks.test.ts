@@ -41,9 +41,10 @@ describe("workflow blocks", () => {
     })
     expect(nodes[1]?.prompt_template.inline).toContain("failing check")
     expect(nodes[1]?.prompt_template.inline).not.toContain("Skill")
+    // A writer is work that must succeed (D9): it defaults to required, like the gates.
     expect(nodes.map((node) => ({ id: node.id, required: node.required }))).toEqual([
       { id: "map", required: false },
-      { id: "build", required: false },
+      { id: "build", required: true },
       { id: "verify", required: true },
     ])
   })
@@ -616,7 +617,7 @@ describe("workflow blocks", () => {
     expect(nodes.find((node) => node.id === "package-b")?.depends_on).toEqual(["map-b"])
   })
 
-  it("routes volume blocks to the standard tier and decision blocks to the advanced tier", () => {
+  it("routes volume blocks to the standard tier, and decision blocks and writers to the advanced tier", () => {
     const nodes = DagBlocks.compileWorkflowBlocks({
       objective: "Deliver a reviewed project change",
       blocks: [
@@ -643,10 +644,11 @@ describe("workflow blocks", () => {
     expect(models).toEqual({
       map: "standard",
       plan: "advanced",
-      experiment: "standard",
+      // Writers are required work (D9), and required work is critical: the advanced tier.
+      experiment: "advanced",
       "diagnose--evidence": "standard",
       diagnose: "advanced",
-      build: "standard",
+      build: "advanced",
       "decision--aggregate": "advanced",
       verify: "advanced",
       "decision--standards": "advanced",
@@ -657,16 +659,84 @@ describe("workflow blocks", () => {
     expect(Object.fromEntries(nodes.map((node) => [node.id, node.required]))).toEqual({
       map: false,
       plan: true,
-      experiment: false,
+      experiment: true,
       "diagnose--evidence": false,
       diagnose: true,
-      build: false,
+      build: true,
       "decision--aggregate": true,
       verify: true,
       "decision--standards": false,
       "decision--intent": false,
       decision: true,
       report: true,
+    })
+  })
+
+  // D9 (#1158): what must succeed fails the workflow at the point it fails. A
+  // writer used to default to optional, so a failed `coding` block only surfaced
+  // when the verify after it ran on a placeholder.
+  describe("writer blocks default to required", () => {
+    const required = (blocks: DagBlocks.WorkflowBlockGraph["blocks"]) =>
+      Object.fromEntries(
+        DagBlocks.compileWorkflowBlocks({ objective: "Ship it", blocks }).map((node) => [node.id, node.required]),
+      )
+
+    it.each(["coding", "prototype"] as const)("compiles a %s block that omits required to required: true", (kind) => {
+      expect(required([{ id: "w", kind }])).toEqual({ w: true })
+    })
+
+    it.each(["coding", "prototype"] as const)("keeps an explicit required: false on a %s block", (kind) => {
+      expect(required([{ id: "w", kind, required: false }])).toEqual({ w: false })
+      expect(required([{ id: "w", kind, required: true }])).toEqual({ w: true })
+    })
+
+    it("leaves the read-only blocks at their defaults", () => {
+      expect(
+        required([
+          { id: "map", kind: "explore" },
+          { id: "diagnose", kind: "debug", depends_on: ["map"] },
+        ]),
+      ).toEqual({ map: false, "diagnose--evidence": false, diagnose: true })
+      // An explicit value still wins on a gate and on a volume block.
+      expect(required([{ id: "map", kind: "explore", required: true }])).toEqual({ map: true })
+      expect(required([{ id: "check", kind: "verify", required: false }])).toEqual({ check: false })
+    })
+
+    // The scheduler's own words for the outcome: a required node that fails is a
+    // workflow failure attributed to it, and nothing after it runs on a placeholder.
+    const schedule = (blocks: DagBlocks.WorkflowBlockGraph["blocks"]) => {
+      const nodes = DagBlocks.compileWorkflowBlocks({ objective: "Ship it", blocks })
+      const runtime = new WorkflowRuntime(
+        nodes.map((node) => ({
+          id: node.id,
+          dependsOn: node.depends_on,
+          required: node.required ?? false,
+          status: "pending" as const,
+        })),
+        8,
+      )
+      runtime.markSatisfied("map")
+      runtime.markUnsatisfied("build")
+      return runtime
+    }
+    const route = (build: object) => [
+      { id: "map", kind: "explore" },
+      { id: "build", kind: "coding", depends_on: ["map"], ...build },
+      { id: "check", kind: "verify", depends_on: ["build"] },
+    ]
+
+    it("fails the workflow when a defaulted writer fails, without running the verify on its placeholder", () => {
+      const runtime = schedule(route({}) as never)
+      expect(runtime.hasRequiredFailure()).toBe(true)
+      expect(runtime.getRequiredFailures()).toContain("build")
+      expect(runtime.getReadyNodes()).toEqual([])
+    })
+
+    it("keeps the old behaviour for a writer the author marked required: false", () => {
+      const runtime = schedule(route({ required: false }) as never)
+      expect(runtime.hasRequiredFailure()).toBe(false)
+      // The optional failure unlocks its dependents with a placeholder, as it always did.
+      expect(runtime.getReadyNodes()).toEqual(["check"])
     })
   })
 
