@@ -80,17 +80,29 @@ export function taskCall(input: {
   status?: TaskStatus
   description?: string
   background?: boolean
+  /** Who asked for the run, as the Task tool records it (#1057). */
+  initiator?: "user" | "agent"
+  /** A foreground run that was turned into a background one. */
+  promoted?: boolean
+  /** When the tool started, epoch milliseconds; the part ends a millisecond later. */
+  start?: number
 }) {
   const status = input.status ?? "completed"
   const description = input.description ?? "扫描变更日志"
+  const start = input.start ?? 1
   const toolInput = { description, subagent_type: "explore", prompt: "x" }
-  const metadata = { sessionID: input.childID, ...(input.background ? { background: true } : {}) }
+  const metadata = {
+    sessionID: input.childID,
+    ...(input.background ? { background: true } : {}),
+    ...(input.initiator ? { initiator: input.initiator } : {}),
+    ...(input.promoted ? { promoted: true } : {}),
+  }
   const state: ToolPart["state"] =
     status === "running"
-      ? { status, input: toolInput, title: description, metadata, time: { start: 1 } }
+      ? { status, input: toolInput, title: description, metadata, time: { start } }
       : status === "completed"
-        ? { status, input: toolInput, output: "done", title: description, metadata, time: { start: 1, end: 2 } }
-        : { status, input: toolInput, error: "boom", metadata, time: { start: 1, end: 2 } }
+        ? { status, input: toolInput, output: "done", title: description, metadata, time: { start, end: start + 1 } }
+        : { status, input: toolInput, error: "boom", metadata, time: { start, end: start + 1 } }
   return {
     id: input.id,
     sessionID: input.parentID,

@@ -143,7 +143,7 @@ export type MountOptions = {
 
 /**
  * Mounts one route view inside the same provider stack the app uses, with a
- * fake server that records every request. Background attention pings are
+ * fake server that records every request. Background attention pings and lifecycle reads are
  * recorded too but excluded from `writes()`: they are telemetry, not a user
  * intent.
  */
@@ -300,7 +300,8 @@ export async function mountRoute(options: MountOptions) {
       return parts === undefined ? undefined : structuredClone(unwrap(parts))
     },
     /** Requests that mutate server state, minus the attention telemetry. */
-    writes: () => sent.filter((item) => !item.path.endsWith("/attention")),
+    // A lifecycle read is a POST that writes nothing.
+    writes: () => sent.filter((item) => !item.path.endsWith("/attention") && !item.path.endsWith("/lifecycle/states")),
     commands: () => sent.filter((item) => item.path.endsWith("/command")),
     /** The frame as text, never read while a frame is still being presented. */
     frame: () => readFrame(app),

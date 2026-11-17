@@ -149,7 +149,6 @@ routes/session/index.tsx	jsx-text	Tools started in this turn, so it was not repl
 routes/session/index.tsx	jsx-text	Updating todos...
 routes/session/index.tsx	jsx-text	WebFetch
 routes/session/index.tsx	jsx-text	Write
-routes/session/index.tsx	jsx-text	background
 routes/session/index.tsx	jsx-text	line
 routes/session/index.tsx	jsx-text	match	2
 routes/session/index.tsx	jsx-text	matches	2
@@ -157,7 +156,6 @@ routes/session/index.tsx	jsx-text	message reverted	2
 routes/session/index.tsx	jsx-text	or /redo to restore	2
 routes/session/index.tsx	jsx-text	question
 routes/session/index.tsx	jsx-text	results)
-routes/session/index.tsx	jsx-text	view subagents
 routes/session/index.tsx	jsx-text	· interrupted
 routes/session/index.tsx	jsx-text	↳ Loaded
 routes/session/index.tsx	prop	Are you sure you want to restore the reverted messages?	2

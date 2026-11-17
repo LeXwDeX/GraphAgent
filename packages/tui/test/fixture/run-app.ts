@@ -149,7 +149,8 @@ export async function runApp(options: {
     setup,
     events,
     commands: () => sent.filter((item) => item.path.endsWith("/command")),
-    writes: () => sent.filter((item) => !item.path.endsWith("/attention")),
+    // A lifecycle read is a POST that writes nothing.
+    writes: () => sent.filter((item) => !item.path.endsWith("/attention") && !item.path.endsWith("/lifecycle/states")),
     /** The kv file as it is on disk now. */
     kv: (): Record<string, unknown> => JSON.parse(readFileSync(`${tmp.path}/kv.json`, "utf8")),
     async stop() {

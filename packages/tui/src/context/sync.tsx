@@ -51,6 +51,7 @@ import {
 import { createStreamBuffer } from "./stream-buffer"
 import { importedEntryIds, snapshotTrust, type TrustSnapshot } from "./trust-import"
 import {
+  backgroundResultOf,
   createSummary,
   HYDRATED_MAX,
   mergeSession,
@@ -59,6 +60,7 @@ import {
   mergeToolPart,
   summarizeMessages,
   taskIndexEntry,
+  type BackgroundResult,
   type SessionSummary,
   type TaskIndexEntry,
   type ToolPartLike,
@@ -484,7 +486,7 @@ export const {
             mergeToolPart(summaryRaw.get(part.sessionID), part as ToolPartLike, seenTools(part.sessionID), at),
           )
           const task = taskIndexEntry(part as ToolPartLike)
-          if (task) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
+          if (task && writeTaskLink(task.childSessionID, task.entry)) wantJob(task.childSessionID)
           break
         }
       }
@@ -621,12 +623,66 @@ export const {
     }
 
     /**
+     * Writes the link a Task part made. The part does not know how a background run ended, so the result the link
+     * already holds stays with it, unless the part started after that result ended (a resumed task's new run). Returns
+     * whether the link is a background one with no result: the state of its run is then asked for (`wantJob`).
+     */
+    function writeTaskLink(childSessionID: string, entry: TaskIndexEntry): boolean {
+      const held = store.taskIndex[childSessionID]
+      // A resumed task (`task_id`) starts a new run after the held result ended: that result belongs to the old run.
+      const result =
+        held?.result && !(entry.startedAt !== undefined && entry.startedAt > held.result.endedAt)
+          ? held.result
+          : undefined
+      setStore("taskIndex", childSessionID, reconcile(result ? { ...entry, result } : entry))
+      return entry.background === true && result === undefined
+    }
+
+    /**
+     * A finished background run is reported in a message the server adds to the parent session, not on its Task part:
+     * the result joins the link of the child it names. A child whose Task part was not seen yet gets a minimal link, so
+     * the result is not lost; the part's own write fills the rest and keeps the result. A result that ended earlier
+     * than the one held, or before the linked run started (a resumed task), does not replace it.
+     */
+    function writeBackgroundResult(parentSessionID: string, childSessionID: string, result: BackgroundResult) {
+      const held = store.taskIndex[childSessionID]
+      if (held?.result && held.result.endedAt > result.endedAt) return
+      // A result that ended before the linked run started belongs to an earlier run of a resumed task.
+      if (held?.startedAt !== undefined && held.startedAt > result.endedAt) return
+      if (held) {
+        setStore("taskIndex", childSessionID, "result", reconcile(result))
+        return
+      }
+      setStore(
+        "taskIndex",
+        childSessionID,
+        reconcile({
+          parentSessionID,
+          parentMessageID: result.messageID,
+          partID: result.partID,
+          description: result.title,
+          background: true,
+          initiator: result.initiator,
+          command: result.command,
+          result,
+        }),
+      )
+    }
+
+    /** A text part that reports a finished background run joins the link of the child it names. */
+    function noteBackgroundResult(part: Part) {
+      if (part.type !== "text") return
+      const found = backgroundResultOf(part)
+      if (found) writeBackgroundResult(part.sessionID, found.childSessionID, found.result)
+    }
+
+    /**
      * #886 5.4: recount a hydrated session from its loaded messages and relink
-     * its Task parts. Hydration and reconnect are the moments the event
-     * reducer cannot be trusted alone: it never saw the history of a cold
-     * session, and it missed whatever happened while disconnected. The seen
-     * set restarts from the snapshot so later live updates of the same tool
-     * parts are not counted twice.
+     * its Task parts and the results of its finished background runs. Hydration
+     * and reconnect are the moments the event reducer cannot be trusted alone:
+     * it never saw the history of a cold session, and it missed whatever
+     * happened while disconnected. The seen set restarts from the snapshot so
+     * later live updates of the same tool parts are not counted twice.
      */
     function rebuildSummary(sessionID: string, complete: boolean) {
       const snapshot = summarizeMessages(
@@ -634,8 +690,13 @@ export const {
       )
       batch(() => {
         writeSummary(sessionID, mergeSnapshot(summaryRaw.get(sessionID), sessionID, snapshot, complete))
-        for (const task of snapshot.tasks) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
+        for (const task of snapshot.tasks) writeTaskLink(task.childSessionID, task.entry)
+        // After the links: a result for a child whose Task part is outside the window gets a minimal link.
+        for (const found of snapshot.results) writeBackgroundResult(sessionID, found.childSessionID, found.result)
+        // A cold history names runs whose state no event reported: ask their jobs (one read for all of them).
+        for (const task of snapshot.tasks) wantJob(task.childSessionID)
       })
+      pullLifecycle()
       // A cut window knows only the newest tool parts; the ones the events
       // already counted stay in the set so their updates are not counted again.
       summarySeen.set(
@@ -710,6 +771,20 @@ export const {
         lifecycleQueued.set(key, { domain: entry.domain, id: entry.id })
     }
 
+    /**
+     * A background run ends without touching its Task part: its state comes from the job it owns, whose id is the
+     * child session's. Queues that job unless a result or a transition already accounts for the run. It is called
+     * while an event is handled, so the pull that follows the frame (`onFlush`) asks the owner, once for everything
+     * the frame queued. Nothing here waits or polls.
+     */
+    function wantJob(childID: string) {
+      const entry = store.taskIndex[childID]
+      if (entry?.background !== true || entry.result) return
+      const ref: LifecycleStateRef = { domain: "job", id: childID }
+      const key = lifecycleKey(ref)
+      if (!lifecycleRaw.has(key)) lifecycleQueued.set(key, ref)
+    }
+
     function applyLifecycleStates(
       answers: readonly LifecycleStateEntry[],
       stamps: ReadonlyMap<string, number>,
@@ -721,9 +796,12 @@ export const {
           const stamp = stamps.get(key)
           if (stamp === undefined || (lifecycleStamp.get(key) ?? 0) !== stamp) continue
           const isGoal = answer.domain === "goal"
+          // A background run's job may be new as well: the link asks for the jobs whose transition this client
+          // never saw (a Task part that arrived first, a reconnect). A deleted session takes its link with it.
+          const isJob = answer.domain === "job" && store.taskIndex[answer.id]?.background === true
           // Evicted or dropped while the read was out. A goal ref may be new:
           // the reconnect refill asks for the goals the store holds.
-          if (!isGoal && !lifecycleRaw.has(key)) continue
+          if (!isGoal && !isJob && !lifecycleRaw.has(key)) continue
           // A goal event since the read started is newer than the answer.
           if (isGoal && (ancillaryRevision.get(`${answer.id}:goal`) ?? 0) !== goalStamps.get(answer.id)) continue
           if (answer.state === null) {
@@ -734,8 +812,11 @@ export const {
             dropLifecycle([key])
             continue
           }
+          const held = lifecycleRaw.get(key)
+          const next = entryFromState(answer.state, held?.sessionID ?? (isGoal || isJob ? answer.id : undefined))
+          // The answer does not carry the reason a transition gave (`process_restart`); the same value keeps it.
           writeLifecycle(
-            entryFromState(answer.state, lifecycleRaw.get(key)?.sessionID ?? (isGoal ? answer.id : undefined)),
+            held?.reason !== undefined && held.value === next.value ? { ...next, reason: held.reason } : next,
           )
           if (isGoal) mirrorGoal(answer.id, answer.state.value)
         }
@@ -1549,6 +1630,7 @@ export const {
           touchPart(event.properties.part.sessionID, event.properties.part.id)
           // A snapshot supersedes whatever deltas were buffered for this part.
           stream.settle(event.properties.part.id)
+          noteBackgroundResult(event.properties.part)
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
             setStore("part", event.properties.part.messageID, [event.properties.part])
@@ -1786,9 +1868,10 @@ export const {
     }
 
     // #1069: the reconnect refill of the lifecycle mirror. Every ref the mirror
-    // holds, plus the goal of every session that has one, goes out in a single
-    // read. The answers are states: they correct the mirror and the goal status,
-    // while the goal itself is read in full by `refreshGoals` below.
+    // holds, plus the goal of every session that has one and the job of every
+    // background run no result has ended, goes out in a single read. The
+    // answers are states: they correct the mirror and the goal status, while the
+    // goal itself is read in full by `refreshGoals` below.
     const refreshLifecycle = (): Promise<void> => {
       lifecycleEpoch++
       lifecycleInFlight = false
@@ -1799,6 +1882,12 @@ export const {
       for (const [sessionID, goal] of Object.entries(store.goal)) {
         if (!goal) continue
         const ref: LifecycleStateRef = { domain: "goal", id: sessionID }
+        lifecycleQueued.set(lifecycleKey(ref), ref)
+      }
+      // The job of every background run no result has ended: the transition that would say may have been missed.
+      for (const [childID, entry] of Object.entries(store.taskIndex)) {
+        if (entry.background !== true || entry.result) continue
+        const ref: LifecycleStateRef = { domain: "job", id: childID }
         lifecycleQueued.set(lifecycleKey(ref), ref)
       }
       pullLifecycle()

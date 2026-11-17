@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createSignal, For, Show } from "solid-js"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
+import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
+import { setLanguage } from "../../../src/i18n"
 import {
+  backgroundReason,
+  formatBackgroundStatus,
   formatCompletedSubagentDetail,
   formatSubagentRetry,
   formatSubagentTitle,
@@ -19,9 +23,15 @@ import {
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
 
+// The row texts follow the interface language: the helpers below are read in English unless a test says otherwise.
+beforeEach(() => {
+  setLanguage("en")
+})
+
 afterEach(() => {
   testSetup?.renderer.destroy()
   testSetup = undefined
+  setLanguage(DEFAULT_LANGUAGE)
 })
 
 type ToolFixture = { icon: string; label: string; error?: string }
@@ -275,9 +285,9 @@ describe("TUI inline tool wrapping", () => {
 
   test("formats completed subagent toolcall details", () => {
     expect(formatCompletedSubagentDetail(0, "501ms")).toBe("501ms")
-    expect(formatCompletedSubagentDetail(1, "501ms")).toBe("1 toolcall · 501ms")
-    expect(formatCompletedSubagentDetail(2, "501ms")).toBe("2 toolcalls · 501ms")
-    expect(formatSubagentToolcalls(0)).toBe("0 toolcalls")
+    expect(formatCompletedSubagentDetail(1, "501ms")).toBe("1 tool call · 501ms")
+    expect(formatCompletedSubagentDetail(2, "501ms")).toBe("2 tool calls · 501ms")
+    expect(formatSubagentToolcalls(0)).toBe("0 tool calls")
   })
 
   test("distinguishes an unknown cold-start tool count from zero", () => {
@@ -285,15 +295,72 @@ describe("TUI inline tool wrapping", () => {
     expect(formatCompletedSubagentDetail(undefined, "501ms")).toBe("— · 501ms")
   })
 
-  test("keeps background state attached to the subagent identity", () => {
-    expect(formatSubagentTitle("Explore", "Inspect renderer", false)).toBe("Explore Task — Inspect renderer")
-    expect(formatSubagentTitle("Explore", "Inspect renderer", true)).toBe(
-      "Explore Task (background) — Inspect renderer",
+  test("keeps who asked and where it runs attached to the subagent identity", () => {
+    const labels = { initiator: undefined, background: false, promoted: false }
+    expect(formatSubagentTitle("Explore", "Inspect renderer", labels)).toBe(
+      "Explore Task — Inspect renderer · main agent · foreground",
     )
+    expect(formatSubagentTitle("Explore", "Inspect renderer", { ...labels, background: true })).toBe(
+      "Explore Task — Inspect renderer · main agent · background",
+    )
+    expect(formatSubagentTitle("Explore", "Inspect renderer", { ...labels, initiator: "user" })).toBe(
+      "Explore Task — Inspect renderer · you · foreground",
+    )
+    expect(
+      formatSubagentTitle("Explore", "Inspect renderer", { initiator: "agent", background: true, promoted: true }),
+    ).toBe("Explore Task — Inspect renderer · main agent · background (moved)")
   })
 
   test("keeps retry status ahead of wrapping messages", () => {
     expect(formatSubagentRetry(2, "Rate limited by provider")).toBe("Retrying (attempt 2) · Rate limited by provider")
+  })
+
+  test("says the same in Chinese", () => {
+    setLanguage("zh-CN")
+    expect(formatCompletedSubagentDetail(2, "501ms")).toBe("2 次工具调用 · 501ms")
+    expect(formatSubagentToolcalls(1)).toBe("1 次工具调用")
+    expect(formatSubagentToolcalls(undefined)).toBe("—")
+    expect(
+      formatSubagentTitle("Explore", "检查渲染器", { initiator: "user", background: false, promoted: false }),
+    ).toBe("Explore Task — 检查渲染器 · 你发起 · 前台")
+    expect(formatSubagentRetry(2, "限流")).toBe("重试中（第 2 次）· 限流")
+  })
+
+  test("puts a background run's status in one line, with a dash where a number is unknown", () => {
+    const base = { reported: false, calls: "—", elapsed: "—" } as const
+    expect(formatBackgroundStatus({ ...base, status: "queued" })).toBe("queued · waiting for a slot")
+    expect(formatBackgroundStatus({ ...base, status: "running" })).toBe("running · — · —")
+    expect(formatBackgroundStatus({ ...base, status: "running", calls: "3 tool calls", elapsed: "1m 5s" })).toBe(
+      "running · 3 tool calls · 1m 5s",
+    )
+    expect(formatBackgroundStatus({ ...base, status: "completed", elapsed: "1.5s" })).toBe("done · 1.5s")
+    expect(formatBackgroundStatus({ ...base, status: "completed", reported: true, elapsed: "1.5s" })).toBe(
+      "done · 1.5s · result below",
+    )
+    expect(formatBackgroundStatus({ ...base, status: "error", reason: "boom" })).toBe("failed · boom")
+    expect(formatBackgroundStatus({ ...base, status: "error" })).toBe("failed")
+    expect(formatBackgroundStatus({ ...base, status: "interrupted" })).toBe("interrupted · can be run again")
+    expect(formatBackgroundStatus({ ...base, status: "cancelled" })).toBe("cancelled")
+  })
+
+  test("reads the reason a run failed from the first line that has text", () => {
+    expect(backgroundReason(undefined, 80, 1)).toBeUndefined()
+    expect(backgroundReason("", 80, 1)).toBeUndefined()
+    expect(backgroundReason(" \t\n\r\n  \n", 80, 1)).toBeUndefined()
+    expect(backgroundReason("\n\n  boom: refused  \nat run (task.ts:42)", 80, 1)).toBe("boom: refused")
+    expect(backgroundReason("line one\r\nline two", 80, 1)).toBe("line one")
+    // Escapes and control characters are not the reader's to see.
+    expect(backgroundReason("\u001b[31mred\u001b[0m boom\u0007", 80, 1)).toBe("red boom")
+  })
+
+  test("cuts the reason by the cells it takes, not by its characters", () => {
+    expect(backgroundReason("abcdefghij", 6, 1)).toBe("abcde…")
+    // Wide characters take two cells each: three of them and the ellipsis are seven cells.
+    expect(backgroundReason("网络错误连接被拒绝", 7, 1)).toBe("网络错…")
+    // The ellipsis itself is an ambiguous glyph: two cells when the setting says so.
+    expect(backgroundReason("abcdefghij", 6, 2)).toBe("abcd…")
+    // No room for even the ellipsis: no reason, which the line then leaves out.
+    expect(backgroundReason("abcdefghij", 0, 1)).toBeUndefined()
   })
 
   test("snapshots consecutive grep, glob, and read rows at a narrow width", async () => {

@@ -156,6 +156,8 @@ describe("cold start", () => {
         kind: "explore",
         description: "Inspect area 1",
         background: false,
+        // The part's own start time (`state.time.start`), kept on the link since #1058.
+        startedAt: 10,
       })
       expect(sync.data.taskIndex.ses_c2.background).toBe(true)
       // The parent itself ran three Task tools, counted from its messages.
@@ -195,25 +197,27 @@ describe("cold start", () => {
 
   test("the Task rows of three finished children show — until one of them is entered", async () => {
     const messages = coldMessages()
+    const routes = routesFor(parentRows, messages)
     const view = await mountSessionMain({
       sessionID: "ses_parent",
       width: 100,
       height: 40,
-      fetch: routesFor(parentRows, messages),
+      // The rows are read in English, whatever the language of the machine the test runs on.
+      fetch: (url) => (url.pathname === "/config" ? json({ language: "en" }) : routes(url)),
     })
 
     try {
       const cold = await waitForFrame(view, "↳ —")
       const unknown = (frame: string) => frame.split("\n").filter((line) => line.includes("↳ —")).length
-      // Every finished child shows the em dash, never 0 toolcalls.
-      expect(cold).toContain("Explore Task — Inspect area 1")
-      expect(cold).toContain("Explore Task (background) — Inspect area 2")
-      expect(cold).toContain("Explore Task — Inspect area 3")
-      expect(cold).not.toContain("0 toolcalls")
+      // Every finished child shows the em dash, never 0 tool calls.
+      expect(cold).toContain("Explore Task — Inspect area 1 · main agent · foreground")
+      expect(cold).toContain("Explore Task — Inspect area 2 · main agent · background")
+      expect(cold).toContain("Explore Task — Inspect area 3 · main agent · foreground")
+      expect(cold).not.toContain("0 tool calls")
       expect(unknown(cold)).toBe(3)
 
       await view.sync.session.sync("ses_c1")
-      const entered = await waitForFrame(view, "4 toolcalls")
+      const entered = await waitForFrame(view, "4 tool calls")
       expect(unknown(entered)).toBe(2)
     } finally {
       await view.dispose()
