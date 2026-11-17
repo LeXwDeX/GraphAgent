@@ -228,7 +228,8 @@ export interface NodeConfig {
   /** The compiler-generated fan-out aggregator under a review block id. */
   aggregates_writers?: boolean
   /** Compiler-generated helper node: its worker was chosen by block
-   * compilation, not by an authored worker override. */
+   * compilation (or by a fan-out expansion, for its aggregator), not by an
+   * authored worker override. The model tier reads it (`DagConfig.tierOf`). */
   generated_helper?: "aggregate" | "evidence" | "split"
   /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
    * unset for hand-authored review nodes, whose outputs keep the pre-arbitration

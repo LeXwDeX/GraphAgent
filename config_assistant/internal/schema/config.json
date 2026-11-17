@@ -1416,11 +1416,11 @@
               "properties": {
                 "advanced": {
                   "type": "string",
-                  "description": "Model (\"provider/model\") for critical nodes: required: true and review/arbiter workers. A project setting overrides the user-level value."
+                  "description": "Model (\"provider/model\") for judging nodes: plan, verify, synthesize and review blocks, review/arbiter workers and composer nodes; a hand-written node without a block takes it when required: true. A project setting overrides the user-level value."
                 },
                 "standard": {
                   "type": "string",
-                  "description": "Model (\"provider/model\") for every other worker node. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value."
+                  "description": "Model (\"provider/model\") for every other worker node: writers, exploration and compose children. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value."
                 }
               },
               "additionalProperties": true,

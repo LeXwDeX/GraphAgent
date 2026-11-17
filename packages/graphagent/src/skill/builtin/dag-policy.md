@@ -6,10 +6,11 @@ dag-blocks, and skill dag-nodes.
 
 ## Model tiers and evidence
 
-Tier placement is mechanical: `required: true` nodes and `review`/`review-*`
-workers prefer the advanced tier of the `dag` section in `settings.json`; every
-other node prefers standard. Set `required` according to whether execution
-failure should stop the workflow. Either tier's claims need evidence.
+Tier placement is mechanical, by role: `plan`, `verify`, `synthesize`, review
+blocks and `review`/`review-*` workers prefer the advanced tier of the `dag`
+section in `settings.json`; writers, `explore` and `debug` prefer standard; a
+node without a block follows `required`. Set `required` according to whether
+execution failure should stop the workflow. Either tier's claims need evidence.
 
 ## Choosing depth
 
@@ -112,8 +113,7 @@ invent a `worker_type`.
 
 ## Model assignment
 
-Workflow YAML has no model-selection field. Runtime configuration assigns
-models: `dag` tier in `settings.json` → configured agent model → parent session
+Runtime configuration assigns models: `dag` tier in `settings.json` → configured agent model → parent session
 model. Use tier labels; do NOT invent a model identifier. If every source is
 missing, the tool returns a blocked diagnostic and creates no workflow.
 
@@ -157,8 +157,7 @@ lists unlisted expectations; missing/unlisted items enter `required_actions`.
 The gate is fixed at run.start: DAG mode on or `mode: deep` fixes
 `config.review_gate` to `strict`, overriding an authored `standard`; otherwise
 it defaults to `standard`, and later mode switches cannot change it. Strict
-enables the review-coverage requirements; standard warns. Lanes, decision,
-`verify`, and `synthesize` default to the read-only `auditor`.
+enables the review-coverage requirements; standard warns.
 
 Strict adds: block-only writers (`coding`/`prototype`, including a fan-out
 aggregator); a downstream `review.phase: "diff"` decision bound to each writer

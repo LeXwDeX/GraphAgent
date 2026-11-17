@@ -51,11 +51,11 @@ export const Dag = Schema.Struct({
     Schema.Struct({
       advanced: Schema.optional(Schema.String).annotate({
         description:
-          'Model ("provider/model") for critical nodes: required: true and review/arbiter workers. A project setting overrides the user-level value.',
+          'Model ("provider/model") for judging nodes: plan, verify, synthesize and review blocks, review/arbiter workers and composer nodes; a hand-written node without a block takes it when required: true. A project setting overrides the user-level value.',
       }),
       standard: Schema.optional(Schema.String).annotate({
         description:
-          'Model ("provider/model") for every other worker node. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value.',
+          'Model ("provider/model") for every other worker node: writers, exploration and compose children. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value.',
       }),
     }),
   ).annotate({

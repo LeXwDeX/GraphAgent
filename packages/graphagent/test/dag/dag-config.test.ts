@@ -4,11 +4,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { Effect } from "effect"
 import { DagSection } from "@/config/dag-section"
+import { DagBlocks } from "@/dag/blocks"
+import { DagCompose } from "@/dag/compose"
 import { DagConfig } from "@/dag/config"
+import type { NodeConfig } from "@/dag/dag"
+import { DagFanOut } from "@/dag/fan-out"
 import { execFileSync } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
+import { composerOf, catalog } from "./compose-fixtures"
 
 let dir: string
 let projectDir: string
@@ -269,5 +274,242 @@ describe("DagConfig.tierModel", () => {
     expect(DagConfig.tierModel({}, { required: true, workerType: "build" })).toBeUndefined()
     expect(DagConfig.tierModel({ model: { standard: "no-slash" } }, { required: false, workerType: "x" })).toBeUndefined()
     expect(DagConfig.tierModel({ model: { standard: "prov/" } }, { required: false, workerType: "x" })).toBeUndefined()
+  })
+})
+// #1158 PR4a: the tier follows what the node is for. `required` is failure semantics and no longer decides the tier
+// of a node that has a role; a node with no role (a hand-written one) keeps the older rule.
+describe("DagConfig.tierOf", () => {
+  const OBJECTIVE = "Deliver the change"
+  const blocks: ConstructorParameters<typeof DagBlocks.WorkflowBlock>[0][] = [
+    { id: "map", kind: "explore" },
+    { id: "plan", kind: "plan", depends_on: ["map"] },
+    { id: "experiment", kind: "prototype", depends_on: ["map"] },
+    { id: "bug", kind: "debug", depends_on: ["map"] },
+    { id: "build", kind: "coding", depends_on: ["plan", "bug"], fan_out: "plan" },
+    { id: "check", kind: "verify", depends_on: ["build", "experiment"] },
+    { id: "gate", kind: "review", depends_on: ["check"], skeptics: 1 },
+    { id: "report", kind: "synthesize", depends_on: ["gate"] },
+  ]
+  const route = DagBlocks.compileWorkflowBlocks({
+    objective: OBJECTIVE,
+    blocks: blocks.map((block) => new DagBlocks.WorkflowBlock(block)),
+  })
+  const byID = (nodes: readonly NodeConfig[], id: string) => {
+    const found = nodes.find((node) => node.id === id)
+    if (!found) throw new Error(`no node ${id}`)
+    return found
+  }
+  const tierOfNode = (graph: readonly NodeConfig[], id: string, required?: boolean) => {
+    const definition = byID(graph, id)
+    return DagConfig.tierOf({
+      required: required ?? definition.required ?? false,
+      workerType: definition.worker_type,
+      definition,
+      graph,
+    })
+  }
+
+  it.each([
+    ["an explore block", "map", "standard"],
+    ["a plan block", "plan", "advanced"],
+    ["a prototype writer", "experiment", "standard"],
+    ["a debug block's evidence node", "bug--evidence", "standard"],
+    ["a debug block's diagnosis", "bug", "standard"],
+    ["a coding writer", "build", "standard"],
+    ["a verify block", "check", "advanced"],
+    ["a review lane", "gate--standards", "advanced"],
+    ["a skeptic lane", "gate--skeptic-1", "advanced"],
+    ["a review decision", "gate", "advanced"],
+    ["a synthesize block", "report", "advanced"],
+    ["the aggregator of parallel writers", "gate--aggregate", "standard"],
+  ] as const)("puts %s (%s) on the %s tier", (_label, id, expected) => {
+    expect(tierOfNode(route, id)).toBe(expected)
+  })
+
+  it("never lets required decide the tier of a block-compiled node", () => {
+    for (const node of route) {
+      const tiers = [true, false].map((required) => tierOfNode(route, node.id, required))
+      expect(new Set(tiers).size, `${node.id} (${node.block})`).toBe(1)
+    }
+  })
+
+  it("keeps a worker that judges on the advanced tier wherever it sits", () => {
+    for (const workerType of ["auditor", "review", "review-arch"]) {
+      for (const block of ["explore", "coding", "debug"] as const) {
+        const definition = { id: "x", block }
+        expect(DagConfig.tierOf({ required: false, workerType, definition }), `${block} on ${workerType}`).toBe(
+          "advanced",
+        )
+      }
+    }
+    // A worker override on a judging block changes nothing either.
+    expect(DagConfig.tierOf({ required: false, workerType: "general", definition: { id: "x", block: "plan" } })).toBe(
+      "advanced",
+    )
+  })
+
+  it("puts the generated fan-out writers on the standard tier and keeps the writer's required", () => {
+    const writer = byID(route, "build")
+    const expansion = DagFanOut.planFanOut(
+      writer,
+      {
+        summary: "s",
+        packages: [
+          { id: "api", instruction: "api", write_set: ["src/api"] },
+          { id: "ui", instruction: "ui", write_set: ["src/ui"] },
+        ],
+      },
+      new Set(),
+    )
+    if (expansion.kind !== "expand") throw new Error("expected an expansion")
+    const graph = [...route.filter((node) => node.id !== "build"), ...expansion.nodes]
+    expect(expansion.nodes.map((node) => [node.id, node.required, tierOfNode(graph, node.id)])).toEqual([
+      ["build--api", true, "standard"],
+      ["build--ui", true, "standard"],
+      // The aggregator is a helper the engine generated: standard, though it is as required as its writers.
+      ["build", true, "standard"],
+    ])
+  })
+
+  describe("a compose expansion", () => {
+    const expand = (survey: { required?: boolean } = {}, items: unknown[]) => {
+      const nodes = DagCompose.compileNodes(
+        DagBlocks.compileWorkflowBlocks({
+          objective: OBJECTIVE,
+          blocks: [new DagBlocks.WorkflowBlock({ id: "survey", kind: "compose", worker_type: "surveyor", ...survey })],
+        }),
+        catalog(),
+        DagCompose.DEFAULT_LIMITS,
+      ).nodes
+      const result = DagCompose.planExpansion({
+        slot: byID(nodes, "survey"),
+        composer: composerOf("surveyor"),
+        limits: DagCompose.DEFAULT_LIMITS,
+        source: { status: "completed", output: { rationale: "r", items, not_planned: [] } },
+        existingNodeIDs: new Set(nodes.map((node) => node.id)),
+      })
+      return { compiled: nodes, expansion: result }
+    }
+    const item = (id: string, agent: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      agent,
+      instruction: `Look into ${id}`,
+      ...extra,
+    })
+
+    it("puts the split node, the slot and the join node on the advanced tier", () => {
+      const { compiled, expansion } = expand({}, [item("code", "explore"), item("official", "researcher")])
+      expect(byID(compiled, "survey--split").generated_helper).toBe("split")
+      // The split node is optional and the slot is too: the tier does not come from required.
+      expect(byID(compiled, "survey--split").required).toBe(false)
+      expect(tierOfNode(compiled, "survey--split")).toBe("advanced")
+      expect(byID(compiled, "survey").expand).toBe("survey--split")
+      expect(tierOfNode(compiled, "survey")).toBe("advanced")
+      expect(tierOfNode(compiled, "survey", true)).toBe("advanced")
+      const graph = [byID(compiled, "survey--split"), ...expansion.nodes]
+      expect(byID(graph, "survey").join).toBeDefined()
+      expect(tierOfNode(graph, "survey")).toBe("advanced")
+    })
+
+    it("puts the children on the standard tier, required or not", () => {
+      const { compiled, expansion } = expand({ required: true }, [
+        item("code", "explore"),
+        item("official", "researcher", { required: true }),
+      ])
+      const graph = [byID(compiled, "survey--split"), ...expansion.nodes]
+      expect(expansion.kind).toBe("expand")
+      // A required item of a required block compiles to a required child, which is still a standard-tier worker.
+      expect(byID(graph, "survey--official").required).toBe(true)
+      expect(tierOfNode(graph, "survey--official")).toBe("standard")
+      expect(byID(graph, "survey--code").required).toBe(false)
+      expect(tierOfNode(graph, "survey--code")).toBe("standard")
+    })
+
+    it("puts the one fallback worker of a degraded expansion on the standard tier", () => {
+      const { compiled } = expand({ required: true }, [])
+      const degraded = DagCompose.degrade(byID(compiled, "survey"), composerOf("surveyor"), "the plan has no items")
+      const graph = [byID(compiled, "survey--split"), ...degraded.nodes]
+      expect(byID(graph, "survey--fallback").required).toBe(true)
+      expect(tierOfNode(graph, "survey--fallback")).toBe("standard")
+      expect(tierOfNode(graph, "survey")).toBe("advanced")
+    })
+
+    it("keeps a child that is an auditor on the advanced tier, since judging work is advanced wherever it sits", () => {
+      const { compiled, expansion } = expand({}, [item("security", "auditor"), item("code", "explore")])
+      const graph = [byID(compiled, "survey--split"), ...expansion.nodes]
+      expect(tierOfNode(graph, "survey--security")).toBe("advanced")
+      expect(tierOfNode(graph, "survey--code")).toBe("standard")
+    })
+
+    it("tells a child by the join node that names it, not by its id", () => {
+      const { compiled, expansion } = expand({}, [item("code", "explore")])
+      const graph = [byID(compiled, "survey--split"), ...expansion.nodes]
+      expect(DagConfig.isComposeChild(graph, "survey--code")).toBe(true)
+      expect(DagConfig.isComposeChild(graph, "survey")).toBe(false)
+      expect(DagConfig.isComposeChild(graph, "elsewhere")).toBe(false)
+      expect(DagConfig.isComposeChild(undefined, "survey--code")).toBe(false)
+      // A node that looks like a child, but no join names it, is a hand-written node.
+      const stray: NodeConfig = { ...byID(graph, "survey--code"), id: "survey--stray", required: true }
+      expect(tierOfNode([...graph, stray], "survey--stray")).toBe("advanced")
+      expect(tierOfNode([...graph, { ...stray, required: false }], "survey--stray")).toBe("standard")
+    })
+
+    it("puts a compose block that was not compiled into a split and a slot on the advanced tier", () => {
+      const block = DagBlocks.compileWorkflowBlocks({
+        objective: OBJECTIVE,
+        blocks: [new DagBlocks.WorkflowBlock({ id: "survey", kind: "compose", worker_type: "surveyor" })],
+      })
+      expect(tierOfNode(block, "survey")).toBe("advanced")
+    })
+  })
+
+  describe("a hand-written node", () => {
+    const hand = (overrides: Partial<NodeConfig> = {}): NodeConfig => ({
+      id: "hand",
+      name: "hand",
+      worker_type: "general",
+      depends_on: [],
+      prompt_template: { inline: "work" },
+      ...overrides,
+    })
+
+    it("keeps the older rule: required takes the advanced tier", () => {
+      expect(tierOfNode([hand({ required: true })], "hand")).toBe("advanced")
+      expect(tierOfNode([hand({ required: false })], "hand")).toBe("standard")
+      expect(tierOfNode([hand({ required: false, worker_type: "plan" })], "hand")).toBe("standard")
+      expect(tierOfNode([hand({ required: true, worker_type: "explore" })], "hand")).toBe("advanced")
+    })
+
+    it("takes review and auditor workers to the advanced tier without being required", () => {
+      expect(tierOfNode([hand({ worker_type: "review-arch" })], "hand", false)).toBe("advanced")
+      expect(tierOfNode([hand({ worker_type: "auditor" })], "hand", false)).toBe("advanced")
+    })
+
+    it("has no role when the caller knows only the worker", () => {
+      expect(DagConfig.tierOf({ required: true, workerType: "build" })).toBe("advanced")
+      expect(DagConfig.tierOf({ required: false, workerType: "build" })).toBe("standard")
+    })
+  })
+
+  it("picks the configured model of the tier a role calls for, and falls back across tiers", () => {
+    const both: DagConfig.Dag = { model: { advanced: "prov/big", standard: "prov/small" } }
+    const build = byID(route, "build")
+    const plan = byID(route, "plan")
+    const pick = (info: DagConfig.Dag, definition: NodeConfig) =>
+      DagConfig.tierModel(info, {
+        required: definition.required ?? false,
+        workerType: definition.worker_type,
+        definition,
+        graph: route,
+      })
+    // The writer is required by default and still takes the standard model;
+    // the plan takes the advanced one, optional or not.
+    expect(build.required).toBe(true)
+    expect(pick(both, build)).toEqual({ providerID: "prov", modelID: "small" })
+    expect(pick(both, { ...plan, required: false })).toEqual({ providerID: "prov", modelID: "big" })
+    // One configured tier serves every role.
+    expect(pick({ model: { advanced: "prov/big" } }, build)).toEqual({ providerID: "prov", modelID: "big" })
+    expect(pick({ model: { standard: "prov/small" } }, plan)).toEqual({ providerID: "prov", modelID: "small" })
+    expect(pick({}, build)).toBeUndefined()
   })
 })
