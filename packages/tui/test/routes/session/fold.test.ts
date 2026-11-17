@@ -11,6 +11,7 @@ import {
   genericShowsBlock,
   outputCharCap,
   reasoningFolds,
+  resultCardFolds,
   shellOutput,
   toolFailed,
   toolMetadata,
@@ -261,4 +262,45 @@ test("only a finished call has an output", () => {
   expect(completedOutput(completed("done"))).toBe("done")
   expect(completedOutput(failed("boom"))).toBeUndefined()
   expect(completedOutput({ status: "running", input: {}, time: { start: 1 } })).toBeUndefined()
+})
+
+/** A card as `backgroundCard` makes one of a result: the body, and the first line of it that has text. */
+const resultOf = (body: string) => ({
+  body,
+  firstLine:
+    body
+      .split("\n")
+      .find((line) => line.trim())
+      ?.trim() ?? "",
+})
+
+test("the card of a background result folds when it has a second line", () => {
+  expect(resultCardFolds(resultOf("All clear."), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf(""), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("found\nmore"), 100, 1)).toBe(true)
+  // A blank line between is a line too: opening the card shows a paragraph the preview does not.
+  expect(resultCardFolds(resultOf("found\n\nmore"), 100, 1)).toBe(true)
+  expect(resultCardFolds(resultOf("found\nmore"), 100, 2)).toBe(true)
+})
+
+test("the card of a background result folds when its first line is wider than the room the preview has", () => {
+  // The preview has the content width less the border, the padding and the indent: 100 - 4 - 2 cells, and a cell
+  // fewer when the border is two cells wide.
+  expect(resultCardFolds(resultOf("x".repeat(94)), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("x".repeat(95)), 100, 1)).toBe(true)
+  expect(resultCardFolds(resultOf("x".repeat(93)), 100, 2)).toBe(false)
+  expect(resultCardFolds(resultOf("x".repeat(94)), 100, 2)).toBe(true)
+  // Cells, not characters: a wide character takes two.
+  expect(resultCardFolds(resultOf("请".repeat(47)), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("请".repeat(48)), 100, 1)).toBe(true)
+  // A glyph of ambiguous width takes two at that setting: the same line fits at one and is cut at two.
+  expect(resultCardFolds(resultOf("·".repeat(90)), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("·".repeat(90)), 100, 2)).toBe(true)
+})
+
+test("the card of a background result folds by the width of the view: a wider one has room for the line", () => {
+  const line = resultOf("x".repeat(95))
+  expect(resultCardFolds(line, 100, 1)).toBe(true)
+  expect(resultCardFolds(line, 101, 1)).toBe(false)
+  expect(resultCardFolds(line, 20, 1)).toBe(true)
 })

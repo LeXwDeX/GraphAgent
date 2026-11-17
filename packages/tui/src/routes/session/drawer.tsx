@@ -1,35 +1,46 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { createMemo, For, Show } from "solid-js"
+import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
 import { resolveRootSessionID } from "../../ask/ask-queue"
 import { WorkspaceLabel } from "../../component/workspace-label"
 import { useTuiConfig } from "../../config"
+import { useKV } from "../../context/kv"
+import { lifecycleKey } from "../../context/lifecycle-mirror"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
+import { useOptionalTicker } from "../../context/ticker-context"
 import { t } from "../../i18n"
 import { useCommandShortcut } from "../../keymap"
+import { backgroundItems } from "../../session/background"
 import { isGoalShown } from "../../shell/status-band"
+import type { AmbiguousWidth } from "../../ui/width"
 import { remoteLine } from "../../util/remote-text"
 import { getScrollAcceleration } from "../../util/scroll"
 import {
   CONTEXT_BAR_CELLS,
+  DRAWER_TEXT_CELLS,
+  backgroundRunLine,
+  backgroundSection,
   contextBarCells,
   contextTone,
   contextUsage,
   costText,
   goalLine,
+  sameBackgroundSection,
   services,
   todoCount,
   todoMark,
+  type BackgroundRunRow,
 } from "./drawer-model"
 
 /**
- * The drawer's sections (#1032 5.2), in their fixed order: session, context, cost, the DAG mode line, goal, todo,
- * services. Each is a plain display component over `useSync()`; nothing in the drawer is clickable. The context,
- * cost and todo follow the session on screen, a sub-agent's included; the goal is always the root session's; LSP and
- * MCP are global. The modified-files section is left out for now (#1032 D8): since H5 its data source is mostly empty.
+ * The drawer's sections (#1032 5.2), in their fixed order: session, context, cost, the DAG mode line, goal,
+ * background runs, todo, services. Each is a plain display component over `useSync()`; nothing in the drawer is
+ * clickable. The context, cost and todo follow the session on screen, a sub-agent's included; the goal and the
+ * background runs are always the root session's; LSP and MCP are global. The modified-files section is left out for
+ * now (#1032 D8): since H5 its data source is mostly empty.
  */
 
 function Heading(props: { title: string; detail?: string }) {
@@ -199,6 +210,75 @@ function DrawerGoal(props: { rootID: string }) {
   )
 }
 
+function DrawerRun(props: { row: BackgroundRunRow; now: () => number; ambiguousWidth: () => AmbiguousWidth }) {
+  const { theme } = useTheme()
+  const line = createMemo(() => backgroundRunLine(props.row, props.now(), DRAWER_TEXT_CELLS, props.ambiguousWidth()))
+  return (
+    <text fg={theme.text} wrapMode="none">
+      <span style={{ fg: theme[line().token] }}>{line().marker}</span>
+      {line().text}
+      <Show when={line().time !== ""}>
+        <span style={{ fg: theme.textMuted }}>{line().pad + line().time}</span>
+      </Show>
+    </text>
+  )
+}
+
+/**
+ * The root session's background runs that are still going, whichever session of the tree is on screen (#1058 5): at
+ * most three lines, each a marker, `kind · description` and, for a running one, how long it has run; the rest are
+ * counted on a last line that points at `/agents`. Hidden while none is going. The times follow the one-second
+ * clock, which this section asks for only while a listed run is running; the drawer mounts its sections only while it
+ * is open, so a closed drawer asks for nothing.
+ */
+function DrawerBackground(props: { rootID: string }) {
+  const sync = useSync()
+  const kv = useKV()
+  const ticker = useOptionalTicker()
+  const { theme } = useTheme()
+  const section = createMemo(
+    () =>
+      backgroundSection(
+        backgroundItems({
+          taskIndex: sync.data.taskIndex,
+          rootID: props.rootID,
+          job: (id) => sync.data.lifecycle[lifecycleKey({ domain: "job", id })],
+          summary: (id) => sync.data.summary[id],
+        }),
+        (id) => sync.session.get(id),
+      ),
+    undefined,
+    { equals: sameBackgroundSection },
+  )
+  const ticking = createMemo(() => section()?.running === true)
+  createEffect(() => {
+    if (!ticking() || !ticker) return
+    onCleanup(ticker.subscribeSecond())
+  })
+  const now = () => {
+    // Reading the second signal is what makes a time follow the clock.
+    if (ticking()) ticker?.second()
+    return ticker?.now() ?? Date.now()
+  }
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
+
+  return (
+    <Show when={section()}>
+      {(current) => (
+        <box>
+          <Heading title={t("background.drawer.title", { n: current().total })} />
+          <For each={current().rows}>{(row) => <DrawerRun row={row} now={now} ambiguousWidth={ambiguousWidth} />}</For>
+          <Show when={current().more > 0}>
+            <text fg={theme.textMuted} wrapMode="none">
+              {t("background.drawer.more", { k: current().more })}
+            </text>
+          </Show>
+        </box>
+      )}
+    </Show>
+  )
+}
+
 function DrawerTodo(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
@@ -291,6 +371,7 @@ export function SessionDrawer(props: { sessionID: string }) {
             <DrawerCost sessionID={props.sessionID} />
             <DrawerDagMode sessionID={props.sessionID} />
             <DrawerGoal rootID={rootID()} />
+            <DrawerBackground rootID={rootID()} />
             <DrawerTodo sessionID={props.sessionID} />
             <DrawerServices />
           </box>

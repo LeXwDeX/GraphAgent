@@ -1,8 +1,13 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Goal, LspStatus, Message, Todo } from "@graphagent/sdk"
+import type { Goal, LspStatus, Message, Session, Todo } from "@graphagent/sdk"
+import { formatDagDuration } from "../../dag/model"
 import { t, type MessageKey } from "../../i18n"
+import { backgroundElapsed, type BackgroundItem, type BackgroundItems } from "../../session/background"
+import { activeRuns, backgroundLabel } from "../../shell/background-mark"
+import { DRAWER_WIDTH } from "../../shell/drawer"
+import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { remoteLine } from "../../util/remote-text"
 
 /**
@@ -147,4 +152,120 @@ export function services(
     mcpConnected: servers.length === 0 ? undefined : servers.filter(([, item]) => item.status === "connected").length,
     mcpFailed: servers.filter(([, item]) => item.status !== "connected").map(([name]) => name),
   }
+}
+
+// ── The background runs (#1058 5) ────────────────────────────────────────────
+
+/** Cells a line of a section has: the drawer less its paddings and the column the scrollbar may take. */
+export const DRAWER_TEXT_CELLS = DRAWER_WIDTH - 6
+
+/** Runs the section lists; the rest are counted on its last line. */
+export const BACKGROUND_ROWS_MAX = 3
+
+/** One run of the section: still going, with the name it has in `/agents`. */
+export interface BackgroundRunRow {
+  readonly item: BackgroundItem
+  readonly marker: "running" | "queued"
+  readonly kind: string
+  readonly description: string
+}
+
+export interface BackgroundSection {
+  /** Running plus queued, as the title counts them. */
+  readonly total: number
+  /** At most `BACKGROUND_ROWS_MAX`: the running runs first, then the queued, each newest start first. */
+  readonly rows: readonly BackgroundRunRow[]
+  /** Runs the rows do not list. */
+  readonly more: number
+  /** A listed run is running, so its time moves: the section needs the one-second clock. */
+  readonly running: boolean
+}
+
+/**
+ * The background section of the root session's runs that are still going; undefined, and so hidden, while none is.
+ * Runs that ended and runs nothing is known of are not listed: `/agents` has them.
+ */
+export function backgroundSection(
+  items: Pick<BackgroundItems, "running" | "queued">,
+  sessionOf: (sessionID: string) => Pick<Session, "title" | "agent"> | undefined,
+): BackgroundSection | undefined {
+  const active = activeRuns(items)
+  if (active.length === 0) return undefined
+  const rows = active.slice(0, BACKGROUND_ROWS_MAX).map((item): BackgroundRunRow => {
+    const { kind, description } = backgroundLabel(item, sessionOf(item.sessionID))
+    return { item, marker: item.status === "queued" ? "queued" : "running", kind, description }
+  })
+  return {
+    total: active.length,
+    rows,
+    more: active.length - rows.length,
+    running: rows.some((row) => row.marker === "running"),
+  }
+}
+
+/** Whether two sections say the same; a run that only reports progress leaves the section as it was. */
+export function sameBackgroundSection(a: BackgroundSection | undefined, b: BackgroundSection | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return (
+    a.total === b.total &&
+    a.more === b.more &&
+    a.rows.length === b.rows.length &&
+    a.rows.every(
+      (row, index) =>
+        row.item.sessionID === b.rows[index].item.sessionID &&
+        row.marker === b.rows[index].marker &&
+        row.kind === b.rows[index].kind &&
+        row.description === b.rows[index].description &&
+        row.item.entry.startedAt === b.rows[index].item.entry.startedAt,
+    )
+  )
+}
+
+export interface BackgroundRunLine {
+  /** The marker and the space after it. */
+  readonly marker: string
+  /** The marker's color: the brand-derived running token, static, or the dim queued one. */
+  readonly token: "statusRunning" | "statusQueued"
+  /** `kind · description`, cut to the room the marker and the time leave. */
+  readonly text: string
+  /** Spaces that put the time at the right edge; empty without a time. */
+  readonly pad: string
+  /** How long a running run has run (`58s`, `2m 14s`); empty for a queued one and where no start is known. */
+  readonly time: string
+}
+
+const RUN_MARKERS = {
+  running: { glyph: "●", token: "statusRunning" },
+  queued: { glyph: "○", token: "statusQueued" },
+} as const
+
+/** Cells the name of a run keeps before its time is left out of the line. */
+const RUN_NAME_MIN_CELLS = 8
+
+/**
+ * One run as a line of `width` cells at most: its marker (`●` running, `○` queued, both static), `kind · description`
+ * with the description cut first, and the time of a running run at the right edge. Only a running run has a time: a
+ * queued one has not started, and the clock that moves it runs only while some listed run is running. A line too
+ * narrow to keep the name beside its time drops the time.
+ */
+export function backgroundRunLine(
+  row: BackgroundRunRow,
+  now: number,
+  width: number,
+  ambiguousWidth: AmbiguousWidth = 1,
+): BackgroundRunLine {
+  const marker = RUN_MARKERS[row.marker]
+  const elapsed = row.marker === "running" ? backgroundElapsed(row.item, now) : undefined
+  const measured = elapsed === undefined ? "" : (formatDagDuration(0, elapsed) ?? "")
+  const lead = `${marker.glyph} `
+  const leadCells = cellWidth(lead, ambiguousWidth)
+  const timeCells = measured === "" ? 0 : 1 + cellWidth(measured, ambiguousWidth)
+  const time = width - leadCells - timeCells >= RUN_NAME_MIN_CELLS ? measured : ""
+  const title = row.description === "" ? row.kind : `${row.kind} · ${row.description}`
+  const text = truncateCells(title, Math.max(0, width - leadCells - (time === "" ? 0 : timeCells)), ambiguousWidth)
+  const pad =
+    time === ""
+      ? ""
+      : " ".repeat(Math.max(1, width - leadCells - cellWidth(text, ambiguousWidth) - cellWidth(time, ambiguousWidth)))
+  return { marker: lead, token: marker.token, text, pad, time }
 }

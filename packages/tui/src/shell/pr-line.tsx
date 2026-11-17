@@ -15,6 +15,7 @@ import { formatReminderIn } from "../pr/reminder"
 import { prCompact, prMark, prTailMark, type PrCompactItem } from "../pr/state"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { remoteLine } from "../util/remote-text"
+import { withBackgroundMark } from "./background-mark"
 import type { PrBandItem, ReminderBandItem } from "./pr-tracker-context"
 // Types only: `status-band` imports this module for its values.
 import type { BandRow, BandSpan, BandToken } from "./status-band"
@@ -103,13 +104,20 @@ function compactRow(items: readonly PrBandItem[], room: number, aw: AmbiguousWid
 /**
  * The row for the tracked PRs, `width` cells at most (sticky warnings first, as the tracker lists them). One PR is
  * written out: `PR #1035  ✓ passed · agent working`, while watching `PR #1035  CI 4/6`. Several are compressed to
- * the marks of `prCompact`, and the ones that do not fit are counted in a trailing `+k`.
+ * the marks of `prCompact`, and the ones that do not fit are counted in a trailing `+k`. The background mark
+ * (`background`, #1058 4) is added flush right when the row has room left for it; it never takes any from the PR.
  */
-export function layoutPrRow(items: readonly PrBandItem[], width: number, ambiguousWidth: AmbiguousWidth = 1): BandRow {
+export function layoutPrRow(
+  items: readonly PrBandItem[],
+  width: number,
+  ambiguousWidth: AmbiguousWidth = 1,
+  background?: string,
+): BandRow {
   const room = cellsFrom(width)
   const shown = drawn(items)
   if (room === 0 || shown.length === 0) return EMPTY_ROW
-  return shown.length === 1 ? singleRow(shown[0], room, ambiguousWidth) : compactRow(shown, room, ambiguousWidth)
+  const row = shown.length === 1 ? singleRow(shown[0], room, ambiguousWidth) : compactRow(shown, room, ambiguousWidth)
+  return withBackgroundMark(row, background, room, ambiguousWidth)
 }
 
 /**
@@ -133,9 +141,15 @@ export function prOpenUrl(items: readonly PrBandItem[]): string | undefined {
 
 /**
  * The nearest reminder as a row of `width` cells at most: `reminder · in 5m · {text}`, or `reminder · due · {text}`
- * in the warning color once it fired. The reminder's own text is at the end, so it is what a narrow row cuts.
+ * in the warning color once it fired. The reminder's own text is at the end, so it is what a narrow row cuts. The
+ * background mark (`background`, #1058 4) is added flush right when the row has room left for it.
  */
-export function layoutReminderRow(item: ReminderBandItem, width: number, ambiguousWidth: AmbiguousWidth = 1): BandRow {
+export function layoutReminderRow(
+  item: ReminderBandItem,
+  width: number,
+  ambiguousWidth: AmbiguousWidth = 1,
+  background?: string,
+): BandRow {
   const room = cellsFrom(width)
   if (room === 0) return EMPTY_ROW
   // The tracker has cleaned the text; the band does not trust what it draws from a remote source to stay clean.
@@ -146,13 +160,14 @@ export function layoutReminderRow(item: ReminderBandItem, width: number, ambiguo
       : t("reminder.band.in", { time: item.when ?? formatReminderIn(0), text })
   ).trimEnd()
   const token: BandToken = item.due ? "warning" : "textMuted"
-  return rowOf([{ text: truncateCells(line, room, ambiguousWidth), token }], ambiguousWidth)
+  const row = rowOf([{ text: truncateCells(line, room, ambiguousWidth), token }], ambiguousWidth)
+  return withBackgroundMark(row, background, room, ambiguousWidth)
 }
 
 // ── Which rows the band draws ────────────────────────────────────────────────
 
-/** What a row of the band is about; the band picks the click by it. */
-export type BandRowKind = "pr" | "dag" | "goal" | "reminder"
+/** What a row of the band is about; the band picks the click by it. `background` is the row of the runs alone. */
+export type BandRowKind = "pr" | "dag" | "goal" | "reminder" | "background"
 
 export interface BandChoice {
   readonly kind: BandRowKind
@@ -164,8 +179,19 @@ export interface BandCandidates {
   /** The PR row, and whether one of the PRs holds a sticky warning. */
   readonly pr?: { readonly row: BandRow; readonly warning: boolean }
   readonly dag?: BandRow
+  /** The workflow row's budget is at its warning or exhausted band: a warning row, which takes no background mark. */
+  readonly dagAlert?: boolean
   readonly goal?: BandRow
   readonly reminder?: BandRow
+  /**
+   * The background runs (#1058 4), when some are going; each part is asked for only when it is drawn. `marked` lays
+   * out a row again with the mark at its tail (the row as it was when the mark does not fit it); `own` is the row of
+   * the runs alone.
+   */
+  readonly background?: {
+    readonly marked: (kind: Exclude<BandRowKind, "background">) => BandRow | undefined
+    readonly own: () => BandRow | undefined
+  }
 }
 
 /**
@@ -174,17 +200,37 @@ export interface BandCandidates {
  * row's tail (`DagRowInput.pr`). The band draws two rows at most and one when `narrow`, so the first of that list
  * is what a narrow terminal keeps; the goal that a warning pushes out is left to the drawer, which always shows it.
  * A row with nothing to draw takes no line.
+ *
+ * The background runs (#1058 4) come after that choice and change none of it: their mark rides at the tail of the
+ * first row drawn that is not a warning row (a PR warning, a workflow whose budget is at its warning or exhausted
+ * band), and they have a row of their own only when no row is drawn at all. Below the narrow limit they have
+ * neither: the drawer lists them.
  */
 export function chooseBandRows(candidates: BandCandidates, narrow: boolean): BandChoice[] {
   const chosen: BandChoice[] = []
   const add = (kind: BandRowKind, row: BandRow | undefined) => {
     if (row !== undefined && row.spans.length > 0) chosen.push({ kind, row })
   }
-  const { pr } = candidates
+  const { pr, background } = candidates
   if (pr?.warning) add("pr", pr.row)
   add("dag", candidates.dag)
   if (pr && !pr.warning && !chosen.some((choice) => choice.kind === "dag")) add("pr", pr.row)
   add("goal", candidates.goal)
   add("reminder", candidates.reminder)
-  return chosen.slice(0, narrow ? 1 : BAND_ROWS_MAX)
+  const rows = chosen.slice(0, narrow ? 1 : BAND_ROWS_MAX)
+  if (narrow || background === undefined) return rows
+
+  const isWarning = (kind: BandRowKind) =>
+    (kind === "pr" && pr?.warning === true) || (kind === "dag" && candidates.dagAlert === true)
+  const target = rows.findIndex((choice) => !isWarning(choice.kind))
+  if (target >= 0) {
+    const { kind } = rows[target]
+    // The rows chosen above are the four kinds with a layout of their own; the runs' row is added only below.
+    const marked = kind === "background" ? undefined : background.marked(kind)
+    if (marked !== undefined && marked.spans.length > 0) rows[target] = { kind, row: marked }
+  } else if (rows.length === 0) {
+    const own = background.own()
+    if (own !== undefined && own.spans.length > 0) rows.push({ kind: "background", row: own })
+  }
+  return rows
 }
