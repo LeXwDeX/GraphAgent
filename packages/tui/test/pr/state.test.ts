@@ -417,6 +417,39 @@ describe("turn errors", () => {
   })
 })
 
+describe("a root whose history is not loaded (partial)", () => {
+  const partial = (assistants: readonly PrAssistant[] = []): PrSession => ({
+    status: "idle",
+    assistants,
+    partial: true,
+  })
+
+  test("no answer seen: notified, with no three-minute clock, however old the notice", () => {
+    for (const now of [T0 + SECOND, T0 + 3 * MINUTE, T0 + 60 * MINUTE]) {
+      const state = prLineState(delivered(), partial(), now)
+      expect(state).toMatchObject({ kind: "notified", sticky: false })
+      expect(state.nextAt).toBeUndefined()
+    }
+  })
+
+  test("an error seen is not a failed turn: a later answer may be missing", () => {
+    expect(prLineState(delivered(), partial([failed(T0 + SECOND)]), T0 + 5 * MINUTE).kind).toBe("notified")
+  })
+
+  test("an answer seen still counts", () => {
+    expect(prLineState(delivered(), partial([answer(T0 + SECOND)]), T0 + 10 * SECOND).kind).toBe("handled")
+    expect(prLineState(delivered(), partial([answer(T0 + SECOND)]), T0 + 5 * MINUTE).hidden).toBe(true)
+  })
+
+  test("busy, no reply and an owed notice do not depend on the history", () => {
+    expect(prLineState(delivered(), { status: "busy", assistants: [], partial: true }, T0 + 5 * MINUTE).kind).toBe(
+      "working",
+    )
+    expect(prLineState(delivered({}, T0, { noReply: true }), partial(), T0 + SECOND).kind).toBe("noReply")
+    expect(prLineState(owed(), partial(), T0 + 5 * MINUTE).kind).toBe("unresponsive")
+  })
+})
+
 describe("precedence", () => {
   test("the first matching row wins", () => {
     const plain = delivered()

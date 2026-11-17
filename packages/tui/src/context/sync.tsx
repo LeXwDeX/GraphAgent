@@ -372,6 +372,9 @@ export const {
     // #1036 F6: the PR watch read in flight per root session. A newer read replaces it and the older answer is
     // dropped. `touched` names the watches that events updated since the read began: they are newer than the answer.
     const prWatchReads = new Map<string, { touched: Set<string> }>()
+    // The roots whose PR watches a read answered. An event that reaches a root first creates its map with that one
+    // watch, so holding a map does not mean the snapshot was read: the first entry still has to read it.
+    const prWatchLoaded = new Set<string>()
     // The reminder read in flight per session; a newer read replaces it and the older answer is dropped.
     const reminderReads = new Map<string, symbol>()
     // The session set last handed to the aggregator and its confirmation: a
@@ -562,6 +565,7 @@ export const {
       dagModeReads.delete(sessionID)
       // A read still out must not bring the session's entries back.
       prWatchReads.delete(sessionID)
+      prWatchLoaded.delete(sessionID)
       reminderReads.delete(sessionID)
       const messages = store.message[sessionID] ?? []
       const partIDs = messages.flatMap((message) => (store.part[message.id] ?? []).map((part) => part.id))
@@ -922,15 +926,16 @@ export const {
     /**
      * Read the PR watches of root sessions and replace each root's map with the answer: a watch it does not return
      * has ended for good, and is dropped. Entries that events delivered while the read was out are newer than the
-     * answer and stay, unless the answer carries a later state of the same watch. `onlyMissing` leaves out the roots
-     * that hold a map or are being read; any other call reads again, and its answer wins over a read that was still
-     * out. A failed read keeps what the slice held, and the next trigger reads again.
+     * answer and stay, unless the answer carries a later state of the same watch; a held state newer than the
+     * answer's state of the same watch also stays. `onlyMissing` leaves out the roots
+     * a read already answered or that are being read (a map events created does not count); any other call reads
+     * again, and its answer wins over a read that was still out. A failed read keeps what the slice held, and the next trigger reads again.
      */
     function fetchPrWatch(rootIDs: readonly string[], onlyMissing = false) {
       const workspace = project.workspace.current()
       return Promise.all(
         rootIDs
-          .filter((rootID) => !onlyMissing || !(rootID in store.pr_watch || prWatchReads.has(rootID)))
+          .filter((rootID) => !onlyMissing || !(prWatchLoaded.has(rootID) || prWatchReads.has(rootID)))
           .map((rootID) => {
             const read = { touched: new Set<string>() }
             prWatchReads.set(rootID, read)
@@ -953,7 +958,13 @@ export const {
                   const current = held?.[watchID]
                   if (current && current.updatedAt >= (next[watchID]?.updatedAt ?? -Infinity)) next[watchID] = current
                 }
+                // An event taken in before the read began may also be newer than the answer's state of its watch.
+                for (const [watchID, entry] of Object.entries(next)) {
+                  const current = held?.[watchID]
+                  if (current && current.updatedAt > entry.updatedAt) next[watchID] = current
+                }
                 setStore("pr_watch", rootID, reconcile(next))
+                prWatchLoaded.add(rootID)
               })
               .catch((error) => {
                 TuiLog.write("error", "Loading the PR watches failed", { sessionID: rootID, error: String(error) })
@@ -1971,6 +1982,7 @@ export const {
       dagReads.clear()
       dagModeReads.clear()
       prWatchReads.clear()
+      prWatchLoaded.clear()
       reminderReads.clear()
       ancillaryAttempts.clear()
       submissionAccepted.clear()

@@ -373,6 +373,33 @@ describe("tui sync pr_watch and reminder slices: reads", () => {
     })
   })
 
+  test("an event that reaches a root before its first entry does not stand in for the snapshot", async () => {
+    const server = createServer({
+      sessions: [{ id: "ses_root" }],
+      prWatch: () => json({ entries: [watch({ watchID: "w2", number: 8 }), watch()] }),
+    })
+    await withMount(server, async ({ emit, sdk, sync }) => {
+      // The event creates the root's map with the one watch it names; the server holds two.
+      emit(updated(watch({ updatedAt: 3_000 })))
+      await advanceUntil(sdk, () => sync.data.pr_watch.ses_root?.w1 !== undefined)
+
+      await sync.session.activate("ses_root")
+      await advanceUntil(sdk, () => sync.data.pr_watch.ses_root?.w2 !== undefined)
+      expect(server.prWatchReads).toEqual(["ses_root"])
+      // The event is newer than the answer's w1 and stays; the watch only the read knows is added.
+      expect(sync.data.pr_watch.ses_root).toEqual({
+        w1: watch({ updatedAt: 3_000 }),
+        w2: watch({ watchID: "w2", number: 8 }),
+      })
+
+      // Once the read answered, the next entry finds the snapshot held.
+      sync.session.deactivate()
+      await sync.session.activate("ses_root")
+      await settle()
+      expect(server.prWatchReads).toEqual(["ses_root"])
+    })
+  })
+
   test("a failed first read leaves the slice absent, and the next entry reads it again", async () => {
     const server = createServer({
       sessions: [{ id: "ses_root" }],

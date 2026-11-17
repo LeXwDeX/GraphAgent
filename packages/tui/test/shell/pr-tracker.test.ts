@@ -122,6 +122,7 @@ interface TestData {
   session_status: Record<string, SessionStatus>
   message: Record<string, Message[]>
   part: Record<string, Part[]>
+  hydrated: string[]
 }
 
 /** The ticker the tracker gets (`at`, `now`) and the controls only the test has. */
@@ -174,6 +175,7 @@ function mount(options: { start?: number } = {}) {
       session_status: {},
       message: {},
       part: {},
+      hydrated: [ROOT],
     })
     const tracker = createPrTracker({
       data,
@@ -233,6 +235,15 @@ function mount(options: { start?: number } = {}) {
       /** A message comes first; its parts arrive in later events (`setParts`). */
       addMessage(message: Message) {
         setData("message", ROOT, (list = []) => [...list, message])
+      },
+      /** The history cache: an evicted root loses its messages and leaves `hydrated`. */
+      evict(root = ROOT) {
+        setData("hydrated", (list) => list.filter((id) => id !== root))
+        setData("message", root, undefined!)
+      },
+      hydrate(root: string, messages: Message[]) {
+        setData("message", root, messages)
+        setData("hydrated", (list) => [root, ...list.filter((id) => id !== root)])
       },
       setParts(messageID: string, parts: Part[]) {
         setData("part", messageID, parts)
@@ -507,6 +518,7 @@ describe("pr tracker: held warnings", () => {
 
   test("a held warning of another root waits for its root", () => {
     const h = mount({ start: T0 + 200 * SECOND })
+    h.hydrate(OTHER, [])
     h.replace(OTHER, [delivered(T0, { sessionID: OTHER, watchID: "w9" })])
     h.replace(OTHER, [])
     expect(kinds(h, OTHER)).toEqual(["w9:unresponsive"])
@@ -643,6 +655,7 @@ describe("pr tracker: toasts", () => {
         session_status: {},
         message: {},
         part: {},
+        hydrated: [ROOT],
       })
       let listener: ((entry: PrWatchEntry) => void) | undefined
       createPrTracker({
@@ -783,5 +796,47 @@ describe("pr tracker: one clock", () => {
     h.dispose()
     expect(h.clock.pending()).toEqual([])
     expect(h.listeners()).toBe(0)
+  })
+})
+
+describe("pr tracker: a root whose history is not loaded", () => {
+  test("a notice is not called unresponsive while the history is absent; loading it judges the notice", () => {
+    const h = mount()
+    h.evict()
+    h.deliver(delivered(T0))
+    expect(kinds(h)).toEqual(["w1:notified"])
+    // No three-minute clock without the history.
+    expect(h.clock.pending()).toEqual([])
+    h.clock.advanceTo(T0 + 4 * MINUTE)
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.toasts.map((toast) => toast.dedupeKey)).toEqual(["pr:w1:success"])
+
+    // The history shows the notice was answered.
+    h.hydrate(ROOT, [assistant("msg_a", T0 + SECOND, T0 + 2 * SECOND)])
+    expect(kinds(h)).toEqual([])
+  })
+
+  test("the history arriving without an answer turns an old notice unresponsive", () => {
+    const h = mount()
+    h.evict()
+    h.deliver(delivered(T0))
+    h.clock.advanceTo(T0 + 4 * MINUTE)
+    h.hydrate(ROOT, [])
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+  })
+
+  test("an answer seen before the history was evicted still counts after it", () => {
+    const h = mount()
+    h.deliver(delivered(T0))
+    h.addMessage(assistant("msg_a", T0 + SECOND, T0 + 2 * SECOND))
+    expect(kinds(h)).toEqual(["w1:handled"])
+    h.evict()
+    h.clock.advanceTo(T0 + 5 * MINUTE)
+    expect(kinds(h)).toEqual([])
+    // A reconnect that drops the watch leaves no warning behind.
+    h.replace(ROOT, [])
+    h.hydrate(ROOT, [assistant("msg_a", T0 + SECOND, T0 + 2 * SECOND)])
+    expect(kinds(h)).toEqual([])
+    expect(h.toasts.some((toast) => toast.dedupeKey === "pr:w1:unresponsive")).toBe(false)
   })
 })

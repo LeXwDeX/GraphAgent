@@ -63,6 +63,8 @@ export interface PrTrackerData {
   readonly reminder: { readonly [sessionID: string]: readonly SessionReminder[] | undefined }
   readonly session_status: { readonly [sessionID: string]: Pick<SessionStatus, "type"> | undefined }
   readonly message: { readonly [sessionID: string]: readonly Message[] | undefined }
+  /** The sessions whose full history is loaded; another session's `message` list is absent or partial. */
+  readonly hydrated: readonly string[]
   readonly part: { readonly [messageID: string]: readonly Part[] | undefined }
 }
 
@@ -117,6 +119,7 @@ interface Core {
 
 const EMPTY: Core = { items: new Map(), reminders: new Map(), states: new Map(), held: new Map(), nextAt: undefined }
 const NO_ITEMS: readonly PrBandItem[] = []
+const NO_ASSISTANTS: readonly PrAssistant[] = []
 
 /** The toasts shown are remembered by key so that one watch never says the same thing twice; this bounds the memory. */
 const TOASTED_MAX = 256
@@ -193,6 +196,9 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
   // The state each watch had when it was last folded in: what an event is compared with.
   const committed = new Map<string, PrLineState>()
   const toasted = new Set<string>()
+  // The assistant messages of each root as last seen while its history was loaded: the evidence of an answer that
+  // outlives the history cache. Kept for the roots that still have watches or held warnings.
+  const seen = new Map<string, readonly PrAssistant[]>()
   let armed: { readonly time: number; readonly cancel: () => void } | undefined
 
   // Getters: a root whose watches are all still `watching` reads neither its status nor a single message.
@@ -201,7 +207,12 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
       get status() {
         return deps.data.session_status[root]?.type
       },
+      get partial() {
+        return !deps.data.hydrated.includes(root)
+      },
       get assistants() {
+        // Without the history, what was seen of it before: an answer there is still an answer.
+        if (!deps.data.hydrated.includes(root)) return seen.get(root) ?? NO_ASSISTANTS
         const assistants: PrAssistant[] = []
         for (const message of deps.data.message[root] ?? []) {
           if (message.role !== "assistant") continue
@@ -211,6 +222,7 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
             error: message.error !== undefined,
           })
         }
+        seen.set(root, assistants)
         return assistants
       },
     }
@@ -307,6 +319,8 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
       const boundary = due ? undefined : reminderNextAt(first.fireAt, now)
       if (boundary !== undefined) wakes.push(boundary)
     }
+
+    for (const root of seen.keys()) if (deps.data.pr_watch[root] === undefined && !held.has(root)) seen.delete(root)
 
     return { items, reminders, states, held, nextAt: wakes.length > 0 ? Math.min(...wakes) : undefined }
   }, EMPTY)

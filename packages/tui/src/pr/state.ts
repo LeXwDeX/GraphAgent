@@ -47,6 +47,12 @@ export interface PrSession {
   /** `undefined` (no status known) is treated as idle; `busy` and `retry` both count as working. */
   readonly status: "idle" | "busy" | "retry" | undefined
   readonly assistants: readonly PrAssistant[]
+  /**
+   * The root's history is not loaded (never opened, or evicted from the cache): `assistants` holds only what was
+   * last seen of it. An answer there still counts; a missing answer proves nothing, so the line neither reports a
+   * failed turn nor runs the three-minute clock.
+   */
+  readonly partial?: boolean
 }
 
 /**
@@ -198,6 +204,7 @@ function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineSt
     const status = muted("pr.status.handled")
     return now >= hideAt ? make("handled", status, { hidden: true }) : make("handled", status, { nextAt: hideAt })
   }
+  if (session.partial) return make("notified", muted("pr.status.notified"))
   if (since.length > 0) return make("turnError", warn("pr.status.turnError"))
 
   const unresponsiveAt = deliveredAt + PR_UNRESPONSIVE_MS
@@ -215,7 +222,8 @@ function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineSt
  * - `handled`: delivered, idle, and an assistant message after the notice did not end in an error.
  * - `turnError`: delivered, idle, and every assistant message after the notice ended in an error.
  * - `unresponsive`: delivered, idle, nothing after the notice for 3 minutes; or owed for 3 minutes.
- * - `notified`: delivered, idle, nothing after the notice yet.
+ * - `notified`: delivered, idle, nothing after the notice yet; or the root's history is not loaded (`partial`) and
+ *   holds no answer to the notice.
  * - `awaiting`: owed (`delivering`) for under 3 minutes.
  * - `settled`: ended, and the server reported no delivery.
  *

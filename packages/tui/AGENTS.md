@@ -299,7 +299,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - PR 行：一个 PR 写成 `PR #1035  ✓ 通过 · agent 处理中`，标签 `textMuted`、编号 `text`，结果与说明各用 `prLineState` 给的 token，分隔符 `textDim`；警示态（`tone` 为 `warning`）标签与编号用 `warning`；监视中是 `CI 4/6` 或“等待 CI”（`textMuted`）。多个 PR 压成 `PR !#1040 ~#1036 ✓#1035 +2`（`prCompact`，警示在前，有警示用 `warning`，否则 `textMuted`），放不下的计入 `+k`。放不下时从行尾截断（`truncateCells`），先截说明，再截结果；只用主题 token，不用 `primary`；`ambiguous_width` 为 1 和 2 时都不超宽。
   - 提醒行：`提醒 · {time}后 · {text}`，到期为 `提醒 · 已到期 · {text}`（`reminder.band.in`、`reminder.band.due`），`textMuted`，到期用 `warning`；提醒文字在行尾，放不下时截它（经 `remoteLine` 去转义）。不可点击。
   - 点击 PR 行：用系统浏览器（`open`）打开第一个 PR（警示的在前）的 URL，只放行 `http`、`https`，选区守卫与点击 DAG 行相同，不产生任何请求；`open` 失败时没有可显示的出口，`.catch(() => {})` 留空。
-- 无 `setInterval`、无定时拉取。状态带不订阅任何时钟（`ticker.frame`、`second`、`at` 都不用）：运行段是静态字符；PR 的“3 分钟未响应”“60 秒隐藏”与提醒倒计时全在 PR tracker 里，每行至多一个 `ticker.at` 一次性回调，到点由 tracker 更新它给出的结果，状态带随之重排。
+- 无 `setInterval`、无定时拉取。状态带不订阅任何时钟（`ticker.frame`、`second`、`at` 都不用）：运行段是静态字符；PR 的“3 分钟未响应”“60 秒隐藏”与提醒倒计时全在 PR tracker 里，每行至多一个 `ticker.at` 一次性回调，到点由 tracker 更新它给出的结果，状态带随之重排。根会话的消息历史未加载（没打开过，或已被 LRU 逐出）时，tracker 只用上次加载时见过的回复作为“已处理”的证据；没见到回复不算未响应，也不算回合出错，3 分钟计时等历史加载后再判。
 - 新增一行或一类标记时：写出显示条件、颜色 token、窄屏让位位置，并在 F4/F6 对应方案里登记（修订本文）。
 
 抽屉（`shell/drawer.tsx`）：
