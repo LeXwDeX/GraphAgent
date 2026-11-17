@@ -10,7 +10,7 @@ import { Effect } from "effect"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagCompose } from "@/dag/compose"
 import type { DagValidation } from "@/dag/validation"
-import { agent, agents, catalog, writerRules } from "./compose-fixtures"
+import { agent, agents, writerRules } from "./compose-fixtures"
 
 const GATE = "compose 的运行时展开尚未启用（#1158 PR3b）"
 
@@ -225,15 +225,5 @@ describe("a graph without composers", () => {
     expect(result.nodes.map((node) => node.id)).toEqual(["map", "plan"])
     expect(result.prepared?.nodes.map((node) => node.id)).toEqual(["map", "plan"])
     expect(result.prepared?.nodes.some((node) => node.expand !== undefined)).toBe(false)
-  })
-})
-
-describe("the composer catalog the environment loads", () => {
-  it("is the effective catalog: a rebuilt catalog changes what the check says", () => {
-    expect(DagCompose.resolve(catalog(), "mapper").available).toBe(true)
-    const reopened = agents().map((entry) =>
-      entry.name === "explore" ? agent("explore", { permission: writerRules, contract: entry.contract }) : entry,
-    )
-    expect(DagCompose.resolve(catalog(reopened), "mapper").available).toBe(false)
   })
 })

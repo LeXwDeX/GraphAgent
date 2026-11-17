@@ -174,10 +174,12 @@ export interface NodeConfig {
    * admission; cleared by the expansion that replaces this node. */
   fan_out?: string
   /** #1158: the expansion slot of a compose block or a composer node, naming its
-   * split node. The scheduler never spawns a node that carries it: at admission
-   * the split node's plan replaces the slot with the expanded subtree and the
-   * join node under the slot's id. Written by the compiler (`DagCompose`), never
-   * by an author; the model-writable node schemas do not have the field. */
+   * split node. A node that carries it is never to be spawned as authored: at
+   * admission the split node's plan replaces it with the expanded subtree and the
+   * join node under its id, as `fan_out` does for a writer. That admission step is
+   * the runtime half of #1158; until it exists the Workflow Authoring Check refuses
+   * to submit a graph with a slot (`DagCompose.gate`). Written by the compiler
+   * (`DagCompose`), never by an author; no model-writable node schema has the field. */
   expand?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
