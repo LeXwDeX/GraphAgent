@@ -994,3 +994,160 @@ test("runs no timer once the initial request settles", async () => {
   await consumed
 })
 
+// A grace verdict (#1029): the idle poll saw a completed workflow with its report receipt while the turn's active
+// latch was set, so the hold waits one settle interval for the wake admission to make the session busy. The
+// admission announces itself with events before the busy status (the wake's user message, then its parts), and the
+// initial request settles around the same time. Neither is the delayed re-check, and neither may spend the grace:
+// where the settle edge lands among those events is a matter of milliseconds, so these tests fix the order.
+describe("a grace waits for its delayed re-check", () => {
+  /** What the run loop does with the session's events: the hold samples on busy and idle, a grace verdict arms the
+   * re-check signal, and a verdict other than hold ends the loop once the initial request has settled. */
+  function runLoop(feed: Feed, hold: DagHold.DagHold, request: { pending: boolean }, interval: number) {
+    const kick: DagHold.DagHoldRecheck = { pending: false }
+    const seen: string[] = []
+    const decisions: DagHold.DagHoldDecision[] = []
+    const done = (async () => {
+      for await (const event of DagHold.pollEvents(
+        feed,
+        "parent",
+        () => {},
+        () => request.pending,
+        interval,
+        kick,
+      )) {
+        seen.push(event.id)
+        if (event.type !== "session.status" || event.properties.sessionID !== "parent") continue
+        if (event.properties.status.type === "busy") await hold.onBusy()
+        if (event.properties.status.type === "idle") {
+          const decision = await hold.onIdle()
+          decisions.push(decision)
+          if (hold.needsRecheck()) kick.pending = true
+          if (decision !== "hold" && !request.pending) break
+        }
+      }
+    })()
+    return { seen, decisions, done }
+  }
+
+  test("the request settling inside a grace is not the delayed re-check", async () => {
+    const feed = new Feed()
+    const kick: DagHold.DagHoldRecheck = { pending: false }
+    let pendingRequest = true
+    const ids: string[] = []
+    const consumed = (async () => {
+      for await (const event of DagHold.pollEvents(
+        feed,
+        "parent",
+        () => {},
+        () => pendingRequest,
+        1_000,
+        kick,
+      )) {
+        ids.push(event.id)
+        // Mirror the run loop: the idle verdict was a grace, armed while the generator is suspended at its yield.
+        if (event.id === "evt_idle") kick.pending = true
+      }
+    })()
+    feed.push(statusEvent("evt_idle", "parent", "idle"))
+    await Bun.sleep(10)
+    // The prompt response arrives, then the first event of the wake admission. That event is where the generator
+    // notices the settled request, and the session has not turned busy yet.
+    pendingRequest = false
+    feed.push(userMessageEvent("evt_wake_user", "parent"))
+    await Bun.sleep(10)
+    expect(ids).toEqual(["evt_idle", "evt_wake_user"])
+    // The admission turns the session busy: that is what the grace waited for, and nothing else was synthesized.
+    feed.push(statusEvent("evt_busy", "parent", "busy"))
+    await Bun.sleep(30)
+    expect(ids).toEqual(["evt_idle", "evt_wake_user", "evt_busy"])
+    feed.close()
+    await consumed
+  })
+
+  test("a settle edge a grace deferred still gets one delayed re-check", async () => {
+    const feed = new Feed()
+    const kick: DagHold.DagHoldRecheck = { pending: false }
+    let pendingRequest = true
+    const ids: string[] = []
+    const consumed = (async () => {
+      for await (const event of DagHold.pollEvents(
+        feed,
+        "parent",
+        () => {},
+        () => pendingRequest,
+        100,
+        kick,
+      )) {
+        ids.push(event.id)
+        if (event.id === "evt_idle") kick.pending = true
+      }
+    })()
+    feed.push(statusEvent("evt_idle", "parent", "idle"))
+    await Bun.sleep(10)
+    pendingRequest = false
+    feed.push(userMessageEvent("evt_wake_user", "parent"))
+    await Bun.sleep(10)
+    expect(ids).toEqual(["evt_idle", "evt_wake_user"])
+    // No admission ever turns the session busy: the grace ends with its re-check, which is not lost.
+    await Bun.sleep(250)
+    expect(ids).toEqual(["evt_idle", "evt_wake_user", "dag-hold-poll"])
+    await Bun.sleep(150)
+    expect(ids).toEqual(["evt_idle", "evt_wake_user", "dag-hold-poll"])
+    feed.close()
+    await consumed
+  })
+
+  test("an unrelated event inside a grace does not lose the delayed re-check", async () => {
+    const feed = new Feed()
+    const kick: DagHold.DagHoldRecheck = { pending: false }
+    const ids: string[] = []
+    const consumed = (async () => {
+      for await (const event of DagHold.pollEvents(feed, "parent", () => {}, undefined, 100, kick)) {
+        ids.push(event.id)
+        if (event.id === "evt_idle") kick.pending = true
+      }
+    })()
+    feed.push(statusEvent("evt_idle", "parent", "idle"))
+    await Bun.sleep(10)
+    // A heartbeat is neither a wake nor a status change: the re-check stays armed through it.
+    feed.push({ id: "evt_heartbeat", type: "server.heartbeat", properties: {} } as unknown as Event)
+    await Bun.sleep(10)
+    expect(ids).toEqual(["evt_idle", "evt_heartbeat"])
+    await Bun.sleep(250)
+    expect(ids).toEqual(["evt_idle", "evt_heartbeat", "dag-hold-poll"])
+    feed.close()
+    await consumed
+  })
+
+  test("the wake turn the grace waits for is handled before the loop breaks", async () => {
+    // Turn one starts a workflow that terminalizes inside it. The idle poll sees it completed with its report
+    // receipt visible while the turn's active latch is set: a grace verdict. The wake turn then finds it quiescent.
+    const rows: Snapshot[] = [
+      [wf("W1", "running")],
+      [wf("W1", "completed", false)],
+      [wf("W1", "completed", false)],
+      [wf("W1", "completed", false)],
+    ]
+    let cursor = 0
+    const hold = DagHold.createDagHold(() => Promise.resolve(rows[cursor++]))
+    const feed = new Feed()
+    const request = { pending: true }
+    const loop = runLoop(feed, hold, request, 1_000)
+
+    feed.push(statusEvent("evt_busy_1", "parent", "busy"))
+    feed.push(statusEvent("evt_idle_1", "parent", "idle"))
+    await Bun.sleep(20)
+    request.pending = false
+    feed.push(userMessageEvent("evt_wake_user", "parent"))
+    await Bun.sleep(20)
+    // Neither the settled request nor the admission's user message spent the grace: the loop still waits.
+    expect(loop.decisions).toEqual(["hold"])
+
+    feed.push(statusEvent("evt_busy_2", "parent", "busy"))
+    feed.push(statusEvent("evt_idle_2", "parent", "idle"))
+    await loop.done
+    expect(loop.seen).toEqual(["evt_busy_1", "evt_idle_1", "evt_wake_user", "evt_busy_2", "evt_idle_2"])
+    expect(loop.decisions).toEqual(["hold", "break"])
+    feed.close()
+  })
+})

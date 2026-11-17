@@ -53,7 +53,10 @@
 // the same grace poll covers that window. A grace poll depends on no incoming
 // event, so the hold exposes `needsRecheck` and the event-driven wrapper
 // schedules exactly that one extra check — otherwise the run would wait for an
-// event that never arrives.
+// event that never arrives. The grace lasts until that check fires: the
+// admission announces itself with events (its user message, parts) before the
+// session turns busy, and neither those nor the initial request settling may
+// stand in for the check and spend the grace early (#1029).
 //
 // Degradation is deliberately silent and matches pre-614 behavior for the DAG
 // list itself:
@@ -162,7 +165,8 @@ export type DagHoldPoll = () => Promise<readonly DagWorkflowSnapshot[] | undefin
 /** One-shot channel from the hold back into the event loop: the last idle
  * verdict held only to consume a grace poll, which no incoming event will
  * drive. The event loop sets `pending` after such a verdict and `pollEvents`
- * converts it into one delayed synthetic idle. */
+ * converts it into one delayed synthetic idle; the grace stays armed until that
+ * idle fires or the session changes status. */
 export type DagHoldRecheck = { pending: boolean }
 
 function syntheticIdle(sessionID: string): Event {
@@ -190,7 +194,8 @@ function wakesIdleHold(event: Event, sessionID: string): boolean {
  * from the hold arms one delayed re-check (the same one-second settle the old
  * tick gave a wake admission), and the timer runs continuously only while
  * `keepAlive()` reports the initial request as pending. A quiet session
- * therefore issues no reads. */
+ * therefore issues no reads. A `kick` stays armed until its re-check fires, and
+ * the initial request settling inside it defers to that re-check. */
 export async function* pollEvents(
   events: AsyncIterable<Event>,
   sessionID: string,
@@ -204,19 +209,28 @@ export async function* pollEvents(
   let idle = false
   let recheck = false
   let keepAliveWasSet = false
+  // A grace verdict whose delayed re-check has not fired yet.
+  let graceArmed = false
   try {
     while (true) {
       // A grace verdict is waiting on nothing but time: consume the kick once
-      // and treat it like an armed re-check below.
-      const kicked = kick?.pending === true
-      if (kick) kick.pending = false
+      // and keep an armed re-check (and the grace) until it fires. The events
+      // that arrive meanwhile, such as the wake admission's user message and
+      // parts, do not disarm it, because they are not the check.
+      if (kick?.pending === true) {
+        kick.pending = false
+        recheck = true
+        graceArmed = true
+      }
       const alive = keepAlive?.() ?? false
       // The initial request settling while the session is idle is the one edge
       // no incoming event covers: without this check the run loop waits on a
-      // stream that will never wake it (#1027 PR5).
+      // stream that will never wake it (#1027 PR5). Inside a grace the delayed
+      // re-check below is that check; firing one now would spend the grace
+      // before the admission it waits for has turned the session busy (#1029).
       const settled = idle && keepAliveWasSet && !alive
       keepAliveWasSet = alive
-      if (settled) {
+      if (settled && !graceArmed) {
         recheck = false
         yield syntheticIdle(sessionID)
         continue
@@ -224,7 +238,7 @@ export async function* pollEvents(
       pending ??= iterator.next()
       let timer: ReturnType<typeof setTimeout> | undefined
       const next: IteratorResult<Event> | undefined =
-        idle && (recheck || alive || kicked)
+        idle && (recheck || alive)
           ? await Promise.race([
               pending,
               new Promise<undefined>((resolve) => {
@@ -234,6 +248,7 @@ export async function* pollEvents(
           : await pending
       if (!next) {
         recheck = false
+        graceArmed = false
         // Re-sample: the request may have settled during the wait, and the
         // settled check above must not fire a second time for the same edge.
         keepAliveWasSet = keepAlive?.() ?? false
@@ -245,8 +260,10 @@ export async function* pollEvents(
       const event: Event = next.value
       if (event.type === "session.status" && event.properties.sessionID === sessionID) {
         idle = event.properties.status.type === "idle"
-        // The idle edge itself already triggers one check in the run loop.
+        // The idle edge itself already triggers one check in the run loop, and
+        // a status change ends a grace: busy is what it waited for.
         recheck = false
+        graceArmed = false
       }
       yield event
       if (idle && wakesIdleHold(event, sessionID)) recheck = true
