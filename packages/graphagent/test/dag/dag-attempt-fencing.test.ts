@@ -20,6 +20,7 @@ import type { InstanceContext } from "@/project/instance-context"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const directory = process.cwd()
 const projectID = Project.ID.make("project-attempt-fence")
@@ -54,7 +55,7 @@ const harness = (() => {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const prompt = mockSessionPrompt({
     cancel: (childSessionID) =>
       Effect.sync(() => {

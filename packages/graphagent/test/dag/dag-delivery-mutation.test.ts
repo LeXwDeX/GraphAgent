@@ -18,6 +18,7 @@ import { deliverReport, selectReportNode } from "@/dag/runtime/report-delivery"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import type { Session } from "@/session/session"
 import { testEffect } from "../lib/effect"
+import { transactLayer } from "./fixture/transact"
 
 const workflowID = "dag_delivery_mutation"
 function node(id: string, depends_on: string[] = []): NodeConfig {
@@ -78,7 +79,15 @@ function services() {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
   const sessionProjector = SessionProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
-  const dependencies = Layer.mergeAll(database, events, bridge, store, projector, sessionProjector)
+  const dependencies = Layer.mergeAll(
+    database,
+    events,
+    bridge,
+    store,
+    projector,
+    sessionProjector,
+    transactLayer(database),
+  )
   return Layer.merge(dependencies, Dag.layer.pipe(Layer.provide(dependencies)))
 }
 const it = testEffect(services())

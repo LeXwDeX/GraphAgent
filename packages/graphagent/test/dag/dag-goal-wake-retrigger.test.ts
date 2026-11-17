@@ -31,6 +31,7 @@ import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 // GOAL-FP-01-02: the final DAG lease unregister (U2) lands AFTER the wake
 // turn's idle event. GoalLoop's claim runs on idle while the dag registration
@@ -146,7 +147,7 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
     : DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const goal = Goal.layer.pipe(Layer.provide(bridge), Layer.provide(database), Layer.provide(status))
   const base = Layer.mergeAll(
     database,
