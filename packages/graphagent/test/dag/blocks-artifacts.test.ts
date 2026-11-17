@@ -79,8 +79,8 @@ describe("the prototype block", () => {
     // The writer contract is unchanged: its output is the implementation record.
     expect(node.output_schema).toEqual(DagBlocks.IMPLEMENTATION_SCHEMA)
     expect(node.block).toBe("prototype")
-    // `required` for writer blocks is PR3's to change, not this PR's.
-    expect(node.required).toBe(false)
+    // D9 (#1158 PR4a): a writer block that leaves `required` out is required.
+    expect(node.required).toBe(true)
     expect(node.report_to_parent).toBe(false)
   })
 

@@ -54,9 +54,9 @@ prompt_template:
 and explicit values win.
 
 The listed node and default fields are exhaustive; workflow YAML has no
-model-selection field. Configuration owns model selection: `required: true`
-and `worker_type: review` / `review-*` nodes prefer the `advanced` tier in the
-`dag` section of `settings.json`; others prefer `standard`. Resolution falls
+model-selection field. Configuration owns model selection: tiers sit in the
+`dag` section of `settings.json` and the node's role picks one (skill
+dag-policy). Resolution falls
 back to the selected agent model and the parent-session model; if none provides
 one, the tool returns a blocked diagnostic and creates no workflow.
 

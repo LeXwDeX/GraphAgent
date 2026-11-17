@@ -97,7 +97,7 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
   }),
   required: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Whether failure is terminal. Decision and verification blocks default to true; volume blocks to false",
+      "Whether failure is terminal. Decision, verification and writer (coding, prototype) blocks default to true; exploration blocks to false",
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -412,6 +412,11 @@ const DIFF_REVIEW_SCHEMA = {
 
 const WRITER_KINDS = new Set<WorkflowBlockKind>(["coding", "prototype"])
 
+/** The kinds whose failure is terminal when the block does not say: judging and accepting work, and writers (D9:
+ * code that failed to be written fails the workflow at the writer, not later at a verification that read a
+ * placeholder). A `fan_out` writer's package writers and aggregator inherit the value. Every other kind is optional. */
+const REQUIRED_BY_DEFAULT = new Set<WorkflowBlockKind>(["plan", "verify", "synthesize", ...WRITER_KINDS])
+
 /** Read-only profiles may judge but never change the workspace. Strict review
  * lanes and arbitration must use one of these; anything else is treated as
  * write-capable. Mirrors the isolation validation's static catalog so a block
@@ -554,7 +559,7 @@ function compileBlock(
   options: WorkflowBlockCompileOptions,
 ): NodeConfig[] {
   const dependencies = block.depends_on ?? []
-  const required = block.required ?? (block.kind === "plan" || block.kind === "verify" || block.kind === "synthesize")
+  const required = block.required ?? REQUIRED_BY_DEFAULT.has(block.kind)
   const reviewDependency = dependencies.find(
     (dependency) => blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
   )

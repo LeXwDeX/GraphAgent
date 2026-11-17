@@ -4,11 +4,14 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import type { Agent } from "@/agent/agent"
+import { DagBlocks } from "@/dag/blocks"
 import { DagCompose } from "@/dag/compose"
 import { DagEnvironmentCatalogs } from "@/dag/environment-catalogs"
+import { DagValidation } from "@/dag/validation"
 import { Permission } from "@/permission"
 import { Provider } from "@/provider/provider"
 import { ProviderTest } from "../fake/provider"
+import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const open = Permission.fromConfig({ "*": "allow" })
@@ -94,5 +97,85 @@ describe("DAG environment catalogs", () => {
       expect(stuck?.available).toBe(false)
       if (stuck && !stuck.available) expect(stuck.reason).toContain('composer "stuck" is unavailable')
     }),
+  )
+})
+
+// #1158 PR4a: the model check asks for the tier a node's role calls for, the same one the loop runs it on. The
+// advanced tier here names a model the provider does not have, so a node resolves exactly when its role is standard.
+describe("DAG environment catalogs: model resolution follows the node role", () => {
+  const tiers = { dag: { model: { advanced: "ghost/ghost", standard: "openai/gpt-5.2" } } }
+
+  const prepare = Effect.gen(function* () {
+    const test = yield* TestInstance
+    const provider = yield* Provider.Service
+    const environment = yield* DagEnvironmentCatalogs.makeCatalogLoader(agents, provider)({ directory: test.directory })
+    const blocks: ConstructorParameters<typeof DagBlocks.WorkflowBlock>[0][] = [
+      { id: "map", kind: "explore", required: true },
+      { id: "design", kind: "plan", required: false },
+      { id: "build", kind: "coding" },
+    ]
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Deliver the change",
+      blocks: blocks.map((block) => new DagBlocks.WorkflowBlock(block)),
+    }).concat(
+      {
+        id: "hand-required",
+        name: "hand required",
+        worker_type: "general",
+        depends_on: [],
+        required: true,
+        prompt_template: { inline: "work" },
+      },
+      {
+        id: "hand-optional",
+        name: "hand optional",
+        worker_type: "general",
+        depends_on: [],
+        required: false,
+        prompt_template: { inline: "work" },
+      },
+    )
+    return { environment, nodes, directory: test.directory }
+  })
+
+  it.instance(
+    "resolves a node against the tier its definition calls for",
+    () =>
+      Effect.gen(function* () {
+        const { environment, nodes } = yield* prepare
+        const resolves = (id: string) => {
+          const node = nodes.find((candidate) => candidate.id === id)!
+          return environment.resolveModel!({
+            id,
+            worker_type: node.worker_type,
+            required: node.required ?? false,
+            definition: node,
+            graph: nodes,
+          })
+        }
+        // Exploring and writing are standard (which resolves) even when required; judging is advanced (ghost) even when optional.
+        expect(yield* resolves("map")).toBe(true)
+        expect(yield* resolves("build")).toBe(true)
+        expect(yield* resolves("design")).toBe(false)
+        // A hand-written node follows required, as it always has.
+        expect(yield* resolves("hand-required")).toBe(false)
+        expect(yield* resolves("hand-optional")).toBe(true)
+      }),
+    { config: tiers },
+  )
+
+  it.instance(
+    "reaches the same answer through the environment diagnostics of a graph",
+    () =>
+      Effect.gen(function* () {
+        const { environment, nodes, directory } = yield* prepare
+        const diagnostics = yield* DagValidation.environmentDiagnostics({ nodes, directory, catalogs: environment })
+        expect(
+          diagnostics
+            .filter((entry) => entry.code === DagValidation.DIAGNOSTIC_CODES.modelUnavailable)
+            .map((entry) => entry.path),
+        ).toEqual(["nodes[design]", "nodes[hand-required]"])
+      }),
+    { config: tiers },
   )
 })

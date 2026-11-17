@@ -100,8 +100,8 @@ deep diff-review metadata (skill dag-blocks). Never declare both.
 Rules a saved spec must respect:
 
 - Never write `model` on a node or in `node_defaults`: `dag.model` in
-  `.agents/settings.json` owns the advanced tier for `required: true` and
-  `review`/`review-*` workers, standard for the rest.
+  `.agents/settings.json` owns both tiers; the node's role picks one (skill
+  dag-policy).
 - Every `worker_type` must exist as a builtin (`explore`, `build`, `general`,
   `plan`) or a configured agent; never invent one.
 - `prompt_template.id` assets live under project `.agents/workflows/prompts/`

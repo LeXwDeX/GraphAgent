@@ -834,6 +834,8 @@ const serviceLayer = Layer.effect(
                 fallbackModel: DagConfig.tierModel(nodeDagConfig, {
                   required: node.required,
                   workerType: node.workerType,
+                  definition: nodeConfig,
+                  graph: entry.config?.nodes,
                 }),
                 variant: nodeDagConfig.thinking_depth,
                 maxTimeoutExtensions:
