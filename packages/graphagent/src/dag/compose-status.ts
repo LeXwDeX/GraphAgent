@@ -85,7 +85,9 @@ export function summaries(input: Input): Summary[] {
  */
 function rootOf(slot: NodeConfig, graph: readonly NodeConfig[]): string {
   const joined = new Set(slot.join?.items.map((item) => item.node))
-  return graph.find((node) => joined.has(node.id) && node.compose_subtree !== undefined)?.compose_subtree?.root ?? slot.id
+  return (
+    graph.find((node) => joined.has(node.id) && node.compose_subtree !== undefined)?.compose_subtree?.root ?? slot.id
+  )
 }
 
 function summaryOf(
@@ -97,7 +99,9 @@ function summaryOf(
   const root = rootOf(slot, graph)
   const subtree = graph.filter((node) => node.compose_subtree?.root === root)
   // Every plan of the block that has been expanded or degraded holds its items in its join node.
-  const joined = [slot, ...subtree].flatMap((node) => (node.join === undefined ? [] : [{ id: node.id, join: node.join }]))
+  const joined = [slot, ...subtree].flatMap((node) =>
+    node.join === undefined ? [] : [{ id: node.id, join: node.join }],
+  )
   const planned = joined.filter((plan) => plan.join.degraded === undefined).flatMap((plan) => plan.join.items)
   const required = planned.filter((item) => item.required).length
   const degraded = joined.flatMap((plan) =>

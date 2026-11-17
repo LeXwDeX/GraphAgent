@@ -24,7 +24,9 @@ function block(id: string, worker = "surveyor", extra: Partial<BlockInput> = {})
   return DagCompose.compileNodes(
     DagBlocks.compileWorkflowBlocks({
       objective: "Understand the persistence layer",
-      blocks: [new DagBlocks.WorkflowBlock({ id, kind: "compose", worker_type: worker, instruction: "Look", ...extra })],
+      blocks: [
+        new DagBlocks.WorkflowBlock({ id, kind: "compose", worker_type: worker, instruction: "Look", ...extra }),
+      ],
     }),
     catalog(),
     limits,
@@ -162,7 +164,11 @@ describe("a compose block whose plan was expanded", () => {
     const some = expandedGraph(
       block("survey"),
       "survey",
-      plan([item("a", "researcher", { required: true }), item("b", "researcher", { required: true }), item("c", "explore")]),
+      plan([
+        item("a", "researcher", { required: true }),
+        item("b", "researcher", { required: true }),
+        item("c", "explore"),
+      ]),
     )
     expect(summarize(some)[0]).toMatchObject({ required_items: 2, required_share: 0.67 })
     const all = expandedGraph(
@@ -210,7 +216,11 @@ describe("a compose block whose plan degraded", () => {
 describe("a recursive compose block", () => {
   // `api` is split again, `web` runs as one worker; the nested plan lists two items.
   const top = () =>
-    expandedGraph(block("map", "mapper"), "map", plan([item("api", "explore", { split: true, required: true }), item("web", "explore")]))
+    expandedGraph(
+      block("map", "mapper"),
+      "map",
+      plan([item("api", "explore", { split: true, required: true }), item("web", "explore")]),
+    )
 
   it("shows the nested slot as waiting: one level down, with its place in the quota set aside", () => {
     const graph = top()
@@ -313,16 +323,17 @@ describe("a recursive compose block", () => {
   })
 
   it("does not count a node that is not part of the current graph", () => {
-    const graph = expandedGraph(
-      top(),
-      "map--api",
-      plan([item("routes", "explore"), item("models", "explore")]),
-    )
+    const graph = expandedGraph(top(), "map--api", plan([item("routes", "explore"), item("models", "explore")]))
     // A replan that cancelled `map--api--models` superseded its row: it holds no room and is no longer there.
     const rows = rowsOf(graph).map((row) => (row.id === "map--api--models" ? { ...row, superseded: true } : row))
     expect(summarize(graph, rows)[0]).toMatchObject({ subtree_nodes: 4, subtree_remaining: 36 })
     // A definition that has no row at all is outside the graph too.
-    expect(summarize(graph, rows.filter((row) => row.id !== "map--api--models"))[0]).toMatchObject({ subtree_nodes: 4 })
+    expect(
+      summarize(
+        graph,
+        rows.filter((row) => row.id !== "map--api--models"),
+      )[0],
+    ).toMatchObject({ subtree_nodes: 4 })
   })
 })
 
@@ -430,14 +441,30 @@ describe("several compose blocks", () => {
     const survey = block("survey")
     const map = block("map", "mapper")
     const graph = expandedGraph(
-      expandedGraph([...survey, ...map], "map", plan([item("api", "explore", { split: true }), item("web", "explore")])),
+      expandedGraph(
+        [...survey, ...map],
+        "map",
+        plan([item("api", "explore", { split: true }), item("web", "explore")]),
+      ),
       "survey",
       plan([item("a", "researcher")]),
     )
     const summaries = summarize(graph, rowsOf(graph, ["map--api"]))
     expect(summaries.map((summary) => summary.id)).toEqual(["survey", "map"])
-    expect(summaries[0]).toMatchObject({ composer: "surveyor", items: 1, depth: 1, subtree_nodes: 1, subtree_remaining: 39 })
-    expect(summaries[1]).toMatchObject({ composer: "mapper", items: 2, depth: 2, subtree_nodes: 3, subtree_remaining: 36 })
+    expect(summaries[0]).toMatchObject({
+      composer: "surveyor",
+      items: 1,
+      depth: 1,
+      subtree_nodes: 1,
+      subtree_remaining: 39,
+    })
+    expect(summaries[1]).toMatchObject({
+      composer: "mapper",
+      items: 2,
+      depth: 2,
+      subtree_nodes: 3,
+      subtree_remaining: 36,
+    })
   })
 })
 

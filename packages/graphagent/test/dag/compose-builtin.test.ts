@@ -107,20 +107,22 @@ describe("the built-in composers in the real agent catalog", () => {
     }),
   )
 
-  it.instance("the surveyor fans out to the researcher and explore, falls back to the researcher, joins a survey_report", () =>
-    Effect.gen(function* () {
-      const { catalog } = yield* loaded
-      const surveyor = usable(catalog, "surveyor")
-      expect(surveyor.pattern).toBe("fan_out")
-      expect(surveyor.fallback).toBe("researcher")
-      expect(surveyor.artifact).toBe("survey_report")
-      // Both are public, read-only and may be skipped; each hands back its own artifact.
-      expect(surveyor.dispatch.map((worker) => [worker.name, worker.artifact, worker.failure])).toEqual([
-        ["researcher", "research_findings", "skip"],
-        ["explore", "code_findings", "skip"],
-      ])
-      expect(surveyor.dispatch.every((worker) => (worker.description ?? "").length > 0)).toBe(true)
-    }),
+  it.instance(
+    "the surveyor fans out to the researcher and explore, falls back to the researcher, joins a survey_report",
+    () =>
+      Effect.gen(function* () {
+        const { catalog } = yield* loaded
+        const surveyor = usable(catalog, "surveyor")
+        expect(surveyor.pattern).toBe("fan_out")
+        expect(surveyor.fallback).toBe("researcher")
+        expect(surveyor.artifact).toBe("survey_report")
+        // Both are public, read-only and may be skipped; each hands back its own artifact.
+        expect(surveyor.dispatch.map((worker) => [worker.name, worker.artifact, worker.failure])).toEqual([
+          ["researcher", "research_findings", "skip"],
+          ["explore", "code_findings", "skip"],
+        ])
+        expect(surveyor.dispatch.every((worker) => (worker.description ?? "").length > 0)).toBe(true)
+      }),
   )
 
   it.instance("the mapper splits recursively over explore, falls back to explore, joins a project_map", () =>
@@ -143,7 +145,13 @@ describe("the built-in composers in the real agent catalog", () => {
         expect(DagBlocks.isReadOnlyWorker(name), name).toBe(true)
         expect(DagBlocks.workspaceWritesOf(undefined, name), name).toBe("deny")
         // Even as a hand-written node the engine would not have to compile, a composer is no writer.
-        const node: NodeConfig = { id: "n", name: "n", worker_type: name, depends_on: [], prompt_template: { inline: "x" } }
+        const node: NodeConfig = {
+          id: "n",
+          name: "n",
+          worker_type: name,
+          depends_on: [],
+          prompt_template: { inline: "x" },
+        }
         expect(DagBlocks.isWriterNode(node), name).toBe(false)
       }
     }),
@@ -165,9 +173,9 @@ describe("the plan each built-in composer asks its split node for", () => {
       expect(schema.maxItems).toBe(6)
       expect(record(schema.properties.agent).enum).toEqual(["researcher", "explore"])
       expect(schema.properties.split).toBeUndefined()
-      expect(DagCompose.checkPlan(plan([item("docs", "researcher"), item("repo", "explore")]), surveyor, limits).ok).toBe(
-        true,
-      )
+      expect(
+        DagCompose.checkPlan(plan([item("docs", "researcher"), item("repo", "explore")]), surveyor, limits).ok,
+      ).toBe(true)
       // An agent outside `dispatch`, one that is private and one that does not exist are schema violations.
       for (const agent of ["architect", "auditor", "prototyper", "mapper", "ghost"]) {
         const checked = DagCompose.checkPlan(plan([item("docs", agent)]), surveyor, limits)
@@ -187,7 +195,8 @@ describe("the plan each built-in composer asks its split node for", () => {
       expect(record(schema.properties.agent).enum).toEqual(["explore"])
       expect(record(schema.properties.split)).toMatchObject({ type: "boolean" })
       expect(
-        DagCompose.checkPlan(plan([item("api", "explore", { split: true }), item("web", "explore")]), mapper, limits).ok,
+        DagCompose.checkPlan(plan([item("api", "explore", { split: true }), item("web", "explore")]), mapper, limits)
+          .ok,
       ).toBe(true)
       for (const agent of ["researcher", "architect", "surveyor", "ghost"]) {
         expect(DagCompose.checkPlan(plan([item("api", agent)]), mapper, limits).ok, agent).toBe(false)
@@ -347,7 +356,11 @@ describe("the tier of the nodes a built-in composer makes", () => {
     Effect.gen(function* () {
       const { catalog } = yield* loaded
       const compiled = compileBlock(catalog, "surveyor", { required: true })
-      const degraded = DagCompose.degrade(find(compiled.nodes, "block"), usable(catalog, "surveyor"), "the plan has no items")
+      const degraded = DagCompose.degrade(
+        find(compiled.nodes, "block"),
+        usable(catalog, "surveyor"),
+        "the plan has no items",
+      )
       const graph = [find(compiled.nodes, "block--split"), ...degraded.nodes]
       expect(find(graph, "block--fallback").worker_type).toBe("researcher")
       expect(tierOf(graph, "block--fallback")).toBe("standard")
@@ -424,7 +437,10 @@ describe("built-in composer prompts", () => {
         slot: find(compiled.nodes, "block"),
         composer: mapper,
         limits,
-        source: { status: "completed", output: plan([item("api", "explore", { split: true }), item("web", "explore")]) },
+        source: {
+          status: "completed",
+          output: plan([item("api", "explore", { split: true }), item("web", "explore")]),
+        },
         existingNodeIDs: new Set(compiled.nodes.map((node) => node.id)),
       })
       if (result.kind !== "expand") throw new Error("expected an expansion")

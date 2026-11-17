@@ -114,7 +114,10 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, catalog: readonly Agen
     prompt: deliver,
     deliver: (input) => deliver(input).pipe(Effect.map(Option.some)),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, { ...impl, children: Effect.succeed(stubChildren(impl).children) } as never)
+  const prompt = Layer.mock(SessionPrompt.Service, {
+    ...impl,
+    children: Effect.succeed(stubChildren(impl).children),
+  } as never)
   const agent = Layer.mock(Agent.Service, {
     list: () => Effect.succeed(catalog as never),
     get: () =>
@@ -152,7 +155,10 @@ interface Services {
   readonly catalog: readonly Agent.Info[]
 }
 
-function runLoopTest<A>(catalog: readonly Agent.Info[], test: (services: Services) => Effect.Effect<A, Error, Scope.Scope>) {
+function runLoopTest<A>(
+  catalog: readonly Agent.Info[],
+  test: (services: Services) => Effect.Effect<A, Error, Scope.Scope>,
+) {
   return Effect.gen(function* () {
     const records = yield* Queue.unbounded<PromptRecord>()
     return yield* Effect.gen(function* () {
@@ -246,7 +252,8 @@ const item = (id: string, agent: string, extra: Record<string, unknown> = {}) =>
   instruction: `Look into ${id}`,
   ...extra,
 })
-const plan = (items: unknown[]) => JSON.stringify({ rationale: "split by what has to be found out", items, not_planned: [] })
+const plan = (items: unknown[]) =>
+  JSON.stringify({ rationale: "split by what has to be found out", items, not_planned: [] })
 
 /** An artifact of the catalog, checked against its schema so a test cannot answer with something no worker could. */
 const artifact = (name: string, summary: string, body: unknown) => {
@@ -319,7 +326,9 @@ describe("the built-in surveyor through the loop", () => {
           yield* loop.init()
           const started = yield* runWorkflow(
             caller(services),
-            startOf(specOf(SURVEY, { id: "decide", kind: "plan", depends_on: ["survey"], instruction: "Choose one design" })),
+            startOf(
+              specOf(SURVEY, { id: "decide", kind: "plan", depends_on: ["survey"], instruction: "Choose one design" }),
+            ),
           )
           expect(started.metadata?.blocked).toBeUndefined()
           expect(started.output).toContain("3 nodes registered")
@@ -420,7 +429,9 @@ describe("the built-in surveyor through the loop", () => {
           yield* loop.init()
           const started = yield* runWorkflow(
             caller(services),
-            startOf(specOf(SURVEY, { id: "decide", kind: "plan", depends_on: ["survey"], instruction: "Choose one design" })),
+            startOf(
+              specOf(SURVEY, { id: "decide", kind: "plan", depends_on: ["survey"], instruction: "Choose one design" }),
+            ),
           )
           const dagID = workflowID(started.output)
           const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")

@@ -168,7 +168,8 @@ describe("task tool and composers", () => {
         expect(workflowDescription, `workflow: ${composer}`).toContain(`- ${composer}:`)
       }
       // The workers they dispatch to stay task types.
-      for (const worker of ["researcher", "explore"]) expect(taskDescription, `task: ${worker}`).toContain(`- ${worker}:`)
+      for (const worker of ["researcher", "explore"])
+        expect(taskDescription, `task: ${worker}`).toContain(`- ${worker}:`)
     }),
   )
 
@@ -257,36 +258,38 @@ describe("task tool and composers", () => {
   )
 
   for (const composer of ["surveyor", "mapper"]) {
-    it.instance(`starting the built-in ${composer} through the task tool fails with a pointer to the workflow tool`, () =>
-      Effect.gen(function* () {
-        const { chat, assistant } = yield* seed()
-        const tool = yield* TaskTool
-        const def = yield* initTaskTool(tool)
+    it.instance(
+      `starting the built-in ${composer} through the task tool fails with a pointer to the workflow tool`,
+      () =>
+        Effect.gen(function* () {
+          const { chat, assistant } = yield* seed()
+          const tool = yield* TaskTool
+          const def = yield* initTaskTool(tool)
 
-        const exit = yield* def
-          .execute(
-            { description: "survey options", prompt: "compare three persistence designs", subagent_type: composer },
-            {
-              sessionID: chat.id,
-              messageID: assistant.id,
-              agent: "build",
-              abort: new AbortController().signal,
-              extra: { promptOps: forbiddenOps },
-              messages: [],
-              metadata: () => Effect.void,
-              ask: () => Effect.void,
-            },
-          )
-          .pipe(Effect.exit)
+          const exit = yield* def
+            .execute(
+              { description: "survey options", prompt: "compare three persistence designs", subagent_type: composer },
+              {
+                sessionID: chat.id,
+                messageID: assistant.id,
+                agent: "build",
+                abort: new AbortController().signal,
+                extra: { promptOps: forbiddenOps },
+                messages: [],
+                metadata: () => Effect.void,
+                ask: () => Effect.void,
+              },
+            )
+            .pipe(Effect.exit)
 
-        expect(Exit.isFailure(exit)).toBe(true)
-        if (!Exit.isFailure(exit)) return
-        const message = Cause.pretty(exit.cause)
-        expect(message).toContain(`"${composer}"`)
-        expect(message).toContain("is a composer")
-        expect(message).toContain("workflow")
-        expect(yield* (yield* Session.Service).children(chat.id)).toHaveLength(0)
-      }),
+          expect(Exit.isFailure(exit)).toBe(true)
+          if (!Exit.isFailure(exit)) return
+          const message = Cause.pretty(exit.cause)
+          expect(message).toContain(`"${composer}"`)
+          expect(message).toContain("is a composer")
+          expect(message).toContain("workflow")
+          expect(yield* (yield* Session.Service).children(chat.id)).toHaveLength(0)
+        }),
     )
   }
 

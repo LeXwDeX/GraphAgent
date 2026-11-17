@@ -403,7 +403,9 @@ describe("dag-patterns", () => {
     // Two or three independent read-only jobs need no workflow (D8).
     expect(patterns).toContain("Two or three independent read-only jobs: `task` each; no workflow.")
     // A shape that is known when the graph is written is blocks or a template, not a composer (D5).
-    expect(patterns).toContain("Shape known when writing the graph (pipeline, generate then check): blocks or a template.")
+    expect(patterns).toContain(
+      "Shape known when writing the graph (pipeline, generate then check): blocks or a template.",
+    )
     // A width that is known only after looking is a compose block, and both built-in composers are named.
     expect(patterns).toContain("Width known only after looking")
     expect(patterns).toContain("a `compose` block with `worker_type: surveyor`")
@@ -412,7 +414,9 @@ describe("dag-patterns", () => {
     expect(patterns).toContain("Parallel writes: `coding` with `fan_out`.")
     expect(patterns).toContain("a review block's `lenses` and `skeptics`")
     // The section comes before the example patterns it chooses between.
-    expect(patterns.indexOf("## Choosing a composition")).toBeLessThan(patterns.indexOf("## 1. Staged pipeline with gate"))
+    expect(patterns.indexOf("## Choosing a composition")).toBeLessThan(
+      patterns.indexOf("## 1. Staged pipeline with gate"),
+    )
   })
 
   test("keeps cross-domain composition separate from route selection", () => {

@@ -133,7 +133,9 @@ it.instance("a composer reads the repository and nothing else: no shell, no web,
       expect(Permission.evaluate("edit", "src/index.ts", composer.permission).action, name).toBe("deny")
       expect(Permission.evaluate("edit", "prototypes/x/a.ts", composer.permission).action, name).toBe("deny")
       // Reading outside the project asks, like the other read-only workers.
-      expect(Permission.evaluate("external_directory", "/some/other/path", composer.permission).action, name).toBe("ask")
+      expect(Permission.evaluate("external_directory", "/some/other/path", composer.permission).action, name).toBe(
+        "ask",
+      )
       expect(AgentContract.isWriterAgent(composer), name).toBe(false)
       // A composer that cannot write has the defaults of a read-only agent, and is never a dispatch target.
       expect(AgentContract.effective(composer), name).toMatchObject({
@@ -167,22 +169,24 @@ it.instance("the surveyor's prompt plans by angle or candidate and joins by comp
   }),
 )
 
-it.instance("the mapper's prompt looks before it splits, splits again only what is too large, and joins by module", () =>
-  Effect.gen(function* () {
-    const prompt = (yield* agentNamed("mapper")).prompt ?? ""
-    expect(prompt).toContain("You never map the modules yourself")
-    const planning = section(prompt, "Planning")
-    expect(planning).toContain("Look before you split")
-    expect(planning).toContain("split: true")
-    expect(planning).toContain("Do not split what one worker can read")
-    expect(planning).toContain("not_planned")
-    const joining = section(prompt, "Joining")
-    expect(joining).toContain("already comes back as a project map")
-    expect(joining).toContain("cross_cutting")
-    expect(joining).toContain("not_examined")
-    expect(joining).toContain("Do not invent modules")
-    expect(prompt).toContain("Do not ask the user questions")
-  }),
+it.instance(
+  "the mapper's prompt looks before it splits, splits again only what is too large, and joins by module",
+  () =>
+    Effect.gen(function* () {
+      const prompt = (yield* agentNamed("mapper")).prompt ?? ""
+      expect(prompt).toContain("You never map the modules yourself")
+      const planning = section(prompt, "Planning")
+      expect(planning).toContain("Look before you split")
+      expect(planning).toContain("split: true")
+      expect(planning).toContain("Do not split what one worker can read")
+      expect(planning).toContain("not_planned")
+      const joining = section(prompt, "Joining")
+      expect(joining).toContain("already comes back as a project map")
+      expect(joining).toContain("cross_cutting")
+      expect(joining).toContain("not_examined")
+      expect(joining).toContain("Do not invent modules")
+      expect(prompt).toContain("Do not ask the user questions")
+    }),
 )
 
 it.instance("only the mapper's prompt offers a recursive split, as only its plan schema has one", () =>
