@@ -48,6 +48,8 @@ export const makeCatalogLoader =
             tier: DagConfig.tierModel(config, {
               required: node.required ?? defaults?.required ?? Dag.DEFAULT_WORKFLOW_CONFIG.nodeRequired,
               workerType: node.worker_type,
+              definition: node.definition,
+              graph: node.graph,
             }),
             agent: agentsByName.get(node.worker_type)?.model,
             parent: context.parent ? { modelID: context.parent.id, providerID: context.parent.providerID } : undefined,

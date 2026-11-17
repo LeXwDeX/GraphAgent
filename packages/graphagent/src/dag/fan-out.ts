@@ -10,6 +10,10 @@ import { AGGREGATOR_CONTRACT, IMPLEMENTATION_SCHEMA, aggregatorEvidenceMapping }
  * shape it can prove safe into parallel writers. Anything else runs the
  * original writer serially, which is always safe, with the reason in its
  * prompt so the degradation is visible rather than silent.
+ *
+ * Every package writer and the aggregator take the writer's `required`, so a
+ * writer block that is required (the default, D9) fails the workflow at the one
+ * package that fails.
  */
 export type FanOutPlan =
   | { readonly kind: "expand"; readonly nodes: NodeConfig[]; readonly writerIDs: string[] }
@@ -76,6 +80,8 @@ export function planFanOut(
     ...(writer.worker_config ? { worker_config: writer.worker_config } : {}),
     input_mapping: evidence,
     output_schema: IMPLEMENTATION_SCHEMA,
+    // Its worker is the engine's choice, not an author's, and it only reconciles what the writers report: a helper.
+    generated_helper: "aggregate",
     // The aggregator continues the writer's logical node.
     ...(writer.recovery ? { recovery: writer.recovery } : {}),
   }

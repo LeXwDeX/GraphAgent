@@ -204,6 +204,58 @@ describe("planFanOut", () => {
   })
 })
 
+// #1158 PR4a (D9): a coding block is required unless it says otherwise, and the writers a fan-out expands it into are
+// as required as the block, so one failed package fails the workflow at that package. The aggregator is the engine's
+// own helper (its worker is not an author's choice), which also tells the model tier to treat it as one.
+describe("planFanOut and the required flag", () => {
+  const withRequired = (required: boolean | undefined) =>
+    compile(
+      route.map((block) => (block.id === "slices" && required !== undefined ? { ...block, required } : block)),
+    ).find((node) => node.id === "slices")!
+  const packages = [pkg("api", ["src/api"]), pkg("ui", ["src/ui"])]
+
+  it.each([
+    ["the default", undefined, true],
+    ["an explicit true", true, true],
+    ["an explicit false", false, false],
+  ] as const)(
+    "gives every package writer and the aggregator the writer's value under %s",
+    (_label, authored, expected) => {
+      const plan = DagFanOut.planFanOut(withRequired(authored), { summary: "s", packages }, new Set())
+      expect(plan.kind).toBe("expand")
+      if (plan.kind !== "expand") return
+      expect(plan.nodes.map((node) => [node.id, node.required])).toEqual([
+        ["slices--api", expected],
+        ["slices--ui", expected],
+        ["slices", expected],
+      ])
+    },
+  )
+
+  it("keeps the writer's value when the fan-out is declined", () => {
+    for (const authored of [undefined, false] as const) {
+      const writerNode = withRequired(authored)
+      const plan = DagFanOut.planFanOut(writerNode, { summary: "s", packages: [pkg("all", ["src"])] }, new Set())
+      expect(plan.kind === "single" && plan.node.required).toBe(writerNode.required)
+    }
+  })
+
+  it("marks the aggregator as a generated helper and the package writers as the block's writers", () => {
+    const plan = DagFanOut.planFanOut(withRequired(undefined), { summary: "s", packages }, new Set())
+    if (plan.kind !== "expand") throw new Error("expected an expansion")
+    const byID = new Map(plan.nodes.map((node) => [node.id, node]))
+    expect(byID.get("slices")?.generated_helper).toBe("aggregate")
+    expect(byID.get("slices")?.block).toBeUndefined()
+    expect(byID.get("slices--api")).toMatchObject({ block: "coding", worker_type: "build" })
+    expect(byID.get("slices--api")?.generated_helper).toBeUndefined()
+    // The aggregator is still not a writer: it only reconciles what the package writers report.
+    expect(plan.nodes.filter((node) => DagBlocks.isWriterNode(node)).map((node) => node.id)).toEqual([
+      "slices--api",
+      "slices--ui",
+    ])
+  })
+})
+
 describe("fan_out recovery", () => {
   it("re-points fan_out at the recovered plan attempt", () => {
     const config = { name: "fan-out", nodes: compile([...route]) }

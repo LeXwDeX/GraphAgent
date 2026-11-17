@@ -13,6 +13,7 @@ import { Effect, Schema } from "effect"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagBlocks } from "@/dag/blocks"
 import { BUILTIN_WORKFLOWS } from "@/dag/builtin-workflows"
+import { DagConfig } from "@/dag/config"
 import { DagTemplateInputs } from "@/dag/template-inputs"
 import { isDisplayOnlyCompletion } from "@/dag/runtime/report-delivery"
 import { DagValidation } from "@/dag/validation"
@@ -299,6 +300,14 @@ describe("builtin stage specs", () => {
       expect(new Set(acceptance.map((item) => item.id)).size).toBe(acceptance.length)
     })
 
+    // D9 (#1158 PR4a): the spec leaves `required` out of the writer, so the writer is required and a failed slice
+    // fails the stage at the slice instead of reaching the verification as a placeholder.
+    it("leaves required out of the coding block, which therefore compiles to a required writer", async () => {
+      expect(only(graph("stage-implement"), "coding").required).toBeUndefined()
+      const prepared = await compiled("stage-implement")
+      expect(prepared.nodes.find((node) => node.id === "coding")).toMatchObject({ required: true, fan_out: "plan" })
+    })
+
     it("compiles to a graph whose only writer is the coding block, reviewed against its fingerprint", async () => {
       const prepared = await compiled("stage-implement")
       expect(prepared.nodes.filter((node) => DagBlocks.isWriterNode(node)).map((node) => node.id)).toEqual(["coding"])
@@ -345,6 +354,56 @@ describe("builtin stage specs", () => {
       expect(prepared.config.delivery_node).toBeUndefined()
       expect(prepared.nodes.filter((node) => node.report_to_parent === true).map((node) => node.id)).toEqual(["review"])
     })
+  })
+
+  // #1158 PR4a: the model tier follows the node's role, not its required flag. Every review lane and decision is
+  // advanced; the other nodes are listed. The writer of stage-implement and the pin of stage-review are required and
+  // still standard; the option planners of stage-design are optional and still advanced.
+  describe("model tiers", () => {
+    const EXPECTED: Record<(typeof NAMES)[number], Record<string, DagConfig.Tier>> = {
+      "stage-understand": {
+        "code-map": "standard",
+        "behavior-map": "standard",
+        "risk-map": "standard",
+        understanding: "advanced",
+      },
+      "stage-design": {
+        "design-context": "standard",
+        "option-a": "advanced",
+        "option-b": "advanced",
+        "option-c": "advanced",
+        judgment: "advanced",
+      },
+      "stage-implement": {
+        map: "standard",
+        plan: "advanced",
+        coding: "standard",
+        verify: "advanced",
+        report: "advanced",
+      },
+      "stage-review": { pin: "standard", checks: "advanced" },
+    }
+
+    for (const name of NAMES) {
+      it(`${name} puts each node on the tier of its role`, async () => {
+        const prepared = await compiled(name)
+        const tierOf = (node: (typeof prepared.nodes)[number]) =>
+          DagConfig.tierOf({
+            required: node.required ?? false,
+            workerType: node.worker_type,
+            definition: node,
+            graph: prepared.nodes,
+          })
+        const reviews = prepared.nodes.filter((node) => node.block === "review")
+        expect(reviews.length).toBeGreaterThan(0)
+        for (const node of reviews) expect(tierOf(node), node.id).toBe("advanced")
+        expect(
+          Object.fromEntries(
+            prepared.nodes.filter((node) => node.block !== "review").map((node) => [node.id, tierOf(node)]),
+          ),
+        ).toEqual(EXPECTED[name])
+      })
+    }
   })
 
   describe("the strict gate really judges these specs", () => {
