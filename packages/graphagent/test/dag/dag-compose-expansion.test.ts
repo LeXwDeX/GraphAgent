@@ -6,7 +6,7 @@
 // from a compiled compose block (the authoring gate is bypassed, as in compose-persistence.test.ts), its
 // split node is settled by hand, and `DagComposeExpansion.expand` is what the scheduler calls for the
 // slot. The loop around it is covered by dag-compose-runtime.test.ts.
-import { describe, expect, it } from "bun:test"
+import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
@@ -24,6 +24,7 @@ import { Config } from "@/config/config"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionID } from "@/session/schema"
 import { agent, agents, catalog, compose } from "./compose-fixtures"
+import { testEffect } from "../lib/effect"
 
 const testLayer = Layer.mergeAll(
   Database.defaultLayer,
@@ -33,6 +34,7 @@ const testLayer = Layer.mergeAll(
   EventV2Bridge.defaultLayer,
 )
 const dagLayer = Layer.provideMerge(Dag.layer, testLayer)
+const it = testEffect(dagLayer)
 
 const setupFKs = () =>
   Effect.gen(function* () {
@@ -107,6 +109,8 @@ interface Setup {
   readonly survey?: Parameters<typeof route>[0]
   readonly agents?: DagCompose.CatalogAgent[]
   readonly globalDag?: Record<string, unknown>
+  /** Nodes of the author's own, beside the block. */
+  readonly extraNodes?: NodeConfig[]
   /** How the split node settles: the plan it completed with, or a failure. */
   readonly split: { readonly plan: unknown } | { readonly failed: string }
 }
@@ -125,7 +129,7 @@ const scenario = (setup: Setup) =>
           name: "compose-expansion",
           ...(setup.maxTotalNodes !== undefined ? { max_total_nodes: setup.maxTotalNodes } : {}),
           ...(setup.reviewGate !== undefined ? { review_gate: setup.reviewGate } : {}),
-          nodes: route(setup.survey, setup.upstream),
+          nodes: [...route(setup.survey, setup.upstream), ...(setup.extraNodes ?? [])],
         },
       })
       .pipe(Effect.orDie)
@@ -167,191 +171,177 @@ const scenario = (setup: Setup) =>
     return { dag, dagID, read, expand }
   })
 
-const run = (effect: Effect.Effect<unknown, unknown, Dag.Service | DagStore.Service | Database.Service>) =>
-  Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(dagLayer)))
-
 const byID = (nodes: readonly NodeConfig[] | undefined) => new Map((nodes ?? []).map((node) => [node.id, node]))
 
 describe("expanding a slot through Dag.extend", () => {
-  it("replaces the slot with the join node and adds one pending child per item, all in one write", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({
-          split: { plan: plan([item("official", "researcher"), item("code", "explore"), item("security", "auditor")]) },
-        })
-        yield* expand()
-        const { rows, config } = yield* read
-        const nodes = byID(config?.nodes)
-        // Children, the join node under the slot's id, and what was there before.
-        expect([...nodes.keys()].sort()).toEqual(
-          ["report", "survey", "survey--code", "survey--official", "survey--security", "survey--split"].sort(),
-        )
-        expect(nodes.get("survey")).toMatchObject({
-          depends_on: ["survey--official", "survey--code", "survey--security"],
-          worker_type: "surveyor",
+  it.live("replaces the slot with the join node and adds one pending child per item, all in one write", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      const { rows, config } = yield* read
+      const nodes = byID(config?.nodes)
+      // Children, the join node under the slot's id, and what was there before.
+      expect([...nodes.keys()].sort()).toEqual(
+        ["report", "survey", "survey--code", "survey--official", "survey--security", "survey--split"].sort(),
+      )
+      expect(nodes.get("survey")).toMatchObject({
+        depends_on: ["survey--official", "survey--code", "survey--security"],
+        worker_type: "surveyor",
+        workspace_writes: "deny",
+      })
+      expect(nodes.get("survey")?.expand).toBeUndefined()
+      expect(nodes.get("survey")?.join?.items.map((entry) => entry.node)).toEqual([
+        "survey--official",
+        "survey--code",
+        "survey--security",
+      ])
+      for (const id of ["survey--official", "survey--code", "survey--security"])
+        expect(nodes.get(id)).toMatchObject({
+          depends_on: ["survey--split"],
           workspace_writes: "deny",
+          report_to_parent: false,
         })
-        expect(nodes.get("survey")?.expand).toBeUndefined()
-        expect(nodes.get("survey")?.join?.items.map((entry) => entry.node)).toEqual([
-          "survey--official",
-          "survey--code",
-          "survey--security",
-        ])
-        for (const id of ["survey--official", "survey--code", "survey--security"])
-          expect(nodes.get(id)).toMatchObject({
-            depends_on: ["survey--split"],
-            workspace_writes: "deny",
-            report_to_parent: false,
-          })
-        // The downstream binding was never touched.
-        expect(nodes.get("report")?.depends_on).toEqual(["survey"])
-        // The rows agree with the config, and nothing but the three children is new.
-        const byRow = new Map(rows.map((row) => [row.id, row]))
-        expect(rows).toHaveLength(6)
-        expect(byRow.get("survey")).toMatchObject({
-          status: "pending",
-          dependsOn: ["survey--official", "survey--code", "survey--security"],
-        })
-        expect(byRow.get("survey--official")).toMatchObject({
-          status: "pending",
-          dependsOn: ["survey--split"],
-          workerType: "researcher",
-        })
-        expect(byRow.get("report")?.dependsOn).toEqual(["survey"])
-      }),
-    )
-  })
+      // The downstream binding was never touched.
+      expect(nodes.get("report")?.depends_on).toEqual(["survey"])
+      // The rows agree with the config, and nothing but the three children is new.
+      const byRow = new Map(rows.map((row) => [row.id, row]))
+      expect(rows).toHaveLength(6)
+      expect(byRow.get("survey")).toMatchObject({
+        status: "pending",
+        dependsOn: ["survey--official", "survey--code", "survey--security"],
+      })
+      expect(byRow.get("survey--official")).toMatchObject({
+        status: "pending",
+        dependsOn: ["survey--split"],
+        workerType: "researcher",
+      })
+      expect(byRow.get("report")?.dependsOn).toEqual(["survey"])
+    }),
+  )
 
-  it("keeps the block's own inputs readable by the join node, which the merged graph checks for ordering", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({ upstream: true, split: { plan: plan([item("a", "explore")]) } })
-        yield* expand()
-        const nodes = byID((yield* read).config?.nodes)
-        // `map` is upstream of the split node, so it is upstream of every child and of the join node.
-        expect(nodes.get("survey")?.input_mapping).toEqual({
-          map: "map",
-          "survey--split": "survey--split",
-          "survey--a": "survey--a",
-        })
-        expect(nodes.get("survey--a")?.depends_on).toEqual(["survey--split"])
-        expect(nodes.get("survey--split")?.depends_on).toEqual(["map"])
-      }),
-    )
-  })
+  it.live("keeps the block's own inputs readable by the join node, which the merged graph checks for ordering", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({ upstream: true, split: { plan: plan([item("a", "explore")]) } })
+      yield* expand()
+      const nodes = byID((yield* read).config?.nodes)
+      // `map` is upstream of the split node, so it is upstream of every child and of the join node.
+      expect(nodes.get("survey")?.input_mapping).toEqual({
+        map: "map",
+        "survey--split": "survey--split",
+        "survey--a": "survey--a",
+      })
+      expect(nodes.get("survey--a")?.depends_on).toEqual(["survey--split"])
+      expect(nodes.get("survey--split")?.depends_on).toEqual(["map"])
+    }),
+  )
 
-  it("lets the fallback worker read what the block read, in a graph that checks the same ordering", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({ upstream: true, split: { plan: plan([]) } })
-        yield* expand()
-        const nodes = byID((yield* read).config?.nodes)
-        expect(nodes.get("survey--fallback")?.input_mapping).toEqual({ map: "map" })
-        expect(nodes.get("survey")?.input_mapping).toEqual({
-          map: "map",
-          "survey--split": "survey--split",
-          "survey--fallback": "survey--fallback",
-        })
-      }),
-    )
-  })
+  it.live("lets the fallback worker read what the block read, in a graph that checks the same ordering", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({ upstream: true, split: { plan: plan([]) } })
+      yield* expand()
+      const nodes = byID((yield* read).config?.nodes)
+      expect(nodes.get("survey--fallback")?.input_mapping).toEqual({ map: "map" })
+      expect(nodes.get("survey")?.input_mapping).toEqual({
+        map: "map",
+        "survey--split": "survey--split",
+        "survey--fallback": "survey--fallback",
+      })
+    }),
+  )
 
-  it("passes the merged graph's strict review gate: composed children are not writers", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({
-          reviewGate: "strict",
-          split: { plan: plan([item("official", "researcher"), item("code", "explore"), item("security", "auditor")]) },
-        })
-        yield* expand()
-        const { config, rows } = yield* read
-        expect(config?.review_gate).toBe("strict")
-        expect(byID(config?.nodes).get("survey")?.expand).toBeUndefined()
-        expect(rows).toHaveLength(6)
-      }),
-    )
-  })
+  it.live("passes the merged graph's strict review gate: composed children are not writers", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        reviewGate: "strict",
+        split: { plan: plan([item("official", "researcher"), item("code", "explore"), item("security", "auditor")]) },
+      })
+      yield* expand()
+      const { config, rows } = yield* read
+      expect(config?.review_gate).toBe("strict")
+      expect(byID(config?.nodes).get("survey")?.expand).toBeUndefined()
+      expect(rows).toHaveLength(6)
+    }),
+  )
 
-  it("settles a plan that was read before a crash the same way: the same ids, no duplicate nodes", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { dag, read, expand } = yield* scenario({
-          split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
-        })
-        // The process dies after reading the plan and before the extend commits: nothing is written.
-        const crashing = {
-          extend: () => Effect.die(new Error("process died before the extend committed")),
-          nodeFailed: dag.nodeFailed,
-        }
-        const first = yield* Effect.exit(expand(crashing))
-        expect(Exit.isFailure(first)).toBe(true)
-        const before = yield* read
-        expect(before.rows.map((row) => row.id).sort()).toEqual(["report", "survey", "survey--split"])
-        const slot = before.config?.nodes.find((node) => node.id === "survey")
-        expect(slot?.expand).toBe("survey--split")
+  it.live("settles a plan that was read before a crash the same way: the same ids, no duplicate nodes", () =>
+    Effect.gen(function* () {
+      const { dag, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      // The process dies after reading the plan and before the extend commits: nothing is written.
+      const crashing = {
+        extend: () => Effect.die(new Error("process died before the extend committed")),
+        nodeFailed: dag.nodeFailed,
+      }
+      const first = yield* Effect.exit(expand(crashing))
+      expect(Exit.isFailure(first)).toBe(true)
+      const before = yield* read
+      expect(before.rows.map((row) => row.id).sort()).toEqual(["report", "survey", "survey--split"])
+      const slot = before.config?.nodes.find((node) => node.id === "survey")
+      expect(slot?.expand).toBe("survey--split")
 
-        // What the next round plans from that persisted state is what it then writes.
-        const composer = DagCompose.resolve(catalog(), "surveyor")
-        if (!slot || !composer.available) throw new Error("no slot or composer")
-        const planned = DagCompose.planExpansion({
-          slot,
-          composer: composer.composer,
-          limits: DagCompose.DEFAULT_LIMITS,
-          source: before.rows.find((row) => row.id === "survey--split"),
-          existingNodeIDs: new Set(before.rows.map((row) => row.id)),
-        })
-        yield* expand()
-        const after = yield* read
-        expect(planned.nodes.map((node) => node.id)).toEqual(["survey--official", "survey--code", "survey"])
-        expect(after.rows.map((row) => row.id).sort()).toEqual(
-          ["report", "survey", "survey--code", "survey--official", "survey--split"].sort(),
-        )
-        expect(after.config?.nodes.find((node) => node.id === "survey")).toMatchObject({
-          depends_on: ["survey--official", "survey--code"],
-          join: planned.nodes.at(-1)?.join,
-        })
-      }),
-    )
-  })
+      // What the next round plans from that persisted state is what it then writes.
+      const composer = DagCompose.resolve(catalog(), "surveyor")
+      if (!slot || !composer.available) throw new Error("no slot or composer")
+      const planned = DagCompose.planExpansion({
+        slot,
+        composer: composer.composer,
+        limits: DagCompose.DEFAULT_LIMITS,
+        source: before.rows.find((row) => row.id === "survey--split"),
+        existingNodeIDs: new Set(before.rows.map((row) => row.id)),
+      })
+      yield* expand()
+      const after = yield* read
+      expect(planned.nodes.map((node) => node.id)).toEqual(["survey--official", "survey--code", "survey"])
+      expect(after.rows.map((row) => row.id).sort()).toEqual(
+        ["report", "survey", "survey--code", "survey--official", "survey--split"].sort(),
+      )
+      expect(after.config?.nodes.find((node) => node.id === "survey")).toMatchObject({
+        depends_on: ["survey--official", "survey--code"],
+        join: planned.nodes.at(-1)?.join,
+      })
+    }),
+  )
 
-  it("does nothing for a round that planned against a slot that has since been reshaped", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { dag, read, expand } = yield* scenario({
-          split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
-        })
-        const before = yield* read
-        yield* expand()
-        const committed = yield* read
-        // The same attempt again, as a round that read the graph before the first one committed: the graph has
-        // moved on, so the extend is refused as stale, and nothing is added, replaced or failed.
-        const row = before.row
-        const slot = before.config?.nodes.find((node) => node.id === "survey")
-        if (!row || !slot || !before.workflow) throw new Error("the slot is gone")
-        yield* DagComposeExpansion.expand({
-          port: dag,
-          agents: { list: () => Effect.succeed(agents() as never) },
-          dagID: before.workflow.id,
-          slot,
-          nodes: before.rows,
-          attempt: { replanAttempts: row.replanAttempts, nodeSeq: row.seq, graphRev: before.workflow.graphRev },
-        })
-        const after = yield* read
-        expect(after.rows.map((node) => [node.id, node.status])).toEqual(
-          committed.rows.map((node) => [node.id, node.status]),
-        )
-        expect(after.config).toEqual(committed.config)
-      }),
-    )
-  })
+  it.live("does nothing for a round that planned against a slot that has since been reshaped", () =>
+    Effect.gen(function* () {
+      const { dag, read, expand } = yield* scenario({
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      const before = yield* read
+      yield* expand()
+      const committed = yield* read
+      // The same attempt again, as a round that read the graph before the first one committed: the graph has
+      // moved on, so the extend is refused as stale, and nothing is added, replaced or failed.
+      const row = before.row
+      const slot = before.config?.nodes.find((node) => node.id === "survey")
+      if (!row || !slot || !before.workflow) throw new Error("the slot is gone")
+      yield* DagComposeExpansion.expand({
+        port: dag,
+        agents: { list: () => Effect.succeed(agents() as never) },
+        dagID: before.workflow.id,
+        slot,
+        nodes: before.rows,
+        attempt: { replanAttempts: row.replanAttempts, nodeSeq: row.seq, graphRev: before.workflow.graphRev },
+      })
+      const after = yield* read
+      expect(after.rows.map((node) => [node.id, node.status])).toEqual(
+        committed.rows.map((node) => [node.id, node.status]),
+      )
+      expect(after.config).toEqual(committed.config)
+    }),
+  )
 })
 
 describe("degrading when the plan cannot be expanded", () => {
   const fallbackOnly = (nodes: Map<string, NodeConfig>) =>
     [...nodes.keys()].filter((id) => id.startsWith("survey--") && id !== "survey--split")
 
-  it("falls back to one worker for a plan naming an agent that cannot be expanded, and does not fail the workflow", async () => {
-    await run(
+  it.live(
+    "falls back to one worker for a plan naming an agent that cannot be expanded, and does not fail the workflow",
+    () =>
       Effect.gen(function* () {
         const { read, expand } = yield* scenario({ split: { plan: plan([item("a", "secret"), item("b", "explore")]) } })
         yield* expand()
@@ -364,100 +354,90 @@ describe("degrading when the plan cannot be expanded", () => {
         expect(["failed", "paused", "cancelled"]).not.toContain(workflow?.status)
         expect(rows.every((row) => row.status !== "failed")).toBe(true)
       }),
-    )
-  })
+  )
 
-  it("falls back when the plan has no items", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({ split: { plan: plan([]) } })
-        yield* expand()
-        const { config } = yield* read
-        expect(byID(config?.nodes).get("survey")?.join?.degraded).toBe("the plan has no items")
-      }),
-    )
-  })
+  it.live("falls back when the plan has no items", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({ split: { plan: plan([]) } })
+      yield* expand()
+      const { config } = yield* read
+      expect(byID(config?.nodes).get("survey")?.join?.degraded).toBe("the plan has no items")
+    }),
+  )
 
-  it("falls back when the split node itself failed, since it is optional", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({ split: { failed: "model ran out of budget" } })
-        yield* expand()
-        const { config, rows } = yield* read
-        expect(byID(config?.nodes).get("survey")?.join?.degraded).toBe(
-          'the split node "survey--split" failed: model ran out of budget',
-        )
-        expect(rows.map((row) => row.id)).toContain("survey--fallback")
-      }),
-    )
-  })
+  it.live("falls back when the split node itself failed, since it is optional", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({ split: { failed: "model ran out of budget" } })
+      yield* expand()
+      const { config, rows } = yield* read
+      expect(byID(config?.nodes).get("survey")?.join?.degraded).toBe(
+        'the split node "survey--split" failed: model ran out of budget',
+      )
+      expect(rows.map((row) => row.id)).toContain("survey--fallback")
+    }),
+  )
 
-  it("falls back when the plan is not one the catalog allows any more", async () => {
-    await run(
-      Effect.gen(function* () {
-        // `researcher` is no longer public: the surveyor can dispatch to `explore` alone.
-        const changed = agents().map((entry) =>
-          entry.name === "researcher" ? agent("researcher", { contract: { visibility: "private" } }) : entry,
-        )
-        const survey = agent("surveyor", {
-          contract: { role: "composer", compose: compose("fan_out", ["researcher", "explore"], "explore") },
-        })
-        const { read, expand } = yield* scenario({
-          agents: [...changed.filter((entry) => entry.name !== "surveyor"), survey],
-          split: { plan: plan([item("a", "researcher")]) },
-        })
-        yield* expand()
-        const { config } = yield* read
-        const nodes = byID(config?.nodes)
-        expect(nodes.get("survey")?.join?.degraded).toContain("the plan was rejected")
-        // The fallback is the composer's current fallback agent.
-        expect(nodes.get("survey--fallback")?.worker_type).toBe("explore")
-      }),
-    )
-  })
+  it.live("falls back when the plan is not one the catalog allows any more", () =>
+    Effect.gen(function* () {
+      // `researcher` is no longer public: the surveyor can dispatch to `explore` alone.
+      const changed = agents().map((entry) =>
+        entry.name === "researcher" ? agent("researcher", { contract: { visibility: "private" } }) : entry,
+      )
+      const survey = agent("surveyor", {
+        contract: { role: "composer", compose: compose("fan_out", ["researcher", "explore"], "explore") },
+      })
+      const { read, expand } = yield* scenario({
+        agents: [...changed.filter((entry) => entry.name !== "surveyor"), survey],
+        split: { plan: plan([item("a", "researcher")]) },
+      })
+      yield* expand()
+      const { config } = yield* read
+      const nodes = byID(config?.nodes)
+      expect(nodes.get("survey")?.join?.degraded).toContain("the plan was rejected")
+      // The fallback is the composer's current fallback agent.
+      expect(nodes.get("survey--fallback")?.worker_type).toBe("explore")
+    }),
+  )
 
-  it("falls back when the node ceiling refuses the expanded graph, and the fallback fits", async () => {
-    await run(
-      Effect.gen(function* () {
-        // split + slot + report is three nodes: one more fits, three more do not.
-        const { read, expand } = yield* scenario({
-          maxTotalNodes: 4,
-          split: { plan: plan([item("a", "explore"), item("b", "explore"), item("c", "explore")]) },
-        })
-        yield* expand()
-        const { config, workflow, rows } = yield* read
-        const nodes = byID(config?.nodes)
-        expect(fallbackOnly(nodes)).toEqual(["survey--fallback"])
-        expect(nodes.get("survey")?.join?.degraded).toContain("the expanded graph was rejected")
-        expect(rows).toHaveLength(4)
-        // A refused expansion is a refusal, not a pause or a failure.
-        expect(workflow?.status).not.toBe("paused")
-        expect(rows.some((row) => row.status === "failed")).toBe(false)
-      }),
-    )
-  })
+  it.live("falls back when the node ceiling refuses the expanded graph, and the fallback fits", () =>
+    Effect.gen(function* () {
+      // split + slot + report is three nodes: one more fits, three more do not.
+      const { read, expand } = yield* scenario({
+        maxTotalNodes: 4,
+        split: { plan: plan([item("a", "explore"), item("b", "explore"), item("c", "explore")]) },
+      })
+      yield* expand()
+      const { config, workflow, rows } = yield* read
+      const nodes = byID(config?.nodes)
+      expect(fallbackOnly(nodes)).toEqual(["survey--fallback"])
+      expect(nodes.get("survey")?.join?.degraded).toContain("the expanded graph was rejected")
+      expect(rows).toHaveLength(4)
+      // A refused expansion is a refusal, not a pause or a failure.
+      expect(workflow?.status).not.toBe("paused")
+      expect(rows.some((row) => row.status === "failed")).toBe(false)
+    }),
+  )
 
-  it("fails the slot with compose_capacity when not even the fallback fits", async () => {
-    await run(
-      Effect.gen(function* () {
-        const { read, expand } = yield* scenario({
-          maxTotalNodes: 3,
-          split: { plan: plan([item("a", "explore"), item("b", "explore")]) },
-        })
-        yield* expand()
-        const { config, workflow, row, rows } = yield* read
-        // Nothing was written but the failure of the slot.
-        expect(rows).toHaveLength(3)
-        expect(config?.nodes.find((node) => node.id === "survey")?.expand).toBe("survey--split")
-        expect(row).toMatchObject({ status: "failed", errorClass: DagComposeExpansion.CAPACITY })
-        expect(row?.errorReason).toContain("Compose expansion does not fit the graph")
-        expect(workflow?.status).not.toBe("paused")
-      }),
-    )
-  })
+  it.live("fails the slot with compose_capacity when not even the fallback fits", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        maxTotalNodes: 3,
+        split: { plan: plan([item("a", "explore"), item("b", "explore")]) },
+      })
+      yield* expand()
+      const { config, workflow, row, rows } = yield* read
+      // Nothing was written but the failure of the slot.
+      expect(rows).toHaveLength(3)
+      expect(config?.nodes.find((node) => node.id === "survey")?.expand).toBe("survey--split")
+      expect(row).toMatchObject({ status: "failed", errorClass: DagComposeExpansion.CAPACITY })
+      expect(row?.errorReason).toContain("Compose expansion does not fit the graph")
+      expect(workflow?.status).not.toBe("paused")
+    }),
+  )
 
-  it("fails the slot as an ordinary execution failure, not a capacity one, when the write fails for another reason", async () => {
-    await run(
+  it.live(
+    "fails the slot as an ordinary execution failure, not a capacity one, when the write fails for another reason",
+    () =>
       Effect.gen(function* () {
         const { dag, read, expand } = yield* scenario({
           split: { plan: plan([item("a", "explore"), item("b", "explore")]) },
@@ -481,70 +461,108 @@ describe("degrading when the plan cannot be expanded", () => {
         expect(row).toMatchObject({ status: "failed", errorClass: "exec_failed" })
         expect(row?.errorReason).toBe("Compose expansion failed: the store is unavailable")
       }),
-    )
-  })
+  )
 
-  it("falls back when the plan has more items than the subtree has room for", async () => {
-    await run(
-      Effect.gen(function* () {
-        const eleven = Array.from({ length: 11 }, (_, index) => item(`i${index}`, "explore"))
-        const { read, expand } = yield* scenario({
-          // Only the user's global layer sets these: a project layer's `dag.compose` never gets here.
-          globalDag: { compose: { max_children: 12, max_subtree_nodes: 10 } },
-          split: { plan: plan(eleven) },
-        })
-        yield* expand()
-        const { config } = yield* read
-        expect(byID(config?.nodes).get("survey")?.join?.degraded).toContain("room for 10 more nodes")
-      }),
-    )
-  })
+  it.live("falls back when the plan has more items than the subtree has room for", () =>
+    Effect.gen(function* () {
+      const eleven = Array.from({ length: 11 }, (_, index) => item(`i${index}`, "explore"))
+      const { read, expand } = yield* scenario({
+        // Only the user's global layer sets these: a project layer's `dag.compose` never gets here.
+        globalDag: { compose: { max_children: 12, max_subtree_nodes: 10 } },
+        split: { plan: plan(eleven) },
+      })
+      yield* expand()
+      const { config } = yield* read
+      expect(byID(config?.nodes).get("survey")?.join?.degraded).toContain("room for 10 more nodes")
+    }),
+  )
 
-  it("reads max_children from the global config when it checks the plan again", async () => {
-    await run(
-      Effect.gen(function* () {
-        const seven = Array.from({ length: 7 }, (_, index) => item(`i${index}`, "explore"))
-        const roomy = yield* scenario({ globalDag: { compose: { max_children: 8 } }, split: { plan: plan(seven) } })
-        yield* roomy.expand()
-        const expanded = byID((yield* roomy.read).config?.nodes)
-        expect(expanded.get("survey")?.join?.degraded).toBeUndefined()
-        expect(expanded.get("survey")?.depends_on).toHaveLength(7)
-      }),
-    )
-    await run(
-      Effect.gen(function* () {
-        const seven = Array.from({ length: 7 }, (_, index) => item(`i${index}`, "explore"))
-        // The default is 6: the same plan is one item too many.
-        const tight = yield* scenario({ split: { plan: plan(seven) } })
-        yield* tight.expand()
-        expect(byID((yield* tight.read).config?.nodes).get("survey")?.join?.degraded).toContain("the plan was rejected")
-      }),
-    )
-  })
+  it.live("reads max_children from the global config when it checks the plan again", () =>
+    Effect.gen(function* () {
+      const seven = Array.from({ length: 7 }, (_, index) => item(`i${index}`, "explore"))
+      const roomy = yield* scenario({ globalDag: { compose: { max_children: 8 } }, split: { plan: plan(seven) } })
+      yield* roomy.expand()
+      const expanded = byID((yield* roomy.read).config?.nodes)
+      expect(expanded.get("survey")?.join?.degraded).toBeUndefined()
+      expect(expanded.get("survey")?.depends_on).toHaveLength(7)
+    }),
+  )
 
-  it("fails the slot with compose_unavailable when its composer cannot be used any more", async () => {
-    await run(
-      Effect.gen(function* () {
-        // `explore` may write now, so the mapper-like composer below has nothing it can expand into.
-        const survey = agent("surveyor", {
-          contract: { role: "composer", compose: compose("fan_out", ["secret"], "secret") },
-        })
-        const { read, expand } = yield* scenario({
-          agents: [...agents().filter((entry) => entry.name !== "surveyor"), survey],
-          split: { plan: plan([item("a", "explore")]) },
-        })
-        yield* expand()
-        const { row, rows } = yield* read
-        expect(row).toMatchObject({ status: "failed", errorClass: DagComposeExpansion.UNAVAILABLE })
-        expect(rows).toHaveLength(3)
-      }),
-    )
-  })
+  it.live("degrades the same plan under the default max_children", () =>
+    Effect.gen(function* () {
+      const seven = Array.from({ length: 7 }, (_, index) => item(`i${index}`, "explore"))
+      // The default is 6: the same plan is one item too many.
+      const tight = yield* scenario({ split: { plan: plan(seven) } })
+      yield* tight.expand()
+      expect(byID((yield* tight.read).config?.nodes).get("survey")?.join?.degraded).toContain("the plan was rejected")
+    }),
+  )
+
+  it.live("fails the slot with compose_unavailable when its composer cannot be used any more", () =>
+    Effect.gen(function* () {
+      // `explore` may write now, so the mapper-like composer below has nothing it can expand into.
+      const survey = agent("surveyor", {
+        contract: { role: "composer", compose: compose("fan_out", ["secret"], "secret") },
+      })
+      const { read, expand } = yield* scenario({
+        agents: [...agents().filter((entry) => entry.name !== "surveyor"), survey],
+        split: { plan: plan([item("a", "explore")]) },
+      })
+      yield* expand()
+      const { row, rows } = yield* read
+      expect(row).toMatchObject({ status: "failed", errorClass: DagComposeExpansion.UNAVAILABLE })
+      expect(rows).toHaveLength(3)
+    }),
+  )
+})
+
+describe("a fallback id another node already holds", () => {
+  // An author's node that happens to be named like the fallback child. `Dag.extend` would replace it while it is
+  // pending, or keep it and hand its result to the join once it is terminal; neither is the fallback's work.
+  const unrelated: NodeConfig = {
+    id: "survey--fallback",
+    name: "unrelated",
+    worker_type: "explore",
+    depends_on: [],
+    prompt_template: { inline: "Unrelated work" },
+  }
+
+  it.live("fails the slot instead of degrading onto it when the plan cannot be expanded", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({ extraNodes: [unrelated], split: { plan: plan([]) } })
+      yield* expand()
+      const { row, rows, config } = yield* read
+      expect(row?.status).toBe("failed")
+      expect(row?.errorReason).toContain('"survey--fallback" already exists')
+      expect(rows).toHaveLength(4)
+      expect(byID(config?.nodes).get("survey--fallback")).toMatchObject({
+        name: "unrelated",
+        prompt_template: { inline: "Unrelated work" },
+      })
+    }),
+  )
+
+  it.live("fails the slot instead of degrading onto it when the expanded graph is refused", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        maxTotalNodes: 5,
+        extraNodes: [unrelated],
+        split: { plan: plan([item("a", "explore"), item("b", "explore")]) },
+      })
+      yield* expand()
+      const { row, rows, config } = yield* read
+      expect(row?.status).toBe("failed")
+      expect(row?.errorReason).toContain('"survey--fallback" already exists')
+      expect(rows).toHaveLength(4)
+      expect(byID(config?.nodes).get("survey--fallback")?.name).toBe("unrelated")
+    }),
+  )
 })
 
 describe("what a required slot does when its expansion cannot be made", () => {
-  it("leaves the failure semantics to the slot: a required slot's compose_capacity failure fails its dependents", async () => {
-    await run(
+  it.live(
+    "leaves the failure semantics to the slot: a required slot's compose_capacity failure fails its dependents",
+    () =>
       Effect.gen(function* () {
         const { read, expand } = yield* scenario({
           maxTotalNodes: 3,
@@ -556,6 +574,5 @@ describe("what a required slot does when its expansion cannot be made", () => {
         expect(row).toMatchObject({ status: "failed", errorClass: "compose_capacity", required: true })
         expect(config?.nodes.find((node) => node.id === "survey")?.required).toBe(true)
       }),
-    )
-  })
+  )
 })

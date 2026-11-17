@@ -76,13 +76,22 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     return
   }
 
+  const existingNodeIDs = new Set(nodes.map((candidate) => candidate.id))
+  // `Dag.extend` replaces a pending node and keeps a terminal one, so a fallback id some other node already holds
+  // would either overwrite that node's work or let the join read its result as the fallback's. Fail instead.
+  const fallbackTaken = existingNodeIDs.has(DagCompose.fallbackID(slot.id))
+  const fallbackCollision = `Compose expansion failed: node "${DagCompose.fallbackID(slot.id)}" already exists, so the slot cannot degrade to its fallback worker`
   const plan = DagCompose.planExpansion({
     slot,
     composer: resolution.composer,
     limits,
     source: nodes.find((candidate) => candidate.id === slot.expand),
-    existingNodeIDs: new Set(nodes.map((candidate) => candidate.id)),
+    existingNodeIDs,
   })
+  if (plan.kind === "fallback" && fallbackTaken) {
+    yield* giveUp(fallbackCollision)
+    return
+  }
   const first = yield* port.extend(dagID, plan.nodes, fence).pipe(Effect.result)
   if (first._tag === "Success") {
     yield* reportDegraded(dagID, slot.id, plan)
@@ -98,6 +107,10 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     return
   }
   // The expanded graph was refused (a node ceiling, most likely). One fallback worker is smaller; try it.
+  if (fallbackTaken) {
+    yield* giveUp(fallbackCollision)
+    return
+  }
   const smaller = DagCompose.degrade(
     slot,
     resolution.composer,
