@@ -459,6 +459,12 @@ const shellVerdictInput = (root: string, name: string, template: string, cmd: Co
   skill: Command.skillCommandOrigin(cmd),
 })
 
+/**
+ * The task tool rejects an empty description, and `description` is optional
+ * in a user's command config (#1361): fall back to the command as typed.
+ */
+const subtaskDescription = (description: string | undefined, command: string) => description?.trim() || `/${command}`
+
 export function makeCommand(deps: CommandDeps) {
   const {
     sessions,
@@ -818,7 +824,7 @@ export function makeCommand(deps: CommandDeps) {
           {
             type: "subtask" as const,
             agent: agent.name,
-            description: cmd.description ?? "",
+            description: subtaskDescription(cmd.description, input.command),
             command: input.command,
             model: { providerID: taskModel.providerID, modelID: taskModel.modelID },
             prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
