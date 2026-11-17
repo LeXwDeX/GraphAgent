@@ -16,6 +16,7 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { Dag } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TerminalViolationError, type NodeStatus } from "@graphagent/core/dag/core/types"
+import { transactLayer } from "./fixture/transact"
 
 // Projector-only layer (for tests that publish events directly)
 const projectorLayer = Layer.mergeAll(
@@ -24,6 +25,10 @@ const projectorLayer = Layer.mergeAll(
   DagProjector.defaultLayer,
   DagStore.defaultLayer,
 )
+
+// The store and the bus of the guard tests are doubles; `Dag` still runs each command in the real transaction,
+// over an in-memory database that only the transaction uses.
+const transact = transactLayer(Database.layerFromPath(":memory:"))
 
 const dagID = "dag_guard" as never
 const nodeID = "node-guard" as never
@@ -275,7 +280,7 @@ describe("Dag.Service guardNode: terminal-origin rejection", () => {
           }),
       } as never),
     )
-    const testLayer = Dag.layer.pipe(Layer.provide(mockBridge), Layer.provide(mockStore))
+    const testLayer = Dag.layer.pipe(Layer.provide(mockBridge), Layer.provide(mockStore), Layer.provide(transact))
 
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -310,7 +315,7 @@ describe("Dag.Service guardNode: terminal-origin rejection", () => {
           }),
       } as never),
     )
-    const testLayer = Dag.layer.pipe(Layer.provide(mockBridge), Layer.provide(mockStore))
+    const testLayer = Dag.layer.pipe(Layer.provide(mockBridge), Layer.provide(mockStore), Layer.provide(transact))
 
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -341,7 +346,7 @@ describe("Dag.Service guardNode: terminal-origin rejection", () => {
           }),
       } as never),
     )
-    const testLayer = Dag.layer.pipe(Layer.provide(mockBridge), Layer.provide(mockStore))
+    const testLayer = Dag.layer.pipe(Layer.provide(mockBridge), Layer.provide(mockStore), Layer.provide(transact))
 
     await Effect.runPromise(
       Effect.gen(function* () {

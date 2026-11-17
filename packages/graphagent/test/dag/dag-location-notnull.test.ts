@@ -28,13 +28,14 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
+import { transactLayer } from "./fixture/transact"
 
 const database = Database.layerFromPath(":memory:")
 const events = EventV2.layer.pipe(Layer.provide(database))
 const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const store = DagStore.layer.pipe(Layer.provide(database))
 const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
-const dagLayer = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+const dagLayer = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
 const it = testEffect(Layer.mergeAll(database, events, projector, store, bridge, dagLayer))
 
 const PROJECT_ID = Project.ID.global
