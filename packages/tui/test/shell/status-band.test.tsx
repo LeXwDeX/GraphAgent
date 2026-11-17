@@ -19,6 +19,7 @@ import {
 import { BAND_NARROW_WIDTH, DAG_PANEL_ID, SessionStatusBand } from "../../src/shell/status-band"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
+import { RUN_START, endRun, seedRun } from "../fixture/background-runs"
 import { bandItem, ciItem, stoppedItem, unresponsiveItem, workingItem } from "../fixture/pr-band"
 import { createEventSource, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { dagModeStatus, mountRoute, sessionFixture, waitFor, type MountOptions } from "../routes/dag-mode-harness"
@@ -1980,6 +1981,610 @@ describe("PR and reminder rows at 80 and 120 columns", () => {
           await harness.dispose()
         }
       })
+    }
+  }
+})
+
+// ── The background runs on the band (#1058 4) ───────────────────────────────────────────────────────────────────
+//
+// A mark `◇ 后台 n` at the tail of the first row that is not a warning, a row of the runs alone when there is no
+// other row, neither below the narrow limit. A click on the mark or on that row opens `/agents`. No clock.
+
+/** The mark of the two runs `twoRuns` seeds: both are going, one of them is waiting for a slot. */
+const MARK = "◇ 后台 2·排1"
+
+/** Two runs of the root session that are going: a running one and a queued one. */
+function twoRuns(harness: Mount) {
+  const sync = harness.sync()
+  seedRun(sync, {
+    parent: rootID,
+    key: "review",
+    state: "running",
+    kind: "review",
+    description: "未提交改动",
+    startedAt: RUN_START + 2,
+  })
+  seedRun(sync, {
+    parent: rootID,
+    key: "scan",
+    state: "queued",
+    kind: "explore",
+    description: "扫描依赖",
+    startedAt: RUN_START + 1,
+  })
+}
+
+/** The first row of the frame that holds `needle`, as a row index, and the cell column `mark` starts at in it. */
+async function columnOfIn(harness: Mount, needle: string, mark: string) {
+  const lines = (await harness.frame()).split("\n")
+  const row = lines.findIndex((line) => line.includes(needle))
+  if (row < 0) throw new Error(`no row holds ${needle}`)
+  return { row, x: cellWidth(lines[row].slice(0, lines[row].indexOf(mark))) }
+}
+
+describe("the background mark", () => {
+  test("rides at the tail of the workflow row, after the PR mark and the hint", async () => {
+    const { harness } = await mountTracked(running, fakeTracker({ items: [ciItem()] }))
+    try {
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith("/dag  PR ~4/6")), "the workflow row")
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes(MARK)), "the mark")
+      expect(lines).toHaveLength(1)
+      expect(lines[0].trimEnd().endsWith(`/dag  PR ~4/6  ${MARK}`)).toBe(true)
+      expect(lines[0]).toContain("◆ alpha")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("rides at the tail of the goal row, and not at the cost of the goal", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 1, "the goal row")
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes(MARK)), "the mark")
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain("◎ 目标  ship the upgrade")
+      expect(lines[0].trimEnd().endsWith(`/goal  ${MARK}`)).toBe(true)
+
+      // A goal too long for its row fills it: the mark is left out and the goal is not cut for it.
+      harness.events.emit(goalEvent(rootID, goal({ goal: "ship the upgrade ".repeat(12) })))
+      const long = await band(
+        harness,
+        (all) => all.some((row) => row.includes("ship the upgrade ship")),
+        "the long goal",
+      )
+      expect(long).toHaveLength(1)
+      expect(long[0]).not.toContain("◇")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("rides on the first row that is not a warning: under a PR warning, on the workflow row", async () => {
+    const tracked = fakeTracker({ items: [unresponsiveItem({ number: 1040 })] })
+    const { harness } = await mountTracked(running, tracked)
+    try {
+      await band(harness, (all) => all.length === 2 && all[0].includes("PR #1040"), "the warning over the workflow")
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the mark")
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toContain("PR #1040")
+      expect(lines[0]).not.toContain("◇")
+      expect(lines[1]).toContain("◆ alpha")
+      expect(lines[1].trimEnd().endsWith(MARK)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("has no place on a PR warning that is the only row: the runs get no row of their own then", async () => {
+    const { harness } = await mountTracked(noFlow, fakeTracker({ items: [unresponsiveItem({ number: 1040 })] }))
+    try {
+      await band(harness, (all) => all.length === 1 && all[0].includes("PR #1040"), "the warning")
+      twoRuns(harness)
+      const lines = await settled(harness)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).not.toContain("◇")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is not put on a workflow row whose budget is at its warning band: the goal row under it takes it", async () => {
+    const { harness } = await mountEntered(usageWorld(850), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 2 && all[0].includes("预算 85%"), "the alert row and the goal row")
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the mark")
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toContain("预算 85%")
+      expect(lines[0]).not.toContain("◇")
+      expect(lines[1]).toContain("◎")
+      expect(lines[1].trimEnd().endsWith(MARK)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("has no place on a workflow row at the warning band that is the only row", async () => {
+    const { harness } = await mountEntered(usageWorld(850), { sessions: modeSessions, dagMode: () => budgeted() })
+    try {
+      await row0(harness, (text) => text.includes("预算 85%"), "the alert row")
+      twoRuns(harness)
+      const lines = await settled(harness)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).not.toContain("◇")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("counts only the runs the root session started that are running or queued", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      const sync = harness.sync()
+      twoRuns(harness)
+      seedRun(sync, { parent: rootID, key: "done", state: "completed" })
+      seedRun(sync, { parent: rootID, key: "failed", state: "error" })
+      seedRun(sync, { parent: rootID, key: "lost", state: "unknown" })
+      seedRun(sync, { parent: rootID, key: "front", state: "running", background: false })
+      seedRun(sync, { parent: childID, key: "deeper", state: "running" })
+      seedRun(sync, { parent: "ses_band_elsewhere", key: "other", state: "running" })
+      // A watched PR, a workflow and a hook job each have a place of their own: none of them is a background run.
+      sync.set("lifecycle", "pr_watch:pr_1", {
+        domain: "pr_watch",
+        id: "pr_1",
+        value: "watching",
+        phase: "running",
+        at: 1,
+      })
+      sync.set("lifecycle", "job:hook_1", { domain: "job", id: "hook_1", value: "running", phase: "running", at: 1 })
+      sync.set("lifecycle", "job:dag_alpha", {
+        domain: "job",
+        id: "dag_alpha",
+        value: "running",
+        phase: "running",
+        at: 1,
+      })
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the mark")
+      expect(lines[0].trimEnd().endsWith(MARK)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the runs: the count moves with them and the mark goes when the last one ends", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      twoRuns(harness)
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith(MARK)), "two runs")
+      seedRun(harness.sync(), { parent: rootID, key: "third", state: "running", startedAt: RUN_START + 3 })
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith("◇ 后台 3·排1")), "three runs")
+      endRun(harness.sync(), "third")
+      endRun(harness.sync(), "review")
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith("/goal  ◇ 后台 1·排1")), "one run")
+      endRun(harness.sync(), "scan")
+      const lines = await band(harness, (all) => all.length === 1 && !all[0].includes("◇"), "no mark")
+      expect(lines[0]).toContain("◎ 目标")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    setLanguage("en")
+    const { harness } = await mountTracked(running, fakeTracker({ items: [ciItem()] }), { language: "en" })
+    try {
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the mark")
+      expect(lines[0].trimEnd().endsWith("/dag  PR ~4/6  ◇ bg 2·q1")).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is the root session's in a sub-agent view", async () => {
+    const { harness } = await mountBand(noFlow, { route: { type: "session", sessionID: childID } })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.some((row) => row.includes("◎")), "the root's goal")
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the mark")
+      expect(lines[0].trimEnd().endsWith(MARK)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("stays while the workflow row is hidden by `dag_band` or by the /dag panel, on the rows that are left", async () => {
+    const { harness } = await mountBand(running, { frame: true })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      twoRuns(harness)
+      // The workflow row first, with the mark at its tail.
+      await band(
+        harness,
+        (all) => all.some((row) => row.includes("◆ alpha") && row.trimEnd().endsWith(MARK)),
+        "the mark on the workflow row",
+      )
+
+      // The panel takes the workflow row: the goal row is the first row now, and carries the mark.
+      const goalWithMark = (all: string[]) =>
+        all.some((row) => row.includes("◎") && row.trimEnd().endsWith(MARK)) &&
+        !all.some((row) => row.includes("◆ alpha"))
+      harness.bottomZone()!.host.push({ id: DAG_PANEL_ID, render: () => <text>panel</text> })
+      await band(harness, goalWithMark, "the mark on the goal row under the panel")
+      harness.bottomZone()!.host.close()
+      await band(
+        harness,
+        (all) => all.some((row) => row.includes("◆ alpha") && row.trimEnd().endsWith(MARK)),
+        "the workflow row again",
+      )
+
+      harness.kv().set("dag_band", "hidden")
+      await band(harness, goalWithMark, "the mark on the goal row with the workflow row hidden")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is on no row below the narrow limit, and is on the row at the limit", async () => {
+    const { harness: narrow } = await mountBand(running, { width: BAND_NARROW_WIDTH - 1 })
+    try {
+      await band(narrow, (all) => all.length === 1, "the workflow row")
+      twoRuns(narrow)
+      const lines = await settled(narrow)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).not.toContain("◇")
+    } finally {
+      await narrow.dispose()
+    }
+    const { harness } = await mountBand(running, { width: BAND_NARROW_WIDTH, kv: { dag_band: "hidden" } })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 1 && all[0].includes("◎"), "the goal row")
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the mark")
+      expect(lines[0].trimEnd().endsWith(MARK)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the row of the background runs", () => {
+  test("is drawn when the band has nothing else to say: the runs by name, and the way to /agents", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      await harness.settle()
+      expect(rows(await harness.frame())).toEqual([])
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the row")
+      expect(lines).toHaveLength(1)
+      expect(lines[0].startsWith("  ◇ 后台 2 · review 未提交改动 · explore 扫描依赖")).toBe(true)
+      expect(lines[0].trimEnd().endsWith("/agents")).toBe(true)
+      // No time: the band subscribes to no clock.
+      expect(lines[0]).not.toMatch(/\d+(s|m)\b/)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("names two runs and counts the rest in +k", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      twoRuns(harness)
+      seedRun(harness.sync(), {
+        parent: rootID,
+        key: "third",
+        state: "running",
+        kind: "general",
+        description: "第三个",
+        startedAt: RUN_START + 3,
+      })
+      seedRun(harness.sync(), {
+        parent: rootID,
+        key: "fourth",
+        state: "queued",
+        kind: "general",
+        description: "第四个",
+        startedAt: RUN_START,
+      })
+      const lines = await band(harness, (all) => all.some((row) => row.includes("+2")), "the count of the rest")
+      // Running first, newest first: the third and the review; the two that wait are counted.
+      expect(lines[0].startsWith("  ◇ 后台 4 · general 第三个 · review 未提交改动 · +2")).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("goes, and takes its line with it, when the last run ends", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      twoRuns(harness)
+      await band(harness, (all) => all.length === 1, "the row")
+      endRun(harness.sync(), "review")
+      endRun(harness.sync(), "scan")
+      await harness.settle()
+      expect(rows(await harness.frame())).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("has the lowest priority: any other row takes the line, and the runs go onto it as a mark", async () => {
+    const { harness } = await mountTracked(noFlow, fakeTracker({ reminder: wait5() }))
+    try {
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("提醒")), "the reminder")
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain("提醒 · 5m后")
+      expect(lines[0].trimEnd().endsWith(MARK)).toBe(true)
+      expect(lines.join("\n")).not.toContain("/agents")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is left out below the narrow limit, where the drawer has the runs", async () => {
+    const { harness } = await mountBand(noFlow, { width: BAND_NARROW_WIDTH - 1 })
+    try {
+      twoRuns(harness)
+      await harness.settle()
+      expect(rows(await harness.frame())).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+    const { harness: wide } = await mountBand(noFlow, { width: BAND_NARROW_WIDTH })
+    try {
+      twoRuns(wide)
+      const lines = await band(wide, (all) => all.length === 1, "the row at the limit")
+      expect(lines[0]).toContain("◇ 后台 2")
+    } finally {
+      await wide.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    setLanguage("en")
+    const { harness } = await mountBand(noFlow, { language: "en" })
+    try {
+      twoRuns(harness)
+      const lines = await band(harness, (all) => all.some((row) => row.includes("◇")), "the row")
+      expect(lines[0].startsWith("  ◇ bg 2 · review 未提交改动 · explore 扫描依赖")).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("clicking the background mark", () => {
+  test("opens /agents from the mark on the workflow row, and /dag from the rest of that row", async () => {
+    const { harness } = await mountTracked(running, fakeTracker({ items: [ciItem()] }))
+    const opened = { agents: 0, dag: 0 }
+    const offAgents = harness.registry().setHandler("agent.subagents", () => {
+      opened.agents++
+    })
+    const offDag = harness.registry().setHandler("dag.open", () => {
+      opened.dag++
+    })
+    try {
+      twoRuns(harness)
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith(MARK)), "the mark")
+      const at = await columnOfIn(harness, "◆ alpha", "◇")
+
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(at.x + 2, at.row)
+      await waitFor(() => opened.agents === 1)
+      await harness.settle()
+      // The click on the mark is the mark's: the workflow row's own click did not run as well.
+      expect(opened).toEqual({ agents: 1, dag: 0 })
+
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(10, at.row)
+      await waitFor(() => opened.dag === 1)
+      expect(opened).toEqual({ agents: 1, dag: 1 })
+
+      // Two cells before the mark is the gap after the PR mark: that is the row's.
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(at.x - 1, at.row)
+      await waitFor(() => opened.dag === 2)
+      expect(opened).toEqual({ agents: 1, dag: 2 })
+      expect(harness.writes()).toEqual([])
+      expect(harness.requested.filter((entry) => entry.startsWith("POST") || entry.startsWith("PUT"))).toEqual([])
+    } finally {
+      offAgents()
+      offDag()
+      await harness.dispose()
+    }
+  })
+
+  test("opens /agents from the mark on the goal row, and does nothing for the rest of it", async () => {
+    const { harness } = await mountBand(noFlow)
+    let opened = 0
+    const off = harness.registry().setHandler("agent.subagents", () => {
+      opened++
+    })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      twoRuns(harness)
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith(MARK)), "the mark")
+      const at = await columnOfIn(harness, "◎", "◇")
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(10, at.row)
+      await harness.settle()
+      expect(opened).toBe(0)
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(at.x, at.row)
+      await waitFor(() => opened === 1)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      off()
+      await harness.dispose()
+    }
+  })
+
+  test("opens /agents from anywhere on the row of the runs alone", async () => {
+    const { harness } = await mountBand(noFlow)
+    let opened = 0
+    const off = harness.registry().setHandler("agent.subagents", () => {
+      opened++
+    })
+    try {
+      twoRuns(harness)
+      await band(harness, (all) => all.length === 1, "the row")
+      const row = (await harness.frame()).split("\n").findIndex((line) => line.includes("◇"))
+      for (const [index, x] of [6, 40, 110].entries()) {
+        harness.app.renderer.clearSelection()
+        await harness.app.mockMouse.click(x, row)
+        await waitFor(() => opened === index + 1)
+      }
+      expect(harness.writes()).toEqual([])
+      expect(harness.requested.filter((entry) => entry.startsWith("POST") || entry.startsWith("PUT"))).toEqual([])
+    } finally {
+      off()
+      await harness.dispose()
+    }
+  })
+
+  test("opens nothing of its own when a drag selected text", async () => {
+    const { harness } = await mountBand(noFlow)
+    let opened = 0
+    const off = harness.registry().setHandler("agent.subagents", () => {
+      opened++
+    })
+    try {
+      twoRuns(harness)
+      await band(harness, (all) => all.length === 1, "the row")
+      const row = (await harness.frame()).split("\n").findIndex((line) => line.includes("◇"))
+      await harness.app.mockMouse.drag(4, row, 30, row)
+      await harness.settle()
+      expect(opened).toBe(0)
+      // The same row does open it for a plain click, so the drag above is what held it back.
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(10, row)
+      await waitFor(() => opened === 1)
+    } finally {
+      off()
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the band with the background runs is still clock-free and read only", () => {
+  test("does not subscribe to the ticker with the mark on a row, or with the row of the runs alone", async () => {
+    const bare = counting()
+    const empty = await mountBand(noFlow, { ticker: bare.ticker })
+    await empty.harness.settle()
+    await empty.harness.dispose()
+
+    const watched = counting()
+    const { harness } = await mountBand(noFlow, { ticker: watched.ticker })
+    try {
+      twoRuns(harness)
+      await band(harness, (all) => all.length === 1 && all[0].includes("/agents"), "the row of the runs")
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 1 && all[0].includes("/goal"), "the mark on the goal row")
+      seedRun(harness.sync(), { parent: rootID, key: "third", state: "running" })
+      endRun(harness.sync(), "review")
+      await harness.settle()
+      // No animation, no one-second signal and no deadline of its own.
+      expect(watched.calls).toEqual(bare.calls)
+      expect(watched.calls.frame).toBe(0)
+      expect(watched.calls.second).toBe(0)
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the background runs at 80 and 120 columns", () => {
+  interface Scenario {
+    readonly name: string
+    readonly world: World
+    readonly items?: () => readonly PrBandItem[]
+    readonly goal?: boolean
+    /** Rows drawn at 80 columns (below the narrow limit, where the runs have no place on the band) and at 120. */
+    readonly rows: readonly [number, number]
+  }
+
+  const scenarios: readonly Scenario[] = [
+    {
+      name: "the mark after the PR mark on the workflow row",
+      world: running,
+      items: () => [ciItem()],
+      goal: true,
+      rows: [1, 2],
+    },
+    { name: "the mark on the goal row", world: noFlow, goal: true, rows: [1, 1] },
+    { name: "the row of the runs alone", world: noFlow, rows: [0, 1] },
+  ]
+
+  async function drawScenario(scenario: Scenario, options: Partial<MountOptions> & { width: number }) {
+    const tracked = fakeTracker({ items: scenario.items?.() })
+    const { harness, served } = await mountTracked(scenario.world, tracked, options)
+    if (scenario.goal) harness.events.emit(goalEvent(rootID, goal()))
+    if (scenario.world === running) await waitFor(() => served.reads.length > 0)
+    twoRuns(harness)
+    return harness
+  }
+
+  /** Rows of the band once it has settled, and (when `marked`) once the runs are on it. */
+  async function drawn(harness: Mount, expected: number, marked: boolean) {
+    if (marked)
+      await band(harness, (all) => all.length === expected && all.some((row) => row.includes("◇")), "the runs")
+    else await band(harness, (all) => all.length === expected, `${expected} rows`)
+    return settled(harness)
+  }
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const [width, height] of [
+      [80, 24],
+      [120, 40],
+    ] as const) {
+      for (const scenario of scenarios) {
+        test(`draws ${scenario.name} in ${language} at ${width}x${height}`, async () => {
+          setLanguage(language)
+          const harness = await drawScenario(scenario, { width, height, language })
+          try {
+            const expected = scenario.rows[width === 80 ? 0 : 1]
+            const lines = await drawn(harness, expected, width > 80)
+            expect(lines).toHaveLength(expected)
+            for (const line of lines) expect(cellWidth(line, 1), line).toBeLessThanOrEqual(width)
+            // Below the narrow limit the runs are not on the band at all.
+            if (width === 80) expect(lines.join("\n")).not.toContain("◇")
+            else expect(lines.join("\n")).toContain("◇")
+            if (expected > 0) expect(lines.join("\n")).toMatchSnapshot()
+            expect(harness.writes()).toEqual([])
+          } finally {
+            await harness.dispose()
+          }
+        })
+      }
+    }
+
+    // The least width the runs can show at is the narrow limit; both ambiguous widths keep every row inside it. A
+    // crowded workflow row has no room for the mark there, so only the rows are waited for in that case.
+    for (const width of [BAND_NARROW_WIDTH, 120]) {
+      for (const scenario of scenarios) {
+        test(`keeps ${scenario.name} inside ${width} columns at ambiguous width 2 in ${language}`, async () => {
+          setLanguage(language)
+          const harness = await drawScenario(scenario, { width, height: 24, language, kv: { ambiguous_width: 2 } })
+          try {
+            const crowded = scenario.world === running && width === BAND_NARROW_WIDTH
+            const lines = await drawn(harness, scenario.rows[1], !crowded)
+            for (const line of lines) expect(cellWidth(line, 2), line).toBeLessThanOrEqual(width)
+          } finally {
+            await harness.dispose()
+          }
+        })
+      }
     }
   }
 })
