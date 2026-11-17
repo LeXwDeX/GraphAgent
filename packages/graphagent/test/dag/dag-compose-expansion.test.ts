@@ -1153,6 +1153,35 @@ describe("a nested plan the graph has no room for", () => {
     }),
   )
 
+  it.live("fails the nested slot with compose_unavailable when its composer cannot be used any more", () =>
+    Effect.gen(function* () {
+      // The catalog is read at every expansion: by the time the nested plan is expanded `explore` is private, so the
+      // mapper has nothing left to expand into, and no fallback worker either.
+      let catalog = agents()
+      const { dag, dagID, read, expand } = yield* scenario({
+        composer: "mapper",
+        get agents() {
+          return catalog
+        },
+        split: { plan: nestedPlan },
+      })
+      yield* expand()
+      catalog = catalog.map((entry) =>
+        entry.name === "explore" ? agent("explore", { contract: { visibility: "private" } }) : entry,
+      )
+      yield* settle(dag, dagID, "survey--big--split", { output: JSON.stringify(leaves) })
+      yield* expand(dag, "survey--big")
+      const { rows, workflow } = yield* read
+      expect(rows).toHaveLength(6)
+      expect(rows.find((row) => row.id === "survey--big")).toMatchObject({
+        status: "failed",
+        errorClass: DagComposeExpansion.UNAVAILABLE,
+        required: false,
+      })
+      expect(workflow?.status).toBe("running")
+    }),
+  )
+
   it.live("passes the merged graph's strict review gate at both levels: nested nodes are not writers", () =>
     Effect.gen(function* () {
       const { dag, dagID, read, expand } = yield* scenario({
