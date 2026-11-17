@@ -895,9 +895,11 @@ function outcome(item: Join["items"][number], child: JoinChild | undefined): str
  * cancelled or vanished one does not.
  *
  * - A required item whose child has nothing refuses the join node with
- *   `compose_required_missing`. Only a required item of an optional block can
- *   get here: in a required block the scheduler already failed the workflow at
- *   that child, and the join node never became ready.
+ *   `compose_required_missing`. In an optional block the child of a required item
+ *   is optional, so its failure reaches the join node and is found here. In a
+ *   required block a required child that fails already failed the workflow, and
+ *   the join node never became ready; what is left to find is a child that
+ *   completed without an output.
  * - A join node none of whose children has anything refuses with
  *   `compose_no_results`. The fallback worker of a degraded expansion is the
  *   only child then, and is not an item the plan could have left out, so its

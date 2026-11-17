@@ -1580,7 +1580,7 @@ export const layer = Layer.effect(
         const marks = ReplanDefinition.changedEngineOwnedFields(current, next)
         if (marks.length === 0) continue
         definitionErrors.push(
-          `Node "${next.id}" carries ${marks.join(", ")}, which the engine wrote when it set up a compose expansion; a replan cannot change or clear it. Cancel the node (cancel: true) and add a replacement under a new id`,
+          `Node "${next.id}" carries ${marks.join(", ")}, which belongs to the engine's compose expansion; a replan cannot change or clear it. Cancel the node (cancel: true) and add a replacement under a new id`,
         )
       }
       for (const next of normalizedFragment.nodes) {
