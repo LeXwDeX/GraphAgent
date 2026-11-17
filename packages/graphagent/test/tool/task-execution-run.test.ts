@@ -622,4 +622,136 @@ describe("task execution mode", () => {
       }),
     )
   })
+
+  // #1057 kept a command inline in a non-interactive turn (`opencode run`, a hook followup), where no user waits for a
+  // later message. The same goes for every task call there: the tool is told the turn's mode (`extra.noninteractive`)
+  // and no layer can put a run in the background.
+  describe("in a non-interactive turn", () => {
+    const quietly = (promptOps: TaskPromptOps, taskOrigin?: Record<string, unknown>) => ({
+      extra: { promptOps, noninteractive: true, ...(taskOrigin ? { taskOrigin } : {}) },
+    })
+
+    it.instance(
+      "an agent that declares the background runs in the foreground when the call says nothing",
+      () =>
+        Effect.gen(function* () {
+          const jobs = yield* BackgroundJob.Service
+          const { chat, assistant } = yield* seed()
+          const def = yield* initTaskTool(yield* TaskTool)
+          const promptOps = stubOps()
+
+          const result = yield* def.execute(
+            { ...call, subagent_type: "bg-worker" },
+            taskCtx(chat, assistant, promptOps, quietly(promptOps)),
+          )
+
+          expect(result.output).toContain('state="completed"')
+          expect(result.output).toContain("child answer")
+          expect(result.metadata).toMatchObject({ execution: "foreground", executionSource: "noninteractive" })
+          expect(result.metadata.background).toBeUndefined()
+          expect((yield* jobs.get(result.metadata.sessionID))?.metadata?.background).toBeUndefined()
+        }),
+      { config },
+    )
+
+    it.instance("an explicit background=true runs in the foreground too", () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const def = yield* initTaskTool(yield* TaskTool)
+        const promptOps = stubOps()
+
+        const result = yield* def.execute(
+          { ...call, subagent_type: "general", background: true },
+          taskCtx(chat, assistant, promptOps, quietly(promptOps)),
+        )
+
+        expect(result.output).toContain('state="completed"')
+        expect(result.metadata).toMatchObject({ execution: "foreground", executionSource: "noninteractive" })
+        expect(result.metadata.background).toBeUndefined()
+        expect(result.metadata.survivesSessionCancel).toBeUndefined()
+      }),
+    )
+
+    it.instance(
+      "an explicit background=true for an interactive agent is not refused there: it runs in the foreground",
+      () =>
+        Effect.gen(function* () {
+          const { chat, assistant } = yield* seed()
+          const def = yield* initTaskTool(yield* TaskTool)
+          const promptOps = stubOps()
+
+          const result = yield* def.execute(
+            { ...call, subagent_type: "asker", background: true },
+            taskCtx(chat, assistant, promptOps, quietly(promptOps)),
+          )
+
+          expect(result.output).toContain('state="completed"')
+          expect(result.metadata).toMatchObject({ execution: "foreground", executionSource: "noninteractive" })
+        }),
+      { config },
+    )
+
+    it.instance("a user command that declares the background runs inline", () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const def = yield* initTaskTool(yield* TaskTool)
+        const promptOps = stubOps()
+
+        const result = yield* def.execute(
+          { ...call, subagent_type: "general" },
+          taskCtx(
+            chat,
+            assistant,
+            promptOps,
+            quietly(promptOps, { initiator: "agent", commandExecution: "background" }),
+          ),
+        )
+
+        expect(result.output).toContain('state="completed"')
+        expect(result.metadata).toMatchObject({
+          initiator: "agent",
+          execution: "foreground",
+          executionSource: "noninteractive",
+        })
+        expect(result.metadata.background).toBeUndefined()
+      }),
+    )
+
+    it.instance(
+      "a call that asks for the foreground reports its own layer, as in an interactive turn",
+      () =>
+        Effect.gen(function* () {
+          const { chat, assistant } = yield* seed()
+          const def = yield* initTaskTool(yield* TaskTool)
+          const promptOps = stubOps()
+
+          const result = yield* def.execute(
+            { ...call, subagent_type: "bg-worker", background: false },
+            taskCtx(chat, assistant, promptOps, quietly(promptOps)),
+          )
+
+          expect(result.metadata).toMatchObject({ execution: "foreground", executionSource: "param" })
+        }),
+      { config },
+    )
+
+    it.instance(
+      "the same call in an interactive turn is detached: the turn's mode is what changes the outcome",
+      () =>
+        Effect.gen(function* () {
+          const jobs = yield* BackgroundJob.Service
+          const { chat, assistant } = yield* seed()
+          const def = yield* initTaskTool(yield* TaskTool)
+
+          const result = yield* def.execute(
+            { ...call, subagent_type: "bg-worker" },
+            taskCtx(chat, assistant, stubOps()),
+          )
+
+          expect(result.metadata).toMatchObject({ background: true, execution: "background", executionSource: "agent" })
+          yield* jobs.wait({ id: result.metadata.sessionID, timeout: 2_000 })
+        }),
+      { config },
+    )
+  })
 })

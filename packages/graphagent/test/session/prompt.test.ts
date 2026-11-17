@@ -3553,6 +3553,105 @@ backgroundUnix(
   30_000,
 )
 
+// The same model-made calls in a non-interactive turn (`opencode run`, a hook followup): nobody waits for a later
+// message, so the run is in the foreground whether the agent declared the background or the model asked for it.
+backgroundUnix(
+  "a task call that says nothing to an agent declaring the background runs in the foreground in a noninteractive turn (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      const chat = yield* sessions.create({
+        title: "task-declared-background-headless",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("task", {
+        description: "review the change",
+        prompt: "audit the retry path",
+        subagent_type: "review",
+      })
+      const childRequest = (hit: { body: Record<string, unknown> }) =>
+        decodeRecords(hit.body.messages)
+          .filter((message) => message.role === "user")
+          .some((message) => JSON.stringify(message.content).includes("audit the retry path"))
+      yield* llm.textMatch(childRequest, "FINDING: the retry path drops the last error")
+      yield* llm.textMatch((hit) => !childRequest(hit), "review summarized")
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        hookMode: "noninteractive",
+        parts: [{ type: "text", text: "look the retry path over" }],
+      })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const tool = messages
+        .flatMap((message) => message.parts)
+        .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task")
+      expect(tool?.state.status === "error" ? tool.state.error : tool?.state.status).toBe("completed")
+      if (tool?.state.status !== "completed") return
+      // The call waited: its own result carries the findings, and no job runs on in the background.
+      expect(tool.state.output).toContain("FINDING: the retry path drops the last error")
+      expect(tool.state.metadata).toMatchObject({
+        initiator: "agent",
+        execution: "foreground",
+        executionSource: "noninteractive",
+      })
+      expect(tool.state.metadata?.background).toBeUndefined()
+      expect((yield* jobs.list()).filter((job) => job.metadata?.background === true)).toEqual([])
+    }),
+  30_000,
+)
+
+backgroundUnix(
+  "an explicit background request from the model also runs in the foreground in a noninteractive turn (#1357)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      const chat = yield* sessions.create({
+        title: "task-requested-background-headless",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("task", {
+        description: "look into the cache",
+        prompt: "audit the retry path",
+        subagent_type: "general",
+        background: true,
+      })
+      const childRequest = (hit: { body: Record<string, unknown> }) =>
+        decodeRecords(hit.body.messages)
+          .filter((message) => message.role === "user")
+          .some((message) => JSON.stringify(message.content).includes("audit the retry path"))
+      yield* llm.textMatch(childRequest, "FINDING: the cache key ignores the tenant")
+      yield* llm.textMatch((hit) => !childRequest(hit), "cache summarized")
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        hookMode: "noninteractive",
+        parts: [{ type: "text", text: "look into the cache in the background" }],
+      })
+
+      const tool = (yield* sessions.messages({ sessionID: chat.id }))
+        .flatMap((message) => message.parts)
+        .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task")
+      expect(tool?.state.status === "error" ? tool.state.error : tool?.state.status).toBe("completed")
+      if (tool?.state.status !== "completed") return
+      // What the model typed stays in the part's input; what ran is what the metadata records.
+      expect(tool.state.input).toMatchObject({ background: true })
+      expect(tool.state.output).toContain("FINDING: the cache key ignores the tenant")
+      expect(tool.state.metadata).toMatchObject({ execution: "foreground", executionSource: "noninteractive" })
+      expect(tool.state.metadata?.background).toBeUndefined()
+      expect((yield* jobs.list()).filter((job) => job.metadata?.background === true)).toEqual([])
+    }),
+  30_000,
+)
+
 backgroundUnix(
   "a user background command runs its subtask detached and presents the result as findings (#1057)",
   () =>
@@ -3668,7 +3767,7 @@ backgroundUnix(
       expect(tool.state.metadata).toMatchObject({
         initiator: "agent",
         execution: "foreground",
-        executionSource: "command",
+        executionSource: "noninteractive",
       })
       expect(tool.state.metadata?.background).toBeUndefined()
       expect(tool.state.metadata?.survivesSessionCancel).toBeUndefined()
@@ -3827,7 +3926,11 @@ backgroundUnix(
       expect(tool.state.status).toBe("completed")
       if (tool.state.status !== "completed") return
       expect(tool.state.output).toContain("FINDING: the cache key ignores the tenant")
-      expect(tool.state.metadata).toMatchObject({ initiator: "agent", execution: "foreground" })
+      expect(tool.state.metadata).toMatchObject({
+        initiator: "agent",
+        execution: "foreground",
+        executionSource: "noninteractive",
+      })
       expect(tool.state.metadata?.background).toBeUndefined()
     }),
   30_000,

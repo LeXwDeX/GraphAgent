@@ -48,7 +48,9 @@ An agent or a command may declare `execution: foreground | background | auto` (d
 4. The declaration of the agent the call runs.
 5. Foreground.
 
-The built-in `review` and `auditor` agents declare `background`; a call can still pass `background: false` to wait for them. The resolved mode and the layer that settled it are written once to the call's metadata (`execution`, `executionSource`); a replay or a recovery reads that record and never resolves again.
+One rule of the turn sits above all five: a non-interactive turn (`opencode run`, a hook follow-up) has no user waiting for a later message, so every `task` call in it runs in the foreground, whatever the argument, the command or the agent asks for. The call is not refused; its source is recorded as `noninteractive`.
+
+The built-in `review` agent declares `background`; a call can still pass `background: false` to wait for it. `auditor` does not: its shell is `bash: allow`, so it is read-only by its prompt and not by its rules, and B-2 cannot be shown in code. The resolved mode and the layer that settled it are written once to the call's metadata (`execution`, `executionSource`); a replay or a recovery reads that record and never resolves again.
 
 ## Default classification
 
@@ -68,8 +70,8 @@ The built-in `review` and `auditor` agents declare `background`; a call can stil
 - Never background a task and then wait for it with sleep or polling; end the turn and let the result arrive as a message.
 - A background delegation is only useful when its result can be summarized in one message for the user.
 - A task run started by the agent does not survive session cancellation. A user-issued background command survives Esc but is force-cancelled when its session is deleted. Other background tools keep their own cancellation semantics.
-- A command-defined `execution` applies only to a user-issued interactive run. A non-interactive turn or hook follow-up runs the subtask inline, whatever the command or the agent declares.
-- A command's legacy `background: true` still loads and reads as `execution: "background"`.
+- A command-defined `execution` applies only to a user-issued interactive run. A non-interactive turn or hook follow-up runs every task call in the foreground, whatever the argument, the command or the agent asks for.
+- A command's legacy `background` still loads and keeps its meaning: `true` reads as `execution: "background"`, `false` as `execution: "foreground"`.
 - The `review` agent is read-only: read, grep, glob, LSP, and read-only git and forge shell commands. It never edits files or runs mutating commands.
 
 ## Related decisions

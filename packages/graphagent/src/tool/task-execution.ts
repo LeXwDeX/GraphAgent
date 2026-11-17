@@ -23,6 +23,11 @@ import { isRecord } from "@/util/record"
  *
  * A declaration of `auto` says nothing, so it is skipped like an absent one.
  *
+ * One rule of the turn sits above all of them: a non-interactive turn (`opencode run`, a hook followup) has no user
+ * waiting for a later message, so nothing in it runs in the background, whatever the argument, a command or the agent
+ * asks for (the #1057 invariant for commands, extended to every task call). The call runs in the foreground and the
+ * source says `noninteractive`.
+ *
  * The decision is made once, when the call starts, and is recorded in the call's metadata (`record`). Anything that
  * needs the mode of a call that already started reads that record (`recorded`) and never resolves again: the
  * catalog it would resolve against may have changed since.
@@ -34,11 +39,13 @@ export type Mode = "foreground" | "background"
 
 /**
  * Which layer settled the mode. `constraint` means a declaration asked for the background and a hard constraint
- * turned it down; when a constraint changed nothing, the layer that spoke is reported. `running` is for a call that
- * only appended input to a task already running in the background: it has no run of its own to decide for, so the
- * resolver never reports it; the task tool does.
+ * turned it down; `noninteractive` means something asked for the background and the turn could not wait for it
+ * (the agent-level constraint and the turn-level rule are different reasons, so they are not one value). When
+ * neither changed anything, the layer that spoke is reported. `running` is for a call that only appended input to
+ * a task already running in the background: it has no run of its own to decide for, so the resolver never reports
+ * it; the task tool does.
  */
-const SOURCES = ["constraint", "param", "command", "agent", "default", "running"] as const
+const SOURCES = ["noninteractive", "constraint", "param", "command", "agent", "default", "running"] as const
 export type Source = (typeof SOURCES)[number]
 const isSource = (value: unknown): value is Source => SOURCES.some((source) => source === value)
 
@@ -110,6 +117,8 @@ export interface Input {
   readonly param?: boolean
   /** What the command that drives the call declares; none for a call the model made. */
   readonly command?: Declared
+  /** The turn the call belongs to is non-interactive: no user is waiting for a later message. */
+  readonly noninteractive?: boolean
 }
 
 // The first layer below the constraints that names a mode.
@@ -128,8 +137,12 @@ function refusal(agent: string, constraint: Constraint) {
 
 /** Decides how a call runs, or refuses it. Pure: the same input always gives the same answer. */
 export function resolve(input: Input): Resolution {
-  const constraint = constraintOf(input.agent)
   const chosen = choose(input)
+  // A turn nobody is waiting on cannot hold a background run: whatever asked for one, the call runs in the foreground.
+  // This is not a refusal: the call is satisfiable, so there is nothing to tell the caller to change.
+  if (input.noninteractive === true && chosen.mode === "background")
+    return { type: "resolved", mode: "foreground", source: "noninteractive" }
+  const constraint = constraintOf(input.agent)
   if (constraint === undefined) return { type: "resolved", ...chosen }
   // The caller asked for it by name; saying no is better than quietly doing something else.
   if (input.param === true) return { type: "refused", constraint, message: refusal(input.agent.name, constraint) }

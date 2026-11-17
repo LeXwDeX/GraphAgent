@@ -153,8 +153,11 @@ export type ToolSelection =
 export type WrapInput = ToolSelection & {
   agent: Agent.Info
   session: Session.Info
-  /** Per-message tool switches from the latest user message. */
-  user?: Pick<SessionV1.User, "tools">
+  /**
+   * The latest user message: its per-message tool switches, and the mode of the turn it starts. A non-interactive
+   * turn reaches the task tool as `extra.noninteractive` (#1357).
+   */
+  user?: Pick<SessionV1.User, "tools" | "hookMode">
   /** Session rules; defaults to `session.permission`. */
   permission?: PermissionV1.Ruleset
   processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "previewToolCall" | "completeToolCall">

@@ -1260,9 +1260,10 @@ describe("ConfigV1 execution declarations", () => {
         template: "run",
         execution: "background",
       })
-      // false is the same as leaving it out: the command declares nothing.
+      // false always meant "wait for it": it keeps that meaning and is not turned into "declares nothing".
       expect(decode({ command: { check: { template: "run", background: false } } }).command?.check).toEqual({
         template: "run",
+        execution: "foreground",
       })
     }),
   )

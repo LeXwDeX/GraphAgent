@@ -160,18 +160,26 @@ amended as follows; the criteria (Decision 2) and the remaining decisions stand.
 1. **Declarations.** An agent (`agent.<name>.execution`, or `execution:` in its frontmatter) and a
    command (`command.<name>.execution`) may declare `foreground`, `background` or `auto`. The default
    is `auto`, which declares nothing. `execution` is a field of its own, not part of the agent
-   `contract`. It replaces the boolean `background` that Decision 3 put on commands: a configured
-   `background: true` still loads and reads as `execution: "background"`, and `background: false`
-   declares nothing. The command list and the agent list carry `execution` in their HTTP shape.
+   `contract`. It replaces the boolean `background` that Decision 3 put on commands, and keeps its
+   meaning: a configured `background: true` still loads and reads as `execution: "background"`, and
+   `background: false` as `execution: "foreground"`; an explicit `execution` wins. The command list
+   and the agent list carry `execution` in their HTTP shape.
 2. **Resolution.** `TaskExecution.resolve` (`packages/graphagent/src/tool/task-execution.ts`) decides
    every `task` call before a session or run exists, in this order: hard constraint, the call's
    `background` argument, the command's declaration, the agent's declaration, foreground. `auto` is
    skipped like an absent declaration. An agent that declares `background` can still be awaited with
    `background: false`. A user command's declaration reaches the call through the task origin, not as
-   an argument nobody wrote. A non-interactive turn or hook follow-up sets the command layer to
-   foreground, so it still runs the subtask inline whatever the command or the agent declares
-   (Decision 3 is unchanged).
-3. **Hard constraints.** F-1: an interactive agent, one whose own effective rules name `question` or
+   an argument nobody wrote.
+3. **Non-interactive turns.** One rule of the turn sits above that order. A non-interactive turn
+   (`opencode run`, a hook follow-up) has no user waiting for a later message, so every `task` call
+   in it runs in the foreground, whatever the argument, the command or the agent asks for. This is
+   Decision 3 extended from commands to every task call. `SessionTools` hands the task tool the
+   turn's mode (`extra.noninteractive`). The call is not refused, since it is satisfiable: that
+   includes an explicit `background: true` for a constrained agent, which is refused only in an
+   interactive turn. The source is recorded as `noninteractive`, a value of its own: `constraint`
+   says an agent cannot be backgrounded, and here the turn cannot wait, which is no fault of the
+   agent.
+4. **Hard constraints.** F-1: an interactive agent, one whose own effective rules name `question` or
    `plan_exit` and allow it (the built-in `build` and `plan`, or any agent a user opts in; a blanket
    `*` allow is not an opt-in). Child sessions never own the human dialog, so F-1 classifies the
    agent rather than guarding a deadlock. F-2: the built-in `compaction` agent rewrites the shared
@@ -180,26 +188,27 @@ amended as follows; the criteria (Decision 2) and the remaining decisions stand.
    move it to the background: the call resolves to foreground. `title` and `summary` are one-shot
    internal generators, not delegation targets, and the worker agents can be backgrounded, so none
    of them is covered.
-4. **Built-in declarations.** `review` and `auditor` declare `background`: they read, report one
-   findings set about finished work, and take minutes (B-1 to B-4). The `auditor` shell is not
-   command-level read-only, so its B-2 rests on its prompt. The other built-ins leave the choice to
-   the call.
-5. **Recorded once.** The resolved mode and the layer that settled it are written to the call's
+5. **Built-in declarations.** `review` declares `background`: it reads through a command allowlist
+   with no file tool, reports one findings set about finished work, and takes minutes (B-1 to B-4).
+   `auditor` does not declare: its shell is `bash: allow`, so it is read-only by its prompt and not
+   by its rules, and B-2 cannot be shown in code. The other built-ins leave the choice to the call.
+6. **Recorded once.** The resolved mode and the layer that settled it are written to the call's
    metadata (`execution`, `executionSource`) when the call starts, next to `initiator` and
    `background`. A run promoted to the background keeps its decision and gains `promoted`; input
    appended to a task that is already running records `running`. A call entered again for a part that
    already records a decision reads that record. Nothing resolves a started call a second time.
-6. **Prompt.** The criteria in `task.txt` stay and still guide the model's own `background` argument.
+7. **Prompt.** The criteria in `task.txt` stay and still guide the model's own `background` argument.
    One added line says a declared mode takes precedence over them.
 
 Consequences and risks:
 
 - Two inputs decide now, and they do not conflict: an explicit argument outranks declarations,
-  declarations outrank the criteria, and hard constraints outrank all of them.
-- A bare `task` call to `review` or `auditor` now runs detached. A model that needs the result for its
-  next step has to pass `background: false`; `task.txt` says so.
-- A non-interactive turn keeps a command inline, but a model-made call to an agent that declares
-  `background` is detached there as well, since no turn-level rule covers a call the model makes.
+  declarations outrank the criteria, and hard constraints outrank all of them in an interactive turn.
+- A bare `task` call to `review` now runs detached in an interactive turn. A model that needs the
+  result for its next step has to pass `background: false`; `task.txt` says so.
+- In a non-interactive turn nothing runs in the background, so the model's own `background: true` is
+  ignored there as well, and a harness that runs with `hookMode: "noninteractive"` cannot observe
+  background delegation.
 - F-1 reads the effective rules, so a user who names `question` as allowed for an agent takes it out
   of the background without any other change. F-2 is a name list; a user-defined agent that rewrites
   shared state has no way to ask for the same treatment.

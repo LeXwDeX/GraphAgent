@@ -176,6 +176,71 @@ describe("TaskExecution hard constraints", () => {
   })
 })
 
+// A non-interactive turn (`opencode run`, a hook followup) has no user waiting for a later message, so no call in it
+// runs in the background, whoever asked for it. That is the #1057 rule for commands, applied to every task call.
+describe("TaskExecution in a non-interactive turn", () => {
+  const quietly = { noninteractive: true } as const
+
+  test("whatever asks for the background is run in the foreground, and the source says why", () => {
+    const foregrounded: { mode: TaskExecution.Mode; source: TaskExecution.Source } = {
+      mode: "foreground",
+      source: "noninteractive",
+    }
+    expect(resolved({ agent: agent("worker"), param: true, ...quietly })).toEqual(foregrounded)
+    expect(resolved({ agent: agent("worker"), command: "background", ...quietly })).toEqual(foregrounded)
+    expect(resolved({ agent: agent("review", { execution: "background" }), ...quietly })).toEqual(foregrounded)
+  })
+
+  test("a call that asked for nothing, or for the foreground, reports the layer that spoke", () => {
+    expect(resolved({ agent: agent("worker"), ...quietly })).toEqual({ mode: "foreground", source: "default" })
+    expect(resolved({ agent: agent("worker"), param: false, ...quietly })).toEqual({
+      mode: "foreground",
+      source: "param",
+    })
+    expect(resolved({ agent: agent("worker", { execution: "foreground" }), ...quietly })).toEqual({
+      mode: "foreground",
+      source: "agent",
+    })
+  })
+
+  test("an explicit request is not refused for a constrained agent: the call is satisfiable in the foreground", () => {
+    const asker = agent("asker", { permission: asking })
+    expect(resolved({ agent: asker, param: true, ...quietly })).toEqual({
+      mode: "foreground",
+      source: "noninteractive",
+    })
+    const declared = agent("asker", { permission: asking, execution: "background" })
+    expect(resolved({ agent: declared, ...quietly })).toEqual({ mode: "foreground", source: "noninteractive" })
+  })
+
+  test("an interactive turn is untouched by the flag being absent or false", () => {
+    const review = agent("review", { execution: "background" })
+    expect(resolved({ agent: review })).toEqual({ mode: "background", source: "agent" })
+    expect(resolved({ agent: review, noninteractive: false })).toEqual({ mode: "background", source: "agent" })
+    expect(resolved({ agent: review, param: true, noninteractive: false })).toEqual({
+      mode: "background",
+      source: "param",
+    })
+  })
+
+  // The same combinations as the priority matrix, with the turn non-interactive: what would have run in the background
+  // runs in the foreground with the source `noninteractive`, and everything else is as it was.
+  test("for every combination, only the background becomes the foreground", () => {
+    const declarations: Layer[] = [undefined, "auto", "foreground", "background"]
+    for (const param of [undefined, true, false] as const) {
+      for (const command of declarations) {
+        for (const declared of declarations) {
+          const input = { agent: agent("worker", { execution: declared }), param, command }
+          const interactive = resolved(input)
+          const expected: { mode: TaskExecution.Mode; source: TaskExecution.Source } =
+            interactive.mode === "background" ? { mode: "foreground", source: "noninteractive" } : interactive
+          expect(resolved({ ...input, ...quietly })).toEqual(expected)
+        }
+      }
+    }
+  })
+})
+
 describe("TaskExecution metadata record", () => {
   test("record writes the decision under the two metadata fields and recorded reads it back", () => {
     const fields = TaskExecution.record({ mode: "background", source: "agent" })
@@ -205,11 +270,12 @@ describe("TaskExecution metadata record", () => {
       resolved({ agent: agent("a"), command: "background" }),
       resolved({ agent: agent("a", { execution: "background" }) }),
       resolved({ agent: agent("a", { permission: asking, execution: "background" }) }),
+      resolved({ agent: agent("a"), param: true, noninteractive: true }),
     ]
     for (const decision of cases) {
       seen.add(decision.source)
       expect(TaskExecution.recorded(TaskExecution.record(decision))).toEqual(decision)
     }
-    expect([...seen].toSorted()).toEqual(["agent", "command", "constraint", "default", "param"])
+    expect([...seen].toSorted()).toEqual(["agent", "command", "constraint", "default", "noninteractive", "param"])
   })
 })

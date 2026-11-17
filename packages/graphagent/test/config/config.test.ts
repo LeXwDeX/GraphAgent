@@ -944,8 +944,8 @@ it.instance("migrates the legacy background flag of a configured command to exec
     })
     const config = yield* Config.use.get()
     expect(config.command?.["legacy_on"]).toEqual({ template: "check", execution: "background" })
-    // false is the same as no declaration.
-    expect(config.command?.["legacy_off"]).toEqual({ template: "check" })
+    // false always meant "wait for it": it keeps that meaning.
+    expect(config.command?.["legacy_off"]).toEqual({ template: "check", execution: "foreground" })
     expect(config.command?.["explicit"]).toEqual({ template: "check", execution: "foreground" })
     expect(config.command?.["both"]).toEqual({ template: "check", execution: "foreground" })
   }),
@@ -971,6 +971,14 @@ background: true
 Run the checks`,
     )
     yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".agents", "commands", "legacy-off.md"),
+      `---
+description: Legacy command that waits
+background: false
+---
+Run the checks`,
+    )
+    yield* FSUtil.use.writeWithDirs(
       path.join(test.directory, ".agents", "agents", "runner.md"),
       `---
 description: Runs checks
@@ -991,6 +999,11 @@ You run checks.`,
       description: "Legacy command",
       template: "Run the checks",
       execution: "background",
+    })
+    expect(config.command?.["legacy-off"]).toEqual({
+      description: "Legacy command that waits",
+      template: "Run the checks",
+      execution: "foreground",
     })
     expect(config.agent?.["runner"]?.execution).toBe("background")
     expect(config.agent?.["runner"]?.options).not.toHaveProperty("execution")

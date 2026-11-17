@@ -247,21 +247,23 @@ it.instance("review agent asks for external directories and allows whitelisted e
   }),
 )
 
-// #1357: the built-in agents that return one report about finished work declare the background; every other built-in
-// leaves the choice to the call. The declaration is a default: configuration can change it.
-it.instance("only the read-only reporting agents declare the background by default", () =>
+// #1357: `review` returns one report about finished work through a command allowlist and no file tool, so it declares
+// the background. `auditor` reports the same way, but its shell is `bash: allow`: it is read-only by its prompt, not by
+// its rules, and does not declare. Every other built-in leaves the choice to the call. A declaration is a default:
+// configuration can change it.
+it.instance("only review declares the background by default", () =>
   Effect.gen(function* () {
     const agents = yield* load((svc) => svc.list())
     const declared = Object.fromEntries(
       agents.filter((agent) => agent.native).map((agent) => [agent.name, agent.execution]),
     )
-    expect(declared).toMatchObject({ review: "background", auditor: "background" })
+    expect(declared).toMatchObject({ review: "background" })
     expect(
       Object.entries(declared)
         .filter(([, execution]) => execution !== undefined)
-        .map(([name]) => name)
-        .toSorted(),
-    ).toEqual(["auditor", "review"])
+        .map(([name]) => name),
+    ).toEqual(["review"])
+    expect(declared["auditor"]).toBeUndefined()
   }),
 )
 

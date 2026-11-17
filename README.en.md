@@ -54,7 +54,7 @@ The `agent` tool carries observation and messages between the main agent and DAG
 
 `/review` uses the built-in read-only `review` agent: it can read files, search, query LSP, and run read-only git and forge commands; it cannot edit files, spawn sub-tasks, or run commands that mutate files. The command runs in the background by default and hands its findings back to the main agent, which relays them.
 
-The `task` tool decides foreground versus background from prompt criteria, not from a code heuristic. Foreground when the work needs the user's input or confirmation, changes state shared with the main agent, is the direct input to the next step, or takes seconds. Background only when it does not block the next step, only reads or writes files the main agent will not touch, takes minutes, and its result fits in one message.
+The `task` tool decides foreground versus background from prompt criteria, not from a code heuristic. Foreground when the work needs the user's input or confirmation, changes state shared with the main agent, is the direct input to the next step, or takes seconds. Background only when it does not block the next step, only reads or writes files the main agent will not touch, takes minutes, and its result fits in one message. An agent or command can declare its execution mode (`execution`), and the declaration takes precedence over the prompt criteria; interactive agents always run in the foreground.
 
 ### Reasoning shaping
 

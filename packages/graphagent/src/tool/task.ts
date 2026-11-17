@@ -53,9 +53,9 @@ export interface TaskOrigin {
   readonly initiator: "user" | "agent"
   readonly command?: string
   /**
-   * What the command layer declares for this call (#1357): the `execution` of the command that drives it, or
-   * `foreground` when the turn must deliver the command inline whatever the command declares (a headless turn, a
-   * hook followup). It ranks between the call's own `background` argument and the agent's declaration.
+   * What the command that drives this call declares (#1357), as `execution`. It ranks between the call's own
+   * `background` argument and the agent's declaration. A non-interactive turn ignores it, like every other ask for
+   * the background (`TaskExecution.resolve`).
    */
   readonly commandExecution?: TaskExecution.Declared
 }
@@ -467,7 +467,12 @@ export const TaskTool = Tool.define(
       const settled = yield* recordedDecision(ctx)
       const resolution: TaskExecution.Resolution = settled
         ? { type: "resolved", ...settled }
-        : TaskExecution.resolve({ agent: next, param: params.background, command: origin?.commandExecution })
+        : TaskExecution.resolve({
+            agent: next,
+            param: params.background,
+            command: origin?.commandExecution,
+            noninteractive: ctx.extra?.noninteractive === true,
+          })
       if (resolution.type === "refused") return yield* Effect.fail(new Error(resolution.message))
       const runInBackground = resolution.mode === "background"
       // An agent that declares an artifact owes its final answer in that shape (#1158). Resolved before any

@@ -405,10 +405,9 @@ export const layer = Layer.effect(
             native: true,
             // A review lane that is missing cannot be treated as if it never ran.
             contract: { role: "worker", visibility: "public", failure: "fail" },
-            // It verifies finished work and reports one finding set, with no file tool (edit, write, apply_patch),
-            // no sub-task and no question. Its shell is not command-level read-only (see the permission note
-            // above), so B-2 holds by its prompt, not by its rules (#1357).
-            execution: "background",
+            // No `execution` declaration on purpose (#1357): it verifies finished work and reports one finding set,
+            // but its shell is `bash: allow` (see the permission note above), so it is read-only by its prompt and
+            // not by its rules, and B-2 cannot be shown in code. The call decides, like for any other worker.
           },
           compaction: {
             name: "compaction",

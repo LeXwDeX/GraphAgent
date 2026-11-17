@@ -718,8 +718,8 @@ function resolveTurnTools(
  * The task call one command-driven subtask makes (#1057, #1357). The call carries no `background` argument: nobody
  * wrote one. What the command declares (`execution`) travels with the call's origin as the command layer of the task
  * tool's resolution, below an argument the caller passes and above what the agent declares. A headless turn or a
- * hook followup delivers its command inline: there is no user waiting for a later message, so it sets the command
- * layer to the foreground, which outranks the agent's declaration too.
+ * hook followup is not told apart here: `SessionTools` hands the task tool the turn's mode, and a non-interactive
+ * turn runs every task call in the foreground, so the command is delivered inline whatever it or its agent declares.
  */
 const resolveSubtaskRun = Effect.fnUntraced(function* (
   commands: Command.Interface,
@@ -727,9 +727,7 @@ const resolveSubtaskRun = Effect.fnUntraced(function* (
   lastUser: SessionV1.User,
 ) {
   const command = task.command === undefined ? undefined : yield* commands.get(task.command)
-  const headless = lastUser.hookMode === "noninteractive"
-  const initiator: TaskOrigin["initiator"] = headless ? "agent" : "user"
-  const commandExecution = headless ? "foreground" : command?.execution
+  const initiator: TaskOrigin["initiator"] = lastUser.hookMode === "noninteractive" ? "agent" : "user"
   return {
     taskInput: {
       prompt: task.prompt,
@@ -740,7 +738,7 @@ const resolveSubtaskRun = Effect.fnUntraced(function* (
     taskOrigin: {
       initiator,
       ...(initiator === "user" && task.command !== undefined ? { command: task.command } : {}),
-      ...(commandExecution === undefined ? {} : { commandExecution }),
+      ...(command?.execution === undefined ? {} : { commandExecution: command.execution }),
     } satisfies TaskOrigin,
   }
 })

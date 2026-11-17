@@ -193,15 +193,17 @@ const scenarios: Scenario[] = [
       const build = body.find((item) => isRecord(item) && item.name === "build")
       object(build)
       check(build.contract === undefined, "an agent without a declared contract should omit the contract field")
-      // #1357: the execution mode an agent declares is part of the public agent shape. The agents that return one
-      // read-only report about finished work declare the background; every other agent leaves it out.
-      for (const name of ["review", "auditor"]) {
-        const reporter = body.find((item) => isRecord(item) && item.name === name)
-        object(reporter)
-        check(reporter.execution === "background", `agent list should carry the ${name} execution mode`)
+      // #1357: the execution mode an agent declares is part of the public agent shape. Only review, which reports on
+      // finished work through a read-only command allowlist, declares the background; every other agent, auditor
+      // included (its shell is not command-level read-only), leaves it out.
+      const review = body.find((item) => isRecord(item) && item.name === "review")
+      object(review)
+      check(review.execution === "background", "agent list should carry the review execution mode")
+      for (const name of ["auditor", "build", "explore"]) {
+        const undeclared = body.find((item) => isRecord(item) && item.name === name)
+        object(undeclared)
+        check(undeclared.execution === undefined, `${name} should leave the execution mode to the call`)
       }
-      check(build.execution === undefined, "an agent that declares no execution mode should omit the field")
-      check(explore.execution === undefined, "explore should leave the execution mode to the call")
     },
     "status",
   ),
