@@ -64,6 +64,17 @@ export class StaleRunnerError extends Schema.TaggedError<StaleRunnerError>()("St
   }
 }
 
+/**
+ * The lease token the next `Dag` command of this fiber writes under (ADR-0008
+ * decision 4): a **runner write** carries it, an intent write finds none. The
+ * runner port provides it around each runner write and nothing else does, so a
+ * call site that went through the port cannot leave it out, and one that did not
+ * writes as an intent. `underFence` is the one consumer.
+ */
+export const Fence = Context.Reference<DagLease.Token | undefined>("@graphagent/v2/DagTransactFence", {
+  defaultValue: () => undefined,
+})
+
 type DB = Database.Interface["db"]
 /** The Drizzle transaction handle a transaction body reads and writes through. */
 export type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0]
@@ -106,6 +117,22 @@ export interface Interface {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/DagTransact") {}
+
+/**
+ * `service.transact` for a `Dag` command, under the fiber's `Fence`: the token the
+ * runner port provided (none for an intent write). The token is consumed here:
+ * the body, and whatever it forks, sees none, so a command it calls on the way
+ * (an observer's pause, a budget's requeue) is an intent write and is never
+ * refused by a lease it did not ask about.
+ */
+export const underFence = <A, E, R>(
+  service: Interface,
+  dagID: string,
+  body: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | StaleRunnerError, R> =>
+  Effect.flatMap(Effect.service(Fence), (token) =>
+    service.transact(dagID, token, token === undefined ? body : Effect.provideService(body, Fence, undefined)),
+  )
 
 export const layer = Layer.effect(
   Service,

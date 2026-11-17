@@ -39,10 +39,12 @@ import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
  *   - `evictor` is the eviction itself: what an instance does with the entry of
  *     a workflow whose lease it lost. It cancels the children its own attempts
  *     created and no other (`Evictable.attemptChild`).
+ *   - A write under the entry's token that the fence refuses (`refused`, which
+ *     the runner port calls, `runner-port.ts`) is the third way to learn of the
+ *     loss, after the renewal and the spawn's re-read: it evicts the same way.
  *
  * Time comes from the `Clock` and the runner is `Identity`, so a test can drive
- * two runners in one process on a TestClock. Not here: the write fence that
- * carries the token on every runner write (PR3b), and the reconcile tick that
+ * two runners in one process on a TestClock. Not here: the reconcile tick that
  * adds the clock-jump rule (PR4a).
  */
 
@@ -106,6 +108,23 @@ export interface Interface<E extends Held = Held> {
    * cannot wait for it.
    */
   readonly verify: (dagID: string, entry: E) => Effect.Effect<boolean>
+  /**
+   * A write under `token` was refused by the write fence (ADR-0008 decision 5):
+   * the lease no longer names it. Evicts the entry that carries the token, from a
+   * fiber of its own, because the refused write may be made by a fiber the
+   * eviction interrupts and under the entry's `evalLock` it takes. Starts the
+   * eviction and returns; it is idempotent while one is in flight. It leaves the
+   * entry alone when
+   *   - no entry carries the token (an adoption that has not published its entry
+   *     ends at its own `confirm`, and an entry that was replaced is not this
+   *     one's to drop);
+   *   - the lease row does not show another holder: the workflow is gone or
+   *     terminal (its terminal and deletion handlers clean the entry up, and an
+   *     eviction racing them would cost the terminal wake and the worktree
+   *     settlement that only the handler does), the row still names the token, or
+   *     it could not be read (transient, as for a renewal; the next tick looks).
+   */
+  readonly refused: (dagID: string, token: DagLease.Token) => Effect.Effect<void>
 }
 
 /**
@@ -169,6 +188,9 @@ export function make<E extends Held>(input: {
       ),
     )
 
+    // Entries whose eviction after a refused write is in flight: concurrent refusals (one per fiber
+    // of the entry) start one eviction, not one each.
+    const evicting = new WeakSet<object>()
     const evictLost = (dagID: string, entry: E) =>
       Effect.gen(function* () {
         yield* Effect.logWarning("DagLoop lost the runner lease of a workflow; evicting it", {
@@ -227,6 +249,21 @@ export function make<E extends Held>(input: {
         const holds = DagLease.holds(yield* leases.held(dagID), entry.token)
         if (!holds) yield* evictLost(dagID, entry).pipe(Effect.forkIn(scope))
         return holds
+      }),
+      refused: Effect.fn("RunnerLease.refused")(function* (dagID: string, token: DagLease.Token) {
+        const entry = entries.get(dagID)
+        if (entry === undefined || !sameToken(entry.token, token) || evicting.has(entry)) return
+        evicting.add(entry)
+        yield* Effect.gen(function* () {
+          const lease = yield* absorb(
+            leases.held(dagID),
+            "unreadable" as const,
+            "DagLoop could not read a runner lease after its write was refused; the next tick looks again",
+            { dagID },
+          )
+          if (lease === "unreadable" || lease === undefined || DagLease.holds(lease, token)) return
+          yield* evictLost(dagID, entry)
+        }).pipe(Effect.ensuring(Effect.sync(() => void evicting.delete(entry))), Effect.forkIn(scope), Effect.asVoid)
       }),
     }
   })

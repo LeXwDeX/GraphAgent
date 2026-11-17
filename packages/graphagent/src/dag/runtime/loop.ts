@@ -82,6 +82,7 @@ import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
 import { RunnerLease } from "./runner-lease"
+import { RunnerPort } from "./runner-port"
 import { settleTerminalWorkflowWorktree, workflowWorktreeSettlementPending } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
 
@@ -119,6 +120,8 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 interface WorkflowEntry {
   /** ADR-0008: the runner lease this entry drives the workflow under. Renewed every period; losing it evicts the entry. */
   token: DagLease.Token
+  /** ADR-0008 decision 5: `Dag` with this entry's runner writes bound to `token`. The entry's runner writes go through it. */
+  port: Dag.Interface
   runtime: WorkflowRuntime
   /** Per-workflow child-run cap, enforced by the process-level scheduler. */
   concurrency: number
@@ -189,6 +192,11 @@ const serviceLayer = Layer.effect(
           entries: runtimes,
           evict: (dagID, entry) => evictEntry(dagID, entry),
         })
+        // ADR-0008 decision 5: runner writes go through the port of the entry (or of the claim, before its
+        // entry exists). A refused token drops the workflow: nothing to drop while there is no entry yet,
+        // and the adoption ends at its own `confirm`.
+        const portFor = (dagID: string, token: DagLease.Token) =>
+          RunnerPort.make({ dag, token, lost: runnerLease.refused(dagID, token) })
         // D7: all delivery scheduling (wake + agent mailbox) lives in
         // DagDelivery. This forward reference is assigned below, before any
         // event or recovery path can trigger it; every call site only nudges.
@@ -197,8 +205,9 @@ const serviceLayer = Layer.effect(
         const checkpointDisposition = Effect.fn("DagLoop.checkpointDisposition")(function* (
           dagID: string,
           checkpoint: Checkpoint.ReplanCheckpoint,
+          port: Dag.Interface,
         ) {
-          const attempt = dag
+          const attempt = port
             .pauseForCheckpoint(dagID, checkpoint.seq)
             .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void)))
           const first = yield* attempt
@@ -233,7 +242,7 @@ const serviceLayer = Layer.effect(
           )
           if (!checkpoint) return false
 
-          const disposition = yield* checkpointDisposition(dagID, checkpoint)
+          const disposition = yield* checkpointDisposition(dagID, checkpoint, entry.port)
           if (disposition === "paused" || disposition === "held") {
             entry.vetoHold = disposition === "held"
             entry.runtime.setPaused(true)
@@ -272,7 +281,7 @@ const serviceLayer = Layer.effect(
                 nodeSeq: node.seq,
                 graphRev: entry.graphRev,
               }
-              const skipped = yield* dag.nodeSkipped(dagID, nodeID, "orphan_cascade", attempt).pipe(
+              const skipped = yield* entry.port.nodeSkipped(dagID, nodeID, "orphan_cascade", attempt).pipe(
                 Effect.as(true),
                 Effect.catchIf(isTransitionRejection, () => Effect.succeed(false)),
               )
@@ -331,6 +340,8 @@ const serviceLayer = Layer.effect(
         const spawnReady = Effect.fn("DagLoop.spawnReady")(function* (dagID: string) {
           const entry = runtimes.get(dagID)
           if (!entry) return
+          // Every runner write of this round goes through the entry's port (ADR-0008 decision 5).
+          const port = entry.port
           // P2-C execution-location revalidation: every spawn call site funnels
           // through here. A workflow whose durable identity was repainted
           // (identity migration) or cascade-deleted must not keep scheduling
@@ -414,7 +425,7 @@ const serviceLayer = Layer.effect(
             }
             const nodeConfig = entry.config?.nodes.find((n) => n.id === nodeID)
             if (!nodeConfig) {
-              yield* dag
+              yield* port
                 .nodeFailed(
                   dagID,
                   nodeID,
@@ -448,13 +459,13 @@ const serviceLayer = Layer.effect(
               }
               const condResult = evaluateCondition(nodeConfig.condition, outputs)
               if (!condResult.ok) {
-                yield* dag
+                yield* port
                   .nodeFailed(dagID, nodeID, condResult.error, "exec_failed", admissionAttempt)
                   .pipe(Effect.ignore)
                 continue
               }
               if (!condResult.value) {
-                const skipped = yield* dag.nodeSkipped(dagID, nodeID, "condition_false", admissionAttempt).pipe(
+                const skipped = yield* port.nodeSkipped(dagID, nodeID, "condition_false", admissionAttempt).pipe(
                   Effect.as(true),
                   Effect.catchIf(isTransitionRejection, () => Effect.succeed(false)),
                 )
@@ -484,7 +495,7 @@ const serviceLayer = Layer.effect(
                 new Set(nodesSnapshot.map((candidate) => candidate.id)),
               )
               const fence = { nodeID, attempt: admissionAttempt }
-              const applied = yield* dag.extend(dagID, plan.kind === "expand" ? plan.nodes : [plan.node], fence).pipe(
+              const applied = yield* port.extend(dagID, plan.kind === "expand" ? plan.nodes : [plan.node], fence).pipe(
                 Effect.as(plan),
                 Effect.catch((error) => {
                   if (plan.kind !== "expand" || isTransitionRejection(error)) return Effect.fail(error)
@@ -492,14 +503,14 @@ const serviceLayer = Layer.effect(
                     nodeConfig,
                     `the expanded graph was rejected: ${error.message}`,
                   )
-                  return dag.extend(dagID, [declined.node], fence).pipe(Effect.as<DagFanOut.FanOutPlan>(declined))
+                  return port.extend(dagID, [declined.node], fence).pipe(Effect.as<DagFanOut.FanOutPlan>(declined))
                 }),
                 // A stale fence means the parent reshaped this writer first;
                 // its WorkflowReplanned handler schedules the current graph.
                 Effect.catch((error) =>
                   isTransitionRejection(error)
                     ? Effect.succeed(undefined)
-                    : dag
+                    : port
                         .nodeFailed(
                           dagID,
                           nodeID,
@@ -543,7 +554,7 @@ const serviceLayer = Layer.effect(
             ).pipe(
               Effect.as(true),
               Effect.catch((error) =>
-                dag
+                port
                   .nodeFailed(
                     dagID,
                     nodeID,
@@ -569,7 +580,7 @@ const serviceLayer = Layer.effect(
                 return placeholder === undefined ? { found: false } : { found: false, placeholder }
               })
               if (!resolved.ok) {
-                yield* dag
+                yield* port
                   .nodeFailed(
                     dagID,
                     nodeID,
@@ -600,7 +611,7 @@ const serviceLayer = Layer.effect(
             if (nodeConfig) {
               const reviewInput = validateReviewExecutionInput(nodeConfig, resolvedMapping)
               if (!reviewInput.valid) {
-                yield* dag
+                yield* port
                   .nodeFailed(
                     dagID,
                     nodeID,
@@ -627,7 +638,7 @@ const serviceLayer = Layer.effect(
                   Effect.map((result) => ({ ok: true as const, ...result })),
                   Effect.catch((err: unknown) =>
                     Effect.gen(function* () {
-                      yield* dag
+                      yield* port
                         .nodeFailed(
                           dagID,
                           nodeID,
@@ -649,7 +660,7 @@ const serviceLayer = Layer.effect(
             if (!resolved.ok) continue
 
             if (resolved.unresolvedPlaceholders.length > 0) {
-              yield* dag
+              yield* port
                 .nodeFailed(
                   dagID,
                   nodeID,
@@ -800,7 +811,7 @@ const serviceLayer = Layer.effect(
                   entry.attemptChild.set(result.fiber, result.childSessionID)
                 }),
               ),
-              Effect.provideService(Dag.Service, dag),
+              Effect.provideService(Dag.Service, port),
               Effect.provideService(Agent.Service, agentSvc),
               Effect.provideService(Session.Service, sessionSvc),
               Effect.provideService(SessionPrompt.Service, promptSvc),
@@ -808,7 +819,7 @@ const serviceLayer = Layer.effect(
               Effect.catchCause((cause) =>
                 Cause.hasInterrupts(cause)
                   ? Effect.failCause(cause)
-                  : dag.nodeFailed(dagID, nodeID, Cause.pretty(cause), "exec_failed", admissionAttempt),
+                  : port.nodeFailed(dagID, nodeID, Cause.pretty(cause), "exec_failed", admissionAttempt),
               ),
               Effect.ignore,
             )
@@ -869,7 +880,7 @@ const serviceLayer = Layer.effect(
           // settleCompletion holds the workflow lock across the decision and
           // the terminal transition; expectedGraphRev prevents a stale runtime
           // snapshot from failing a graph that recover/replan already replaced.
-          yield* dag.settleCompletion(dagID, {
+          yield* entry.port.settleCompletion(dagID, {
             expectedGraphRev: entry.graphRev,
             owner: { projectID: ctx.project.id, directory: ctx.directory },
             skipReviewGate: true,
@@ -994,7 +1005,7 @@ const serviceLayer = Layer.effect(
                 )
               }),
             ).pipe(
-              Effect.provideService(Dag.Service, dag),
+              Effect.provideService(Dag.Service, entry.port),
               Effect.provideService(SessionPrompt.Service, promptSvc),
               (self) => (messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self),
               Effect.onExit((exit) =>
@@ -1037,7 +1048,7 @@ const serviceLayer = Layer.effect(
                   entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
                 scope: stateScope,
               }).pipe(
-                Effect.provideService(Dag.Service, dag),
+                Effect.provideService(Dag.Service, entry.port),
                 Effect.provideService(SessionPrompt.Service, promptSvc),
                 Effect.forkIn(stateScope),
               ))
@@ -1089,6 +1100,9 @@ const serviceLayer = Layer.effect(
             const token = yield* runnerLease.claim(dagID)
             if (!token) return
             claimed = token
+            // ADR-0008 decision 4: the node-level reconciliation, its recovery pause and the checkpoint gate
+            // are runner writes under this claim, ahead of the entry that will carry the same port.
+            const port = portFor(dagID, token)
             const config = parseWorkflowConfig(wf.config)
             const recovery = yield* reconcileWorkflow(
               dagID,
@@ -1116,7 +1130,7 @@ const serviceLayer = Layer.effect(
                 return makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary)
               },
               lastAssistantMessage,
-            ).pipe(Effect.provideService(Dag.Service, dag), (self) =>
+            ).pipe(Effect.provideService(Dag.Service, port), (self) =>
               messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self,
             )
             // P2-2 recovery-pause: reconciliation invented failures (ownership
@@ -1141,7 +1155,7 @@ const serviceLayer = Layer.effect(
               // replan-verdict gate: retry twice, fold defects in, and only
               // abandon when the durable row is genuinely terminal.
               const pauseAccepted = yield* Effect.gen(function* () {
-                const attemptPause = dag.pause(dagID).pipe(
+                const attemptPause = port.pause(dagID).pipe(
                   Effect.map(() => true),
                   Effect.catchCause((cause) =>
                     Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(false),
@@ -1179,7 +1193,7 @@ const serviceLayer = Layer.effect(
             // in recovery reconcile above) is untouched.
             const nodes = yield* store.getCurrentNodes(dagID)
             const checkpoint = Checkpoint.latestReplanCheckpoint(config, nodes)
-            const checkpointState = checkpoint ? yield* checkpointDisposition(dagID, checkpoint) : undefined
+            const checkpointState = checkpoint ? yield* checkpointDisposition(dagID, checkpoint, port) : undefined
             const pausedForCheckpoint = checkpointState === "paused" || checkpointState === "held"
             if (pausedForCheckpoint) {
               yield* Effect.logWarning("DagLoop recovered unresolved checkpoint verdict: replan", {
@@ -1198,6 +1212,7 @@ const serviceLayer = Layer.effect(
             if (isStepping) runtime.setStepMode(true)
             const entry: WorkflowEntry = {
               token,
+              port,
               runtime,
               concurrency: maxConcurrency,
               evalLock: Semaphore.makeUnsafe(1),
@@ -1283,6 +1298,7 @@ const serviceLayer = Layer.effect(
           // Effect.ensuring releases the slot even when a fiber interrupt cuts
           // the sequence — a finally block does not survive interruption.
           recovering.add(dagID)
+          let claimed: DagLease.Token | undefined
           yield* Effect.gen(function* () {
             const location = DagLocation.resolveExecution(wf)
             if (location._tag !== "ok") {
@@ -1295,13 +1311,22 @@ const serviceLayer = Layer.effect(
             // orphaned. All-pending rows can only be interrupted creates, since
             // create() completes its start event within the same process.
             if (!nodes.every((node) => node.status === "pending")) return
+            // ADR-0008 decision 4: terminalizing the orphan is a runner write, so the runner holds the
+            // workflow's lease first (a live lease of another runner means somebody drives it).
+            const token = yield* runnerLease.claim(dagID)
+            if (!token) return
+            claimed = token
             yield* events.publish(DagEvent.WorkflowStarted, { dagID: dagID as never, timestamp: yield* DateTime.now })
-            // dag.fail guards running→failed, persists the reason in the durable
+            // port.fail guards running→failed, persists the reason in the durable
             // WorkflowFailed event, and terminalizes every pending node via
             // NodeSkipped — no node is ever scheduled.
-            yield* dag.fail(dagID, "orphan pending workflow recovered at startup")
+            yield* portFor(dagID, token).fail(dagID, "orphan pending workflow recovered at startup")
             yield* Effect.logWarning("DagLoop terminalized orphan pending workflow", { dagID })
-          }).pipe(Effect.ensuring(Effect.sync(() => recovering.delete(dagID))))
+          }).pipe(
+            // The workflow ended: nothing renews the lease, so it is given back.
+            Effect.onExit(() => runnerLease.abandon(dagID, claimed)),
+            Effect.ensuring(Effect.sync(() => recovering.delete(dagID))),
+          )
         })
 
         yield* events.subscribe(DagEvent.WorkflowStarted).pipe(
@@ -1370,6 +1395,7 @@ const serviceLayer = Layer.effect(
                 const runtime = new WorkflowRuntime(toSchedulingNodes(nodes), maxConcurrency)
                 const entry: WorkflowEntry = {
                   token,
+                  port: portFor(dagID, token),
                   runtime,
                   concurrency: maxConcurrency,
                   evalLock: Semaphore.makeUnsafe(1),
@@ -1926,7 +1952,7 @@ const serviceLayer = Layer.effect(
                     // a structural check, whereas Cause.interruptors collects
                     // only DEFINED fiber IDs and ignores interrupt reasons
                     // carrying none — those would be swallowed as errors here.
-                    const written = yield* dag
+                    const written = yield* entry.port
                       .nodeExtendTimeout(dagID, node.id, now + fragTimeoutMs, {
                         replanAttempts: node.replanAttempts,
                         ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
@@ -1989,7 +2015,7 @@ const serviceLayer = Layer.effect(
                         newConfig?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
                       scope: stateScope,
                     }).pipe(
-                      Effect.provideService(Dag.Service, dag),
+                      Effect.provideService(Dag.Service, entry.port),
                       Effect.provideService(SessionPrompt.Service, promptSvc),
                       Effect.forkScoped,
                     )
@@ -2184,7 +2210,6 @@ const serviceLayer = Layer.effect(
           projectID: ctx.project.id,
           scope: stateScope,
           store,
-          dag,
           sessions: sessionSvc,
           prompts: promptSvc,
           status: statusSvc,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
+import { sql } from "drizzle-orm"
 import { DateTime, Effect, Layer, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -15,6 +16,7 @@ import { Dag } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EngineProcess } from "@/session/engine-process"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
@@ -178,6 +180,59 @@ describe("DagLoop orphan pending recovery", () => {
           expect(failures).toContainEqual(expect.objectContaining({ reason: ORPHAN_REASON }))
           // The WorkflowStarted published for the terminalization leg must not
           // be adopted: no node may be scheduled on a dead workflow.
+          expect(promptCalls).toEqual([])
+        }),
+      ),
+    )
+  })
+
+  // ADR-0008 decisions 4 and 6: failing the orphan is a runner write, so the runner claims the workflow
+  // first, writes under that claim, and gives it back once the workflow ended (nothing would renew it).
+  it("terminalizes the orphan under a lease claim of its own, and gives the claim back", async () => {
+    await Effect.runPromise(
+      runOrphanRecovery(({ database, loop, events, store }) =>
+        Effect.gen(function* () {
+          yield* seedProjectAndSession(database)
+          const dagID = DagEvent.DagID.create()
+          yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 1)
+          const lease = () =>
+            database.db.get<{ runner_id: string; epoch: number; expires_at: number }>(
+              sql`SELECT runner_id, epoch, expires_at FROM dag_runner WHERE dag_id = ${dagID}`,
+            )
+          expect(yield* lease()).toBeUndefined()
+
+          yield* loop.init()
+
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+          const row = yield* lease()
+          expect(row).toMatchObject({ runner_id: EngineProcess.runner.id, epoch: 1 })
+          // Given back: expired now, so a runner that reopens the workflow does not wait out a TTL.
+          expect(row?.expires_at).toBeLessThanOrEqual(Date.now())
+        }),
+      ),
+    )
+  })
+
+  it("leaves an orphan alone while another runner holds a live lease on it", async () => {
+    await Effect.runPromise(
+      runOrphanRecovery(({ database, loop, events, store, promptCalls }) =>
+        Effect.gen(function* () {
+          yield* seedProjectAndSession(database)
+          const dagID = DagEvent.DagID.create()
+          yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 1)
+          // Somebody drives it: this runner may not terminalize what it does not hold.
+          yield* database.db.run(
+            sql`INSERT INTO dag_runner (dag_id, runner_id, epoch, expires_at) VALUES (${dagID}, '99:other', 1, ${Date.now() + 3_600_000})`,
+          )
+
+          yield* loop.init()
+
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("pending")
+          expect((yield* store.getNode(dagID, "n1"))?.status).toBe("pending")
+          const row = yield* database.db.get<{ runner_id: string; epoch: number }>(
+            sql`SELECT runner_id, epoch FROM dag_runner WHERE dag_id = ${dagID}`,
+          )
+          expect(row).toEqual({ runner_id: "99:other", epoch: 1 })
           expect(promptCalls).toEqual([])
         }),
       ),

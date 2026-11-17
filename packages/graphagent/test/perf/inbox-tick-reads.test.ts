@@ -134,7 +134,6 @@ const measureTick = (sources: Sources): Effect.Effect<Tick> =>
         database: yield* Database.Service,
         // The tick only reads the ledgers; delivery paths are unreachable with
         // nothing to deliver, so their services stay unused.
-        dag: undefined as never,
         sessions: undefined as never,
         prompts: undefined as never,
         status: undefined as never,

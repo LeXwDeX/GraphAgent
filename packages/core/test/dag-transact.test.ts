@@ -19,7 +19,7 @@ import { describe, expect } from "bun:test"
 import path from "node:path"
 import { Database as NativeDatabase } from "bun:sqlite"
 import { sql } from "drizzle-orm"
-import { Cause, Clock, Deferred, Effect, Exit, Layer, Option, Scheduler, Schema, Stream } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Option, Scheduler, Schema, Stream } from "effect"
 import type { Scope } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { DagLease } from "@graphagent/core/dag/lease"
@@ -499,6 +499,79 @@ describe("DagTransact.transact: the fence", () => {
         } finally {
           other.close()
         }
+      }),
+    ),
+  )
+})
+
+describe("DagTransact.underFence: the fence of the fiber (ADR-0008 decision 4)", () => {
+  /** Which token the transaction's fence got, and which the body (and a fiber it forks) could see. */
+  const probe = Effect.gen(function* () {
+    const seen = {
+      fence: undefined as DagLease.Token | undefined | "unset",
+      body: "unset" as DagLease.Token | undefined | "unset",
+      forked: "unset" as DagLease.Token | undefined | "unset",
+    }
+    const service = yield* DagTransact.Service
+    const spy = DagTransact.Service.of({
+      transact: (dagID, token, body) => {
+        seen.fence = token
+        return service.transact(dagID, token, body)
+      },
+    })
+    const body = Effect.gen(function* () {
+      seen.body = yield* Effect.service(DagTransact.Fence)
+      const child = yield* Effect.forkChild(
+        Effect.gen(function* () {
+          seen.forked = yield* Effect.service(DagTransact.Fence)
+        }),
+      )
+      yield* Fiber.join(child)
+    })
+    return { seen, run: DagTransact.underFence(spy, DAG, body) }
+  })
+
+  it.effect("without a fence the transaction gets no token: an intent write", () =>
+    onFile(() =>
+      Effect.gen(function* () {
+        const { seen, run } = yield* probe
+
+        yield* run
+
+        expect(seen).toEqual({ fence: undefined, body: undefined, forked: undefined })
+      }),
+    ),
+  )
+
+  it.effect("the fiber's token reaches the transaction's fence, and nothing the body does or forks inherits it", () =>
+    onFile(() =>
+      Effect.gen(function* () {
+        const lease = yield* claim(A)
+        const { seen, run } = yield* probe
+
+        yield* run.pipe(Effect.provideService(DagTransact.Fence, lease))
+
+        expect(seen).toEqual({ fence: lease, body: undefined, forked: undefined })
+      }),
+    ),
+  )
+
+  it.effect("the token is fenced like any other: a takeover refuses it and the body never runs", () =>
+    onFile(() =>
+      Effect.gen(function* () {
+        const a = yield* claim(A)
+        yield* TestClock.adjust(`${TTL} millis`)
+        yield* claim(B)
+        const service = yield* DagTransact.Service
+
+        const exit = yield* Effect.exit(
+          DagTransact.underFence(service, DAG, touch).pipe(Effect.provideService(DagTransact.Fence, a)),
+        )
+
+        expect(Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()).toMatchObject({
+          value: { _tag: "StaleRunnerError", runnerID: A, epoch: a.epoch },
+        })
+        expect(yield* titleOf).toBe("untouched")
       }),
     ),
   )

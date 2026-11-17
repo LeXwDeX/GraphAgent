@@ -234,11 +234,15 @@ function graph(control: Control) {
   )
 }
 
-/** What the loop keeps for a live workflow, with the runtime in whatever state a test needs. */
-const liveEntry = (nodes: readonly SchedulingNode[]): DagDelivery.Entry => ({
+/**
+ * What the loop keeps for a live workflow, with the runtime in whatever state a test needs. The port is the
+ * plain service: the entry's lease token is the loop's business (dag-runner-port.test.ts).
+ */
+const liveEntry = (nodes: readonly SchedulingNode[], port: Dag.Interface): DagDelivery.Entry => ({
   runtime: new WorkflowRuntime([...nodes], 5),
   evalLock: Semaphore.makeUnsafe(1),
   fibers: new Map(),
+  port,
 })
 
 function startDelivery(entries: (dagID: string) => DagDelivery.Entry | undefined = () => undefined) {
@@ -248,7 +252,6 @@ function startDelivery(entries: (dagID: string) => DagDelivery.Entry | undefined
       projectID: PROJECT_ID,
       scope: yield* Scope.Scope,
       store: yield* DagStore.Service,
-      dag: yield* Dag.Service,
       sessions: yield* Session.Service,
       prompts: yield* SessionPrompt.Service,
       status: yield* SessionStatus.Service,
@@ -501,7 +504,7 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
           // not hand the parent a progress or stalled turn about a workflow that
           // finishes a moment later: the completion owes the only turn.
           const delivery = yield* startDelivery(() =>
-            liveEntry([{ id: "final", dependsOn: [], required: true, status: window.status }]),
+            liveEntry([{ id: "final", dependsOn: [], required: true, status: window.status }], dag),
           )
           expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
           yield* delivery.drain(PARENT)
@@ -525,6 +528,62 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
       )
     })
   }
+
+  // ADR-0008 decision 4: failing a stalled workflow is the entry's runner write, so it goes through the entry's port
+  // (which carries its lease token) and through nothing else.
+  it("fails a stalled workflow through the entry's port: nothing runs, nothing is ready, the work is not done", () => {
+    const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
+    return run(
+      control,
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        yield* seedParent("on")
+        const node = (id: string, report: boolean) => ({
+          id,
+          name: id,
+          worker_type: "build",
+          depends_on: [],
+          required: true,
+          prompt_template: { inline: id },
+          report_to_parent: report,
+        })
+        const dagID = yield* dag.create({
+          projectID: PROJECT_ID,
+          sessionID: PARENT,
+          title: "Stalled",
+          config: { name: "stalled", nodes: [node("cp", true), node("work", false)] },
+        })
+        yield* dag.nodeQueued(dagID, "cp")
+        yield* dag.nodeStarted(dagID, "cp", "ses_child_cp", Date.now() + 60_000, true)
+        yield* dag.nodeQueued(dagID, "work")
+        yield* dag.nodeStarted(dagID, "work", "ses_child_work", Date.now() + 60_000, false)
+        yield* dag.nodeCompleted(dagID, "cp", "checkpoint verdict")
+        const failures: Array<readonly [string, string]> = []
+        const port: Dag.Interface = {
+          ...dag,
+          fail: (id, reason) =>
+            Effect.sync(() => void failures.push([id, reason])).pipe(Effect.andThen(dag.fail(id, reason))),
+        }
+
+        const delivery = yield* startDelivery(() =>
+          liveEntry(
+            [
+              { id: "cp", dependsOn: [], required: true, status: "satisfied" },
+              // Waits only for a skipped node: not ready, not running, not done, until the cascade skips it.
+              { id: "gate", dependsOn: [], required: true, status: "skipped" },
+              { id: "work", dependsOn: ["gate"], required: true, status: "pending" },
+            ],
+            port,
+          ),
+        )
+        yield* delivery.drain(PARENT)
+
+        expect(failures).toEqual([[dagID, "orchestrator_unresponsive"]])
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+      }),
+    )
+  })
 
   it("still delivers a checkpoint's progress turn while a sibling node keeps running", () => {
     const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
@@ -556,10 +615,13 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
         yield* dag.nodeCompleted(dagID, "cp", "checkpoint verdict")
 
         const delivery = yield* startDelivery(() =>
-          liveEntry([
-            { id: "cp", dependsOn: [], required: true, status: "satisfied" },
-            { id: "work", dependsOn: [], required: true, status: "running" },
-          ]),
+          liveEntry(
+            [
+              { id: "cp", dependsOn: [], required: true, status: "satisfied" },
+              { id: "work", dependsOn: [], required: true, status: "running" },
+            ],
+            dag,
+          ),
         )
         yield* delivery.drain(PARENT)
         expect(control.admissions).toBe(1)
