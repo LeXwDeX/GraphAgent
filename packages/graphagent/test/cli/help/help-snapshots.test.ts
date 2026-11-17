@@ -80,7 +80,8 @@ const SUBCOMMANDS = [
 // Fixed wrap width so a developer's terminal doesn't affect snapshots.
 // yargs honors COLUMNS; CI runners typically default to 80 which produces
 // different wraps from a 200-col local terminal.
-const SNAPSHOT_ENV = { COLUMNS: "120", LANG: "C", LC_ALL: "C" }
+// The help text is localised; pin English so the snapshots stay stable.
+const SNAPSHOT_ENV = { COLUMNS: "120", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }
 
 describe("graphagent CLI help-text snapshots", () => {
   // Single test, parallel spawns. Each command's help fires under

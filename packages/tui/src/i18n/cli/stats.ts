@@ -1,0 +1,58 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
+/** CLI messages for the `stats` domain. Keys use the `cli.<domain>.<name>` form. */
+export const statsZhCN = {
+  "cli.stats.describe": "显示 token 用量与费用统计",
+  "cli.stats.option.days": "显示最近 N 天的统计（默认：全部时间）",
+  "cli.stats.option.tools": "显示的工具数量（默认：全部）",
+  "cli.stats.option.models": "显示模型统计（默认：隐藏）。传入数字则只显示前 N 个，否则显示全部",
+  "cli.stats.option.project": "按项目筛选（默认：所有项目，空字符串：当前项目）",
+  "cli.stats.largeDataset": "检测到数据量较大（{count} 个会话），可能需要一些时间...",
+  "cli.stats.title.overview": "概览",
+  "cli.stats.title.costTokens": "费用与 token",
+  "cli.stats.title.modelUsage": "模型用量",
+  "cli.stats.title.toolUsage": "工具用量",
+  "cli.stats.row.sessions": "会话数",
+  "cli.stats.row.messages": "消息数",
+  "cli.stats.row.days": "天数",
+  "cli.stats.row.totalCost": "总费用",
+  "cli.stats.row.avgCostPerDay": "日均费用",
+  "cli.stats.row.avgTokensPerSession": "会话平均 token 数",
+  "cli.stats.row.medianTokensPerSession": "会话 token 数中位数",
+  "cli.stats.row.input": "输入",
+  "cli.stats.row.output": "输出",
+  "cli.stats.row.cacheRead": "缓存读取",
+  "cli.stats.row.cacheWrite": "缓存写入",
+  "cli.stats.row.inputTokens": "输入 token",
+  "cli.stats.row.outputTokens": "输出 token",
+  "cli.stats.row.cost": "费用",
+} as const
+
+export const statsEn: Record<keyof typeof statsZhCN, string> = {
+  "cli.stats.describe": "show token usage and cost statistics",
+  "cli.stats.option.days": "show stats for the last N days (default: all time)",
+  "cli.stats.option.tools": "number of tools to show (default: all)",
+  "cli.stats.option.models":
+    "show model statistics (default: hidden). Pass a number to show top N, otherwise shows all",
+  "cli.stats.option.project": "filter by project (default: all projects, empty string: current project)",
+  "cli.stats.largeDataset": "Large dataset detected ({count} sessions). This may take a while...",
+  "cli.stats.title.overview": "OVERVIEW",
+  "cli.stats.title.costTokens": "COST & TOKENS",
+  "cli.stats.title.modelUsage": "MODEL USAGE",
+  "cli.stats.title.toolUsage": "TOOL USAGE",
+  "cli.stats.row.sessions": "Sessions",
+  "cli.stats.row.messages": "Messages",
+  "cli.stats.row.days": "Days",
+  "cli.stats.row.totalCost": "Total Cost",
+  "cli.stats.row.avgCostPerDay": "Avg Cost/Day",
+  "cli.stats.row.avgTokensPerSession": "Avg Tokens/Session",
+  "cli.stats.row.medianTokensPerSession": "Median Tokens/Session",
+  "cli.stats.row.input": "Input",
+  "cli.stats.row.output": "Output",
+  "cli.stats.row.cacheRead": "Cache Read",
+  "cli.stats.row.cacheWrite": "Cache Write",
+  "cli.stats.row.inputTokens": "Input Tokens",
+  "cli.stats.row.outputTokens": "Output Tokens",
+  "cli.stats.row.cost": "Cost",
+}

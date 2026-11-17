@@ -2,26 +2,26 @@ import type { Argv } from "yargs"
 import { spawn } from "child_process"
 import { Database } from "@graphagent/core/database/database"
 import { Vacuum } from "@graphagent/core/database/vacuum"
-import { APP_NAME } from "@graphagent/core/brand"
 import { Effect } from "effect"
 import { sql } from "drizzle-orm"
 import { effectCmd, fail } from "../effect-cmd"
+import { t } from "@graphagent/tui/i18n"
 
 const QueryCommand = effectCmd({
   command: "$0 [query]",
-  describe: "open an interactive sqlite3 shell or run a query",
+  describe: t("cli.db.query.describe"),
   instance: false,
   builder: (yargs: Argv) => {
     return yargs
       .positional("query", {
         type: "string",
-        describe: "SQL query to execute",
+        describe: t("cli.db.query.arg.query"),
       })
       .option("format", {
         type: "string",
         choices: ["json", "tsv"],
         default: "tsv",
-        describe: "Output format",
+        describe: t("cli.db.query.option.format"),
       })
   },
   handler: Effect.fn("Cli.db.query")(function* (args: { query?: string; format: string }) {
@@ -46,7 +46,7 @@ const QueryCommand = effectCmd({
 
 const PathCommand = effectCmd({
   command: "path",
-  describe: "print the database path",
+  describe: t("cli.db.path.describe"),
   instance: false,
   handler: Effect.fn("Cli.db.path")(function* () {
     console.log(Database.path())
@@ -61,13 +61,13 @@ const PathCommand = effectCmd({
 // startup path and fails nonzero unless the readback is FULL.
 const VacuumCommand = effectCmd({
   command: "vacuum",
-  describe: "convert a database file to full auto_vacuum (FULL -> VACUUM -> truncate WAL)",
+  describe: t("cli.db.vacuum.describe"),
   instance: false,
   builder: (yargs: Argv) => {
     return yargs.option("db", {
       type: "string",
       demandOption: true,
-      describe: `path to the SQLite database file (print the default with \`${APP_NAME} db path\`)`,
+      describe: t("cli.db.vacuum.option.db"),
     })
   },
   handler: Effect.fn("Cli.db.vacuum")(function* (args: { db: string }) {
@@ -75,9 +75,7 @@ const VacuumCommand = effectCmd({
       Effect.catch((cause) =>
         cause._tag === "VacuumRefused"
           ? fail(cause.message)
-          : fail(
-              `vacuum failed for ${args.db} — close running graphagent processes that use this file and retry (${cause.message})`,
-            ),
+          : fail(t("cli.db.vacuum.failed", { db: args.db, message: cause.message })),
       ),
     )
     console.log(`auto_vacuum=${result.autoVacuum}`)
@@ -86,7 +84,7 @@ const VacuumCommand = effectCmd({
 
 export const DbCommand = effectCmd({
   command: "db",
-  describe: "database tools",
+  describe: t("cli.db.describe"),
   instance: false,
   builder: (yargs: Argv) => {
     return yargs.command(QueryCommand).command(PathCommand).command(VacuumCommand).demandCommand()

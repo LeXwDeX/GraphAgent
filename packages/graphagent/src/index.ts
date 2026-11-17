@@ -1,3 +1,6 @@
+// Must stay the first import: it settles the interface language before the
+// command modules evaluate their `describe` strings.
+import "./cli/language-init"
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"
@@ -23,6 +26,7 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { Heap } from "./cli/heap"
 import { APP_NAME } from "@graphagent/core/brand"
+import { getLanguage, t } from "@graphagent/tui/i18n"
 
 const args = hideBin(process.argv)
 
@@ -36,20 +40,36 @@ function show(out: string) {
   process.stderr.write(out)
 }
 
+// yargs' own labels ("Options:", validation messages) follow the same language.
+const YARGS_LOCALE = { "zh-CN": "zh_CN", en: "en" } as const
+
+// Validation failures that should print the help text. yargs localises these
+// messages, so match both the English and the Simplified Chinese prefixes.
+const HELP_ON_FAILURE = [
+  "Unknown argument",
+  "Not enough non-option arguments",
+  "Invalid values:",
+  "无法识别",
+  "缺少 non-option 参数",
+  "无效的选项值",
+]
+
 const cli = yargs(args)
+  .detectLocale(false)
+  .locale(YARGS_LOCALE[getLanguage()])
   .parserConfiguration({ "populate--": true })
   .scriptName(APP_NAME)
   .wrap(100)
-  .help("help", "show help")
+  .help("help", t("cli.common.help"))
   .alias("help", "h")
-  .version("version", "show version number", InstallationVersion)
+  .version("version", t("cli.common.version"), InstallationVersion)
   .alias("version", "v")
   .option("print-logs", {
-    describe: "print logs to stderr",
+    describe: t("cli.common.option.printLogs"),
     type: "boolean",
   })
   .option("log-level", {
-    describe: "log level",
+    describe: t("cli.common.option.logLevel"),
     type: "string",
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
@@ -64,7 +84,7 @@ const cli = yargs(args)
     process.env.GRAPHAGENT_PID = String(process.pid)
   })
   .usage("")
-  .completion("completion", "generate shell completion script")
+  .completion("completion", t("cli.common.completion"))
   .command(McpCommand)
   .command(TuiThreadCommand)
   .command(RunCommand)
@@ -82,11 +102,7 @@ const cli = yargs(args)
   .command(SessionCommand)
   .command(DbCommand)
   .fail((msg, err) => {
-    if (
-      msg?.startsWith("Unknown argument") ||
-      msg?.startsWith("Not enough non-option arguments") ||
-      msg?.startsWith("Invalid values:")
-    ) {
+    if (msg && HELP_ON_FAILURE.some((prefix) => msg.startsWith(prefix))) {
       if (err) throw err
       cli.showHelp(show)
     }
@@ -109,7 +125,7 @@ try {
   const formatted = FormatError(e)
   if (formatted) UI.error(formatted)
   if (formatted === undefined) {
-    UI.error("Unexpected error" + EOL)
+    UI.error(t("cli.common.unexpectedError") + EOL)
     process.stderr.write(errorMessage(e) + EOL)
   }
   process.exitCode = 1

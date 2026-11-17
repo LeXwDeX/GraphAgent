@@ -145,6 +145,9 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
     XDG_DATA_HOME: path.join(home, ".local/share"),
     XDG_STATE_HOME: path.join(home, ".local/state"),
     XDG_CACHE_HOME: path.join(home, ".cache"),
+    // English unless a test sets `language` in its config: CLI copy is localised.
+    LC_ALL: "en_US.UTF-8",
+    LANG: "en_US.UTF-8",
     GRAPHAGENT_CONFIG_CONTENT: configJson,
     GRAPHAGENT_DISABLE_PROJECT_CONFIG: "1",
     GRAPHAGENT_DISABLE_AUTOCOMPACT: "1",

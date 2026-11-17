@@ -11,29 +11,30 @@ import path from "path"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Effect, Schema } from "effect"
 import type { InstanceContext } from "@/project/instance-context"
+import { t } from "@graphagent/tui/i18n"
 
 const decodeMessageInfo = Schema.decodeUnknownSync(SessionV1.Info)
 const decodePart = Schema.decodeUnknownSync(SessionV1.Part)
 
 export function formatImportFileError(file: string, error: FSUtil.Error) {
   if (error._tag === "PlatformError") {
-    if (error.reason._tag === "NotFound") return `File not found: ${file}`
-    if (error.reason._tag === "PermissionDenied") return `Failed to read file: Permission denied`
-    return `Failed to read file: ${error.message}`
+    if (error.reason._tag === "NotFound") return t("cli.import.fileNotFound", { file })
+    if (error.reason._tag === "PermissionDenied") return t("cli.import.permissionDenied")
+    return t("cli.import.readFailed", { message: error.message })
   }
 
   const detail = error.cause instanceof Error ? error.cause.message : error.message
-  return `Invalid JSON in ${file}: ${detail}`
+  return t("cli.import.invalidJson", { file, detail })
 }
 
 type ExportData = { info: SDKSession; messages: Array<{ info: Message; parts: Part[] }> }
 
 export const ImportCommand = effectCmd({
   command: "import <file>",
-  describe: "import session data from JSON file",
+  describe: t("cli.import.describe"),
   builder: (yargs) =>
     yargs.positional("file", {
-      describe: "path to JSON file",
+      describe: t("cli.import.arg.file"),
       type: "string",
       demandOption: true,
     }),
@@ -101,6 +102,7 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
     }
   }
 
+  // Stays English: `graphagent pr` parses this line out of the child process output.
   process.stdout.write(`Imported session: ${exportData.info.id}`)
   process.stdout.write(EOL)
 })
