@@ -110,7 +110,7 @@ test("the session prompt's @ file search runs in the session's directory", async
   }
 })
 
-test("a sub-agent view has no prompt and keeps its own footer above the app footer", async () => {
+test("a sub-agent view has no prompt, and no footer of its own under the transcript", async () => {
   const harness = await mountApp(
     { type: "session", sessionID: childID },
     { sessions: [sessionFixture(mainID), sessionFixture(childID, { parentID: mainID })] },
@@ -119,7 +119,8 @@ test("a sub-agent view has no prompt and keeps its own footer above the app foot
     await harness.settle()
     expect(textareas(harness)).toHaveLength(0)
     expect(harness.promptDraft()).toBeUndefined()
-    expect(await harness.frame()).toContain("Subagent")
+    // The old Parent/Prev/Next bar is gone: what a sub-agent view says about itself is the frame's top bar and footer.
+    expect(await harness.frame()).not.toContain("Subagent")
 
     // The root session of the same tree has one.
     harness.route().navigate({ type: "session", sessionID: mainID })

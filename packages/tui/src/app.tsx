@@ -61,9 +61,10 @@ import { SessionListPanel } from "./panel/sessions"
 import { CommandPalettePanel } from "./panel/palette"
 import { VariantPanel } from "./panel/variant"
 import { useDrawer } from "./shell/drawer"
-import { useFooterKeyHints } from "./shell/footer"
+import { subagentFooterHints, subagentNoticeReserve, useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
 import { dagIndicatorReserve } from "./shell/dag-indicator"
+import { sameSubagentView, subagentView } from "./shell/subagent-path"
 import { HookProgress } from "./shell/hook-progress"
 import { SessionStatusBand } from "./shell/status-band"
 import { HookStatusProvider, useHookStatus } from "./context/hook-status"
@@ -71,6 +72,7 @@ import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
 import { returnToParent, useOpenSubAgent } from "./session/navigate"
+import { siblingPosition, siblingSessions } from "./session/siblings"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
@@ -403,6 +405,40 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const footerKeys = useFooterKeyHints()
   const dagIndicator = useDagIndicator()
   const hookStatus = useHookStatus()
+  // A session with a parent is a sub-agent view (#1033): the top bar shows its path and the footer says it is read-only.
+  const subagent = createMemo(
+    () =>
+      route.data.type === "session"
+        ? subagentView(
+            {
+              session: (id) => sync.session.get(id),
+              task: (id) => sync.data.taskIndex[id],
+              summary: (id) => sync.data.summary[id],
+            },
+            route.data.sessionID,
+          )
+        : undefined,
+    undefined,
+    { equals: sameSubagentView },
+  )
+  // The path segments open their session on a click; the root is an ordinary session, the others are sub-agents.
+  const subagentPath = createMemo(() => {
+    const view = subagent()
+    if (!view) return undefined
+    return {
+      ...view,
+      onOpen: (sessionID: string) =>
+        sync.session.get(sessionID)?.parentID
+          ? openSubAgent(sessionID)
+          : route.navigate({ type: "session", sessionID }),
+    }
+  })
+  // `子 agent i/N` in the top bar: the same `(time.created, id)` order that `←→` walks.
+  const subagentPosition = createMemo(() => {
+    if (route.data.type !== "session" || !subagent()) return undefined
+    const sessionID = route.data.sessionID
+    return siblingPosition(siblingSessions(sync.data.session, sessionID), sessionID)
+  })
   const footerStatus = useFooterStatus(
     // The shared slot holds the hook progress only while a hook runs. The component renders nothing when idle, but
     // an element in the slot would still keep the idle key hints off the session footer.
@@ -410,7 +446,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       route.data.type === "session" && hookStatus.list(route.data.sessionID).length > 0 ? (
         <HookProgress sessionID={route.data.sessionID} />
       ) : undefined,
-    () => dagIndicatorReserve(dagIndicator(), dimensions().width, kv.get("ambiguous_width", 1) === 2 ? 2 : 1),
+    () => {
+      const ambiguousWidth = kv.get("ambiguous_width", 1) === 2 ? 2 : 1
+      const view = subagent()
+      return view
+        ? subagentNoticeReserve(view.kind, ambiguousWidth)
+        : dagIndicatorReserve(dagIndicator(), dimensions().width, ambiguousWidth)
+    },
   )
   const bottomZone = createBottomZoneState()
   const btw = useBtw()
@@ -1121,7 +1163,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
 
     return {
-      path: route.data.type === "session" ? sync.session.get(route.data.sessionID)?.title : undefined,
+      path:
+        route.data.type === "session" && !subagentPath() ? sync.session.get(route.data.sessionID)?.title : undefined,
+      subagent: subagentPath(),
+      position: subagentPosition(),
       right,
     }
   })
@@ -1161,11 +1206,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <AppFrame
           topBar={topBar()}
           footer={{
-            agent: local.agent.current()?.name,
-            agentAction: footerKeys().agent,
-            hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
+            // A sub-agent view has no agent to switch and no mode to toggle: its footer says it is read-only.
+            agent: subagent() ? undefined : local.agent.current()?.name,
+            agentAction: subagent() ? undefined : footerKeys().agent,
+            hints:
+              route.data.type === "diff"
+                ? diffFooterHints()
+                : subagent()
+                  ? subagentFooterHints(footerKeys().drawer, (subagentPosition()?.total ?? 0) > 1)
+                  : footerKeys().hints,
             meta: route.data.type === "home" ? homeMeta() : { trust: homeMeta().trust },
             dag: dagIndicator(),
+            subagent: subagent(),
             right: footerStatus(),
           }}
           statusBand={route.data.type === "session" ? <SessionStatusBand /> : undefined}
