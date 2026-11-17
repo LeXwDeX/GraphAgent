@@ -73,7 +73,7 @@ import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
-import { FooterToastProvider, useToast } from "./ui/toast"
+import { FooterToastProvider, serverToastText, useToast } from "./ui/toast"
 import { TickerProvider } from "./context/ticker-context"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
@@ -1025,7 +1025,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (workspace !== project.workspace.current()) return
     const message = evt.properties.message
     toast.show({
-      text: evt.properties.title ? `${evt.properties.title}: ${message}` : message,
+      text: serverToastText(evt.properties.title, message),
       level: evt.properties.variant,
       duration: evt.properties.duration,
       dedupeKey: `tui.toast.${message}`,

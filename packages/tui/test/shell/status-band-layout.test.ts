@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { DagWorkflowSummary, Goal } from "@graphagent/sdk"
+import type { DagUsage } from "../../src/dag/mode"
 import type { DagNodeRow } from "../../src/dag/model"
 import { setLanguage } from "../../src/i18n"
 import { bandRowText, layoutDagRow, layoutGoalRow, type BandRow } from "../../src/shell/status-band"
@@ -340,6 +341,170 @@ describe("the DAG row", () => {
 
   test("draws nothing at all for a width that cannot hold the lead", () => {
     expect(layoutDagRow({ summary: summary(), nodes: NODES, more: 0, width: 0 })).toEqual({ spans: [], cells: 0 })
+  })
+})
+
+describe("the DAG row in DAG mode: the mode mark, the usage and the wait", () => {
+  const USAGE: DagUsage = {
+    running: 3,
+    cap: 12,
+    tokens: 1_200_000,
+    budget: 5_000_000,
+    percent: 24,
+    tier: "normal",
+  }
+  const FULL = { summary: summary(), nodes: NODES, more: 2, mode: "on", usage: USAGE, waiting: true } as const
+
+  test("draws, at the right edge, the wait, the mode mark, the usage, the folded workflows and the hint", () => {
+    const row = layoutDagRow({ ...FULL, width: 200 })
+    const line = bandRowText(row)
+    expect(line.endsWith("等待主 agent  模式开  全进程并发 3/12 · 1.2M tok · 预算 24%  +2 个  /dag")).toBe(true)
+    expect(row.cells).toBe(200)
+    expect(measured(row, 1)).toBe(200)
+  })
+
+  test("paints the mark and the pieces in the colors the band keeps for them, none of them the brand color", () => {
+    const token = (text: string) =>
+      layoutDagRow({ ...FULL, width: 200 }).spans.find((span) => span.text === text)?.token
+    expect(token("模式开")).toBe("text")
+    expect(token("等待主 agent")).toBe("warning")
+    expect(token("全进程并发 3/12")).toBe("textMuted")
+    expect(token("1.2M tok")).toBe("textMuted")
+    expect(token("预算 24%")).toBe("textMuted")
+    const off = layoutDagRow({ ...FULL, mode: "off", width: 200 })
+    expect(off.spans.find((span) => span.text === "模式关")?.token).toBe("textDim")
+    // The lead is the one piece in the brand color, besides the running segments of the bar.
+    const brand = layoutDagRow({ ...FULL, width: 200 }).spans.filter((span) => span.token === "primary")
+    expect(brand.map((span) => span.text)).toEqual(["◆"])
+  })
+
+  test("colors the budget by its band: quiet, warning, error", () => {
+    const budgetToken = (tier: DagUsage["tier"]) =>
+      layoutDagRow({ ...FULL, usage: { ...USAGE, tier, percent: 24 }, width: 200 }).spans.find((span) =>
+        span.text.startsWith("预算"),
+      )?.token
+    expect(budgetToken("normal")).toBe("textMuted")
+    expect(budgetToken("warn")).toBe("warning")
+    expect(budgetToken("exhausted")).toBe("error")
+  })
+
+  test("shows only the pieces of the usage that are known", () => {
+    const rowText = (usage: DagUsage) => bandRowText(layoutDagRow({ ...FULL, waiting: false, usage, width: 200 }))
+    // No budget: no percent. No slot count: no concurrency.
+    const open = rowText({ running: 3, cap: 12, tokens: 900, tier: "normal" })
+    expect(open).toContain("全进程并发 3/12 · 900 tok")
+    expect(open).not.toContain("预算")
+    const tokensOnly = rowText({ tokens: 5, tier: "normal" })
+    expect(tokensOnly).toContain("模式开  5 tok  +2 个")
+    expect(tokensOnly).not.toContain("并发")
+    const slotsOnly = rowText({ running: 0, cap: 4, tier: "normal" })
+    expect(slotsOnly).toContain("全进程并发 0/4")
+    expect(slotsOnly).not.toContain("tok")
+  })
+
+  test("draws neither the mark nor the wait nor the usage when it is not given them", () => {
+    const line = bandRowText(layoutDagRow({ summary: summary(), nodes: NODES, more: 2, width: 200 }))
+    for (const word of ["模式", "等待主", "并发", "tok", "预算"]) expect(line).not.toContain(word)
+  })
+
+  test("gives way in the order: hint, budget, tokens, concurrency, +N, wave, wait, counts, title; the mark stays", () => {
+    const long = summary({ title: "依赖升级验证与发布前检查" })
+    const stageOf = (line: string) => {
+      if (line.includes("/dag")) return 0
+      if (line.includes("预算")) return 1
+      if (line.includes("tok")) return 2
+      if (line.includes("并发")) return 3
+      if (line.includes("+2 个")) return 4
+      if (line.includes("波")) return 5
+      if (line.includes("等待主")) return 6
+      if (line.includes("完成")) return 7
+      if (line.includes("发布前检查")) return 8
+      return 9
+    }
+    const stages: number[] = []
+    // The bar is 27 cells and 4 spaces; the least text is the lead, a title of 12 cells, `4/9` and the mark (6 cells
+    // and a gap of 2): from 58 cells on the bar keeps its full size and only the text gives way.
+    for (let width = 220; width >= 58; width--) {
+      const row = layoutDagRow({ ...FULL, summary: long, width })
+      const line = bandRowText(row)
+      expect(line.match(/[━─]/g), `bar at ${width}`).toHaveLength(27)
+      expect(line, `mark at ${width}`).toContain("模式开")
+      stages.push(stageOf(line))
+    }
+    expect(stages[0]).toBe(0)
+    expect(stages.at(-1)).toBe(9)
+    expect(new Set(stages)).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]))
+    for (const [index, stage] of stages.entries())
+      if (index > 0) expect(stage, `width ${220 - index}`).toBeGreaterThanOrEqual(stages[index - 1])
+  })
+
+  for (const aw of [1, 2] as const) {
+    test(`keeps the mark and a bar down to the narrowest terminal the shell draws (ambiguous width ${aw})`, () => {
+      for (const nodes of [[...NODES], wide(60, 10), wide(200, 8)]) {
+        for (const mode of ["on", "off"] as const) {
+          for (let width = 56; width <= 140; width++) {
+            const row = layoutDagRow({
+              summary: summary({ nodeCount: nodes.length }),
+              nodes,
+              more: 3,
+              mode,
+              usage: USAGE,
+              waiting: true,
+              width,
+              ambiguousWidth: aw,
+            })
+            const label = `${nodes.length} nodes, mode ${mode} at ${width} (aw ${aw})`
+            expect(bandRowText(row), label).toContain(mode === "on" ? "模式开" : "模式关")
+            expect(bandRowText(row), label).toMatch(/[━─╌]/)
+            expect(row.cells, label).toBeLessThanOrEqual(width)
+          }
+        }
+      }
+    })
+
+    test(`never claims more cells than it uses or than it has, whatever it is given (ambiguous width ${aw})`, () => {
+      const shapes: Array<[string, DagNodeRow[] | undefined, DagWorkflowSummary]> = [
+        ["a table", [...NODES], summary()],
+        ["no table", undefined, summary()],
+        ["a long title", [...NODES], summary({ title: "依赖升级验证与发布前检查和回归测试的完整清单" })],
+        ["200 nodes", wide(200, 8), summary({ nodeCount: 200, completedNodes: 200 })],
+      ]
+      for (const [name, nodes, flow] of shapes) {
+        for (const mode of [undefined, "on", "off"] as const) {
+          for (const usage of [undefined, USAGE, { tokens: 7, tier: "warn" } as const]) {
+            for (const waiting of [false, true]) {
+              for (let width = 8; width <= 160; width++) {
+                const row = layoutDagRow({
+                  summary: flow,
+                  nodes,
+                  more: 3,
+                  mode,
+                  usage,
+                  waiting,
+                  width,
+                  ambiguousWidth: aw,
+                })
+                const label = `${name}, ${mode}, ${usage ? "usage" : "no usage"}, ${waiting} at ${width} (aw ${aw})`
+                expect(measured(row, aw), label).toBe(row.cells)
+                expect(row.cells, label).toBeLessThanOrEqual(width)
+              }
+            }
+          }
+        }
+      }
+    })
+  }
+
+  test("says it in English too", () => {
+    setLanguage("en")
+    const row = layoutDagRow({ ...FULL, width: 200 })
+    expect(
+      bandRowText(row).endsWith(
+        "waiting for main agent  mode on  global slots 3/12 · 1.2M tok · budget 24%  +2 more  /dag",
+      ),
+    ).toBe(true)
+    const off = layoutDagRow({ ...FULL, mode: "off", waiting: false, width: 200 })
+    expect(bandRowText(off)).toContain("mode off")
   })
 })
 

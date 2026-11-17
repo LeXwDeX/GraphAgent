@@ -13,6 +13,7 @@ import { useSync } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { useTicker } from "../context/ticker-context"
 import { layoutDagBar } from "../dag/bar"
+import { dagCoverageEntries, dagModeLine, dagQualityText, dagUsage, type DagModePiece } from "../dag/mode"
 import {
   DAG_STATE_STYLE,
   dagCurrentWave,
@@ -27,6 +28,7 @@ import {
   formatDagOutputPreview,
   selectMainWorkflow,
   type DagNodeRow,
+  type DagStatusToken,
   type DagWorkflowSummary,
   type DagWorkflowView,
 } from "../dag/model"
@@ -138,6 +140,49 @@ const ACTIVE = new Set(["running", "stepping", "paused"])
 
 /** Width of the longest tab label before it is cut. */
 const TAB_LABEL_CELLS = 16
+
+/** Coverage entries listed before the rest are only counted: the block is part of the summary and the panel is short. */
+const COVERAGE_ENTRIES = 4
+
+const LINE_SEPARATOR = " · "
+
+/** A piece of a line and the theme token it is drawn in. */
+interface Piece {
+  readonly text: string
+  readonly token: DagStatusToken | DagModePiece["token"] | "textDim"
+}
+
+/**
+ * The pieces on one line of `width` cells, `separator` between them. The piece that crosses the edge is cut with an
+ * ellipsis and the ones after it are left out, so a line is never wrapped and never wider than its room.
+ */
+function fitLine(
+  pieces: readonly Piece[],
+  width: number,
+  aw: AmbiguousWidth,
+  separator: Piece = { text: LINE_SEPARATOR, token: "textDim" },
+): Piece[] {
+  const fitted: Piece[] = []
+  let room = width
+  const gap = cellWidth(separator.text, aw)
+  for (const [index, piece] of pieces.entries()) {
+    if (index > 0) {
+      if (room <= gap) break
+      fitted.push(separator)
+      room -= gap
+    }
+    const cells = cellWidth(piece.text, aw)
+    if (cells <= room) {
+      fitted.push(piece)
+      room -= cells
+      continue
+    }
+    const cut = truncateCells(piece.text, room, aw)
+    if (cut !== "") fitted.push({ text: cut, token: piece.token })
+    break
+  }
+  return fitted
+}
 
 const nodeKey = (workflowID: string, nodeID: string) => `${workflowID}\u0000${nodeID}`
 
@@ -258,6 +303,42 @@ export function DagPanel(props: { state?: DagPanelState }) {
       ACTIVE.has(current.summary.status) ||
       current.nodes.some((node) => dagDisplayState(node.status, node.error_class) === "running")
     )
+  })
+
+  // DAG mode (F4 7.1), all of it read from what the data layer holds: the mode is the session's own field, the
+  // usage follows the workflow summaries over the mode snapshot, quality and coverage are the shown workflow's own.
+  const snapshot = createMemo(() => {
+    const root = rootID()
+    return root === undefined ? undefined : sync.data.dagMode[root]
+  })
+  const usage = createMemo(() => {
+    const root = rootID()
+    return root === undefined ? undefined : dagUsage({ snapshot: snapshot(), workflows: sync.data.dag[root] })
+  })
+  const modeLine = createMemo(() => {
+    const root = rootID()
+    const on = root !== undefined && sync.session.get(root)?.dagMode === "on"
+    return fitLine(dagModeLine({ on, snapshot: snapshot(), usage: usage() }), innerWidth(), ambiguousWidth())
+  })
+  const qualityText = createMemo(() => dagQualityText(active()?.summary.quality))
+  /** A workflow paused while the budget is gone: the pause is most likely the budget's, so the panel says what ends it. */
+  const budgetPaused = createMemo(() => {
+    const summary = active()?.summary
+    return summary?.status === "paused" && summary.checkpointPending !== true && usage()?.tier === "exhausted"
+  })
+  const coverage = createMemo(() => {
+    const current = view()
+    const count = current ? counted(current.summary.coverageCount) : 0
+    if (!current || count <= 0) return undefined
+    const entries = loaded() ? dagCoverageEntries(nodeList()) : []
+    // The server counts more than nodes (a declined fan-out, a lane gap, a safety denial); the nodes are a subset.
+    const tail = [
+      entries.length > COVERAGE_ENTRIES
+        ? t("dagmode.panel.coverage.more", { n: entries.length - COVERAGE_ENTRIES })
+        : "",
+      loaded() && count > entries.length ? t("dagmode.panel.coverage.rest", { n: count - entries.length }) : "",
+    ].filter((part) => part !== "")
+    return { count, entries: entries.slice(0, COVERAGE_ENTRIES), tail: tail.join(LINE_SEPARATOR) }
   })
 
   // The declaration to the data layer: what is shown here, and from this panel only. The layer registers
@@ -582,6 +663,9 @@ export function DagPanel(props: { state?: DagPanelState }) {
 
   const summaryElement = (
     <box flexDirection="column">
+      <text wrapMode="none">
+        <For each={modeLine()}>{(piece) => <span style={{ fg: theme[piece.token] }}>{piece.text}</span>}</For>
+      </text>
       <Show when={barLayout()}>
         {(layout) => (
           <box height={1} flexShrink={0} flexDirection="row">
@@ -598,6 +682,50 @@ export function DagPanel(props: { state?: DagPanelState }) {
       <text fg={theme.textMuted} wrapMode="none">
         {countsText()}
       </text>
+      <Show when={qualityText()}>
+        {(text) => (
+          <text fg={theme.textMuted} wrapMode="none">
+            {truncateCells(text(), innerWidth(), ambiguousWidth())}
+          </text>
+        )}
+      </Show>
+      <Show when={budgetPaused()}>
+        <text fg={theme.warning} wrapMode="none">
+          {truncateCells(t("dagmode.budget.exhausted"), innerWidth(), ambiguousWidth())}
+        </text>
+      </Show>
+      <Show when={coverage()}>
+        {(block) => (
+          <box flexDirection="column" flexShrink={0}>
+            <text fg={theme.textMuted} wrapMode="none">
+              {truncateCells(
+                t("dagmode.panel.coverage.title", { count: block().count }),
+                innerWidth(),
+                ambiguousWidth(),
+              )}
+            </text>
+            <For each={block().entries}>
+              {(entry) => {
+                const style = DAG_STATE_STYLE[entry.state]
+                const pieces: Piece[] = [{ text: `  ${style.glyph} ${entry.name}`, token: style.token }]
+                if (entry.reason) pieces.push({ text: entry.reason, token: "textMuted" })
+                return (
+                  <text wrapMode="none">
+                    <For each={fitLine(pieces, innerWidth(), ambiguousWidth(), { text: "  ", token: "textDim" })}>
+                      {(piece) => <span style={{ fg: theme[piece.token] }}>{piece.text}</span>}
+                    </For>
+                  </text>
+                )
+              }}
+            </For>
+            <Show when={block().tail}>
+              <text fg={theme.textMuted} wrapMode="none">
+                {truncateCells(`  ${block().tail}`, innerWidth(), ambiguousWidth())}
+              </text>
+            </Show>
+          </box>
+        )}
+      </Show>
       <Show when={view() !== undefined && !loaded()}>
         <text fg={theme.textMuted} wrapMode="none">
           {t("dagmode.panel.loading")}

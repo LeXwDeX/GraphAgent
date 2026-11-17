@@ -21,6 +21,7 @@ import type {
   SnapshotFileDiff,
   Goal,
   DagWorkflowSummary,
+  SessionDagMode,
   ReferenceInfo,
   ProjectTrustEntry,
   ProjectTrustDecision,
@@ -197,6 +198,16 @@ export const {
         [workflowID: string]: DagMerge.Feed
       }
       /**
+       * The DAG mode snapshot of the root session of the tree the route is in (`GET /session/:id/dag-mode`): the
+       * effective budget and its warning ratio, and the process's limits (#1032 7). Read when the tree is entered
+       * with DAG mode on or a workflow in it (or becomes so), and again when the session's budget changes or the
+       * stream reconnects; the usage between reads comes from the workflow summaries, and the mode itself from the
+       * session, so nothing polls. A session that has neither never reads it.
+       */
+      dagMode: {
+        [rootSessionID: string]: SessionDagMode
+      }
+      /**
        * What the user did in the `/dag` panel, per session tree (keyed by its root session): the workflow
        * they picked and the ones they opened. Memory only, never sent or persisted, so a reconnect has
        * nothing to refresh; the status band follows it (#1032 2.5).
@@ -258,6 +269,7 @@ export const {
       vcs: undefined,
       dag: {},
       dagNodes: {},
+      dagMode: {},
       dag_focus: {},
       turn_settled: {},
       summary: {},
@@ -320,6 +332,9 @@ export const {
     // The table read in flight per workflow. A newer read replaces it, and an
     // answer that no longer matches is dropped.
     const dagReads = new Map<string, symbol>()
+    // The mode snapshot read in flight per session. A newer read replaces it and the older answer is dropped; a
+    // read that is still out also stands in for another one that only wants the snapshot to exist.
+    const dagModeReads = new Map<string, symbol>()
     // The session set last handed to the aggregator and its confirmation: a
     // second surface showing the same workflow must wait for the same answer
     // before it reads, or it would read ahead of the worker.
@@ -505,6 +520,7 @@ export const {
 
     function dropSession(sessionID: string) {
       dropDagOwner(sessionID)
+      dagModeReads.delete(sessionID)
       const messages = store.message[sessionID] ?? []
       const partIDs = messages.flatMap((message) => (store.part[message.id] ?? []).map((part) => part.id))
       stream.clearParts(partIDs)
@@ -526,6 +542,7 @@ export const {
           delete draft.goal[sessionID]
           delete draft.session_diff[sessionID]
           delete draft.dag[sessionID]
+          delete draft.dagMode[sessionID]
           delete draft.dag_focus[sessionID]
           delete draft.turn_settled[sessionID]
           delete draft.session_status[sessionID]
@@ -762,6 +779,57 @@ export const {
               .catch(() => {}),
           ),
       )
+    }
+
+    /**
+     * Read the DAG mode snapshot of root sessions. `onlyMissing` leaves out the ones that already have one or are
+     * being read; any other call reads again and its answer wins over a read that was still out. A failed read keeps
+     * what the slice held, and the next trigger reads again.
+     */
+    function fetchDagMode(sessionIDs: readonly string[], onlyMissing = false) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        sessionIDs
+          .filter((sessionID) => !onlyMissing || !(sessionID in store.dagMode || dagModeReads.has(sessionID)))
+          .map((sessionID) => {
+            const read = Symbol(sessionID)
+            dagModeReads.set(sessionID, read)
+            return sdk.client.session
+              .dagMode({ sessionID }, { headers: locationHeaders({ workspace }) })
+              .then((response) => {
+                if (disposed || dagModeReads.get(sessionID) !== read) return
+                if (!response.data) {
+                  TuiLog.write("error", "Loading the DAG mode failed", { sessionID, status: response.response?.status })
+                  return
+                }
+                setStore("dagMode", sessionID, reconcile(response.data))
+              })
+              .catch((error) => {
+                TuiLog.write("error", "Loading the DAG mode failed", { sessionID, error: String(error) })
+              })
+              .finally(() => {
+                if (dagModeReads.get(sessionID) === read) dagModeReads.delete(sessionID)
+              })
+          }),
+      ).then(() => undefined)
+    }
+
+    /**
+     * The snapshot the status band and the /dag title draw their limits from, read the first time the route's tree
+     * needs it: the tree has DAG mode on or a workflow, and the snapshot is neither here nor on its way. The three
+     * moments are entering the tree, a workflow summary arriving, and the root session's mode turning on. A tree in
+     * no such state costs no read at all (a plain session, the home view), and nothing here polls.
+     */
+    function wantDagMode() {
+      const rootID = routeChain.at(-1)
+      if (rootID === undefined || rootID in store.dagMode || dagModeReads.has(rootID)) return
+      const match = search(store.session, rootID, (item) => item.id)
+      const on = match.found && store.session[match.index].dagMode === "on"
+      // The sessions with summaries are few (the trees entered), so this is cheaper than walking the session list.
+      const owned = Object.entries(store.dag).some(
+        ([ownerID, list]) => list.length > 0 && (ownerID === rootID || parentChain(ownerID).at(-1) === rootID),
+      )
+      if (on || owned) void fetchDagMode([rootID], true)
     }
 
     /** Workflow -> owning session over every surface; the first surface to name a workflow decides. */
@@ -1118,6 +1186,7 @@ export const {
           // store-node identity: a no-op summary must not remount expanded
           // sidebar rows and re-trigger their signature-guarded fetches.
           setStore("dag", event.properties.sessionID, reconcile(event.properties.summaries))
+          if (event.properties.summaries.length > 0) wantDagMode()
           break
 
         // #1032: node-level push for a workflow a surface shows; merged by the
@@ -1162,7 +1231,17 @@ export const {
           if (hydration) hydration.session = true
           const result = search(store.session, event.properties.info.id, (s) => s.id)
           if (result.found) {
+            // The mode itself is the session's own field and needs no read; the effective budget also depends on
+            // the global default, which only the server knows, so a change to the session's budget reads it again.
+            const before = store.session[result.index]
+            const budgetChanged =
+              before.dagBudgetTokens !== event.properties.info.dagBudgetTokens ||
+              before.dagBudgetUnlimited !== event.properties.info.dagBudgetUnlimited
             setStore("session", result.index, reconcile(event.properties.info))
+            // A read still out may have been answered before the change, so it is replaced as well.
+            const held = event.properties.info.id in store.dagMode || dagModeReads.has(event.properties.info.id)
+            if (budgetChanged && held) void fetchDagMode([event.properties.info.id])
+            else if (event.properties.info.id === routeChain.at(-1)) wantDagMode()
             break
           }
           setStore(
@@ -1601,6 +1680,8 @@ export const {
       }
     }
     onResync(guardedRefreshDagSummaries)
+    // #1032 7: the mode snapshot of every root the user entered is read again; the answers are states, not events.
+    onResync(() => fetchDagMode(Object.keys(store.dagMode)))
     // #1032: every shown workflow reads its table again, from an empty buffer.
     // A shown workflow with no feed yet is one whose interest the worker never
     // confirmed: declaring it again would be a no-op, so the reconnect registers
@@ -1648,6 +1729,7 @@ export const {
       dagFeeds.clear()
       dagWatches.clear()
       dagReads.clear()
+      dagModeReads.clear()
       ancillaryAttempts.clear()
       submissionAccepted.clear()
       unsubscribeStream()
@@ -1830,6 +1912,8 @@ export const {
           if (disposed) return
           const rootID = routeChain.at(-1) ?? sessionID
           await fetchDagSummaries(sessionTree(rootID), true)
+          // The snapshot is for the status band and the /dag panel, which draw without it: the route does not wait.
+          wantDagMode()
         },
         deactivate() {
           routeChain = []

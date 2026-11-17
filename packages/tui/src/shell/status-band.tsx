@@ -12,6 +12,15 @@ import { useSync, type DagWatch } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { layoutDagBar, type DagBarNode } from "../dag/bar"
 import {
+  dagModeMarker,
+  dagTierToken,
+  dagUsage,
+  dagWaitingForMainAgent,
+  formatDagTokens,
+  type DagModeMarker,
+  type DagUsage,
+} from "../dag/mode"
+import {
   dagCurrentWave,
   dagWorkflowView,
   formatDagProgress,
@@ -140,6 +149,12 @@ export interface DagRowInput {
   readonly nodes?: readonly BandNode[]
   /** Workflows the band does not show, folded into `+N`. */
   readonly more?: number
+  /** The mode mark (F4 7.1): on, or the dim off mark while a workflow runs; none draws none. */
+  readonly mode?: DagModeMarker
+  /** What the session's workflows have used; each piece it carries is drawn, and the budget in its band's color. */
+  readonly usage?: DagUsage
+  /** A checkpoint waits for the main agent and it is not at work on it. */
+  readonly waiting?: boolean
   /** Cells the row may use. */
   readonly width: number
   readonly ambiguousWidth?: AmbiguousWidth
@@ -147,32 +162,64 @@ export interface DagRowInput {
 
 /**
  * What a row keeps. The levels run from everything to the least a row may be
- * (F4 1): the hint goes first, then the folded count, the wave, the counts
- * squeezed to `n/m`, and the title cut short. The last two go beyond the spec,
- * for a terminal so narrow that not even that leaves room for the bar.
+ * (F4 1, 7.1): the hint goes first, then the budget, the tokens and the
+ * concurrency of the usage, the folded count, the wave, the wait, the counts
+ * squeezed to `n/m`, and the title cut short. The mode mark stays with the bar
+ * (it is at most 8 cells): only the last level, beyond the spec and for a
+ * terminal so narrow that not even the bar fits with it, lets go of it. The
+ * levels after the title cut go beyond the spec too.
  */
 interface DagLevel {
   readonly hint: boolean
+  readonly budget: boolean
+  readonly tokens: boolean
+  readonly concurrency: boolean
   readonly more: boolean
   readonly wave: boolean
+  readonly waiting: boolean
   readonly counts: "full" | "compact" | "none"
   /** How much of the title shows. */
   readonly name: "full" | "short" | "none"
+  readonly mark: boolean
 }
 
-const DAG_LEVELS: readonly DagLevel[] = [
-  { hint: true, more: true, wave: true, counts: "full", name: "full" },
-  { hint: false, more: true, wave: true, counts: "full", name: "full" },
-  { hint: false, more: false, wave: true, counts: "full", name: "full" },
-  { hint: false, more: false, wave: false, counts: "full", name: "full" },
-  { hint: false, more: false, wave: false, counts: "compact", name: "full" },
-  { hint: false, more: false, wave: false, counts: "compact", name: "short" },
-  { hint: false, more: false, wave: false, counts: "none", name: "short" },
-  { hint: false, more: false, wave: false, counts: "none", name: "none" },
+/** Each step is what the next level gives up on top of what the one before it did. */
+const DAG_STEPS: readonly Partial<DagLevel>[] = [
+  { hint: false },
+  { budget: false },
+  { tokens: false },
+  { concurrency: false },
+  { more: false },
+  { wave: false },
+  { waiting: false },
+  { counts: "compact" },
+  { name: "short" },
+  { counts: "none" },
+  { name: "none" },
+  { mark: false },
 ]
 
+const DAG_LEVELS: readonly DagLevel[] = (() => {
+  const levels: DagLevel[] = [
+    {
+      hint: true,
+      budget: true,
+      tokens: true,
+      concurrency: true,
+      more: true,
+      wave: true,
+      waiting: true,
+      counts: "full",
+      name: "full",
+      mark: true,
+    },
+  ]
+  for (const step of DAG_STEPS) levels.push({ ...levels[levels.length - 1], ...step })
+  return levels
+})()
+
 /** The least text the spec allows; the bar is sized against it. */
-const DAG_MINIMAL_LEVEL = 5
+const DAG_MINIMAL_LEVEL = DAG_LEVELS.findIndex((level) => level.counts === "compact" && level.name === "short")
 
 /** A bar's worth of nodes drawn from the summary's counts, for a workflow whose table is not loaded. */
 function nodesFromCounts(summary: DagWorkflowSummary): DagBarNode[] {
@@ -192,6 +239,22 @@ function nodesFromCounts(summary: DagWorkflowSummary): DagBarNode[] {
   }
   for (; placed < total; placed++) nodes.push({ status: "pending" })
   return nodes
+}
+
+/** The usage pieces a level keeps, in the order they are drawn; the budget is colored by its band. */
+function usagePieces(usage: DagUsage | undefined, level: DagLevel): BandSpan[] {
+  if (!usage) return []
+  const pieces: BandSpan[] = []
+  if (level.concurrency && usage.running !== undefined && usage.cap !== undefined) {
+    pieces.push({ text: t("dagmode.band.concurrency", { running: usage.running, cap: usage.cap }), token: "textMuted" })
+  }
+  if (level.tokens && usage.tokens !== undefined) {
+    pieces.push({ text: t("dagmode.band.tokens", { tokens: formatDagTokens(usage.tokens) }), token: "textMuted" })
+  }
+  if (level.budget && usage.percent !== undefined) {
+    pieces.push({ text: t("dagmode.band.budget", { percent: usage.percent }), token: dagTierToken(usage.tier) })
+  }
+  return pieces
 }
 
 function dagCounts(
@@ -253,12 +316,23 @@ export function layoutDagRow(input: DagRowInput): BandRow {
     const name = level.name === "none" ? "" : level.name === "short" ? shortTitle : title
     const head: BandSpan[] = [...lead, ...(name === "" ? [] : [{ text: name, token: "text" as const }, blank(1)])]
     const counts = dagCounts(summary, wave, level)
-    const right: BandSpan[] = []
-    if (level.more && more > 0) right.push({ text: t("dagmode.band.more", { count: more }), token: "textMuted" })
-    if (level.hint) {
-      if (right.length > 0) right.push({ text: HINT_GAP, token: "textMuted" })
-      right.push({ text: DAG_HINT, token: "textDim" })
+    // At the right edge, from the counts outward: the wait, the mode mark, the usage, the folded workflows, the hint.
+    const groups: BandSpan[][] = []
+    if (level.waiting && input.waiting) groups.push([{ text: t("dagmode.band.waiting"), token: "warning" }])
+    if (level.mark && input.mode) {
+      groups.push([
+        input.mode === "on"
+          ? { text: t("dagmode.band.mode.on"), token: "text" }
+          : { text: t("dagmode.band.mode.off"), token: "textDim" },
+      ])
     }
+    const usage = usagePieces(input.usage, level)
+    if (usage.length > 0) groups.push(separated(usage))
+    if (level.more && more > 0) groups.push([{ text: t("dagmode.band.more", { count: more }), token: "textMuted" }])
+    if (level.hint) groups.push([{ text: DAG_HINT, token: "textDim" }])
+    const right = groups.flatMap((group, index) =>
+      index === 0 ? group : [{ text: HINT_GAP, token: "textMuted" as const }, ...group],
+    )
     // The space between the bar and the counts is counted in; the bar itself is not.
     const fixed =
       cellsOf(head, aw) +
@@ -503,6 +577,33 @@ export function SessionStatusBand() {
     return entry ? { entry } : undefined
   })
 
+  // DAG mode (F4 7.1), all of it derived from what the data layer holds: the mode is the session's own field, the
+  // usage follows the workflows' summaries over the mode snapshot, and the wait follows the checkpoints, the root
+  // session's status and how its latest turn ended.
+  const modeMark = createMemo(() => {
+    const root = rootID()
+    const on = root !== undefined && sync.session.get(root)?.dagMode === "on"
+    return dagModeMarker(
+      on,
+      workflows().map((entry) => entry.summary),
+    )
+  })
+  const usage = createMemo(() => {
+    const root = rootID()
+    return root === undefined
+      ? undefined
+      : dagUsage({ snapshot: sync.data.dagMode[root], workflows: sync.data.dag[root] })
+  })
+  const waiting = createMemo(() => {
+    const root = rootID()
+    if (root === undefined) return false
+    return dagWaitingForMainAgent({
+      workflows: workflows().map((entry) => entry.summary),
+      idle: (sync.data.session_status[root]?.type ?? "idle") === "idle",
+      lastTurn: sync.data.turn_settled[root]?.outcome,
+    })
+  })
+
   const dagRow = createMemo<BandRow | undefined>(() => {
     const shown = target()
     if (shown === undefined) return undefined
@@ -512,6 +613,9 @@ export function SessionStatusBand() {
       summary,
       nodes: sync.dag.nodes(summary.id),
       more: workflows().length - 1,
+      mode: modeMark(),
+      usage: usage(),
+      waiting: waiting(),
       width: width(),
       ambiguousWidth: aw(),
     })
