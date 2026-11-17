@@ -16051,6 +16051,9 @@
               "type": "string"
             }
           },
+          "expanded_from": {
+            "type": "string"
+          },
           "model_id": {
             "type": "string"
           },

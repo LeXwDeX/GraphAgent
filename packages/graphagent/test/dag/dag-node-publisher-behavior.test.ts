@@ -196,6 +196,103 @@ describe("DagNodePublisher behavior", () => {
         expect(patches[1].resync).toBeUndefined()
         expect(patches[1].nodes.map((node) => [node.id, node.status])).toEqual([["a", "running"]])
         expect(patches[1].removed).toEqual([])
+        // This workflow's definition is empty: the pushed row has no `expanded_from` at all, not an undefined one.
+        expect("expanded_from" in patches[1].nodes[0]).toBe(false)
+      }),
+    ).pipe(Effect.provide(runtime(state)))
+  })
+
+  // #1158 PR5: `expanded_from` is in the workflow's definition, not in a node row.
+  const slotted = (marks: Record<string, string>) =>
+    JSON.stringify({
+      name: "w",
+      nodes: ["a", "b", "c"].map((id) => ({
+        id,
+        name: id,
+        worker_type: "build",
+        depends_on: [],
+        ...(marks[id] !== undefined ? { expanded_from: marks[id] } : {}),
+      })),
+    })
+
+  it.instance("pushes the slot that generated a node with its row, and again when the definition names another", () => {
+    const state = control()
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        const instance = yield* InstanceState.context
+        const defined = (marks: Record<string, string>) => ({
+          ...workflow("dag-slot", "ses-slot", instance.directory),
+          config: slotted(marks),
+        })
+        const table = (a = "pending", b = "pending") => [
+          nodeRow("dag-slot", "a", a),
+          nodeRow("dag-slot", "b", b),
+          nodeRow("dag-slot", "c"),
+        ]
+        state.workflows.set("dag-slot", defined({ b: "a" }))
+        state.nodes.set("dag-slot", table())
+        yield* (yield* DagNodePublisher.Service).init()
+        yield* publishEvent("dag-slot", DagEvent.NodeRegistered.type)
+        yield* waitPatches(collector, 1)
+
+        // The first table is snapshotted with its marks, so a node that has one and did not change is not pushed.
+        state.nodes.set("dag-slot", table("running"))
+        yield* publishEvent("dag-slot", DagEvent.NodeStarted.type, { nodeID: "a" })
+        const second = yield* waitPatches(collector, 2)
+        expect(second[1].nodes.map((node) => node.id)).toEqual(["a"])
+        expect(second[1].nodes[0]).not.toHaveProperty("expanded_from")
+
+        // The row that has one is pushed with it.
+        state.nodes.set("dag-slot", table("running", "running"))
+        yield* publishEvent("dag-slot", DagEvent.NodeStarted.type, { nodeID: "b" })
+        const third = yield* waitPatches(collector, 3)
+        expect(third[2].nodes).toHaveLength(1)
+        expect(third[2].nodes[0]).toMatchObject({ id: "b", status: "running", expanded_from: "a" })
+
+        // The definition now names `c` as the slot of `b`, in the same graph revision and with no row changed: the
+        // mark is part of what a row is compared by, so `b` is pushed again and nothing else is.
+        state.workflows.set("dag-slot", defined({ b: "c" }))
+        yield* publishEvent("dag-slot", DagEvent.WorkflowConfigUpdated.type)
+        const fourth = yield* waitPatches(collector, 4)
+        expect(fourth[3].resync).toBeUndefined()
+        expect(fourth[3].nodes.map((node) => [node.id, node.expanded_from])).toEqual([["b", "c"]])
+
+        // A node that gets a mark is pushed with it, and one that loses it is pushed without the field.
+        state.workflows.set("dag-slot", defined({ a: "c" }))
+        yield* publishEvent("dag-slot", DagEvent.WorkflowConfigUpdated.type)
+        const fifth = yield* waitPatches(collector, 5)
+        expect(fifth[4].nodes.map((node) => node.id).sort()).toEqual(["a", "b"])
+        expect(fifth[4].nodes.find((node) => node.id === "a")?.expanded_from).toBe("c")
+        expect(fifth[4].nodes.find((node) => node.id === "b")).not.toHaveProperty("expanded_from")
+      }),
+    ).pipe(Effect.provide(runtime(state)))
+  })
+
+  it.instance("keeps pushing rows, without the mark, when the stored definition cannot be read", () => {
+    const state = control()
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        const instance = yield* InstanceState.context
+        state.workflows.set("dag-bad", {
+          ...workflow("dag-bad", "ses-bad", instance.directory),
+          config: slotted({ b: "a" }),
+        })
+        state.nodes.set("dag-bad", [nodeRow("dag-bad", "a"), nodeRow("dag-bad", "b")])
+        yield* (yield* DagNodePublisher.Service).init()
+        yield* publishEvent("dag-bad", DagEvent.NodeRegistered.type)
+        yield* waitPatches(collector, 1)
+
+        // A definition that cannot be parsed costs the rows their mark, and nothing else: the publisher goes on, and
+        // the row that changed is the one that is pushed.
+        state.workflows.set("dag-bad", { ...workflow("dag-bad", "ses-bad", instance.directory), config: "{ damaged" })
+        state.nodes.set("dag-bad", [nodeRow("dag-bad", "a"), nodeRow("dag-bad", "b", "running")])
+        yield* publishEvent("dag-bad", DagEvent.NodeStarted.type, { nodeID: "b" })
+        const patches = yield* waitPatches(collector, 2)
+        expect(patches[1].resync).toBeUndefined()
+        // `b` lost its mark with the definition, which is a change of the view too; `a` never had one.
+        expect(patches[1].nodes.map((node) => node.id)).toEqual(["b"])
+        expect(patches[1].nodes[0]).toMatchObject({ id: "b", status: "running" })
+        expect(patches[1].nodes[0]).not.toHaveProperty("expanded_from")
       }),
     ).pipe(Effect.provide(runtime(state)))
   })

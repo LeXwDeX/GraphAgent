@@ -58,8 +58,9 @@ const BLOCK_TIER: Record<WorkflowBlockKind, Tier> = {
 
 /**
  * Whether a join node of `graph` names `nodeID` as one of its items, that is, whether an expansion planned the
- * node. A child carries no marker of its own (its definition is a plain read-only worker), so the join node that
- * waits for it is the record that it is one.
+ * node as a worker. A child carries the marks of every node an expansion generated (`compose_subtree`,
+ * `expanded_from`), but so do a nested split node and slot, which are the composer's own work and take their tier
+ * from `generated_helper`, `expand` and `join`; the join node that waits for a worker is the record that it is one.
  */
 export function isComposeChild(graph: TierNode["graph"], nodeID: string): boolean {
   return graph?.some((node) => node.join?.items.some((item) => item.node === nodeID) === true) === true

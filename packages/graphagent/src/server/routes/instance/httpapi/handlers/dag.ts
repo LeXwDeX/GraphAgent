@@ -46,6 +46,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
     const observedNodes = Effect.fn("DagHttpApi.observedNodes")(function* (
       rows: ReadonlyArray<DagStore.NodeRow>,
       ownerSessionID: string,
+      config: string,
     ) {
       const first = rows[0]
       if (first === undefined) return []
@@ -67,7 +68,9 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
         })),
       )
       const byNode: ReadonlyMap<string, DagMessages.Metadata> = metadata.ok ? metadata.value : new Map()
-      return rows.map((row) => DagNodeView.observed(node(row), byNode.get(row.id)))
+      // #1158: `expanded_from` is part of the workflow's definition, not of a node row.
+      const marks = DagNodeView.expandedFrom(config)
+      return rows.map((row) => DagNodeView.observed(node(row, marks.get(row.id)), byNode.get(row.id)))
     })
 
     const workflowInProject = Effect.fn("DagHttpApi.workflowInProject")(function* (dagID: string) {
@@ -122,7 +125,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       // renders the CURRENT graph revision only (zero TUI changes: the
       // server filters).
       const rows = yield* dag.store.getCurrentNodes(ctx.params.dagID).pipe(Effect.orDie)
-      return yield* observedNodes(rows, workflow.sessionId)
+      return yield* observedNodes(rows, workflow.sessionId, workflow.config)
     })
 
     return handlers

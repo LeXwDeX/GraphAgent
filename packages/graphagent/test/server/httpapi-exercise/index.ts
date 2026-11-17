@@ -2171,7 +2171,8 @@ const scenarios: Scenario[] = [
           ctx.dag({
             sessionID: s.id,
             nodes: [
-              { id: "a", name: "Node A", worker_type: "general", depends_on: [], required: true },
+              // #1158 PR5: `a` is a node a compose expansion generated for the slot `b`, which waits for it.
+              { id: "a", name: "Node A", worker_type: "general", depends_on: [], required: true, expanded_from: "b" },
               { id: "b", name: "Node B", worker_type: "general", depends_on: ["a"], required: false },
             ],
           }),
@@ -2201,6 +2202,10 @@ const scenarios: Scenario[] = [
         const pristine = body.find((node: any) => node.id === "a")
         object(pristine)
         check(!("error_class" in pristine), "error_class should be absent on non-failed nodes")
+        // #1158 PR5: the slot that generated a node is part of the node's definition, which a row has no column for.
+        // It reaches the wire next to the mailbox counters, and only on the node an expansion generated.
+        check(pristine.expanded_from === "b", "a generated node should expose the slot that generated it")
+        check(!("expanded_from" in failed), "expanded_from should be absent on nodes no expansion generated")
         check(typeof pristine.attempt_id === "string", "running node should expose exact attempt identity")
         check(typeof pristine.last_activity_at === "string", "node should expose its last activity timestamp")
         check(
