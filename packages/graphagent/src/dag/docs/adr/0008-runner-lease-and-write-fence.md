@@ -789,7 +789,25 @@ fall into two classes, plus the one that is replaced.
 
 ### Decision 7: the host sweep (4b-B)
 
-See PR for 4b-B.
+The host-level `DagSupervisionSweep` no longer assumes that the process's
+database owns every workflow row it can read. It reads the lease table
+(`DagLease.held`) and never writes it: it holds no lease and carries no token.
+
+- Workspace failure (`failUnusableWorkspaces`) acts only on a workflow with no
+  live lease: no row, or `expires_at <= now`, the boundary at which
+  `DagLease.claim` lets another runner take over. A live lease is left to its
+  holder, whoever it is, this process included; the holder's own reconcile
+  round judges the location (decision 6, row 4). The clock is read before the
+  lease row, in the reconciler's order. Only rows whose location is unusable
+  pay for the read.
+- A lease that cannot be read (a database defect such as `SQLITE_BUSY`) is not
+  "no lease": the row is logged and left for the next tick.
+- The node-timeout settle is unchanged. It is a durable-fact write bounded by
+  the attempt identity and reads no lease.
+- The fallback still holds: an instance that is torn down releases its leases
+  in its exit finalizer, and a dead process stops renewing, so its lease runs
+  out within the TTL. The case the sweep exists for, nobody driving the row,
+  still has no live lease.
 
 ### Decision 8: line counts of `loop.ts` (4b-A)
 
