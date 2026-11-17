@@ -27,9 +27,9 @@
  * children left it anything to join. The scheduler's admission seam, next to the
  * `fan_out` expansion of ADR-0004 (`DagComposeExpansion`), reads the stored state,
  * calls them and writes the result, with `Dag.extend` for an expansion and a node
- * failure for a refused join. Until the rest of the runtime half lands (#1158
- * PR3b-2: coverage and the model-visible schema) the submission gate below keeps a
- * graph that holds a compose block from being submitted.
+ * failure for a refused join. The Workflow Authoring Check submits the compiled
+ * graph as it is: nothing holds a compose block back, and `DagCoverage` reads what an
+ * expansion left in the persisted `join` back into the coverage section.
  */
 
 import { AgentArtifact } from "@/agent/artifact"
@@ -496,6 +496,24 @@ export function compileNodes(nodes: readonly NodeConfig[], catalog: Catalog | un
     compiled.push(...splitAndSlot(node, checked.composer, limits))
   }
   return { nodes: compiled, problems }
+}
+
+/**
+ * The compose blocks `compileNodes` left as one node because it had no catalog. Run as
+ * that node, the composer would answer the task statement and nothing would expand, so
+ * a profile that starts workflows (`environment`) reports each one. The portable
+ * profile has no catalog by design: it cannot tell whether a composer is usable, and the
+ * start, which compiles with the catalog, is where that is decided.
+ */
+export function uncompiledBlocks(nodes: readonly NodeConfig[]): Problem[] {
+  return nodes
+    .filter((node) => node.block === "compose" && node.expand === undefined && node.generated_helper === undefined)
+    .map((node) => ({
+      node: node.id,
+      path: `config.blocks[${node.id}]`,
+      message: `compose block "${node.id}" cannot be compiled: the environment has no agent catalog, so its composer "${node.worker_type}" cannot be resolved`,
+      hint: "Validate and start the workflow where the agent catalog is loaded",
+    }))
 }
 
 function checkNode(node: NodeConfig, catalog: Catalog): { composer: Composer } | { problem: Problem } {
@@ -1144,31 +1162,6 @@ export function checkJoin(join: Join, child: (node: string) => JoinChild | undef
           ? `Compose join did not run: the fallback worker produced no result: ${list(missing)}`
           : `Compose join did not run: no item produced a result: ${list(missing)}`,
   }
-}
-
-// ============================================================================
-// The submission gate (goes away with the runtime expansion)
-// ============================================================================
-
-/**
- * The scheduler cannot expand a slot yet (#1158 PR3b), so a graph that holds a
- * compose block or a composer node must not be submitted: it would run the
- * half-built join node as an ordinary node. The Workflow Authoring Check calls
- * this for every graph it prepares, and the runtime expansion removes the call
- * together with this function.
- */
-export function gate(nodes: readonly NodeConfig[]): Problem[] {
-  return nodes
-    .filter((node) => node.expand !== undefined || (node.block === "compose" && node.generated_helper === undefined))
-    .map((node) => {
-      const block = node.block === "compose"
-      return {
-        node: node.id,
-        path: block ? `config.blocks[${node.id}]` : `nodes[${node.id}]`,
-        message: `compose 的运行时展开尚未启用（#1158 PR3b）: ${block ? "compose block" : "composer node"} "${node.id}" cannot be submitted yet, because the engine cannot expand it while the workflow runs`,
-        hint: "Use explore and plan blocks instead, or fan the work out by hand with run.extend",
-      }
-    })
 }
 
 export * as DagCompose from "./compose"

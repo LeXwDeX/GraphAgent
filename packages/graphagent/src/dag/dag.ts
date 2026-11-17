@@ -177,12 +177,11 @@ export interface NodeConfig {
    * split node. A node that carries it is never to be spawned as authored: at
    * admission the split node's plan replaces it with the expanded subtree and the
    * join node under its id, as `fan_out` does for a writer
-   * (`DagComposeExpansion`, in the loop's admission seam). The Workflow Authoring
-   * Check still refuses to submit a graph with a slot until the rest of the
-   * feature lands (`DagCompose.gate`). Written by the compiler (`DagCompose`),
-   * never by an author; no model-writable node schema has the field. A recovery
-   * points it at the recovered split node, and a replan can neither change nor
-   * clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+   * (`DagComposeExpansion`, in the loop's admission seam). Written by the
+   * compiler (`DagCompose`), never by an author; no model-writable node schema
+   * has the field. A recovery points it at the recovered split node, and a
+   * replan can neither change nor clear it
+   * (`ReplanDefinition.changedEngineOwnedFields`). */
   expand?: string
   /** #1158: what the join node of an expanded slot joins. Written at expansion,
    * in the same extend that replaces the slot, so the join's admission check and

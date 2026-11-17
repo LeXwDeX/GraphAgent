@@ -797,6 +797,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                           "verify",
                           "review",
                           "synthesize",
+                          "compose",
                         ],
                         "type": "string",
                       },

@@ -1252,6 +1252,64 @@ describe("workflow tool execution", () => {
     }),
   )
 
+  // #1158: `compose` is a block kind a model may draft. The file is portable-valid, because the portable profile has no
+  // agent catalog to judge a composer by; the environment profile, which every start runs under, names what is missing.
+  runtime.effect("draft renders a compose block into a spec file; validate says which composer is missing", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const result = yield* workflow.execute(
+        {
+          params: {
+            action: "spec",
+            operation: "draft",
+            config: {
+              name: "draft-compose",
+              objective: "Compare three session persistence designs",
+              blocks: [
+                { id: "map", kind: "explore" },
+                {
+                  id: "survey",
+                  kind: "compose",
+                  worker_type: "surveyor",
+                  depends_on: ["map"],
+                  instruction: "Compare the designs",
+                },
+                { id: "decide", kind: "plan", depends_on: ["survey"] },
+              ],
+            },
+          },
+        },
+        toolContext(),
+      )
+      const draftPath = path.join(workflowDraftsArea(projectID), "draft-compose.yaml")
+      expect(result.output).toContain(draftPath)
+      expect(result.output).not.toContain("validation errors")
+      expect(result.metadata?.blocked).toBeUndefined()
+
+      const read = yield* workflow.execute(
+        { params: { action: "spec", operation: "read", spec_path: draftPath } },
+        toolContext(),
+      )
+      const parsed = JSON.parse(read.output)
+      expect(parsed.validation.valid).toBe(true)
+      expect(parsed.spec.config.blocks.map((block: { kind: string }) => block.kind)).toEqual([
+        "explore",
+        "compose",
+        "plan",
+      ])
+
+      const validated = yield* workflow.execute(
+        { params: { action: "spec", operation: "validate", spec_path: draftPath, profile: "environment" } },
+        toolContext(),
+      )
+      const checked = JSON.parse(validated.output)
+      expect(checked.valid).toBe(false)
+      expect(checked.errors.map((error: { message: string }) => error.message)).toContain(
+        'compose block "survey": agent "surveyor" does not exist',
+      )
+    }),
+  )
+
   runtime.effect("start surfaces legacy model warnings while preserving the authored pin", () =>
     Effect.gen(function* () {
       published.length = 0

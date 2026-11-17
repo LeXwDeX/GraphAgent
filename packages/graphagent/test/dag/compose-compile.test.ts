@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-// #1158 PR3a: a compose block, or a node whose worker is a composer, compiles to
-// a split node and an expansion slot; the submission gate keeps such a graph from
-// being submitted until the runtime can expand the slot.
+// #1158: a compose block, or a node whose worker is a composer, compiles to a
+// split node and an expansion slot, which the scheduler expands when the split
+// node has settled. The engine's marks on those nodes are not model-writable, and
+// `compose` is a block kind on the model-facing wire.
 import { describe, expect, it } from "bun:test"
 import { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import { Result, Schema } from "effect"
@@ -266,7 +267,7 @@ describe("compiling a compose block into a split node and an expansion slot", ()
     const result = DagCompose.compileNodes(nodes, catalog(), limits)
     expect(result.nodes).toEqual(nodes)
     expect(result.problems).toEqual([])
-    expect(DagCompose.gate(result.nodes)).toEqual([])
+    expect(DagCompose.uncompiledBlocks(result.nodes)).toEqual([])
   })
 
   it("refuses an input alias in the namespace the expansion binds its own nodes under", () => {
@@ -518,23 +519,22 @@ describe("the composer nodes it cannot compile", () => {
   })
 })
 
-describe("the submission gate", () => {
-  const { nodes } = DagCompose.compileNodes(compileBlocks(route), catalog(), limits)
+describe("a compose block the compiler had no catalog for", () => {
+  const compiled = DagCompose.compileNodes(compileBlocks(route), catalog(), limits).nodes
+  const unexpanded = compileBlocks(route)
 
-  it("refuses a graph with an expansion slot, once per compose block, and says why", () => {
-    const found = DagCompose.gate(nodes)
+  it("is reported once per block, so it never runs as the one node it still is", () => {
+    const found = DagCompose.uncompiledBlocks(unexpanded)
     expect(found).toHaveLength(1)
     expect(found[0]).toMatchObject({ node: "survey", path: "config.blocks[survey]" })
-    expect(found[0]?.message).toContain("compose 的运行时展开尚未启用（#1158 PR3b）")
-    expect(found[0]?.message).toContain('compose block "survey"')
+    expect(found[0]?.message).toContain('compose block "survey" cannot be compiled')
+    expect(found[0]?.message).toContain('composer "surveyor"')
+    const two = compileBlocks([...route, { id: "second", kind: "compose", worker_type: "mapper" }])
+    expect(DagCompose.uncompiledBlocks(two).map((problem) => problem.node)).toEqual(["survey", "second"])
   })
 
-  it("refuses a compose block that could not be compiled, so it never runs as an ordinary node", () => {
-    const unexpanded = compileBlocks(route)
-    expect(DagCompose.gate(unexpanded).map((problem) => problem.node)).toEqual(["survey"])
-  })
-
-  it("refuses a composer node too, naming the node", () => {
+  it("reports nothing for what the compiler did compile: the split node, the slot, and every other graph", () => {
+    expect(DagCompose.uncompiledBlocks(compiled)).toEqual([])
     const node: NodeConfig = {
       id: "survey",
       name: "Survey",
@@ -542,25 +542,24 @@ describe("the submission gate", () => {
       depends_on: [],
       prompt_template: { inline: "x" },
     }
-    const compiled = DagCompose.compileNodes([node], catalog(), limits).nodes
-    const found = DagCompose.gate(compiled)
-    expect(found).toHaveLength(1)
-    expect(found[0]).toMatchObject({ node: "survey", path: "nodes[survey]" })
-    expect(found[0]?.message).toContain('composer node "survey"')
-  })
-
-  it("lets every other graph through", () => {
+    expect(DagCompose.uncompiledBlocks(DagCompose.compileNodes([node], catalog(), limits).nodes)).toEqual([])
     const plain = compileBlocks([
       { id: "map", kind: "explore" },
       { id: "plan", kind: "plan", depends_on: ["map"], fan_out: undefined },
       { id: "build", kind: "coding", depends_on: ["plan"] },
     ])
-    expect(DagCompose.gate(plain)).toEqual([])
+    expect(DagCompose.uncompiledBlocks(plain)).toEqual([])
+  })
+
+  it("is left to the catalog when the composer cannot be used: that is reported there, not here", () => {
+    const result = DagCompose.compileNodes(compileBlocks([{ ...survey, worker_type: "researcher" }]), catalog(), limits)
+    expect(result.problems).toHaveLength(1)
+    expect(result.problems[0]?.message).toContain('agent "researcher" is not a composer')
   })
 })
 
-describe("why the gate exists", () => {
-  it("the scheduler core knows nothing of the marker: the slot is ready as soon as its split node completes", () => {
+describe("what holds an expansion slot back", () => {
+  it("is not the scheduler core: the slot is ready as soon as its split node completes", () => {
     const { nodes } = DagCompose.compileNodes(compileBlocks(route), catalog(), limits)
     const runtime = new WorkflowRuntime(
       nodes.map((node) => ({
@@ -574,39 +573,139 @@ describe("why the gate exists", () => {
     runtime.markSatisfied("map")
     expect(runtime.getReadyNodes()).toEqual(["survey--split"])
     runtime.markSatisfied("survey--split")
-    // Nothing here holds the slot back. Only the loop's admission seam could, the way it replaces a fan_out
-    // writer before spawning it, and that seam is the runtime half of #1158.
+    // Nothing here holds the slot back. Only the loop's admission seam does, the way it replaces a fan_out writer
+    // before spawning it: `DagComposeExpansion.expand`, covered by dag-compose-runtime.test.ts.
     expect(runtime.getReadyNodes()).toEqual(["survey"])
   })
 })
 
-describe("the expansion marker is not model-writable", () => {
-  it("is not a field of the authoring node schema, and a node that carries it is refused", () => {
-    expect(Object.keys(DagValidation.NodeSchema.fields)).not.toContain("expand")
-    const decode = Schema.decodeUnknownResult(DagValidation.NodeSchema, DagValidation.STRICT_PARSE_OPTIONS)
-    const node = { id: "a", name: "a", worker_type: "explore", depends_on: [], prompt_template: { inline: "x" } }
-    expect(Result.isSuccess(decode(node))).toBe(true)
-    expect(Result.isFailure(decode({ ...node, expand: "a--split" }))).toBe(true)
-    // The compiler's own helper marker is no more writable.
-    expect(Result.isFailure(decode({ ...node, generated_helper: "split" }))).toBe(true)
+// The engine's own marks on a compose node. None of them is a field a model can write, in any schema it writes by:
+// the tool's wire, the strict authoring schemas that decode the files it hands over, or a draft it asks the tool to
+// write for it.
+const ENGINE_MARKS = ["expand", "join", "compose_subtree", "generated_helper"] as const
+
+/** Every property name that appears anywhere in a JSON schema, at any depth. */
+function propertyNames(schema: unknown): Set<string> {
+  const names = new Set<string>()
+  const walk = (value: unknown) => {
+    if (Array.isArray(value)) return value.forEach(walk)
+    if (typeof value !== "object" || value === null) return
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "properties" && typeof child === "object" && child !== null && !Array.isArray(child))
+        Object.keys(child).forEach((name) => names.add(name))
+      walk(child)
+    }
+  }
+  walk(schema)
+  return names
+}
+
+const jsonSchemaOf = (schema: Schema.Top) => JSON.parse(JSON.stringify(Schema.toJsonSchemaDocument(schema)))
+
+describe("the engine's marks on a compose node are not model-writable", () => {
+  const node = { id: "a", name: "a", worker_type: "explore", depends_on: [], prompt_template: { inline: "x" } }
+  const marks: Record<(typeof ENGINE_MARKS)[number], unknown> = {
+    expand: "a--split",
+    join: { plan: "a--split", items: [] },
+    compose_subtree: { root: "a", depth: 1 },
+    generated_helper: "split",
+  }
+
+  it("are not fields of the authoring schemas, and a node or block that carries one is refused", () => {
+    for (const mark of ENGINE_MARKS) {
+      expect(Object.keys(DagValidation.NodeSchema.fields), mark).not.toContain(mark)
+      expect(Object.keys(DagBlocks.WorkflowBlock.fields), mark).not.toContain(mark)
+    }
+    const decodeNode = Schema.decodeUnknownResult(DagValidation.NodeSchema, DagValidation.STRICT_PARSE_OPTIONS)
+    expect(Result.isSuccess(decodeNode(node))).toBe(true)
+    const decodeBlock = Schema.decodeUnknownResult(DagBlocks.WorkflowBlock, DagValidation.STRICT_PARSE_OPTIONS)
+    const block = { id: "survey", kind: "compose", worker_type: "surveyor" }
+    expect(Result.isSuccess(decodeBlock(block))).toBe(true)
+    for (const mark of ENGINE_MARKS) {
+      expect(Result.isFailure(decodeNode({ ...node, [mark]: marks[mark] })), `node ${mark}`).toBe(true)
+      expect(Result.isFailure(decodeBlock({ ...block, [mark]: marks[mark] })), `block ${mark}`).toBe(true)
+    }
   })
 
-  it("is not on the wire the model calls the tool through", () => {
-    expect(Object.keys(CompactNode.fields)).not.toContain("expand")
-    expect(Object.keys(CompactBlock.fields)).not.toContain("expand")
-    expect(Object.keys(DraftGraph.fields)).not.toContain("expand")
-    const wire = JSON.stringify(ToolJsonSchema.fromSchema(WorkflowParameters))
-    expect(wire).not.toContain("expand")
-    expect(wire).not.toContain("generated_helper")
+  it("are refused in every document a model hands over: start, extend and replan", () => {
+    const start = Schema.decodeUnknownResult(DagValidation.StartSpec, DagValidation.STRICT_PARSE_OPTIONS)
+    const extend = Schema.decodeUnknownResult(DagValidation.ExtendSpec, DagValidation.STRICT_PARSE_OPTIONS)
+    const replan = Schema.decodeUnknownResult(DagValidation.ReplanSpec, DagValidation.STRICT_PARSE_OPTIONS)
+    const block = { id: "survey", kind: "compose", worker_type: "surveyor" }
+    const config = { name: "w", objective: OBJECTIVE, blocks: [block] }
+    expect(Result.isSuccess(start({ config }))).toBe(true)
+    expect(Result.isSuccess(extend({ objective: OBJECTIVE, blocks: [block] }))).toBe(true)
+    expect(Result.isSuccess(replan({ fragment: config }))).toBe(true)
+    for (const mark of ENGINE_MARKS) {
+      const marked = { ...block, [mark]: marks[mark] }
+      const markedNode = { ...node, [mark]: marks[mark] }
+      expect(Result.isFailure(start({ config: { ...config, blocks: [marked] } })), `start ${mark}`).toBe(true)
+      expect(Result.isFailure(start({ config: { name: "w", nodes: [markedNode] } })), `start node ${mark}`).toBe(true)
+      expect(Result.isFailure(extend({ objective: OBJECTIVE, blocks: [marked] })), `extend ${mark}`).toBe(true)
+      expect(Result.isFailure(extend({ nodes: [markedNode] })), `extend node ${mark}`).toBe(true)
+      expect(Result.isFailure(replan({ fragment: { ...config, blocks: [marked] } })), `replan ${mark}`).toBe(true)
+    }
   })
 
-  it("keeps compose off the wire until the runtime can expand it, while files may already use it", () => {
-    const wireKinds = (() => {
-      const kind = CompactBlock.fields.kind
-      return Object.values(JSON.parse(JSON.stringify(ToolJsonSchema.fromSchema(kind))).enum ?? [])
-    })()
-    expect(wireKinds).not.toContain("compose")
-    expect(DagBlocks.WORKFLOW_BLOCK_KINDS).toContain("compose")
-    expect([...DagBlocks.WORKFLOW_BLOCK_KINDS].filter((kind) => !wireKinds.includes(kind))).toEqual(["compose"])
+  it("are no property of any schema the model sees or writes by: the tool's wire and every authoring schema", () => {
+    for (const mark of ENGINE_MARKS) {
+      for (const [name, fields] of Object.entries({ CompactNode, CompactBlock, DraftGraph })) {
+        expect(Object.keys(fields.fields), `${name} ${mark}`).not.toContain(mark)
+      }
+    }
+    const documents = {
+      wire: ToolJsonSchema.fromSchema(WorkflowParameters),
+      start: jsonSchemaOf(DagValidation.StartSpec),
+      extend: jsonSchemaOf(DagValidation.ExtendSpec),
+      replan: jsonSchemaOf(DagValidation.ReplanSpec),
+      node: jsonSchemaOf(DagValidation.NodeSchema),
+      block: jsonSchemaOf(DagBlocks.WorkflowBlock),
+    }
+    for (const [name, document] of Object.entries(documents)) {
+      const names = propertyNames(document)
+      // A schema that lists no property at all would pass every check below, so it has to list the ones that exist.
+      expect(names.has("depends_on"), name).toBe(true)
+      for (const mark of ENGINE_MARKS) expect(names.has(mark), `${name} ${mark}`).toBe(false)
+    }
+  })
+})
+
+describe("compose on the model-facing wire", () => {
+  const kind = () => JSON.parse(JSON.stringify(ToolJsonSchema.fromSchema(CompactBlock.fields.kind)))
+
+  it("is a block kind a draft can name, and the wire lists exactly the kinds the authoring schema does", () => {
+    expect(kind().enum).toEqual([...DagBlocks.WORKFLOW_BLOCK_KINDS])
+    expect(kind().enum).toContain("compose")
+    const decode = Schema.decodeUnknownSync(WorkflowParameters, { onExcessProperty: "error" })
+    const draft = {
+      action: "spec",
+      operation: "draft",
+      config: {
+        name: "survey-draft",
+        objective: OBJECTIVE,
+        blocks: [
+          { id: "map", kind: "explore" },
+          {
+            id: "survey",
+            kind: "compose",
+            worker_type: "surveyor",
+            depends_on: ["map"],
+            instruction: "Compare the designs",
+            required: true,
+            report_to_parent: false,
+            worker_config: { timeout_ms: 60000 },
+          },
+        ],
+      },
+    }
+    expect(() => decode({ params: draft })).not.toThrow()
+    expect(() =>
+      decode({
+        params: { ...draft, config: { ...draft.config, blocks: [{ id: "survey", kind: "compose", expand: "x" }] } },
+      }),
+    ).toThrow()
+    expect(() =>
+      decode({ params: { ...draft, config: { ...draft.config, blocks: [{ id: "x", kind: "synthesise" }] } } }),
+    ).toThrow()
   })
 })

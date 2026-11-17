@@ -3,11 +3,13 @@
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- service mocks use the narrow runtime surface exercised here
 // #1158 PR3b-1: the loop's admission seam for an expansion slot, with a scripted worker. A compiled compose
-// block is created directly (the authoring gate is bypassed, as in compose-persistence.test.ts); each prompt
+// block is created directly (without the authoring check, as in compose-persistence.test.ts); each prompt
 // a node receives is handed to the test, which answers it the way the model would, so the split node's plan,
 // the children's artifacts and the join node all go through the real spawn and settlement path. PR3b-2 adds
-// the nested plans of a recursive composer, and what cancellation and the token budget do to a subtree.
-import { describe, expect } from "bun:test"
+// the nested plans of a recursive composer, and what cancellation and the token budget do to a subtree. The
+// last group starts the same expansion through the workflow tool, over a spec file, the way a model does: the
+// Workflow Authoring Check, `run.start` and `run.extend`, the expansion, the join and the coverage the parent reads.
+import { afterAll, describe, expect } from "bun:test"
 import { Deferred, Effect, Layer, Option, Queue, Scope } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { AbsolutePath } from "@graphagent/core/schema"
@@ -21,10 +23,13 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
 import { DagBlocks } from "@/dag/blocks"
+import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagBudget } from "@/dag/budget"
 import { DagCompose } from "@/dag/compose"
+import { DagControl } from "@/dag/control"
 import { Dag, type NodeConfig, parseWorkflowConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import type { DagValidation } from "@/dag/validation"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
@@ -32,11 +37,16 @@ import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { controlWorkflow } from "@/tool/workflow/control"
+import { inspectWorkflow } from "@/tool/workflow/inspect"
+import { runWorkflow } from "@/tool/workflow/run"
+import type { ControlParams, InspectParams, RunParams } from "@/tool/workflow/schema"
 import { awaitWithTimeout as awaitUntil, it, pollWithTimeout as pollUntil } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { stubChildren } from "../lib/child-runs"
-import { agent, agents, catalog, compose } from "./compose-fixtures"
+import { agent, agents, catalog, compose, writerRules } from "./compose-fixtures"
 import { transactLayer } from "./fixture/transact"
+import { cleanup, failureText, toolContext, workflowID, writeSpec } from "./workflow-harness"
 
 // Every wait returns as soon as its state is reached, so the bound only decides how long a real failure takes to report.
 const STALL_TOLERANCE = "20 seconds"
@@ -151,12 +161,15 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, harness: Harness) {
   // and raises it with `onBudgetChanged`, which is what the usage and `/dag-mode budget` end in.
   const config = Layer.mock(Config.Service, { dagGlobal: () => Effect.succeed({} as never) })
   const budget = DagBudget.layer.pipe(Layer.provide(Layer.mergeAll(base, session, config)))
-  return Layer.mergeAll(base, loop, budget)
+  // What the workflow tool applies a mutation through.
+  const control = DagControl.layer.pipe(Layer.provide(base))
+  return Layer.mergeAll(base, loop, budget, control)
 }
 
 function runLoopTest<A>(
   test: (services: {
     dag: Dag.Interface
+    control: DagControl.Interface
     loop: DagLoop.Interface
     store: DagStore.Interface
     budget: DagBudget.Interface
@@ -169,6 +182,7 @@ function runLoopTest<A>(
     const harness: Harness = { catalog: agents(), starts: [] }
     return yield* Effect.gen(function* () {
       const dag = yield* Dag.Service
+      const control = yield* DagControl.Service
       const loop = yield* DagLoop.Service
       const store = yield* DagStore.Service
       const budget = yield* DagBudget.Service
@@ -190,7 +204,7 @@ function runLoopTest<A>(
         })
         .run()
         .pipe(Effect.orDie)
-      return yield* test({ dag, loop, store, budget, records, harness })
+      return yield* test({ dag, control, loop, store, budget, records, harness })
     }).pipe(
       Effect.provide(runtimeLayer(records, harness)),
       Effect.provideService(InstanceRef, {
@@ -1137,6 +1151,295 @@ describe("DagLoop compose under the token budget", () => {
         expect(
           (yield* workflowConfig(store, dagID))?.nodes.find((node) => node.id === "survey")?.join?.degraded,
         ).toBeUndefined()
+      }),
+    ),
+  )
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The same expansion, reached the way a model reaches it: a spec file the workflow tool starts or extends with. Nothing
+// below builds a graph by hand, so the Workflow Authoring Check, the durable create or extend, the scheduler's
+// expansion, the join and the coverage section sit on one path.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("a compose block submitted through the workflow tool", () => {
+  afterAll(cleanup)
+
+  const OBJECTIVE = "Compare three session persistence designs"
+  const DECIDE = "decide: plan"
+  const PARENT_SESSION = "ses_compose_parent"
+
+  const environment = (list: DagCompose.CatalogAgent[]): DagValidation.EnvironmentCatalogs => ({
+    worker_types: new Set([...list.map((entry) => entry.name), "plan", "build", "general"]),
+    composers: DagCompose.catalogFrom(list),
+  })
+
+  /** What the tool is called with: the live agent catalog of the harness, so a test may change it between calls. */
+  const caller = (services: { dag: Dag.Interface; control: DagControl.Interface; harness: Harness }) => ({
+    dag: services.dag,
+    control: services.control,
+    authoring: WorkflowAuthoring.make({
+      loadEnvironment: () => Effect.sync(() => environment(services.harness.catalog)),
+    }),
+    sessionID: PARENT_SESSION,
+    session: { directory: process.cwd(), projectID: Project.ID.global, model: undefined },
+    ctx: toolContext(PARENT_SESSION, "build"),
+  })
+
+  const SURVEY = { id: "survey", kind: "compose", worker_type: "surveyor", instruction: "Compare the designs" }
+  const DECIDE_BLOCK = { id: "decide", kind: "plan", depends_on: ["survey"], instruction: "Choose one design" }
+  const specOf = (...blocks: unknown[]) => writeSpec({ config: { name: "survey-route", objective: OBJECTIVE, blocks } })
+  const startOf = (specPath: string) => ({ action: "run", operation: "start", spec_path: specPath }) as RunParams
+
+  const completed = (store: DagStore.Interface, dagID: string) =>
+    pollWithTimeout(
+      store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
+      "the workflow did not complete",
+    )
+
+  const status = (dag: Dag.Interface, dagID: string) =>
+    inspectWorkflow({ dag, sessionID: PARENT_SESSION }, {
+      action: "inspect",
+      operation: "status",
+      workflow_id: dagID,
+    } as InspectParams).pipe(
+      Effect.map(
+        (result) =>
+          JSON.parse(result.output) as {
+            status: string
+            coverage?: { node_id: string; reason: string }[]
+            nodes: { id: string; status: string; error_class?: string }[]
+          },
+      ),
+    )
+
+  it.live("runs a block a model wrote from run.start to the join node: check, expansion, join, downstream", () =>
+    runLoopTest((services) =>
+      Effect.gen(function* () {
+        const { dag, loop, store, records } = services
+        yield* loop.init()
+        const started = yield* runWorkflow(caller(services), startOf(specOf(SURVEY, DECIDE_BLOCK)))
+        expect(started.metadata?.blocked).toBeUndefined()
+        expect(started.output).toContain("3 nodes registered")
+        const dagID = workflowID(started.output)
+        // What the check prepared is what was stored: the split node and the slot, the marker on the slot alone.
+        const stored = yield* workflowConfig(store, dagID)
+        expect(stored?.nodes.map((node) => node.id)).toEqual(["survey--split", "survey", "decide"])
+        expect(stored?.nodes.filter((node) => node.expand !== undefined).map((node) => node.id)).toEqual(["survey"])
+
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        expect(split.title).toBe(SPLIT)
+        // The plan the composer is asked for is bounded by the catalog the check compiled against.
+        expect(split.text).toContain("researcher")
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("code", "explore")]))
+        const taken = yield* take(records, 2, "the children did not start")
+        expect(taken.map((record) => record.title).sort()).toEqual([child("code"), child("official")])
+        yield* Deferred.succeed(named(taken, child("official")).release, research("official says"))
+        yield* Deferred.succeed(named(taken, child("code")).release, findings("code says"))
+        const join = yield* awaitWithTimeout(Queue.take(records), "the join node did not start")
+        expect(join.title).toBe(JOIN)
+        expect(join.text).toContain("official says")
+        expect(join.text).toContain("code says")
+        yield* Deferred.succeed(join.release, surveyReport("joined"))
+        const decide = yield* awaitWithTimeout(Queue.take(records), "the downstream block did not start")
+        expect(decide.title).toBe(DECIDE)
+        expect(decide.text).toContain("joined")
+        yield* Deferred.succeed(decide.release, "decided")
+        yield* completed(store, dagID)
+
+        // The expansion followed its plan: nothing degraded, nothing was left unsplit, nothing failed.
+        const view = yield* status(dag, dagID)
+        expect(view.status).toBe("completed")
+        expect(view.coverage).toBeUndefined()
+        expect(view.nodes.map((node) => node.id).sort()).toEqual(
+          ["decide", "survey", "survey--code", "survey--official", "survey--split"].sort(),
+        )
+        expect(view.nodes.every((node) => node.status === "completed")).toBe(true)
+        expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
+      }),
+    ),
+  )
+
+  it.live("refuses a start whose composer the catalog cannot run, names the agent and why, and creates nothing", () =>
+    runLoopTest((services) =>
+      Effect.gen(function* () {
+        const { loop, store, harness } = services
+        yield* loop.init()
+        // A user-level explore.md that lets explore write: public no more, so mapper has nothing to dispatch to.
+        harness.catalog = agents().map((entry) =>
+          entry.name === "explore" ? agent("explore", { permission: writerRules, contract: entry.contract }) : entry,
+        )
+        const refused = yield* failureText(
+          runWorkflow(caller(services), startOf(specOf({ id: "map-repo", kind: "compose", worker_type: "mapper" }))),
+        )
+        expect(refused).toContain('compose block "map-repo": composer "mapper" is unavailable')
+        expect(refused).toContain('agent "explore"')
+        expect(refused).toContain("can write files")
+        expect(yield* store.listWorkflows()).toEqual([])
+        // A worker that is no composer is refused too, and a block with no worker_type at all.
+        const worker = yield* failureText(
+          runWorkflow(caller(services), startOf(specOf({ ...SURVEY, worker_type: "researcher" }))),
+        )
+        expect(worker).toContain('agent "researcher" is not a composer')
+        const { worker_type: _worker, ...bare } = SURVEY
+        const missing = yield* failureText(runWorkflow(caller(services), startOf(specOf(bare))))
+        expect(missing).toContain('Block "survey" (compose) requires worker_type')
+        expect(yield* store.listWorkflows()).toEqual([])
+      }),
+    ),
+  )
+
+  it.live("extends a live workflow with a compose block, which expands once the block it depends on is done", () =>
+    runLoopTest((services) =>
+      Effect.gen(function* () {
+        const { loop, store, records } = services
+        yield* loop.init()
+        const context = caller(services)
+        const started = yield* runWorkflow(
+          context,
+          startOf(
+            writeSpec({
+              config: { name: "map-first", objective: OBJECTIVE, blocks: [{ id: "map", kind: "explore" }] },
+            }),
+          ),
+        )
+        const dagID = workflowID(started.output)
+        const map = yield* awaitWithTimeout(Queue.take(records), "the map node did not start")
+        const extended = yield* runWorkflow(context, {
+          action: "run",
+          operation: "extend",
+          workflow_id: dagID,
+          spec_path: writeSpec({ objective: OBJECTIVE, blocks: [{ ...SURVEY, depends_on: ["map"] }] }),
+        } as RunParams)
+        expect(extended.output).toContain("Added: survey--split, survey")
+        const config = yield* workflowConfig(store, dagID)
+        expect(config?.nodes.find((node) => node.id === "survey")?.expand).toBe("survey--split")
+
+        // Nothing of the extension runs before the block it depends on is done.
+        expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
+        yield* Deferred.succeed(map.release, "mapped")
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        expect(split.title).toBe(SPLIT)
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("code", "explore")]))
+        const taken = yield* take(records, 2, "the children did not start")
+        yield* Deferred.succeed(named(taken, child("official")).release, research("official says"))
+        yield* Deferred.succeed(named(taken, child("code")).release, findings("code says"))
+        const join = yield* awaitWithTimeout(Queue.take(records), "the join node did not start")
+        expect(join.title).toBe(JOIN)
+        yield* Deferred.succeed(join.release, surveyReport("joined"))
+        yield* completed(store, dagID)
+      }),
+    ),
+  )
+
+  it.live("adds a compose block with a replan fragment, which expands the same way", () =>
+    runLoopTest((services) =>
+      Effect.gen(function* () {
+        const { loop, store, records } = services
+        yield* loop.init()
+        const context = caller(services)
+        const started = yield* runWorkflow(
+          context,
+          startOf(
+            writeSpec({
+              config: { name: "map-first", objective: OBJECTIVE, blocks: [{ id: "map", kind: "explore" }] },
+            }),
+          ),
+        )
+        const dagID = workflowID(started.output)
+        const map = yield* awaitWithTimeout(Queue.take(records), "the map node did not start")
+        const replanned = yield* controlWorkflow(context, {
+          action: "control",
+          operation: "replan",
+          workflow_id: dagID,
+          spec_path: writeSpec({
+            fragment: { name: "survey-too", objective: OBJECTIVE, blocks: [{ ...SURVEY, depends_on: ["map"] }] },
+          }),
+        } as ControlParams)
+        expect(replanned.output).toContain("Added: survey--split, survey")
+        const config = yield* workflowConfig(store, dagID)
+        expect(config?.nodes.find((node) => node.id === "survey")?.expand).toBe("survey--split")
+
+        yield* Deferred.succeed(map.release, "mapped")
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        expect(split.title).toBe(SPLIT)
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("code", "explore")]))
+        const taken = yield* take(records, 2, "the children did not start")
+        yield* Deferred.succeed(named(taken, child("official")).release, research("official says"))
+        yield* Deferred.succeed(named(taken, child("code")).release, findings("code says"))
+        const join = yield* awaitWithTimeout(Queue.take(records), "the join node did not start")
+        expect(join.title).toBe(JOIN)
+        yield* Deferred.succeed(join.release, surveyReport("joined"))
+        yield* completed(store, dagID)
+      }),
+    ),
+  )
+
+  it.live("lists a degraded expansion in the coverage the parent reads, beside the split node that failed", () =>
+    runLoopTest((services) =>
+      Effect.gen(function* () {
+        const { dag, loop, store, records } = services
+        yield* loop.init()
+        const started = yield* runWorkflow(caller(services), startOf(specOf(SURVEY, DECIDE_BLOCK)))
+        const dagID = workflowID(started.output)
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        expect(split.title).toBe(SPLIT)
+        yield* dag.nodeFailed(dagID, "survey--split", "the model gave up", "exec_failed")
+        const fallback = yield* awaitWithTimeout(Queue.take(records), "the fallback worker did not start")
+        expect(fallback.title).toBe(child("fallback"))
+        yield* Deferred.succeed(fallback.release, research("everything, alone"))
+        const join = yield* awaitWithTimeout(Queue.take(records), "the join node did not start")
+        yield* Deferred.succeed(join.release, surveyReport("joined"))
+        const decide = yield* awaitWithTimeout(Queue.take(records), "the downstream block did not start")
+        yield* Deferred.succeed(decide.release, "decided")
+        yield* completed(store, dagID)
+
+        const view = yield* status(dag, dagID)
+        expect(view.status).toBe("completed")
+        expect(view.coverage).toEqual([
+          { node_id: "survey--split", reason: "failed: exec_failed: the model gave up" },
+          {
+            node_id: "survey",
+            reason: 'compose expansion degraded: the split node "survey--split" failed: the model gave up',
+          },
+        ])
+      }),
+    ),
+  )
+
+  it.live("lists a join the admission check refused, with its error class and the item that is missing", () =>
+    runLoopTest((services) =>
+      Effect.gen(function* () {
+        const { dag, loop, store, records } = services
+        yield* loop.init()
+        const started = yield* runWorkflow(caller(services), startOf(specOf(SURVEY, DECIDE_BLOCK)))
+        const dagID = workflowID(started.output)
+        const split = yield* awaitWithTimeout(Queue.take(records), "the split node did not start")
+        // `auditor` is an agent whose work is required: in this optional block its child stays optional, and it is
+        // the join node's admission check that finds the item missing.
+        yield* Deferred.succeed(split.release, plan([item("official", "researcher"), item("security", "auditor")]))
+        const taken = yield* take(records, 2, "the children did not start")
+        yield* dag.nodeFailed(dagID, "survey--security", "the audit crashed", "exec_failed")
+        yield* Deferred.succeed(named(taken, child("official")).release, research("official says"))
+        const refused = yield* pollWithTimeout(
+          store.getNode(dagID, "survey").pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+          "the join node was not refused",
+        )
+        expect(refused.errorClass).toBe("compose_required_missing")
+        // The optional join node failed, so its dependent runs on the failure as its placeholder and the workflow ends.
+        const decide = yield* awaitWithTimeout(Queue.take(records), "the downstream block did not start")
+        yield* Deferred.succeed(decide.release, "decided")
+        yield* completed(store, dagID)
+
+        const view = yield* status(dag, dagID)
+        // The refused join node is a failed node, listed with its error class and reason like any other; coverage adds
+        // no second entry for it.
+        expect(view.coverage?.map((entry) => entry.node_id).sort()).toEqual(["survey", "survey--security"])
+        expect(view.coverage?.find((entry) => entry.node_id === "survey--security")?.reason).toBe(
+          "failed: exec_failed: the audit crashed",
+        )
+        expect(view.coverage?.find((entry) => entry.node_id === "survey")?.reason).toBe(
+          'failed: compose_required_missing: Compose join did not run: required item "security" (survey--security: failed) produced no result',
+        )
       }),
     ),
   )

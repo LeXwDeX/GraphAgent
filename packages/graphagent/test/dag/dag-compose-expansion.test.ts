@@ -3,8 +3,8 @@
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the agent catalog and the config service are narrow stand-ins.
 // #1158 PR3b-1: the admission seam's step, over a real Dag service and database. A workflow is created
-// from a compiled compose block (the authoring gate is bypassed, as in compose-persistence.test.ts), its
-// split node is settled by hand, and `DagComposeExpansion.expand` is what the scheduler calls for the
+// from a compiled compose block (compiled directly, without the authoring check, as in compose-persistence.test.ts),
+// its split node is settled by hand, and `DagComposeExpansion.expand` is what the scheduler calls for the
 // slot. The loop around it is covered by dag-compose-runtime.test.ts.
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer } from "effect"

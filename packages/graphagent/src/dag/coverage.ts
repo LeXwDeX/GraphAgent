@@ -6,10 +6,11 @@
  *
  * The engine, not the delivering model, accounts for what did not run or was
  * not read: condition-gated and failed nodes, a fan-out that fell back to a
- * serial writer, a budget pause, review lanes that declared gaps, and result
- * pages the caller stopped short of. `inspect` renders the list and the final
- * report appends a deterministic section. M7 adds safety denials to the same
- * list; no safety policy lives here.
+ * serial writer, a compose expansion that degraded or did not split an item, a
+ * budget pause, review lanes that declared gaps, and result pages the caller
+ * stopped short of. `inspect` renders the list and the final report appends a
+ * deterministic section. M7 adds safety denials to the same list; no safety
+ * policy lives here.
  */
 export * as DagCoverage from "./coverage"
 
@@ -118,6 +119,22 @@ export function workflowCoverage(input: {
     )
     if (!expanded && ran)
       entries.push({ node_id: definition.id, reason: "parallel fan-out declined; the writer ran serially" })
+  }
+
+  // #1158: a compose expansion that did not follow its plan is reported the way a declined fan-out is. The join
+  // node keeps why in its persisted `join` (a recovery rewrites it to the attempts that now count): the plan could
+  // not be expanded and one fallback worker took the whole task, or an item that asked to be split again ran as one
+  // worker. A join the admission check refused (`compose_required_missing`, `compose_no_results`) is a failed node,
+  // which the node entries above already list with its error class and reason.
+  for (const definition of input.config?.nodes ?? []) {
+    const join = definition.join
+    if (join === undefined) continue
+    if (join.degraded !== undefined)
+      entries.push({ node_id: definition.id, reason: `compose expansion degraded: ${join.degraded}` })
+    for (const item of join.items) {
+      if (item.unsplit === undefined) continue
+      entries.push({ node_id: item.node, reason: `compose split declined: ${item.unsplit}` })
+    }
   }
 
   // A review loop that stopped for its own rule (not the dry-run default)
