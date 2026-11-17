@@ -661,3 +661,139 @@ wins.
 - `loop.ts` loses 65 lines (2494 to 2429): the orphan sweep, the body of the `Moved`
   eviction and the startup scan are replaced by wiring. The new code is `reconcile-decide.ts`
   and `reconciler.ts`.
+
+## Amendment 3 (PR4b, #1029)
+
+What PR4b adds to this ADR and where it departs from it. PR4b is delivered in
+parts, and each part writes the subsections it owns (named in their headings).
+The text above and Amendments 1 and 2 stay as written; where they conflict with
+this section, this section wins.
+
+### Decision 6: two entries, `reconcile` and `reconcileAfter` (4b-A)
+
+- The text above has every trigger call `reconcile(dagID)`, so that concurrent
+  triggers collapse into one evaluation. That is right for a caller that asks
+  "what is the state now" on its own schedule, the startup round and the tick.
+  It is wrong for a trigger that carries news. An event (`WorkflowStarted`, a
+  replan, a session `Moved`) is handled after its change was committed, and an
+  evaluation that began before the commit may be under way: joining it hands back
+  a verdict made from the state before the event. A `noop` for a workflow that was
+  `completed` when the evaluation read it and has been reopened by an extend since
+  (the replan finds no entry, and the workflow waits for the next tick); a `renew`
+  for an entry whose session has moved away; a `defer` for a workflow that was still
+  `pending` when the evaluation looked and has been started since.
+- `reconcile` keeps its meaning, and the case that pins it stays: three concurrent
+  calls, one observation. The startup round and the tick keep calling it.
+  `reconcileAfter(dagID)` is the second entry, for the event triggers. With nothing
+  under way it is `reconcile`. With an evaluation under way it waits for that
+  evaluation to end, however it ends (a verdict, a failure, an interruption: none
+  of them is its answer, and a failure is not its failure), and evaluates once
+  more. The calls that arrive during the same wait share that one re-evaluation
+  through a per-workflow slot that the first of them creates (its leader). A call
+  that arrives while the re-evaluation is running does not join it, because the
+  reads of the re-evaluation began before the call; it waits for the next one.
+- The re-evaluation runs in the fiber of its leader, which is the fiber of the
+  event handler, as the adoption did when the handlers called `recoverWorkflow`
+  themselves. A `reconcile` that arrives while a re-evaluation waits joins the
+  evaluation under way, and one that arrives during the re-evaluation joins that
+  one, so a trigger never holds a tick up.
+- Mechanism. The evaluations under way (flights) and the slots are two maps keyed
+  by workflow. Looking at the maps and registering in them is one synchronous
+  step; `reconcile` used to look and register in two consecutive steps of one
+  fiber, which holds only as long as the runtime does not yield between them. The
+  step in which a leader registers the flight of its re-evaluation also gives up
+  its slot, so a later call is never answered by an evaluation whose reads began
+  before it. Every flight and every slot is ended by a release step that always
+  runs, with the verdict, the failure, or "interrupted"; the calls that waited on
+  an interrupted one look again, as joiners of an interrupted flight always did,
+  so a leader that is cut off leaves its followers an answer.
+- Cost. A trigger now waits behind an evaluation of its own workflow that is under
+  way, which can be an adoption that waits for a worktree removal or a user hook.
+  The `WorkflowStarted` and `WorkflowReplanned` handlers call it inline, as they
+  ran the adoption itself before, so their subscriptions can be held up for as
+  long. The `Moved` handler forks its calls (below).
+
+### Decision 6, rows 2 and 10: the first wave, a replan and a move are triggers (4b-A)
+
+- `WorkflowStarted`: the handler no longer adopts. It calls `reconcileAfter`, and
+  the roughly 100 lines of `loop.ts` that duplicated `recoverWorkflow` for the
+  first wave (claim, entry, deletion-race re-check, confirm, first spawn) are
+  deleted. The steps that `recoverWorkflow` has and the first wave did not are
+  no-ops for a workflow that was just created: the node-level reconciliation skips
+  `pending` and `queued` nodes, there is no checkpoint and there are no message
+  continuations. The handler's status guard (running rows only) is the truth
+  table's now: a terminal row is row 1; a `pending` row is row 9, or row 8 for an
+  orphan, whose own `WorkflowStarted` the handler meets while the orphan's
+  evaluation is under way (the call waits for it and finds the workflow failed);
+  a `paused` or `stepping` row, which the guard left to the next round, is adopted
+  like any other. An unusable location is row 4 and another runner's live lease is
+  row 5, and neither claims.
+- `WorkflowReplanned`: the two places that called `recoverWorkflow` (no entry; an
+  entry that was dropped while the handler waited for its lock) call
+  `reconcileAfter`, the second one outside the entry's lock, which the evaluation
+  takes itself when it evicts or adopts.
+- Session `Moved`: the old owner's entries whose workflow the directory no longer
+  owns, and the new owner's non-terminal rows that have no entry, are each handed
+  to `reconcileAfter` in a fiber of their own, so that one evaluation that waits
+  holds up neither the other workflows of the session nor the next event. The old
+  owner's call ends in row 2, the eviction that `movedEvictor` has always made
+  (the children that the node rows name are cancelled, the dag registration is
+  kept); the new owner's in row 10. The wake nudge that follows is unchanged.
+
+### Decision 6: `recovering` is deleted (4b-A)
+
+- The in-process reservation of the loop had two jobs. One was to keep two
+  adoptions of a workflow from running at once. That is the single flight now that
+  every path which creates an entry comes through it: the one `runtimes.set` of
+  the loop is in `recoverWorkflow`, which only the reconciler's `adopt` calls
+  (`dag-location-guards.test.ts` pins both facts). The other was to keep the first
+  wave off an orphan whose `WorkflowStarted` the terminalization had just
+  published. The terminalization runs inside the flight of the orphan, so the
+  first-wave call waits for it and finds the workflow failed.
+- `recoverWorkflow` keeps a check for an entry that is there already, as the last
+  line of defense. It loses the branch that failed an unusable location: row 4
+  comes before row 10, so an adoption never saw one.
+
+### Decision 6, row 10: adopt reads the row again (4b-A)
+
+- The row that `adopt` is given is the observation's, older than the claim.
+  `recoverWorkflow` reads the workflow once it holds the claim and works from that
+  row (status, config, graph revision, execution directory). A workflow that is
+  gone or terminal then is not adopted, and the claim is given back.
+
+### Decision 3: the writes that bypass `Dag` commands (4b-A; completes Amendment 1)
+
+Amendment 1 listed four writes that carry no token. None of them takes one. They
+fall into two classes, plus the one that is replaced.
+
+- `WorkflowWorktreeSettled` is a durable-fact write. It is protected by the
+  write-once projection of `workflow.worktree` and by the `{graphRev, seq}`
+  episode fence: a settlement computed for an episode that a replan has since
+  reopened folds to a no-op. It cannot carry a token, because settlement runs
+  after the terminal event, when the entry is gone and the lease has been given
+  back, and a fence would refuse any token.
+- The captured-output receipts are durable-fact writes bound by the attempt
+  identity: `DagStore.setCapturedOutput` is one
+  `UPDATE ... WHERE child_session_id = ? AND status = 'running'`. A late receipt of
+  a runner that lost the lease reaches only the child session it created, and does
+  not reach a row that was given a new child session. There are four call sites,
+  in `spawn.ts`, in `recovery.ts` (two) and in `final-response.ts`, which
+  Amendment 1 did not list.
+- `NodeSafetyDenied` is an audit write. It records a tool denial that has already
+  happened, and the node goes on running, so a token would fence nothing worth
+  fencing. It has two publishers, `permission/safety-guard.ts` and
+  `permission/hook-guard.ts`; Amendment 1 named one.
+- The bare `WorkflowStarted` of the orphan's terminalization is not classified
+  here. It stays a runner write and is replaced by an atomic runner command in
+  4b-C.
+
+### Decision 7: the host sweep (4b-B)
+
+See PR for 4b-B.
+
+### Decision 8: line counts of `loop.ts` (4b-A)
+
+- `loop.ts` loses 114 lines (2428 to 2314): the duplicate first-wave adoption, the
+  `recovering` reservation with its uses and the unusable-location branch are
+  deleted, and the other triggers become calls of `reconcileAfter`. The new code
+  is in `reconciler.ts` (the two entries and their flights).
