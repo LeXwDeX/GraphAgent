@@ -194,12 +194,32 @@ export interface NodeConfig {
    * in it are also the keys of the join node's `input_mapping` and the keys its
    * prompt describes. A recovery points `plan` and every `node` at the attempts
    * that now count, and the keys with them; a replan can neither change nor clear
-   * it, as with `expand`. */
+   * it, as with `expand`. An item the plan asked to split further is one of two
+   * things: `nested` when its node is the join node of a nested expansion (its
+   * `agent` is then the composer that joins it), or `unsplit` when it runs as one
+   * worker after all, with the reason the engine did not split it (the deepest
+   * level or no room left in the subtree). */
   join?: {
     plan: string
-    items: { id: string; node: string; agent: string; required: boolean }[]
+    items: { id: string; node: string; agent: string; required: boolean; nested?: true; unsplit?: string }[]
     degraded?: string
   }
+  /** #1158: the mark of a node a compose expansion generated, nested expansions
+   * included: its children, nested split nodes and slots, and fallback workers.
+   * The author's own nodes do not carry it: the block's split node, its slot and
+   * the join node that slot becomes. `root` is the id the top-level slot had when
+   * it was expanded and only groups one block's subtree: it is a key, not a
+   * reference, so a recovery that renames the slot leaves it alone. `depth` is the
+   * level of the plan the node takes part in: the plan a worker's item came from, or
+   * for a nested split node and slot the plan they make, one deeper than the plan
+   * that listed the item. The expansion reads both from the persisted graph alone
+   * (`DagCompose.positionOf`): the slot's own mark is its depth, and the marked
+   * nodes of the current graph are what `dag.compose.max_subtree_nodes` has been
+   * spent on. A replay after a crash, a recovery or a sibling's expansion therefore
+   * writes the same ids and definitions. Written by the expansion, never by an
+   * author; no model-writable node schema has the field. A replan can neither
+   * change nor clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+  compose_subtree?: { root: string; depth: number }
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow

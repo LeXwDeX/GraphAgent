@@ -19,15 +19,17 @@
  *   `expand` marker and is already the definition of the join node that replaces it.
  *
  * Expanding a stored plan is here too, as pure functions (`planExpansion`,
- * `degrade`): the plan's children, the join node that replaces the slot, and the
- * degraded path when a plan cannot be expanded. So is the join node's admission
- * check (`checkJoin`): whether the children left it anything to join. The
- * scheduler's admission seam, next to the `fan_out` expansion of ADR-0004
- * (`DagComposeExpansion`), reads the stored state, calls them and writes the
- * result, with `Dag.extend` for an expansion and a node failure for a refused
- * join. Nested expansion, cancellation and budget are still to come (#1158
- * PR3b-2); until they land the submission gate below keeps such a graph from
- * being submitted.
+ * `degrade`): the plan's children, the nested plans of the items that asked to be
+ * split again (`recursive_split`), the join node that replaces the slot, and the
+ * degraded path when a plan cannot be expanded. Where a plan sits, its depth and
+ * what is left of the subtree's quota, is read from the persisted graph alone
+ * (`positionOf`). So is the join node's admission check (`checkJoin`): whether the
+ * children left it anything to join. The scheduler's admission seam, next to the
+ * `fan_out` expansion of ADR-0004 (`DagComposeExpansion`), reads the stored state,
+ * calls them and writes the result, with `Dag.extend` for an expansion and a node
+ * failure for a refused join. Until the rest of the runtime half lands (#1158
+ * PR3b-2: coverage and the model-visible schema) the submission gate below keeps a
+ * graph that holds a compose block from being submitted.
  */
 
 import { AgentArtifact } from "@/agent/artifact"
@@ -632,6 +634,61 @@ function note(reason: string): string {
   return reason.replace(/[{}]/g, "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 300)
 }
 
+/** What an expansion writes on the nodes it generates: the persisted `NodeConfig.compose_subtree`. */
+export type Subtree = NonNullable<NodeConfig["compose_subtree"]>
+
+/**
+ * The subtree of the plan a slot makes. A nested slot carries it; the author's own
+ * top-level slot does not, and is the root of its subtree at depth 1.
+ */
+export function subtreeOf(slot: Pick<NodeConfig, "id" | "compose_subtree">): Subtree {
+  return slot.compose_subtree ?? { root: slot.id, depth: 1 }
+}
+
+/** A node of the workflow's current graph: its definition, and the status of its row. */
+export interface Member {
+  readonly node: Pick<NodeConfig, "id" | "expand" | "compose_subtree">
+  readonly status: string
+}
+
+/**
+ * Nodes one nested plan costs beyond the item it belongs to: its split node, and
+ * the room one more node needs (the item's first worker, or the fallback worker
+ * that takes the whole task when its plan cannot be expanded). The second is only
+ * set aside, never written, so that a plan which degrades always has a node to
+ * degrade into and the subtree cannot outgrow `max_subtree_nodes` by its fallbacks.
+ */
+export const NESTED_COST = 2
+
+/**
+ * Where the plan of `slot` is made: its depth, and the room its subtree has left.
+ * Both come from the persisted graph alone, so planning the same state again, after a
+ * crash, a recovery or a sibling's expansion, gives the same answer. `members` is the
+ * current graph: the definitions of the nodes whose rows were not superseded, so a
+ * node that a cancellation or a recovery replaced no longer counts.
+ *
+ * The subtree is every node carrying the slot's `root`. The room is what
+ * `max_subtree_nodes` leaves after them, the slot itself among them when it is nested
+ * (it is the item that asked for the plan), and after the room set aside for each
+ * other nested slot still waiting to be expanded (`NESTED_COST`). The plans of
+ * siblings take their room from this one pool, the first to be expanded first.
+ */
+export function positionOf(
+  slot: Pick<NodeConfig, "id" | "compose_subtree">,
+  members: Iterable<Member>,
+  limits: Limits,
+): Position {
+  const subtree = subtreeOf(slot)
+  let used = 0
+  let waiting = 0
+  for (const { node, status } of members) {
+    if (node.compose_subtree?.root !== subtree.root) continue
+    used++
+    if (node.expand !== undefined && node.id !== slot.id && status === "pending") waiting++
+  }
+  return { depth: subtree.depth, remainingNodes: Math.max(0, limits.maxSubtreeNodes - used - waiting) }
+}
+
 export interface ExpansionInput {
   /** The expansion slot as persisted: carries `expand`. */
   readonly slot: NodeConfig
@@ -642,20 +699,31 @@ export interface ExpansionInput {
     { readonly status: string; readonly output: unknown; readonly errorReason?: string | null } | undefined
   /** Every node id of the workflow now, so a child never takes an id that is used. */
   readonly existingNodeIDs: ReadonlySet<string>
-  /** Where this plan sits; a top-level compose block when left out. */
+  /**
+   * Where this plan sits (`positionOf`). Left out, it is the slot's own depth with the whole quota: right for a
+   * top-level block planned on its own, not for a nested slot, whose siblings may have taken room.
+   */
   readonly position?: Position
+}
+
+/** An item that asked to be split further and runs as one worker, with the reason it was not split. */
+export interface Declined {
+  readonly item: string
+  readonly reason: string
 }
 
 /**
  * What replaces the slot. Either way the fragment holds the join node under the
- * slot's id plus its new children, so one `Dag.extend` makes the change.
+ * slot's id plus its new nodes, so one `Dag.extend` makes the change.
  *
- * - `expand`: one child per plan item.
+ * - `expand`: one child per plan item. An item that is split again gets its split node
+ *   and its own slot instead, which the scheduler expands in turn once that split node
+ *   has settled. `declined` lists the items that asked to be split and were not.
  * - `fallback`: one child that takes the whole task, with the reason the plan was
  *   not expanded. The reason is also what the join node and the coverage section report.
  */
 export type Expansion =
-  | { readonly kind: "expand"; readonly nodes: NodeConfig[] }
+  | { readonly kind: "expand"; readonly nodes: NodeConfig[]; readonly declined: readonly Declined[] }
   | { readonly kind: "fallback"; readonly nodes: NodeConfig[]; readonly reason: string }
 
 /**
@@ -668,13 +736,18 @@ export type Expansion =
  * invalid or empty, an agent that can no longer be expanded, a plan the subtree
  * has no room for, and a child id that is taken or is not a node id.
  *
- * A `split: true` item runs as a plain worker here; nested expansion is not
- * written yet (#1158 PR3b-2).
+ * An item of a `recursive_split` composer that asks for `split: true` becomes a
+ * nested plan, the split node `<slot>--<item>--split` and the slot `<slot>--<item>`
+ * (the same composer, one level deeper), while the depth and the room allow. When the
+ * slot's depth has reached `max_depth`, or what is left of the quota cannot pay for a
+ * nested plan (`NESTED_COST`), the item runs as a plain worker that is told why, and the
+ * join node's input says so too. The items ask in plan order and the first are served first.
  */
 export function planExpansion(input: ExpansionInput): Expansion {
   const { slot, composer, limits, source, existingNodeIDs } = input
   const planID = slot.expand ?? splitID(slot.id)
-  const position = input.position ?? topPosition(limits)
+  const subtree = subtreeOf(slot)
+  const position = input.position ?? { ...topPosition(limits), depth: subtree.depth }
   const decline = (reason: string) => degrade(slot, composer, reason)
   if (source === undefined) return decline(`the split node "${planID}" is gone`)
   if (source.status !== "completed")
@@ -687,7 +760,22 @@ export function planExpansion(input: ExpansionInput): Expansion {
     return decline(
       `the plan has ${items.length} items but the expansion has room for ${position.remainingNodes} more nodes (dag.compose.max_subtree_nodes)`,
     )
-  const children: NodeConfig[] = []
+  // Which items are split again. Each one that is takes its cost from what the plan's own items left of the room.
+  let room = position.remainingNodes - items.length
+  const nests = new Set<string>()
+  const declined: Declined[] = []
+  for (const item of items) {
+    if (item.split !== true || composer.pattern !== "recursive_split") continue
+    const reason = nestingRefusal(position.depth, room, limits)
+    if (reason === undefined) {
+      nests.add(item.id)
+      room -= NESTED_COST
+    } else declined.push({ item: item.id, reason })
+  }
+  const reasons = new Map(declined.map((entry) => [entry.item, entry.reason]))
+  // A nested plan may count on what is free once this plan is written, and on the place its own slot held for it.
+  const below: Position = { depth: position.depth + 1, remainingNodes: room + 1 }
+  const nodes: NodeConfig[] = []
   const joined: Join["items"] = []
   for (const item of items) {
     const id = childID(slot.id, item.id)
@@ -696,28 +784,58 @@ export function planExpansion(input: ExpansionInput): Expansion {
     const worker = composer.dispatch.find((candidate) => candidate.name === item.agent)
     if (worker === undefined) return decline(`item "${item.id}" names "${item.agent}", which cannot be expanded`)
     const required = itemRequired(item, composer)
-    children.push(
+    // D9: a required item fails the workflow only when the block is required; in an optional block it stays
+    // optional here, and the join node's admission check is what finds it missing. A nested slot is the item's node,
+    // so the rule is the same, and what it expands into follows its own `required` in turn.
+    const childRequired = slot.required === true && required
+    if (nests.has(item.id)) {
+      const planNode = splitID(id)
+      if (existingNodeIDs.has(planNode)) return decline(`node "${planNode}" already exists`)
+      nodes.push(
+        ...nestedNodes(slot, composer, limits, planID, {
+          item,
+          id,
+          required: childRequired,
+          subtree: { root: subtree.root, depth: below.depth },
+          position: below,
+        }),
+      )
+      joined.push({ id: item.id, node: id, agent: composer.name, required, nested: true })
+      continue
+    }
+    const unsplit = reasons.get(item.id)
+    nodes.push(
       childNode(slot, planID, {
         id,
         name: `${slot.name} [${item.id}]`,
         worker,
-        // D9: a required item fails the workflow only when the block is required; in an optional block it stays
-        // optional here, and the join node's admission check is what finds it missing.
-        required: slot.required === true && required,
-        prompt: itemPrompt(item),
+        required: childRequired,
+        prompt: itemPrompt(item, unsplit),
         mapping: {},
+        subtree: { root: subtree.root, depth: position.depth },
       }),
     )
-    joined.push({ id: item.id, node: id, agent: item.agent, required })
+    joined.push({ id: item.id, node: id, agent: item.agent, required, ...(unsplit !== undefined ? { unsplit } : {}) })
   }
-  return { kind: "expand", nodes: [...children, joinNode(slot, planID, joined, children)] }
+  return { kind: "expand", nodes: [...nodes, joinNode(slot, planID, joined)], declined }
+}
+
+/** Why an item that asked to be split again cannot be: the deepest level is reached, or the room cannot pay for a nested plan. */
+function nestingRefusal(depth: number, room: number, limits: Limits): string | undefined {
+  if (depth >= limits.maxDepth)
+    return `the expansion is already as deep as dag.compose.max_depth ${limits.maxDepth} allows`
+  if (room < NESTED_COST)
+    return `the subtree has no room left for a nested plan under dag.compose.max_subtree_nodes ${limits.maxSubtreeNodes}`
+  return undefined
 }
 
 /**
  * The expansion that does not split: one child, the composer's `fallback` worker,
  * takes the whole task as the block's author wrote it, and the join node reads its
  * result. `reason` says why the plan was not expanded; it is written into both
- * prompts, kept as `join.degraded`, and left to the caller to log.
+ * prompts, kept as `join.degraded`, and left to the caller to log. For a nested slot
+ * the room it takes was set aside when the slot was written (`NESTED_COST`), so it fits
+ * the subtree whatever the plans expanded before it took.
  */
 export function degrade(
   slot: NodeConfig,
@@ -725,6 +843,7 @@ export function degrade(
   reason: string,
 ): Extract<Expansion, { kind: "fallback" }> {
   const planID = slot.expand ?? splitID(slot.id)
+  const subtree = subtreeOf(slot)
   const why = note(reason)
   const id = fallbackID(slot.id)
   const worker = composer.dispatch.find((candidate) => candidate.name === composer.fallback) ?? {
@@ -747,10 +866,11 @@ export function degrade(
     },
     // It does the whole task, so it reads what the block read.
     mapping: { ...slot.input_mapping },
+    subtree: { root: subtree.root, depth: subtree.depth },
   })
   // Not an item the plan could leave out: that no worker produced anything is `compose_no_results`, not a missing item.
   const joined: Join["items"] = [{ id: "fallback", node: id, agent: worker.name, required: false }]
-  return { kind: "fallback", reason, nodes: [child, joinNode(slot, planID, joined, [child], why)] }
+  return { kind: "fallback", reason, nodes: [child, joinNode(slot, planID, joined, why)] }
 }
 
 interface ChildSpec {
@@ -760,6 +880,7 @@ interface ChildSpec {
   readonly required: boolean
   readonly prompt: NodeConfig["prompt_template"]
   readonly mapping: Record<string, string>
+  readonly subtree: Subtree
 }
 
 /**
@@ -768,7 +889,7 @@ interface ChildSpec {
  * the plan out of its context), never writes (`workspace_writes: "deny"`), never
  * reports to the parent, and produces the artifact its agent declares. It keeps
  * the block's workspace and timeout. It takes no model of the block's: that is the
- * composer's choice, and a worker resolves its own.
+ * composer's choice, and a worker resolves its own. It is marked as part of the subtree.
  */
 function childNode(slot: NodeConfig, planID: string, spec: ChildSpec): NodeConfig {
   const artifact = spec.worker.artifact === undefined ? undefined : AgentArtifact.schema(spec.worker.artifact)
@@ -782,21 +903,21 @@ function childNode(slot: NodeConfig, planID: string, spec: ChildSpec): NodeConfi
     workspace_writes: "deny",
     prompt_template: spec.prompt,
     input_mapping: spec.mapping,
+    compose_subtree: { ...spec.subtree },
     ...(slot.worker_config ? { worker_config: { ...slot.worker_config } } : {}),
     ...(slot.workspace !== undefined ? { workspace: slot.workspace } : {}),
     ...(artifact ? { output_schema: artifact } : {}),
   }
 }
 
-/** The task of one plan item, kept out of the template text: the plan's words are data, not placeholders. */
-function itemPrompt(item: PlanItem): NodeConfig["prompt_template"] {
+/** The task of one plan item as prompt lines and template input, kept out of the template text: the plan's words are data, not placeholders. */
+function itemTask(item: PlanItem): { lines: string[]; input: Record<string, unknown> } {
   const scope = (item.scope ?? []).filter((entry) => entry.trim() !== "")
   return {
-    inline: [
+    lines: [
       "{{compose_instruction}}",
       ...(scope.length > 0 ? ["Scope, so that this item does not overlap the others:\n{{compose_scope}}"] : []),
-      ITEM_RULES,
-    ].join("\n\n"),
+    ],
     input: {
       compose_instruction: item.instruction,
       ...(scope.length > 0 ? { compose_scope: scope.map((entry) => `- ${entry}`).join("\n") } : {}),
@@ -804,34 +925,130 @@ function itemPrompt(item: PlanItem): NodeConfig["prompt_template"] {
   }
 }
 
+/** The prompt of a plain worker: its task, and when the plan asked to split it, why it has to take all of it. */
+function itemPrompt(item: PlanItem, unsplit?: string): NodeConfig["prompt_template"] {
+  const task = itemTask(item)
+  return {
+    inline: [
+      ...task.lines,
+      ...(unsplit !== undefined
+        ? [
+            `The plan asked to split this item further, but it runs as one worker: ${note(unsplit)}. Take all of it, and name in not_examined what one worker could not look at.`,
+          ]
+        : []),
+      ITEM_RULES,
+    ].join("\n\n"),
+    input: task.input,
+  }
+}
+
+interface NestedSpec {
+  readonly item: PlanItem
+  /** The id of the nested slot: the id the item's child would have had. */
+  readonly id: string
+  /** The nested slot's own `required`: the block's and the item's, as for a plain child. */
+  readonly required: boolean
+  readonly subtree: Subtree
+  /** Where the nested plan is made, which its split node's prompt tells. */
+  readonly position: Position
+}
+
+/**
+ * An item that is split again: a split node `<id>--split` and a slot `<id>`, the same composer one level
+ * deeper. Both take the item's instruction as data, like a plain worker. The split node waits for the plan
+ * this slot's own split node made, is read-only, silent and optional (a failed plan degrades the nested slot
+ * and never fails the workflow), and is asked for the plan with the nested position. The slot is the item's
+ * node: the join node above reads it by its id, it waits for its split node alone, and the scheduler
+ * expands it when that has settled, into its own join node under the same id. Both keep what the block gave
+ * its composer nodes (`splitAndSlot`).
+ */
+function nestedNodes(
+  slot: NodeConfig,
+  composer: Composer,
+  limits: Limits,
+  planID: string,
+  spec: NestedSpec,
+): NodeConfig[] {
+  const nestedPlanID = splitID(spec.id)
+  const task = itemTask(spec.item)
+  const shared = {
+    worker_type: composer.name,
+    workspace_writes: "deny" as const,
+    ...(slot.worker_config ? { worker_config: { ...slot.worker_config } } : {}),
+    ...(slot.workspace !== undefined ? { workspace: slot.workspace } : {}),
+    ...(slot.isolation !== undefined ? { isolation: slot.isolation } : {}),
+    ...(slot.model ? { model: { ...slot.model } } : {}),
+  }
+  const split: NodeConfig = {
+    ...shared,
+    id: nestedPlanID,
+    name: `${slot.name} [${spec.item.id}]: plan the expansion`,
+    depends_on: [planID],
+    required: false,
+    report_to_parent: false,
+    prompt_template: {
+      inline: [...task.lines, splitContract(composer, limits, spec.position)].join("\n\n"),
+      input: { ...task.input },
+    },
+    // The plan above stays out of its context: the item is self-contained.
+    input_mapping: {},
+    output_schema: planSchema(composer, limits),
+    generated_helper: "split",
+    compose_subtree: { ...spec.subtree },
+  }
+  const artifact = composer.artifact === undefined ? undefined : AgentArtifact.schema(composer.artifact)
+  const nested: NodeConfig = {
+    ...shared,
+    id: spec.id,
+    name: `${slot.name} [${spec.item.id}]`,
+    depends_on: [nestedPlanID],
+    required: spec.required,
+    report_to_parent: false,
+    prompt_template: {
+      inline: [...task.lines, joinContract(composer)].join("\n\n"),
+      input: { ...task.input },
+    },
+    input_mapping: {},
+    ...(artifact ? { output_schema: artifact } : {}),
+    expand: nestedPlanID,
+    compose_subtree: { ...spec.subtree },
+  }
+  return [split, nested]
+}
+
 /**
  * The slot, now the join node: the same definition under the same id, so every
  * binding to it stays, minus the marker, plus what it joins. It waits for every
- * child and reads the plan and each child's result by node id (the keys of the
+ * item's node and reads the plan and each of them by node id (the keys of the
  * Context its prompt describes): a child that failed or was skipped reaches it as
  * the scheduler's placeholder text, an artifact as itself. The mapping the slot
  * had, the block's own inputs, is kept.
  */
-function joinNode(
-  slot: NodeConfig,
-  planID: string,
-  items: Join["items"],
-  children: readonly NodeConfig[],
-  degraded?: string,
-): NodeConfig {
+function joinNode(slot: NodeConfig, planID: string, items: Join["items"], degraded?: string): NodeConfig {
   const { expand: _expand, ...definition } = slot
   const join: Join = { plan: planID, items, ...(degraded !== undefined ? { degraded } : {}) }
   return {
     ...definition,
-    depends_on: children.map((child) => child.id),
+    depends_on: items.map((item) => item.node),
     prompt_template: { ...slot.prompt_template, inline: `${slot.prompt_template.inline ?? ""}\n\n${joinInput(join)}` },
     input_mapping: {
       ...slot.input_mapping,
       [planID]: planID,
-      ...Object.fromEntries(children.map((child) => [child.id, child.id])),
+      ...Object.fromEntries(items.map((item) => [item.node, item.node])),
     },
     join,
   }
+}
+
+/** What one key of the join node's Context is: its item, who worked on it, and anything it was not given. */
+function describeItem(join: Join, item: Join["items"][number]): string {
+  if (join.degraded !== undefined) return `the whole task, by ${item.agent}.`
+  const need = item.required ? "required" : "may be skipped"
+  if (item.nested === true) return `item "${item.id}", split again and joined by ${item.agent}; ${need}.`
+  const plain = `item "${item.id}", by ${item.agent}; ${need}.`
+  return item.unsplit === undefined
+    ? plain
+    : `${plain} The plan asked to split it further, but it ran as one worker: ${note(item.unsplit)}.`
 }
 
 /** Tells the join node what each key of its Context is, and whether the plan was followed. */
@@ -844,11 +1061,7 @@ function joinInput(join: Join): string {
       : []),
     "Expansion input, by key of the Context:",
     `- "${join.plan}": the plan this expansion followed.`,
-    ...join.items.map((item) =>
-      join.degraded !== undefined
-        ? `- "${item.node}": the whole task, by ${item.agent}.`
-        : `- "${item.node}": item "${item.id}", by ${item.agent}; ${item.required ? "required" : "may be skipped"}.`,
-    ),
+    ...join.items.map((item) => `- "${item.node}": ${describeItem(join, item)}`),
     'A key that holds an artifact is that item\'s result. A key that holds text starting with "Dependency" says the item failed, was skipped or was aborted, and why: the item is not covered.',
   ].join("\n")
 }

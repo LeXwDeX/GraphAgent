@@ -21,6 +21,13 @@ import { DagValidation } from "../validation"
  * reshaped graph. The marker lives in the persisted definition, so a crash
  * before the extend commits plans again on the next round and gets the same ids.
  *
+ * A nested slot, the node of an item that was split again, is expanded the same way
+ * when its own split node has settled. How deep it sits and what is left of the
+ * subtree's quota are read from the persisted graph (`DagCompose.positionOf`), never
+ * kept anywhere else, and the rounds of one workflow run one at a time, so siblings
+ * share the quota in the order they are expanded and a replay decides as the first
+ * run did.
+ *
  * Expanding never fails or parks the workflow. A plan that cannot be expanded
  * degrades to one fallback worker that takes the whole task, and when even that
  * does not fit the graph, the slot itself fails with `compose_capacity` and
@@ -48,6 +55,8 @@ export interface Input {
   readonly slot: NodeConfig
   /** The workflow's rows of this scheduling round. */
   readonly nodes: readonly DagStore.NodeRow[]
+  /** The workflow's node definitions as the round holds them: with the rows, the graph the subtree's depth and quota are read from. */
+  readonly graph: readonly NodeConfig[]
   /** What the round read of the slot, so a parent's replan or cancel in between wins. */
   readonly attempt: NodeExecutionAttempt
 }
@@ -90,6 +99,7 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     return
   }
   const existingNodeIDs = new Set(nodes.map((candidate) => candidate.id))
+  const position = positionIn(slot, input.graph, nodes, limits)
   // `Dag.extend` replaces a pending node and keeps a terminal one, so a fallback id some other node already holds
   // would either overwrite that node's work or let the join read its result as the fallback's. Fail instead.
   const fallbackTaken = existingNodeIDs.has(DagCompose.fallbackID(slot.id))
@@ -100,6 +110,7 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     limits,
     source: nodes.find((candidate) => candidate.id === slot.expand),
     existingNodeIDs,
+    position,
   })
   if (plan.kind === "fallback" && fallbackTaken) {
     yield* giveUp(fallbackCollision)
@@ -138,6 +149,28 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
   const { reason, errorClass } = refusal(second.failure)
   yield* giveUp(reason, errorClass)
 })
+
+/**
+ * Where the plan of `slot` sits in the graph a round holds (`DagCompose.positionOf`): its depth, and the room its
+ * subtree has left. The graph is the definitions whose rows are current: a node a cancellation or a recovery
+ * superseded no longer counts, so neither does it hold room nor keep a nested slot waiting for it.
+ */
+export const positionIn = (
+  slot: NodeConfig,
+  graph: readonly NodeConfig[],
+  nodes: readonly DagStore.NodeRow[],
+  limits: DagCompose.Limits,
+): DagCompose.Position => {
+  const rows = new Map(nodes.map((row) => [row.id, row]))
+  return DagCompose.positionOf(
+    slot,
+    graph.flatMap((node) => {
+      const row = rows.get(node.id)
+      return row === undefined || row.superseded ? [] : [{ node, status: row.status }]
+    }),
+    limits,
+  )
+}
 
 export interface JoinInput {
   /** The runner's writes: the entry's port, so a lost lease refuses them. */
@@ -196,4 +229,15 @@ const reportDegraded = (dagID: string, nodeID: string, plan: DagCompose.Expansio
         nodeID,
         reason: plan.reason,
       })
-    : Effect.void
+    : // An item that asked to be split further and was not: it runs as one worker, and its prompt and the join node's input say why.
+      Effect.forEach(
+        plan.declined,
+        (declined) =>
+          Effect.logWarning("DAG compose item runs as one worker though its plan asked to split it", {
+            dagID,
+            nodeID,
+            item: declined.item,
+            reason: declined.reason,
+          }),
+        { discard: true },
+      )

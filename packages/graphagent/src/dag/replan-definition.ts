@@ -43,14 +43,16 @@ function changedObjectFields(
 
 /**
  * The engine-owned marks of a compose node (#1158): `expand` on a slot the
- * scheduler has yet to expand, `join` on the join node an expansion left. The
- * scheduler writes them and no schema a caller writes in has them, so a fragment
- * that restates such a node can only change them or drop them, and the node would
- * go on as an ordinary one: a slot would be spawned as authored, and a join node
- * would no longer be checked against its children. Returns the marks the
+ * scheduler has yet to expand, `join` on the join node an expansion left, and
+ * `compose_subtree` on every node an expansion generated. The scheduler writes them
+ * and no schema a caller writes in has them, so a fragment that restates such a node
+ * can only change them or drop them, and the node would go on as an ordinary one: a
+ * slot would be spawned as authored, a join node would no longer be checked against
+ * its children, and a node whose scope is gone would stop counting against the
+ * subtree's quota and would no longer know how deep it sits. Returns the marks the
  * replacement `next` of `current` changes or clears. The one writer that may turn
  * a slot into its join node is the expansion itself, whose replacement carries
- * `join` and no `expand`.
+ * `join` and no `expand`, and the same `compose_subtree` the slot had.
  */
 export function changedEngineOwnedFields<T extends object>(current: T, next: T): string[] {
   const left = Object.fromEntries(Object.entries(current))
@@ -59,6 +61,8 @@ export function changedEngineOwnedFields<T extends object>(current: T, next: T):
   const changed: string[] = []
   if (left.expand !== undefined && left.expand !== right.expand && !expanded) changed.push("expand")
   if (left.join !== undefined && !structurallyEqual(left.join, right.join)) changed.push("join")
+  if (left.compose_subtree !== undefined && !structurallyEqual(left.compose_subtree, right.compose_subtree))
+    changed.push("compose_subtree")
   return changed
 }
 

@@ -547,6 +547,7 @@ const serviceLayer = Layer.effect(
                 dagID,
                 slot: nodeConfig,
                 nodes: nodesSnapshot,
+                graph: entry.config?.nodes ?? [],
                 attempt: admissionAttempt,
               })
               return
