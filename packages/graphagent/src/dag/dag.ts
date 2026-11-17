@@ -823,7 +823,10 @@ export const layer = Layer.effect(
           .pipe(Effect.timeout(WORKFLOW_LOCK_TIMEOUT))
     // ADR-0008 decision 3: the guard and the publish of a write run in ONE
     // IMMEDIATE transaction (`DagTransact`), so nothing can change the workflow
-    // between them. Harnesses without the service run the body as it stands.
+    // between them. The service is optional for now, like `DagMessages`: the
+    // production layers always provide it, and the many harnesses that mock this
+    // layer's dependencies run the body as it stands. PR4b makes it required,
+    // with the removal of the old paths.
     const transact = <A, E, R>(
       dagID: string,
       body: Effect.Effect<A, E, R>,
