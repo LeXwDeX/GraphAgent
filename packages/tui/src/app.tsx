@@ -69,6 +69,7 @@ import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
+import { returnToParent } from "./session/navigate"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
@@ -1038,6 +1039,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   event.on("session.deleted", (evt) => {
     if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
+      // A sub-agent session deleted while on screen leaves the user in its parent session; a root goes home.
+      const parentID = evt.properties.info.parentID
+      if (parentID) {
+        returnToParent(parentID, { kind: "deleted" }, { route, toast })
+        return
+      }
       route.navigate({ type: "home" })
       toast.show({
         text: "The current session was deleted",

@@ -71,6 +71,8 @@ import { TimelinePanel } from "../../panel/timeline"
 import { useHookStatus } from "../../context/hook-status"
 import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
+import { returnToParent, useOpenSubAgent } from "../../session/navigate"
+import { childSessions, nextSibling, siblingSessions } from "../../session/siblings"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
@@ -265,12 +267,7 @@ export function Main() {
     setEpilogue(sessionEpilogue({ title, sessionID: session()?.id }))
   })
   onCleanup(() => setEpilogue())
-  const children = createMemo(() => {
-    const parentID = session()?.parentID ?? session()?.id
-    return sync.data.session
-      .filter((x) => x.parentID === parentID || x.id === parentID)
-      .toSorted((a, b) => b.time.created - a.time.created)
-  })
+  const openSubAgent = useOpenSubAgent()
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const foregroundTasks = createMemo(() =>
     messages().flatMap((message) =>
@@ -505,6 +502,9 @@ export function Main() {
         seeded = false
         lastSwitch = undefined
         prompt?.set(route.prompt ?? { input: "", parts: [] })
+        // A sub-agent session that cannot be shown sends the user back to its parent session; any other goes home.
+        // Read now: a deletion can drop the entry from the store before the failure comes back.
+        let parentID = sync.session.get(sessionID)?.parentID
 
         activation = activation
           .then(async () => {
@@ -513,6 +513,10 @@ export function Main() {
             const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
             if (!isCurrent()) return
             if (!result.data) {
+              if (parentID) {
+                returnToParent(parentID, { kind: "notFound" }, { route: { navigate }, toast })
+                return
+              }
               toast.show({
                 text: `Session not found: ${sessionID}`,
                 level: "error",
@@ -521,6 +525,7 @@ export function Main() {
               navigate({ type: "home" })
               return
             }
+            parentID = result.data.parentID
 
             if (result.data.workspaceID !== previousWorkspace) {
               project.workspace.set(result.data.workspaceID)
@@ -554,6 +559,10 @@ export function Main() {
           })
           .catch((error) => {
             if (!isCurrent()) return
+            if (parentID) {
+              returnToParent(parentID, { kind: "failed", message: errorMessage(error) }, { route: { navigate }, toast })
+              return
+            }
             toast.show({
               text: errorMessage(error),
               level: "error",
@@ -757,34 +766,25 @@ export function Main() {
 
   const local = useLocal()
 
-  function enterChild(sessionID: string) {
-    navigate({
-      type: "session",
-      sessionID,
-    })
-    const status = sync.data.session_status[sessionID]
-    if (status?.type === "retry")
-      toast.show({
-        text: "Retry Error: " + status.message,
-        level: "warning",
-      })
-  }
-
+  // The first sub-agent of the session in view: the children of a root session, or, from inside a sub-agent, the
+  // oldest of its siblings. Oldest first is the order `moveChild` walks, so this is where that walk starts.
   function moveFirstChild() {
-    if (children().length === 1) return
-    const next = children().find((x) => !!x.parentID)
-    if (next) enterChild(next.id)
+    const current = session()
+    if (!current) return
+    const first = childSessions(sync.data.session, current.parentID ?? current.id)[0]
+    if (!first) {
+      toast.show({ text: t("subagent.none"), level: "info", dedupeKey: "subagent.none" })
+      return
+    }
+    if (first.id !== current.id) openSubAgent(first.id)
   }
 
-  function moveChild(direction: number) {
-    if (children().length === 1) return
-
-    const sessions = children().filter((x) => !!x.parentID)
-    let next = sessions.findIndex((x) => x.id === session()?.id) - direction
-
-    if (next >= sessions.length) next = 0
-    if (next < 0) next = sessions.length - 1
-    if (sessions[next]) enterChild(sessions[next].id)
+  // The previous or next sibling under the same parent, in `siblingSessions` order, wrapping at both ends.
+  function moveChild(direction: 1 | -1) {
+    const current = session()
+    if (!current) return
+    const next = nextSibling(siblingSessions(sync.data.session, current.id), current.id, direction)
+    if (next) openSubAgent(next.id)
   }
 
   function childSessionHandler(func: () => void) {
@@ -2897,9 +2897,8 @@ function WebSearch(props: ToolProps) {
 
 function Task(props: ToolProps) {
   const { theme } = useTheme()
-  const { navigate } = useRoute()
   const sync = useSync()
-  const toast = useToast()
+  const openSubAgent = useOpenSubAgent()
 
   // `sessionID` is the current key; `sessionId` keeps tabs for messages
   // persisted before the rename (#1069 P9).
@@ -2963,15 +2962,8 @@ function Task(props: ToolProps) {
       pending="Delegating..."
       part={props.part}
       onClick={() => {
-        if (sessionID()) {
-          navigate({ type: "session", sessionID: sessionID()! })
-        }
-        const status = retry()
-        if (status)
-          toast.show({
-            text: "Retry Error: " + status.message,
-            level: "warning",
-          })
+        const id = sessionID()
+        if (id) openSubAgent(id)
       }}
     >
       {content()}
