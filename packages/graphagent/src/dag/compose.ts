@@ -18,10 +18,14 @@
  *   composer, asked for the plan) and an expansion slot `<id>` that carries the
  *   `expand` marker and is already the definition of the join node that replaces it.
  *
- * Reading a plan and writing its children (the degraded paths, the join
- * admission checks, replay, recovery, cancellation, budget) belongs to the
- * scheduler's admission seam, next to the `fan_out` expansion of ADR-0004. Until
- * that lands the submission gate below keeps such a graph from being submitted.
+ * Expanding a stored plan is here too, as pure functions (`planExpansion`,
+ * `degrade`): the plan's children, the join node that replaces the slot, and the
+ * degraded path when a plan cannot be expanded. The scheduler's admission seam,
+ * next to the `fan_out` expansion of ADR-0004 (`DagComposeExpansion`), reads the
+ * stored state, calls them and writes the result with `Dag.extend`. The join
+ * admission checks, nested expansion, recovery, cancellation and budget are still
+ * to come (#1158 PR3b-2); until they land the submission gate below keeps such a
+ * graph from being submitted.
  */
 
 import { AgentArtifact } from "@/agent/artifact"
@@ -397,10 +401,13 @@ export function splitContract(composer: Composer, limits: Limits, position: Posi
   ].join("\n\n")
 }
 
+/** How the join prompt opens: also what `taskPrompt` cuts at to get the task back. */
+const JOIN_OPENING = "You join the results of an expansion."
+
 /** What the join node is asked: merge the results, and say what is missing. */
 export function joinContract(composer: Composer): string {
   return [
-    "You join the results of an expansion. The input holds the plan and, for each item, its status and the artifact it produced or the reason it did not. Combine them into one decision-ready result: compare the items, settle conflicts by evidence strength, and keep material uncertainty.",
+    `${JOIN_OPENING} The input holds the plan and, for each item, its status and the artifact it produced or the reason it did not. Combine them into one decision-ready result: compare the items, settle conflicts by evidence strength, and keep material uncertainty.`,
     "Every item that failed, was skipped or produced nothing goes into not_examined with its reason, together with what the plan left out: a missing result is never covered work. Do not invent results the input does not hold.",
     composer.artifact !== undefined
       ? `Return the ${composer.artifact} artifact. Do not ask the user questions from this child session.`
@@ -429,6 +436,17 @@ export interface Compiled {
 /** The id of the split node that plans the expansion of the slot `slotID`. */
 export function splitID(slotID: string): string {
   return `${slotID}--split`
+}
+
+/**
+ * The first input alias of the slot `slotID` that falls in the namespace its
+ * expansion writes into: the split node, every child and the fallback are
+ * `<slotID>--…`, and the join node reads each of them under its own id. An authored
+ * alias there would be overwritten by the expansion's binding, and the split and the
+ * join would read the same name as different inputs.
+ */
+export function reservedAlias(slotID: string, mapping: NodeConfig["input_mapping"]): string | undefined {
+  return Object.keys(mapping ?? {}).find((alias) => alias.startsWith(`${slotID}--`))
 }
 
 /**
@@ -503,6 +521,16 @@ function checkNode(node: NodeConfig, catalog: Catalog): { composer: Composer } |
       `composer "${node.worker_type}" cannot carry ${node.fan_out !== undefined ? "fan_out" : "review"}: it plans read-only work`,
       "Remove the field; fan_out belongs to a coding writer and review to a review worker",
     )
+  const alias = reservedAlias(node.id, node.input_mapping)
+  if (alias !== undefined)
+    return {
+      problem: {
+        node: node.id,
+        path: block ? `config.blocks[${node.id}].input_mapping` : `nodes[${node.id}].input_mapping`,
+        message: `${subject}: input alias "${alias}" is reserved: the expansion binds the split node and its children under "${node.id}--…"`,
+        hint: `Rename the alias (and its placeholder) so that it does not start with "${node.id}--"`,
+      },
+    }
   return { composer: resolution.composer }
 }
 
@@ -560,6 +588,267 @@ function splitAndSlot(node: NodeConfig, composer: Composer, limits: Limits): Nod
     expand: planID,
   }
   return [split, slot]
+}
+
+// ============================================================================
+// Expansion: the plan becomes children, and the slot becomes the join node
+// ============================================================================
+
+/** What the join node keeps of an expansion: the persisted `NodeConfig.join`. */
+export type Join = NonNullable<NodeConfig["join"]>
+
+/** A node id: the pattern block ids and fan-out package ids follow. */
+const NODE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+
+/** The id of the child that runs the plan item `itemID` of the slot `slotID`. */
+export function childID(slotID: string, itemID: string): string {
+  return `${slotID}--${itemID}`
+}
+
+/** The id of the one worker that takes the whole task when a slot cannot be expanded. */
+export function fallbackID(slotID: string): string {
+  return `${slotID}--fallback`
+}
+
+/** What a composed worker is told besides its task. It never writes and never asks (the node is unattended). */
+const READ_ONLY_RULES =
+  "You run read-only: do not edit files, and do not ask the user questions from this child session. Cite what you read, and say what you did not look at and why."
+const ITEM_RULES = `You are one worker of several, each given a separate part of a larger task; answer only this part. ${READ_ONLY_RULES}`
+
+/**
+ * The task of a compose block as the author wrote it, taken back from the slot's
+ * prompt, which is that task followed by the join contract. A slot that does not
+ * carry the contract is returned whole.
+ */
+export function taskPrompt(inline: string): string {
+  const cut = inline.lastIndexOf(`\n\n${JOIN_OPENING}`)
+  return cut === -1 ? inline : inline.slice(0, cut)
+}
+
+/** A reason as one line of prompt text: braces would read as placeholders, parentheses end the note early. */
+function note(reason: string): string {
+  return reason.replace(/[{}]/g, "").replace(/[()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 300)
+}
+
+export interface ExpansionInput {
+  /** The expansion slot as persisted: carries `expand`. */
+  readonly slot: NodeConfig
+  readonly composer: Composer
+  readonly limits: Limits
+  /** The split node as the store has it. Only a completed one holds a plan. */
+  readonly source:
+    { readonly status: string; readonly output: unknown; readonly errorReason?: string | null } | undefined
+  /** Every node id of the workflow now, so a child never takes an id that is used. */
+  readonly existingNodeIDs: ReadonlySet<string>
+  /** Where this plan sits; a top-level compose block when left out. */
+  readonly position?: Position
+}
+
+/**
+ * What replaces the slot. Either way the fragment holds the join node under the
+ * slot's id plus its new children, so one `Dag.extend` makes the change.
+ *
+ * - `expand`: one child per plan item.
+ * - `fallback`: one child that takes the whole task, with the reason the plan was
+ *   not expanded. The reason is also what the join node and the coverage section report.
+ */
+export type Expansion =
+  | { readonly kind: "expand"; readonly nodes: NodeConfig[] }
+  | { readonly kind: "fallback"; readonly nodes: NodeConfig[]; readonly reason: string }
+
+/**
+ * Turns the split node's plan into the nodes that replace the slot, deciding
+ * everything from the persisted plan, the slot's definition and the catalog and
+ * limits as they are now, so planning again after a crash gives the same node ids
+ * and definitions. The plan is checked again (`checkPlan`: the catalog may have
+ * changed since the split node ran), and anything that cannot be expanded degrades
+ * to one fallback worker instead of failing the workflow: a plan that is missing,
+ * invalid or empty, an agent that can no longer be expanded, a plan the subtree
+ * has no room for, and a child id that is taken or is not a node id.
+ *
+ * A `split: true` item runs as a plain worker here; nested expansion is not
+ * written yet (#1158 PR3b-2).
+ */
+export function planExpansion(input: ExpansionInput): Expansion {
+  const { slot, composer, limits, source, existingNodeIDs } = input
+  const planID = slot.expand ?? splitID(slot.id)
+  const position = input.position ?? topPosition(limits)
+  const decline = (reason: string) => degrade(slot, composer, reason)
+  if (source === undefined) return decline(`the split node "${planID}" is gone`)
+  if (source.status !== "completed")
+    return decline(`the split node "${planID}" ${source.status}${source.errorReason ? `: ${source.errorReason}` : ""}`)
+  const checked = checkPlan(source.output, composer, limits)
+  if (!checked.ok) return decline(`the plan was rejected: ${checked.error}`)
+  const { items } = checked.plan
+  if (items.length === 0) return decline("the plan has no items")
+  if (items.length > position.remainingNodes)
+    return decline(
+      `the plan has ${items.length} items but the expansion has room for ${position.remainingNodes} more nodes (dag.compose.max_subtree_nodes)`,
+    )
+  const children: NodeConfig[] = []
+  const joined: Join["items"] = []
+  for (const item of items) {
+    const id = childID(slot.id, item.id)
+    if (!NODE_ID.test(id)) return decline(`node id "${id}" is not a valid node id`)
+    if (existingNodeIDs.has(id)) return decline(`node "${id}" already exists`)
+    const worker = composer.dispatch.find((candidate) => candidate.name === item.agent)
+    if (worker === undefined) return decline(`item "${item.id}" names "${item.agent}", which cannot be expanded`)
+    const required = itemRequired(item, composer)
+    children.push(
+      childNode(slot, planID, {
+        id,
+        name: `${slot.name} [${item.id}]`,
+        worker,
+        // D9: a required item fails the workflow only when the block is required; in an optional block it stays
+        // optional here, and the join node's admission check is what finds it missing.
+        required: slot.required === true && required,
+        prompt: itemPrompt(item),
+        mapping: {},
+      }),
+    )
+    joined.push({ id: item.id, node: id, agent: item.agent, required })
+  }
+  return { kind: "expand", nodes: [...children, joinNode(slot, planID, joined, children)] }
+}
+
+/**
+ * The expansion that does not split: one child, the composer's `fallback` worker,
+ * takes the whole task as the block's author wrote it, and the join node reads its
+ * result. `reason` says why the plan was not expanded; it is written into both
+ * prompts, kept as `join.degraded`, and left to the caller to log.
+ */
+export function degrade(
+  slot: NodeConfig,
+  composer: Composer,
+  reason: string,
+): Extract<Expansion, { kind: "fallback" }> {
+  const planID = slot.expand ?? splitID(slot.id)
+  const why = note(reason)
+  const id = fallbackID(slot.id)
+  const worker = composer.dispatch.find((candidate) => candidate.name === composer.fallback) ?? {
+    name: composer.fallback,
+    failure: "skip" as const,
+  }
+  const child = childNode(slot, planID, {
+    id,
+    name: `${slot.name} [fallback]`,
+    worker,
+    // The whole task is the block's own work: it is as required as the block.
+    required: slot.required === true,
+    prompt: {
+      inline: [
+        taskPrompt(slot.prompt_template.inline ?? ""),
+        `Compose expansion was degraded (${why}). Nothing was split: you take the whole task alone.`,
+        READ_ONLY_RULES,
+      ].join("\n\n"),
+      ...(slot.prompt_template.input ? { input: { ...slot.prompt_template.input } } : {}),
+    },
+    // It does the whole task, so it reads what the block read.
+    mapping: { ...slot.input_mapping },
+  })
+  // Not an item the plan could leave out: that no worker produced anything is `compose_no_results`, not a missing item.
+  const joined: Join["items"] = [{ id: "fallback", node: id, agent: worker.name, required: false }]
+  return { kind: "fallback", reason, nodes: [child, joinNode(slot, planID, joined, [child], why)] }
+}
+
+interface ChildSpec {
+  readonly id: string
+  readonly name: string
+  readonly worker: Worker
+  readonly required: boolean
+  readonly prompt: NodeConfig["prompt_template"]
+  readonly mapping: Record<string, string>
+}
+
+/**
+ * A worker the plan asked for. It waits for the split node alone, sees what its
+ * prompt and mapping give it (an item is self-contained: an empty mapping keeps
+ * the plan out of its context), never writes (`workspace_writes: "deny"`), never
+ * reports to the parent, and produces the artifact its agent declares. It keeps
+ * the block's workspace and timeout. It takes no model of the block's: that is the
+ * composer's choice, and a worker resolves its own.
+ */
+function childNode(slot: NodeConfig, planID: string, spec: ChildSpec): NodeConfig {
+  const artifact = spec.worker.artifact === undefined ? undefined : AgentArtifact.schema(spec.worker.artifact)
+  return {
+    id: spec.id,
+    name: spec.name,
+    worker_type: spec.worker.name,
+    depends_on: [planID],
+    required: spec.required,
+    report_to_parent: false,
+    workspace_writes: "deny",
+    prompt_template: spec.prompt,
+    input_mapping: spec.mapping,
+    ...(slot.worker_config ? { worker_config: { ...slot.worker_config } } : {}),
+    ...(slot.workspace !== undefined ? { workspace: slot.workspace } : {}),
+    ...(artifact ? { output_schema: artifact } : {}),
+  }
+}
+
+/** The task of one plan item, kept out of the template text: the plan's words are data, not placeholders. */
+function itemPrompt(item: PlanItem): NodeConfig["prompt_template"] {
+  const scope = (item.scope ?? []).filter((entry) => entry.trim() !== "")
+  return {
+    inline: [
+      "{{compose_instruction}}",
+      ...(scope.length > 0 ? ["Scope, so that this item does not overlap the others:\n{{compose_scope}}"] : []),
+      ITEM_RULES,
+    ].join("\n\n"),
+    input: {
+      compose_instruction: item.instruction,
+      ...(scope.length > 0 ? { compose_scope: scope.map((entry) => `- ${entry}`).join("\n") } : {}),
+    },
+  }
+}
+
+/**
+ * The slot, now the join node: the same definition under the same id, so every
+ * binding to it stays, minus the marker, plus what it joins. It waits for every
+ * child and reads the plan and each child's result by node id (the keys of the
+ * Context its prompt describes): a child that failed or was skipped reaches it as
+ * the scheduler's placeholder text, an artifact as itself. The mapping the slot
+ * had, the block's own inputs, is kept.
+ */
+function joinNode(
+  slot: NodeConfig,
+  planID: string,
+  items: Join["items"],
+  children: readonly NodeConfig[],
+  degraded?: string,
+): NodeConfig {
+  const { expand: _expand, ...definition } = slot
+  const join: Join = { plan: planID, items, ...(degraded !== undefined ? { degraded } : {}) }
+  return {
+    ...definition,
+    depends_on: children.map((child) => child.id),
+    prompt_template: { ...slot.prompt_template, inline: `${slot.prompt_template.inline ?? ""}\n\n${joinInput(join)}` },
+    input_mapping: {
+      ...slot.input_mapping,
+      [planID]: planID,
+      ...Object.fromEntries(children.map((child) => [child.id, child.id])),
+    },
+    join,
+  }
+}
+
+/** Tells the join node what each key of its Context is, and whether the plan was followed. */
+function joinInput(join: Join): string {
+  return [
+    ...(join.degraded !== undefined
+      ? [
+          `Compose expansion was degraded (${join.degraded}): one worker took the whole task, so nothing was compared across items. Say so in not_examined.`,
+        ]
+      : []),
+    "Expansion input, by key of the Context:",
+    `- "${join.plan}": the plan this expansion followed.`,
+    ...join.items.map((item) =>
+      join.degraded !== undefined
+        ? `- "${item.node}": the whole task, by ${item.agent}.`
+        : `- "${item.node}": item "${item.id}", by ${item.agent}; ${item.required ? "required" : "may be skipped"}.`,
+    ),
+    'A key that holds an artifact is that item\'s result. A key that holds text starting with "Dependency" says the item failed, was skipped or was aborted, and why: the item is not covered.',
+  ].join("\n")
 }
 
 // ============================================================================
