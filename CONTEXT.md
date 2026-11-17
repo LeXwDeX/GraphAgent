@@ -1,6 +1,6 @@
-# OpenCode Session Runtime
+# GraphAgent Session Runtime
 
-OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
+GraphAgent sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
 
 ## Language
 
@@ -55,7 +55,7 @@ One process-local execution span that promotes eligible input and runs required 
 The bounded projection of a Core-executed tool result persisted in Session history and replayed to the model. A tool may shape this projection semantically, but the Tool Registry enforces the final size limit.
 
 **Managed Tool Output File**:
-A temporary file created under OpenCode's shared tool-output directory to retain complete output that was too large for Session history.
+A temporary file created under GraphAgent's shared tool-output directory to retain complete output that was too large for Session history.
 
 **PTY Environment**:
 The host-supplied environment overlay applied by the server when creating a PTY, observed for the request Location and resolved PTY working directory.
