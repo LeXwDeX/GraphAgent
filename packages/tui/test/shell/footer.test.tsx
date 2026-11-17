@@ -544,7 +544,7 @@ test("two results of one sub-agent inside ten seconds are one toast, refreshed b
   try {
     emit(report(300))
     const first = toast().currentToast
-    expect(first?.text).toBe("explore 已完成 · ⏎ 查看")
+    expect(first?.text).toBe("explore 已完成 · 点击查看")
     expect(first?.dedupeKey).toBe("child")
 
     // Four seconds on, the same sub-agent reports again: it is the toast that is showing, not one behind it.
@@ -563,7 +563,7 @@ test("two results of one sub-agent inside ten seconds are one toast, refreshed b
     expect(toast().queued).toHaveLength(0)
     clock.mockReturnValue(30_000)
     emit(report(600))
-    expect(toast().queued.map((entry) => entry.text)).toEqual(["explore 已完成 · ⏎ 查看"])
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["explore 已完成 · 点击查看"])
   } finally {
     dispose()
     clock.mockRestore()

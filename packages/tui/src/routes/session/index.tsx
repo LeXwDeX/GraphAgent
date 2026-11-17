@@ -568,8 +568,11 @@ export function Main() {
   // one serialized activation so a slow switch cannot overlap the next one.
   let generation = 0
   let activation = Promise.resolve()
+  // How many jumps the route has asked for and got: a snap to the end queued before one does not undo it.
+  let jumps = 0
   // The session whose activation ended last. By then its messages are loaded and the view is at the end, which is where
-  // an activation leaves it, so a jump the route asks for (below) waits for it.
+  // an activation leaves it, so a jump the route asks for (below) waits for it. A switch clears it: a session visited
+  // before does not count as activated while its new activation is still queued.
   const [activated, setActivated] = createSignal<string>()
 
   createEffect(
@@ -578,6 +581,7 @@ export function Main() {
       (sessionID) => {
         const current = ++generation
         const isCurrent = () => current === generation
+        setActivated(undefined)
         seeded = false
         lastSwitch = undefined
         prompt?.set(route.prompt ?? { input: "", parts: [] })
@@ -769,6 +773,7 @@ export function Main() {
     const target = route.messageID
     if (!target || activated() !== route.sessionID || !session() || !scroll || scroll.isDestroyed) return
     untrack(() => {
+      jumps++
       jumpToMessage(target)
       navigate({ type: "session", sessionID: route.sessionID })
     })
@@ -870,8 +875,10 @@ export function Main() {
   }
 
   function toBottom() {
+    // A jump the route asked for after this was queued (back to a session with a message to show) has the last word.
+    const at = jumps
     ticker.at(ticker.now() + 50, () => {
-      if (!scroll || scroll.isDestroyed) return
+      if (at !== jumps || !scroll || scroll.isDestroyed) return
       scroll.scrollTo(scroll.scrollHeight)
     })
   }

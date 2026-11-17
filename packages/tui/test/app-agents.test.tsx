@@ -464,11 +464,11 @@ test("a background run that ends while the user is in the main session leaves a 
     expect(await captureFrame(app.setup)).not.toContain("explore 已完成")
 
     app.events.emit(resultEvent(charlieID))
-    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成 · ⏎ 查看"), "the reminder")
+    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成 · 点击查看"), "the reminder")
     expect(fake.childReads()).toEqual([])
 
     // The result card is in the main session, where the user is: the click goes there, and not into the sub-agent.
-    const { row, column } = locate(frame, "explore 已完成 · ⏎ 查看")
+    const { row, column } = locate(frame, "explore 已完成 · 点击查看")
     await app.setup.mockMouse.click(column + 2, row)
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
     expect(await captureFrame(app.setup)).toContain(PROMPT_MARK)
@@ -499,7 +499,7 @@ test("a click on the toast takes the main session's transcript to the report's c
     const atEnd = (frame: string) => frame.includes(TAIL_TEXT) && !frame.includes(HEAD_TEXT)
     const atCard = (frame: string) =>
       frame.includes("Inspected.") && !frame.includes(HEAD_TEXT) && !frame.includes(TAIL_TEXT)
-    const toast = "explore 已完成 · ⏎ 查看"
+    const toast = "explore 已完成 · 点击查看"
     app.setup.mockInput.pressKey("g", { ctrl: true })
     await waitForFrame(app.setup, atHead, "the head of the transcript")
     app.events.emit(resultEvent(bravoID))
@@ -547,7 +547,7 @@ test("from a sub-agent view a click on the toast goes to the main session, in bo
       for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
 
       app.events.emit(resultEvent(bravoID, "error"))
-      const text = language === "en" ? "explore did not finish · ⏎ view" : "explore 未完成 · ⏎ 查看"
+      const text = language === "en" ? "explore did not finish · click to view" : "explore 未完成 · 点击查看"
       const frame = await waitForFrame(app.setup, (value) => value.includes(text), "the reminder")
       expect(frame).not.toContain(PROMPT_MARK)
 
@@ -587,12 +587,12 @@ test("what a load or a reconnect brings is no event: a result already in the tra
 
     // A result that arrives as an event is announced, once: the same part again (redelivered after the reconnect) is not.
     app.events.emit(resultEvent(bravoID, "completed", 700))
-    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成 · ⏎ 查看"), "the reminder")
-    expect(frame.split("explore 已完成 · ⏎ 查看").length - 1).toBe(1)
+    const frame = await waitForFrame(app.setup, (value) => value.includes("explore 已完成 · 点击查看"), "the reminder")
+    expect(frame.split("explore 已完成 · 点击查看").length - 1).toBe(1)
     app.events.reconnect()
     app.events.emit(resultEvent(bravoID, "completed", 700))
     for (let pass = 0; pass < 10; pass++) await app.setup.renderOnce()
-    expect((await captureFrame(app.setup)).split("explore 已完成 · ⏎ 查看").length - 1).toBe(1)
+    expect((await captureFrame(app.setup)).split("explore 已完成 · 点击查看").length - 1).toBe(1)
     expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)

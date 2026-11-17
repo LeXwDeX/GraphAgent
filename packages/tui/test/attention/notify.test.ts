@@ -393,10 +393,10 @@ describe("sub-agent reminders", () => {
     harness.emit(report("subagent", "interrupted", { endedAt: 3 }))
 
     expect(footer.toasts.map((toast) => [toast.text, toast.level])).toEqual([
-      ["explore 已完成 · ⏎ 查看", "success"],
+      ["explore 已完成 · 点击查看", "success"],
       ["explore 需要权限 · /agents", "warning"],
-      ["explore 未完成 · ⏎ 查看", "error"],
-      ["explore 未完成 · ⏎ 查看", "error"],
+      ["explore 未完成 · 点击查看", "error"],
+      ["explore 未完成 · 点击查看", "error"],
     ])
   })
 
@@ -536,7 +536,7 @@ describe("the result of a background run", () => {
 
     expect(footer.toasts).toHaveLength(1)
     expect(footer.toasts[0]).toMatchObject({
-      text: "explore finished · ⏎ view",
+      text: "explore finished · click to view",
       level: "success",
       dedupeKey: "subagent",
     })
@@ -556,9 +556,9 @@ describe("the result of a background run", () => {
     harness.emit(report("subagent", "completed", { endedAt: 3 }))
 
     expect(footer.toasts.map((toast) => [toast.text, toast.level, toast.dedupeKey])).toEqual([
-      ["explore did not finish · ⏎ view", "error", "subagent"],
-      ["explore did not finish · ⏎ view", "error", "subagent"],
-      ["explore finished · ⏎ view", "success", "subagent"],
+      ["explore did not finish · click to view", "error", "subagent"],
+      ["explore did not finish · click to view", "error", "subagent"],
+      ["explore finished · click to view", "success", "subagent"],
     ])
   })
 
@@ -670,10 +670,10 @@ describe("the result of a background run", () => {
     harness.emit(report("unknown-child", "completed", { endedAt: 4 }))
 
     expect(footer.toasts.map((toast) => toast.text)).toEqual([
-      "explore finished · ⏎ view",
-      "build finished · ⏎ view",
-      "agent finished · ⏎ view",
-      "agent finished · ⏎ view",
+      "explore finished · click to view",
+      "build finished · click to view",
+      "agent finished · click to view",
+      "agent finished · click to view",
     ])
   })
 

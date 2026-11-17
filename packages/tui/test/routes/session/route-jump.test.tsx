@@ -233,3 +233,23 @@ test("the report of a background run lands on its result card", async () => {
     await harness.dispose()
   }
 })
+
+test("back to a session visited before, the jump waits for the new activation, not the one of the earlier visit", async () => {
+  const harness = await mountJump()
+  try {
+    // The main session has been activated once.
+    await harness.waitForFrame((frame) => frame.includes(TAIL), "the end of the transcript")
+
+    // Over to the sub-agent and straight back with a jump, before the sub-agent's activation can end.
+    harness.route().navigate({ type: "session", sessionID: CHILD })
+    harness.route().navigate({ type: "session", sessionID: ROOT, messageID: MID_ID })
+    await harness.waitForFrame(atMiddle, "the message in the middle")
+    expect(plain(harness)).toEqual({ type: "session", sessionID: ROOT })
+
+    // The activation of this visit, which ends at the end of the transcript, came before the jump and does not undo it.
+    await harness.settle()
+    expect(atMiddle(await harness.frame())).toBe(true)
+  } finally {
+    await harness.dispose()
+  }
+})
