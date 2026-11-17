@@ -112,7 +112,7 @@ A set of context-management features: limits on tool output length, a cap on too
 
 ## Quick start
 
-Prebuilt binaries (Linux, macOS, Windows, with SHA256SUMS) are on the [Releases](https://github.com/LeXwDeX/GraphAgent/releases) page. Unpack one, put `graphagent` on your PATH and run it in your project directory. The `oc` installer script in this repo goes away in v2.1, when installing and upgrading move into the main program (see the roadmap). GraphAgent is not published to npm, brew or scoop, and the upstream `opencode-ai` package installs upstream opencode, not GraphAgent.
+Prebuilt binaries (Linux, macOS, with SHA256SUMS) are on the [Releases](https://github.com/LeXwDeX/GraphAgent/releases) page. Unpack one, put `graphagent` on your PATH and run it in your project directory. From v2.0 no native Windows build is published and Windows integration tests no longer run. On Windows, install WSL, then set up and use GraphAgent inside it the Linux way. The `oc` installer script in this repo goes away in v2.1, when installing and upgrading move into the main program (see the roadmap). GraphAgent is not published to npm, brew or scoop, and the upstream `opencode-ai` package installs upstream opencode, not GraphAgent.
 
 To run from source you need the Bun version pinned in `package.json` (`packageManager`) and the Node version in `.node-version`:
 
@@ -176,7 +176,7 @@ v2.0's remaining work is tracked on the [milestone](https://github.com/LeXwDeX/G
 - Workflow tool interface convergence, workflow-level worktrees, event-driven mailboxes and durable reconciliation.
 - Agent contracts and a composer: built-in research, architecture design and prototyping agents, composed inside a DAG.
 - PR watching rebuilt as an event source; `/remind` persistent reminders; background task display and a read-only child-agent view.
-- The v2.0.0 release: version derivation, breaking-change list, migration guides in Chinese and English, and three-platform smoke tests.
+- The v2.0.0 release: version derivation, breaking-change list, migration guides in Chinese and English, and Linux and macOS smoke tests.
 - v2.1: install and upgrade move into the main program. It looks up new versions on GitHub and upgrades itself, so the `oc` script is gone. Release packaging changes with it, so installing on macOS no longer asks for a password. Configuration can also be read from a GitHub repository ([#1281](https://github.com/LeXwDeX/GraphAgent/issues/1281)).
 
 These are plans. The milestone has the actual status.
