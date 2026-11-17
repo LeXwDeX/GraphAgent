@@ -163,7 +163,6 @@ const runSpawn = (input: NodeSpawnInput, nodeStarted: () => Effect.Effect<void, 
     const workflow = makeWorkflowRow({ id: input.dagID, sessionId: input.parentSessionID })
     const dag = Layer.mock(Dag.Service, {
       store: {
-        tryClaimAdoption: () => Effect.succeed(true),
         getWorkflow: () => Effect.succeed(workflow),
         getNode: () => Effect.succeed(input.node),
       } as unknown as DagStore.Interface,

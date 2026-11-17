@@ -251,8 +251,8 @@ describe("runner identity", () => {
 
 describe("races between two runners (#1029)", () => {
   // Race 1. A second runner that starts on the same directory recovers every
-  // non-terminal workflow of it. `reconcileWorkflow` used to run before
-  // `tryClaimAdoption` (which only compares the status), and it settles any
+  // non-terminal workflow of it. `reconcileWorkflow` used to run before the
+  // adoption claim (which only compared the status), and it settles any
   // `running` node whose child is not finished as "execution ownership lost":
   // it cancels the child, fails the node and pauses the workflow. That the
   // node is in fact being driven by another live process was never asked. It

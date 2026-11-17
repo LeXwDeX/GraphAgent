@@ -43,7 +43,7 @@ type TrackedEvent = {
 function makeEventTracker(store: Partial<DagStore.Interface> = {}) {
   const events: TrackedEvent[] = []
   const dagLayer = Layer.mock(Dag.Service, {
-    store: { tryClaimAdoption: () => Effect.succeed(true), ...store } as unknown as DagStore.Interface,
+    store: { ...store } as unknown as DagStore.Interface,
     nodeQueued: Effect.fn("stub.nodeQueued")((dagID: string, nodeID: string) =>
       Effect.sync(() => events.push({ type: "nodeQueued", dagID, nodeID })),
     ),
@@ -964,7 +964,7 @@ describe("spawnNode child run", () => {
   it("cancels the registered run when nodeStarted rejects the attempt", async () => {
     const events: TrackedEvent[] = []
     const dagLayer = Layer.mock(Dag.Service, {
-      store: { tryClaimAdoption: () => Effect.succeed(true) } as unknown as DagStore.Interface,
+      store: {} as unknown as DagStore.Interface,
       nodeQueued: () => Effect.void,
       nodeStarted: () => Effect.fail(new TerminalViolationError("node-1", "failed", "running")),
       nodeFailed: Effect.fn("stub.nodeFailed")((dagID: string, nodeID: string, reason: string) =>
@@ -991,7 +991,7 @@ describe("spawnNode terminalization during spawn window", () => {
     const events: TrackedEvent[] = []
     let cancelCalled = false
     const dagLayer = Layer.mock(Dag.Service, {
-      store: { tryClaimAdoption: () => Effect.succeed(true) } as unknown as DagStore.Interface,
+      store: {} as unknown as DagStore.Interface,
       nodeQueued: () => Effect.void,
       nodeStarted: () => Effect.fail(new TerminalViolationError("node-1", "failed", "running")),
       nodeCompleted: Effect.fn("stub.nodeCompleted")((dagID: string, nodeID: string) =>
@@ -1031,7 +1031,7 @@ describe("spawnNode terminalization during spawn window", () => {
     let cancelCalled = false
     let promptCalled = false
     const dagLayer = Layer.mock(Dag.Service, {
-      store: { tryClaimAdoption: () => Effect.succeed(true) } as unknown as DagStore.Interface,
+      store: {} as unknown as DagStore.Interface,
       nodeQueued: () => Effect.void,
       nodeStarted: () => Effect.fail(new Error("nodeStarted write failed")),
       nodeCompleted: Effect.fn("stub.nodeCompleted")((dagID: string, nodeID: string) =>
