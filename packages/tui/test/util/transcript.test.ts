@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
+import { setLanguage } from "../../src/i18n"
 import { formatAssistantHeader, formatMessage, formatPart, formatTranscript } from "../../src/util/transcript"
 import type { AssistantMessage, Part, Provider, UserMessage } from "@graphagent/sdk"
 
@@ -526,6 +528,175 @@ describe("transcript", () => {
 
     test("without readText the stored text is used", () => {
       expect(formatPart(text("part_1", "已落库"), options)).toBe("已落库\n\n")
+    })
+  })
+
+  // #1058: the result of a finished background run is a synthetic part, and the one kind of it that /copy and
+  // /export write out: a heading with the card's title, then what the run left.
+  describe("the result of a background run", () => {
+    afterEach(() => {
+      setLanguage(DEFAULT_LANGUAGE)
+    })
+
+    const options = { thinking: true, toolDetails: true, assistantMetadata: false }
+    const CHILD = "ses_child"
+    const notice = (tag: "task_result" | "task_error", body: string) =>
+      `<task id="${CHILD}" state="completed">\n<summary>Background task completed: Scan src</summary>\n<${tag}>\n${body}\n</${tag}>\n</task>`
+    const result = (
+      body: string,
+      extra: {
+        status?: string
+        synthetic?: boolean
+        metadata?: Record<string, unknown> | null
+        tag?: "task_result" | "task_error"
+      } = {},
+    ): Part => ({
+      id: "part_result",
+      sessionID: "ses_123",
+      messageID: "msg_result",
+      type: "text",
+      text: notice(extra.tag ?? "task_result", body),
+      synthetic: extra.synthetic ?? true,
+      ...(extra.metadata === null
+        ? {}
+        : {
+            metadata: extra.metadata ?? {
+              backgroundResult: {
+                childSessionID: CHILD,
+                initiator: "agent",
+                title: "Scan src",
+                status: extra.status ?? "completed",
+                startedAt: 1_000,
+                endedAt: 66_000,
+              },
+            },
+          }),
+    })
+
+    test("is a heading with the title of the card and the body under it", () => {
+      setLanguage("en")
+      expect(formatPart(result("Found 3 issues\nin src/a.ts"), options)).toBe(
+        "### background result · agent · Scan src · done · 1m 5s\n\nFound 3 issues\nin src/a.ts\n\n",
+      )
+      setLanguage("zh-CN")
+      expect(formatPart(result("找到 3 处"), options)).toBe(
+        "### 后台结果 · agent · Scan src · 完成 · 1m 5s\n\n找到 3 处\n\n",
+      )
+    })
+
+    test("says how the run ended in the title", () => {
+      setLanguage("en")
+      expect(formatPart(result("boom", { status: "error", tag: "task_error" }), options)).toStartWith(
+        "### background result · agent · Scan src · failed · 1m 5s\n\nboom\n\n",
+      )
+      expect(formatPart(result("cut short", { status: "interrupted", tag: "task_error" }), options)).toStartWith(
+        "### background result · agent · Scan src · interrupted · 1m 5s\n\ncut short\n\n",
+      )
+    })
+
+    test("names the kind of agent the caller knows for the child, and `agent` when it does not", () => {
+      setLanguage("en")
+      const asked: string[] = []
+      const written = formatPart(result("ok"), {
+        ...options,
+        taskKind: (childSessionID) => {
+          asked.push(childSessionID)
+          return childSessionID === CHILD ? "explore" : undefined
+        },
+      })
+      expect(written).toStartWith("### background result · explore · Scan src")
+      expect(asked).toEqual([CHILD])
+      expect(formatPart(result("ok"), { ...options, taskKind: () => undefined })).toStartWith(
+        "### background result · agent · Scan src",
+      )
+    })
+
+    test("is a heading alone when the run left nothing", () => {
+      setLanguage("en")
+      expect(formatPart(result(""), options)).toBe("### background result · agent · Scan src · done · 1m 5s\n\n")
+    })
+
+    test("leaves the instruction above a run the user started out of it", () => {
+      setLanguage("en")
+      const part = result("1 high")
+      if (part.type !== "text") throw new Error("a text part")
+      const withNotice: Part = {
+        ...part,
+        text: `The user ran /review in the background and it has finished. Present its findings.\n\n${part.text}`,
+      }
+      const written = formatPart(withNotice, options)
+      expect(written).toContain("1 high")
+      expect(written).not.toContain("Present its findings")
+    })
+
+    test("is not a card for a part without the metadata, or one the user wrote, whatever its text says", () => {
+      expect(formatPart(result("looks like one", { metadata: null }), options)).toBe("")
+      expect(formatPart(result("looks like one", { metadata: {} }), options)).toBe("")
+      // A part that is not synthetic is the user's text, written as it always was.
+      const written = formatPart(result("by the user", { synthetic: false }), options)
+      expect(written).not.toContain("###")
+      expect(written).toContain("<task_result>")
+    })
+
+    test("does not read the part through readText, which has nothing to add to a finished notice", () => {
+      let asked = 0
+      formatPart(result("ok"), {
+        ...options,
+        readText: () => {
+          asked++
+          return ""
+        },
+      })
+      expect(asked).toBe(0)
+    })
+
+    test("a message that only reports results has no user heading: the card heading stands alone", () => {
+      setLanguage("en")
+      const msg: UserMessage = {
+        id: "msg_result",
+        sessionID: "ses_123",
+        role: "user",
+        agent: "build",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        time: { created: 1000000 },
+      }
+      expect(formatMessage(msg, [result("ok")], options)).toBe(
+        "### background result · agent · Scan src · done · 1m 5s\n\nok\n\n",
+      )
+    })
+
+    test("a transcript has the card where the message stands, between its neighbours", () => {
+      setLanguage("en")
+      const user = (id: string, created: number): UserMessage => ({
+        id,
+        sessionID: "ses_123",
+        role: "user",
+        agent: "build",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        time: { created },
+      })
+      const text = (messageID: string, body: string): Part => ({
+        id: `part_${messageID}`,
+        sessionID: "ses_123",
+        messageID,
+        type: "text",
+        text: body,
+      })
+      const written = formatTranscript(
+        { id: "ses_123", title: "Run", time: { created: 1000000, updated: 1000001 } },
+        [
+          { info: user("msg_1", 1), parts: [text("msg_1", "scan it")] },
+          { info: user("msg_2", 2), parts: [result("found it")] },
+          { info: user("msg_3", 3), parts: [text("msg_3", "thanks")] },
+        ],
+        options,
+      )
+      const at = (needle: string) => written.indexOf(needle)
+      expect(at("scan it")).toBeGreaterThan(-1)
+      expect(at("### background result")).toBeGreaterThan(at("scan it"))
+      expect(at("found it")).toBeGreaterThan(at("### background result"))
+      expect(at("thanks")).toBeGreaterThan(at("found it"))
+      expect(written.match(/### background result/g)).toHaveLength(1)
     })
   })
 })
