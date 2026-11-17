@@ -151,7 +151,11 @@ describe("incremental transcript scaling", () => {
         console.log(
           `[perf-1018] median ratio=${medianRatio.toFixed(2)}, worst ${LARGE} p95=${Math.max(...largeP95s).toFixed(3)}ms`,
         )
-        expect(medianRatio).toBeLessThanOrEqual(1.5)
+        // #1383: the guard is against O(N) work. A transcript rebuilt on every trigger (no cursor kept) measured a
+        // median ratio of 6-8 here, a flat one 1.1-1.2; 3 sits between the two and absorbs the jitter of a loaded CI
+        // host, where 1.5 failed repeatedly at ratios just above it (1.51). The absolute bound below and
+        // `writes === 0` above still hold.
+        expect(medianRatio).toBeLessThanOrEqual(3)
         expect(Math.max(...largeP95s)).toBeLessThanOrEqual(10)
 
         HookTranscript.clearCursor(small.id)

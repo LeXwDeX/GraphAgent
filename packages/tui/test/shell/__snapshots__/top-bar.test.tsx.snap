@@ -1,0 +1,36 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`draws the path of a sub-agent: the root title, then the kind and its description 1`] = `
+" ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更               Claude Sonnet 4.5 · high · 上下文 24% 
+"
+`;
+
+exports[`shows the position and the keys that move it on the right, in both languages 1`] = `
+" ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更                                    子 agent 2/3  ←→ 
+"
+`;
+
+exports[`shows the position and the keys that move it on the right, in both languages 2`] = `
+" ◇─◆ GraphAgent › Upgrade the toolchain and every dependency › ● explore · scan for breaking changes   subagent 1/3  ←→ 
+"
+`;
+
+exports[`keeps the path and the position inside 80 columns in zh-CN at ambiguous_width 1 1`] = `
+" ◇─◆ GraphAgent › 升级工具链与整… › … › ● explore · 扫描全…   子 agent 3/12  ←→ 
+"
+`;
+
+exports[`keeps the path and the position inside 80 columns in zh-CN at ambiguous_width 2 1`] = `
+" ◇─◆ GraphAgent › 升级工具链与整个… › … › ● explore   子 agent 3/12  ←→         
+"
+`;
+
+exports[`keeps the path and the position inside 80 columns in en at ambiguous_width 1 1`] = `
+" ◇─◆ GraphAgent › Upgrade the to… › … › ● explore · scan th…  subagent 3/12  ←→ 
+"
+`;
+
+exports[`keeps the path and the position inside 80 columns in en at ambiguous_width 2 1`] = `
+" ◇─◆ GraphAgent › Upgrade the toolc… › … › ● explore  subagent 3/12  ←→         
+"
+`;

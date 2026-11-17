@@ -23,7 +23,8 @@
 packages/tui/src/
   app.tsx               # provider 树与 AppFrame 装配（F1 3.3）
   shell/                # 骨架（F1）：app-frame、top-bar、footer（及 footer-status、dag-indicator、hook-progress）、
-                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行）；bottom-zone（F3）；pr-line（F6，未落地）
+                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行）；bottom-zone（F3）；
+                        #   subagent-path（子 agent 视图的顶栏路径、溢出折叠与状态标记，F5）；pr-line（F6，未落地）
   panel/                # 面板模板与具体面板（F3）：
                         #   shell.tsx（PanelShell）、list.tsx、settings.tsx、detail.tsx、host.tsx（PanelHost）
                         #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4 已落地）
@@ -39,7 +40,7 @@ packages/tui/src/
   routes/               # home.tsx（及 home/）、session/、diff/
                         #   session/index.tsx 的 Main 按 parentID 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
                         #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
-  session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
+  session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
   dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4 已落地）
   pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
@@ -60,7 +61,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 
 目录职责（一句话）与落地 Issue：
 
-- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），其余行（PR、信任）与 `pr-line`（F6）未落地。
+- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；F5 已落 `subagent-path`（子 agent 视图顶栏路径的纯布局函数，顶栏与页脚的子 agent 分支用它）；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），其余行（PR、信任）与 `pr-line`（F6）未落地。
   - 输入框（`Prompt`）画在 `bottom-zone` 的输入框槽里：主区 → 状态带槽 → 输入框 → 页脚，抽屉只覆盖主区（F4 PR0，#1032）。`home`、`session` 路由在 setup 里调用 `useBottomZoneOptional()?.setComposer({ render })` 装入自己的 `Prompt`（草稿、提交、焦点的接线仍留在路由里），卸载时调用返回的撤销函数（只撤销自己装的那一份）。`render` 在槽里创建，不在路由的 provider 树里，只能读到应用级 context；路由自己提供的（会话的 `LocationProvider`，`@` 文件搜索靠它定位目录）要在 `render` 里重新提供。
   - `AppFrame` 的 `statusBand`、`bottomZone`、`drawer` 经 `Slot` 只构造一次：直接写 `<Show when={props.x}>{props.x}</Show>` 会把 prop 里的 JSX 构造两次，多出来的一份不上屏却一直在跑（面板、输入框、key layer 都会重复）。
 - `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`/dag` 面板 `panel/dag.tsx` 已落地（F4）。
@@ -72,7 +73,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
-- `session/`：会话级辅助函数。目前只有预填落地 `prefill.ts`；同级排序 `siblings.ts`、导航 `navigate.ts` 随 F5。
+- `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，`i/N`、`←→`、`<leader>down` 共用）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）。
 - `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒。
 - `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。
 - `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
