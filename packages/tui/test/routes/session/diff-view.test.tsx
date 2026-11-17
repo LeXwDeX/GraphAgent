@@ -6,6 +6,7 @@ import { expect, test } from "bun:test"
 import { diffView, sessionContentWidth, SPLIT_DIFF_MIN_CONTENT_WIDTH } from "../../../src/routes/session/diff-view"
 import { createFixture } from "../../perf/fixtures"
 import { mountHarness, type PerfHarness } from "../../perf/harness"
+import { settleHighlights } from "../../perf/scenarios"
 import { readFrame } from "../dag-mode-harness"
 
 /**
@@ -63,16 +64,18 @@ function editTranscript() {
   return fixture
 }
 
-/** Renders at `width` until both sides of the change are on screen and returns the frame. */
+/**
+ * Renders at `width` and returns the frame once the diff has re-laid out. Time only moves on the harness's manual
+ * clock; the one wait is for the highlighter worker, which `settleHighlights` bounds without sleeping.
+ */
 async function diffAt(harness: PerfHarness, width: number) {
   harness.app.resize(width, 30)
-  for (let attempt = 0; attempt < 200; attempt++) {
-    await harness.app.renderOnce()
-    const frame = await readFrame(harness.app)
-    if (frame.includes(OLD_LINE) && frame.includes(NEW_LINE)) return frame
-    await Bun.sleep(5)
-  }
-  throw new Error(`the diff never showed:\n${await readFrame(harness.app)}`)
+  await harness.app.renderOnce()
+  harness.clock.advance(100)
+  await settleHighlights(harness)
+  const frame = await readFrame(harness.app)
+  if (!frame.includes(OLD_LINE) || !frame.includes(NEW_LINE)) throw new Error(`the diff is not on screen:\n${frame}`)
+  return frame
 }
 
 /** A split diff puts the removed and the added line on the same row; a unified one on two rows. */
