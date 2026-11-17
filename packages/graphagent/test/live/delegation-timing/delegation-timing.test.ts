@@ -558,6 +558,9 @@ describe("a read-only shell call stays in the workspace", () => {
       "git -C /tmp log",
       "cd / && ls",
       "grep --file=/etc/passwd x src",
+      "grep -f /etc/passwd src",
+      "grep -n login /etc/passwd",
+      "sed -n 1p ../secret.txt",
     ]) {
       expect(classifyShell(command), command).toBe("exec")
     }
@@ -569,6 +572,10 @@ describe("a read-only shell call stays in the workspace", () => {
       "cat src/auth/login.ts 2>/dev/null",
       "grep -rn formatDate src",
       "diff src/a.ts /dev/null",
+      "grep -n '/api/login' src/api/server.ts",
+      "rg -n '/auth/(login|logout)' src",
+      "grep -rn -e '/api/' -e '~user' src",
+      "sed -n '/^export/p' src/utils/date.ts",
     ]) {
       expect(classifyShell(command), command).toBe("read")
     }

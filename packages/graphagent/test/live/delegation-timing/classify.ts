@@ -461,9 +461,46 @@ const ENV_READERS = new Set(["env", "printenv", "set", "export", "declare", "typ
  * model, so a read is only a read when it provably stays in the workspace; anything else stops the
  * scenario like an execution. `/dev/null` is not a place.
  */
+/** Commands whose first operand is a pattern or a script, not a path. */
+const PATTERN_FIRST = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk"])
+/** Options of those commands whose value is a pattern or script; `-f`/`--file` values stay paths. */
+const PATTERN_OPTIONS = new Set(["-e", "--regexp", "--expression"])
+
+/**
+ * The words that can name a place: every argument but the patterns and scripts of PATTERN_FIRST
+ * commands (their first operand, unless a pattern came through `-e`, and every `-e` value). A pattern
+ * such as `/api/login` is text to search for, not a path to read.
+ */
+function placeWords(words: readonly string[]): readonly string[] {
+  const command = words[0] ?? ""
+  if (!PATTERN_FIRST.has(command)) return words
+  const args = words.slice(1)
+  // A pattern given by `-e`, or read from a file by `-f`, leaves every operand a path.
+  const viaOption = args.some(
+    (word) =>
+      PATTERN_OPTIONS.has(word) || /^--(regexp|expression|file)=/.test(word) || word === "-f" || word === "--file",
+  )
+  const places: string[] = [command]
+  let patternTaken = viaOption
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] ?? ""
+    if (PATTERN_OPTIONS.has(word)) {
+      i++ // its value is a pattern
+      continue
+    }
+    if (/^--(regexp|expression)=/.test(word)) continue
+    if (!word.startsWith("-") && !patternTaken) {
+      patternTaken = true
+      continue
+    }
+    places.push(word)
+  }
+  return places
+}
+
 function reachesOutside(words: readonly string[], bound: ReadonlySet<string>): boolean {
   if (ENV_READERS.has(words[0] ?? "")) return true
-  return words.some((word) => {
+  return placeWords(words).some((word) => {
     const expanded = [...word.replaceAll("$(...)", "").matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*|.)/g)]
     // Positional and special parameters ($1, $?, $#) carry no environment; a named variable does,
     // unless the command itself binds it (a loop variable, `read`, an assignment).
