@@ -3,6 +3,7 @@ import { SessionEvent } from "@graphagent/core/session/event"
 import { EventManifest as SchemaEventManifest } from "@graphagent/schema/event-manifest"
 import { Todo } from "@/session/todo"
 import { SessionGoal } from "@graphagent/schema/session-goal"
+import { PrWatchEvent } from "@graphagent/schema/pr-watch-event"
 import { EventManifest } from "@/event-manifest"
 
 describe("public event manifest", () => {
@@ -10,11 +11,12 @@ describe("public event manifest", () => {
     expect(EventManifest.Definitions).toBe(SchemaEventManifest.Definitions)
     expect(EventManifest.Latest).toBe(SchemaEventManifest.Latest)
     expect(EventManifest.Durable).toBe(SchemaEventManifest.Durable)
-    expect(EventManifest.Latest.size).toBe(67)
+    expect(EventManifest.Latest.size).toBe(68)
     expect(EventManifest.Latest.get("session.next.moved")).toBe(SessionEvent.Moved)
     expect(EventManifest.Latest.get("todo.updated")).toBe(Todo.Event.Updated)
     expect(EventManifest.Latest.get("goal.updated")).toBe(SessionGoal.Event.Updated)
     expect(EventManifest.Latest.get("goal.cleared")).toBe(SessionGoal.Event.Cleared)
+    expect(EventManifest.Latest.get("pr.watch.updated")).toBe(PrWatchEvent.Updated)
     expect(EventManifest.Latest.has("ide.installed")).toBe(false)
     expect(EventManifest.Latest.has("server.connected")).toBe(true)
     expect(EventManifest.Latest.has("global.disposed")).toBe(true)

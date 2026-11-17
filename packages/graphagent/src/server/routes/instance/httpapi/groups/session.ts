@@ -12,6 +12,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { SessionGoal } from "@graphagent/schema/session-goal"
+import { PrWatchEvent } from "@graphagent/schema/pr-watch-event"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, Struct } from "effect"
@@ -38,6 +39,26 @@ import { ModelV2 } from "@graphagent/core/model"
 import { VALID_HOOK_EVENTS, type HookEvent } from "@/hook"
 
 const root = "/session"
+
+/** `GET /session/:sessionID/pr-watch` (#1036): entries share the `pr.watch.updated` payload shape. */
+export const PrWatchList = Schema.Struct({
+  entries: Schema.Array(PrWatchEvent.Entry),
+}).annotate({ identifier: "PrWatchList" })
+
+/** One pending reminder (#1072 hand-over to #1036): `fireAt` is the next occurrence it waits for or owes. */
+export const SessionReminder = Schema.Struct({
+  id: Schema.String,
+  sessionID: SessionID,
+  text: Schema.String,
+  fireAt: Schema.Number,
+  everyMs: Schema.NullOr(Schema.Number),
+  status: Schema.Literals(["scheduled", "due"]),
+  createdAt: Schema.Number,
+}).annotate({ identifier: "SessionReminder" })
+
+export const SessionReminderList = Schema.Struct({
+  entries: Schema.Array(SessionReminder),
+}).annotate({ identifier: "SessionReminderList" })
 export const ListQuery = Schema.Struct({
   scope: Schema.optional(Schema.Literals(["project"])),
   path: Schema.optional(Schema.String),
@@ -158,6 +179,8 @@ export const SessionPaths = {
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   goal: `${root}/:sessionID/goal`,
+  prWatch: `${root}/:sessionID/pr-watch`,
+  reminder: `${root}/:sessionID/reminder`,
   hook: `${root}/:sessionID/hook`,
   hookRemove: `${root}/:sessionID/hook/:hookID`,
   hookCancel: `${root}/:sessionID/hook/:hookID/cancel`,
@@ -267,6 +290,30 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.goal",
             summary: "Get session goal",
             description: "Retrieve the autonomous goal state for a session, if one is set.",
+          }),
+        ),
+        HttpApiEndpoint.get("prWatch", SessionPaths.prWatch, {
+          params: { sessionID: SessionID },
+          success: described(PrWatchList, "PR/MR watches"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.prWatch",
+            summary: "Get session PR watches",
+            description:
+              "List the session's PR/MR watches that are live or ended within the last 10 minutes, newest first. Each entry has the shape of the pr.watch.updated event payload.",
+          }),
+        ),
+        HttpApiEndpoint.get("reminder", SessionPaths.reminder, {
+          params: { sessionID: SessionID },
+          success: described(SessionReminderList, "Pending reminders"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.reminder",
+            summary: "Get session reminders",
+            description:
+              "List the session's reminders that can still fire or are owed, soonest first, with the time each fires at.",
           }),
         ),
         HttpApiEndpoint.post("hookAdd", SessionPaths.hook, {

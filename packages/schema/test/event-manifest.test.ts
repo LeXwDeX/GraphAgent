@@ -21,7 +21,7 @@ import { WorkspaceEvent } from "../src/workspace-event"
 describe("public event manifest", () => {
   test("owns the complete public event surface", () => {
     expect(EventManifest.ServerDefinitions.length).toBe(27)
-    expect(EventManifest.Definitions.length).toBe(67)
+    expect(EventManifest.Definitions.length).toBe(68)
     expect([...SessionV1.Event.Definitions]).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
@@ -37,7 +37,7 @@ describe("public event manifest", () => {
       SessionV1.Event.Diff,
       SessionV1.Event.Error,
     ])
-    expect(EventManifest.Latest.size).toBe(67)
+    expect(EventManifest.Latest.size).toBe(68)
     // 34 = 33 before #1031 M7 + `dag.node.safety_denied` (M7 safety guard).
     expect(EventManifest.Durable.size).toBe(34)
   })
