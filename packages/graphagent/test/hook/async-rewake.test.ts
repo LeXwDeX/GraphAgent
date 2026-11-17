@@ -48,7 +48,7 @@ const writeSettingsTo = (hooksJson: object) => (dir: string) =>
       .then(() => fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooksJson))),
   )
 
-const tmp = (name: string) => path.join(os.tmpdir(), `opencode-test-${name}`)
+const tmp = (name: string) => path.join(os.tmpdir(), `graphagent-test-${name}`)
 
 const observeDiscardedCallback = (sessionID: string) =>
   Effect.gen(function* () {

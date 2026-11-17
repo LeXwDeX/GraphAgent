@@ -1,10 +1,11 @@
 import yargs from "yargs"
 import { TuiThreadCommand } from "./cli/cmd/tui"
+import { APP_NAME } from "@graphagent/core/brand"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { hideBin } from "yargs/helpers"
 const cli = yargs(hideBin(process.argv))
   .parserConfiguration({ "populate--": true })
-  .scriptName("opencode")
+  .scriptName(APP_NAME)
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")

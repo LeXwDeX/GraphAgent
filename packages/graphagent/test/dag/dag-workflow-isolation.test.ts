@@ -108,7 +108,7 @@ function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory) {
         rmSync(directory, { recursive: true, force: true })
         execFileSync("git", ["-C", ctx!.directory, "worktree", "add", "--detach", directory, "HEAD"])
         probe.created.push(DagLocation.canonicalDirectory(directory))
-        return { name: input?.name ?? "wt", branch: `opencode/${input?.name ?? "wt"}`, directory }
+        return { name: input?.name ?? "wt", branch: `graphagent/${input?.name ?? "wt"}`, directory }
       }),
     remove: (input: { directory: string; keepBranch?: boolean }) =>
       Effect.gen(function* () {
@@ -193,7 +193,7 @@ describe("Dag.create workflow-level worktree isolation (#1030)", () => {
           expect(probe.creates[0]?.name).toEndWith("-workflow")
           expect(config?.isolation).toBe("worktree")
           expect(config?.worktree?.directory).toBe(probe.created[0])
-          expect(config?.worktree?.branch).toBe(`opencode/${probe.creates[0]?.name}`)
+          expect(config?.worktree?.branch).toBe(`graphagent/${probe.creates[0]?.name}`)
           expect(config?.worktree?.baseHead).toBe(git(repository, ["rev-parse", "HEAD"]))
           expect(workflow?.executionDirectory).toBe(probe.created[0])
           expect(workflow?.targetFingerprint).toEqual(
@@ -405,7 +405,7 @@ describe("Dag.create workflow-level worktree isolation (#1030)", () => {
           const config = {
             name: "isolated",
             isolation: "worktree",
-            worktree: { directory: "/settled-away", branch: "opencode/dag-dag_reopen-workflow" },
+            worktree: { directory: "/settled-away", branch: "graphagent/dag-dag_reopen-workflow" },
             nodes: [node("checkpoint")],
           }
           yield* db

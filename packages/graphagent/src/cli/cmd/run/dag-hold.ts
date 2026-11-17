@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-// Consumer-only DAG hold for the non-interactive `opencode run` loop (issue 614).
+// Consumer-only DAG hold for the non-interactive `graphagent run` loop (issue 614).
 //
 // Today the loop breaks on the FIRST session.status=idle of the target session,
 // so a workflow started in that turn keeps running server-side while the CLI

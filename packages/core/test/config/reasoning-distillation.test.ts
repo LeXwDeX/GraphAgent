@@ -77,7 +77,7 @@ describe("ConfigReasoningDistillation.resolveEnabled (D02)", () => {
       enabled: true,
       compatibility: [
         {
-          runtime: "opencode-ai-sdk",
+          runtime: "graphagent-ai-sdk",
           protocol: "openai-compatible",
           providerModelVariant: "provider/model/default",
           endpointIdentity: "endpoint-hash",

@@ -8,7 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 async function run(level: string, printLogs: string, mode = "normal") {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-background-debug-"))
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-background-debug-"))
   try {
     const child = Bun.spawn(
       [process.execPath, "run", fileURLToPath(new URL("./fixtures/background-debug.ts", import.meta.url))],

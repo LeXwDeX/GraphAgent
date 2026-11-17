@@ -319,7 +319,7 @@ test("changing the new-session default leaves the current session unchanged", as
     id: "ses_test",
     slug: "test",
     projectID: "proj_test",
-    directory: "/tmp/opencode",
+    directory: "/tmp/graphagent",
     title: "Test",
     version: "0.0.0",
     time: { created: 1, updated: 1 },

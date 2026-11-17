@@ -5,7 +5,7 @@ import { afterAll } from "bun:test"
 
 // Set these before any source imports: xdg-basedir captures its paths at load
 // time, and cache/log tests must never mutate an installed user's files.
-const directory = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-test-data-"))
+const directory = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-core-test-data-"))
 process.env.XDG_DATA_HOME = path.join(directory, "share")
 process.env.XDG_CACHE_HOME = path.join(directory, "cache")
 process.env.XDG_CONFIG_HOME = path.join(directory, "config")

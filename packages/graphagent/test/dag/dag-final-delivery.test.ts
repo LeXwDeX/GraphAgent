@@ -280,7 +280,7 @@ it("copies the answer verbatim with source metadata and adopts the same receipt 
 it("waits for the worktree settlement before writing a receipt, then adopts the settled receipt", () => {
   const pointer = {
     directory: "/repo/.agents/worktree/dag-wf-1-workflow",
-    branch: "opencode/dag-wf-1-workflow",
+    branch: "graphagent/dag-wf-1-workflow",
     baseHead: "base",
   }
   const settled = { ...pointer, head: "head", touchedPaths: [], state: "kept" as const }

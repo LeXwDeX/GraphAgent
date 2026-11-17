@@ -623,7 +623,7 @@ describe("task execution mode", () => {
     )
   })
 
-  // #1057 kept a command inline in a non-interactive turn (`opencode run`, a hook followup), where no user waits for a
+  // #1057 kept a command inline in a non-interactive turn (`graphagent run`, a hook followup), where no user waits for a
   // later message. The same goes for every task call there: the tool is told the turn's mode (`extra.noninteractive`)
   // and no layer can put a run in the background.
   describe("in a non-interactive turn", () => {

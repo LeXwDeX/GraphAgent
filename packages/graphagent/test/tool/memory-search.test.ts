@@ -268,7 +268,7 @@ function session(id: SessionID, parentID?: SessionID): Session.Info {
     id,
     slug: "memory-search-tool",
     projectID: ProjectV2.ID.global,
-    directory: "/tmp/opencode",
+    directory: "/tmp/graphagent",
     parentID,
     title: "Memory search tool",
     version: "1.0.0",

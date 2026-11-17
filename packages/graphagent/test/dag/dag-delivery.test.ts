@@ -319,7 +319,7 @@ describe("DagDelivery drain", () => {
     let admissions = 0
     const settled = {
       directory: "/repo/.agents/worktree/dag-dag_delivery-workflow",
-      branch: "opencode/dag-dag_delivery-workflow",
+      branch: "graphagent/dag-dag_delivery-workflow",
       baseHead: "base-sha",
       head: "head-sha",
       touchedPaths: ["src/a.ts"],

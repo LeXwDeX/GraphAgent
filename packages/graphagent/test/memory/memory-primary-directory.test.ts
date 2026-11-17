@@ -31,7 +31,7 @@ import { testEffect } from "../lib/effect"
 // Project must not (re)create `.agents/settings.local.json` there.
 
 // Private global config dir so other test files cannot leak a global memory.jsonc in.
-const pinnedConfigDir = path.join(os.tmpdir(), `opencode-memory-primary-${process.pid}`)
+const pinnedConfigDir = path.join(os.tmpdir(), `graphagent-memory-primary-${process.pid}`)
 const previousConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 beforeAll(() => {
   fs.mkdirSync(pinnedConfigDir, { recursive: true })
@@ -95,7 +95,7 @@ describe("memory primary directory", () => {
             git(
               primary,
               "-c",
-              "user.email=test@opencode.test",
+              "user.email=test@graphagent.test",
               "-c",
               "user.name=Test",
               "-c",
@@ -166,7 +166,7 @@ describe("memory primary directory", () => {
         git(
           primary,
           "-c",
-          "user.email=test@opencode.test",
+          "user.email=test@graphagent.test",
           "-c",
           "user.name=Test",
           "-c",

@@ -8,7 +8,7 @@ import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 cliIt.live(
   "a real session ConfigChange hook veto prevents HTTP config write and cache disposal",
-  ({ home, opencode }) =>
+  ({ home, graphagent }) =>
     Effect.gen(function* () {
       const script = path.join(home, "config-hook.ts")
       const audit = path.join(home, "config-audit.json")
@@ -28,7 +28,7 @@ cliIt.live(
           }),
         )
       })
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const request = (route: string, method: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

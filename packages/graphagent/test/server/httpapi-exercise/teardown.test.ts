@@ -10,8 +10,8 @@ import type { CachedApp } from "./backend"
 // at import time. Import it lazily under dedicated preserved paths, then
 // restore everything so this file never leaks those overrides into the rest of
 // the bun test process (single shared process).
-const exerciseDb = path.join(process.env.TMPDIR ?? "/tmp", `opencode-teardown-regression-${process.pid}.db`)
-const exerciseGlobal = path.join(process.env.TMPDIR ?? "/tmp", `opencode-teardown-regression-${process.pid}`)
+const exerciseDb = path.join(process.env.TMPDIR ?? "/tmp", `graphagent-teardown-regression-${process.pid}.db`)
+const exerciseGlobal = path.join(process.env.TMPDIR ?? "/tmp", `graphagent-teardown-regression-${process.pid}`)
 const envKeys = [
   "GRAPHAGENT_DB",
   "GRAPHAGENT_HTTPAPI_EXERCISE_DB",

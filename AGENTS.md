@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents in GraphAgent, a terminal coding agent with a DAG workflow engine (originally derived from opencode, developed independently since v2.0). This file records repository facts and secondary development constraints. Apply the nearest nested `AGENTS.md` to each changed package. Verify factual claims against current source, package scripts, and workflows; do not treat a development rule as proof that a check has passed.
+Guidance for coding agents in GraphAgent, a terminal coding agent with a DAG workflow engine (originally derived from an upstream MIT-licensed project, developed independently since v2.0). This file records repository facts and secondary development constraints. Apply the nearest nested `AGENTS.md` to each changed package. Verify factual claims against current source, package scripts, and workflows; do not treat a development rule as proof that a check has passed.
 
 ## Scope and layout
 

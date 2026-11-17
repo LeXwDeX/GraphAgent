@@ -135,10 +135,10 @@ describe("release packaging smoke test", () => {
   it.effect("packages every license referenced by NOTICE into the real CLI archive", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
-      const dist = path.join(directory, "opencode-test")
+      const dist = path.join(directory, "graphagent-test")
       yield* Effect.promise(() => fs.mkdir(path.join(dist, "bin"), { recursive: true }))
-      yield* Effect.promise(() => fs.writeFile(path.join(dist, "bin", "opencode"), "test binary"))
-      const archive = path.join(directory, "opencode-test.tar.gz")
+      yield* Effect.promise(() => fs.writeFile(path.join(dist, "bin", "graphagent"), "test binary"))
+      const archive = path.join(directory, "graphagent-test.tar.gz")
       const packaged = runCliPackager(dist, archive)
       expect(packaged.exitCode).toBe(0)
 

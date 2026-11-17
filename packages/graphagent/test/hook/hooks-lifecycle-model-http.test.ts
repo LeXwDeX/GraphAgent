@@ -9,7 +9,7 @@ import path from "node:path"
 import { SessionRetry } from "@/session/retry"
 import { cliIt, type RunOpts } from "../lib/cli-process"
 
-cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons", ({ home, opencode }) =>
+cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons", ({ home, graphagent }) =>
   Effect.gen(function* () {
     const script = path.join(home, "model-policy.ts")
     yield* Effect.promise(async () => {
@@ -24,7 +24,7 @@ cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons"
         }),
       )
     })
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const request = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -59,7 +59,7 @@ cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons"
 for (const transport of ["command", "http"] as const) {
   cliIt.live(
     `${transport} model hooks receive actual metrics and their guidance reaches the next model request`,
-    ({ home, env, llm, opencode }) =>
+    ({ home, env, llm, graphagent }) =>
       Effect.gen(function* () {
         const audit = path.join(home, "model-events.jsonl")
         const response = (event: string) =>
@@ -106,7 +106,7 @@ for (const transport of ["command", "http"] as const) {
           id: "wire-other",
           cost: { input: 2, output: 3, cache_write: 4 },
         }
-        const server = yield* opencode.host({ env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) } })
+        const server = yield* graphagent.host({ env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) } })
         const request = (route: string, body: object) =>
           Effect.promise(async () => {
             const result = await fetch(server.url + route, {
@@ -156,7 +156,7 @@ for (const transport of ["command", "http"] as const) {
   )
 }
 
-cliIt.live("V1 process restart restores model context once without a model change", ({ home, env, llm, opencode }) =>
+cliIt.live("V1 process restart restores model context once without a model change", ({ home, env, llm, graphagent }) =>
   Effect.gen(function* () {
     const audit = path.join(home, "resume-model.jsonl")
     const hook = path.join(home, "resume-model.ts")
@@ -176,15 +176,17 @@ cliIt.live("V1 process restart restores model context once without a model chang
       env: { ...env, GRAPHAGENT_DB: path.join(home, "resume-model.sqlite") },
     } satisfies RunOpts
     yield* llm.text("BEFORE_RESTART", { usage: { input: 80, output: 20 } })
-    const initial = yield* opencode.run("first input", opts)
-    opencode.expectExit(initial, 0)
-    const id = opencode.parseJsonEvents(initial.stdout).find((event) => typeof event.sessionID === "string")?.sessionID
+    const initial = yield* graphagent.run("first input", opts)
+    graphagent.expectExit(initial, 0)
+    const id = graphagent
+      .parseJsonEvents(initial.stdout)
+      .find((event) => typeof event.sessionID === "string")?.sessionID
     expect(id).toBeDefined()
     if (typeof id !== "string") throw new Error("Initial session ID missing")
     expect(yield* Effect.promise(() => Bun.file(audit).exists())).toBe(false)
     yield* llm.text("AFTER_RESTART")
-    const resumed = yield* opencode.run("second input", { ...opts, extraArgs: ["--session", id] })
-    opencode.expectExit(resumed, 0)
+    const resumed = yield* graphagent.run("second input", { ...opts, extraArgs: ["--session", id] })
+    graphagent.expectExit(resumed, 0)
     const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
       .trim()
       .split("\n")
@@ -208,7 +210,7 @@ cliIt.live("V1 process restart restores model context once without a model chang
   }),
 )
 
-cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, opencode }) =>
+cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const audit = path.join(home, "stop-failure.json")
     const hook = path.join(home, "stop-failure.ts")
@@ -219,7 +221,7 @@ cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, 
         JSON.stringify({ StopFailure: [{ hooks: [{ type: "command", command: process.execPath, args: [hook] }] }] }),
       )
     })
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const request = (route: string, body: object) =>
       Effect.promise(async () => {
         const response = await fetch(server.url + route, {

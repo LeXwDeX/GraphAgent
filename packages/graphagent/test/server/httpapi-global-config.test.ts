@@ -118,7 +118,11 @@ describe("global config HttpApi", () => {
       const root = yield* tmpdirScoped()
       const project = path.join(root, "project")
       const projectFile = path.join(project, ".agents", "settings.json")
-      const projectConfig = JSON.stringify({ $schema: "https://opencode.ai/config.json", formatter: false }, null, 2)
+      const projectConfig = JSON.stringify(
+        { $schema: "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json", formatter: false },
+        null,
+        2,
+      )
       yield* Effect.promise(async () => {
         await fs.mkdir(path.dirname(projectFile), { recursive: true })
         await fs.writeFile(projectFile, projectConfig)

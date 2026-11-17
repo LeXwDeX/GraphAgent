@@ -159,7 +159,7 @@ const mockNodes = (id: string) =>
             baseHead: "0123456789abcdef",
             targetFingerprint,
             worktreeDirectory: "/repo/.worktrees/status-node-running",
-            worktreeBranch: "opencode/dag-status-node-running",
+            worktreeBranch: "graphagent/dag-status-node-running",
             worktreeCommit: "fedcba9876543210",
             worktreeState: "removed",
             worktreeConflictsWith: ["node_failed"],
@@ -168,7 +168,7 @@ const mockNodes = (id: string) =>
             worktreeHistory: [
               {
                 directory: "/repo/.worktrees/status-node-retired",
-                branch: "opencode/dag-status-node-retired",
+                branch: "graphagent/dag-status-node-retired",
                 touchedPaths: ["src/retired.ts"],
                 state: "kept" as const,
                 conflictsWith: [],
@@ -204,7 +204,7 @@ const mockNodes = (id: string) =>
             modelProviderId: null,
             childSessionId: "ses_failed_child",
             worktreeDirectory: "/repo/.worktrees/status-node-failed",
-            worktreeBranch: "opencode/dag-status-node-failed",
+            worktreeBranch: "graphagent/dag-status-node-failed",
             worktreeCommit: "0123456789abcdef",
             worktreePatchPath: "/repo/.agents/workflow-reports/dag_status/node_failed.patch",
             worktreePatchSha256: "a".repeat(64),
@@ -528,7 +528,7 @@ const store = Layer.mock(DagStore.Service, {
               required: false,
               superseded: true,
               worktreeDirectory: "/repo/.worktrees/status-node-orphan",
-              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeBranch: "graphagent/dag-status-node-orphan",
               worktreeState: "active",
               touchedPaths: ["src/orphan.ts"],
             }),
@@ -551,7 +551,7 @@ const store = Layer.mock(DagStore.Service, {
               required: false,
               superseded: true,
               worktreeDirectory: "/repo/.worktrees/status-node-orphan",
-              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeBranch: "graphagent/dag-status-node-orphan",
               worktreeState: "active",
               touchedPaths: ["src/orphan.ts"],
             })
@@ -1598,7 +1598,7 @@ describe("workflow tool execution", () => {
       // #946: worktree evidence and conflict views are part of the status.
       expect(result.output).toContain('"worktrees"')
       expect(result.output).toContain('"state": "kept"')
-      expect(result.output).toContain('"branch": "opencode/dag-status-node-failed"')
+      expect(result.output).toContain('"branch": "graphagent/dag-status-node-failed"')
       // A cancelled/restarted superseded row still owns an active worktree.
       expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-orphan"')
       expect(result.output).toContain('"state": "active"')

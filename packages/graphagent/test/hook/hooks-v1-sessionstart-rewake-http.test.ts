@@ -11,7 +11,7 @@ import { pollWithTimeout } from "../lib/effect"
 // SessionStart hooks are not wrapped by the V1 prompt loop. The V2 bridge is
 // still registered in a served graph, so it must decline the legacy session
 // instead of starting a hidden V2 turn that the V1 transcript never shows.
-cliIt.live("V1 SessionStart asyncRewake exit-2 wakes the legacy session", ({ home, llm, opencode }) =>
+cliIt.live("V1 SessionStart asyncRewake exit-2 wakes the legacy session", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const script = path.join(home, "v1-async-session-start.ts")
     yield* Effect.promise(async () => {
@@ -32,7 +32,7 @@ cliIt.live("V1 SessionStart asyncRewake exit-2 wakes the legacy session", ({ hom
       )
     })
     yield* llm.text("REWAKE_DONE")
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const request = (route: string, body?: object) =>
       Effect.promise(async () => {
         const result = await fetch(server.url + route, {

@@ -121,7 +121,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     const transformInput = ContextFolding.copyModelMessages(input.messages) ?? input.messages
     const transformedMessages = ProviderTransform.message(transformInput, input.model, input.providerOptions ?? {})
     const headers = { ...providerHeaders(input.provider.options.headers), ...input.headers }
-    // Only registered OpenCode transports consume and strip the title routing marker.
+    // Only registered GraphAgent transports consume and strip the title routing marker.
     const consumesTitle = isTitleHeaderConsumer(fetch)
     const model = consumesTitle
       ? input.model
@@ -355,7 +355,7 @@ export function nativeTools(tools: Record<string, Tool>, input: Pick<StreamInput
   return Object.fromEntries(
     Object.entries(tools).map(([name, item]) => [
       name,
-      // Tool execution remains opencode-owned. The native runtime only adapts
+      // Tool execution remains GraphAgent-owned. The native runtime only adapts
       // the @graphagent/llm tool call back into the AI SDK Tool.execute shape.
       NativeTool.make({
         description: item.description ?? "",

@@ -4,7 +4,7 @@
 import type { Client } from "@modelcontextprotocol/client"
 import type { HookPermissionInterrupt } from "@/permission/hook-control"
 
-const hookSource = Symbol("OpenCode MCP hook source")
+const hookSource = Symbol("GraphAgent MCP hook source")
 type HookSource = { sessionID?: string; inHook: true }
 export function mcpHookOptions<T extends object>(options: T, sessionID?: string): T {
   return Object.assign({}, options, { [hookSource]: { sessionID, inHook: true } satisfies HookSource })

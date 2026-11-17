@@ -167,11 +167,11 @@ async function refreshAccessToken(account: string, refreshToken: string) {
 
 const HTML_SUCCESS = `<!doctype html>
 <html>
-  <head><title>OpenCode - Snowflake Authorization Successful</title></head>
+  <head><title>GraphAgent - Snowflake Authorization Successful</title></head>
   <body style="font-family: system-ui; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#111; color:#eee;">
     <div style="text-align:center; max-width:36rem; padding:2rem;">
       <h1 style="color:#7ee787;">Authorization Successful</h1>
-      <p>You can close this window and return to OpenCode.</p>
+      <p>You can close this window and return to GraphAgent.</p>
     </div>
     <script>setTimeout(() => window.close(), 1500)</script>
   </body>
@@ -179,7 +179,7 @@ const HTML_SUCCESS = `<!doctype html>
 
 const htmlError = (message: string) => `<!doctype html>
 <html>
-  <head><title>OpenCode - Snowflake Authorization Failed</title></head>
+  <head><title>GraphAgent - Snowflake Authorization Failed</title></head>
   <body style="font-family: system-ui; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#111; color:#eee;">
     <div style="text-align:center; max-width:48rem; padding:2rem;">
       <h1 style="color:#ff7b72;">Authorization Failed</h1>
@@ -501,7 +501,7 @@ export function SnowflakeCortexAdapter(input: AdapterContext): ProviderAdapter {
             return {
               url,
               instructions:
-                "Complete Snowflake sign-in in your browser. OpenCode will capture the OAuth callback and store the bearer token automatically.",
+                "Complete Snowflake sign-in in your browser. GraphAgent will capture the OAuth callback and store the bearer token automatically.",
               method: "auto" as const,
               async callback() {
                 try {

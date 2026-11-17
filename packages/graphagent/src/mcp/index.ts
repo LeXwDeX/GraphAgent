@@ -35,14 +35,14 @@ import { McpEvent } from "@graphagent/schema/mcp-event"
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
   capabilities: {
-    // https://github.com/anomalyco/opencode/issues/11948
+    // upstream issue 11948
     // sampling: {},
     // mcp-elicitation-notification: elicitation client capability + handler wiring.
     // The handler is registered per-client in `watch` (the connected-client chokepoint).
     elicitation: {},
-    // https://github.com/anomalyco/opencode/issues/2308
+    // upstream issue 2308
     roots: {},
-    // https://github.com/anomalyco/opencode/issues/28567
+    // upstream issue 28567
     // tasks: {},
   },
 } satisfies ClientOptions
@@ -320,7 +320,7 @@ export const layer = Layer.effect(
               return events
                 .publish(TuiEvent.ToastShow, {
                   title: "MCP Authentication Required",
-                  message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
+                  message: `Server "${key}" requires authentication. Run: graphagent mcp auth ${key}`,
                   variant: "warning",
                   duration: 8000,
                 })

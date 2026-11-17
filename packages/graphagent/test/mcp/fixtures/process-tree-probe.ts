@@ -15,7 +15,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
 
 // A direct subprocess does not run test/preload.ts. Set its own paths before
 // importing application modules, including xdg-basedir's import-time cache.
-const isolation = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-tree-"))
+const isolation = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-mcp-tree-"))
 process.env.XDG_DATA_HOME = path.join(isolation, "share")
 process.env.XDG_CACHE_HOME = path.join(isolation, "cache")
 process.env.XDG_CONFIG_HOME = path.join(isolation, "config")

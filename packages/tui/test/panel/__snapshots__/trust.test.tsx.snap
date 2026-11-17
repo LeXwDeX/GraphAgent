@@ -2,7 +2,7 @@
 
 exports[`first-open panel renders at 80x24 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
-│ 先看一下这个项目会做什么 /tmp/opencode                                       │
+│ 先看一下这个项目会做什么 /tmp/graphagent                                     │
 │ 这个项目带了 2 条会在你电脑上执行的命令，确认之前一条都不会运行。            │
 │   .agents/commands.json · 1 条 命令                                          │
 │ › [x] 执行命令模板里的 shell 时  bun run build                               │
@@ -30,7 +30,7 @@ exports[`first-open panel renders at 80x24 1`] = `
 
 exports[`first-open panel renders at 80x24 with ambiguous_width 2 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
-│ 先看一下这个项目会做什么 /tmp/opencode                                       │
+│ 先看一下这个项目会做什么 /tmp/graphagent                                     │
 │ 这个项目带了 2 条会在你电脑上执行的命令，确认之前一条都不会运行。            │
 │   .agents/commands.json · 1 条 命令                                          │
 │ › [x] 执行命令模板里的 shell 时  bun run build                               │
@@ -58,7 +58,7 @@ exports[`first-open panel renders at 80x24 with ambiguous_width 2 1`] = `
 
 exports[`first-open panel lists pending entries at 120x40 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ 先看一下这个项目会做什么 /tmp/opencode                                                                        /trust │
+│ 先看一下这个项目会做什么 /tmp/graphagent                                                                      /trust │
 │ 这个项目带了 2 条会在你电脑上执行的命令，确认之前一条都不会运行。                                                    │
 │   .agents/commands.json · 1 条 命令                                                                                  │
 │ › [x] 执行命令模板里的 shell 时  bun run build                                                                       │
@@ -102,7 +102,7 @@ exports[`first-open panel lists pending entries at 120x40 1`] = `
 
 exports[`first-open panel renders at 120x40 with ambiguous_width 2 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ 先看一下这个项目会做什么 /tmp/opencode                                                                        /trust │
+│ 先看一下这个项目会做什么 /tmp/graphagent                                                                      /trust │
 │ 这个项目带了 2 条会在你电脑上执行的命令，确认之前一条都不会运行。                                                    │
 │   .agents/commands.json · 1 条 命令                                                                                  │
 │ › [x] 执行命令模板里的 shell 时  bun run build                                                                       │

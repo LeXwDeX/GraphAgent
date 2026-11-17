@@ -98,7 +98,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   meta = {
     description = "The open source coding agent";
-    homepage = "https://opencode.ai";
+    homepage = "https://github.com/LeXwDeX/GraphAgent";
     license = lib.licenses.mit;
     mainProgram = "graphagent";
     inherit (node_modules.meta) platforms;

@@ -17,7 +17,7 @@ async function gitRepoWithLinkedWorktree() {
   const tmp = await tmpdir({
     git: true,
     init: async (directory) => {
-      linked = path.join(os.tmpdir(), `opencode-workspace-${Math.random().toString(36).slice(2)}`)
+      linked = path.join(os.tmpdir(), `graphagent-workspace-${Math.random().toString(36).slice(2)}`)
       await $`git worktree add --detach ${linked} HEAD`.cwd(directory).quiet()
       linked = await fs.realpath(linked)
     },
@@ -229,7 +229,7 @@ describe("DagLocation execution directory", () => {
   it("rejects a bound workspace that resolves through a new symlink", async () => {
     const { tmp, linked } = await gitRepoWithLinkedWorktree()
     await using _ = tmp
-    const alias = path.join(os.tmpdir(), `opencode-workspace-alias-${Math.random().toString(36).slice(2)}`)
+    const alias = path.join(os.tmpdir(), `graphagent-workspace-alias-${Math.random().toString(36).slice(2)}`)
     await fs.symlink(linked, alias)
     try {
       const location = DagLocation.resolveExecution({ directory: tmp.path, executionDirectory: alias })

@@ -16,7 +16,7 @@ for (const { event, action } of [
 ] as const)
   cliIt.live(
     `real stdio MCP ${event} ${action} response notifies and reaches the next model request`,
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const serverScript = path.join(home, "mcp-server.ts")
         const hookScript = path.join(home, "elicitation-hook.ts")
@@ -49,7 +49,7 @@ for (const { event, action } of [
         })
         yield* llm.tool("fixture_pick", {})
         yield* llm.text("MCP_SYNTHETIC_DONE")
-        const server = yield* opencode.host()
+        const server = yield* graphagent.host()
         const request = (route: string, method = "GET", body?: object) =>
           Effect.promise(() =>
             fetch(server.url + route, {

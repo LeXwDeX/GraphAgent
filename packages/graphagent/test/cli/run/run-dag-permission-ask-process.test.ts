@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-// Subprocess integration test for `opencode run` under `dag.permission: "ask"`
+// Subprocess integration test for `graphagent run` under `dag.permission: "ask"`
 // (#1324). A workflow node that wants to run a command waits for the user, and
 // a non-interactive run has nobody to ask: it rejects the node's request, the
 // node's turn ends, and the workflow still reaches a terminal state instead of
@@ -83,10 +83,10 @@ config:
         inline: "ASK-TIER-NODE marker: run the command."
 `
 
-describe("opencode run under dag.permission ask (#1324)", () => {
+describe("graphagent run under dag.permission ask (#1324)", () => {
   cliIt.concurrent(
     "rejects the node's command request, tells the user on stderr, and the workflow still ends",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const spec = path.join(home, "wf-ask-tier.yaml")
         yield* Effect.promise(() => Bun.write(spec, askSpec))
@@ -97,14 +97,14 @@ describe("opencode run under dag.permission ask (#1324)", () => {
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Workflow"), reply().text("wake handled").stop().item())
 
-        const result = yield* opencode.run("ASK-TIER start the single node workflow", {
+        const result = yield* graphagent.run("ASK-TIER start the single node workflow", {
           extraArgs: SKIP_PERMISSIONS,
           timeoutMs: 150_000,
           env: { GRAPHAGENT_CONFIG_CONTENT: askConfig(llm.url) },
         })
 
         // The process did not hang on the node's question and exited cleanly.
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stdout).toContain("wake handled")
         // One stderr line names the tier at startup; the node's request was refused, not answered.
         const hints = result.stderr.split("\n").filter((line) => line.includes('dag.permission is "ask"'))
@@ -122,7 +122,7 @@ describe("opencode run under dag.permission ask (#1324)", () => {
 
   cliIt.concurrent(
     "the default tier prints no hint and lets the node run its command",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const spec = path.join(home, "wf-ask-default.yaml")
         yield* Effect.promise(() => Bun.write(spec, askSpec))
@@ -133,12 +133,12 @@ describe("opencode run under dag.permission ask (#1324)", () => {
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Workflow"), reply().text("wake handled").stop().item())
 
-        const result = yield* opencode.run("ASK-TIER start the single node workflow", {
+        const result = yield* graphagent.run("ASK-TIER start the single node workflow", {
           extraArgs: SKIP_PERMISSIONS,
           timeoutMs: 150_000,
         })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stdout).toContain("wake handled")
         expect(result.stderr).not.toContain('dag.permission is "ask"')
         expect(result.stderr).not.toContain("auto-rejecting")
@@ -156,7 +156,7 @@ describe("opencode run under dag.permission ask (#1324)", () => {
 
   cliIt.concurrent(
     "rejects the request of a node that runs in its own worktree, and the workflow still ends",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const project = projectIn(home)
         yield* initRepository(project, { "wf-ask-worktree.yaml": worktreeSpec })
@@ -168,14 +168,14 @@ describe("opencode run under dag.permission ask (#1324)", () => {
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Workflow"), reply().text("wake handled").stop().item())
 
-        const result = yield* opencode.run("ASK-TIER start the worktree node workflow", {
+        const result = yield* graphagent.run("ASK-TIER start the worktree node workflow", {
           extraArgs: SKIP_PERMISSIONS,
           timeoutMs: 90_000,
           cwd: project,
           env: { ...(yield* projectEnv(home)), GRAPHAGENT_CONFIG_CONTENT: askConfig(llm.url) },
         })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stdout).toContain("wake handled")
         expect(result.stderr.match(/permission requested/g)).toHaveLength(1)
         expect(result.stderr).toMatch(/permission requested: bash \(.*\); auto-rejecting/)
@@ -187,7 +187,7 @@ describe("opencode run under dag.permission ask (#1324)", () => {
 
   cliIt.concurrent(
     "the control: under the default tier the same node runs its command inside its worktree",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const project = projectIn(home)
         yield* initRepository(project, { "wf-ask-worktree-default.yaml": worktreeSpec })
@@ -199,14 +199,14 @@ describe("opencode run under dag.permission ask (#1324)", () => {
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Workflow"), reply().text("wake handled").stop().item())
 
-        const result = yield* opencode.run("ASK-TIER start the worktree node workflow", {
+        const result = yield* graphagent.run("ASK-TIER start the worktree node workflow", {
           extraArgs: SKIP_PERMISSIONS,
           timeoutMs: 90_000,
           cwd: project,
           env: yield* projectEnv(home),
         })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stderr).not.toContain("auto-rejecting")
         // The command ran, and it ran in a worktree, not in the run's own directory.
         expect(JSON.stringify(yield* llm.inputs)).toMatch(/RAN-MARK-42 [^"\\]*worktree/)
@@ -224,7 +224,7 @@ describe("opencode run under dag.permission ask (#1324)", () => {
 
   cliIt.concurrent(
     "rejects a task agent's command request too when the session is in DAG mode, and the run ends",
-    ({ llm, opencode }) =>
+    ({ llm, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.tool("task", taskCall)
         yield* llm.pushMatch(
@@ -232,13 +232,13 @@ describe("opencode run under dag.permission ask (#1324)", () => {
           reply().tool("bash", { command: RAN_COMMAND, description: "Print a line" }).item(),
         )
 
-        const result = yield* opencode.run("ASK-TIER delegate the command", {
+        const result = yield* graphagent.run("ASK-TIER delegate the command", {
           extraArgs: [...SKIP_PERMISSIONS, "--dag-mode", "on"],
           timeoutMs: 150_000,
           env: { GRAPHAGENT_CONFIG_CONTENT: askConfig(llm.url) },
         })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stderr).toMatch(/permission requested: bash \(.*\); auto-rejecting/)
         expect(JSON.stringify(yield* llm.inputs)).not.toContain(RAN_OUTPUT)
       }),
@@ -247,7 +247,7 @@ describe("opencode run under dag.permission ask (#1324)", () => {
 
   cliIt.concurrent(
     "a task agent outside DAG mode is attended: the tier does not reach it",
-    ({ llm, opencode }) =>
+    ({ llm, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.tool("task", taskCall)
         yield* llm.pushMatch(
@@ -255,13 +255,13 @@ describe("opencode run under dag.permission ask (#1324)", () => {
           reply().tool("bash", { command: RAN_COMMAND, description: "Print a line" }).item(),
         )
 
-        const result = yield* opencode.run("ASK-TIER delegate the command", {
+        const result = yield* graphagent.run("ASK-TIER delegate the command", {
           extraArgs: [...SKIP_PERMISSIONS, "--dag-mode", "off"],
           timeoutMs: 150_000,
           env: { GRAPHAGENT_CONFIG_CONTENT: askConfig(llm.url) },
         })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stderr).not.toContain("auto-rejecting")
         expect(JSON.stringify(yield* llm.inputs)).toContain(RAN_OUTPUT)
       }),

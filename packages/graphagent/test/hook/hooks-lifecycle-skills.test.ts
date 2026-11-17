@@ -7,7 +7,7 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../lib/cli-process"
-cliIt.live("SessionStart reloadSkills refreshes an already populated real skill cache", ({ home, opencode }) =>
+cliIt.live("SessionStart reloadSkills refreshes an already populated real skill cache", ({ home, graphagent }) =>
   Effect.gen(function* () {
     const script = path.join(home, "skills-hook.ts")
     yield* Effect.promise(async () => {
@@ -20,7 +20,7 @@ cliIt.live("SessionStart reloadSkills refreshes an already populated real skill 
         JSON.stringify({ SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })
-    const server = yield* opencode.host({ env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0" } })
+    const server = yield* graphagent.host({ env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0" } })
     const get = () =>
       Effect.promise(async () => {
         const response = await fetch(server.url + "/skill", { headers: { "x-graphagent-directory": home } })

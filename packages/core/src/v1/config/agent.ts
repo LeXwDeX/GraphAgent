@@ -100,7 +100,7 @@ const AgentSchema = Schema.StructWithRest(
     contract: Schema.optional(Contract),
     execution: Schema.optional(ConfigExecutionV1.Mode).annotate({
       description:
-        'How a task call to this agent runs by default: "foreground" waits for the result, "background" detaches the run and delivers the result later, "auto" (default) leaves it to the call. The call\'s own background argument and a command\'s execution take precedence over it. An interactive agent (its own rules name and allow question or plan_exit) always runs in the foreground, and so does every call in a non-interactive turn (opencode run, a hook follow-up).',
+        'How a task call to this agent runs by default: "foreground" waits for the result, "background" detaches the run and delivers the result later, "auto" (default) leaves it to the call. The call\'s own background argument and a command\'s execution take precedence over it. An interactive agent (its own rules name and allow question or plan_exit) always runs in the foreground, and so does every call in a non-interactive turn (graphagent run, a hook follow-up).',
     }),
   }),
   [Schema.Record(Schema.String, Schema.Any)],

@@ -5,7 +5,7 @@
 
 ## Context
 
-Project Memory is shared by every worktree of one Project. Separate OpenCode processes can therefore read the same Topic revision and attempt conflicting updates. Per-process mutexes and per-file atomic writes do not prevent the last writer from silently replacing another process's confirmed content, nor do they make a multi-Topic update crash-atomic.
+Project Memory is shared by every worktree of one Project. Separate GraphAgent processes can therefore read the same Topic revision and attempt conflicting updates. Per-process mutexes and per-file atomic writes do not prevent the last writer from silently replacing another process's confirmed content, nor do they make a multi-Topic update crash-atomic.
 
 ## Decision
 

@@ -287,7 +287,7 @@ async function check(map: (dir: string) => string) {
   await clear()
   try {
     await writeConfig(globalTmp.path, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       snapshot: false,
     })
     await withTestInstance({
@@ -380,7 +380,7 @@ it.instance("updates config and preserves empty shell sentinel", () =>
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
       projectSettingsFile(test.directory),
-      JSON.stringify({ $schema: "https://opencode.ai/config.json", shell: "bash" }),
+      JSON.stringify({ $schema: CONFIG_SCHEMA_URL, shell: "bash" }),
     )
 
     yield* Config.Service.use((svc) => svc.update(ConfigParse.schema(ConfigV1.Info, { shell: "" }, "test:config")))
@@ -451,11 +451,11 @@ test("loads project config from Cygwin paths on Windows", async () => {
   })
 })
 
-it.instance("ignores legacy tui keys in opencode config", () =>
+it.instance("ignores legacy tui keys in graphagent config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       model: "test/model",
       theme: "legacy",
       tui: { scroll_speed: 4 },
@@ -475,7 +475,7 @@ it.instance("loads JSONC config file", () =>
       projectSettingsFile(test.directory),
       `{
         // This is a comment
-        "$schema": "https://opencode.ai/config.json",
+        "$schema": "${CONFIG_SCHEMA_URL}",
         "model": "test/model",
         "username": "testuser"
       }`,
@@ -490,12 +490,12 @@ it.instance("settings.local.json overrides settings.json in the project layer", 
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       model: "base",
       username: "base",
     })
     yield* writeProjectLocalConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       model: "override",
     })
     const config = yield* Config.use.get()
@@ -511,7 +511,7 @@ it.instance("handles environment variable substitution", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* writeProjectConfigEffect(test.directory, {
-        $schema: "https://opencode.ai/config.json",
+        $schema: CONFIG_SCHEMA_URL,
         username: "{env:TEST_VAR}",
       })
       const config = yield* Config.use.get()
@@ -547,7 +547,7 @@ it.instance("handles file inclusion substitution", () =>
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(path.join(test.directory, ".agents", "included.txt"), "test-user")
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       username: "{file:included.txt}",
     })
     const config = yield* Config.use.get()
@@ -563,7 +563,7 @@ it.instance("handles file inclusion with replacement tokens", () =>
       "const out = await Bun.$`echo hi`",
     )
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       username: "{file:included.md}",
     })
     const config = yield* Config.use.get()
@@ -575,7 +575,7 @@ it.instance("validates config schema and throws on invalid values", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       model: 42,
     })
     const exit = yield* Config.use.get().pipe(Effect.exit)
@@ -648,7 +648,7 @@ it.instance("accepts known engine limits and still ignores unknown top-level key
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       engine: {
         concurrency: { global: 24, perProvider: 12, childGlobal: 16, taskReserve: 2 },
         cache: { staggerSiblings: true },
@@ -692,7 +692,7 @@ it.instance("handles agent configuration", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: {
         test_agent: {
           model: "test/model",
@@ -716,7 +716,7 @@ it.instance("treats agent variant as model-scoped setting (not provider option)"
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: {
         test_agent: {
           model: "openai/gpt-5.2",
@@ -740,7 +740,7 @@ it.instance("handles command configuration", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       command: {
         test_command: {
           template: "test template",
@@ -762,7 +762,7 @@ it.instance("migrates mode field to agent field", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       mode: {
         test_mode: {
           model: "test/model",
@@ -785,7 +785,7 @@ it.instance("accepts the deprecated reference field", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       reference: {
         local: { path: "../library" },
         sdk: { repository: "github.com/example/sdk", branch: "main" },
@@ -1263,7 +1263,7 @@ it.instance("migrates legacy tools config to permissions - allow", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { tools: { bash: true, read: true } } },
     })
 
@@ -1279,7 +1279,7 @@ it.instance("migrates legacy tools config to permissions - deny", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { tools: { bash: false, webfetch: false } } },
     })
 
@@ -1295,7 +1295,7 @@ it.instance("migrates legacy write tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { tools: { write: true } } },
     })
 
@@ -1311,7 +1311,7 @@ it.instance(
   "managed settings override user settings",
   Effect.gen(function* () {
     yield* writeManagedSettingsEffect({
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       model: "managed/model",
     })
 
@@ -1326,7 +1326,7 @@ it.instance(
   "managed settings override project settings",
   Effect.gen(function* () {
     yield* writeManagedSettingsEffect({
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       autoupdate: false,
       disabled_providers: ["openai"],
     })
@@ -1375,7 +1375,7 @@ it.instance("migrates legacy edit tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { tools: { edit: false } } },
     })
 
@@ -1388,7 +1388,7 @@ it.instance("migrates legacy patch tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { tools: { patch: true } } },
     })
 
@@ -1401,7 +1401,7 @@ it.instance("migrates mixed legacy tools config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { tools: { bash: true, write: true, read: false, webfetch: true } } },
     })
 
@@ -1419,7 +1419,7 @@ it.instance("merges legacy tools with existing permission config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       agent: { test: { permission: { glob: "allow" }, tools: { bash: true } } },
     })
 
@@ -1437,7 +1437,7 @@ it.instance("permission config preserves user key order", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
+      $schema: CONFIG_SCHEMA_URL,
       permission: {
         "*": "deny",
         edit: "ask",
@@ -1778,7 +1778,7 @@ describe("GRAPHAGENT_CONFIG_CONTENT token substitution", () => {
       withProcessEnv(
         "GRAPHAGENT_CONFIG_CONTENT",
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: CONFIG_SCHEMA_URL,
           username: "{env:TEST_CONFIG_VAR}",
         }),
         Effect.gen(function* () {
@@ -1796,7 +1796,7 @@ describe("GRAPHAGENT_CONFIG_CONTENT token substitution", () => {
       yield* withProcessEnv(
         "GRAPHAGENT_CONFIG_CONTENT",
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: CONFIG_SCHEMA_URL,
           username: "{file:./api_key.txt}",
         }),
         Effect.gen(function* () {
@@ -2093,7 +2093,7 @@ test("parseManagedPlist parses permission rules", async () => {
     ConfigParse.jsonc(
       await ConfigManaged.parseManagedPlist(
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: CONFIG_SCHEMA_URL,
           permission: {
             "*": "ask",
             bash: { "*": "ask", "rm -rf *": "deny", "curl *": "deny" },
@@ -2123,7 +2123,7 @@ test("parseManagedPlist parses enabled_providers", async () => {
     ConfigParse.jsonc(
       await ConfigManaged.parseManagedPlist(
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: CONFIG_SCHEMA_URL,
           enabled_providers: ["anthropic", "google"],
         }),
       ),
