@@ -1,0 +1,40 @@
+export interface User {
+  id: string
+  email: string
+  salt: string
+  passwordHash: string
+  role: "customer" | "admin"
+}
+
+// Demo data. Hashes are sha256(salt + password).
+const users: User[] = [
+  {
+    id: "u_101",
+    email: "ada@example.com",
+    salt: "k3j9",
+    passwordHash: "7b2e1c0f5d8a49e6b3a1d7c4f9e20a6b8c5d3e1f7a9b2c4d6e8f0a1b3c5d7e9f",
+    role: "admin",
+  },
+  {
+    id: "u_102",
+    email: "grace@example.com",
+    salt: "p0x2",
+    passwordHash: "1a3c5e7f9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5a7b9d1f3b5c7e9a2d4f",
+    role: "customer",
+  },
+  {
+    id: "u_103",
+    email: "linus@example.com",
+    salt: "m7q4",
+    passwordHash: "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0",
+    role: "customer",
+  },
+]
+
+export function findUserByEmail(email: string): User | undefined {
+  return users.find((user) => user.email === email)
+}
+
+export function findUserById(id: string): User | undefined {
+  return users.find((user) => user.id === id)
+}

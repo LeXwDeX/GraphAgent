@@ -1,0 +1,31 @@
+const TTL_SECONDS = Number(process.env.SESSION_TTL_SECONDS ?? 3600)
+
+export interface Session {
+  id: string
+  userId: string
+  expiresAt: number
+}
+
+// Sessions only live in this process; see docs/architecture.md.
+const sessions = new Map<string, Session>()
+
+export function createSession(userId: string, now = Date.now()): Session {
+  const session: Session = { id: crypto.randomUUID(), userId, expiresAt: now + TTL_SECONDS * 1000 }
+  sessions.set(session.id, session)
+  return session
+}
+
+export function validateSession(id: string | undefined, now = Date.now()): Session | undefined {
+  if (!id) return undefined
+  const session = sessions.get(id)
+  if (!session) return undefined
+  if (session.expiresAt <= now) {
+    sessions.delete(id)
+    return undefined
+  }
+  return session
+}
+
+export function revokeSession(id: string): boolean {
+  return sessions.delete(id)
+}

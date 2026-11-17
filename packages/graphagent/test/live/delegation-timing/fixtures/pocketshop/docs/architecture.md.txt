@@ -1,0 +1,28 @@
+# PocketShop architecture
+
+PocketShop 1.5.0 is organised in five modules.
+
+## Modules
+
+| Module | Responsibility |
+| --- | --- |
+| src/auth | Password hashing, sessions (in-memory Map) and signed tokens |
+| src/api | HTTP routes; every route except /login requires a session |
+| src/billing | Invoices, tax tables and refunds |
+| src/payments | Card processing adapters |
+| src/ui | Rendering helpers for the web client |
+
+## Sessions
+
+Sessions are stored in a process-local `Map` and expire after `SESSION_TTL`
+seconds (default 3600). Restarting the server drops every session.
+
+## Request flow
+
+1. `requireAuth` reads `x-session` and calls `validateSession`.
+2. The route handler runs and returns JSON.
+3. Errors are mapped to `{ error: code }` bodies.
+
+## Release
+
+Tag releases as `v1.5.0` and keep the version in package.json in sync.
