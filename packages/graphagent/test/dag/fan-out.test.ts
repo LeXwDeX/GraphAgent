@@ -3,7 +3,6 @@
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- block and row fixtures use `as never` shims.
 import { describe, expect, it } from "bun:test"
-import { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import { DagBlocks } from "@/dag/blocks"
 import type { NodeConfig } from "@/dag/dag"
 import { DagFanOut } from "@/dag/fan-out"
@@ -202,54 +201,6 @@ describe("planFanOut", () => {
       new Set(),
     )
     expect(plan.kind === "single" && plan.node.prompt_template.inline).not.toContain("{{x}}")
-  })
-})
-
-// D9 (#1158): the writer's required flag is the package writers' too. A package that fails is the
-// workflow's failure and is attributed to that package, instead of waiting for the verify to say so.
-describe("fan_out writers inherit the writer's required", () => {
-  const plan = (node: NodeConfig) => {
-    const result = DagFanOut.planFanOut(node, { packages: [pkg("api", ["src/api"]), pkg("ui", ["src/ui"])] }, new Set())
-    if (result.kind !== "expand") throw new Error("expected an expansion")
-    return result
-  }
-
-  it("makes every package writer and the aggregator required when the writer defaults to it", () => {
-    const authored = writer()
-    expect(authored.required).toBe(true)
-    expect(plan(authored).nodes.map((node) => [node.id, node.required])).toEqual([
-      ["slices--api", true],
-      ["slices--ui", true],
-      ["slices", true],
-    ])
-  })
-
-  it("keeps an explicit required: false on every package writer", () => {
-    const authored = compile(
-      route.map((block) => (block.id === "slices" ? { ...block, required: false } : block)),
-    ).find((node) => node.id === "slices")!
-    expect(authored.required).toBe(false)
-    expect(plan(authored).nodes.map((node) => node.required)).toEqual([false, false, false])
-  })
-
-  it("fails the workflow on the failing package and runs nothing after it", () => {
-    const expanded = compile([...route]).flatMap((node) => (node.id === "slices" ? plan(node).nodes : [node]))
-    const runtime = new WorkflowRuntime(
-      expanded.map((node) => ({
-        id: node.id,
-        dependsOn: node.depends_on,
-        required: node.required ?? false,
-        status: "pending" as const,
-      })),
-      8,
-    )
-    runtime.markSatisfied("plan")
-    expect(runtime.getReadyNodes()).toEqual(["slices--api", "slices--ui"])
-    runtime.markSatisfied("slices--ui")
-    runtime.markUnsatisfied("slices--api")
-    expect(runtime.hasRequiredFailure()).toBe(true)
-    expect(runtime.getRequiredFailures()).toContain("slices--api")
-    expect(runtime.getReadyNodes()).toEqual([])
   })
 })
 

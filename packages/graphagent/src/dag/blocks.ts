@@ -97,7 +97,7 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
   }),
   required: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Whether failure is terminal. Decision, verification and writer (coding, prototype) blocks default to true; volume blocks to false",
+      "Whether failure is terminal. Decision and verification blocks default to true; volume blocks to false",
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -554,12 +554,7 @@ function compileBlock(
   options: WorkflowBlockCompileOptions,
 ): NodeConfig[] {
   const dependencies = block.depends_on ?? []
-  // D9 (#1158): work that must succeed defaults to required: the judgment and acceptance gates, and
-  // the writers. A writer that fails fails the workflow now instead of surfacing later, through the
-  // verify that ran on its placeholder. `required: false` is still the author's to write.
-  const required =
-    block.required ??
-    (block.kind === "plan" || block.kind === "verify" || block.kind === "synthesize" || WRITER_KINDS.has(block.kind))
+  const required = block.required ?? (block.kind === "plan" || block.kind === "verify" || block.kind === "synthesize")
   const reviewDependency = dependencies.find(
     (dependency) => blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
   )
