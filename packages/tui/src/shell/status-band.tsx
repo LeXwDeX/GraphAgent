@@ -183,8 +183,38 @@ interface DagLevel {
   readonly mark: boolean
 }
 
+/** The levels a row steps down through, richest first, and the one the bar is sized against. */
+interface DagChain {
+  readonly levels: readonly DagLevel[]
+  /** The least text the spec allows: counts squeezed to `n/m`, a short title, no wait and no budget. */
+  readonly minimal: number
+}
+
+const FULL_LEVEL: DagLevel = {
+  hint: true,
+  budget: true,
+  tokens: true,
+  concurrency: true,
+  more: true,
+  wave: true,
+  waiting: true,
+  counts: "full",
+  name: "full",
+  mark: true,
+}
+
 /** Each step is what the next level gives up on top of what the one before it did. */
-const DAG_STEPS: readonly Partial<DagLevel>[] = [
+function chainOf(steps: readonly Partial<DagLevel>[]): DagChain {
+  const levels: DagLevel[] = [FULL_LEVEL]
+  for (const step of steps) levels.push({ ...levels[levels.length - 1], ...step })
+  const minimal = levels.findIndex(
+    (level) => level.counts === "compact" && level.name === "short" && !level.waiting && !level.budget,
+  )
+  return { levels, minimal }
+}
+
+/** The order of a quiet budget (F4 1, 7.1): the budget is the first of the usage to give way after the hint. */
+const DAG_CHAIN = chainOf([
   { hint: false },
   { budget: false },
   { tokens: false },
@@ -197,29 +227,29 @@ const DAG_STEPS: readonly Partial<DagLevel>[] = [
   { counts: "none" },
   { name: "none" },
   { mark: false },
-]
+])
 
-const DAG_LEVELS: readonly DagLevel[] = (() => {
-  const levels: DagLevel[] = [
-    {
-      hint: true,
-      budget: true,
-      tokens: true,
-      concurrency: true,
-      more: true,
-      wave: true,
-      waiting: true,
-      counts: "full",
-      name: "full",
-      mark: true,
-    },
-  ]
-  for (const step of DAG_STEPS) levels.push({ ...levels[levels.length - 1], ...step })
-  return levels
-})()
-
-/** The least text the spec allows; the bar is sized against it. */
-const DAG_MINIMAL_LEVEL = DAG_LEVELS.findIndex((level) => level.counts === "compact" && level.name === "short")
+/**
+ * The order of a budget at its warning or exhausted band: the budget, and the wait that may be on the row with it,
+ * are what the row should still say when room is short, so they give way after the counts and the title. The tokens,
+ * the concurrency, the folded count and the wave go as before, only without the budget between them. Of the two the
+ * wait goes first: the bar and the mark still reserve their room first, so a quiet row's least text is the same
+ * here and the bar is never narrowed for either.
+ */
+const DAG_ALERT_CHAIN = chainOf([
+  { hint: false },
+  { tokens: false },
+  { concurrency: false },
+  { more: false },
+  { wave: false },
+  { counts: "compact" },
+  { name: "short" },
+  { waiting: false },
+  { budget: false },
+  { counts: "none" },
+  { name: "none" },
+  { mark: false },
+])
 
 /** A bar's worth of nodes drawn from the summary's counts, for a workflow whose table is not loaded. */
 function nodesFromCounts(summary: DagWorkflowSummary): DagBarNode[] {
@@ -312,7 +342,11 @@ export function layoutDagRow(input: DagRowInput): BandRow {
   const shortTitle = truncateCells(title, TITLE_SHORT_CELLS, aw)
   const more = whole(input.more)
 
-  const parts = DAG_LEVELS.map((level) => {
+  // A budget at its warning or exhausted band has the order that keeps it; any other has the quiet one.
+  const alert = input.usage !== undefined && input.usage.tier !== "normal" && input.usage.percent !== undefined
+  const { levels, minimal } = alert ? DAG_ALERT_CHAIN : DAG_CHAIN
+
+  const parts = levels.map((level) => {
     const name = level.name === "none" ? "" : level.name === "short" ? shortTitle : title
     const head: BandSpan[] = [...lead, ...(name === "" ? [] : [{ text: name, token: "text" as const }, blank(1)])]
     const counts = dagCounts(summary, wave, level)
@@ -346,11 +380,11 @@ export function layoutDagRow(input: DagRowInput): BandRow {
     layoutDagBar({ waves, unplaced, width: room, ambiguousWidth: aw, per: SLOTS_PER_NODE })
 
   // The bar is sized against the least text, and the text then takes what the bar leaves.
-  let base = DAG_MINIMAL_LEVEL
+  let base = minimal
   let bar = barIn(width - parts[base].fixed)
   // Too little text for the room: the bar got none although there are nodes, or the text alone is too wide.
   const cramped = () => (hasBar && bar.cells === 0) || parts[base].fixed + bar.cells > width
-  while (base < DAG_LEVELS.length - 1 && cramped()) {
+  while (base < levels.length - 1 && cramped()) {
     base++
     bar = barIn(width - parts[base].fixed)
   }
@@ -389,6 +423,16 @@ function layoutEmptyRow(input: { width: number; ambiguousWidth?: AmbiguousWidth 
 }
 
 // ── The goal row ─────────────────────────────────────────────────────────────
+
+/**
+ * Whether a goal body can be drawn: it has its text and its status. The wire type promises both, but a body that is
+ * not a goal must cost the band its goal row and nothing else: an error thrown while a row is laid out stalls the
+ * updates of every row after it.
+ */
+export function isGoalShown(goal: Goal | null | undefined): goal is Goal {
+  // The store types an absent goal as undefined, but a server that answers "no goal" with null puts null there.
+  return typeof goal === "object" && goal !== null && typeof goal.goal === "string" && typeof goal.status === "string"
+}
 
 export interface GoalRowInput {
   readonly goal: Goal
@@ -430,13 +474,18 @@ export function layoutGoalRow(input: GoalRowInput): BandRow {
   const aw = input.ambiguousWidth ?? 1
   const width = whole(input.width)
   const { goal } = input
+  if (!isGoalShown(goal)) return EMPTY_ROW
   const mark: BandSpan = { text: "◎ ", token: "textMuted" }
   const lead: BandSpan[] = [mark, { text: t("goal.title"), token: "textMuted" }, blank(2)]
   const text = remoteLine(goal.goal)
 
   const reason =
     goal.status === "waiting" || goal.status === "paused"
-      ? truncateCells(remoteLine(goal.pausedReason ?? ""), GOAL_STATUS_MAX_CELLS, aw)
+      ? truncateCells(
+          remoteLine(typeof goal.pausedReason === "string" ? goal.pausedReason : ""),
+          GOAL_STATUS_MAX_CELLS,
+          aw,
+        )
       : ""
   const known = GOAL_STATUS[goal.status]
   const status: BandSpan =
@@ -453,7 +502,7 @@ export function layoutGoalRow(input: GoalRowInput): BandRow {
       : max === undefined
         ? t("dagmode.band.goal.turnsOpen", { used })
         : t("dagmode.band.goal.turns", { used, max })
-  const subgoals = goal.subgoals?.length ?? 0
+  const subgoals = Array.isArray(goal.subgoals) ? goal.subgoals.length : 0
 
   /** The row with the goal text cut to `room` cells. */
   const row = (kept: readonly BandSpan[], room: number, right: readonly BandSpan[]) => {
@@ -624,7 +673,8 @@ export function SessionStatusBand() {
   const goalRow = createMemo<BandRow | undefined>(() => {
     const root = rootID()
     const goal = root === undefined ? undefined : sync.data.goal[root]
-    return goal ? layoutGoalRow({ goal, width: width(), ambiguousWidth: aw() }) : undefined
+    // A body that is not a goal takes no row, instead of throwing out of a memo the whole band depends on.
+    return isGoalShown(goal) ? layoutGoalRow({ goal, width: width(), ambiguousWidth: aw() }) : undefined
   })
 
   // Below the narrow limit the two rows merge into one: the workflow's, else the goal's.

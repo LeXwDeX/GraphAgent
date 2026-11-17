@@ -28,18 +28,18 @@ exports[`at 80 and 120 columns draws the rows in en inside 120 columns at ambigu
   ◎ Goal  全部依赖升到最新稳定版并通过 CI                             turn 6/30 · 等待 watch_pr · subgoals 2  /goal"
 `;
 
-exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 80 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                    模式开"`;
+exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 80 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9          模式开  预算 85%"`;
 
 exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 80 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━ ━━━━ ━━━━ ── ── 4/9          模式开"`;
 
-exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 120 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 完成 · 第 3/5 波 · 2 运行中 · 1 失败         等待主 agent  模式开"`;
+exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 120 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 完成 · 2 运行中 · 1 失败           等待主 agent  模式开  预算 85%"`;
 
-exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 120 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 完成 · 2 运行中 · 1 失败     模式开"`;
+exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in zh-CN inside 120 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9        等待主 agent  模式开  预算 85%"`;
 
-exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 80 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                   mode on"`;
+exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 80 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9       mode on  budget 85%"`;
 
 exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 80 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━ ━━━━ ━━━━ ── ── 4/9         mode on"`;
 
-exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 120 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 done · 2 running · 1 failed       waiting for main agent  mode on"`;
+exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 120 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                       waiting for main agent  mode on  budget 85%"`;
 
-exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 120 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                               mode on"`;
+exports[`DAG mode at 80 and 120 columns draws the mark, the usage and the wait in en inside 120 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9                   mode on  budget 85%"`;

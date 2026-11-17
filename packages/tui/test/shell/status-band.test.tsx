@@ -1263,6 +1263,15 @@ describe("DAG mode at 80 and 120 columns", () => {
             // The mark does not give way at either width, and the bar is still there beside it.
             expect(drawn[0]).toContain(language === "en" ? "mode on" : "模式开")
             expect(drawn[0]).toMatch(/[━─]/)
+            // The budget is at its warning band (850 of 1000), so it is the last piece of the usage to go: both widths
+            // keep it. At 120 columns the wait that is also on the row keeps its place beside it; at 80 the room
+            // beside the bar, the title and the counts is short for both, and the budget stays while the wait goes.
+            if (aw === 1) {
+              expect(drawn[0]).toContain(language === "en" ? "budget 85%" : "预算 85%")
+              const wait = language === "en" ? "waiting for main agent" : "等待主 agent"
+              if (width === 120) expect(drawn[0]).toContain(wait)
+              else expect(drawn[0]).not.toContain(wait)
+            }
             expect(drawn.join("\n")).toMatchSnapshot()
           } finally {
             await harness.dispose()
@@ -1271,4 +1280,60 @@ describe("DAG mode at 80 and 120 columns", () => {
       }
     }
   }
+})
+
+describe("a goal that is not one", () => {
+  /** A goal body as a broken server might send it: the wire type says what a goal has, this has less. */
+  function malformed(body: Record<string, unknown>): Goal {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- synthetic: a body the wire type does not allow.
+    return body as unknown as Goal
+  }
+
+  test("takes no row, and the rest of the band goes on following the server", async () => {
+    const { harness } = await mountBand(running)
+    try {
+      await band(harness, (all) => all.some((row) => row.includes("第 2/3 波")), "the loaded table")
+
+      harness.events.emit(goalEvent(rootID, malformed({})))
+      harness.events.emit(summaryEvent(rootID, [flow("dag_alpha", "running", { completedNodes: 3, queuedNodes: 0 })]))
+      const lines = await band(harness, (all) => all.some((row) => row.includes("3/4 完成")), "the refreshed counts")
+      // The workflow row only: a goal row with nothing in it would still take a line.
+      expect(lines).toHaveLength(1)
+
+      // A body with a text and no status is no goal either; the row stays away and the band still refreshes.
+      harness.events.emit(goalEvent(rootID, malformed({ goal: "ship the upgrade" })))
+      harness.events.emit(
+        summaryEvent(rootID, [flow("dag_alpha", "running", { completedNodes: 4, queuedNodes: 0, runningNodes: 0 })]),
+      )
+      const later = await band(harness, (all) => all.some((row) => row.includes("4/4 完成")), "the counts again")
+      expect(later).toHaveLength(1)
+
+      // And a goal that is one gets its row once it arrives.
+      harness.events.emit(goalEvent(rootID, goal()))
+      const both = await band(harness, (all) => all.length === 2 && all[1].includes("◎ 目标"), "the real goal")
+      expect(both[0]).toContain("4/4 完成")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("does not stop the goal row of the next goal from coming and updating either", async () => {
+    const { harness } = await mountBand(running)
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 2 && all[1].includes("第 6/30 轮"), "the goal")
+      harness.events.emit(goalCleared(rootID))
+      await band(harness, (all) => all.length === 1, "the goal cleared")
+      // The store merges an update into what it holds; with nothing held, this body is all there is of the goal.
+      harness.events.emit(goalEvent(rootID, malformed({ status: "active" })))
+      await harness.settle()
+      expect(rows(await harness.frame())).toHaveLength(1)
+      // A goal that is one arrives on top of it and is drawn whole.
+      harness.events.emit(goalEvent(rootID, goal({ turnsUsed: 7 })))
+      await band(harness, (all) => all.length === 2 && all[1].includes("第 7/30 轮"), "the goal again")
+    } finally {
+      await harness.dispose()
+    }
+  })
 })
