@@ -7,6 +7,7 @@ import { TextareaRenderable, type Renderable } from "@opentui/core"
 import { setLanguage } from "../src/i18n"
 import { cellWidth } from "../src/ui/width"
 import { captureFrame, runApp, waitFor, waitForFrame, PROMPT_MARK, type Setup } from "./fixture/run-app"
+import { assistantMessage, taskCall, textPart, userMessage } from "./fixture/session-records"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -355,6 +356,188 @@ test("says it in English when the interface is English", async () => {
     const frame = await waitForFrame(app.setup, (value) => value.includes("◎ Goal"), "the English goal row")
     expect(frame).toContain("2/4 done · wave 2/3 · 1 running")
     expect(frame).toContain("turn 6/30 · Active  /goal")
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+// ── The background runs (#1058 4, 5) ────────────────────────────────────────────────────────────────────────────
+//
+// The runs the root session started in the background, read from its Task calls and the jobs they own: a mark on the
+// band, or a row of their own, a click that opens `/agents`, and a section of the drawer.
+
+const bgOne = "ses_band_bg_one"
+const bgTwo = "ses_band_bg_two"
+const bgSessions = [
+  ...sessions,
+  sessionFixture(bgOne, { parentID: mainID, time: { created: 10, updated: 11 } }),
+  sessionFixture(bgTwo, { parentID: mainID, time: { created: 12, updated: 13 } }),
+]
+
+/** The root's transcript with two Task calls that started background runs, and the jobs of both answering `running`. */
+function backgroundServer() {
+  const handler: FetchHandler = async (url, request) => {
+    if (url.pathname === `/session/${mainID}/message`) {
+      return json([
+        {
+          info: userMessage("msg_band_user", mainID, 1),
+          parts: [textPart("msg_band_user", mainID, "prt_band_prompt", "scan everything")],
+        },
+        {
+          info: assistantMessage("msg_band_assistant", mainID, "msg_band_user", 2),
+          parts: [
+            taskCall({
+              parentID: mainID,
+              messageID: "msg_band_assistant",
+              id: "prt_band_one",
+              childID: bgOne,
+              description: "Scan one",
+              background: true,
+              initiator: "agent",
+              start: 1_000,
+            }),
+            taskCall({
+              parentID: mainID,
+              messageID: "msg_band_assistant",
+              id: "prt_band_two",
+              childID: bgTwo,
+              description: "Scan two",
+              background: true,
+              initiator: "agent",
+              start: 2_000,
+            }),
+          ],
+        },
+      ])
+    }
+    if (url.pathname !== "/lifecycle/states") return undefined
+    const body: unknown = await request?.json()
+    const refs =
+      typeof body === "object" && body !== null && "refs" in body && Array.isArray(body.refs) ? body.refs : []
+    return json(
+      refs.map((ref: { domain: string; id: string }) => ({
+        domain: ref.domain,
+        id: ref.id,
+        state: {
+          domain: ref.domain,
+          id: ref.id,
+          value: "running",
+          phase: "running",
+          terminal: false,
+          settled: false,
+          source: "live",
+          observedAt: 3_000,
+        },
+      })),
+    )
+  }
+  return handler
+}
+
+/** Where the mark is: its row in the frame and the cell column it starts at. */
+function markAt(frame: string, rowNeedle: string) {
+  const rows = rowsOf(frame)
+  const row = rows.findIndex((line) => line.includes(rowNeedle))
+  return { row, x: cellWidth(rows[row].slice(0, rows[row].indexOf("◇"))) }
+}
+
+test("the runs have a row of their own just above the prompt, and a click on it opens /agents", async () => {
+  const app = await runApp({
+    sessions: bgSessions,
+    args: { sessionID: mainID },
+    width: 120,
+    height: 30,
+    handler: backgroundServer(),
+  })
+  try {
+    const frame = await waitForFrame(
+      app.setup,
+      (value) => value.includes("◇ 后台 2 · explore Scan two · explore Scan one"),
+      "the row of the runs",
+    )
+    const rows = rowsOf(frame)
+    const own = rows.findIndex((line) => line.includes("◇ 后台 2"))
+    // The runs are both waiting for a slot (a running job and a child that has run no turn); newest first.
+    expect(rows[own]).toContain("◇ 后台 2 · explore Scan two · explore Scan one")
+    expect(rows[own].trimEnd().endsWith("/agents")).toBe(true)
+    // The prompt starts on the next row: the band took a line of the main area, none of the prompt's.
+    expect(rows[own + 1].trimStart().startsWith("┃")).toBe(true)
+    expect(rows.filter((line) => line.includes("◇ 后台")).length).toBe(1)
+
+    await app.setup.mockMouse.click(10, own)
+    const panel = await waitForFrame(app.setup, (value) => value.includes("explore · Scan one"), "the sub-agent list")
+    expect(panel).not.toContain(PROMPT_MARK)
+    expect(app.writes()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("the mark rides on the goal row, and a click on it opens /agents while one on the goal does nothing", async () => {
+  const app = await runApp({
+    sessions: bgSessions,
+    args: { sessionID: mainID },
+    width: 120,
+    height: 30,
+    handler: backgroundServer(),
+  })
+  try {
+    await waitForFrame(app.setup, (value) => value.includes("◇ 后台 2"), "the runs")
+    app.events.emit(goalEvent(mainID, GOAL))
+    const frame = await waitForFrame(
+      app.setup,
+      (value) => value.includes("◎ 目标") && value.includes("/goal  ◇ 后台 2·排2"),
+      "the mark on the goal row",
+    )
+    const at = markAt(frame, "◎ 目标")
+
+    // A click on the goal row has no handler: a few renders are enough to see that nothing opened.
+    await app.setup.mockMouse.click(10, at.row)
+    for (let pass = 0; pass < 3; pass++) await app.setup.renderOnce()
+    expect(await captureFrame(app.setup)).toContain(PROMPT_MARK)
+
+    app.setup.renderer.clearSelection()
+    await app.setup.mockMouse.click(at.x + 1, at.row)
+    const panel = await waitForFrame(app.setup, (value) => value.includes("explore · Scan two"), "the sub-agent list")
+    expect(panel).not.toContain(PROMPT_MARK)
+    expect(app.writes()).toEqual([])
+    expect(app.commands()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("below 100 columns the band says nothing of the runs, and the drawer lists them while it is open", async () => {
+  const app = await runApp({
+    sessions: bgSessions,
+    args: { sessionID: mainID },
+    width: 80,
+    height: 30,
+    handler: backgroundServer(),
+  })
+  try {
+    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    app.events.emit(goalEvent(mainID, GOAL))
+    // The goal has the one row of a narrow band; the runs are not on it. Their Task rows say they wait for a slot once
+    // the data layer holds them, which is when the band would have drawn them.
+    const frame = await waitForFrame(
+      app.setup,
+      (value) => value.includes("◎ 目标") && value.includes("排队中 · 等待并发槽位"),
+      "the goal row and the runs in the transcript",
+    )
+    expect(frame).not.toContain("◇ 后台")
+    // The drawer closed has no section; open, it lists the runs the band left out.
+    expect(frame).not.toContain("后台任务")
+    app.setup.mockInput.pressKey("b", { ctrl: true })
+    const open = await waitForFrame(app.setup, (value) => value.includes("后台任务 2"), "the drawer's section")
+    expect(open).toContain("○ explore · Scan two")
+    expect(open).toContain("○ explore · Scan one")
+    app.setup.mockInput.pressKey("b", { ctrl: true })
+    await waitForFrame(app.setup, (value) => !value.includes("后台任务"), "the drawer closed")
+    expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
     await app.stop()

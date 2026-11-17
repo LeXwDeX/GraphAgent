@@ -6,7 +6,15 @@ import type { DagWorkflowSummary, Goal } from "@graphagent/sdk"
 import type { DagUsage } from "../../src/dag/mode"
 import type { DagNodeRow } from "../../src/dag/model"
 import { setLanguage } from "../../src/i18n"
-import { bandRowText, isGoalShown, layoutDagRow, layoutGoalRow, type BandRow } from "../../src/shell/status-band"
+import {
+  bandRowText,
+  dagUsageAlert,
+  isGoalShown,
+  layoutDagRow,
+  layoutEmptyRow,
+  layoutGoalRow,
+  type BandRow,
+} from "../../src/shell/status-band"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 
 beforeEach(() => {
@@ -868,4 +876,184 @@ describe("the goal row", () => {
       }
     })
   }
+})
+
+const LANGUAGES = ["zh-CN", "en"] as const
+
+describe("the background mark on a workflow row", () => {
+  const MARK = "◇ 后台 3"
+  const PR = "PR ~4/6"
+  const BASE = { summary: summary(), nodes: NODES, more: 0 } as const
+  const dag = (extra: Partial<Parameters<typeof layoutDagRow>[0]> = {}) =>
+    layoutDagRow({ ...BASE, width: 116, ...extra })
+
+  test("rides at the tail, after the PR mark, two cells off it, as a piece of its own", () => {
+    const row = dag({ pr: PR, background: MARK })
+    expect(bandRowText(row).endsWith("/dag  PR ~4/6  ◇ 后台 3")).toBe(true)
+    expect(row.cells).toBe(116)
+    expect(measured(row, 1)).toBe(116)
+    expect(row.spans.filter((span) => span.action !== undefined)).toEqual([
+      { text: MARK, token: "textMuted", action: "agents" },
+    ])
+    expect(row.spans.at(-1)?.action).toBe("agents")
+  })
+
+  test("is the last group when there is no PR mark either", () => {
+    const row = dag({ background: MARK })
+    expect(bandRowText(row).endsWith("/dag  ◇ 后台 3")).toBe(true)
+  })
+
+  test("is the first thing the row gives up: before the /dag hint, with the PR mark staying", () => {
+    let hintWithoutMark = 0
+    let markWidths = 0
+    for (const language of LANGUAGES) {
+      setLanguage(language)
+      for (let width = 140; width >= 30; width--) {
+        const marked = dag({ pr: PR, background: MARK, width })
+        const plain = dag({ pr: PR, width })
+        const line = bandRowText(marked)
+        if (line.includes(MARK)) {
+          markWidths++
+          // The mark never outlives the hint, and the PR mark is there whenever the background mark is.
+          expect(line, `width ${width}`).toContain("/dag")
+          expect(line, `width ${width}`).toContain(PR)
+        } else {
+          // Without room for it the row is the row it was: nothing else gave way for the mark.
+          expect(marked, `width ${width}`).toEqual(plain)
+          if (line.includes("/dag")) hintWithoutMark++
+        }
+      }
+    }
+    // Both happen somewhere on the way down: the mark is there, and then the hint is still there without it.
+    expect(markWidths).toBeGreaterThan(0)
+    expect(hintWithoutMark).toBeGreaterThan(0)
+  })
+
+  test("the mark does not narrow the bar, take the counts or the title: the row is the unmarked one when it fits", () => {
+    const marked = dag({ pr: PR, background: MARK, width: 200 })
+    const plain = dag({ pr: PR, width: 200 })
+    const named = (row: BandRow) => row.spans.filter((span) => span.text.trim() !== "" && span.action === undefined)
+    expect(bandRowText(marked)).toContain(MARK)
+    expect(named(marked)).toEqual(named(plain))
+  })
+
+  test("a row at the warning or exhausted band of its budget is a warning row: it takes no mark", () => {
+    const base = { running: 3, cap: 12, budget: 1_000_000 } as const
+    const quiet: DagUsage = { ...base, tokens: 620_000, percent: 62, tier: "normal" }
+    const warn: DagUsage = { ...base, tokens: 850_000, percent: 85, tier: "warn" }
+    const exhausted: DagUsage = { ...base, tokens: 1_000_000, percent: 100, tier: "exhausted" }
+    expect(dagUsageAlert(undefined)).toBe(false)
+    expect(dagUsageAlert(quiet)).toBe(false)
+    expect(dagUsageAlert(warn)).toBe(true)
+    expect(dagUsageAlert(exhausted)).toBe(true)
+    // A tier without a percent is not drawn as an alert either (there is no budget to keep on the row).
+    expect(dagUsageAlert({ tokens: 5, tier: "warn" })).toBe(false)
+    for (const usage of [warn, exhausted]) {
+      const row = dag({ usage, background: MARK, width: 200 })
+      expect(bandRowText(row)).not.toContain("◇")
+      expect(row.spans.some((span) => span.action !== undefined)).toBe(false)
+      expect(row).toEqual(dag({ usage, width: 200 }))
+    }
+    expect(bandRowText(dag({ usage: quiet, background: MARK, width: 200 }))).toContain(MARK)
+  })
+
+  for (const language of LANGUAGES) {
+    for (const aw of [1, 2] as const) {
+      test(`never claims more cells than it has with the mark, 20 to 200, in ${language} at ambiguous width ${aw}`, () => {
+        setLanguage(language)
+        const mark = language === "en" ? "◇ bg 3·q1" : "◇ 后台 3·排1"
+        for (let width = 20; width <= 200; width++) {
+          const row = dag({ pr: PR, background: mark, width, ambiguousWidth: aw })
+          expect(row.cells, `width ${width}`).toBeLessThanOrEqual(width)
+          expect(measured(row, aw), `width ${width}`).toBe(row.cells)
+        }
+      })
+    }
+  }
+})
+
+describe("the background mark on the row `always` shows without a workflow", () => {
+  const MARK = "◇ 后台 3"
+
+  test("follows the hint and the PR mark, and gives way before the hint", () => {
+    const row = layoutEmptyRow({ width: 116, pr: "PR ✓", background: MARK })
+    expect(bandRowText(row).endsWith("/dag  PR ✓  ◇ 后台 3")).toBe(true)
+    expect(row.cells).toBe(116)
+    expect(row.spans.at(-1)).toEqual({ text: MARK, token: "textMuted", action: "agents" })
+
+    let withHintOnly = 0
+    for (let width = 90; width >= 10; width--) {
+      const marked = layoutEmptyRow({ width, pr: "PR ✓", background: MARK })
+      const plain = layoutEmptyRow({ width, pr: "PR ✓" })
+      const line = bandRowText(marked)
+      if (line.includes(MARK)) {
+        expect(line, `width ${width}`).toContain("/dag")
+        expect(line, `width ${width}`).toContain("PR ✓")
+      } else {
+        expect(marked, `width ${width}`).toEqual(plain)
+        if (line.includes("/dag")) withHintOnly++
+      }
+    }
+    expect(withHintOnly).toBeGreaterThan(0)
+  })
+
+  test("is the row it was when there is no mark, and never overflows with one", () => {
+    for (const language of LANGUAGES) {
+      for (const aw of [1, 2] as const) {
+        setLanguage(language)
+        const mark = language === "en" ? "◇ bg 12" : "◇ 后台 12"
+        for (let width = 0; width <= 160; width++) {
+          const row = layoutEmptyRow({ width, ambiguousWidth: aw, pr: "PR ~4/6", background: mark })
+          expect(row.cells, `${language} aw ${aw} width ${width}`).toBeLessThanOrEqual(width)
+          expect(measured(row, aw), `${language} aw ${aw} width ${width}`).toBe(row.cells)
+        }
+      }
+    }
+    expect(layoutEmptyRow({ width: 60 })).toEqual(layoutEmptyRow({ width: 60, background: undefined }))
+  })
+})
+
+describe("the background mark on the goal row", () => {
+  const MARK = "◇ 后台 3"
+
+  test("follows the hint, two cells off it, when the row has room left over", () => {
+    const row = layoutGoalRow({ goal: goal(), background: MARK, width: 116 })
+    expect(bandRowText(row).endsWith("第 6/30 轮 · 进行中  /goal  ◇ 后台 3")).toBe(true)
+    expect(row.cells).toBe(116)
+    expect(row.spans.at(-1)).toEqual({ text: MARK, token: "textMuted", action: "agents" })
+  })
+
+  test("takes no room from the goal: a long goal fills the row and the mark is left out", () => {
+    const long = goal({
+      goal: "把所有依赖逐个升到最新稳定版，跑完整的回归测试，并且在每一步之后写一份迁移记录".repeat(3),
+    })
+    expect(layoutGoalRow({ goal: long, background: MARK, width: 116 })).toEqual(
+      layoutGoalRow({ goal: long, width: 116 }),
+    )
+  })
+
+  test("never changes what the row says: the pieces other than the mark are the unmarked row's, at every width", () => {
+    const named = (row: BandRow) => row.spans.filter((span) => span.text.trim() !== "" && span.action === undefined)
+    let drawn = 0
+    for (const language of LANGUAGES) {
+      for (const aw of [1, 2] as const) {
+        setLanguage(language)
+        const mark = language === "en" ? "◇ bg 3" : "◇ 后台 3"
+        for (let width = 0; width <= 200; width++) {
+          const marked = layoutGoalRow({
+            goal: goal({ subgoals: ["a", "b"] }),
+            background: mark,
+            width,
+            ambiguousWidth: aw,
+          })
+          const plain = layoutGoalRow({ goal: goal({ subgoals: ["a", "b"] }), width, ambiguousWidth: aw })
+          expect(marked.cells, `${language} aw ${aw} width ${width}`).toBeLessThanOrEqual(width)
+          expect(measured(marked, aw), `${language} aw ${aw} width ${width}`).toBe(marked.cells)
+          expect(named(marked), `${language} aw ${aw} width ${width}`).toEqual(named(plain))
+          if (marked.spans.some((span) => span.action !== undefined)) drawn++
+        }
+      }
+    }
+    expect(drawn).toBeGreaterThan(0)
+  })
 })

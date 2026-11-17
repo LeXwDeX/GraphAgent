@@ -626,3 +626,181 @@ describe("which rows the band draws", () => {
     expect(kinds).toEqual(new Set<BandRowKind>(["pr", "dag", "goal", "reminder"]))
   })
 })
+
+describe("the background mark on the PR and reminder rows", () => {
+  const MARK = "◇ 后台 2"
+
+  test("goes flush right on a PR row that has room, as a piece of its own", () => {
+    const plain = layoutPrRow([ci()], 76)
+    const row = layoutPrRow([ci()], 76, 1, MARK)
+    expect(bandRowText(row)).toBe(
+      `PR #1035  CI 4/6${" ".repeat(76 - cellWidth("PR #1035  CI 4/6") - cellWidth(MARK))}${MARK}`,
+    )
+    expect(row.cells).toBe(76)
+    expect(row.spans.slice(0, plain.spans.length)).toEqual([...plain.spans])
+    expect(row.spans.at(-1)).toEqual({ text: MARK, token: "textMuted", action: "agents" })
+  })
+
+  test("leaves the PR row as it was when it has no room: the PR keeps every cell", () => {
+    const warned = layoutPrRow([unresponsive({ number: 1040 })], 40)
+    expect(layoutPrRow([unresponsive({ number: 1040 })], 40, 1, MARK)).toEqual(warned)
+    const several = [unresponsive({ number: 1040 }), ci({ number: 1036 }), working({ number: 1035 })]
+    for (const width of [10, 20, 30]) expect(layoutPrRow(several, width, 1, MARK)).toEqual(layoutPrRow(several, width))
+  })
+
+  test("goes flush right on the reminder row, and leaves a full one alone", () => {
+    const reminder = { when: "5m", text: "部署完成后检查", due: false }
+    const row = layoutReminderRow(reminder, 60, 1, MARK)
+    expect(bandRowText(row).startsWith("提醒 · 5m后 · 部署完成后检查")).toBe(true)
+    expect(bandRowText(row).endsWith(MARK)).toBe(true)
+    expect(row.cells).toBe(60)
+    expect(row.spans.at(-1)?.action).toBe("agents")
+    // The text is cut to the room: a row that fills it has none left for the mark.
+    const long = { when: "5m", text: "部署".repeat(60), due: false }
+    expect(layoutReminderRow(long, 60, 1, MARK)).toEqual(layoutReminderRow(long, 60))
+  })
+
+  for (const language of LANGUAGES) {
+    for (const aw of AMBIGUOUS_WIDTHS) {
+      test(`stay inside their width with the mark, 0 to 120, in ${language} at ambiguous width ${aw}`, () => {
+        setLanguage(language)
+        const mark = language === "en" ? "◇ bg 3·q1" : "◇ 后台 3·排1"
+        const several = [unresponsive({ number: 1040 }), ci({ number: 1036 }), working({ number: 1035 })]
+        for (let width = 0; width <= 120; width++) {
+          for (const row of [
+            layoutPrRow([ci()], width, aw, mark),
+            layoutPrRow([working()], width, aw, mark),
+            layoutPrRow(several, width, aw, mark),
+            layoutReminderRow({ when: "5m", text: "部署完成后检查", due: false }, width, aw, mark),
+            layoutReminderRow({ when: undefined, text: "deploy", due: true }, width, aw, mark),
+          ]) {
+            expect(row.cells, `width ${width}`).toBeLessThanOrEqual(width)
+            expect(measured(row, aw), `width ${width}`).toBe(row.cells)
+          }
+        }
+      })
+    }
+  }
+})
+
+describe("where the background runs go on the band", () => {
+  const row = (text: string): BandRow => ({ spans: [{ text, token: "text" }], cells: text.length })
+  const dag = row("dag")
+  const goal = row("goal")
+  const reminder = row("reminder")
+  const quiet = { row: row("pr"), warning: false }
+  const warned = { row: row("pr!"), warning: true }
+
+  /** The runs' part of the candidates, and a record of what the band was asked for. */
+  function runs() {
+    const asked = { marked: [] as string[], own: 0 }
+    const background = {
+      marked: (kind: Exclude<BandRowKind, "background">) => {
+        asked.marked.push(kind)
+        return row(`${kind}◇`)
+      },
+      own: () => {
+        asked.own++
+        return row("own")
+      },
+    }
+    return { asked, background }
+  }
+
+  /** What the band draws, as `kind:text` top to bottom. */
+  const draws = (candidates: BandCandidates, narrow = false) =>
+    chooseBandRows(candidates, narrow).map((choice) => `${choice.kind}:${bandRowText(choice.row)}`)
+
+  test("rides at the tail of the first row drawn, and changes nothing else about the choice", () => {
+    const { background } = runs()
+    expect(draws({ dag, goal, background })).toEqual(["dag:dag◇", "goal:goal"])
+    expect(draws({ pr: quiet, dag, goal, background })).toEqual(["dag:dag◇", "goal:goal"])
+    expect(draws({ pr: quiet, goal, background })).toEqual(["pr:pr◇", "goal:goal"])
+    expect(draws({ goal, reminder, background })).toEqual(["goal:goal◇", "reminder:reminder"])
+    expect(draws({ reminder, background })).toEqual(["reminder:reminder◇"])
+    // The same candidates without the runs are the choice that was made before them.
+    expect(draws({ dag, goal })).toEqual(["dag:dag", "goal:goal"])
+  })
+
+  test("skips a PR warning: the row under it takes the mark", () => {
+    const { background } = runs()
+    expect(draws({ pr: warned, dag, background })).toEqual(["pr:pr!", "dag:dag◇"])
+    expect(draws({ pr: warned, dag, goal, background })).toEqual(["pr:pr!", "dag:dag◇"])
+    expect(draws({ pr: warned, goal, background })).toEqual(["pr:pr!", "goal:goal◇"])
+    expect(draws({ pr: warned, reminder, background })).toEqual(["pr:pr!", "reminder:reminder◇"])
+  })
+
+  test("skips a workflow row at the alert band of its budget: the row under it takes the mark", () => {
+    const { background } = runs()
+    expect(draws({ dag, dagAlert: true, goal, background })).toEqual(["dag:dag", "goal:goal◇"])
+    expect(draws({ dag, dagAlert: true, reminder, background })).toEqual(["dag:dag", "reminder:reminder◇"])
+    // An alert that is not about the workflow row on screen does not matter.
+    expect(draws({ goal, dagAlert: true, background })).toEqual(["goal:goal◇"])
+    expect(draws({ dag, dagAlert: false, background })).toEqual(["dag:dag◇"])
+  })
+
+  test("is nowhere when every row drawn is a warning row, and the runs have no row of their own then", () => {
+    const { asked, background } = runs()
+    expect(draws({ pr: warned, background })).toEqual(["pr:pr!"])
+    expect(draws({ dag, dagAlert: true, background })).toEqual(["dag:dag"])
+    expect(draws({ pr: warned, dag, dagAlert: true, background })).toEqual(["pr:pr!", "dag:dag"])
+    expect(asked).toEqual({ marked: [], own: 0 })
+  })
+
+  test("has a row of its own only when no other row is drawn", () => {
+    const { asked, background } = runs()
+    expect(draws({ background })).toEqual(["background:own"])
+    const blank: BandRow = { spans: [], cells: 0 }
+    expect(draws({ pr: { row: blank, warning: false }, dag: blank, goal: blank, reminder: blank, background })).toEqual(
+      ["background:own"],
+    )
+    expect(asked.own).toBe(2)
+    expect(draws({ goal, background })).toEqual(["goal:goal◇"])
+    expect(asked.own).toBe(2)
+  })
+
+  test("has neither the mark nor the row below the narrow limit, and asks for neither", () => {
+    const { asked, background } = runs()
+    expect(draws({ dag, goal, background }, true)).toEqual(["dag:dag"])
+    expect(draws({ goal, reminder, background }, true)).toEqual(["goal:goal"])
+    expect(draws({ background }, true)).toEqual([])
+    expect(draws({ pr: warned, dag, background }, true)).toEqual(["pr:pr!"])
+    expect(asked).toEqual({ marked: [], own: 0 })
+  })
+
+  test("asks for the marked layout of the one row that takes it, once, and for the own row only when it is drawn", () => {
+    const { asked, background } = runs()
+    draws({ pr: warned, dag, goal, background })
+    expect(asked).toEqual({ marked: ["dag"], own: 0 })
+    draws({ background })
+    expect(asked).toEqual({ marked: ["dag"], own: 1 })
+  })
+
+  test("leaves a row as it was when the mark did not fit it, or came back empty", () => {
+    const unchanged = { marked: () => undefined, own: () => row("own") }
+    expect(draws({ dag, goal, background: unchanged })).toEqual(["dag:dag", "goal:goal"])
+    const emptied = { marked: () => ({ spans: [], cells: 0 }), own: () => ({ spans: [], cells: 0 }) }
+    expect(draws({ dag, background: emptied })).toEqual(["dag:dag"])
+    expect(draws({ background: emptied })).toEqual([])
+  })
+
+  test("never draws more than the rows the band has, whatever is given", () => {
+    const { background } = runs()
+    for (const pr of [undefined, quiet, warned]) {
+      for (const d of [undefined, dag]) {
+        for (const dagAlert of [false, true]) {
+          for (const g of [undefined, goal]) {
+            for (const r of [undefined, reminder]) {
+              for (const narrow of [false, true]) {
+                const chosen = chooseBandRows({ pr, dag: d, dagAlert, goal: g, reminder: r, background }, narrow)
+                expect(chosen.length).toBeLessThanOrEqual(narrow ? 1 : BAND_ROWS_MAX)
+                // The row of the runs is never drawn beside another.
+                if (chosen.some((choice) => choice.kind === "background")) expect(chosen).toHaveLength(1)
+              }
+            }
+          }
+        }
+      }
+    }
+  })
+})

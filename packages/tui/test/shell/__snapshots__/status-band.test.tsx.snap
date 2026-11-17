@@ -107,3 +107,29 @@ exports[`PR and reminder rows at 80 and 120 columns draws a reminder in en at 12
 exports[`PR and reminder rows at 80 and 120 columns draws a PR warning over the workflow row in zh-CN at 80x24 1`] = `"  PR #1040  ✓ 通过 · agent 未响应"`;
 
 exports[`PR and reminder rows at 80 and 120 columns draws a PR warning over the workflow row in en at 80x24 1`] = `"  PR #1040  ✓ passed · agent not responding"`;
+
+exports[`the background runs at 80 and 120 columns draws the mark after the PR mark on the workflow row in zh-CN at 80x24 1`] = `"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 完成 · 第 2/3 波 · 1 运行中       模式关  PR ~4/6"`;
+
+exports[`the background runs at 80 and 120 columns draws the mark on the goal row in zh-CN at 80x24 1`] = `"  ◎ 目标  ship the upgrade                          第 6/30 轮 · 进行中  /goal"`;
+
+exports[`the background runs at 80 and 120 columns draws the mark after the PR mark on the workflow row in zh-CN at 120x40 1`] = `
+"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 完成 · 第 2/3 波 · 1 运行中                           模式关  /dag  PR ~4/6  ◇ 后台 2·排1
+  ◎ 目标  ship the upgrade                                                                  第 6/30 轮 · 进行中  /goal"
+`;
+
+exports[`the background runs at 80 and 120 columns draws the mark on the goal row in zh-CN at 120x40 1`] = `"  ◎ 目标  ship the upgrade                                                    第 6/30 轮 · 进行中  /goal  ◇ 后台 2·排1"`;
+
+exports[`the background runs at 80 and 120 columns draws the row of the runs alone in zh-CN at 120x40 1`] = `"  ◇ 后台 2 · review 未提交改动 · explore 扫描依赖                                                              /agents"`;
+
+exports[`the background runs at 80 and 120 columns draws the mark after the PR mark on the workflow row in en at 80x24 1`] = `"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 done · wave 2/3 · 1 running     mode off  PR ~4/6"`;
+
+exports[`the background runs at 80 and 120 columns draws the mark on the goal row in en at 80x24 1`] = `"  ◎ Goal  ship the upgrade                           turn 6/30 · Active  /goal"`;
+
+exports[`the background runs at 80 and 120 columns draws the mark after the PR mark on the workflow row in en at 120x40 1`] = `
+"  ◆ alpha ━━━━━━ ━━━ ─── 2/4 done · wave 2/3 · 1 running                            mode off  /dag  PR ~4/6  ◇ bg 2·q1
+  ◎ Goal  ship the upgrade                                                                   turn 6/30 · Active  /goal"
+`;
+
+exports[`the background runs at 80 and 120 columns draws the mark on the goal row in en at 120x40 1`] = `"  ◎ Goal  ship the upgrade                                                        turn 6/30 · Active  /goal  ◇ bg 2·q1"`;
+
+exports[`the background runs at 80 and 120 columns draws the row of the runs alone in en at 120x40 1`] = `"  ◇ bg 2 · review 未提交改动 · explore 扫描依赖                                                                /agents"`;
