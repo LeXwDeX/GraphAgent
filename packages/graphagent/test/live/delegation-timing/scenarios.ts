@@ -54,7 +54,9 @@ export function expectationOf(scenario: Scenario): Expectation {
 // Every outcome but a background task. A foreground task, doing the work itself, asking, or only reading all comply.
 const NOT_BACKGROUND: readonly Outcome[] = ["task_fg", "edit", "exec", "ask", "other", "none", "cap"]
 // After an injected review the main agent presents the findings: reading more or asking is fine, acting is not.
-const AFTER_REVIEW: readonly Outcome[] = ["none", "ask", "cap", "exec"]
+// An execution the hook stopped is not proven harmless (it may have been an edit by another name), so it is
+// not accepted here.
+const AFTER_REVIEW: readonly Outcome[] = ["none", "ask", "cap"]
 const BACKGROUND_ONLY: readonly Outcome[] = ["task_bg"]
 // The scenario leaves the delegation style to the model: foreground or background delegation, or doing the
 // work itself (reading, running something to analyse, writing a scratch script or the requested file) all
