@@ -22,6 +22,8 @@ import type {
   Goal,
   DagWorkflowSummary,
   SessionDagMode,
+  PrWatchEntry,
+  SessionReminder,
   ReferenceInfo,
   ProjectTrustEntry,
   ProjectTrustDecision,
@@ -172,6 +174,25 @@ export const {
       goal: {
         [sessionID: string]: Goal | undefined
       }
+      /**
+       * The PR/MR watches of a session tree (#1036 F6), per root session (the one that registered them) and then per
+       * watch. `pr.watch.updated` upserts one entry; the read (`GET /session/:id/pr-watch`: the live watches and the ones
+       * that ended within the last 10 minutes) replaces the root's whole map, when the tree is first entered and on
+       * reconnect, since the event is not durable. An event never removes an entry: an ended watch stays until a read
+       * no longer returns it. The store does not say whether a change came from an event or from a read; what must
+       * react to events only (a toast) listens to the event.
+       */
+      pr_watch: {
+        [rootSessionID: string]: { [watchID: string]: PrWatchEntry }
+      }
+      /**
+       * The reminders of a session that can still fire or are owed, soonest first (`GET /session/:id/reminder`). No
+       * event carries them: a `lifecycle.transitioned` of the `reminder` domain reads the session's list again, and
+       * so do the first entry into its tree and a reconnect.
+       */
+      reminder: {
+        [sessionID: string]: SessionReminder[]
+      }
       message: {
         [sessionID: string]: Message[]
       }
@@ -270,6 +291,8 @@ export const {
       session_diff: {},
       todo: {},
       goal: {},
+      pr_watch: {},
+      reminder: {},
       message: {},
       part: {},
       lsp: [],
@@ -346,6 +369,11 @@ export const {
     // The mode snapshot read in flight per session. A newer read replaces it and the older answer is dropped; a
     // read that is still out also stands in for another one that only wants the snapshot to exist.
     const dagModeReads = new Map<string, symbol>()
+    // #1036 F6: the PR watch read in flight per root session. A newer read replaces it and the older answer is
+    // dropped. `touched` names the watches that events updated since the read began: they are newer than the answer.
+    const prWatchReads = new Map<string, { touched: Set<string> }>()
+    // The reminder read in flight per session; a newer read replaces it and the older answer is dropped.
+    const reminderReads = new Map<string, symbol>()
     // The session set last handed to the aggregator and its confirmation: a
     // second surface showing the same workflow must wait for the same answer
     // before it reads, or it would read ahead of the worker.
@@ -532,6 +560,9 @@ export const {
     function dropSession(sessionID: string) {
       dropDagOwner(sessionID)
       dagModeReads.delete(sessionID)
+      // A read still out must not bring the session's entries back.
+      prWatchReads.delete(sessionID)
+      reminderReads.delete(sessionID)
       const messages = store.message[sessionID] ?? []
       const partIDs = messages.flatMap((message) => (store.part[message.id] ?? []).map((part) => part.id))
       stream.clearParts(partIDs)
@@ -551,6 +582,8 @@ export const {
           delete draft.question[sessionID]
           delete draft.todo[sessionID]
           delete draft.goal[sessionID]
+          delete draft.pr_watch[sessionID]
+          delete draft.reminder[sessionID]
           delete draft.session_diff[sessionID]
           delete draft.dag[sessionID]
           delete draft.dagMode[sessionID]
@@ -869,6 +902,103 @@ export const {
         ([ownerID, list]) => list.length > 0 && (ownerID === rootID || parentChain(ownerID).at(-1) === rootID),
       )
       if (on || owned) void fetchDagMode([rootID], true)
+    }
+
+    /**
+     * Take a `pr.watch.updated` entry in. The event is not durable and may arrive late, so one older than the entry
+     * held is dropped. The entry replaces the held one outright (reconcile): a `checks`, `delivery` or `review` that
+     * the new state no longer has must not linger.
+     */
+    function writePrWatch(entry: PrWatchEntry) {
+      const map = store.pr_watch[entry.sessionID]
+      const held = map?.[entry.watchID]
+      if (held && held.updatedAt > entry.updatedAt) return
+      prWatchReads.get(entry.sessionID)?.touched.add(entry.watchID)
+      // A path through a root that has no map yet cannot be set: the first watch of a root creates the map.
+      if (map) setStore("pr_watch", entry.sessionID, entry.watchID, reconcile(entry))
+      else setStore("pr_watch", entry.sessionID, { [entry.watchID]: entry })
+    }
+
+    /**
+     * Read the PR watches of root sessions and replace each root's map with the answer: a watch it does not return
+     * has ended for good, and is dropped. Entries that events delivered while the read was out are newer than the
+     * answer and stay, unless the answer carries a later state of the same watch. `onlyMissing` leaves out the roots
+     * that hold a map or are being read; any other call reads again, and its answer wins over a read that was still
+     * out. A failed read keeps what the slice held, and the next trigger reads again.
+     */
+    function fetchPrWatch(rootIDs: readonly string[], onlyMissing = false) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        rootIDs
+          .filter((rootID) => !onlyMissing || !(rootID in store.pr_watch || prWatchReads.has(rootID)))
+          .map((rootID) => {
+            const read = { touched: new Set<string>() }
+            prWatchReads.set(rootID, read)
+            return sdk.client.session
+              .prWatch({ sessionID: rootID }, { headers: locationHeaders({ workspace }) })
+              .then((response) => {
+                if (disposed || prWatchReads.get(rootID) !== read) return
+                const entries = response.data?.entries
+                if (!entries) {
+                  TuiLog.write("error", "Loading the PR watches failed", {
+                    sessionID: rootID,
+                    status: response.response?.status,
+                  })
+                  return
+                }
+                const next: Record<string, PrWatchEntry> = {}
+                for (const entry of entries) next[entry.watchID] = entry
+                const held = store.pr_watch[rootID]
+                for (const watchID of read.touched) {
+                  const current = held?.[watchID]
+                  if (current && current.updatedAt >= (next[watchID]?.updatedAt ?? -Infinity)) next[watchID] = current
+                }
+                setStore("pr_watch", rootID, reconcile(next))
+              })
+              .catch((error) => {
+                TuiLog.write("error", "Loading the PR watches failed", { sessionID: rootID, error: String(error) })
+              })
+              .finally(() => {
+                if (prWatchReads.get(rootID) === read) prWatchReads.delete(rootID)
+              })
+          }),
+      ).then(() => undefined)
+    }
+
+    /**
+     * Read the reminders of sessions and replace each session's list with the answer. `onlyMissing`, a failed read
+     * and a newer read replacing one that is still out behave as in `fetchPrWatch`.
+     */
+    function fetchReminder(sessionIDs: readonly string[], onlyMissing = false) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        sessionIDs
+          .filter((sessionID) => !onlyMissing || !(sessionID in store.reminder || reminderReads.has(sessionID)))
+          .map((sessionID) => {
+            const read = Symbol(sessionID)
+            reminderReads.set(sessionID, read)
+            return sdk.client.session
+              .reminder({ sessionID }, { headers: locationHeaders({ workspace }) })
+              .then((response) => {
+                if (disposed || reminderReads.get(sessionID) !== read) return
+                const entries = response.data?.entries
+                if (!entries) {
+                  TuiLog.write("error", "Loading the reminders failed", {
+                    sessionID,
+                    status: response.response?.status,
+                  })
+                  return
+                }
+                setStore("reminder", sessionID, reconcile(entries))
+              })
+              .catch((error) => {
+                TuiLog.write("error", "Loading the reminders failed", { sessionID, error: String(error) })
+              })
+              .finally(() => {
+                if (reminderReads.get(sessionID) === read) reminderReads.delete(sessionID)
+              })
+          }),
+      ).then(() => undefined)
     }
 
     /** Workflow -> owning session over every surface; the first surface to name a workflow decides. */
@@ -1216,6 +1346,20 @@ export const {
 
         case "lifecycle.transitioned":
           mirrorTransition(event.properties)
+          // #1036 F6: no event carries the reminders; a transition of one says its session's list changed.
+          if (
+            event.properties.domain === "reminder" &&
+            event.properties.sessionID !== undefined &&
+            (workspace === undefined || workspace === project.workspace.current())
+          )
+            void fetchReminder([event.properties.sessionID])
+          break
+
+        // #1036 F6: the state of a PR/MR watch, published by the watch itself and not durable: a reconnect reads the
+        // watches again (`refreshPrWatches`). Session-summary scoped, so it arrives whether or not its session is loaded.
+        case "pr.watch.updated":
+          if (workspace !== undefined && workspace !== project.workspace.current()) break
+          writePrWatch(event.properties)
           break
 
         // ── DAG workflow summary ────────────────────────────────────
@@ -1654,7 +1798,7 @@ export const {
     // slice refreshes in full on reconnect). Hydrated sessions are left out:
     // `sync` reloads their goal. Reads run a few at a time, and a newer
     // reconnect supersedes an older round.
-    const GOAL_REFRESH_CONCURRENCY = 4
+    const REFRESH_CONCURRENCY = 4
     let goalEpoch = 0
     const refreshGoal = (sessionID: string, epoch: number): Promise<void> => {
       // A goal event after the read began carries a newer snapshot than it.
@@ -1681,12 +1825,40 @@ export const {
       const sessionIDs = Object.entries(store.goal)
         .filter(([sessionID, goal]) => goal && !store.hydrated.includes(sessionID))
         .map(([sessionID]) => sessionID)
-      for (let start = 0; start < sessionIDs.length; start += GOAL_REFRESH_CONCURRENCY) {
+      for (let start = 0; start < sessionIDs.length; start += REFRESH_CONCURRENCY) {
         if (disposed || epoch !== goalEpoch) return
-        const round = sessionIDs.slice(start, start + GOAL_REFRESH_CONCURRENCY)
+        const round = sessionIDs.slice(start, start + REFRESH_CONCURRENCY)
         await Promise.all(round.map((sessionID) => refreshGoal(sessionID, epoch)))
       }
     }
+
+    // #1036 F6: the PR watches and the reminders mirror server state that no durable event carries, so what changed
+    // during a disconnect is known only by reading it again. Every session whose slice is held or being read is read
+    // in full, and so is the root of the route even when it holds nothing: its first read may have failed, or a watch
+    // may have been set while the stream was down. The answers replace what the slices held. Reads run a few at a
+    // time, and a newer reconnect supersedes an older round.
+    const refreshRounds = (held: () => Iterable<string>, read: (round: string[]) => Promise<void>) => {
+      let epoch = 0
+      return async (): Promise<void> => {
+        const mine = ++epoch
+        const sessionIDs = new Set(held())
+        const active = routeChain.at(-1)
+        if (active !== undefined) sessionIDs.add(active)
+        const ids = [...sessionIDs]
+        for (let start = 0; start < ids.length; start += REFRESH_CONCURRENCY) {
+          if (disposed || mine !== epoch) return
+          await read(ids.slice(start, start + REFRESH_CONCURRENCY))
+        }
+      }
+    }
+    const refreshPrWatches = refreshRounds(
+      () => [...Object.keys(store.pr_watch), ...prWatchReads.keys()],
+      (round) => fetchPrWatch(round),
+    )
+    const refreshReminders = refreshRounds(
+      () => [...Object.keys(store.reminder), ...reminderReads.keys()],
+      (round) => fetchReminder(round),
+    )
 
     // #1040: project-layer trust is global state. The change event only names
     // ids, so every notification re-reads the snapshot rather than merging.
@@ -1754,6 +1926,8 @@ export const {
     })
     onResync(refreshLifecycle)
     onResync(refreshGoals)
+    onResync(refreshPrWatches)
+    onResync(refreshReminders)
     onResync(refreshTrust)
 
     // #1032 7: a global config write that leaves the instance alone reaches the TUI as `config.updated` and as
@@ -1792,6 +1966,8 @@ export const {
       dagWatches.clear()
       dagReads.clear()
       dagModeReads.clear()
+      prWatchReads.clear()
+      reminderReads.clear()
       ancillaryAttempts.clear()
       submissionAccepted.clear()
       unsubscribeStream()
@@ -1974,6 +2150,10 @@ export const {
           await result.session.sync(sessionID)
           if (disposed) return
           const rootID = routeChain.at(-1) ?? sessionID
+          // #1036 F6: the PR watches and the reminders hang off the root of the tree. The lines that show them draw
+          // without the reads, so the route does not wait for them; an event or a reconnect keeps them current after.
+          void fetchPrWatch([rootID], true)
+          void fetchReminder([rootID], true)
           await fetchDagSummaries(sessionTree(rootID), true)
           // The snapshot is for the status band and the /dag panel, which draw without it: the route does not wait.
           wantDagMode()
