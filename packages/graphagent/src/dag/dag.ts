@@ -190,9 +190,11 @@ export interface NodeConfig {
    * split node the plan came from, per item the child node that runs it, its agent
    * and whether the item's work is required (the child's own `required` also
    * depends on the block, so it is not that), and the reason when the plan was not
-   * expanded and one fallback worker took the whole task. Never authored. A
-   * recovery points `plan` and every `node` at the attempts that now count, and a
-   * replan can neither change nor clear it, as with `expand`. */
+   * expanded and one fallback worker took the whole task. Never authored. The ids
+   * in it are also the keys of the join node's `input_mapping` and the keys its
+   * prompt describes. A recovery points `plan` and every `node` at the attempts
+   * that now count, and the keys with them; a replan can neither change nor clear
+   * it, as with `expand`. */
   join?: {
     plan: string
     items: { id: string; node: string; agent: string; required: boolean }[]

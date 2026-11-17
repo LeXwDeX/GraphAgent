@@ -773,8 +773,8 @@ describe("recovering a compose node over a real Dag service", () => {
     "reads the plan of the recovered split node: the slot is pointed at it and expands instead of degrading",
     () =>
       Effect.gen(function* () {
-        // The split node failed and the run was stopped before the slot was expanded.
-        const { dag, dagID, read, expand } = yield* scenario({ split: { failed: "the model gave up" } })
+        // The split node failed and the run was stopped before the slot was expanded. The block reads `map` for itself.
+        const { dag, dagID, read, expand } = yield* scenario({ upstream: true, split: { failed: "the model gave up" } })
         const { attempt } = yield* stopAndRecover(dag, dagID, ["survey--split"])
         const splitID = attempt("survey--split")
         const slotID = attempt("survey")
@@ -793,6 +793,14 @@ describe("recovering a compose node over a real Dag service", () => {
         expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual([`${slotID}--official`, `${slotID}--code`])
         for (const entry of joinNode?.join?.items ?? []) expect(nodes.get(entry.node)?.depends_on).toEqual([splitID])
         expect(rows.find((row) => row.id === slotID)?.dependsOn).toEqual([`${slotID}--official`, `${slotID}--code`])
+        // The recovered slot is a slot of its own namespace: its expansion binds the nodes it made under their ids,
+        // beside the input the block reads for itself.
+        expect(joinNode?.input_mapping).toEqual({
+          map: "map",
+          [splitID]: splitID,
+          [`${slotID}--official`]: `${slotID}--official`,
+          [`${slotID}--code`]: `${slotID}--code`,
+        })
       }),
   )
 
@@ -810,6 +818,12 @@ describe("recovering a compose node over a real Dag service", () => {
       const joinNode = byID((yield* read).config?.nodes).get(joinID)
       expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual(["survey--official", childID])
       expect(joinNode?.depends_on).toEqual(["survey--official", childID])
+      // The keys it reads its inputs under name the same attempts, and no key is left for the one that was replaced.
+      expect(joinNode?.input_mapping).toEqual({
+        "survey--split": "survey--split",
+        "survey--official": "survey--official",
+        [childID]: childID,
+      })
 
       // The recovered child produces its result: the recovered join node finds it where the failed attempt was.
       yield* settle(dag, dagID, childID, { output: "security says" })
@@ -831,10 +845,11 @@ describe("recovering a compose node over a real Dag service", () => {
         attempt("survey--official"),
         attempt("survey--code"),
       ])
-      // Both of the children the join node now reads are rows of the current graph.
+      // Everything the join node reads is a row of the current graph, under a key of the same name.
       const current = new Set((yield* dag.store.getCurrentNodes(dagID)).map((row) => row.id))
-      for (const id of [joinNode?.join?.plan ?? "", ...(joinNode?.join?.items.map((entry) => entry.node) ?? [])])
-        expect(current.has(id), id).toBe(true)
+      const ids = [joinNode?.join?.plan ?? "", ...(joinNode?.join?.items.map((entry) => entry.node) ?? [])]
+      for (const id of ids) expect(current.has(id), id).toBe(true)
+      expect(joinNode?.input_mapping).toEqual(Object.fromEntries(ids.map((id) => [id, id])))
     }),
   )
 

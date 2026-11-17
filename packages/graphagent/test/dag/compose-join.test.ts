@@ -185,16 +185,19 @@ describe("the join node's admission check", () => {
 // Recovery
 // ---------------------------------------------------------------------------------------------------------------
 
-const surveyBlock = () =>
+/** The compose block `survey`, compiled; with `upstream`, behind a block `map` that it reads for itself. */
+const surveyBlock = (upstream = false) =>
   DagCompose.compileNodes(
     DagBlocks.compileWorkflowBlocks({
       objective: "Compare three session persistence designs",
       blocks: [
+        ...(upstream ? [new DagBlocks.WorkflowBlock({ id: "map", kind: "explore" })] : []),
         new DagBlocks.WorkflowBlock({
           id: "survey",
           kind: "compose",
           worker_type: "surveyor",
           instruction: "Compare the designs",
+          ...(upstream ? { depends_on: ["map"] } : {}),
         }),
       ],
     }),
@@ -218,8 +221,8 @@ const plan = (...ids: [string, string][]) => ({
 })
 
 /** The block the way the scheduler leaves it after expanding the slot: the split node, the children and the join node. */
-function expandedRoute(output: unknown): NodeConfig[] {
-  const nodes = surveyBlock()
+function expandedRoute(output: unknown, upstream = false): NodeConfig[] {
+  const nodes = surveyBlock(upstream)
   const slot = nodes.find((node) => node.id === "survey")
   if (!slot) throw new Error("the block compiled to no slot")
   const expansion = DagCompose.planExpansion({
@@ -252,6 +255,21 @@ const terminated = (nodes: NodeConfig[], statuses: Record<string, string>) =>
       ? row(node, statuses[node.id], statuses[node.id] === "failed" ? { errorReason: "boom" } : {})
       : row(node, "skipped", { errorReason: "workflow_failed" }),
   )
+
+/**
+ * The ids of a join record are the keys the join node reads its inputs under, each naming itself, and the prompt
+ * describes each of them. `own` are the inputs the block reads for itself, which are none of that.
+ */
+const expectInputsFollowRecord = (node: NodeConfig | undefined, own: Record<string, string> = {}) => {
+  const record = node?.join
+  if (!node || !record) throw new Error("not a join node")
+  const ids = [record.plan, ...record.items.map((entry) => entry.node)]
+  expect(node.input_mapping).toEqual({ ...own, ...Object.fromEntries(ids.map((id) => [id, id])) })
+  for (const id of ids) expect(node.prompt_template.inline, id).toContain(`\n- "${id}": `)
+  // Every line that describes a key is one of those: nothing is left describing an attempt that was replaced.
+  const described = [...(node.prompt_template.inline ?? "").matchAll(/\n- "([^"\n]*)": /g)].map((match) => match[1])
+  expect(described.sort()).toEqual([...ids].sort())
+}
 
 describe("recovering a compose node", () => {
   it("points a slot that has not been expanded at the recovered split node", () => {
@@ -301,11 +319,20 @@ describe("recovering a compose node", () => {
     ])
     // A join node never carries a slot's marker.
     expect(joinNode?.expand).toBeUndefined()
+    // The keys it reads its inputs under, and the prompt that describes them, follow the record.
+    expectInputsFollowRecord(joinNode)
+    expect(joinNode?.input_mapping).toEqual({
+      "survey--split": "survey--split",
+      "survey--official": "survey--official",
+      [codeID]: codeID,
+    })
+    expect(joinNode?.prompt_template.inline).toContain(`\n- "${codeID}": item "code", by explore; may be skipped.`)
+    expect(joinNode?.prompt_template.inline).not.toContain('\n- "survey--code": ')
     // The definition the recovery started from keeps naming the attempt it was written against.
-    expect(nodes.find((node) => node.id === "survey")?.join?.items.map((entry) => entry.node)).toEqual([
-      "survey--official",
-      "survey--code",
-    ])
+    const before = nodes.find((node) => node.id === "survey")
+    expect(before?.join?.items.map((entry) => entry.node)).toEqual(["survey--official", "survey--code"])
+    expect(before?.input_mapping).toHaveProperty("survey--code", "survey--code")
+    expect(before?.prompt_template.inline).toContain('\n- "survey--code": ')
   })
 
   it("points the join node at every recovered attempt when the split node is recovered", () => {
@@ -319,9 +346,10 @@ describe("recovering a compose node", () => {
       attempt("survey--official"),
       attempt("survey--code"),
     ])
-    // The same attempts the join node now depends on and reads by node id.
+    // The same attempts the join node now depends on and reads by node id, under keys that name them.
     expect(joinNode?.depends_on).toEqual([attempt("survey--official"), attempt("survey--code")])
-    expect(Object.values(joinNode?.input_mapping ?? {}).sort()).toEqual(
+    expectInputsFollowRecord(joinNode)
+    expect(Object.keys(joinNode?.input_mapping ?? {}).sort()).toEqual(
       [attempt("survey--split"), attempt("survey--official"), attempt("survey--code")].sort(),
     )
     // The children wait for the recovered split node, which is their only dependency.
@@ -339,6 +367,36 @@ describe("recovering a compose node", () => {
     expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual(["survey--fallback__attempt_2_r2"])
     expect(joinNode?.join?.degraded).toBe("the plan has no items")
     expect(joinNode?.join?.plan).toBe("survey--split")
+    expectInputsFollowRecord(joinNode)
+    expect(joinNode?.prompt_template.inline).toContain('\n- "survey--fallback__attempt_2_r2": the whole task, by ')
+  })
+
+  it("keeps the name of an input the block reads for itself, and follows its source", () => {
+    // `map` is the block's own input: its key is the block's word for it, not a node id of the expansion.
+    const nodes = expandedRoute(plan(["official", "researcher"], ["code", "explore"]), true)
+    const rows = terminated(nodes, { map: "completed", "survey--split": "completed", "survey--official": "completed" })
+    const recovered = planRecovery(config(nodes), rows, ["map"], 2, 3)
+    const joinNode = recovered.config.nodes.find((node) => node.recovery?.logical_node_id === "survey")
+    const attempt = (id: string) => `${id}__attempt_2_r2`
+    expectInputsFollowRecord(joinNode, { map: attempt("map") })
+    expect(joinNode?.join?.plan).toBe(attempt("survey--split"))
+    expect(joinNode?.depends_on).toEqual([attempt("survey--official"), attempt("survey--code")])
+  })
+
+  it("keeps a join node that no recovered node touches as it is, keys and prompt included", () => {
+    const nodes = expandedRoute(plan(["official", "researcher"], ["code", "explore"]))
+    const rows = terminated(nodes, {
+      "survey--split": "completed",
+      "survey--official": "completed",
+      "survey--code": "completed",
+      survey: "completed",
+      report: "failed",
+    })
+    const recovered = planRecovery(config(nodes), rows, ["report"], 2, 3)
+    expect(recovered.superseded).toEqual(["report"])
+    expect(recovered.config.nodes.find((node) => node.id === "survey")).toEqual(
+      nodes.find((node) => node.id === "survey"),
+    )
   })
 
   it("keeps pointing the join node at the right attempts through a second recovery", () => {
@@ -366,6 +424,9 @@ describe("recovering a compose node", () => {
     const joinNode = second.config.nodes.find((node) => node.recovery?.attempt === 3 && node.join !== undefined)
     expect(joinNode?.join?.items.map((entry) => entry.node)).toEqual(["survey--official", "survey--code__attempt_3_r3"])
     expect(joinNode?.depends_on).toEqual(["survey--official", "survey--code__attempt_3_r3"])
+    // The keys follow the record again, and nothing of the first recovery is left in them or in the prompt.
+    expectInputsFollowRecord(joinNode)
+    expect(joinNode?.prompt_template.inline).not.toContain("survey--code__attempt_2_r2")
   })
 })
 
