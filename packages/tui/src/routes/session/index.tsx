@@ -73,7 +73,6 @@ import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
 import { childSessions, nextSibling, siblingSessions } from "../../session/siblings"
-import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -1662,9 +1661,6 @@ export function Main() {
                   />
                 </Show>
               </scrollbox>
-              <Show when={session()?.parentID}>
-                <SubagentFooter />
-              </Show>
             </Show>
           </box>
         </box>

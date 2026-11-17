@@ -87,7 +87,8 @@ test("a sub-agent view and the home route show no indicator", async () => {
     args: { sessionID: childID },
   })
   try {
-    const frame = await waitForFrame(child.setup, (value) => footerRow(value).includes("build"), "the footer agent")
+    // The footer of a sub-agent view carries its read-only notice where the agent name is on the other routes.
+    const frame = await waitForFrame(child.setup, (value) => footerRow(value).includes("只读"), "the sub-agent footer")
     await Bun.sleep(100)
     await child.setup.renderOnce()
     expect(footerRow(await captureFrame(child.setup))).not.toContain("DAG")

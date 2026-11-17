@@ -107,6 +107,22 @@ describe("mergeStatus", () => {
     expect(next.current).toEqual({ tool: "task", title: "t" })
     expect(next.status).toBe("idle")
   })
+
+  test("a new run drops the error of the previous one; a run already under way keeps it", () => {
+    const failed = { ...mergeStatus(createSummary(session), "ses_a", { type: "busy" }), error: "boom" }
+    const stopped = mergeStatus(failed, "ses_a", { type: "idle" })
+    expect(stopped).toMatchObject({ status: "idle", error: "boom" })
+
+    const rerun = mergeStatus(stopped, "ses_a", { type: "busy" })
+    expect(rerun.status).toBe("busy")
+    expect(rerun.error).toBeUndefined()
+    expect(mergeStatus(rerun, "ses_a", { type: "idle" }).error).toBeUndefined()
+
+    // A retry inside the same run, or a repeated busy, does not start a new run.
+    const retrying = mergeStatus(failed, "ses_a", { type: "retry", attempt: 1, message: "again", next: 0 })
+    expect(retrying.error).toBe("boom")
+    expect(mergeStatus(failed, "ses_a", { type: "busy" }).error).toBe("boom")
+  })
 })
 
 describe("mergeToolPart", () => {

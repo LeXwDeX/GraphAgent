@@ -48,8 +48,8 @@ test("a sub-agent session deleted on screen returns the user to its parent sessi
     args: { sessionID: childID },
   })
   try {
-    // The sub-agent view has no prompt; its own footer names the agent.
-    const child = await waitForFrame(app.setup, (frame) => frame.includes("Subagent"), "the sub-agent view")
+    // The sub-agent view has no prompt; its footer says it is read-only.
+    const child = await waitForFrame(app.setup, (frame) => frame.includes("只读"), "the sub-agent view")
     expect(child).not.toContain(PROMPT_MARK)
 
     app.events.emit(deleted(childID, rootID))
@@ -75,7 +75,7 @@ test("a sub-agent session deleted on screen says so in English too", async () =>
     handler: (url) => (url.pathname === "/config" ? json({ language: "en" }) : undefined),
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("Subagent"), "the sub-agent view")
+    await waitForFrame(app.setup, (frame) => frame.includes("read-only"), "the sub-agent view")
     app.events.emit(deleted(childID, rootID))
     const parent = await waitForFrame(
       app.setup,
