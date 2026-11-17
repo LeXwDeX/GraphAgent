@@ -70,6 +70,15 @@ describe("configuredLanguage", () => {
     expect(configuredLanguage({ GRAPHAGENT_TEST_CONFIG_DIR: dir, GRAPHAGENT_CONFIG_CONTENT: config("en") })).toBe("en")
   })
 
+  test("expands {env:} and {file:} substitutions like the config loader", async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), "graphagent-language-"))
+    await writeFile(path.join(dir, "graphagent.json"), JSON.stringify({ language: "{env:UI_LANGUAGE}" }))
+    expect(configuredLanguage({ GRAPHAGENT_TEST_CONFIG_DIR: dir, UI_LANGUAGE: "zh-CN" })).toBe("zh-CN")
+    await writeFile(path.join(dir, "language.txt"), "en\n")
+    await writeFile(path.join(dir, "graphagent.jsonc"), JSON.stringify({ language: "{file:language.txt}" }))
+    expect(configuredLanguage({ GRAPHAGENT_TEST_CONFIG_DIR: dir, UI_LANGUAGE: "zh-CN" })).toBe("en")
+  })
+
   test("ignores malformed files and missing keys", async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), "graphagent-language-"))
     await writeFile(path.join(dir, "graphagent.json"), "{ not json")

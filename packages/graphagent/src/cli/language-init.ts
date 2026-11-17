@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { readFileSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { parse } from "jsonc-parser"
 import { xdgConfig } from "xdg-basedir"
@@ -15,11 +16,24 @@ import { initLanguage } from "@graphagent/tui/i18n"
 
 type Environment = Record<string, string | undefined>
 
-function languageOf(text: string | undefined): string | undefined {
+/**
+ * Apply the config loader's `{env:VAR}` and `{file:path}` substitutions
+ * (`ConfigVariable.substitute`) to the language value, synchronously. A
+ * missing file yields an empty value, which the language resolver ignores.
+ */
+function substitute(value: string, env: Environment, dir: string): string {
+  const expanded = value.replace(/\{env:([^}]+)\}/g, (_, name: string) => env[name] || "")
+  return expanded.replace(/\{file:([^}]+)\}/g, (_, target: string) => {
+    const file = target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target
+    return readFile(path.isAbsolute(file) ? file : path.resolve(dir, file))?.trim() ?? ""
+  })
+}
+
+function languageOf(text: string | undefined, env: Environment, dir: string): string | undefined {
   if (!text) return undefined
   const value: unknown = parse(text, [], { allowTrailingComma: true })
   if (!value || typeof value !== "object" || Array.isArray(value) || !("language" in value)) return undefined
-  return typeof value.language === "string" ? value.language : undefined
+  return typeof value.language === "string" ? substitute(value.language, env, dir) : undefined
 }
 
 function readFile(file: string): string | undefined {
@@ -58,13 +72,13 @@ export function configuredLanguage(env: Environment = process.env): string | und
   let result: string | undefined
   for (const file of files) {
     try {
-      result = languageOf(readFile(file)) ?? result
+      result = languageOf(readFile(file), env, path.dirname(file)) ?? result
     } catch {
       // An unreadable or malformed file is reported by the real config loader.
     }
   }
   try {
-    result = languageOf(env.GRAPHAGENT_CONFIG_CONTENT) ?? result
+    result = languageOf(env.GRAPHAGENT_CONFIG_CONTENT, env, process.cwd()) ?? result
   } catch {}
   return result
 }
