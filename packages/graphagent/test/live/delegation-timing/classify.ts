@@ -364,16 +364,26 @@ function readGroup(command: string, start: number): { text: string; end: number 
 const worst = (a: ShellKind, b: ShellKind): ShellKind =>
   a === "edit" || b === "edit" ? "edit" : a === "exec" || b === "exec" ? "exec" : "read"
 
+/**
+ * Git options that run a program: configuration on the command line (any key can name a helper, a
+ * pager or an editor), the exec path, the pager, external diff and textconv drivers, and the remote
+ * pack programs. A read-only form never needs them, so their presence alone makes the call an execution.
+ */
+const GIT_GLOBAL_EXEC = /^(-c.*|--config-env(=.*)?|--exec-path(=.*)?|-p|--paginate)$/
+const GIT_EXEC_OPTION = /^--(ext-diff|textconv|upload-pack(=.*)?|receive-pack(=.*)?|exec(=.*)?|config(=.*)?)$/
+
 function gitKind(args: readonly string[]): ShellKind {
   const rest = [...args]
   while (rest.length > 0) {
     const option = rest[0] ?? ""
-    if (option === "-C" || option === "-c") rest.splice(0, 2)
+    if (GIT_GLOBAL_EXEC.test(option)) return "exec"
+    if (option === "-C") rest.splice(0, 2)
     else if (option.startsWith("-")) rest.shift()
     else break
   }
   const sub = rest.shift()
   if (sub === undefined) return "read"
+  if (rest.some((arg) => GIT_EXEC_OPTION.test(arg))) return "exec"
   // `diff`, `show`, `log` and others can write their output to a file instead of stdout.
   if (rest.some((arg) => /^--output(-directory)?(=|$)/.test(arg))) return "edit"
   if (GIT_READ.has(sub)) return "read"
@@ -405,16 +415,21 @@ function gitKind(args: readonly string[]): ShellKind {
 
 function wordsKind(words: readonly string[]): ShellKind {
   const rest = [...words]
-  // Leading environment assignments and transparent wrappers do not change what runs.
+  // Transparent wrappers do not change what runs. Leading environment assignments do: they can point
+  // the command at another program (GIT_EXTERNAL_DIFF, PAGER, LD_PRELOAD, ...).
+  let assigns = false
   while (
     rest.length > 0 &&
     (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? "") ||
       ["time", "command", "builtin"].includes(rest[0] ?? "") ||
       CONTROL_PREFIX.has(rest[0] ?? ""))
-  )
+  ) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? "")) assigns = true
     rest.shift()
+  }
   const head = rest.shift()
   if (head === undefined || CONTROL_WORDS.has(head)) return "read"
+  if (assigns) return "exec"
   const name = head.split("/").at(-1) ?? head
   // `tool --version` and `tool --help` only print.
   if (rest.length > 0 && rest.every((arg) => /^(--version|-v|-V|--help|-h)$/.test(arg))) return "read"

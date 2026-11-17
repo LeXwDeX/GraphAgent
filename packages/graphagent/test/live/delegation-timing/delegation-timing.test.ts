@@ -569,6 +569,14 @@ describe("a read-only shell call stays in the workspace", () => {
       "awk '{ while ((getline line < \"/etc/passwd\") > 0) print line }' README.md",
       "awk '{print > \"out.txt\"}' README.md",
       "rg --pre cat token src",
+      `git -c 'diff.external=sh -c "touch /tmp/probe"' diff --ext-diff HEAD~1 HEAD`,
+      "git -c core.pager=cat log",
+      "git --config-env=core.pager=X log",
+      "git -p log",
+      "git diff --ext-diff HEAD~1",
+      "git log -p --textconv",
+      "GIT_EXTERNAL_DIFF=./x.sh git diff HEAD~1",
+      "PAGER=./x git log",
     ]) {
       expect(classifyShell(command), command).toBe("exec")
     }
