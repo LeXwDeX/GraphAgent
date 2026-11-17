@@ -151,7 +151,7 @@ detect_asset() {
                 arm64|aarch64) echo "opencode-darwin-arm64.zip" ;;
                 *) die "不支持的 macOS 架构：$arch（fork 当前仅发布 darwin-arm64）" ;;
             esac ;;
-        MINGW*|MSYS*|CYGWIN*) die "不再提供 Windows 原生版本：请安装 WSL，在 WSL 中按 Linux 方式安装" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "opencode-windows-x64.zip" ;;
         *) die "未知操作系统：$os" ;;
     esac
 }
@@ -243,6 +243,7 @@ asset_hash_key() {
     case "$(detect_asset)" in
         opencode-linux-x64.tar.gz)   echo "SHA256_LINUX_X64" ;;
         opencode-darwin-arm64.zip)   echo "SHA256_DARWIN_ARM64" ;;
+        opencode-windows-x64.zip)    echo "SHA256_WINDOWS_X64" ;;
     esac
 }
 
