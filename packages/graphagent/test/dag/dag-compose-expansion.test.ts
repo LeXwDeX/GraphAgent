@@ -12,6 +12,7 @@ import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
@@ -32,6 +33,7 @@ const testLayer = Layer.mergeAll(
   DagProjector.defaultLayer,
   DagStore.defaultLayer,
   EventV2Bridge.defaultLayer,
+  DagTransact.defaultLayer,
 )
 const dagLayer = Layer.provideMerge(Dag.layer, testLayer)
 const it = testEffect(dagLayer)

@@ -33,6 +33,7 @@ import { awaitWithTimeout as awaitUntil, it, pollWithTimeout as pollUntil } from
 import { withIdleAdmission } from "../lib/session-prompt"
 import { stubChildren } from "../lib/child-runs"
 import { agent, agents, catalog, compose } from "./compose-fixtures"
+import { transactLayer } from "./fixture/transact"
 
 // Every wait returns as soon as its state is reached, so the bound only decides how long a real failure takes to report.
 const STALL_TOLERANCE = "20 seconds"
@@ -72,7 +73,7 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, harness: Harness) {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const titles = new Map<string, string>()
   let created = 0
