@@ -269,6 +269,29 @@ describe("compiling a compose block into a split node and an expansion slot", ()
     expect(DagCompose.gate(result.nodes)).toEqual([])
   })
 
+  it("refuses an input alias in the namespace the expansion binds its own nodes under", () => {
+    // The join node reads the split node and each child under its id; an authored `survey--code` would be overwritten
+    // by the child of item `code`, and the split and the join would read the same name as different inputs.
+    const node: NodeConfig = {
+      id: "survey",
+      name: "survey",
+      worker_type: "surveyor",
+      depends_on: ["map"],
+      input_mapping: { "survey--code": "map" },
+      prompt_template: { inline: "Compare the designs in {{survey--code}}" },
+    }
+    const result = DagCompose.compileNodes([node], catalog(), limits)
+    expect(result.nodes).toEqual([node])
+    expect(result.problems).toEqual([
+      expect.objectContaining({
+        node: "survey",
+        path: "nodes[survey].input_mapping",
+        message: expect.stringContaining('input alias "survey--code" is reserved'),
+      }),
+    ])
+    expect(DagCompose.reservedAlias("survey", { map: "map", "survey-code": "x" })).toBeUndefined()
+  })
+
   it("compiles two compose blocks side by side", () => {
     const { nodes } = compile([
       { ...survey, id: "one" },

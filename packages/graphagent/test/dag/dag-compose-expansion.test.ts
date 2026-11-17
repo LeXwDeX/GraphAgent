@@ -109,6 +109,8 @@ interface Setup {
   readonly survey?: Parameters<typeof route>[0]
   readonly agents?: DagCompose.CatalogAgent[]
   readonly globalDag?: Record<string, unknown>
+  /** Changes the slot the scheduler hands to the expansion, as a replan of the pending slot could. */
+  readonly patchSlot?: (slot: NodeConfig) => NodeConfig
   /** Nodes of the author's own, beside the block. */
   readonly extraNodes?: NodeConfig[]
   /** How the split node settles: the plan it completed with, or a failure. */
@@ -159,7 +161,7 @@ const scenario = (setup: Setup) =>
           port,
           agents: { list: () => Effect.succeed((setup.agents ?? agents()) as never) },
           dagID,
-          slot,
+          slot: setup.patchSlot ? setup.patchSlot(slot) : slot,
           nodes: rows,
           attempt: { replanAttempts: row.replanAttempts, nodeSeq: row.seq, graphRev: workflow.graphRev },
         }).pipe(
@@ -555,6 +557,24 @@ describe("a fallback id another node already holds", () => {
       expect(row?.errorReason).toContain('"survey--fallback" already exists')
       expect(rows).toHaveLength(4)
       expect(byID(config?.nodes).get("survey--fallback")?.name).toBe("unrelated")
+    }),
+  )
+})
+
+describe("an input alias in the expansion's namespace", () => {
+  it.live("fails the slot rather than let the expansion overwrite the authored binding", () =>
+    Effect.gen(function* () {
+      const { read, expand } = yield* scenario({
+        upstream: true,
+        patchSlot: (slot) => ({ ...slot, input_mapping: { ...slot.input_mapping, "survey--code": "map" } }),
+        split: { plan: plan([item("code", "explore")]) },
+      })
+      yield* expand()
+      const { row, rows, config } = yield* read
+      expect(row?.status).toBe("failed")
+      expect(row?.errorReason).toContain('input alias "survey--code" is reserved')
+      expect(rows.map((candidate) => candidate.id)).not.toContain("survey--code")
+      expect(byID(config?.nodes).get("survey")?.expand).toBe("survey--split")
     }),
   )
 })

@@ -439,6 +439,17 @@ export function splitID(slotID: string): string {
 }
 
 /**
+ * The first input alias of the slot `slotID` that falls in the namespace its
+ * expansion writes into: the split node, every child and the fallback are
+ * `<slotID>--…`, and the join node reads each of them under its own id. An authored
+ * alias there would be overwritten by the expansion's binding, and the split and the
+ * join would read the same name as different inputs.
+ */
+export function reservedAlias(slotID: string, mapping: NodeConfig["input_mapping"]): string | undefined {
+  return Object.keys(mapping ?? {}).find((alias) => alias.startsWith(`${slotID}--`))
+}
+
+/**
  * A node that expands: a compose block's node, or a hand-written node whose worker
  * is a composer. A block of another kind that names a composer as its worker
  * override is not one: that is an ordinary worker choice, and `compose` is the block
@@ -510,6 +521,16 @@ function checkNode(node: NodeConfig, catalog: Catalog): { composer: Composer } |
       `composer "${node.worker_type}" cannot carry ${node.fan_out !== undefined ? "fan_out" : "review"}: it plans read-only work`,
       "Remove the field; fan_out belongs to a coding writer and review to a review worker",
     )
+  const alias = reservedAlias(node.id, node.input_mapping)
+  if (alias !== undefined)
+    return {
+      problem: {
+        node: node.id,
+        path: block ? `config.blocks[${node.id}].input_mapping` : `nodes[${node.id}].input_mapping`,
+        message: `${subject}: input alias "${alias}" is reserved: the expansion binds the split node and its children under "${node.id}--…"`,
+        hint: `Rename the alias (and its placeholder) so that it does not start with "${node.id}--"`,
+      },
+    }
   return { composer: resolution.composer }
 }
 

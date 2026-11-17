@@ -76,6 +76,14 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     return
   }
 
+  // Validation keeps authored aliases out of the expansion's namespace; a replan could still write one in.
+  const alias = DagCompose.reservedAlias(slot.id, slot.input_mapping)
+  if (alias !== undefined) {
+    yield* giveUp(
+      `Compose expansion failed: input alias "${alias}" is reserved for the nodes the expansion binds under "${slot.id}--…"`,
+    )
+    return
+  }
   const existingNodeIDs = new Set(nodes.map((candidate) => candidate.id))
   // `Dag.extend` replaces a pending node and keeps a terminal one, so a fallback id some other node already holds
   // would either overwrite that node's work or let the join read its result as the fallback's. Fail instead.
