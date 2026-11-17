@@ -314,7 +314,7 @@ describe("DagConfig.tierOf", () => {
     ["a plan block", "plan", "advanced"],
     ["a prototype writer", "experiment", "standard"],
     ["a debug block's evidence node", "bug--evidence", "standard"],
-    ["a debug block's diagnosis", "bug", "standard"],
+    ["a debug block's diagnosis", "bug", "advanced"],
     ["a coding writer", "build", "standard"],
     ["a verify block", "check", "advanced"],
     ["a review lane", "gate--standards", "advanced"],

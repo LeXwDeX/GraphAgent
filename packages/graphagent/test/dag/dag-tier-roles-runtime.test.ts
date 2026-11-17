@@ -284,43 +284,45 @@ describe("DagLoop model tiers follow the node role", () => {
     ),
   )
 
-  it.live("splits a debug block and a writer fan-out by role too: helpers and package writers stay standard", () =>
-    runLoopTest(({ dag, loop, store, records }) =>
-      Effect.gen(function* () {
-        yield* loop.init()
-        const nodes = compile([
-          { id: "plan", kind: "plan" },
-          { id: "bug", kind: "debug", depends_on: ["plan"] },
-          { id: "slices", kind: "coding", depends_on: ["bug", "plan"], fan_out: "plan" },
-        ])
-        const dagID = yield* start(dag, nodes)
-        const models = new Map<string, unknown>()
-        const next = (message: string) =>
-          awaitWithTimeout(Queue.take(records), message).pipe(
-            Effect.tap((record) => Effect.sync(() => models.set(record.title, record.model))),
-          )
-        const planned = yield* next("the plan did not start")
-        yield* Deferred.succeed(planned.release, plan(pkg("api", ["src/api"]), pkg("ui", ["src/ui"])))
-        const evidence = yield* next("the debug evidence did not start")
-        yield* Deferred.succeed(evidence.release, "evidence")
-        const diagnosis = yield* next("the diagnosis did not start")
-        yield* Deferred.succeed(diagnosis.release, "root cause")
-        const writers = yield* Effect.forEach(Array.from({ length: 2 }), () => next("a package writer did not start"))
-        for (const writer of writers) yield* Deferred.succeed(writer.release, implemented)
-        const aggregate = yield* next("the aggregator did not start")
-        yield* Deferred.succeed(aggregate.release, implemented)
-        yield* settled(store, dagID, "completed", "the workflow did not complete")
+  it.live(
+    "splits a debug block and a writer fan-out by role too: the diagnosis judges (advanced), helpers and package writers stay standard",
+    () =>
+      runLoopTest(({ dag, loop, store, records }) =>
+        Effect.gen(function* () {
+          yield* loop.init()
+          const nodes = compile([
+            { id: "plan", kind: "plan" },
+            { id: "bug", kind: "debug", depends_on: ["plan"] },
+            { id: "slices", kind: "coding", depends_on: ["bug", "plan"], fan_out: "plan" },
+          ])
+          const dagID = yield* start(dag, nodes)
+          const models = new Map<string, unknown>()
+          const next = (message: string) =>
+            awaitWithTimeout(Queue.take(records), message).pipe(
+              Effect.tap((record) => Effect.sync(() => models.set(record.title, record.model))),
+            )
+          const planned = yield* next("the plan did not start")
+          yield* Deferred.succeed(planned.release, plan(pkg("api", ["src/api"]), pkg("ui", ["src/ui"])))
+          const evidence = yield* next("the debug evidence did not start")
+          yield* Deferred.succeed(evidence.release, "evidence")
+          const diagnosis = yield* next("the diagnosis did not start")
+          yield* Deferred.succeed(diagnosis.release, "root cause")
+          const writers = yield* Effect.forEach(Array.from({ length: 2 }), () => next("a package writer did not start"))
+          for (const writer of writers) yield* Deferred.succeed(writer.release, implemented)
+          const aggregate = yield* next("the aggregator did not start")
+          yield* Deferred.succeed(aggregate.release, implemented)
+          yield* settled(store, dagID, "completed", "the workflow did not complete")
 
-        expect(Object.fromEntries(models)).toEqual({
-          "plan: plan": ADVANCED,
-          "bug: reproduce and collect evidence": STANDARD,
-          "bug: diagnose root cause": STANDARD,
-          "slices: coding [api]": STANDARD,
-          "slices: coding [ui]": STANDARD,
-          "slices: coding: aggregate fan-out writers": STANDARD,
-        })
-      }),
-    ),
+          expect(Object.fromEntries(models)).toEqual({
+            "plan: plan": ADVANCED,
+            "bug: reproduce and collect evidence": STANDARD,
+            "bug: diagnose root cause": ADVANCED,
+            "slices: coding [api]": STANDARD,
+            "slices: coding [ui]": STANDARD,
+            "slices: coding: aggregate fan-out writers": STANDARD,
+          })
+        }),
+      ),
   )
 
   // The children of an expansion carry no marker of their own: the join node that waits for them is what says they

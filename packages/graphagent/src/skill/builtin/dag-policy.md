@@ -8,7 +8,7 @@ dag-blocks, and skill dag-nodes.
 
 Tier placement is mechanical, by role: `plan`, `verify`, `synthesize`, review
 blocks and `review`/`review-*` workers prefer the advanced tier of the `dag`
-section in `settings.json`; writers, `explore` and `debug` prefer standard; a
+section in `settings.json`; writers, `explore` and debug evidence prefer standard; a
 node without a block follows `required`. Set `required` according to whether
 execution failure should stop the workflow. Either tier's claims need evidence.
 

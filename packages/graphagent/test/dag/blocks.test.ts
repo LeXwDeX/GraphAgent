@@ -618,7 +618,7 @@ describe("workflow blocks", () => {
   })
 
   // #1158 PR4a: the tier follows the block's role, not its required flag. Writers are required by default (D9) and
-  // still run on the standard tier; the debug block and the writers' aggregator are standard-tier work as well.
+  // still run on the standard tier; a debug block's evidence node and the writers' aggregator are standard-tier work as well, its diagnosis judges.
   it("routes writers and exploration to the standard tier and judging blocks to the advanced tier", () => {
     const nodes = DagBlocks.compileWorkflowBlocks({
       objective: "Deliver a reviewed project change",
@@ -648,7 +648,7 @@ describe("workflow blocks", () => {
       plan: "advanced",
       experiment: "standard",
       "diagnose--evidence": "standard",
-      diagnose: "standard",
+      diagnose: "advanced",
       build: "standard",
       "decision--aggregate": "standard",
       verify: "advanced",

@@ -39,15 +39,16 @@ export interface TierNode {
 
 /**
  * The tier a block kind runs on. Judging and accepting work (a plan, a
- * verification, a synthesis, a review lane or decision) and the composer take
- * the advanced tier; writing and exploring take the standard one. A `Record`
+ * verification, a synthesis, a review lane or decision, a debug block's root-cause
+ * diagnosis) and the composer take the advanced tier; writing and exploring take
+ * the standard one (a debug block's evidence node is a generated helper). A `Record`
  * over every kind, so a new block kind must be placed here.
  */
 const BLOCK_TIER: Record<WorkflowBlockKind, Tier> = {
   explore: "standard",
   plan: "advanced",
   prototype: "standard",
-  debug: "standard",
+  debug: "advanced",
   coding: "standard",
   verify: "advanced",
   review: "advanced",
@@ -71,8 +72,8 @@ export function isComposeChild(graph: TierNode["graph"], nodeID: string): boolea
  * 2. A composer's split node, expansion slot and join node (`generated_helper: "split"`, `expand`, `join`) are advanced.
  * 3. A generated helper (the writers' aggregator, a debug block's evidence node) only reconciles or collects: standard.
  * 4. A block-compiled node follows its block kind (`BLOCK_TIER`): `plan`, `verify`, `synthesize`, `review` and
- *    `compose` advanced; `coding`, `prototype` (fan-out package writers keep their block), `explore` and `debug`
- *    standard.
+ *    `compose` advanced, and `debug` (its diagnosis; its evidence node is a helper, above); `coding`, `prototype`
+ *    (fan-out package writers keep their block) and `explore` standard.
  * 5. A child of an expansion is standard.
  * 6. Any other node has no role (a hand-written one) and keeps the older rule: `required` takes the advanced tier.
  */
