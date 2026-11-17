@@ -22,19 +22,22 @@
  *     id explicitly, so a test passes `runner.identity.id` (and a `now` from the
  *     TestClock) per side. Code that reads the process singleton instead runs
  *     inside `withEngineRunner(identity, effect)`.
- *   - Stall / zombie: `runner.hold(...)` parks every matching durable publish of
- *     ONE runner until released. The hold sits in front of the bus, so the
- *     runner stops BEFORE the publish opens its transaction. A held
- *     `NodeStarted` is exactly a publisher that passed its `guardNode` read and
- *     froze before its publish, the window that the in-process workflow lock
- *     cannot close across processes. Only publishes that are not inside a
- *     `DagMessages` fence can be held: with `mailbox` on, completing or failing a
- *     running node and cancel/complete/fail/replan/extend/recover publish inside
- *     an open IMMEDIATE transaction, and parking one there would keep SQLite's
- *     write lock and block the other runner's connection on the single JS thread
- *     (until its 5 s busy timeout). A hold that would do so dies with an error
- *     instead. `freeze()` parks everything, so arm it only once the runner's own
- *     fibers have nothing left to write.
+ *   - Stall / zombie: `runner.hold(...)` parks every matching durable write of
+ *     ONE runner until released. Every `Dag` command runs in one IMMEDIATE
+ *     transaction (`DagTransact`, ADR-0008 decision 3), and parking inside it
+ *     would keep SQLite's write lock and block the other runner's connection on
+ *     the single JS thread (until its 5 s busy timeout). So the hold sits at the
+ *     command entry, ahead of the in-process workflow lock and of the
+ *     transaction: it matches the event the command publishes (`dag.node.started`
+ *     for `nodeStarted`) and parks the call. That is a writer which decided to
+ *     write and then stalled, and which, once released, runs its guard against
+ *     whatever the other runner did meanwhile. A write window between a guard
+ *     read and its publish no longer exists to be modeled: they share the
+ *     transaction. Publishes that are not Dag commands (the session events, and
+ *     `Dag.create`'s batch) are held in front of the bus; one that would park
+ *     inside an open transaction dies with an error instead. `freeze()` parks
+ *     everything, so arm it only once the runner's own fibers have nothing left
+ *     to write.
  *   - Time: the fixture adds no delays of its own. Run the test under TestClock
  *     (`testEffect(...).effect` or `Effect.provide(TestClock.layer())`) and
  *     `TestClock.adjust` moves both runners' clocks together, a wall-clock jump
@@ -59,9 +62,11 @@ import * as path from "node:path"
 import { asc, eq } from "drizzle-orm"
 import { Context, Deferred, Effect, Exit, Layer, Option, Queue, Scope } from "effect"
 import { Database } from "@graphagent/core/database/database"
+import { DagLease } from "@graphagent/core/dag/lease"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { EventV2 } from "@graphagent/core/event"
 import { EventTable } from "@graphagent/core/event/sql"
 import { Project } from "@graphagent/core/project"
@@ -147,7 +152,7 @@ export interface PromptGate {
   readonly release: Deferred.Deferred<string>
 }
 
-/** The publish a hold is looking at. */
+/** The write a hold is looking at: a publish, or the event a `Dag` command is about to publish. */
 export interface PublishView {
   readonly type: string
   readonly data: unknown
@@ -275,7 +280,7 @@ function transcript(sessionID: string, state: ChildState, text = ""): SessionV1.
 }
 
 interface Gate {
-  /** Park the publish when a hold matches it; `inTransaction` tells whether it runs inside an open SQLite transaction. */
+  /** Park the write when a hold matches it; `inTransaction` tells whether it runs inside an open SQLite transaction. */
   readonly before: (publish: PublishView, inTransaction: Effect.Effect<boolean>) => Effect.Effect<void>
   readonly hold: Runner["hold"]
 }
@@ -297,7 +302,7 @@ function makeGate(): Gate {
         if (yield* inTransaction)
           yield* Effect.die(
             new Error(
-              `a hold on ${publish.type} would park inside an open SQLite transaction (a DagMessages fence) and keep its write lock; hold before the command instead`,
+              `a hold on ${publish.type} would park inside an open SQLite transaction (a DagTransact or DagMessages transaction) and keep its write lock; hold before the command instead`,
             ),
           )
         if (held.once) held.spent = true
@@ -323,6 +328,57 @@ function makeGate(): Gate {
         }
       }),
   }
+}
+
+/**
+ * The runner's Dag with the stall point at the command entry, ahead of the
+ * workflow lock and of the command's transaction (see the module comment). A
+ * hold matches the event the command publishes first (`dag.node.started` for
+ * `nodeStarted`); `data` carries the command's arguments.
+ */
+function gatedDag(gate: Gate) {
+  return Layer.effect(
+    Dag.Service,
+    Effect.gen(function* () {
+      const real = yield* Dag.Service
+      const { db } = yield* Database.Service
+      const inTransaction = Effect.serviceOption(db.$client.transactionService).pipe(Effect.map(Option.isSome))
+      const held =
+        <Args extends ReadonlyArray<unknown>, A, E, R>(type: string, run: (...args: Args) => Effect.Effect<A, E, R>) =>
+        (...args: Args): Effect.Effect<A, E, R> =>
+          gate
+            .before({ type, data: { dagID: args[0], args } }, inTransaction)
+            .pipe(Effect.andThen(Effect.suspend(() => run(...args))))
+      return Dag.Service.of({
+        ...real,
+        pause: held("dag.workflow.paused", real.pause),
+        pauseForBudget: held("dag.workflow.paused", real.pauseForBudget),
+        pauseForCheckpoint: held("dag.workflow.paused", real.pauseForCheckpoint),
+        resume: held("dag.workflow.resumed", real.resume),
+        step: held("dag.workflow.stepped", real.step),
+        cancel: held("dag.workflow.cancelled", real.cancel),
+        complete: held("dag.workflow.completed", real.complete),
+        fail: held("dag.workflow.failed", real.fail),
+        failUnrecoverable: held("dag.workflow.failed", real.failUnrecoverable),
+        settleCompletion: held("dag.workflow.completed", real.settleCompletion),
+        replan: held("dag.workflow.replanned", real.replan),
+        extend: held("dag.workflow.replanned", real.extend),
+        recover: held("dag.workflow.replanned", real.recover),
+        retarget: held("dag.workflow.replanned", real.retarget),
+        requeueNodes: held("dag.node.requeued", real.requeueNodes),
+        nodeQueued: held("dag.node.queued", real.nodeQueued),
+        nodeStarted: held("dag.node.started", real.nodeStarted),
+        nodeCompleted: held("dag.node.completed", real.nodeCompleted),
+        nodeFailed: held("dag.node.failed", real.nodeFailed),
+        nodeSkipped: held("dag.node.skipped", real.nodeSkipped),
+        nodeCancelled: held("dag.node.cancelled", real.nodeCancelled),
+        nodeRestarted: held("dag.node.restarted", real.nodeRestarted),
+        nodeTimeoutEscalated: held("dag.node.timeout_escalated", real.nodeTimeoutEscalated),
+        nodeExtendTimeout: held("dag.node.deadline_extended", real.nodeExtendTimeout),
+        extendTimeout: held("dag.node.deadline_extended", real.extendTimeout),
+      })
+    }),
+  )
 }
 
 /** The runner's bridge with the stall point in front of every durable publish. */
@@ -392,7 +448,15 @@ function runnerGraph(input: GraphInput) {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const messages = input.mailbox ? DagMessages.layer.pipe(Layer.provide(database)) : Layer.empty
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(messages))
+  // The lease primitives and the write fence the commands run in, on this runner's own connection.
+  const lease = DagLease.layer.pipe(Layer.provide(database))
+  const transact = DagTransact.layer.pipe(Layer.provide(Layer.merge(database, lease)))
+  const dag = gatedDag(input.gate).pipe(
+    Layer.provide(
+      Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(messages), Layer.provide(transact)),
+    ),
+    Layer.provide(database),
+  )
   // As in production the shared inbox is part of the graph the loop is built in.
   const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const base = Layer.mergeAll(
@@ -402,6 +466,8 @@ function runnerGraph(input: GraphInput) {
     store,
     projector,
     messages,
+    lease,
+    transact,
     dag,
     status,
     AgentScheduler.defaultLayer,
