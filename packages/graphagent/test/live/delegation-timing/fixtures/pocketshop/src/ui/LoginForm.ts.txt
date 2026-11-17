@@ -1,0 +1,28 @@
+import { renderButton } from "./Button"
+import { theme } from "./theme"
+
+export interface LoginFormValues {
+  email: string
+  password: string
+}
+
+export function renderLoginForm(): string {
+  return [
+    `<form class="login" style="color:${theme.text}">`,
+    '  <input name="email" type="email" placeholder="Email" />',
+    '  <input name="password" type="password" placeholder="Password" />',
+    `  ${renderButton("sign in", "primary")}`,
+    "</form>",
+  ].join("\n")
+}
+
+export async function submitLogin(values: LoginFormValues): Promise<string> {
+  const response = await fetch("/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: values.email, password: values.password }),
+  })
+  if (!response.ok) throw new Error("login failed")
+  const body = (await response.json()) as { session: string }
+  return body.session
+}

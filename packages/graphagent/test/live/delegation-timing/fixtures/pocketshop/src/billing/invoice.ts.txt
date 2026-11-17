@@ -1,0 +1,31 @@
+import { taxRateFor } from "./tax"
+
+export interface LineItem {
+  sku: string
+  unitCents: number
+  quantity: number
+}
+
+export interface Invoice {
+  lines: LineItem[]
+  subtotalCents: number
+  discountCents: number
+  taxCents: number
+  totalCents: number
+}
+
+export function formatMoney(cents: number, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100)
+}
+
+export function applyDiscount(subtotalCents: number, percent: number): number {
+  return Math.round((subtotalCents * percent) / 100)
+}
+
+export function buildInvoice(lines: LineItem[], country: string, discountPercent = 0): Invoice {
+  const subtotalCents = lines.reduce((sum, line) => sum + line.unitCents * line.quantity, 0)
+  const discountCents = applyDiscount(subtotalCents, discountPercent)
+  const taxableCents = subtotalCents - discountCents
+  const taxCents = Math.round((taxableCents * taxRateFor(country)) / 100)
+  return { lines, subtotalCents, discountCents, taxCents, totalCents: taxableCents + taxCents }
+}

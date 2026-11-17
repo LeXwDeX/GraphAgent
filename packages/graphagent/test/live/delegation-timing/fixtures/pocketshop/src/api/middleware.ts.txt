@@ -1,0 +1,23 @@
+import { validateSession, type Session } from "../auth"
+
+export interface Req {
+  headers: Record<string, string | undefined>
+  params: Record<string, string>
+  body?: unknown
+}
+
+export interface Res {
+  status: number
+  json: unknown
+}
+
+/** Returns the caller's session, or a 401 response when there is none. */
+export function requireAuth(req: Req): Session | Res {
+  const session = validateSession(req.headers["x-session"])
+  if (!session) return { status: 401, json: { error: "UNAUTHENTICATED" } }
+  return session
+}
+
+export function isRes(value: Session | Res): value is Res {
+  return "status" in value
+}

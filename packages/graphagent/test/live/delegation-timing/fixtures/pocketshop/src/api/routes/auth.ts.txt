@@ -1,0 +1,17 @@
+import { login, revokeSession } from "../../auth"
+import { isRes, requireAuth, type Req, type Res } from "../middleware"
+
+export function postLogin(req: Req): Res {
+  const body = req.body as { email?: string; password?: string } | undefined
+  if (!body?.email || !body.password) return { status: 400, json: { error: "MISSING_FIELDS" } }
+  const result = login(body.email, body.password)
+  if (!result.ok) return { status: 401, json: { error: result.reason } }
+  return { status: 200, json: { session: result.session.id, expiresAt: result.session.expiresAt } }
+}
+
+export function postLogout(req: Req): Res {
+  const session = requireAuth(req)
+  if (isRes(session)) return session
+  revokeSession(session.id)
+  return { status: 204, json: null }
+}

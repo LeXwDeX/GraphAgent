@@ -1,0 +1,20 @@
+const OPTIONS: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" }
+
+/**
+ * Formats a timestamp for display.
+ * The instant is rendered in the given IANA time zone (default UTC); an unknown
+ * zone falls back to UTC instead of throwing. Daylight saving time is handled
+ * by Intl.DateTimeFormat, not by this module.
+ */
+export function formatDate(ms: number, timeZone = "UTC"): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { ...OPTIONS, timeZone }).format(ms)
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", { ...OPTIONS, timeZone: "UTC" }).format(ms)
+  }
+}
+
+/** Midnight (UTC) of the day containing `ms`. */
+export function startOfDay(ms: number): number {
+  return ms - (ms % 86_400_000)
+}
