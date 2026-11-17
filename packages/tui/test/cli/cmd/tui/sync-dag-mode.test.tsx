@@ -522,6 +522,20 @@ describe("tui sync dag mode snapshot: the global dag configuration", () => {
     )
   })
 
+  test("a write that disposes the instance reads every snapshot held again", async () => {
+    await withMount(TREE, async ({ emit, server, sdk, sync }) => {
+      await sync.session.activate("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      server.reads.length = 0
+
+      server.answers.ses_new = () => status({ limits: { concurrency: 6, maxTotalNodes: 50, running: 0 } })
+      emit(global("server.instance.disposed", { directory }))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagMode.ses_new?.limits.concurrency === 6)
+      expect(server.reads).toEqual(["ses_new"])
+    })
+  })
+
   test("a change to any other key reads nothing", async () => {
     await withMount(TREE, async ({ emit, server, sdk, sync }) => {
       await sync.session.activate("ses_new")

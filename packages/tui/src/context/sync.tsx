@@ -1108,6 +1108,9 @@ export const {
       switch (event.type) {
         case "server.instance.disposed":
           void bootstrap()
+          // #1032 7: a config write that disposes the instance sends this instead of `config.updated`, and the
+          // bootstrap does not read the mode snapshots: every one held or being read is read again here.
+          void fetchDagMode(dagModeRoots())
           break
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
