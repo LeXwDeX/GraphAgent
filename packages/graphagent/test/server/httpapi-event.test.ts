@@ -1,5 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Queue, Schema, Stream } from "effect"
+import { GlobalBus } from "../../src/bus/global"
 import { EventPaths } from "../../src/server/routes/instance/httpapi/groups/event"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
@@ -88,6 +89,26 @@ describe("event HttpApi", () => {
         const created = yield* requestInDirectory("/session", directory, { method: "POST" })
         expect(created.status).toBe(200)
         expect(yield* readEvent(reader)).toMatchObject({ type: "session.created" })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "carries pr.watch.updated from GlobalBus for this directory only (#1036)",
+    () =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        const { reader } = yield* openEventStream(directory)
+        expect(yield* readEvent(reader)).toMatchObject({ type: "server.connected", properties: {} })
+
+        const progress = (watchID: string) => ({ type: "pr.watch.updated", properties: { watchID, phase: "watching" } })
+        GlobalBus.emit("event", { directory: `${directory}-elsewhere`, payload: progress("watch_foreign") })
+        GlobalBus.emit("event", { directory, payload: { type: "lsp.updated", properties: {} } })
+        GlobalBus.emit("event", { directory, payload: progress("watch_here") })
+        expect(yield* readEvent(reader)).toMatchObject({
+          type: "pr.watch.updated",
+          properties: { watchID: "watch_here", phase: "watching" },
+        })
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

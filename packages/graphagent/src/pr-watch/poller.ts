@@ -27,6 +27,7 @@ import {
   type Runner,
   type Snapshot,
 } from "./forge"
+import { PrWatchProgress } from "./progress"
 
 /**
  * Process-level PR/MR poller (#1071 PR2).
@@ -262,18 +263,14 @@ export const make = Effect.gen(function* () {
    * The deadline condition is the guard, so two processes racing the same row
    * publish one transition.
    */
-  const deliverDeadline = Effect.fnUntraced(function* (id: string, sessionID: string) {
+  const deliverDeadline = Effect.fnUntraced(function* (row: typeof PrWatchTable.$inferSelect) {
+    const { id, session_id: sessionID } = row
     const now = yield* Clock.currentTimeMillis
+    const values = { phase: "delivering", outcome: "deadline", next_poll_at: null, process_id: owner, updated_at: now }
     const updated = yield* db
       .update(PrWatchTable)
-      .set({ phase: "delivering", outcome: "deadline", next_poll_at: null, process_id: owner, updated_at: now })
-      .where(
-        and(
-          eq(PrWatchTable.id, id),
-          eq(PrWatchTable.phase, "watching"),
-          lte(PrWatchTable.deadline_at, now),
-        ),
-      )
+      .set(values)
+      .where(and(eq(PrWatchTable.id, id), eq(PrWatchTable.phase, "watching"), lte(PrWatchTable.deadline_at, now)))
       .returning({ id: PrWatchTable.id })
       .get()
       .pipe(Effect.orDie)
@@ -286,6 +283,7 @@ export const make = Effect.gen(function* () {
     }
     observeLive(id, sessionID, "delivering")
     yield* publish(id, "watching", "delivering", "deadline", sessionID)
+    yield* PrWatchProgress.observe(db, { ...row, ...values })
     yield* nudgeDelivery(sessionID)
     return true
   })
@@ -301,13 +299,7 @@ export const make = Effect.gen(function* () {
     db
       .update(PrWatchTable)
       .set(values)
-      .where(
-        and(
-          eq(PrWatchTable.id, id),
-          eq(PrWatchTable.phase, "watching"),
-          eq(PrWatchTable.process_id, owner),
-        ),
-      )
+      .where(and(eq(PrWatchTable.id, id), eq(PrWatchTable.phase, "watching"), eq(PrWatchTable.process_id, owner)))
       .returning({ id: PrWatchTable.id })
       .get()
       .pipe(Effect.orDie)
@@ -345,11 +337,11 @@ export const make = Effect.gen(function* () {
 
   const pollOne = Effect.fnUntraced(function* (row: typeof PrWatchTable.$inferSelect) {
     const claimedAt = yield* Clock.currentTimeMillis
-    if (claimedAt >= row.deadline_at) return yield* deliverDeadline(row.id, row.session_id)
+    if (claimedAt >= row.deadline_at) return yield* deliverDeadline(row)
 
     const read = yield* readSnapshot(forge.run, rowRequest(row)).pipe(Effect.timeoutOption(READ_TIMEOUT))
     const now = yield* Clock.currentTimeMillis
-    if (now >= row.deadline_at) return yield* deliverDeadline(row.id, row.session_id)
+    if (now >= row.deadline_at) return yield* deliverDeadline(row)
     if (Option.isNone(read) || !read.value.ok) {
       // A forge read is retried until the deadline: one transient CLI failure
       // must not end a durable watch. The row keeps its baseline and stays
@@ -366,37 +358,44 @@ export const make = Effect.gen(function* () {
 
     const current = read.value.snapshot
     const decision = classifyPoll(baselineOf(row, current), current)
+    // What the status line shows between lifecycle edges (#1036); the row as
+    // written below supplies phase, outcome and head.
+    const observed = { checks: current.checks, review: current.review }
     switch (decision.kind) {
       case "observe": {
-        const updated = yield* advance(row.id, {
+        const values = {
           head: current.head,
           baseline_review: current.review,
           outcome: decision.outcome,
           phase: "delivering",
           next_poll_at: null,
           updated_at: now,
-        })
+        }
+        const updated = yield* advance(row.id, values)
         if (!updated) {
           forgetLive(row.id)
           return
         }
         observeLive(row.id, row.session_id, "delivering")
         yield* publish(row.id, "watching", "delivering", decision.outcome, row.session_id)
+        yield* PrWatchProgress.observe(db, { ...row, ...values }, observed)
         yield* nudgeDelivery(row.session_id)
         return
       }
       case "rebaseline": {
-        const updated = yield* advance(row.id, {
+        const values = {
           head: decision.head,
           baseline_review: decision.review,
           next_poll_at: now + POLL_INTERVAL_MS,
           updated_at: now,
-        })
+        }
+        const updated = yield* advance(row.id, values)
         if (!updated) {
           forgetLive(row.id)
           return
         }
         observeLive(row.id, row.session_id, "watching")
+        yield* PrWatchProgress.observe(db, { ...row, ...values }, observed)
         // No lifecycle value exists for "the baseline moved"; the durable row
         // is the record, and the log marks the moment for operators.
         yield* Effect.logInfo("PrWatchPoller rebaselined a watch onto a new head", {
@@ -407,16 +406,18 @@ export const make = Effect.gen(function* () {
         return
       }
       case "continue": {
-        const updated = yield* advance(row.id, {
+        const values = {
           ...(row.head === null ? { head: current.head, baseline_review: current.review } : {}),
           next_poll_at: now + POLL_INTERVAL_MS,
           updated_at: now,
-        })
+        }
+        const updated = yield* advance(row.id, values)
         if (!updated) {
           forgetLive(row.id)
           return
         }
         observeLive(row.id, row.session_id, "watching")
+        yield* PrWatchProgress.observe(db, { ...row, ...values }, observed)
         return
       }
     }
@@ -437,7 +438,7 @@ export const make = Effect.gen(function* () {
     for (const row of overdue) {
       // A failure legitimately stops the pass; a defect inside one row only
       // costs that row this tick, and the loop re-reads it next time.
-      const delivered = yield* deliverDeadline(row.id, row.session_id).pipe(
+      const delivered = yield* deliverDeadline(row).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.failCause(cause)
@@ -464,7 +465,9 @@ export const make = Effect.gen(function* () {
       const claimed = yield* db
         .update(PrWatchTable)
         .set({ process_id: owner, next_poll_at: null, updated_at: claimNow })
-        .where(and(eq(PrWatchTable.id, id), eq(PrWatchTable.phase, "watching"), lte(PrWatchTable.next_poll_at, claimNow)))
+        .where(
+          and(eq(PrWatchTable.id, id), eq(PrWatchTable.phase, "watching"), lte(PrWatchTable.next_poll_at, claimNow)),
+        )
         .returning()
         .get()
         .pipe(Effect.orDie)
@@ -632,6 +635,7 @@ export const make = Effect.gen(function* () {
     const created = Effect.fnUntraced(function* () {
       yield* publish(id, null, "watching", "registered", input.sessionID)
       observeLive(id, input.sessionID, "watching")
+      yield* PrWatchProgress.observe(db, values)
       yield* wakeLoop
       return { id, created: true } satisfies RegisterResult
     })
@@ -713,12 +717,14 @@ export const make = Effect.gen(function* () {
     forgetLive(row.id)
     if (!updated) return undefined
     yield* publish(row.id, row.phase, "cancelled", "cancelled", row.session_id)
-    return watchInfoOf({ ...row, phase: "cancelled", next_poll_at: null, updated_at: now })
+    const cancelled = { ...row, phase: "cancelled", next_poll_at: null, updated_at: now }
+    yield* PrWatchProgress.observe(db, cancelled)
+    return watchInfoOf(cancelled)
   })
 
   const retireSession = Effect.fn("PrWatchPoller.retireSession")(function* (sessionID: string) {
     const rows = yield* db
-      .select({ id: PrWatchTable.id, phase: PrWatchTable.phase })
+      .select()
       .from(PrWatchTable)
       .where(and(eq(PrWatchTable.session_id, sessionID), inArray(PrWatchTable.phase, LIVE_PHASES)))
       .all()
@@ -745,6 +751,7 @@ export const make = Effect.gen(function* () {
               }),
         ),
       )
+      yield* PrWatchProgress.observe(db, { ...row, phase: "cancelled", updated_at: now })
     }
     return rows.length
   })

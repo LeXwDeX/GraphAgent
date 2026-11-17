@@ -39,9 +39,19 @@ describe("reminders are created by the user only", () => {
     expect(reachingFiles).toEqual([
       "effect/app-runtime.ts",
       "project/bootstrap.ts",
+      "server/routes/instance/httpapi/handlers/session.ts",
       "server/routes/instance/httpapi/server.ts",
       "session/command.ts",
     ])
+  })
+
+  test("the HTTP surface only lists reminders (the status-line countdown, #1036)", () => {
+    const handler = readFileSync(path.join(src, "server/routes/instance/httpapi/handlers/session.ts"), "utf8")
+    const bound = [...handler.matchAll(/const\s+(\w+)\s*=\s*yield\*\s*ReminderClock\.Service/g)].map((m) => m[1])
+    expect(bound).toEqual(["reminders"])
+    const calls = [...handler.matchAll(/\breminders\.(\w+)\(/g)].map((m) => m[1])
+    expect(calls.length).toBeGreaterThan(0)
+    expect(new Set(calls)).toEqual(new Set(["list"]))
   })
 
   test("nothing a model drives imports the reminder module", () => {
@@ -62,9 +72,14 @@ describe("reminders are created by the user only", () => {
   })
 
   test("`ReminderClock.create` is called from the /remind command only", () => {
-    const callers = files.filter((file) =>
-      /\bclock\.create\(|ReminderClock\.Service[\s\S]*\.create\(/.test(readFileSync(path.join(src, file), "utf8")),
-    )
+    // A creation is `clock.create(`, `ReminderClock.Service.use((x) => x.create(`, or `.create(` on a
+    // name bound to the service; an unrelated `.create(` elsewhere in a file that reads the clock is not one.
+    const creates = (text: string) =>
+      /\bclock\.create\(|ReminderClock\.Service\.use\(\s*\(?(\w+)\)?\s*=>\s*\1\.create\(/.test(text) ||
+      [...text.matchAll(/const\s+(\w+)\s*=\s*yield\*\s*ReminderClock\.Service\b/g)].some((m) =>
+        new RegExp(`\\b${m[1]}\\.create\\(`).test(text),
+      )
+    const callers = files.filter((file) => creates(readFileSync(path.join(src, file), "utf8")))
     expect(callers).toEqual(["reminder/command.ts"])
   })
 })

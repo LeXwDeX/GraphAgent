@@ -370,7 +370,8 @@ export function inspectCommand(request: Request) {
   return `glab mr view ${request.url} --output json`
 }
 
-function safeReview(value: string | undefined) {
+/** The review state reduced to `[A-Za-z0-9_.-]`, at most 40 characters; never a remote control string. */
+export function safeReview(value: string | null | undefined) {
   if (!value) return "unknown"
   const clean = value.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40)
   return clean || "unknown"

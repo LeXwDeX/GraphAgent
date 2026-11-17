@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents in GraphAgent, an opencode fork with a DAG workflow engine. This file records repository facts and secondary development constraints. Apply the nearest nested `AGENTS.md` to each changed package. Verify factual claims against current source, package scripts, and workflows; do not treat a development rule as proof that a check has passed.
+Guidance for coding agents in GraphAgent, a terminal coding agent with a DAG workflow engine (originally derived from opencode, developed independently since v2.0). This file records repository facts and secondary development constraints. Apply the nearest nested `AGENTS.md` to each changed package. Verify factual claims against current source, package scripts, and workflows; do not treat a development rule as proof that a check has passed.
 
 ## Scope and layout
 
@@ -51,12 +51,12 @@ When a file operation is denied, record the exact action and error before changi
 
 - Install: `bun install`. Installs are exact-pinned; newly resolved releases must be ≥3 days old unless excluded (root `bunfig.toml`).
 - Toolchain: `bun run toolchain:check` checks installed Bun, Node, and Go before runtime validation and rejects any differing runtime patch; an optional local pre-push hook may run the same check. CLI build scripts import the shared `Script` module, which checks Bun and Node. Go CI sets `GOTOOLCHAIN=local`. Rust containers read `packages/containers/rust-toolchain.toml` and verify the compiler version.
-- Dev: `bun run dev` (opencode CLI — starts the interactive TUI; use the tmux pattern from `packages/graphagent/AGENTS.md`, never a blocking foreground run).
+- Dev: `bun run dev` (graphagent CLI — starts the interactive TUI; use the tmux pattern from `packages/graphagent/AGENTS.md`, never a blocking foreground run).
 - Typecheck: `bun run typecheck` uses Turbo to run package scripts. Most use `tsgo --noEmit`. Use the package scripts.
 - Build: `cd packages/graphagent && bun run build --single` builds the host CLI. Other packages own their build scripts; the root has no `build` script. A successful build does not replace typechecking.
 - Lint: `bun run lint` = `oxlint` with a `--max-warnings` ratchet. The ratchet only tightens: fix warnings, never raise the cap (contract: `_lint_ratchet_note` in `package.json` and the `.oxlintrc.json` header).
 - Private hosts: `bun run check:hosts` scans tracked files and `bun.lock`; run it before every commit. `bun.lock` may only contain public registry URLs. Use `bun run check:hosts:test` for its unit tests.
-- Tests: do not run bare `bun test` or `bun run test` at the root; both are guarded. Run Bun tests inside a package, preferably through its `test` script. Workspace CI uses `bun turbo test` from the root. The opencode and TUI test scripts pass `--timeout 30000`.
+- Tests: do not run bare `bun test` or `bun run test` at the root; both are guarded. Run Bun tests inside a package, preferably through its `test` script. Workspace CI uses `bun turbo test` from the root. The graphagent and TUI test scripts pass `--timeout 30000`.
 - DAG gate: `cd packages/graphagent && bun run test:dag-core` — behavior/coverage gate; run it before merging changes to DAG state-machine or persistence code.
 - Format: Prettier `semi: false`, `printWidth: 120`.
 

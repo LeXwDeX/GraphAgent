@@ -21,7 +21,7 @@ const graphagent = path.resolve(dir, "../../graphagent")
 // generation dropped, preserving clean semantics) instead of hey-api's
 // tree delete: `clean: true` on the shared path deletes the tree another
 // concurrent run is reading. No locking is wanted here.
-const openapiTmpDir = await mkdtemp(path.join(os.tmpdir(), "opencode-sdk-openapi-"))
+const openapiTmpDir = await mkdtemp(path.join(os.tmpdir(), "graphagent-sdk-openapi-"))
 const openapiPath = path.join(openapiTmpDir, "openapi.json")
 const genDir = path.join(openapiTmpDir, "gen")
 

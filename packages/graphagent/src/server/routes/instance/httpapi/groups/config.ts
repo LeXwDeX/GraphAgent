@@ -18,7 +18,7 @@ export const ConfigApi = HttpApi.make("config")
           OpenApi.annotations({
             identifier: "config.get",
             summary: "Get configuration",
-            description: "Retrieve the current OpenCode configuration settings and preferences.",
+            description: "Retrieve the current GraphAgent configuration settings and preferences.",
           }),
         ),
         HttpApiEndpoint.patch("update", root, {
@@ -29,7 +29,7 @@ export const ConfigApi = HttpApi.make("config")
           OpenApi.annotations({
             identifier: "config.update",
             summary: "Update configuration",
-            description: "Update OpenCode configuration settings and preferences.",
+            description: "Update GraphAgent configuration settings and preferences.",
           }),
         ),
         HttpApiEndpoint.get("providers", `${root}/providers`, {
@@ -53,7 +53,7 @@ export const ConfigApi = HttpApi.make("config")
   )
   .annotateMerge(
     OpenApi.annotations({
-      title: "opencode experimental HttpApi",
+      title: "GraphAgent experimental HttpApi",
       version: "0.0.1",
       description: "Experimental HttpApi surface for selected instance routes.",
     }),

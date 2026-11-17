@@ -22,6 +22,8 @@ import { Lifecycle } from "@/lifecycle/service"
 import { PrWatchSource } from "@/pr-watch/source"
 import { SessionCancellation } from "@/session/cancellation"
 import { EngineProcess } from "@/session/engine-process"
+import { GlobalBus, type GlobalEvent } from "@/bus/global"
+import type { PrWatchEvent } from "@graphagent/schema/pr-watch-event"
 import { SessionInbox, type InboxSource } from "@/session/inbox"
 import type { Interface as PromptInterface, PromptInput } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
@@ -104,7 +106,17 @@ interface AdmissionRecord {
 }
 
 /** The recording admission port; `persistAdmission` runs inside one immediate transaction, like the real one. */
-const recordingPrompts = (db: Db, options: { readonly barrier?: number; readonly failAfterMark?: boolean } = {}) =>
+const recordingPrompts = (
+  db: Db,
+  options: {
+    readonly barrier?: number
+    readonly failAfterMark?: boolean
+    /** The committed message's creation time (the admission point). */
+    readonly created?: number
+    /** `not_started`: the admission wrote the message without running a turn. */
+    readonly kind?: "started" | "not_started"
+  } = {},
+) =>
   Effect.gen(function* () {
     const admitted: AdmissionRecord[] = []
     let arrived = 0
@@ -129,11 +141,19 @@ const recordingPrompts = (db: Db, options: { readonly barrier?: number; readonly
               .pipe(Effect.mapError((cause) => new AdmissionPersistFailed({ cause: String(cause) })))
           admitted.push({ input, options: admissionOptions, extras })
           const message = {
-            info: { id: MessageID.ascending(), sessionID: input.sessionID, role: "user", time: { created: 0 } },
+            info: {
+              id: MessageID.ascending(),
+              sessionID: input.sessionID,
+              role: "user",
+              time: { created: options.created ?? 0 },
+            },
             parts: [],
           } as unknown as SessionV1.WithParts
           return {
-            admission: { kind: "started", turn: undefined as never },
+            admission:
+              options.kind === "not_started"
+                ? { kind: "not_started", reason: "noReply" }
+                : { kind: "started", turn: undefined as never },
             message,
             wait: Effect.succeed(message),
           } satisfies TurnStart
@@ -207,7 +227,7 @@ describe("pr_watch source", () => {
       expect(admitted.options).toEqual({ continueToolBudget: true })
       // Delivery settles the ledger: the terminal phase commits with the mark,
       // so a resolver or a restart reads a finished watch, not a live one.
-      expect((yield* rowOf(db, "watch_success"))).toMatchObject({
+      expect(yield* rowOf(db, "watch_success")).toMatchObject({
         delivery: "watch_success:success:abc",
         phase: "succeeded",
       })
@@ -253,7 +273,7 @@ describe("pr_watch source", () => {
       )
       // The deadline notice settles the durable row; it is not left owed or
       // reported as a successful watch.
-      expect((yield* rowOf(db, "watch_deadline"))).toMatchObject({
+      expect(yield* rowOf(db, "watch_deadline")).toMatchObject({
         delivery: "watch_deadline:deadline:abc",
         phase: "expired",
       })
@@ -487,5 +507,89 @@ describe("pr_watch delivery boundary", () => {
       yield* settle
       expect(recording.admitted).toHaveLength(1)
     }).pipe(Effect.provideService(InstanceRef, boundaryContext)),
+  )
+})
+describe("pr_watch source progress (#1036)", () => {
+  const it = testEffect(Database.layerFromPath(":memory:"))
+
+  const capture = () => {
+    const seen: PrWatchEvent.Entry[] = []
+    const listener = (event: GlobalEvent) => {
+      if (event.payload?.type === "pr.watch.updated") seen.push(event.payload.properties)
+    }
+    GlobalBus.on("event", listener)
+    return { seen, stop: () => GlobalBus.off("event", listener) }
+  }
+
+  it.effect("reports the committed notice as delivered at the admission point", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(unique("ses_prw_progress"))
+      yield* seedSession(db, sessionID)
+      const watchID = unique("watch_progress")
+      yield* insertWatch(db, { id: watchID, session_id: sessionID })
+      const recording = yield* recordingPrompts(db, { created: 4_242 })
+      const source = yield* harness(DIRECTORY, recording.prompts)
+      const events = capture()
+      try {
+        expect(yield* source.claim(sessionID)).toBe(true)
+      } finally {
+        events.stop()
+      }
+      expect(recording.admitted).toHaveLength(1)
+      const delivered = events.seen.filter((entry) => entry.watchID === watchID)
+      expect(delivered).toHaveLength(1)
+      expect(delivered[0]).toMatchObject({
+        sessionID,
+        phase: "succeeded",
+        outcome: "success",
+        delivery: { state: "delivered", deliveredAt: 4_242, noticeMessageID: expect.stringMatching(/^msg_/) },
+      })
+      expect(delivered[0].delivery?.noReply).toBeUndefined()
+      EngineProcess.prWatch.progress.delete(watchID)
+    }),
+  )
+
+  it.effect("marks an admission that did not start a turn as noReply", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(unique("ses_prw_noreply"))
+      yield* seedSession(db, sessionID)
+      const watchID = unique("watch_noreply")
+      yield* insertWatch(db, { id: watchID, session_id: sessionID, outcome: "deadline" })
+      const recording = yield* recordingPrompts(db, { created: 7, kind: "not_started" })
+      const source = yield* harness(DIRECTORY, recording.prompts)
+      const events = capture()
+      try {
+        expect(yield* source.claim(sessionID)).toBe(true)
+      } finally {
+        events.stop()
+      }
+      expect(events.seen.filter((entry) => entry.watchID === watchID)).toMatchObject([
+        { phase: "expired", outcome: "deadline", delivery: { state: "delivered", deliveredAt: 7, noReply: true } },
+      ])
+      EngineProcess.prWatch.progress.delete(watchID)
+    }),
+  )
+
+  it.effect("publishes nothing when the admission committed nothing", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(unique("ses_prw_failed"))
+      yield* seedSession(db, sessionID)
+      const watchID = unique("watch_failed")
+      yield* insertWatch(db, { id: watchID, session_id: sessionID })
+      const recording = yield* recordingPrompts(db, { failAfterMark: true })
+      const source = yield* harness(DIRECTORY, recording.prompts)
+      const events = capture()
+      try {
+        yield* source.claim(sessionID).pipe(Effect.exit)
+      } finally {
+        events.stop()
+      }
+      expect(events.seen.filter((entry) => entry.watchID === watchID)).toEqual([])
+      // The notice stays owed: the row is still delivering for the next boundary.
+      expect(yield* rowOf(db, watchID)).toMatchObject({ phase: "delivering", delivery: null })
+    }),
   )
 })

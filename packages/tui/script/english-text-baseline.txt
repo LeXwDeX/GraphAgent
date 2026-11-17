@@ -70,8 +70,6 @@ component/prompt/index.tsx	jsx-text	Some session details could not load (
 component/prompt/index.tsx	jsx-text	Stopping…
 component/prompt/index.tsx	jsx-text	Workspace	2
 component/prompt/index.tsx	jsx-text	again to interrupt
-component/prompt/index.tsx	jsx-text	agents
-component/prompt/index.tsx	jsx-text	commands
 component/prompt/index.tsx	jsx-text	esc	2
 component/prompt/index.tsx	jsx-text	exit shell mode
 component/prompt/index.tsx	jsx-text	interrupt

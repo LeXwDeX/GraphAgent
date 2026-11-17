@@ -91,7 +91,7 @@ export const LifecycleApi = HttpApi.make("lifecycle")
   )
   .annotateMerge(
     OpenApi.annotations({
-      title: "opencode lifecycle HttpApi",
+      title: "GraphAgent lifecycle HttpApi",
       version: "0.0.1",
       description: "Read-only cross-domain lifecycle state for live clients.",
     }),
