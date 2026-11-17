@@ -3798,6 +3798,13 @@ const reviewCommands = (url: string) => ({
       subtask: true,
       execution: "foreground" as const,
     },
+    // #1361: `description` is optional in a user's command config.
+    "nameless-review": {
+      template: "You are a code reviewer. Review the changes: $ARGUMENTS",
+      agent: "review",
+      subtask: true,
+      execution: "foreground" as const,
+    },
   },
 })
 
@@ -3897,6 +3904,35 @@ backgroundUnix(
       })
       expect(tool.state.metadata?.background).toBeUndefined()
       expect(tool.state.metadata?.survivesSessionCancel).toBeUndefined()
+    }),
+  30_000,
+)
+
+backgroundUnix(
+  "a user subtask command without a description runs under its command name (#1361)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(reviewCommands)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "command-without-description",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.textMatch(reviewerRequest, "FINDING: the cache key ignores the tenant")
+      yield* llm.textMatch((hit) => !reviewerRequest(hit), "review summarized")
+
+      yield* prompt.command({ sessionID: chat.id, command: "nameless-review", arguments: "" })
+
+      const tool = (yield* sessions.messages({ sessionID: chat.id }))
+        .filter((message) => message.info.role === "assistant")
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "task")
+      if (tool?.type !== "tool") throw new Error("task tool part missing")
+      expect(tool.state.status === "error" ? tool.state.error : tool.state.status).toBe("completed")
+      expect(tool.state.input).toMatchObject({ description: "/nameless-review" })
+      if (tool.state.status !== "completed") return
+      expect(tool.state.output).toContain("FINDING: the cache key ignores the tenant")
     }),
   30_000,
 )
