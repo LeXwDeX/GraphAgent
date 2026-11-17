@@ -409,7 +409,7 @@ export class App extends HeyApiClient {
   /**
    * List agents
    *
-   * Get a list of all available AI agents in the OpenCode system.
+   * Get a list of all available AI agents in the GraphAgent system.
    */
   public agents<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -423,7 +423,7 @@ export class App extends HeyApiClient {
   /**
    * List skills
    *
-   * Get a list of all available skills in the OpenCode system.
+   * Get a list of all available skills in the GraphAgent system.
    */
   public skills<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -486,7 +486,7 @@ export class Capabilities extends HeyApiClient {
   /**
    * Get experimental capabilities
    *
-   * Get experimental features enabled on the OpenCode server.
+   * Get experimental features enabled on the GraphAgent server.
    */
   public get<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -905,7 +905,7 @@ export class Config extends HeyApiClient {
   /**
    * Get global configuration
    *
-   * Retrieve the current global OpenCode configuration settings and preferences.
+   * Retrieve the current global GraphAgent configuration settings and preferences.
    */
   public get<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -919,7 +919,7 @@ export class Config extends HeyApiClient {
   /**
    * Update global configuration
    *
-   * Update global OpenCode configuration settings and preferences.
+   * Update global GraphAgent configuration settings and preferences.
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -945,7 +945,7 @@ export class Global extends HeyApiClient {
   /**
    * Get health
    *
-   * Get health information about the OpenCode server.
+   * Get health information about the GraphAgent server.
    */
   public health<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -959,7 +959,7 @@ export class Global extends HeyApiClient {
   /**
    * Dispose instance
    *
-   * Clean up and dispose all OpenCode instances, releasing all resources.
+   * Clean up and dispose all GraphAgent instances, releasing all resources.
    */
   public dispose<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -1020,7 +1020,7 @@ export class Config2 extends HeyApiClient {
   /**
    * Get configuration
    *
-   * Retrieve the current OpenCode configuration settings and preferences.
+   * Retrieve the current GraphAgent configuration settings and preferences.
    */
   public get<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -1034,7 +1034,7 @@ export class Config2 extends HeyApiClient {
   /**
    * Update configuration
    *
-   * Update OpenCode configuration settings and preferences.
+   * Update GraphAgent configuration settings and preferences.
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1202,7 +1202,7 @@ export class Instance extends HeyApiClient {
   /**
    * Dispose instance
    *
-   * Clean up and dispose the current OpenCode instance, releasing all resources.
+   * Clean up and dispose the current GraphAgent instance, releasing all resources.
    */
   public dispose<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -1218,7 +1218,7 @@ export class Path extends HeyApiClient {
   /**
    * Get paths
    *
-   * Retrieve the current working directory and related path information for the OpenCode instance.
+   * Retrieve the current working directory and related path information for the GraphAgent instance.
    */
   public get<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -1339,7 +1339,7 @@ export class Command extends HeyApiClient {
   /**
    * List commands
    *
-   * Get a list of all available commands in the OpenCode system.
+   * Get a list of all available commands in the GraphAgent system.
    */
   public list<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -1613,7 +1613,7 @@ export class Project extends HeyApiClient {
   /**
    * List all projects
    *
-   * Get a list of projects that have been opened with OpenCode.
+   * Get a list of projects that have been opened with GraphAgent.
    */
   public list<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -1627,7 +1627,7 @@ export class Project extends HeyApiClient {
   /**
    * Get current project
    *
-   * Retrieve the currently active project that OpenCode is working with.
+   * Retrieve the currently active project that GraphAgent is working with.
    */
   public current<ThrowOnError extends boolean = false>(
     options?: Options<never, ThrowOnError>,
@@ -2260,7 +2260,7 @@ export class Session2 extends HeyApiClient {
   /**
    * List sessions
    *
-   * Get a list of all OpenCode sessions, sorted by most recently updated.
+   * Get a list of all GraphAgent sessions, sorted by most recently updated.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2298,7 +2298,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Create session
    *
-   * Create a new OpenCode session for interacting with AI assistants and managing conversations.
+   * Create a new GraphAgent session for interacting with AI assistants and managing conversations.
    */
   public create<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2382,7 +2382,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Get session
    *
-   * Retrieve detailed information about a specific OpenCode session.
+   * Retrieve detailed information about a specific GraphAgent session.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters: {

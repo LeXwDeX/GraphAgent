@@ -59,7 +59,7 @@ export const InstanceApi = HttpApi.make("instance")
           OpenApi.annotations({
             identifier: "instance.dispose",
             summary: "Dispose instance",
-            description: "Clean up and dispose the current OpenCode instance, releasing all resources.",
+            description: "Clean up and dispose the current GraphAgent instance, releasing all resources.",
           }),
         ),
         HttpApiEndpoint.get("path", InstancePaths.path, {
@@ -69,7 +69,7 @@ export const InstanceApi = HttpApi.make("instance")
             identifier: "path.get",
             summary: "Get paths",
             description:
-              "Retrieve the current working directory and related path information for the OpenCode instance.",
+              "Retrieve the current working directory and related path information for the GraphAgent instance.",
           }),
         ),
         HttpApiEndpoint.get("vcs", InstancePaths.vcs, {
@@ -130,7 +130,7 @@ export const InstanceApi = HttpApi.make("instance")
           OpenApi.annotations({
             identifier: "command.list",
             summary: "List commands",
-            description: "Get a list of all available commands in the OpenCode system.",
+            description: "Get a list of all available commands in the GraphAgent system.",
           }),
         ),
         HttpApiEndpoint.get("agent", InstancePaths.agent, {
@@ -139,7 +139,7 @@ export const InstanceApi = HttpApi.make("instance")
           OpenApi.annotations({
             identifier: "app.agents",
             summary: "List agents",
-            description: "Get a list of all available AI agents in the OpenCode system.",
+            description: "Get a list of all available AI agents in the GraphAgent system.",
           }),
         ),
         HttpApiEndpoint.get("skill", InstancePaths.skill, {
@@ -148,7 +148,7 @@ export const InstanceApi = HttpApi.make("instance")
           OpenApi.annotations({
             identifier: "app.skills",
             summary: "List skills",
-            description: "Get a list of all available skills in the OpenCode system.",
+            description: "Get a list of all available skills in the GraphAgent system.",
           }),
         ),
         HttpApiEndpoint.get("lsp", InstancePaths.lsp, {
@@ -181,7 +181,7 @@ export const InstanceApi = HttpApi.make("instance")
   )
   .annotateMerge(
     OpenApi.annotations({
-      title: "opencode experimental HttpApi",
+      title: "GraphAgent experimental HttpApi",
       version: "0.0.1",
       description: "Experimental HttpApi surface for selected instance routes.",
     }),

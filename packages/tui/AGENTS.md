@@ -127,7 +127,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不可见会话只留 `SessionSummary`，完整消息只在 `hydrated`（LRU，基础上限 `HYDRATED_MAX = 4`，实际上限 `max(HYDRATED_MAX, 父链长度 + 1)`）里。当前会话与全部祖先不被驱逐。`session.deleted` 要同时清 `message`、`part`、`summary`、`hydrated`。
 - 进入会话的固定顺序：向 interest 聚合器登记 → `await setInterest` 确认 → `sync.session.sync(sessionID)` → 之后的事件与快照幂等合并。
 - interest 只经唯一聚合器 `context/interest.ts` 登记（来源键：当前会话与父链、F5 子 agent 视图、F4 正在显示的工作流的归属会话）。聚合后每帧至多一次 `setInterest`。检查：`grep -rn "setInterest" packages/tui/src` 只命中 `context/interest.ts` 与 `context/` 内的接入处。
-- 重连：唯一入口是 `context/sync.tsx` 提供的 `onResync(fn)` 注册表；F4、F6 等功能注册各自的刷新函数，不自建重连监听。`reconnected` 后所有 `hydrated` 会话重新 `sync`，buffer 清空，已加载会话的摘要由快照重建；其余数据片（`dag` 汇总、`goal`、`pr_watch`、`dagNodes`）各自全量刷新。快照加载与重连刷新不得触发 toast（F6 2.4）。新增数据片必须在同一 PR 里向 `onResync` 注册刷新函数；只存在客户端内存、服务端没有读口的片除外，如 `dag_focus`（用户在 `/dag` 面板里选过、打开过的工作流，按根会话记，会话删除时清掉），没有可刷新的东西。
+- 重连：唯一入口是 `context/sync.tsx` 提供的 `onResync(fn)` 注册表；F4、F6 等功能注册各自的刷新函数，不自建重连监听。`reconnected` 后所有 `hydrated` 会话重新 `sync`，buffer 清空，已加载会话的摘要由快照重建；其余数据片（`dag` 汇总、`goal`、`pr_watch`、`dagNodes`、`dagMode`）各自全量刷新（`dag` 汇总与 `dagMode` 在同一个刷新里读完，之后路由的根还缺快照而需要时补取；`dagRunning` 没有读口，由这两处读取带回）。快照加载与重连刷新不得触发 toast（F6 2.4）。新增数据片必须在同一 PR 里向 `onResync` 注册刷新函数；只存在客户端内存、服务端没有读口的片除外，如 `dag_focus`（用户在 `/dag` 面板里选过、打开过的工作流，按根会话记，会话删除时清掉），没有可刷新的东西。
 - 禁止轮询 DAG 节点或 PR 状态。拉取触发点只有：首次需要、`resync`、`graphRev` 跳变、重连（F4 2.1）。
 
 ### 新增一种服务端事件的接入步骤
@@ -279,15 +279,22 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 高度 0–2 行，不占用时高度为 0，不留空行。属于根会话；子 agent 视图显示根会话的工作流与目标；home 不显示。
 - 窄终端（< 100 列）合并为一行。行的优先级与让位顺序以 F4（#1032）方案 1 和 F6（#1036）2.2 为准：DAG 行行尾先让位的是 `/dag` 提示 → 预算段 → 费用 → 并发段 → 阶段名 → 计数压缩 → 标题截断；进度条与模式标记（≤ 8 列）、非警示 PR 短标记（≤ 14 列）不让位。PR 警示态一定单独占一行，窄终端单行时 PR 警示 > DAG > 目标。
 - 只读：点击 DAG 行只打开 `/dag`；点击 PR 行只用系统浏览器打开 URL。
-- DAG 行（F4 PR2）：显示策略 kv `dag_band`（`auto` 默认，有活跃或未确认失败的工作流才显示；`always`；`hidden`），`always` 且没有工作流时显示一行“没有工作流”；`/dag` 面板（panel id `dag`）打开时隐藏，目标行不受影响。主工作流用 `selectMainWorkflow`，其余折叠成行尾 `+N 个`；用户在面板里选过、打开过的工作流记在 `sync.dag.focus`（面板写，状态带只读）。当前波用 `dagCurrentWave`，进度条用 `layoutDagBar`，节点表未加载时按汇总计数画。点击 DAG 行经命令注册表执行 `dag.open`。状态带由 `app.tsx` 以表达式传给 `AppFrame` 的 `statusBand`，不经 memo：槽在 `BottomZoneProvider` 里创建它，它才读得到面板栈。让位：先去 `/dag` 提示，再 `+N 个`，再波次，再把计数压成 `n/m`，再把标题截到 12 列；这之后进度条才收窄，并取走剩余的全部宽度。颜色：行首 `◆` 用 `primary`，进度条按状态 token，说明文字 `textMuted`，分隔符与提示 `textDim`，失败数 `error`、暂停 `statusPaused`；运行中的数量不用品牌色。
-- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，DAG 行优先，没有 DAG 行时才显示目标行。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。
+- DAG 行（F4 PR2）：显示策略 kv `dag_band`（`auto` 默认，有活跃或未确认失败的工作流才显示；`always`；`hidden`），`always` 且没有工作流时显示一行“没有工作流”；`/dag` 面板（panel id `dag`）打开时隐藏，目标行不受影响。主工作流用 `selectMainWorkflow`，其余折叠成行尾 `+N 个`；用户在面板里选过、打开过的工作流记在 `sync.dag.focus`（面板写，状态带只读）。当前波用 `dagCurrentWave`，进度条用 `layoutDagBar`，节点表未加载时按汇总计数画。点击 DAG 行经命令注册表执行 `dag.open`。状态带由 `app.tsx` 以表达式传给 `AppFrame` 的 `statusBand`，不经 memo：槽在 `BottomZoneProvider` 里创建它，它才读得到面板栈。让位（预算为正常档时；警告与耗尽档的例外见下）：先去 `/dag` 提示，再预算、tokens、并发，再 `+N 个`，再波次，再等待主 agent，再把计数压成 `n/m`，再把标题截到 12 列；这之后进度条才收窄，并取走剩余的全部宽度。颜色：行首 `◆` 用 `primary`，进度条按状态 token，说明文字 `textMuted`，分隔符与提示 `textDim`，失败数 `error`、暂停 `statusPaused`；运行中的数量不用品牌色。
+- DAG 模式的显示（F4 PR4，#1032 7；只读，数据都由数据层的现成切片派生，状态带不自己取数）：行尾自左向右依次是等待主 agent（`warning`）、模式标记、用量段、`+N 个`、`/dag` 提示。
+  - 模式标记：模式取根会话自己的 `dagMode`（`session.updated` 维护）；开时 `模式开`（`text`），关而有工作流在跑（`running`、`stepping`）时暗色 `模式关`（`textDim`），其余情况没有标记；至多 8 列，不让位，只有窄到进度条也放不下时才最后去掉，不用品牌色。
+  - 用量段：全进程并发 `running/cap`、`{tokens} tok`、`预算 {百分比}%`，预算段按档位着色（正常 `textMuted`、警告 `warning`、耗尽 `error`），未设预算不显示百分比；费用段没有数据来源，不做。档位与服务端同一刀（`dag/mode.ts` 的 `dagBudgetTier`：用量 ≥ 预算为耗尽，≥ ⌊预算 × `warn_ratio`⌋ 为警告）。用量取根会话自己各工作流摘要的 `tokens` 之和（事件驱动），在其上叠 `store.dagMode` 快照（预算、`warnRatio`、`limits`）：快照在路由进入的会话树有 DAG 模式开或有工作流时取一次（进入树、该树来了摘要事件、根会话的模式变为开，三个时刻；在途读不重复发），会话的预算字段变化（`session.updated`）、全局 `dag` 配置变化（`config.updated` 的 `keys` 含 `dag`；该事件不经 `useEvent`，数据层直接听 SDK 事件源）与重连时再取（重连时路由的根没有快照而按上述条件需要时，也在此时补取），没有轮询；普通会话与首页不产生读取。并发段的 `running` 是全进程的计数，摘要事件只给它所属的那个会话带上，所以取全进程最近一次的报告（`sync.data.dagRunning`：任一会话的摘要或汇总读取里的 `concurrencyRunning`，或快照的 `limits.running`，以后到者为准），其次才是根会话自己摘要里的，再其次是快照里的（`dagUsage` 的 `running` 输入）。
+  - 让位的档位例外：预算为警告或耗尽档（用量段带百分比）时，预算段与等待主 agent 提到计数压缩和标题截断之后才让位，顺序是 `/dag` 提示、tokens、并发、`+N 个`、波次、计数压成 `n/m`、标题截到 12 列、等待主 agent、预算。进度条与模式标记仍先预留宽度：进度条只按最少文字（标记、12 列标题、`n/m`）定宽，不为这两段收窄，它们只取进度条与最少文字之外的余宽；余宽只够其一时留预算。正常档维持上一条的顺序。
+  - 等待主 agent：任一工作流 `checkpointPending` 且（根会话空闲，或其最近一个回合以 `error` 结束，读 `turn_settled`）。
+  - 预算 toast 只有服务端 `DagBudget` 发出的那一份（`tui.toast.show`）；TUI 不为档位变化、快照加载或重连刷新自弹 toast，只按档位着色（#1032 D6）。服务端 toast 的消息已以标题开头时只显示一次（`ui/toast.tsx` 的 `serverToastText`）。
+  - `/dag` 面板的对应部分：summary 区第一行是模式行（`DAG 模式：开/关 · 运行 x/y（全进程） · 节点上限 n · token 用量/预算`，token 段按预算档位着色，放不下时截断不换行）；计数行之后是该工作流的质量行（`quality` 的 `reviews`、`stillOpen`、`completeness`，按工作流计数，`null` 时没有）、预算耗尽时对暂停的工作流（非检查点）说明恢复条件、以及 `coverageCount > 0` 时的“覆盖与截断”块（至多 4 个失败、跳过、取消、中止的节点及原因，其余只计数；服务端的计数还含不对应节点的条目，单独说明，不新增服务端读口）。
+- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，DAG 行优先，没有 DAG 行时才显示目标行。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。缺目标文字或缺状态的目标体（`isGoalShown` 为假，含服务端把“没有目标”回成 null 的情形）不画行、不占高度，也不抛错：行布局里抛出的错误会让状态带所有行停止更新。
 - 无 `setInterval`、无定时拉取；已用时间用 `ticker.second`。状态带本身不订阅 `ticker`：运行段是静态字符。
 - 新增一行或一类标记时：写出显示条件、颜色 token、窄屏让位位置，并在 F4/F6 对应方案里登记（修订本文）。
 
 抽屉（`shell/drawer.tsx`）：
 
 - 默认隐藏，覆盖在主区右侧 40 列，从顶栏下沿到底区上沿，不盖底区与页脚，不挤压主区（`contentWidth` 不变）。宽 < 60 时整屏只显示"终端太小"，抽屉不设宽度回退分支（已删除 F4 5.1 的"宽 − 4"）。关闭方式：`esc`、点击背景（有文本选区时不关）、再按开关键、`/sidebar`。
-- 区块顺序固定：会话、上下文、费用、目标、待办、修改的文件、服务（F4 5.2）。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、费用、待办、文件跟随子会话；目标始终是根会话；LSP、MCP 全局）。
+- 区块顺序固定：会话、上下文、费用、目标、待办、修改的文件、服务（F4 5.2）；DAG 模式状态一行（`DAG 模式 开 {key}` / `DAG 模式 关`，`{key}` 取 `session.dagmode.toggle` 的实际绑定）在费用与目标之间，只读、不可点击，子 agent 视图没有这一行。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、费用、待办、文件跟随子会话；目标始终是根会话；LSP、MCP 全局）。
 - 区块是纯展示函数组件。抽屉关闭时不创建任何区块组件、不订阅任何数据。抽屉里不放任何操作按钮。
 - 显示策略 kv `drawer_mode`（`hidden` 默认 / `auto` / `always`），不读旧 kv `sidebar`。
 
@@ -303,7 +310,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 时长经 `ticker.at`，不得自建计时器。默认 4 秒，`error` 8 秒（F3 9）。
 - 变体颜色：`info` 用 `text`，`success` 用 `success`，`warning` 用 `warning`，`error` 用 `error`。
 - 超宽错误被截断，完整文本写日志并进 `/status` 的"最近消息"（最近 20 条），页脚附 `… /status`。
-- 来源侧的去重规则：预算警告档每会话每档至多一次（F4 7.1）；PR 状态只在事件引起的迁移时弹，快照加载与重连刷新不弹，`cancelled` 不弹（F6 2.4）。
+- 来源侧的去重规则：预算警告档每会话每档至多一次（F4 7.1），这一份由服务端发出，TUI 不自弹第二份；PR 状态只在事件引起的迁移时弹，快照加载与重连刷新不弹，`cancelled` 不弹（F6 2.4）。
 - 服务端 `tui.toast.show` 事件走同一入口。
 
 必须写的测试：页脚位置快照；排队与溢出；`dedupeKey` 合并；`onActivate`；超长截断。

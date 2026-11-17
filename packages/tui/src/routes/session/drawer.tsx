@@ -11,8 +11,10 @@ import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
 import { t, type MessageKey } from "../../i18n"
+import { useCommandShortcut } from "../../keymap"
 import { Locale } from "../../util/locale"
 import { getScrollAcceleration } from "../../util/scroll"
+import { isGoalShown } from "../../shell/status-band"
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -152,10 +154,36 @@ function DrawerCost(props: { sessionID: string }) {
   )
 }
 
+/**
+ * The DAG mode line (F4 5.1, 7.1), above the goal: on, with the key that switches it, or off. Read-only, nothing
+ * to click. The mode belongs to the root session, so a sub-agent session has no line.
+ */
+function DrawerDagMode(props: { sessionID: string }) {
+  const sync = useSync()
+  const { theme } = useTheme()
+  const key = useCommandShortcut("session.dagmode.toggle")
+  const session = createMemo(() => sync.session.get(props.sessionID))
+  const text = createMemo(() =>
+    session()?.dagMode === "on" ? t("dagmode.drawer.on", { key: key() }).trimEnd() : t("dagmode.drawer.off"),
+  )
+
+  return (
+    <Show when={session() && !session()?.parentID}>
+      <text fg={theme.textMuted} wrapMode="none">
+        {text()}
+      </text>
+    </Show>
+  )
+}
+
 function DrawerGoal(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const goal = createMemo(() => sync.data.goal[props.sessionID])
+  // A partial goal body (no text or status) is no goal: reading `.goal.length` on it would throw.
+  const goal = createMemo(() => {
+    const value = sync.data.goal[props.sessionID]
+    return isGoalShown(value) ? value : undefined
+  })
 
   return (
     <Show when={goal()}>
@@ -396,6 +424,7 @@ export function SessionDrawer(props: { sessionID: string }) {
             <DrawerSession sessionID={props.sessionID} />
             <DrawerContext sessionID={props.sessionID} />
             <DrawerCost sessionID={props.sessionID} />
+            <DrawerDagMode sessionID={props.sessionID} />
             <DrawerGoal sessionID={props.sessionID} />
             <DrawerTodo sessionID={props.sessionID} />
             <DrawerFiles sessionID={props.sessionID} />

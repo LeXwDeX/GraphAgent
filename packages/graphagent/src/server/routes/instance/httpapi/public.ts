@@ -67,7 +67,7 @@ const QueryParameterSchemas: Record<string, OpenApiSchema> = {
 
 const LegacyComponentDescriptions: Record<string, string> = {
   LogLevel: "Log level",
-  ServerConfig: "Server configuration for opencode serve and web commands",
+  ServerConfig: "Server configuration for the embedded GraphAgent server",
   LayoutConfig: "@deprecated Always uses stretch layout.",
 }
 
@@ -727,9 +727,9 @@ function normalizeParameter(param: OpenApiParameter, route: string) {
 
 export const PublicApi = GraphagentHttpApi.annotateMerge(
   OpenApi.annotations({
-    title: "opencode",
+    title: "GraphAgent",
     version: "1.0.0",
-    description: "opencode api",
+    description: "GraphAgent API",
     transform: matchLegacyOpenApi,
   }),
 )
