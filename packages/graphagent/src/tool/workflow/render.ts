@@ -12,6 +12,7 @@ import { DagLocation } from "@/dag/location"
 import { DagReviewLifecycle } from "@/dag/review-lifecycle"
 import { DagQuality } from "@/dag/quality"
 import { DagValidation } from "@/dag/validation"
+import type { DagComposeStatus } from "@/dag/compose-status"
 import { DagCoverage, resultPage, withResultPageCoverage } from "@/dag/coverage"
 import { isManagedOutputFileRef, isOutputFileRef } from "@/dag/runtime/output-ref"
 import type { Tool } from "../tool"
@@ -172,12 +173,15 @@ export function renderStatus(input: {
   childRuns?: ReadonlyMap<string, ChildRunView>
   /** #1031 M6: deterministic coverage entries for this snapshot. */
   coverage?: readonly DagCoverage.CoverageEntry[]
+  /** #1158: one summary per compose block; listed only when the workflow has one. */
+  compose?: readonly DagComposeStatus.Summary[]
   /** #1031 M6: durable usage the parent's final report quotes. */
   usage?: { readonly nodeCount: number; readonly tokens: number; readonly tokensCacheRead: number }
   /** #1073: what a later extend runs into (node quota, terminal state, graph form). */
   constraints?: object
 }): Tool.ExecuteResult {
-  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns, coverage, usage, constraints } = input
+  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns, coverage, compose, usage, constraints } =
+    input
   const config = Dag.parseWorkflowConfig(workflow.config)
   // A completed graph can still carry an unresolved review verdict
   // (REJECT checkpoint, issue #294); surface it explicitly instead
@@ -290,6 +294,7 @@ export function renderStatus(input: {
               },
             }
           : {}),
+        ...(compose && compose.length > 0 ? { compose } : {}),
         ...(coverage && coverage.length > 0 ? { coverage } : {}),
         ...(usage
           ? {
