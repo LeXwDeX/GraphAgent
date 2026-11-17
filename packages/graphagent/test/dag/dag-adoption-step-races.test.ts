@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
+import { sql } from "drizzle-orm"
 import { DateTime, Deferred, Effect, Fiber, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
@@ -205,10 +206,11 @@ describe("DagLoop adoption idempotency", () => {
   it("adopts a workflow exactly once when a replan event races the startup scan", async () => {
     // The startup scan blocks inside reconciliation (first child status
     // probe); a WorkflowReplanned event arriving in that window finds no
-    // runtimes entry and takes the re-adoption path. Without the synchronous
-    // recovering reservation both adoptions run: reconciliation executes
-    // twice (double child-session cancel) and the second runtimes.set
-    // orphans the first entry's fibers.
+    // runtimes entry and takes the re-adoption path (reconcileAfter). Without
+    // the single flight of the reconciler both adoptions run: reconciliation
+    // executes twice (double child-session cancel) and the second runtimes.set
+    // orphans the first entry's fibers. The replan waits for the scan's
+    // evaluation instead, and finds its entry afterwards.
     const gate = await Effect.runPromise(Deferred.make<void>())
     const childStatusCalls = { count: 0 }
     await Effect.runPromise(
@@ -258,6 +260,54 @@ describe("DagLoop adoption idempotency", () => {
             expect((yield* store.getNode(dagID, "n1"))?.status).toBe("failed")
             expect((yield* store.getNode(dagID, "n2"))?.status).toBe("pending")
           }),
+      ),
+    )
+  })
+})
+
+describe("DagLoop first wave (a trigger of the reconciler)", () => {
+  it("adopts a new workflow once, spawns every ready node, and schedules the dependents after them", async () => {
+    await Effect.runPromise(
+      runRaceTest({ messages: () => Effect.succeed([]) }, ({ dag, loop, store, database, childPrompts }) =>
+        Effect.gen(function* () {
+          yield* loop.init()
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "First wave",
+            config: {
+              name: "first-wave",
+              nodes: [nodeConfig("a"), nodeConfig("b"), nodeConfig("c", ["a", "b"])],
+            },
+          })
+
+          // WorkflowStarted reaches the reconciler, which adopts the workflow and spawns what is ready.
+          const first = yield* takeWithin(childPrompts, "the first wave did not start the first ready node")
+          const second = yield* takeWithin(childPrompts, "the first wave did not start the second ready node")
+          expect([first.title, second.title].sort()).toEqual(["a", "b"])
+          // Once: nothing else starts (a second adoption would spawn the ready nodes again), and the claim made
+          // the lease of the workflow at its first epoch.
+          yield* Effect.sleep("150 millis")
+          expect(Option.isNone(yield* Queue.poll(childPrompts))).toBe(true)
+          expect((yield* store.getNode(dagID, "c"))?.status).toBe("pending")
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+          expect(yield* database.db.get(sql`SELECT epoch FROM dag_runner WHERE dag_id = ${dagID}`)).toEqual({
+            epoch: 1,
+          })
+
+          // The entry that adoption published schedules the dependent once both have settled.
+          yield* Deferred.succeed(first.release, "done")
+          yield* Deferred.succeed(second.release, "done")
+          const third = yield* takeWithin(childPrompts, "the dependent of the first wave did not start")
+          expect(third.title).toBe("c")
+          yield* Deferred.succeed(third.release, "done")
+          yield* pollWithTimeout(
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
+            "the first-wave workflow did not complete",
+          )
+        }),
       ),
     )
   })
