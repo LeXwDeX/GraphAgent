@@ -34,9 +34,12 @@ function rowsOf(frame: string) {
   return frame.split("\n")
 }
 
+/**
+ * Key presses, clicks and resizes reach the drawer's signals synchronously, so a few renders show their effect; no
+ * wall-clock wait is needed to see that something did not change.
+ */
 async function settled(setup: Setup) {
-  await Bun.sleep(60)
-  await setup.renderOnce()
+  for (let pass = 0; pass < 3; pass++) await setup.renderOnce()
   return captureFrame(setup)
 }
 
