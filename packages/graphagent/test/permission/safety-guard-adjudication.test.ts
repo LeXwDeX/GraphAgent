@@ -25,6 +25,7 @@ import { ChildRegistry } from "@/session/child/registry"
 import type { ChildOwner, ChildPermissionPolicy } from "@/session/child/types"
 import { SessionID } from "@/session/schema"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { transactLayer } from "../dag/fixture/transact"
 
 /**
  * #1031 M7: the SafetyGuard is the production adjudicator behind the H3 seam.
@@ -40,7 +41,7 @@ const events = EventV2.layer.pipe(Layer.provide(database))
 const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
 const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const store = DagStore.layer.pipe(Layer.provide(database))
-const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
 const permissionLayer = Permission.layer.pipe(
   Layer.provide(database),
   Layer.provide(bridge),

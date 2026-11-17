@@ -24,6 +24,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionStatus } from "@/session/status"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 describe("DagSupervisionSweep attempt identity", () => {
   it("does not fail a new attempt that started after the sweep observed the frozen one", async () => {
@@ -35,7 +36,7 @@ describe("DagSupervisionSweep attempt identity", () => {
     const store = DagStore.layer.pipe(Layer.provide(database))
     const status = SessionStatus.layer.pipe(Layer.provide(bridge))
     const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-    const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+    const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
     const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
     const prompt = mockSessionPrompt({
       cancel: (sessionID: string) =>

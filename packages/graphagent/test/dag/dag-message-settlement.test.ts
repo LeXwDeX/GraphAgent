@@ -25,6 +25,7 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const parent = { projectID: "p", directory: process.cwd(), sessionID: "ses_parent" }
 const child = { ...parent, sessionID: "ses_child" }
@@ -37,7 +38,7 @@ function services() {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const messages = DagMessages.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
-  const dependencies = Layer.mergeAll(database, events, bridge, store, messages, projector)
+  const dependencies = Layer.mergeAll(database, events, bridge, store, messages, projector, transactLayer(database))
   return Layer.mergeAll(sqlite, dependencies, Dag.layer.pipe(Layer.provide(dependencies)))
 }
 const run = <A, E>(

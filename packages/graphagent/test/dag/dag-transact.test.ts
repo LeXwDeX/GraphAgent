@@ -147,8 +147,6 @@ interface Harness {
 interface HarnessOptions {
   /** Wire `DagMessages` as production does. Default true. */
   readonly mailbox?: boolean
-  /** Wire `DagTransact`. Default true; without it commands run as they did before PR3a. */
-  readonly transact?: boolean
 }
 
 type Services = Dag.Service | Database.Service | DagStore.Service | Scope.Scope
@@ -172,10 +170,9 @@ const withHarness = <A, E>(options: HarnessOptions, body: (harness: Harness) => 
     const store = spies.store.pipe(Layer.provide(DagStore.layer.pipe(Layer.provide(database))))
     const messages = options.mailbox === false ? Layer.empty : DagMessages.layer.pipe(Layer.provide(database))
     const lease = DagLease.layer.pipe(Layer.provide(database))
-    const transact =
-      options.transact === false
-        ? Layer.empty
-        : spies.transact.pipe(Layer.provide(DagTransact.layer.pipe(Layer.provide(Layer.merge(database, lease)))))
+    const transact = spies.transact.pipe(
+      Layer.provide(DagTransact.layer.pipe(Layer.provide(Layer.merge(database, lease)))),
+    )
     const dag = Dag.layer.pipe(Layer.provide(Layer.mergeAll(bridge, store, messages, transact)))
     const services = Layer.mergeAll(sqlite, database, events, projector, store, messages, dag)
 
@@ -427,21 +424,6 @@ describe("every state-changing Dag command runs in one transaction (ADR-0008 dec
           }),
         ),
     )
-
-  it.live("a command without the transaction service runs as it did before (no transaction, a window)", () =>
-    withHarness({ transact: false }, (harness) =>
-      Effect.gen(function* () {
-        const dag = yield* Dag.Service
-        const dagID = yield* createWorkflow()
-
-        yield* recorded(harness.spy, dag.nodeQueued(dagID, "a"))
-
-        expect(harness.spy.trace).toContain("publish:dag.node.queued")
-        expect(harness.spy.trace).not.toContain("begin")
-        expect((yield* dag.store.getNode(dagID, "a"))?.status).toBe("queued")
-      }),
-    ),
-  )
 })
 
 // -- one transaction means all or nothing -----------------------------------

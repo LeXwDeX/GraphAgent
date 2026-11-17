@@ -23,6 +23,7 @@ import type { InstanceContext } from "@/project/instance-context"
 import { SessionID } from "@/session/schema"
 import { isRecord } from "@/util/record"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { transactLayer } from "./fixture/transact"
 
 interface BatchProbe {
   failAtConfig: boolean
@@ -118,7 +119,7 @@ function atomicLayer(probe: BatchProbe) {
   ).pipe(Layer.provide(rawBridge))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(eventsWithPriorListener), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   return Layer.mergeAll(database, eventsWithPriorListener, bridge, store, projector, dag)
 }
 

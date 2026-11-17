@@ -12,6 +12,7 @@ import { Database } from "@graphagent/core/database/database"
 import { layer as sqliteLayer } from "@graphagent/core/database/sqlite.bun"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { EventV2 } from "@graphagent/core/event"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Dag } from "@/dag/dag"
@@ -24,8 +25,15 @@ describe("Dag settlement transaction fence", () => {
     try {
       const sqlite = sqliteLayer({ filename: path.join(dir, "orphan.sqlite") })
       const database = Database.layer.pipe(Layer.provide(sqlite))
-      const persistence = Layer.mergeAll(database, EventV2.defaultLayer, DagProjector.defaultLayer, DagStore.defaultLayer,
-        EventV2Bridge.defaultLayer, DagMessages.layer.pipe(Layer.provide(database)))
+      const persistence = Layer.mergeAll(
+        database,
+        EventV2.defaultLayer,
+        DagProjector.defaultLayer,
+        DagStore.defaultLayer,
+        DagTransact.defaultLayer,
+        EventV2Bridge.defaultLayer,
+        DagMessages.layer.pipe(Layer.provide(database)),
+      )
       const layer = Layer.mergeAll(sqlite, persistence, Dag.layer.pipe(Layer.provide(persistence)))
       await Effect.runPromise(Effect.gen(function* () {
         const { db } = yield* Database.Service
@@ -125,6 +133,7 @@ describe("Dag settlement transaction fence", () => {
         EventV2.defaultLayer,
         DagProjector.defaultLayer,
         DagStore.defaultLayer,
+        DagTransact.defaultLayer,
         EventV2Bridge.defaultLayer,
         DagMessages.layer.pipe(Layer.provide(database)),
       )

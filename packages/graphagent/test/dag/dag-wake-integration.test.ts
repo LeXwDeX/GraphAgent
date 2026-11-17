@@ -47,6 +47,7 @@ import { ProviderTest } from "../fake/provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { mockSessionPrompt, mockSessionPromptWithStub, type StubChildren } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const integration = testEffect(Layer.empty)
 
@@ -147,7 +148,7 @@ function wakeLayer(input: {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const control = DagControl.layer.pipe(Layer.provide(dag))
   const base = Layer.mergeAll(
     database,
@@ -419,7 +420,7 @@ describe("DagLoop atomic wake integration", () => {
         const store = DagStore.layer.pipe(Layer.provide(database))
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-        const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+        const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
         // PR4 serves the period reminder from the inbox tick; the dedicated
         // DagLoop sweep is gone (#1027 D5), so the inbox must be part of the
         // build environment and explicitly initialized below.
@@ -1801,7 +1802,7 @@ describe("DagLoop atomic wake integration", () => {
         const store = DagStore.layer.pipe(Layer.provide(database))
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-        const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+        const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
         const base = Layer.mergeAll(
           database,
           events,

@@ -46,6 +46,7 @@ import { mockSessionPrompt } from "../lib/child-runs"
 import { partText, reportPartKind, tableSession } from "../lib/dag-session-tables"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { transactLayer } from "./fixture/transact"
 
 const PARENT = SessionID.make("ses_parent")
 
@@ -128,7 +129,7 @@ function harness(queues: Queues) {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const transcript = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   // The loop publishes a workflow's terminal event from `settleCompletion`;
   // holding it leaves the window between the last node's event and that one.
   const dag = Layer.effect(
