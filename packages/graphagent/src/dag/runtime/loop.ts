@@ -62,6 +62,7 @@ import { sanitizeInput } from "../templates/sanitize"
 import { DagConfig } from "../config"
 import { DagSection } from "@/config/dag-section"
 import { spawnNode, makeDeadlineWatcher } from "./spawn"
+import { DagComposeExpansion } from "./compose-expansion"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
@@ -529,6 +530,22 @@ const serviceLayer = Layer.effect(
                   reason: applied.reason,
                 })
               }
+              return
+            }
+
+            // #1158: a compose slot is not spawned as authored either. Its split node's plan replaces it
+            // through the same durable extend path: one read-only child per plan item and a join node under
+            // its id, or one fallback worker, or a `compose_capacity` failure of the slot. Marker and plan
+            // are persisted, so a crash before the extend commits plans again and gets the same ids.
+            if (nodeConfig.expand !== undefined) {
+              yield* DagComposeExpansion.expand({
+                port,
+                agents: agentSvc,
+                dagID,
+                slot: nodeConfig,
+                nodes: nodesSnapshot,
+                attempt: admissionAttempt,
+              })
               return
             }
 
