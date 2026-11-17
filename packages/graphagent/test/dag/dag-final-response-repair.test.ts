@@ -107,7 +107,6 @@ async function run(
   const events: TrackedEvent[] = []
   const prompts: SeenPrompt[] = []
   const store = {
-    tryClaimAdoption: () => Effect.succeed(true),
     getNode: () =>
       Effect.succeed({
         ...makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" }),

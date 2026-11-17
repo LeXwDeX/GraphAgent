@@ -114,7 +114,6 @@ describe("spawn final-response protocol", () => {
     let prompts = 0
     const promptSessions: string[] = []
     const store = {
-      tryClaimAdoption: () => Effect.succeed(true),
       getNode: () =>
         Effect.succeed({
           ...makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" }),

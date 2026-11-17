@@ -69,7 +69,6 @@ function makeEventTracker(options: { capturedFail?: boolean; directory?: string 
   capturedStore = new Map()
   capturedCalls = []
   const storeStub: Partial<DagStore.Interface> = {
-    tryClaimAdoption: () => Effect.succeed(true),
     ...(options.directory
       ? {
           getWorkflow: () =>
