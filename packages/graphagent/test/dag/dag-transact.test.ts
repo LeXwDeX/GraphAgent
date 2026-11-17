@@ -27,7 +27,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { Database as NativeDatabase } from "bun:sqlite"
 import { asc, eq, sql } from "drizzle-orm"
-import { Effect, Layer, Option, Stream } from "effect"
+import { Effect, Layer, Option, Queue, Stream } from "effect"
 import type { Scope } from "effect"
 import { DagLease } from "@graphagent/core/dag/lease"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -41,7 +41,7 @@ import { EventSequenceTable, EventTable } from "@graphagent/core/event/sql"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { testEffect } from "../lib/effect"
+import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 const PROJECT = "p"
 const PARENT = "ses_parent"
@@ -518,34 +518,61 @@ describe("a command that fails part-way leaves nothing behind", () => {
 // -- the mailbox change stream -----------------------------------------------
 
 describe("the mailbox change a command makes follows the outermost commit", () => {
-  /** Every change `DagMessages.changed` delivers, by kind, from now on. */
+  /** The changes `DagMessages.changed` delivers from now on, in the order the subscriber took them. */
   const watchChanges = Effect.gen(function* () {
     const messages = yield* Effect.serviceOption(DagMessages.Service)
     if (Option.isNone(messages)) return yield* Effect.die(new Error("this harness has no mailbox"))
-    const kinds = new Array<string>()
+    const arrived = yield* Queue.unbounded<DagMessages.Change>()
     yield* messages.value.changed.pipe(
-      Stream.runForEach((change) => Effect.sync(() => void kinds.push(change.kind))),
+      Stream.runForEach((change) => Queue.offer(arrived, change)),
       Effect.forkScoped({ startImmediately: true }),
     )
-    return kinds
+    return arrived
   })
-  const letConsumersRun = Effect.gen(function* () {
-    for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow
-  })
+
+  /**
+   * Take what the subscriber took, up to and including the first change of `nodeID`. The stream is FIFO, so that is
+   * everything delivered before it: a settlement of that node, committed after the one under test, is the sentinel
+   * that proves an absence without waiting for it.
+   */
+  const takeThrough = (arrived: Queue.Queue<DagMessages.Change>, nodeID: string) =>
+    awaitWithTimeout(
+      Effect.gen(function* () {
+        const taken = new Array<{ nodeID: string | undefined; kind: string }>()
+        while (true) {
+          const change = yield* Queue.take(arrived)
+          taken.push({ nodeID: change.nodeID, kind: change.kind })
+          if (change.nodeID === nodeID) return taken
+        }
+      }),
+      `the mailbox change of node ${nodeID} never arrived`,
+    )
+
+  /** Two independent nodes, both running: `a` is the settlement under test, `b` the sentinel behind it. */
+  const twoRunning = (harness: Harness) =>
+    Effect.gen(function* () {
+      const dag = yield* Dag.Service
+      const dagID = yield* createWorkflow([node("a"), node("b")])
+      yield* start(dag, dagID, "a", harness)
+      yield* start(dag, dagID, "b", harness)
+      return { dag, dagID }
+    })
 
   it.live("a settlement's mailbox close is delivered once, after the transaction that made it commits", () =>
     withHarness({}, (harness) =>
       Effect.gen(function* () {
-        const dag = yield* Dag.Service
-        const dagID = yield* createWorkflow()
-        yield* start(dag, dagID, "a", harness)
-        const kinds = yield* watchChanges
+        const { dag, dagID } = yield* twoRunning(harness)
+        const arrived = yield* watchChanges
 
         yield* dag.nodeCompleted(dagID, "a", "done")
-        yield* letConsumersRun
+        yield* dag.nodeCompleted(dagID, "b", "done")
 
-        // The guard closes the node's mailbox inside the settlement transaction (a savepoint of the command's).
-        expect(kinds).toEqual(["closed"])
+        // The guard closes the node's mailbox inside the settlement transaction (a savepoint of the command's): one
+        // change for `a`, then the sentinel's.
+        expect(yield* takeThrough(arrived, "b")).toEqual([
+          { nodeID: "a", kind: "closed" },
+          { nodeID: "b", kind: "closed" },
+        ])
       }),
     ),
   )
@@ -553,17 +580,16 @@ describe("the mailbox change a command makes follows the outermost commit", () =
   it.live("a settlement that rolls back closes nothing and delivers no change", () =>
     withHarness({}, (harness) =>
       Effect.gen(function* () {
-        const dag = yield* Dag.Service
-        const dagID = yield* createWorkflow()
-        yield* start(dag, dagID, "a", harness)
-        const kinds = yield* watchChanges
+        const { dag, dagID } = yield* twoRunning(harness)
+        const arrived = yield* watchChanges
         yield* harness.events.project(DagEvent.NodeCompleted, () => Effect.die("projector failed"))
 
         const exit = yield* Effect.exit(dag.nodeCompleted(dagID, "a", "done"))
-        yield* letConsumersRun
+        // The projector fails every NodeCompleted, so the sentinel is a failure of the other node.
+        yield* dag.nodeFailed(dagID, "b", "boom", "exec_failed")
 
         expect(exit._tag).toBe("Failure")
-        expect(kinds).toEqual([])
+        expect(yield* takeThrough(arrived, "b")).toEqual([{ nodeID: "b", kind: "closed" }])
         expect((yield* dag.store.getNode(dagID, "a"))?.status).toBe("running")
       }),
     ),
@@ -572,10 +598,8 @@ describe("the mailbox change a command makes follows the outermost commit", () =
   it.live("a settlement inside an enclosing transaction that rolls back later delivers no change", () =>
     withHarness({}, (harness) =>
       Effect.gen(function* () {
-        const dag = yield* Dag.Service
-        const dagID = yield* createWorkflow()
-        yield* start(dag, dagID, "a", harness)
-        const kinds = yield* watchChanges
+        const { dag, dagID } = yield* twoRunning(harness)
+        const arrived = yield* watchChanges
         const { db } = yield* Database.Service
 
         // The command's own transaction is a savepoint here: its guard has closed the
@@ -585,16 +609,15 @@ describe("the mailbox change a command makes follows the outermost commit", () =
             behavior: "immediate",
           })
           .pipe(Effect.exit)
-        yield* letConsumersRun
+        yield* dag.nodeCompleted(dagID, "b", "done")
 
         expect(exit._tag).toBe("Failure")
-        expect(kinds).toEqual([])
+        expect(yield* takeThrough(arrived, "b")).toEqual([{ nodeID: "b", kind: "closed" }])
         expect((yield* dag.store.getNode(dagID, "a"))?.status).toBe("running")
 
         // The same settlement in a transaction that commits delivers its change once.
         yield* dag.nodeCompleted(dagID, "a", "done")
-        yield* letConsumersRun
-        expect(kinds).toEqual(["closed"])
+        expect(yield* takeThrough(arrived, "a")).toEqual([{ nodeID: "a", kind: "closed" }])
       }),
     ),
   )

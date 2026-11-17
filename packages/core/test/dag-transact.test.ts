@@ -19,7 +19,7 @@ import { describe, expect } from "bun:test"
 import path from "node:path"
 import { Database as NativeDatabase } from "bun:sqlite"
 import { sql } from "drizzle-orm"
-import { Cause, Clock, Effect, Exit, Layer, Option, Scheduler, Schema, Stream } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Layer, Option, Scheduler, Schema, Stream } from "effect"
 import type { Scope } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { DagLease } from "@graphagent/core/dag/lease"
@@ -43,6 +43,12 @@ const Note = EventV2.define({
   durable: { version: 1, aggregate: "id" },
   schema: { id: Schema.String, text: Schema.String },
 })
+
+/** Not durable: it needs no transaction, so a test can publish it at a moment of its choosing. */
+const Mark = EventV2.define({ type: "test.transact.mark", schema: { text: Schema.String } })
+
+const textOf = (event: EventV2.Payload) =>
+  Schema.decodeUnknownSync(Schema.Struct({ text: Schema.String }))(event.data).text
 
 /** What a guard that rejects fails with. */
 class GuardRejected extends Error {
@@ -305,12 +311,19 @@ describe("DagTransact.transact: the transaction", () => {
     onFile(() =>
       Effect.gen(function* () {
         const events = yield* EventV2.Service
+        const { db } = yield* Database.Service
         const seen = new Array<string>()
-        yield* events.subscribe(Note).pipe(
-          Stream.runForEach((event) => Effect.sync(() => void seen.push(event.data.text))),
+        const sawSentinel = yield* Deferred.make<void>()
+        yield* events.all().pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => void seen.push(textOf(event))).pipe(
+              Effect.andThen(textOf(event) === "sentinel" ? Deferred.succeed(sawSentinel, undefined) : Effect.void),
+            ),
+          ),
           Effect.forkScoped({ startImmediately: true }),
         )
 
+        // Rolled back: what the body published is never delivered.
         yield* Effect.exit(
           transact(
             undefined,
@@ -320,18 +333,21 @@ describe("DagTransact.transact: the transaction", () => {
             }),
           ),
         )
-        const inside = yield* transact(
+        // Committed: `afterCommit` callbacks run in registration order once the transaction commits, and a delivery is
+        // one of them. A marker registered ahead of the publish goes out at the commit, ahead of the delivery: an event
+        // delivered when it was published would be queued before the marker instead.
+        yield* transact(
           undefined,
           Effect.gen(function* () {
+            yield* db.$client.afterCommit(events.publish(Mark, { text: "commit" }))
             yield* events.publish(Note, { id: DAG, text: "committed" })
-            for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow
-            return [...seen]
           }),
         )
-        for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow
+        // The stream is FIFO: once the sentinel, published after both, has arrived, so has everything before it.
+        yield* events.publish(Mark, { text: "sentinel" })
+        yield* Deferred.await(sawSentinel)
 
-        expect(inside).toEqual([])
-        expect(seen).toEqual(["committed"])
+        expect(seen).toEqual(["commit", "committed", "sentinel"])
       }),
     ),
   )

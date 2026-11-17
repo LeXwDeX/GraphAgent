@@ -115,42 +115,67 @@ const Sentinel = EventV2.define({
 const anyText = (event: EventV2.Payload) =>
   Schema.decodeUnknownSync(Schema.Struct({ text: Schema.String }))(event.data).text
 
+/** A count that consumers raise and a test can wait on without polling: `reached(n)` completes once it is at least n. */
+const counter = Effect.gen(function* () {
+  let value = 0
+  const waiters = new Array<{ readonly target: number; readonly done: Deferred.Deferred<void> }>()
+  const bump = Effect.gen(function* () {
+    value += 1
+    for (const waiter of waiters) if (value >= waiter.target) yield* Deferred.succeed(waiter.done, undefined)
+  })
+  const reached = (target: number) =>
+    Effect.gen(function* () {
+      const done = yield* Deferred.make<void>()
+      // Looking and registering is one synchronous step, so no bump can fall between them.
+      if (value >= target) yield* Deferred.succeed(done, undefined)
+      else waiters.push({ target, done })
+      yield* Deferred.await(done)
+    })
+  return { bump, reached }
+})
+
 /**
- * Watchers on every delivery path: the typed stream, the all-events stream and
- * the deprecated `listen` callbacks. `finish` publishes a committed sentinel
- * and returns once the two streams have seen it, which orders every earlier
- * delivery before the caller's assertions (a stream is FIFO).
+ * Watchers on every delivery path: the typed stream of `Message`, the all-events
+ * stream and the deprecated `listen` callbacks. `finish` publishes a committed
+ * sentinel and returns once every watcher has what the all-events stream had by
+ * then. That stream is FIFO, so what it has seen when the sentinel arrives is
+ * everything delivered before it. The typed stream and the `listen` callbacks
+ * are consumed on fibers of their own, with no order across events guaranteed,
+ * so each signals its own progress and `finish` waits for it to catch up
+ * instead of assuming when it runs.
  */
 const watching = Effect.gen(function* () {
   const events = yield* EventV2.Service
   const seen = { typed: new Array<string>(), all: new Array<string>(), listen: new Array<string>() }
-  const sawTyped = yield* Deferred.make<void>()
-  const sawAll = yield* Deferred.make<void>()
-  const record = (into: string[], done?: Deferred.Deferred<void>) => (event: EventV2.Payload) =>
-    Effect.sync(() => into.push(anyText(event))).pipe(
-      Effect.andThen(done && anyText(event) === "sentinel" ? Deferred.succeed(done, undefined) : Effect.void),
-    )
-  yield* events
-    .subscribe(Message)
-    .pipe(Stream.runForEach(record(seen.typed)), Effect.forkScoped({ startImmediately: true }))
-  yield* events
-    .subscribe(Sentinel)
-    .pipe(Stream.runForEach(record(seen.typed, sawTyped)), Effect.forkScoped({ startImmediately: true }))
-  yield* events.all().pipe(Stream.runForEach(record(seen.all, sawAll)), Effect.forkScoped({ startImmediately: true }))
-  yield* events.listen(record(seen.listen))
+  const sawSentinel = yield* Deferred.make<void>()
+  const typedTook = yield* counter
+  const listenTook = yield* counter
+  let messagesInAll = 0
+  yield* events.subscribe(Message).pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => void seen.typed.push(anyText(event))).pipe(Effect.andThen(typedTook.bump)),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+  )
+  yield* events.all().pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        seen.all.push(anyText(event))
+        if (event.type === Message.type) messagesInAll += 1
+      }).pipe(Effect.andThen(anyText(event) === "sentinel" ? Deferred.succeed(sawSentinel, undefined) : Effect.void)),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+  )
+  yield* events.listen((event) =>
+    Effect.sync(() => void seen.listen.push(anyText(event))).pipe(Effect.andThen(listenTook.bump)),
+  )
   const finish = Effect.gen(function* () {
     yield* events.publish(Sentinel, { id: EventV2.ID.create(), text: "sentinel" })
-    yield* Deferred.await(sawTyped)
-    yield* Deferred.await(sawAll)
-    // The deprecated listeners run on a fiber per event: give them the turns they need.
-    for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow
+    yield* Deferred.await(sawSentinel)
+    yield* typedTook.reached(messagesInAll)
+    yield* listenTook.reached(seen.all.length)
   })
   return { events, seen, finish }
-})
-
-/** Let every consumer fiber run: an event already delivered would be recorded by now. */
-const letConsumersRun = Effect.gen(function* () {
-  for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow
 })
 
 describe("EventV2 delivery waits for the outermost commit", () => {
@@ -160,25 +185,25 @@ describe("EventV2 delivery waits for the outermost commit", () => {
       const { events, seen, finish } = yield* watching
       const id = EventV2.ID.create()
 
-      const inside = yield* db.transaction(() =>
+      yield* db.transaction(() =>
         Effect.gen(function* () {
+          // `afterCommit` callbacks run in registration order once the transaction commits, and a delivery is one of
+          // them. A marker registered ahead of every publish therefore goes out at the commit, ahead of every delivery:
+          // an event delivered when it was published would be queued before the marker instead.
+          yield* db.$client.afterCommit(events.publish(Local, { text: "commit" }))
           yield* events.publish(Message, { id, text: "first" })
           yield* events.publish(Local, { text: "second" })
           yield* events.publishMany([
             { definition: Message, data: { id, text: "third" } },
             { definition: Message, data: { id, text: "fourth" } },
           ])
-          yield* letConsumersRun
-          return { typed: [...seen.typed], all: [...seen.all], listen: [...seen.listen] }
         }),
       )
-      // Nothing reached a subscriber while the transaction was still open.
-      expect(inside).toEqual({ typed: [], all: [], listen: [] })
 
       yield* finish
-      expect(seen.all).toEqual(["first", "second", "third", "fourth", "sentinel"])
-      expect(seen.typed).toEqual(["first", "third", "fourth", "sentinel"])
-      expect(seen.listen.slice().sort()).toEqual(["first", "fourth", "second", "sentinel", "third"])
+      expect(seen.all).toEqual(["commit", "first", "second", "third", "fourth", "sentinel"])
+      expect(seen.typed).toEqual(["first", "third", "fourth"])
+      expect(seen.listen.slice().sort()).toEqual(["commit", "first", "fourth", "second", "sentinel", "third"])
     }),
   )
 
@@ -204,7 +229,7 @@ describe("EventV2 delivery waits for the outermost commit", () => {
 
       expect(outer._tag).toBe("Failure")
       expect(seen.all).toEqual(["sentinel"])
-      expect(seen.typed).toEqual(["sentinel"])
+      expect(seen.typed).toEqual([])
       expect(seen.listen).toEqual(["sentinel"])
     }),
   )
@@ -232,7 +257,8 @@ describe("EventV2 delivery waits for the outermost commit", () => {
       yield* finish
 
       expect(seen.all).toEqual(["kept-1", "kept-2", "sentinel"])
-      expect(seen.typed).toEqual(["kept-1", "kept-2", "sentinel"])
+      expect(seen.typed).toEqual(["kept-1", "kept-2"])
+      expect(seen.listen.slice().sort()).toEqual(["kept-1", "kept-2", "sentinel"])
     }),
   )
 
@@ -241,10 +267,12 @@ describe("EventV2 delivery waits for the outermost commit", () => {
       const { db } = yield* Database.Service
       const events = yield* EventV2.Service
       const delivered = new Array<string>()
-      const sawFirst = yield* Deferred.make<void>()
+      const sawSentinel = yield* Deferred.make<void>()
       yield* events.all().pipe(
         Stream.runForEach((event) =>
-          Effect.sync(() => delivered.push(event.type)).pipe(Effect.andThen(Deferred.succeed(sawFirst, undefined))),
+          Effect.sync(() => delivered.push(event.type)).pipe(
+            Effect.andThen(event.type === Sentinel.type ? Deferred.succeed(sawSentinel, undefined) : Effect.void),
+          ),
         ),
         Effect.forkScoped({ startImmediately: true }),
       )
@@ -265,35 +293,35 @@ describe("EventV2 delivery waits for the outermost commit", () => {
           }),
         ),
       )
-      yield* letConsumersRun
-      expect(delivered).toEqual([])
-
-      // Committed: delivered once the transaction is over, not before.
-      const inside = yield* db.transaction(() =>
+      // Committed: delivered once the transaction is over, not before. The marker goes out at the commit, ahead of
+      // the replay's delivery, which was registered after it.
+      yield* db.transaction(() =>
         Effect.gen(function* () {
+          yield* db.$client.afterCommit(events.publish(Local, { text: "commit" }))
           yield* events.replay(replayed(DagEvent.DagID.create()), { publish: true })
-          yield* letConsumersRun
-          return [...delivered]
         }),
       )
-      expect(inside).toEqual([])
-      yield* Deferred.await(sawFirst)
-      expect(delivered).toEqual([DagEvent.WorkflowPaused.type])
+      // The stream is FIFO: once the sentinel, published after both, has arrived, so has everything before it.
+      yield* events.publish(Sentinel, { id: EventV2.ID.create(), text: "sentinel" })
+      yield* Deferred.await(sawSentinel)
+      expect(delivered).toEqual([Local.type, DagEvent.WorkflowPaused.type, Sentinel.type])
     }),
   )
 
-  it.effect("control: a publish outside any transaction is still delivered before publish returns", () =>
-    Effect.gen(function* () {
-      const { events, seen } = yield* watching
+  it.effect(
+    "control: a publish outside any transaction is delivered at once, ahead of what is published after it",
+    () =>
+      Effect.gen(function* () {
+        const { events, seen, finish } = yield* watching
 
-      yield* events.publish(Message, { id: EventV2.ID.create(), text: "plain" })
-      yield* events.publish(Local, { text: "plain-local" })
-      yield* letConsumersRun
+        yield* events.publish(Message, { id: EventV2.ID.create(), text: "plain" })
+        yield* events.publish(Local, { text: "plain-local" })
+        yield* finish
 
-      expect(seen.all).toEqual(["plain", "plain-local"])
-      expect(seen.typed).toEqual(["plain"])
-      expect(seen.listen.slice().sort()).toEqual(["plain", "plain-local"])
-    }),
+        expect(seen.all).toEqual(["plain", "plain-local", "sentinel"])
+        expect(seen.typed).toEqual(["plain"])
+        expect(seen.listen.slice().sort()).toEqual(["plain", "plain-local", "sentinel"])
+      }),
   )
 
   it.effect("control: a failing publish outside any transaction delivers nothing", () =>
