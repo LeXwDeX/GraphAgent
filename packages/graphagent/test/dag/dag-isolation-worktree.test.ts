@@ -683,6 +683,34 @@ describe("spawn worktree isolation", () => {
     for (const worktree of harness.worktrees) expect(existsSync(worktree)).toBe(false)
   })
 
+  it("removes the worktree of an attempt whose lease was lost before its child session (ADR-0008)", async () => {
+    const target = repo()
+    const harness = makeHarness(target)
+    // Held at the fence, gone by the time the worktree exists: the spawn stops before `sessions.create`.
+    let reads = 0
+    const leaseHeld = Effect.sync(() => ++reads === 1)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(spawnSchedule(spawnInput(target, "a", "success", harness), 1), {
+            ...spawnInput(target, "a", "success", harness),
+            leaseHeld,
+          })
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(reads).toBe(2)
+    expect(harness.worktrees).toHaveLength(1)
+    // No child session, no node event, and the worktree it made is gone again.
+    expect(harness.directories.size).toBe(0)
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toEqual([])
+    expect(harness.removals).toEqual(harness.worktrees)
+    for (const worktree of harness.worktrees) expect(existsSync(worktree)).toBe(false)
+  })
+
   it("fails the node when worktree isolation has no Worktree service", async () => {
     const target = repo()
     const harness = makeHarness(target, "success", { withWorktree: false })

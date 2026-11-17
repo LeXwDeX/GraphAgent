@@ -10,6 +10,7 @@
 // instead of leaving the durable row running with a dead node and a pending
 // dependent that nothing ever schedules again.
 import { afterAll, describe, expect, it } from "bun:test"
+import { sql } from "drizzle-orm"
 import { DateTime, Deferred, Effect, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
@@ -26,6 +27,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EngineProcess } from "@/session/engine-process"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -215,6 +217,12 @@ describe("DagLoop session move with a running workflow", () => {
           expect((yield* storeSvc.getNode(dagID, "n1"))?.errorReason).toContain("ownership lost")
           // Nothing was spawned under the old directory after the move.
           expect(Option.isNone(yield* Queue.poll(childPrompts.get(DIR_A)!))).toBe(true)
+          // The move is a handover inside one process (ADR-0008): the new owner's claim found the
+          // lease already naming this runner and kept its epoch.
+          expect(yield* db.db.get(sql`SELECT runner_id, epoch FROM dag_runner WHERE dag_id = ${dagID}`)).toEqual({
+            runner_id: EngineProcess.runner.id,
+            epoch: 1,
+          })
         }).pipe(
           Effect.provide(Layer.mergeAll(base, loopLayer)),
           Effect.provideService(InstanceRef, {

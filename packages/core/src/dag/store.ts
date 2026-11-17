@@ -303,6 +303,11 @@ const workflowReplannedType = (() => {
 
 export interface Interface {
   readonly getWorkflow: (id: string) => Effect.Effect<WorkflowRow | undefined>
+  /**
+   * Compatibility only: no production caller since #1029 PR2 (ADR-0008). An
+   * adoption and a spawn take or re-read the runner lease (`DagLease`), which
+   * keeps this guarantee. Test doubles still provide it; PR4b removes it.
+   */
   readonly tryClaimAdoption: (id: string) => Effect.Effect<boolean>
   readonly listWorkflows: () => Effect.Effect<WorkflowRow[]>
   readonly listBySession: (sessionId: string) => Effect.Effect<WorkflowRow[]>
@@ -567,20 +572,26 @@ export const layer = Layer.effect(
         return { seq: row.seq, retarget: decoded.value.retarget }
       }),
 
-      // #270 atomic-adoption fence (C2). The adoption sites previously re-read the
-      // row (ownsWorkflow) and then published their entry into the in-memory map —
-      // a check-then-act pair a deletion cascade could commit between. The claim
-      // collapses the admission into ONE conditional UPDATE: it matches the row
-      // only while the row STILL EXISTS and is in an adoptable (non-terminal)
-      // status, and returns whether it claimed. A Session.remove (FK cascade) or a
-      // terminal transition that commits before the claim therefore makes the claim
-      // match zero rows and the adoption aborts atomically — no post-deletion
-      // admission survives. Directory ownership is NOT re-asserted here: the caller
-      // has already passed DagLocation.ownsWorkflow, which canonicalizes both sides;
-      // duplicating a directory comparison in SQL would diverge from that
-      // canonicalization (create stamps are realpathed, Moved re-stamps are not),
-      // so status conditionality is the fence and the read authority keeps the
-      // directory key. No lease column — the status conditionality IS the claim.
+      // #270 atomic-adoption fence (C2), kept for compatibility: since #1029 PR2
+      // (ADR-0008) nothing in production calls it. Adoption claims the runner
+      // lease and the spawn admission re-reads it (`DagLease.claim` / `held`);
+      // both refuse a workflow that is gone or terminal, which is this fence's
+      // guarantee, and add the owner check. Only test doubles of DagStore still
+      // provide it; PR4b removes it with the old adoption paths.
+      //
+      // What it did: the adoption sites re-read the row (ownsWorkflow) and then
+      // published their entry into the in-memory map — a check-then-act pair a
+      // deletion cascade could commit between. The claim collapses the admission
+      // into ONE conditional UPDATE: it matches the row only while the row STILL
+      // EXISTS and is in an adoptable (non-terminal) status, and returns whether
+      // it claimed. A Session.remove (FK cascade) or a terminal transition that
+      // commits before the claim therefore makes the claim match zero rows and the
+      // adoption aborts atomically. Directory ownership is NOT re-asserted here:
+      // the caller has already passed DagLocation.ownsWorkflow, which
+      // canonicalizes both sides; duplicating a directory comparison in SQL would
+      // diverge from that canonicalization (create stamps are realpathed, Moved
+      // re-stamps are not), so status conditionality is the fence and the read
+      // authority keeps the directory key.
       tryClaimAdoption: Effect.fn("DagStore.tryClaimAdoption")(function* (id) {
         const claimed = yield* db
           .update(WorkflowTable)
