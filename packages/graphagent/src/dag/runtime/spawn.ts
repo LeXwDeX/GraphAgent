@@ -134,7 +134,10 @@ export interface NodeSpawnInput {
    * `sessions.create`. `false` ends the spawn there and leaves nothing behind:
    * no child session, no worktree, no node event (the node stays queued for
    * whoever holds the lease now); what the lost lease means for the workflow is
-   * the caller's to act on. Callers that run no loop, so hold no lease, omit it.
+   * the caller's to act on. It is read once more before an isolated node's
+   * worktree is committed and removed: `false` there ends the attempt without
+   * the commit, the removal or a settlement. Callers that run no loop, so hold
+   * no lease, omit it.
    */
   leaseHeld?: Effect.Effect<boolean>
   parentSessionID: string
@@ -832,7 +835,7 @@ export function spawnNode(
           // conditional UPDATE did, and a lease another runner took over fences
           // a zombie runner too. The spawn ends here with no trace (the node
           // stays queued for the holder). The commit of a finished node's
-          // worktree is not behind this check: that is the write fence of PR3b.
+          // worktree has its own re-read, in `complete` below.
           if (input.leaseHeld && !(yield* input.leaseHeld)) return
           // #948: model resolution, permit acquisition, and the pause hold all
           // happen before this point, so the scheduling-round workspace check
@@ -1159,6 +1162,11 @@ export function spawnNode(
               let touchedPaths: string[] = []
               let metadata = isolatedWorktree
               if (metadata) {
+                // ADR-0008 decision 2: committing and removing the worktree are side effects the write
+                // fence cannot take back, so the lease is read again right before them. A lost lease ends
+                // the attempt here, with the worktree as it is: whoever holds the workflow now settles it
+                // from the child's transcript (recovery), and nothing is written for the node.
+                if (input.leaseHeld && !(yield* input.leaseHeld)) return
                 const completion = yield* completeIsolatedNode({
                   worktree: metadata,
                   ownerDirectory: executionDirectory ?? metadata.directory,

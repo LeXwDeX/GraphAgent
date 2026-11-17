@@ -711,6 +711,38 @@ describe("spawn worktree isolation", () => {
     for (const worktree of harness.worktrees) expect(existsSync(worktree)).toBe(false)
   })
 
+  it("leaves the worktree of a finished attempt alone when its lease was lost before the commit (ADR-0008)", async () => {
+    const target = repo()
+    const harness = makeHarness(target)
+    // Held at the spawn fence and before the child session, gone by the time the finished node would be committed.
+    let reads = 0
+    const leaseHeld = Effect.sync(() => ++reads <= 2)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(spawnSchedule(spawnInput(target, "a", "success", harness), 1), {
+            ...spawnInput(target, "a", "success", harness),
+            leaseHeld,
+          })
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(reads).toBe(3)
+    expect(harness.worktrees).toHaveLength(1)
+    const worktree = harness.worktrees[0] ?? ""
+    // The child ran in the worktree. Nothing was committed, patched, removed or written for the node: whoever holds
+    // the lease now settles it from the child's transcript.
+    expect(harness.directories.size).toBe(1)
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toEqual([])
+    expect(harness.removals).toEqual([])
+    expect(existsSync(worktree)).toBe(true)
+    expect(git(worktree, ["status", "--porcelain"])).toContain("shared.txt")
+    expect(git(worktree, ["rev-parse", "HEAD"])).toBe(git(target, ["rev-parse", "HEAD"]))
+  })
+
   it("fails the node when worktree isolation has no Worktree service", async () => {
     const target = repo()
     const harness = makeHarness(target, "success", { withWorktree: false })
