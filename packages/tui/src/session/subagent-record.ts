@@ -5,7 +5,7 @@ import type { Part } from "@graphagent/sdk"
 import type { SessionSummary } from "../context/session-summary"
 import { t } from "../i18n"
 import { renderUserTextPart } from "../i18n/receipt"
-import { SUBAGENT_MARKER_GLYPH, subagentMarker, type SubagentMarker } from "../shell/subagent-path"
+import { SUBAGENT_MARKER_GLYPH, subagentMarker, type SubagentMarker } from "./subagents"
 import { Locale } from "../util/locale"
 
 /**

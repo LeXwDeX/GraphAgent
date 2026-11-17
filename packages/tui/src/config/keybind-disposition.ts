@@ -22,6 +22,7 @@ export type KeybindLayer =
   | "ask"
   | "run"
   | "modal:session-list"
+  | "modal:agents"
   | "modal:stash"
   | "modal:model"
   | "modal:mcp"
@@ -103,6 +104,10 @@ export const Layers = {
   },
   "modal:session-list": {
     summary: "Session list panel actions (mode `modal`, priority 400).",
+    coactive: [],
+  },
+  "modal:agents": {
+    summary: "Sub-agent list panel actions (mode `modal`, priority 400).",
     coactive: [],
   },
   "modal:stash": {
@@ -231,6 +236,11 @@ export const Disposition = {
   session_queued_prompts: keep("run", "Registered by the run footer only; the TUI registers no command for it"),
   session_child_first: keep("session"),
   session_pin_toggle: change("modal:session-list", "Scoped to the session list panel; no longer a global key"),
+  subagent_relay: added(
+    "modal:agents",
+    "ctrl+r in the /agents panel only (a list with a filter box takes ctrl+<key> actions); it fills the main " +
+      "session's input and sends nothing, so a sub-agent is never stopped or steered from the list",
+  ),
   session_quick_switch_1: keep("global"),
   session_quick_switch_2: keep("global"),
   session_quick_switch_3: keep("global"),

@@ -6,13 +6,13 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
+import { subagentMarkerToken } from "../session/subagents"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import {
   DESCRIPTION_SEPARATOR,
   PATH_SEPARATOR,
   SUBAGENT_SWITCH_KEYS,
   layoutSubagentPath,
-  subagentMarkerToken,
   type SubagentPathPart,
   type SubagentView,
 } from "./subagent-path"

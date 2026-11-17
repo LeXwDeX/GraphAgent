@@ -81,7 +81,7 @@ import {
   subagentOutcome,
   type HandbackLine,
 } from "../../session/subagent-record"
-import { subagentDescription, subagentMarkerToken } from "../../shell/subagent-path"
+import { subagentDescription, subagentMarkerToken } from "../../session/subagents"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
