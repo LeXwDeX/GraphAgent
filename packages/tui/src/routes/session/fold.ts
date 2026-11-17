@@ -5,6 +5,8 @@ import stripAnsi from "strip-ansi"
 import type { Part, ToolPart } from "@graphagent/sdk"
 import type { PartPreview } from "../../context/stream-buffer"
 import { reasoningSummary, type ThinkingMode } from "../../context/thinking"
+import type { BackgroundCard } from "../../session/background-card"
+import { cellWidth, type AmbiguousWidth } from "../../ui/width"
 import { outputOverflows } from "../../util/collapse-tool-output"
 import {
   parseApplyPatchFiles,
@@ -13,6 +15,7 @@ import {
   stringValue,
   toolDisplay,
 } from "../../util/tool-display"
+import { resultPreviewRoom } from "./result-card"
 import { DELEGATION_PROMPT_LINES, type ViewFlag } from "./rows"
 import { toolAttention } from "./tool-attention"
 
@@ -118,6 +121,23 @@ export function reasoningFolds(text: string, thinking: ThinkingMode) {
  */
 export function delegationFolds(text: string, width: number) {
   return outputOverflows(text, DELEGATION_PROMPT_LINES, outputCharCap(DELEGATION_PROMPT_LINES, width))
+}
+
+/**
+ * Whether the card of a background result has more to show than its one line of preview: a body of more than one line,
+ * or a first line wider than the room that line has at `width`, the content width of the transcript, at the reader's
+ * `ambiguous_width`. A body that is that one line has nothing to open. The card, its hint and `view.expand.toggle` all
+ * read this, so the key never lands on a card that cannot change. A click on the card does not fold it: it opens the
+ * sub-agent.
+ */
+export function resultCardFolds(
+  card: Pick<BackgroundCard, "body" | "firstLine">,
+  width: number,
+  ambiguousWidth: AmbiguousWidth,
+) {
+  return (
+    card.body.includes("\n") || cellWidth(card.firstLine, ambiguousWidth) > resultPreviewRoom(width, ambiguousWidth)
+  )
 }
 
 /** Tools that draw a block without a fold once their metadata is there; a failed call of one is a block, not a row. */

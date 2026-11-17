@@ -4,6 +4,7 @@
 import { createMemo, mapArray, untrack, type Accessor } from "solid-js"
 import type { Message, Part } from "@graphagent/sdk"
 import { renderUserTextPart } from "../../i18n/receipt"
+import { backgroundCard } from "../../session/background-card"
 import { errorMessage } from "../../util/error"
 import {
   createTextFacts,
@@ -196,6 +197,22 @@ function buildMessageRows(
       const key = `user:${message.id}`
       rows.push({ key, messageID: message.id, kind: "user", revision: rowRevision(text, compaction) })
       chars.set(key, longestLine(text))
+    }
+    // A synthetic part is not the user's: it has no row, unless its metadata says it is the result of a background
+    // run. Then it is a card, which folds under its part id like a reasoning or a tool block does.
+    for (const part of parts) {
+      if (part.type !== "text" || !part.synthetic) continue
+      const card = backgroundCard(part)
+      if (!card) continue
+      const key = `part:${part.id}`
+      rows.push({
+        key,
+        messageID: message.id,
+        partID: part.id,
+        kind: "result",
+        revision: rowRevision(card.status, card.title, card.elapsedMs, card.body, deps.view.get(part.id, "expanded")),
+      })
+      chars.set(key, longestLine(card.body))
     }
     return { rows, chars, streaming }
   }

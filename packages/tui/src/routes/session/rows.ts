@@ -21,6 +21,8 @@ export type RowKind =
   | "delegation"
   /** The line that closes the record of a sub-agent that has finished (#1033 3.4). */
   | "handback"
+  /** The card of a finished background run, drawn from the result message the server added to the session (#1058). */
+  | "result"
 
 export interface Row {
   key: string
@@ -66,8 +68,8 @@ export const delegationFoldID = (messageID: string) => `${DELEGATION_FOLD_PREFIX
 
 /**
  * The key of the row that folds under `partID` in `SessionViewState`, which is the row `pinnedKeys` keeps mounted
- * while it is open. A reasoning or tool row is keyed `part:<partID>`; the task block of a sub-agent view folds under
- * its own key.
+ * while it is open. A reasoning, tool or result row is keyed `part:<partID>`; the task block of a sub-agent view folds
+ * under its own key.
  */
 export function foldRowKey(partID: string) {
   return partID.startsWith(DELEGATION_FOLD_PREFIX) ? partID : `part:${partID}`
@@ -270,6 +272,10 @@ export function estimateRowHeight(row: Row, width: number, chars: number, expand
     }
     case "handback":
       return 2
+    case "result":
+      // The gap above, the padding above and below, and the title make four rows. Closed, one line of preview stands
+      // under the title. Open, the body (a gap, then its lines) and the hint (a gap, then its line) stand there.
+      return expanded ? lines + 7 : 5
     case "text":
       return lines + 1
     case "reasoning":
