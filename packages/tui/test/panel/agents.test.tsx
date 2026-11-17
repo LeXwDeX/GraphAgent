@@ -655,6 +655,32 @@ describe("what the user can do in it", () => {
     }
   })
 
+  test("a running sub-agent the filter hides keeps no clock: the subscription follows the rows on screen", async () => {
+    const clock = fakeTicker(at(95))
+    const harness = await mount({ ticker: clock.ticker })
+    try {
+      expect(clock.listeners()).toBe(1)
+      await harness.app.mockInput.typeText("SDK")
+      const filtered = await harness.settle().then(() => harness.frame())
+      expect(filtered).not.toContain(TITLE_SCAN)
+      expect(clock.listeners()).toBe(0)
+      // The row that is left keeps its columns while the hidden one's time would grow.
+      const row = rowWith(filtered, TITLE_BUILD)
+      clock.advance(60_000)
+      await harness.settle()
+      expect(rowWith(await harness.frame(), TITLE_BUILD)).toBe(row)
+
+      // The running one is shown again: the clock is listened to again.
+      for (let index = 0; index < 3; index++) harness.app.mockInput.pressBackspace()
+      const all = await harness.settle().then(() => harness.frame())
+      expect(all).toContain(TITLE_SCAN)
+      expect(clock.listeners()).toBe(1)
+    } finally {
+      await harness.dispose()
+    }
+    expect(clock.listeners()).toBe(0)
+  })
+
   test("says nothing matches when the filter lets no row through, not that there are no sub-agents", async () => {
     const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
     try {

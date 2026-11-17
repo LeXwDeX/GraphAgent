@@ -414,12 +414,12 @@ export const {
         }
         case "session.status": {
           const { sessionID, status } = event.properties
-          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, status))
+          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, status, Date.now()))
           break
         }
         case "session.idle": {
           const sessionID = event.properties.sessionID
-          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, { type: "idle" }))
+          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, { type: "idle" }, Date.now()))
           break
         }
         case "session.error": {

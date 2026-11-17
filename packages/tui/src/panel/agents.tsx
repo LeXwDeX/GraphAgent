@@ -109,7 +109,6 @@ export function AgentsPanel() {
   })
   const byID = createMemo(() => new Map(rows().map((row) => [row.id, row])))
   const rowOf = (id: string) => byID().get(id)
-  const ticking = createMemo(() => rows().some((row) => row.marker === "running"))
 
   /** What a row says of its sub-agent: the state, the tool count and the time. A clock is read only for a running one. */
   const stateText = (row: SubagentRow) => subagentTrail(row, row.marker === "running" ? now() : 0)
@@ -117,12 +116,6 @@ export function AgentsPanel() {
   // A row is one string, name then state, laid out by `cellWidth` so that it fits the panel whichever width the
   // terminal gives East Asian ambiguous glyphs. The states line up in a column as wide as the widest of them, and the
   // name is cut to what is left of the row.
-  const stateWidth = createMemo(() => Math.max(0, ...rows().map((row) => cellWidth(stateText(row), ambiguousWidth()))))
-  const nameWidth = createMemo(() => {
-    const marker = cellWidth(`${SUBAGENT_MARKER_GLYPH.running} `, ambiguousWidth())
-    const room = dimensions().width - SHELL_WIDTH - POINTER_WIDTH - marker - NAME_GAP - stateWidth()
-    return Math.max(MIN_NAME_WIDTH, room)
-  })
   const rowText = (row: SubagentRow) => {
     const aw = ambiguousWidth()
     const name = padCells(truncateCells(subagentTitle(row), nameWidth(), aw), nameWidth(), aw)
@@ -138,33 +131,49 @@ export function AgentsPanel() {
   // its items change, which a running sub-agent would do on every tool it calls. Each item reads its row where it is
   // drawn, so the glyph, the text and the time still follow the data.
   const ids = createMemo<string[]>(() => rows().map((row) => row.id), [], { equals: sameStrings })
-  const items = createMemo<ListItem<string>[]>(() => {
-    const text = needle().trim()
-    return ids()
-      .filter((id) => {
+  const shownIDs = createMemo<string[]>(
+    () => {
+      const text = needle().trim()
+      return ids().filter((id) => {
         if (!text) return true
         const row = untrack(() => rowOf(id))
         return row !== undefined && fuzzysort.single(text, subagentTitle(row)) !== null
       })
-      .map((id) => ({
-        id,
-        value: id,
-        get title() {
-          const row = rowOf(id)
-          return row ? rowText(row) : id
-        },
-        lead: <StateGlyph row={() => rowOf(id)} />,
-        // Read only for the selected row. The delegated prompt is the first user message of the session when it is
-        // loaded; otherwise the Task description stands in, and nothing is requested to get the message.
-        get description() {
-          const row = rowOf(id)
-          if (!row) return undefined
-          const text =
-            delegatedPrompt(sync.data.message[id], (messageID) => sync.data.part[messageID]) ?? row.description
-          return t("subagent.panel.prompt", { text })
-        },
-      }))
+    },
+    [],
+    { equals: sameStrings },
+  )
+  // The rows on screen. The clock and the width of the state column follow these only: a running sub-agent the filter
+  // hides keeps no subscription alive and does not move the columns of the rows that are shown.
+  const shownRows = createMemo(() => shownIDs().flatMap((id) => rowOf(id) ?? []))
+  const ticking = createMemo(() => shownRows().some((row) => row.marker === "running"))
+  const stateWidth = createMemo(() =>
+    Math.max(0, ...shownRows().map((row) => cellWidth(stateText(row), ambiguousWidth()))),
+  )
+  const nameWidth = createMemo(() => {
+    const marker = cellWidth(`${SUBAGENT_MARKER_GLYPH.running} `, ambiguousWidth())
+    const room = dimensions().width - SHELL_WIDTH - POINTER_WIDTH - marker - NAME_GAP - stateWidth()
+    return Math.max(MIN_NAME_WIDTH, room)
   })
+  const items = createMemo<ListItem<string>[]>(() =>
+    shownIDs().map((id) => ({
+      id,
+      value: id,
+      get title() {
+        const row = rowOf(id)
+        return row ? rowText(row) : id
+      },
+      lead: <StateGlyph row={() => rowOf(id)} />,
+      // Read only for the selected row. The delegated prompt is the first user message of the session when it is
+      // loaded; otherwise the Task description stands in, and nothing is requested to get the message.
+      get description() {
+        const row = rowOf(id)
+        if (!row) return undefined
+        const text = delegatedPrompt(sync.data.message[id], (messageID) => sync.data.part[messageID]) ?? row.description
+        return t("subagent.panel.prompt", { text })
+      },
+    })),
+  )
 
   function relay(item: ListItem<string>) {
     const row = rowOf(item.value)
