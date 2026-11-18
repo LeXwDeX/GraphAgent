@@ -53,6 +53,7 @@ import { it } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMEvent } from "@graphagent/llm"
 import { Stream } from "effect"
+import { HINT_TEXT } from "../../src/session/turn/hints"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -312,3 +313,116 @@ it.instance(
     }),
   { config: cfg },
 )
+
+const pseudoToolCallScript: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.textStart({ id: "text-1" }),
+  LLMEvent.textDelta({
+    id: "text-1",
+    text: 'Reading it now.\n<tool_call>{"name":"read","arguments":{}}</tool_call>',
+  }),
+  LLMEvent.textEnd({ id: "text-1" }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+
+/** Plain text of one model message, whatever shape the content has. */
+const messageText = (message: LLM.StreamInput["messages"][number] | undefined) => {
+  if (!message) return ""
+  if (typeof message.content === "string") return message.content
+  return message.content.map((part) => ("text" in part ? part.text : "")).join("")
+}
+
+it.instance(
+  "session.prompt loop answers a tool call written into the text with one runtime hint and a second step",
+  () =>
+    Effect.gen(function* () {
+      const requests: LLM.StreamInput["messages"][] = []
+      const llmLayer = Layer.succeed(
+        LLM.Service,
+        LLM.Service.of({
+          organizer: () => Effect.succeed(undefined),
+          stream: (input) => {
+            const script = requests.length === 0 ? pseudoToolCallScript : validScript
+            requests.push(input.messages)
+            return Stream.fromIterable(script)
+          },
+        }),
+      )
+      yield* Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Pseudo tool call" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "read the file" }],
+        })
+
+        const looped = yield* prompt.loop({ sessionID: chat.id })
+
+        expect(requests).toHaveLength(2)
+        expect(looped.info.role).toBe("assistant")
+        if (looped.info.role !== "assistant") throw new Error("expected an assistant reply")
+        expect(looped.info.error).toBeUndefined()
+        expect(looped.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+
+        // user, the assistant reply with the pseudo call, the runtime hint, the second reply.
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        expect(messages.map((message) => message.info.role)).toEqual(["user", "assistant", "user", "assistant"])
+
+        // The second request ends with the hint as a user message; the first request did not carry it.
+        expect(messageText(requests[0]?.at(-1))).not.toContain(HINT_TEXT.pseudo_tool_call)
+        const lastOfSecond = requests[1]?.at(-1)
+        expect(lastOfSecond?.role).toBe("user")
+        expect(messageText(lastOfSecond)).toContain(HINT_TEXT.pseudo_tool_call)
+      }).pipe(Effect.provide(makePrompt(llmLayer)))
+    }),
+  { config: cfg },
+)
+
+// The turn's mode is read from its last user message, so the runtime hint that continues the turn must carry it.
+for (const hookMode of ["interactive", "noninteractive", undefined] as const) {
+  it.instance(
+    `session.prompt loop keeps the turn's hook mode on the runtime hint message (${hookMode ?? "unset"})`,
+    () =>
+      Effect.gen(function* () {
+        let calls = 0
+        const llmLayer = Layer.succeed(
+          LLM.Service,
+          LLM.Service.of({
+            organizer: () => Effect.succeed(undefined),
+            stream: () => {
+              const script = calls === 0 ? pseudoToolCallScript : validScript
+              calls += 1
+              return Stream.fromIterable(script)
+            },
+          }),
+        )
+        yield* Effect.gen(function* () {
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const chat = yield* sessions.create({ title: "Hint hook mode" })
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            noReply: true,
+            ...(hookMode === undefined ? {} : { hookMode }),
+            parts: [{ type: "text", text: "read the file" }],
+          })
+
+          yield* prompt.loop({ sessionID: chat.id })
+
+          expect(calls).toBe(2)
+          const messages = yield* sessions.messages({ sessionID: chat.id })
+          const users = messages.flatMap((message) => (message.info.role === "user" ? [message.info] : []))
+          // The original message holds the mode the turn was started with; the hint continues the same turn.
+          expect(users).toHaveLength(2)
+          expect(users[0]?.hookMode).toBe(hookMode)
+          expect(users[1]?.hookMode).toBe(hookMode)
+        }).pipe(Effect.provide(makePrompt(llmLayer)))
+      }),
+    { config: cfg },
+  )
+}

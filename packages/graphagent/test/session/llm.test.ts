@@ -12,7 +12,7 @@ import { LLM, strictJSON } from "../../src/session/llm"
 import { AgentScheduler } from "../../src/session/agent-scheduler"
 import * as AgentSchedulerState from "../../src/session/agent-scheduler-state"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
-import { LLMEvent } from "@graphagent/llm"
+import { isContextOverflowFailure, LLMEvent, Usage } from "@graphagent/llm"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -421,6 +421,121 @@ describe("session.llm.ai-sdk adapter", () => {
     const stepFinish = events.at(-1)
     if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
     expect(stepFinish.providerMetadata).toBeUndefined()
+  })
+
+  // The AI SDK folds every non-standard finish_reason into `other` and keeps the
+  // vendor value in `rawFinishReason`; the Anthropic provider maps
+  // model_context_window_exceeded onto `length`. The adapter reads the raw value first.
+  const finishStepEvent = (finishReason: string, rawFinishReason: string | undefined) =>
+    uncheckedAdapterEvent({ type: "finish-step", finishReason, rawFinishReason })
+  const finishStepWith = (finishReason: string, rawFinishReason: string | undefined) => [
+    uncheckedAdapterEvent({ type: "start-step", request: {}, warnings: [] }),
+    finishStepEvent(finishReason, rawFinishReason),
+  ]
+
+  test("maps a content-filter vendor finish_reason carried only in rawFinishReason", async () => {
+    const events = await adapt(finishStepWith("other", "sensitive"))
+    expect(events.at(-1)).toMatchObject({ type: "step-finish", reason: "content-filter" })
+  })
+
+  for (const raw of ["insufficient_system_resource", "aborted", "network_error"]) {
+    test(`fails the stream as a retryable response stream error for finish_reason ${raw}`, async () => {
+      const error = await Effect.runPromise(
+        Effect.flip(LLMAISDK.toLLMEvents(LLMAISDK.adapterState(), finishStepEvent("other", raw))),
+      )
+      expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+      if (!(error instanceof ProviderError.ResponseStreamError)) throw error
+      expect(error.message).toBe(`Provider finish_reason: ${raw}`)
+      expect(ProviderError.isRetryableResponseStreamError(error)).toBe(true)
+    })
+  }
+
+  test("turns model_context_window_exceeded into a context-overflow provider error even when mapped to length", async () => {
+    const events = await adapt(finishStepWith("length", "model_context_window_exceeded"))
+    expect(events.at(-1)).toMatchObject({
+      type: "provider-error",
+      classification: "context-overflow",
+      message: "Provider finish_reason: model_context_window_exceeded",
+    })
+    expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("carries the billed usage and provider metadata on the context-overflow provider error", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({ type: "start-step", request: {}, warnings: [] }),
+      uncheckedAdapterEvent({
+        type: "finish-step",
+        finishReason: "length",
+        rawFinishReason: "model_context_window_exceeded",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+          inputTokenDetails: { noCacheTokens: 70, cacheReadTokens: 30, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: 15, reasoningTokens: 5 },
+        },
+        providerMetadata: { anthropic: { cacheCreationInputTokens: 7 } },
+      }),
+    ])
+    const error = events.at(-1)
+    if (error?.type !== "provider-error") throw new Error("expected a provider error")
+    expect(error.usage).toBeInstanceOf(Usage)
+    expect(error.usage).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      reasoningTokens: 5,
+      cacheReadInputTokens: 30,
+    })
+    expect(error.providerMetadata).toEqual({ anthropic: { cacheCreationInputTokens: 7 } })
+    // The route to compaction must not depend on the usage riding along.
+    expect(isContextOverflowFailure(error)).toBe(true)
+    expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("leaves usage off the context-overflow provider error when the stream reported none", async () => {
+    const error = (await adapt(finishStepWith("length", "model_context_window_exceeded"))).at(-1)
+    if (error?.type !== "provider-error") throw new Error("expected a provider error")
+    expect("usage" in error).toBe(false)
+    expect(isContextOverflowFailure(error)).toBe(true)
+  })
+
+  test("keeps an unlisted vendor finish_reason as unknown and carries the raw value", async () => {
+    const events = await adapt(finishStepWith("other", "foo"))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.reason).toBe("unknown")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("foo")
+  })
+
+  test("truncates a long raw finish_reason to 64 characters", async () => {
+    const events = await adapt(finishStepWith("other", "x".repeat(100)))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("x".repeat(64))
+  })
+
+  for (const [finishReason, raw] of [
+    ["other", "other"],
+    ["other", undefined],
+    ["other", ""],
+    ["stop", "stop"],
+    ["length", "length"],
+  ] as const) {
+    test(`does not add rawFinishReason for ${finishReason}/${String(raw)}`, async () => {
+      const events = await adapt(finishStepWith(finishReason, raw))
+      const stepFinish = events.at(-1)
+      if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+      expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBeUndefined()
+    })
+  }
+
+  test("does not match inherited object keys as finish rules", async () => {
+    const events = await adapt(finishStepWith("other", "constructor"))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.reason).toBe("unknown")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("constructor")
   })
 
   test("preserves tool-error cause", async () => {

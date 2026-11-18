@@ -1,8 +1,18 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import type { PartID } from "../schema"
+import type { StepFinish, TextStart } from "@graphagent/llm"
+import {
+  EMPTY_RESPONSE_MESSAGE,
+  EmptyResponseError,
+  INCOMPLETE_REASONING_RESPONSE_MESSAGE,
+  INCOMPLETE_RESPONSE_MESSAGE,
+  IncompleteReasoningResponseError,
+  IncompleteResponseError,
+} from "../retry"
+import { PartID } from "../schema"
 
 /**
  * Attempt-scoped state of the session processor (Issue #1019, PR-b).
@@ -40,6 +50,11 @@ export interface AttemptState {
   pendingToolExecutions: Set<string>
   /** Finish reason of the current attempt only (assistant.finish persists across attempts). */
   finish: string | undefined
+  /**
+   * Vendor finish_reason no rule covers (`graphagent.rawFinishReason` on the
+   * step-finish metadata); named in the error text of an unproductive attempt.
+   */
+  rawFinish: string | undefined
   /** Sum of text-delta lengths in the current attempt; zero means no visible text. */
   textLength: number
   /** Sum of reasoning-delta lengths in the current attempt; zero means no visible reasoning. */
@@ -50,6 +65,8 @@ export interface AttemptState {
   opaqueReasoning: boolean
   /** Persisted reasoning from this attempt must be removed if it fails. */
   reasoningParts: Set<PartID>
+  /** Text parts this attempt persisted; the half-written answer of a failed attempt is removed on retry. */
+  textParts: Set<PartID>
   /**
    * Any tool input/call/result/error signal was observed in the current
    * attempt. Input-level signals count even without an admitted tool call so
@@ -80,11 +97,13 @@ export function initialAttemptState(): AttemptState {
     admittedToolCalls: 0,
     pendingToolExecutions: new Set(),
     finish: undefined,
+    rawFinish: undefined,
     textLength: 0,
     reasoningLength: 0,
     reasoningActivity: false,
     opaqueReasoning: false,
     reasoningParts: new Set(),
+    textParts: new Set(),
     toolActivity: false,
     suppressedActivity: false,
     retryBlockingSuppressedActivity: false,
@@ -100,6 +119,60 @@ export function initialAttemptState(): AttemptState {
  */
 export function beginAttempt(owner: { attempt: AttemptState }): void {
   owner.attempt = initialAttemptState()
+}
+
+/** Record the finish of the attempt's step, and the raw vendor value when the adapter carried one. */
+export function recordFinish(attempt: AttemptState, event: StepFinish): void {
+  attempt.finish = event.reason
+  const raw = event.providerMetadata?.[METADATA_NAMESPACE]?.rawFinishReason
+  if (typeof raw === "string") attempt.rawFinish = raw
+}
+
+/**
+ * Open a text part for this attempt: persisted by the caller, registered so a
+ * failed attempt can remove it, and tracked as the attempt's open text.
+ */
+export function startText(
+  attempt: AttemptState,
+  message: SessionV1.Assistant,
+  event: TextStart,
+  display: boolean,
+): SessionV1.TextPart {
+  const part: SessionV1.TextPart = {
+    id: PartID.ascending(),
+    messageID: message.id,
+    sessionID: message.sessionID,
+    type: "text",
+    text: "",
+    ...(display ? { displayText: "" } : {}),
+    time: { start: Date.now() },
+    metadata: event.providerMetadata,
+  }
+  attempt.textParts.add(part.id)
+  attempt.openText = part
+  attempt.openTextID = event.id
+  return part
+}
+
+function withRawFinish(attempt: AttemptState, message: string) {
+  return attempt.rawFinish === undefined ? message : `${message} (finish_reason: "${attempt.rawFinish}")`
+}
+
+/** A normal-conversation attempt that produced nothing; the text names the vendor finish_reason when known. */
+export function emptyResponse(attempt: AttemptState) {
+  return new EmptyResponseError({ message: withRawFinish(attempt, EMPTY_RESPONSE_MESSAGE) })
+}
+
+/** The response ended before an unfinished tool call became executable. */
+export function incompleteResponse(attempt: AttemptState) {
+  return new IncompleteResponseError({ message: withRawFinish(attempt, INCOMPLETE_RESPONSE_MESSAGE) })
+}
+
+/** The attempt ended after reasoning without an answer. */
+export function incompleteReasoning(attempt: AttemptState) {
+  return new IncompleteReasoningResponseError({
+    message: withRawFinish(attempt, INCOMPLETE_REASONING_RESPONSE_MESSAGE),
+  })
 }
 
 export * as Attempt from "./attempt"

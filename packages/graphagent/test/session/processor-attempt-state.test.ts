@@ -55,26 +55,29 @@ function dirtyAttempt(): AttemptState {
     text: "thought",
     time: { start: 1 },
   }
+  const text: SessionV1.TextPart = {
+    id: PartID.make("prt_attempt-state-text"),
+    messageID,
+    sessionID,
+    type: "text",
+    text: "partial",
+    time: { start: 1 },
+  }
   return {
-    openText: {
-      id: PartID.make("prt_attempt-state-text"),
-      messageID,
-      sessionID,
-      type: "text",
-      text: "partial",
-      time: { start: 1 },
-    },
+    openText: text,
     openTextID: "text-1",
     reasoningMap: { "reasoning-1": reasoning },
     anyToolCalled: true,
     admittedToolCalls: 2,
     pendingToolExecutions: new Set(["call-1"]),
     finish: "tool-calls",
+    rawFinish: "foo",
     textLength: 7,
     reasoningLength: 7,
     reasoningActivity: true,
     opaqueReasoning: true,
     reasoningParts: new Set([reasoning.id]),
+    textParts: new Set([text.id]),
     toolActivity: true,
     suppressedActivity: true,
     retryBlockingSuppressedActivity: true,
@@ -126,10 +129,12 @@ describe("attempt state reset", () => {
     expect(owner.attempt).not.toBe(previous)
     expect(owner.attempt.pendingToolExecutions).not.toBe(previous.pendingToolExecutions)
     expect(owner.attempt.reasoningParts).not.toBe(previous.reasoningParts)
+    expect(owner.attempt.textParts).not.toBe(previous.textParts)
     expect(owner.attempt.reasoningMap).not.toBe(previous.reasoningMap)
     // Whoever still holds attempt 1 keeps seeing attempt 1.
     expect([...previous.pendingToolExecutions]).toEqual(["call-1"])
     expect(previous.reasoningParts.size).toBe(1)
+    expect(previous.textParts.size).toBe(1)
     expect(Object.keys(previous.reasoningMap)).toEqual(["reasoning-1"])
     // And two fresh states never alias each other.
     const first = initialAttemptState()

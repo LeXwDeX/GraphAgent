@@ -396,7 +396,8 @@ partialNetwork.it.effect(
         expect(partialNetwork.count()).toBe(2)
         const parts = yield* MessageV2.parts(msg.id)
         expect(parts.some((part) => part.type === "reasoning" && part.text === "thinking")).toBe(false)
-        expect(parts.some((part) => part.type === "text" && part.text === "partial" && part.time?.end)).toBe(true)
+        // The failed attempt's half-written text is removed with its reasoning; only the retry's answer stays.
+        expect(parts.some((part) => part.type === "text" && part.text === "partial")).toBe(false)
         expect(parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
       }),
     { config: cfg },
@@ -1041,6 +1042,46 @@ exhausted.it.effect(
         // Single-turn history: no tool parts persisted and nothing replayed.
         const parts = yield* MessageV2.parts(msg.id)
         expect(toolParts(parts)).toHaveLength(0)
+      }),
+    { config: cfg },
+  ),
+)
+
+// A vendor finish_reason the adapter could not classify rides on the step-finish
+// metadata and is named in the terminal error, so the user sees why nothing came back.
+const emptyWithRawFinish: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.stepFinish({ index: 0, reason: "unknown", providerMetadata: { graphagent: { rawFinishReason: "foo" } } }),
+  LLMEvent.finish({ reason: "unknown" }),
+]
+
+const exhaustedRawFinish = scripted([emptyWithRawFinish])
+
+exhaustedRawFinish.it.effect(
+  "session.processor names the vendor finish_reason in the error after repeated empty responses",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "always empty with a raw finish")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("10 minutes")
+        expect(yield* Fiber.join(run)).toBe("stop")
+
+        expect(exhaustedRawFinish.count()).toBe(6)
+        expect(handle.message.error?.name).toBe("APIError")
+        if (handle.message.error && "data" in handle.message.error) {
+          const data = handle.message.error.data as { message?: string; metadata?: Record<string, unknown> }
+          expect(data.message).toContain("empty response")
+          expect(data.message).toContain('(finish_reason: "foo")')
+          expect(data.metadata?.code).toBe("empty_response")
+        }
       }),
     { config: cfg },
   ),
