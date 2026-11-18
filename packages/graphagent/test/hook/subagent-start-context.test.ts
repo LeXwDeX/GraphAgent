@@ -158,7 +158,12 @@ const run = Effect.fn("SubagentStartContextTest.run")(function* (
   const tool = yield* TaskTool
   const def = yield* initTaskTool(tool)
   const result = yield* def.execute(
-    { description: "ctx", prompt: "do it", subagent_type: "general", ...extra },
+    {
+      description: "ctx",
+      prompt: "do it",
+      subagent_type: "general",
+      ...(extra?.task_id ? { action: "resume" as const, task_id: extra.task_id } : {}),
+    },
     {
       sessionID: chat.id,
       messageID: assistant.id,

@@ -103,7 +103,7 @@ A set of context-management features: limits on tool output length, a cap on too
 
 ## Other changes
 
-- `task` can resume a child agent by `task_id` and supports background child agents, which notify on completion.
+- `task` can resume a child agent with `action: "resume"` and `task_id`, and supports background child agents, which notify on completion.
 - Every model gets the same system prompt. Tool usage lives in each tool's description instead of a per-provider prompt.
 - Stricter, easier-to-debug tools: `edit` matches strictly (it lists candidate lines when several match and the closest snippet when none does), and validation errors carry field-level hints.
 - Independent git worktrees can be used to manage working directories. Workflows are not isolated automatically, so concurrent workflows need different worktrees or must run serially.

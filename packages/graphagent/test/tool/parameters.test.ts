@@ -21,7 +21,7 @@ import { Parameters as Question } from "../../src/tool/question"
 import { Parameters as Read } from "../../src/tool/read"
 import { Parameters as Shell } from "../../src/tool/shell"
 import { Parameters as Skill } from "../../src/tool/skill"
-import { Parameters as Task } from "../../src/tool/task"
+import { Parameters as Task, validateTaskCall } from "../../src/tool/task"
 import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
 import { Parameters as WebSearch } from "../../src/tool/websearch"
@@ -264,19 +264,53 @@ describe("tool parameters", () => {
       const parsed = parse(Task, { description: "d", prompt: "p", subagent_type: "general", background: true })
       expect(parsed.background).toBe(true)
     })
-    test("rejects missing prompt", () => {
-      expect(accepts(Task, { description: "d", subagent_type: "general" })).toBe(false)
+    // The call shape is checked when the call runs (`validateTaskCall`), not when it decodes: a root-level
+    // combinator is outside some providers' tool contract, so every field stays optional on the wire.
+    test("decodes a call without prompt; the shape check names what is missing", () => {
+      const params = parse(Task, { description: "d", subagent_type: "general" })
+      expect(validateTaskCall(params)).toEqual({
+        kind: "invalid",
+        detail: "description, prompt and subagent_type are required (missing: prompt).",
+      })
     })
     test("accepts the cancel shape", () => {
       const parsed = parse(Task, { action: "cancel", task_id: "ses_child" })
       expect(parsed).toMatchObject({ action: "cancel", task_id: "ses_child" })
+      expect(validateTaskCall(parsed)).toEqual({ kind: "cancel", taskID: "ses_child" })
     })
-    test("rejects cancel without task_id", () => {
-      expect(accepts(Task, { action: "cancel" })).toBe(false)
-      expect(accepts(Task, { action: "cancel", description: "d", prompt: "p", subagent_type: "general" })).toBe(false)
+    test("decodes cancel without task_id; the shape check rejects it", () => {
+      expect(accepts(Task, { action: "cancel" })).toBe(true)
+      expect(accepts(Task, { action: "cancel", description: "d", prompt: "p", subagent_type: "general" })).toBe(true)
+      expect(validateTaskCall(parse(Task, { action: "cancel" }))).toMatchObject({ kind: "invalid" })
     })
-    test("exposes the cancel action on the wire schema", () => {
-      expect(toJsonSchema(Task)).toMatchObject({ properties: { action: { enum: ["cancel"] } } })
+    test("accepts the resume shape with every required field", () => {
+      const call = {
+        action: "resume",
+        task_id: "ses_child",
+        subagent_type: "general",
+        description: "Continue task",
+        prompt: "go on",
+      }
+      expect(parse(Task, call)).toMatchObject(call)
+      expect(validateTaskCall(parse(Task, call))).toEqual({
+        kind: "run",
+        description: "Continue task",
+        prompt: "go on",
+        subagentType: "general",
+      })
+    })
+    test("rejects an action outside resume and cancel", () => {
+      expect(accepts(Task, { action: "read", task_id: "ses_child" })).toBe(false)
+    })
+    test("exposes resume and cancel on the wire schema", () => {
+      expect(toJsonSchema(Task)).toMatchObject({ properties: { action: { enum: ["resume", "cancel"] } } })
+    })
+    test("does not show a model the command argument", () => {
+      expect(toJsonSchema(Task)).not.toHaveProperty("properties.command")
+    })
+    test("ignores a command the engine adds to a command-driven call", () => {
+      const parsed = parse(Task, { description: "d", prompt: "p", subagent_type: "general", command: "review" })
+      expect(parsed).toEqual({ description: "d", prompt: "p", subagent_type: "general" })
     })
   })
 
@@ -290,9 +324,22 @@ describe("tool parameters", () => {
     test("rejects missing todos", () => {
       expect(accepts(Todo, {})).toBe(false)
     })
+    test("accepts every status and priority of the enums", () => {
+      for (const status of ["pending", "in_progress", "completed", "cancelled"])
+        for (const priority of ["high", "medium", "low"])
+          expect(accepts(Todo, { todos: [{ content: "x", status, priority }] })).toBe(true)
+    })
+    test("rejects a status or priority outside the enums", () => {
+      expect(accepts(Todo, { todos: [{ content: "x", status: "done", priority: "medium" }] })).toBe(false)
+      expect(accepts(Todo, { todos: [{ content: "x", status: "pending", priority: "urgent" }] })).toBe(false)
+    })
   })
 
   describe("webfetch", () => {
+    test("takes the timeout in whole milliseconds", () => {
+      expect(parse(WebFetch, { url: "https://example.com", timeout: 5000 }).timeout).toBe(5000)
+      expect(accepts(WebFetch, { url: "https://example.com", timeout: 0.05 })).toBe(false)
+    })
     test("defaults omitted format to markdown", () => {
       expect(parse(WebFetch, { url: "https://example.com" })).toEqual({
         url: "https://example.com",

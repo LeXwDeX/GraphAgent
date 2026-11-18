@@ -309,6 +309,7 @@ describe("task tool and composers", () => {
               description: "survey options",
               prompt: "continue",
               subagent_type: "panel",
+              action: "resume",
               task_id: child.id,
             },
             {

@@ -6,6 +6,7 @@ import * as Tool from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
+import { PositiveInt } from "@graphagent/core/schema"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
@@ -19,8 +20,8 @@ export const Parameters = Schema.Struct({
       default: "markdown",
     })
     .pipe(Schema.withDecodingDefault(Effect.succeed("markdown" as const))),
-  timeout: Schema.optional(Schema.Number.check(Schema.isFinite(), Schema.isGreaterThan(0))).annotate({
-    description: "Positive timeout in seconds, including body download (default 30, max 120)",
+  timeout: Schema.optional(PositiveInt).annotate({
+    description: `Positive timeout in milliseconds, including body download (default ${DEFAULT_TIMEOUT}, max ${MAX_TIMEOUT})`,
   }),
 })
 
@@ -51,7 +52,7 @@ export const WebFetchTool = Tool.define(
             },
           })
 
-          const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
+          const timeout = Math.min(params.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
 
           // Build Accept header based on requested format with q parameters for fallbacks
           let acceptHeader = "*/*"
@@ -116,7 +117,15 @@ export const WebFetchTool = Tool.define(
             return { response, bytes: Buffer.concat(chunks, size) }
           }).pipe(
             Effect.scoped,
-            Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
+            Effect.timeoutOrElse({
+              duration: timeout,
+              orElse: () =>
+                Effect.die(
+                  new Error(
+                    `Request timed out after ${timeout} ms (the timeout is in milliseconds, max ${MAX_TIMEOUT}).`,
+                  ),
+                ),
+            }),
           )
 
           const contentType = response.headers["content-type"] || ""
