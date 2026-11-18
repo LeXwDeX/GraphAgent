@@ -94,6 +94,7 @@ import {
   subagentSiblings,
   subagentSource,
 } from "../../session/subagents"
+import { isSyntheticMessage } from "../../session/synthetic-message"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -1020,9 +1021,13 @@ export function Main() {
         if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
         const revert = session()?.revert?.messageID
         const revertMessage = revert ? messages().find((m) => m.id === revert) : undefined
-        const message = messages().findLast(
-          (x) => x.role === "user" && (!revertMessage || orderedBefore(x, revertMessage)),
-        )
+        // What the user wrote, not what the server added after a run (#1408): a background result and the text a command
+        // leaves for the model are synthetic messages. One whose parts have not arrived is not known to be the user's.
+        const message = messages().findLast((x) => {
+          if (x.role !== "user" || (revertMessage && !orderedBefore(x, revertMessage))) return false
+          const parts = sync.data.part[x.id]
+          return parts !== undefined && !isSyntheticMessage(parts)
+        })
         if (!message) return
         void sdk.client.session
           .revert({
@@ -1234,7 +1239,8 @@ export function Main() {
         const messages = sync.data.message[route.sessionID]
         if (!messages || !messages.length) return
 
-        // Find the most recent user message with non-ignored, non-synthetic text parts
+        // Find the most recent user message the user wrote: not a synthetic one, and with text that was not ignored
+        // (the echo of a command and a hook's notice are shown, not written)
         for (let i = messages.length - 1; i >= 0; i--) {
           const message = messages[i]
           if (!message || message.role !== "user") continue
@@ -1242,9 +1248,8 @@ export function Main() {
           const parts = sync.data.part[message.id]
           if (!parts || !Array.isArray(parts)) continue
 
-          const hasValidTextPart = parts.some(
-            (part) => part && part.type === "text" && !part.synthetic && !part.ignored,
-          )
+          const hasValidTextPart =
+            !isSyntheticMessage(parts) && parts.some((part) => part && part.type === "text" && !part.ignored)
 
           if (hasValidTextPart) {
             scrollToMessageID(message.id)
