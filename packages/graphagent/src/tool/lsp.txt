@@ -2,4 +2,4 @@ Query language servers for code intelligence. Use this for definitions, referenc
 
 Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol (also takes query), goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls.
 
-All operations require filePath, line, and character (both 1-based). The file type needs a configured LSP server, or the call fails.
+All operations require filePath. line and character (1-based, as shown by read) are required except for documentSymbol and workspaceSymbol. Results use the same line numbers and absolute paths. The file type needs a configured LSP server, or the call fails.

@@ -125,7 +125,7 @@ function settle(result: SessionV1.WithParts, prior = ""): { text: string; error?
   // Keep the child session reachable: the parent can resume it by passing this
   // id back as task_id instead of redoing the whole task from scratch.
   const resume = info
-    ? `. Continue: task task_id="${info.sessionID}" prompt="Continue the task and write the final answer now."`
+    ? `. Continue: task action="resume" task_id="${info.sessionID}" subagent_type="${info.agent}" description="Continue task" prompt="Continue the task and write the final answer now."`
     : ""
   if (info?.finish === "length") {
     const { output, reasoning } = info.tokens
@@ -169,10 +169,13 @@ function continuationFailure(cause: Cause.Cause<unknown>, prior: string): Effect
   )
 }
 
-const TaskParameterFields = {
-  action: Schema.optional(Schema.Literal("cancel")).annotate({
+// The tool takes three shapes on one object root: a new run, a resume and a cancel. A root-level union is outside
+// the OpenAI tools contract (see Tool.assertObjectRootedParameters), so they share one optional-field struct and
+// `validateTaskCall` tells them apart when the call runs.
+export const Parameters = Schema.Struct({
+  action: Schema.optional(Schema.Literals(["resume", "cancel"])).annotate({
     description:
-      'Set to "cancel" together with task_id to cancel one of this session\'s background tasks. Omit for a normal task run. Only background tasks can be cancelled here; a foreground task is cancelled from the parent session.',
+      "resume: continue the task named by task_id with a new prompt. cancel: cancel the background task named by task_id. Omit to start a new task.",
   }),
   description: Schema.optional(Schema.String).annotate({
     description: "A short (3-5 words) description of the task; required unless action is cancel",
@@ -184,34 +187,70 @@ const TaskParameterFields = {
     description: "The type of specialized agent to use for this task; required unless action is cancel",
   }),
   task_id: Schema.optional(Schema.String).annotate({
-    description:
-      'With action "cancel": the background task to cancel. Otherwise set only to resume a previous task (pass a prior task_id and the task continues the same subagent session instead of creating a fresh one)',
+    description: "The existing task this call acts on. Required with action; not allowed without it.",
   }),
-  command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
-}
-
-type TaskShape = Schema.Schema.Type<Schema.Struct<typeof TaskParameterFields>>
-
-// The tool accepts two shapes on one object root: a start/resume call and
-// `{ action: "cancel", task_id }`. A root-level union is outside the OpenAI
-// tools contract (see Tool.assertObjectRootedParameters), so both shapes share
-// one optional-field struct and are distinguished here at decode time.
-const requireTaskShape = Schema.makeFilter<TaskShape>((value) => {
-  if (value.action === "cancel") {
-    return value.task_id ? undefined : 'task_id is required when action is "cancel"'
-  }
-  return value.description && value.prompt && value.subagent_type
-    ? undefined
-    : "description, prompt and subagent_type are required unless action is cancel"
-})
-
-export const Parameters = Schema.Struct({
-  ...TaskParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
       'Run without waiting. Use only for independent, long-running work whose result you do not need for your next step (see "Choosing foreground or background"). You will be notified when it finishes.',
   }),
-}).check(requireTaskShape)
+})
+
+/** What a task call asks for, or why it cannot run (#1450). Cancel takes only `task_id`; a new run and a resume carry the same three fields. */
+export type TaskCall =
+  | { readonly kind: "invalid"; readonly detail: string }
+  | { readonly kind: "cancel"; readonly taskID: string }
+  | { readonly kind: "run"; readonly description: string; readonly prompt: string; readonly subagentType: string }
+
+/** An omitted argument and an empty string both count as missing. */
+const isMissing = (value: string | undefined): value is undefined | "" => value === undefined || value === ""
+
+const invalid = (detail: string): TaskCall => ({ kind: "invalid", detail })
+
+// A cancel names its task and nothing else: a run argument beside it means the caller mixed two calls.
+function cancelCall(params: Schema.Schema.Type<typeof Parameters>, taskID: string): TaskCall {
+  const extra = (
+    [
+      ["description", params.description],
+      ["prompt", params.prompt],
+      ["subagent_type", params.subagent_type],
+      ["background", params.background],
+    ] as const
+  ).flatMap(([name, value]) => (value === undefined ? [] : [name]))
+  if (extra.length > 0) return invalid(`action "cancel" takes only task_id; remove ${extra.join(", ")}.`)
+  return { kind: "cancel", taskID }
+}
+
+// A new run and a resume carry the same fields; a resume adds the `task_id` that rules (a) and (b) already checked.
+function runCall(params: Schema.Schema.Type<typeof Parameters>): TaskCall {
+  const { description, prompt, subagent_type: subagentType } = params
+  if (isMissing(description) || isMissing(prompt) || isMissing(subagentType)) {
+    const missing = (
+      [
+        ["description", description],
+        ["prompt", prompt],
+        ["subagent_type", subagentType],
+      ] as const
+    ).flatMap(([name, value]) => (isMissing(value) ? [name] : []))
+    return invalid(`description, prompt and subagent_type are required (missing: ${missing.join(", ")}).`)
+  }
+  return { kind: "run", description, prompt, subagentType }
+}
+
+/**
+ * Reads the shape of a task call at the start of `run()`, before anything is looked up or asked. The rules are tried
+ * in order and the first one that matches names the fault: (a) a `task_id` without an action, (b) an action without
+ * a `task_id`, (c) a cancel that carries run arguments, (d) a run that lacks a required field.
+ */
+export function validateTaskCall(params: Schema.Schema.Type<typeof Parameters>): TaskCall {
+  const { action, task_id: taskID } = params
+  if (action === undefined) {
+    if (!isMissing(taskID))
+      return invalid('task_id needs action "resume" or "cancel". To start a new task, omit task_id.')
+    return runCall(params)
+  }
+  if (isMissing(taskID)) return invalid(`task_id is required when action is "${action}".`)
+  return action === "cancel" ? cancelCall(params, taskID) : runCall(params)
+}
 
 function repairBackgroundArgument(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value
@@ -222,7 +261,7 @@ function repairBackgroundArgument(value: unknown): unknown {
 }
 
 const notOwned = (taskID: string) =>
-  `task_id "${taskID}" is not a task started by this conversation. Pass a task_id returned by an earlier task call of this conversation, or omit it to start a new task.`
+  `task_id "${taskID}" is not a task started by this conversation. Use the task_id of a task this conversation started, with action "resume"; to start a new task, omit task_id.`
 
 // The child run of one tool call, recorded as soon as it is registered so an
 // interruption before anyone else owns it can still settle it. A background
@@ -453,6 +492,9 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
       claim: RunClaim,
     ) {
+      const call = validateTaskCall(params)
+      if (call.kind === "invalid")
+        return yield* Effect.fail(new Tool.InvalidArgumentsError({ tool: id, detail: call.detail }))
       const parent = yield* sessions.get(ctx.sessionID)
       if (SessionRole.isChild(parent)) {
         return yield* Effect.fail(
@@ -461,19 +503,8 @@ export const TaskTool = Tool.define(
       }
       const children = ctx.children
       if (!children) return yield* Effect.fail(new Error("TaskTool requires ctx.children"))
-      if (params.action === "cancel") {
-        if (params.task_id === undefined)
-          return yield* Effect.fail(new Error('task_id is required when action is "cancel"'))
-        return yield* cancelTask(children, params.task_id, ctx)
-      }
-      if (params.description === undefined || params.prompt === undefined || params.subagent_type === undefined) {
-        return yield* Effect.fail(
-          new Error("description, prompt and subagent_type are required unless action is cancel"),
-        )
-      }
-      const description: string = params.description
-      const prompt: string = params.prompt
-      const subagentType: string = params.subagent_type
+      if (call.kind === "cancel") return yield* cancelTask(children, call.taskID, ctx)
+      const { description, prompt, subagentType } = call
       const cfg = yield* config.get()
       // #1057: a user-issued background command survives ESC and is presented
       // back as its findings; an agent-started task is ordinary background work.
@@ -712,7 +743,7 @@ export const TaskTool = Tool.define(
         return {
           text: settled.text,
           error: new Error(
-            `${ResultContract.failureMessage(contract, second.reason)}. Partial output:\n${settled.text}. Continue: task task_id="${nextSession.id}" prompt="Resubmit your final answer as one JSON value that satisfies the ${contract.artifact} artifact contract."`,
+            `${ResultContract.failureMessage(contract, second.reason)}. Partial output:\n${settled.text}. Continue: task action="resume" task_id="${nextSession.id}" subagent_type="${next.name}" description="Continue task" prompt="Resubmit your final answer as one JSON value that satisfies the ${contract.artifact} artifact contract."`,
           ),
         }
       })

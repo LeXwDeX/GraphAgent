@@ -167,7 +167,7 @@ const harness = Effect.fn("TaskArtifactTest.harness")(function* () {
         description: "look into it",
         prompt: extra.prompt ?? "compare three persistence designs",
         subagent_type: subagent,
-        ...(extra.task_id ? { task_id: extra.task_id } : {}),
+        ...(extra.task_id ? { action: "resume" as const, task_id: extra.task_id } : {}),
         ...(extra.command ? { command: extra.command } : {}),
       },
       {
@@ -306,7 +306,7 @@ describe("task results that declare an artifact", () => {
       // The child stays reachable, so the caller can ask the same worker to fix it.
       const children = yield* (yield* Session.Service).children(chat.id)
       expect(children).toHaveLength(1)
-      expect(message).toContain(`task_id="${children[0].id}"`)
+      expect(message).toContain(`action="resume" task_id="${children[0].id}" subagent_type="researcher"`)
     }),
   )
 

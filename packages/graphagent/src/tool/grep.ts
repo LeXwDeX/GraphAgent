@@ -22,7 +22,8 @@ const MAX_CONTEXT = 20
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The regex pattern to search for in file contents" }),
   path: Schema.optional(Schema.String).annotate({
-    description: "The file or directory to search in. Defaults to the current working directory.",
+    description:
+      "The file or directory to search in; relative paths resolve from the project directory. Defaults to the project directory.",
   }),
   include: Schema.optional(Schema.String).annotate({
     description: 'File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")',

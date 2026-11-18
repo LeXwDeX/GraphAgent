@@ -2,5 +2,5 @@ Fetch a URL and return its content. Use this for a known URL; use websearch to d
 
 - format: "markdown" (default) converts HTML, "text" returns plain text, and "html" returns decoded source. Supported raster images return attachments.
 - The URL must be fully formed; HTTP and HTTPS are accepted and HTTP is not upgraded automatically. If the response redirects to another host, fetch the reported URL.
-- Read-only. Downloads are capped at 5 MB; the timeout covers the body, defaults to 30 seconds, and caps at 120.
+- Read-only. Downloads are capped at 5 MB; the timeout is in milliseconds, covers the body, defaults to 30000, and caps at 120000.
 - Text uses the declared charset, or UTF-8; unsupported charsets fail explicitly.
