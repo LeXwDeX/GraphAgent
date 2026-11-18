@@ -6,6 +6,12 @@ import type { BuiltinRule, ModelProfile, RuleInput } from "./model-profile"
 /** Ids of the Mistral family; a model of the provider `mistral` belongs to it whatever its id says. */
 const MISTRAL_FAMILIES = ["mistral", "devstral", "codestral", "pixtral", "mixtral"]
 
+/** Packages through which a MiniMax-M3 endpoint takes a thinking switch in the request body. */
+const MINIMAX_M3_NPMS = ["@ai-sdk/anthropic", "@ai-sdk/openai-compatible"]
+
+/** Providers that host MiniMax-M3 behind a chat template, which takes the switch as a template argument. */
+const CHAT_TEMPLATE_PROVIDERS = ["nvidia", "lilac"]
+
 /** Gemini models that keep the sampling defaults; later ones deprecated them. */
 const GEMINI_MODELS_WITH_SAMPLING_DEFAULTS = [
   /gemini-2[.-]5(?:[.-]|$)/,
@@ -161,5 +167,53 @@ export const BUILTIN_RULES: ReadonlyArray<BuiltinRule> = [
     source: "296a1a5d0:packages/graphagent/src/session/message-v2.ts:206-218",
     match: (input) => toolResultMediaOf(input) !== undefined,
     set: (input) => ({ toolResultMedia: toolResultMediaOf(input) }),
+  },
+  {
+    // DeepSeek wants reasoning on every assistant message of the history, so each one without it gets an empty string.
+    name: "reasoning-placeholder-deepseek",
+    source: "296a1a5d0:packages/graphagent/src/provider/transform.ts:310-326",
+    match(input) {
+      const id = input.apiID.toLowerCase()
+      return id.includes("deepseek")
+    },
+    set: () => ({ reasoningMode: { placeholder: true } }),
+  },
+  {
+    // MiniMax-M3 behind a chat template turns thinking on and off through a template argument.
+    name: "minimax-m3-toggle-chat-template",
+    source: "296a1a5d0:packages/graphagent/src/provider/transform.ts:1038-1052",
+    match(input) {
+      const id = input.apiID.toLowerCase()
+      return (
+        id.includes("minimax-m3") &&
+        input.npm !== undefined &&
+        MINIMAX_M3_NPMS.includes(input.npm) &&
+        CHAT_TEMPLATE_PROVIDERS.includes(input.providerID)
+      )
+    },
+    set: () => ({
+      reasoningMode: {
+        controls: [{ type: "toggle" }],
+        toggle: {
+          on: { chat_template_kwargs: { thinking_mode: "enabled" } },
+          off: { chat_template_kwargs: { thinking_mode: "disabled" } },
+        },
+      },
+    }),
+  },
+  {
+    // Every other MiniMax-M3 endpoint takes the Anthropic style thinking switch in the request body.
+    name: "minimax-m3-toggle",
+    source: "296a1a5d0:packages/graphagent/src/provider/transform.ts:1038-1052",
+    match(input) {
+      const id = input.apiID.toLowerCase()
+      return id.includes("minimax-m3") && input.npm !== undefined && MINIMAX_M3_NPMS.includes(input.npm)
+    },
+    set: () => ({
+      reasoningMode: {
+        controls: [{ type: "toggle" }],
+        toggle: { on: { thinking: { type: "adaptive" } }, off: { thinking: { type: "disabled" } } },
+      },
+    }),
   },
 ]

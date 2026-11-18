@@ -1846,6 +1846,58 @@ it.instance(
   },
 )
 
+const toggleConfig = {
+  provider: {
+    "toggle-custom": {
+      name: "Toggle Custom",
+      npm: "@ai-sdk/openai-compatible",
+      env: [],
+      models: {
+        qwen: {
+          name: "Qwen",
+          reasoning: true,
+          tool_call: true,
+          limit: { context: 128_000, output: 8_000 },
+          profile: {
+            reasoning_mode: { toggle: { on: { enable_thinking: true }, off: { enable_thinking: false } } },
+          },
+        },
+        plain: { name: "Plain", reasoning: true, tool_call: true, limit: { context: 128_000, output: 8_000 } },
+        m3: {
+          id: "MiniMax-M3",
+          name: "MiniMax M3",
+          reasoning: true,
+          tool_call: true,
+          limit: { context: 128_000, output: 8_000 },
+        },
+      },
+      options: { apiKey: "test-key" },
+    },
+  },
+}
+
+it.instance(
+  "a thinking toggle of the profile becomes the none and thinking variants",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const models = providers[ProviderV2.ID.make("toggle-custom")].models
+    // configured: qwen has no tiers of its own, the toggle gives it none and thinking
+    expect(models["qwen"].variants).toEqual({
+      none: { enable_thinking: false },
+      thinking: { enable_thinking: true },
+    })
+    // built in: the rule of MiniMax-M3 declares the toggle, whatever the configured key is
+    expect(models["m3"].variants).toEqual({
+      none: { thinking: { type: "disabled" } },
+      thinking: { thinking: { type: "adaptive" } },
+    })
+    expect(ProviderProfile.profileOf(models["m3"]).sources["reasoningMode.toggle"]).toBe("builtin:minimax-m3-toggle")
+    // no toggle: the default tiers
+    expect(Object.keys(models["plain"].variants!)).toEqual(["low", "medium", "high"])
+  }),
+  { config: toggleConfig },
+)
+
 it.instance(
   "variants filtered in second pass for database models",
   Effect.gen(function* () {

@@ -850,7 +850,8 @@ describe("shipped request shaping rules", () => {
 
   test("each rule is shipped once, after edit-tools-apply-patch, and cites the code it replaces", () => {
     const names = BUILTIN_RULES.map((item) => item.name)
-    expect(names).toEqual([
+    // the table grows by one Issue step at a time; the rules of later steps are asserted where they are tested
+    expect(names.slice(0, 6)).toEqual([
       "edit-tools-apply-patch",
       "tool-call-id-claude",
       "tool-call-id-mistral",
@@ -1017,6 +1018,205 @@ describe("shipped request shaping rules", () => {
     for (const key of ["toolCallId", "userAfterToolResult", "cacheMarker", "toolResultMedia", "sampling"]) {
       expect(profile.sources[key]).toBe("config")
     }
+  })
+})
+
+describe("shipped reasoning rules", () => {
+  // The predicates the rules replace, as they stood at 296a1a5d0 (transform.ts:311 and :1038-1052) with the lookups
+  // lowercased.
+  const isDeepseek = (apiID: string) => apiID.toLowerCase().includes("deepseek")
+  const M3_NPMS = ["@ai-sdk/anthropic", "@ai-sdk/openai-compatible"]
+  const isMinimaxM3 = (apiID: string, npm?: string) =>
+    apiID.toLowerCase().includes("minimax-m3") && npm !== undefined && M3_NPMS.includes(npm)
+  /** What `variants()` returned for the model through the replaced block; undefined when the block did not apply. */
+  const replacedPair = (providerID: string, apiID: string, npm?: string) => {
+    if (!isMinimaxM3(apiID, npm)) return undefined
+    if (["nvidia", "lilac"].includes(providerID)) {
+      return {
+        none: { chat_template_kwargs: { thinking_mode: "disabled" } },
+        thinking: { chat_template_kwargs: { thinking_mode: "enabled" } },
+      }
+    }
+    return { none: { thinking: { type: "disabled" } }, thinking: { thinking: { type: "adaptive" } } }
+  }
+  const PROVIDERS = ["relay", "nvidia", "lilac", "NVIDIA", "minimax", "deepseek", "openrouter", "mistral"]
+  const NPMS = [
+    undefined,
+    "@ai-sdk/openai-compatible",
+    "@ai-sdk/anthropic",
+    "@ai-sdk/openai",
+    "@ai-sdk/google",
+    "@ai-sdk/gateway",
+    "@openrouter/ai-sdk-provider",
+  ]
+  const IDS = [
+    "",
+    "m",
+    "minimax-m3",
+    "MiniMax-M3",
+    "MINIMAX-M3",
+    "minimaxai/minimax-m3",
+    "minimax/MiniMax-M3-Pro",
+    "minimax-m3.1",
+    "minimax-m2",
+    "MiniMax-M2.5",
+    "minimax",
+    "minimax_m3",
+    "deepseek-chat",
+    "DeepSeek-V4-Pro",
+    "deepseek/deepseek-v4-flash",
+    "deepseek-ai/DeepSeek-R1",
+    "deepsee",
+    "gpt-5",
+    "qwen3-max",
+    "claude-sonnet-4",
+    "glm-5.2",
+    "kimi-k2.5",
+  ]
+  const resolved = (providerID: string, apiID: string, npm?: string) =>
+    resolveProfile({ providerID, apiID, ...(npm === undefined ? {} : { npm }) })
+  const shipped = (name: string) => BUILTIN_RULES.find((item) => item.name === name)
+  const NAMES = ["reasoning-placeholder-deepseek", "minimax-m3-toggle-chat-template", "minimax-m3-toggle"]
+
+  test("are shipped once each, in this order after the request shaping rules, and cite the code they replace", () => {
+    const names = BUILTIN_RULES.map((item) => item.name)
+    expect(names.slice(6, 9)).toEqual(NAMES)
+    for (const name of NAMES) expect(names.filter((item) => item === name)).toHaveLength(1)
+    const transform = "296a1a5d0:packages/graphagent/src/provider/transform.ts"
+    expect(shipped("reasoning-placeholder-deepseek")?.source).toBe(`${transform}:310-326`)
+    expect(shipped("minimax-m3-toggle-chat-template")?.source).toBe(`${transform}:1038-1052`)
+    expect(shipped("minimax-m3-toggle")?.source).toBe(`${transform}:1038-1052`)
+  })
+
+  test("a rule reads only the API id as a string; provider and npm are compared, never taken apart", () => {
+    for (const name of NAMES) {
+      const rule = shipped(name)
+      expect(rule).toBeDefined()
+      const noProvider: RuleInput = { providerID: "relay", apiID: "X" }
+      Reflect.deleteProperty(noProvider, "providerID")
+      expect(() => rule?.match(noProvider)).not.toThrow()
+      expect(() => rule?.match({ providerID: "relay", apiID: "X" })).not.toThrow()
+      expect(() => rule?.match({ providerID: "relay", apiID: "", npm: "" })).not.toThrow()
+    }
+  })
+
+  test("reasoning-placeholder-deepseek: a placeholder for exactly the ids that name deepseek, ignoring case", () => {
+    for (const providerID of PROVIDERS) {
+      for (const id of IDS) {
+        const profile = resolved(providerID, id)
+        expect({ providerID, id, placeholder: profile.reasoningMode.placeholder }).toEqual({
+          providerID,
+          id,
+          placeholder: isDeepseek(id),
+        })
+        expect<string | undefined>(profile.sources["reasoningMode.placeholder"]).toBe(
+          isDeepseek(id) ? "builtin:reasoning-placeholder-deepseek" : undefined,
+        )
+        // the rule names the placeholder and nothing else
+        expect(profile.reasoningMode.controls).toEqual([])
+        expect(profile.reasoningMode.toggle).toBeUndefined()
+        expect(profile.reasoningMode.replay).toBe("none")
+      }
+    }
+  })
+
+  test("minimax-m3 toggles: the pair of the replaced block for every provider, npm and id", () => {
+    for (const providerID of PROVIDERS) {
+      for (const npm of NPMS) {
+        for (const id of IDS) {
+          const profile = resolved(providerID, id, npm)
+          const expected = replacedPair(providerID, id, npm)
+          const toggle = profile.reasoningMode.toggle
+          expect({ providerID, npm, id, pair: toggle && { none: toggle.off, thinking: toggle.on } }).toEqual({
+            providerID,
+            npm,
+            id,
+            pair: expected,
+          })
+          if (!expected) {
+            expect(profile.reasoningMode.controls).toEqual([])
+            expect(profile.sources["reasoningMode.toggle"]).toBeUndefined()
+            expect(profile.sources["reasoningMode.controls"]).toBeUndefined()
+            continue
+          }
+          const source = ["nvidia", "lilac"].includes(providerID)
+            ? "builtin:minimax-m3-toggle-chat-template"
+            : "builtin:minimax-m3-toggle"
+          expect(profile.reasoningMode.controls).toEqual([{ type: "toggle" }])
+          expect(profile.sources["reasoningMode.toggle"]).toBe(source)
+          expect(profile.sources["reasoningMode.controls"]).toBe(source)
+        }
+      }
+    }
+  })
+
+  test("minimax-m3 toggles: the provider ids compare exactly and the npm package is a set", () => {
+    expect(resolved("nvidia", "minimax-m3", "@ai-sdk/anthropic").reasoningMode.toggle).toEqual({
+      on: { chat_template_kwargs: { thinking_mode: "enabled" } },
+      off: { chat_template_kwargs: { thinking_mode: "disabled" } },
+    })
+    expect(resolved("relay", "MiniMax-M3", "@ai-sdk/anthropic").reasoningMode.toggle).toEqual({
+      on: { thinking: { type: "adaptive" } },
+      off: { thinking: { type: "disabled" } },
+    })
+    // an uppercase provider id is another provider; a package outside the set, or none, gets no toggle
+    expect(resolved("NVIDIA", "minimax-m3", "@ai-sdk/openai-compatible").sources["reasoningMode.toggle"]).toBe(
+      "builtin:minimax-m3-toggle",
+    )
+    expect(resolved("nvidia", "minimax-m3", "@ai-sdk/openai").reasoningMode.toggle).toBeUndefined()
+    expect(resolved("nvidia", "minimax-m3").reasoningMode.toggle).toBeUndefined()
+  })
+
+  test("the toggle of a profile shares nothing with the table", () => {
+    const first = resolved("relay", "minimax-m3", "@ai-sdk/anthropic")
+    const second = resolved("relay", "minimax-m3", "@ai-sdk/anthropic")
+    expect(first.reasoningMode.toggle).toEqual(second.reasoningMode.toggle)
+    expect(first.reasoningMode.toggle).not.toBe(second.reasoningMode.toggle)
+    expect(first.reasoningMode.controls).not.toBe(second.reasoningMode.controls)
+    if (first.reasoningMode.toggle) Reflect.set(first.reasoningMode.toggle.on, "thinking", "changed")
+    expect(resolved("relay", "minimax-m3", "@ai-sdk/anthropic").reasoningMode.toggle?.on).toEqual({
+      thinking: { type: "adaptive" },
+    })
+  })
+
+  test("a configured key wins over each of these rules, key by key", () => {
+    const toggle = { on: { custom: "on" }, off: { custom: "off" } }
+    const configured = resolveProfile({
+      providerID: "nvidia",
+      apiID: "DeepSeek-MiniMax-M3",
+      npm: "@ai-sdk/anthropic",
+      config: { profile: { reasoning_mode: { toggle, placeholder: false } } },
+    })
+    expect(configured.reasoningMode.toggle).toEqual(toggle)
+    expect(configured.reasoningMode.placeholder).toBe(false)
+    expect(configured.sources["reasoningMode.toggle"]).toBe("config")
+    expect(configured.sources["reasoningMode.placeholder"]).toBe("config")
+    // a key the configuration leaves out still comes from the rule
+    expect(configured.reasoningMode.controls).toEqual([{ type: "toggle" }])
+    expect(configured.sources["reasoningMode.controls"]).toBe("builtin:minimax-m3-toggle-chat-template")
+  })
+
+  test("a catalog entry keeps the controls it declares while the rule fills the toggle", () => {
+    const declared = fromCatalogEntry(
+      entry("minimax-m3", {
+        reasoning: true,
+        reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["high"] }],
+      }),
+    )
+    const profile = resolveProfile({
+      providerID: "relay",
+      apiID: "minimax-m3",
+      npm: "@ai-sdk/anthropic",
+      base: declared,
+    })
+    expect(profile.reasoningMode.controls).toEqual([{ type: "toggle" }, { type: "effort", values: ["high"] }])
+    expect(profile.sources["reasoningMode.controls"]).toBe("catalog")
+    expect(profile.reasoningMode.toggle?.on).toEqual({ thinking: { type: "adaptive" } })
+    expect(profile.sources["reasoningMode.toggle"]).toBe("builtin:minimax-m3-toggle")
+    // a model without a rule match keeps catalog controls and gets no toggle
+    const plain = resolveProfile({ providerID: "relay", apiID: "qwen3-max", base: declared })
+    expect(plain.reasoningMode.toggle).toBeUndefined()
+    expect(plain.reasoningMode.controls).toEqual([{ type: "toggle" }, { type: "effort", values: ["high"] }])
   })
 })
 

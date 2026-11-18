@@ -5,7 +5,7 @@ import { LLMRequestPrep } from "@/session/llm/request"
 import { TodoReminders } from "@/session/todo-reminders"
 import { RuntimeContext } from "@/session/runtime-context"
 import { ProviderV2 } from "@graphagent/core/provider"
-import { resolveProfile, type ModelProfileOverride } from "@graphagent/core/model-profile"
+import { fromCatalogEntry, resolveProfile, type ModelProfileOverride } from "@graphagent/core/model-profile"
 import { ProviderProfile } from "@/provider/profile"
 import type { Provider } from "@/provider/provider"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
@@ -441,6 +441,19 @@ describe("ProviderTransform.highestVariant", () => {
     expect(ProviderTransform.highestVariant({})).toBeUndefined()
     expect(ProviderTransform.highestVariant({ variants: undefined })).toBeUndefined()
     expect(ProviderTransform.highestVariant({ variants: {} })).toBeUndefined()
+  })
+
+  test("ranks thinking above none", () => {
+    // a model whose only choice is off or on has no effort tiers: the highest is the one that thinks
+    expect(ProviderTransform.highestVariant(named("none", "thinking"))).toBe("thinking")
+    expect(ProviderTransform.highestVariant(named("thinking", "none"))).toBe("thinking")
+    expect(ProviderTransform.highestVariant(named("thinking"))).toBe("thinking")
+  })
+
+  test("sortVariants keeps the toggle in its order: none, thinking, then custom names", () => {
+    const sorted = ProviderTransform.sortVariants({ thinking: {}, quality: {}, none: {} })
+    expect(Object.keys(sorted)).toEqual(["none", "thinking", "quality"])
+    expect(ProviderTransform.highestVariant({ variants: sorted })).toBe("thinking")
   })
 })
 
@@ -6447,6 +6460,92 @@ describe("ProviderTransform case-insensitive family", () => {
       expect(result[0].providerOptions?.anthropic?.cacheControl).toEqual({ type: "ephemeral" })
     }
   })
+
+  const reasoning = (model: Provider.Model): Provider.Model => ({
+    ...model,
+    capabilities: { ...model.capabilities, reasoning: true },
+  })
+  const anthropic = { providerID: "anthropic", npm: "@ai-sdk/anthropic" }
+
+  test("variants and options", () => {
+    // Claude-Opus-4-6 gets the adaptive tiers of Opus 4.6 on the Anthropic protocol, as claude-opus-4-6 does
+    const opus = reasoning(relayModel("Claude-Opus-4-6", anthropic))
+    expect(Object.keys(ProviderTransform.variants(opus))).toEqual(["low", "medium", "high", "max"])
+    expect(ProviderTransform.variants(opus)).toEqual(
+      ProviderTransform.variants(reasoning(relayModel("claude-opus-4-6", anthropic))),
+    )
+
+    // Claude-Sonnet-4 is a Claude model: no toolStreaming switch; another id on the same package still gets it
+    const sonnet = relayModel("Claude-Sonnet-4", anthropic)
+    expect(ProviderTransform.options({ model: sonnet, sessionID: "s" })).not.toHaveProperty("toolStreaming")
+    expect(ProviderTransform.options({ model: relayModel("kimi-k2.5", anthropic), sessionID: "s" })).toHaveProperty(
+      "toolStreaming",
+      false,
+    )
+  })
+
+  test("variants lookups", () => {
+    // every lookup of the API id in variants() ignores case, whichever npm branch it sits in
+    const cases: Array<{ apiID: string; options: NonNullable<Parameters<typeof relayModel>[1]>; keys: string[] }> = [
+      { apiID: "Claude-Opus-4-5", options: anthropic, keys: ["low", "medium", "high"] },
+      { apiID: "Claude-Fable-5", options: anthropic, keys: ["low", "medium", "high", "xhigh", "max"] },
+      {
+        apiID: "Claude-Opus-4.7",
+        options: { providerID: "github-copilot", npm: "@ai-sdk/anthropic" },
+        keys: ["medium"],
+      },
+      {
+        apiID: "Anthropic/Claude-Opus-4-6",
+        options: { npm: "@ai-sdk/gateway" },
+        keys: ["low", "medium", "high", "max"],
+      },
+      { apiID: "Google/Gemini-2.5-Pro", options: { npm: "@ai-sdk/gateway" }, keys: ["high", "max"] },
+      { apiID: "Anthropic.Claude-Sonnet-4", options: { npm: "@ai-sdk/amazon-bedrock" }, keys: ["high", "max"] },
+      { apiID: "OpenAI/GPT-5", options: { npm: "ai-gateway-provider" }, keys: ["minimal", "low", "medium", "high"] },
+      {
+        apiID: "OpenAI/O3-Mini",
+        options: { npm: "@openrouter/ai-sdk-provider" },
+        keys: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      },
+      { apiID: "North-Mini-Code-1-0-Latest", options: {}, keys: ["none", "high"] },
+      { apiID: "DeepSeek-V4-Pro", options: {}, keys: ["low", "medium", "high", "max"] },
+    ]
+    for (const item of cases) {
+      const mixed = ProviderTransform.variants(reasoning(relayModel(item.apiID, item.options)))
+      const lower = ProviderTransform.variants(reasoning(relayModel(item.apiID.toLowerCase(), item.options)))
+      expect({ apiID: item.apiID, keys: Object.keys(lower) }).toEqual({ apiID: item.apiID, keys: item.keys })
+      expect({ apiID: item.apiID, variants: mixed }).toEqual({ apiID: item.apiID, variants: lower })
+    }
+  })
+
+  test("options lookups", () => {
+    const optionsOf = (apiID: string, model: Parameters<typeof relayModel>[1], isReasoning = false) => {
+      const built = relayModel(apiID, model)
+      return ProviderTransform.options({ model: isReasoning ? reasoning(built) : built, sessionID: "s" })
+    }
+    const openrouter = { providerID: "openrouter", npm: "@openrouter/ai-sdk-provider" }
+    expect(optionsOf("Google/Gemini-3-Pro", openrouter).reasoning).toEqual({ effort: "high" })
+    expect(optionsOf("google/gemini-3-pro", openrouter).reasoning).toEqual({ effort: "high" })
+
+    const google = { providerID: "google", npm: "@ai-sdk/google" }
+    expect(optionsOf("Gemini-3-Pro", google, true).thinkingConfig).toEqual({
+      includeThoughts: true,
+      thinkingLevel: "high",
+    })
+
+    // gpt-5 asks for reasoning summaries and encrypted content; gpt-5-chat and gpt-5-pro do not
+    const openai = { providerID: "openai", npm: "@ai-sdk/openai" }
+    const gpt = optionsOf("GPT-5", openai)
+    expect(gpt.reasoningSummary).toBe("auto")
+    expect(gpt.include).toEqual(["reasoning.encrypted_content"])
+    expect(optionsOf("GPT-5-Chat", openai).reasoningSummary).toBeUndefined()
+    expect(optionsOf("GPT-5-Pro", openai).reasoningSummary).toBeUndefined()
+
+    // smallOptions looks for google in the API id as well
+    expect(ProviderTransform.smallOptions(relayModel("Google/Gemini-2.5-Flash", openrouter))).toEqual({
+      reasoning: { enabled: false },
+    })
+  })
 })
 
 describe("ProviderTransform.message - request shaping follows the model profile", () => {
@@ -6661,5 +6760,251 @@ describe("ProviderTransform sampling defaults - profile rule", () => {
       topP: undefined,
       topK: undefined,
     })
+  })
+})
+
+describe("ProviderTransform.variants - family follows the API id", () => {
+  /** A reasoning model whose configured key is `key`, not its API id. */
+  const keyed = (key: string, apiID: string, options: NonNullable<Parameters<typeof relayModel>[1]> = {}) => {
+    const model = relayModel(apiID, options)
+    return { ...model, id: ModelV2.ID.make(key), capabilities: { ...model.capabilities, reasoning: true } }
+  }
+
+  test("variants family follows the API id, not the configured key", () => {
+    // the key names no family and the API id is Qwen: no tiers, as under the model's own key
+    expect(ProviderTransform.variants(keyed("relay-a", "qwen3-max", { npm: "@ai-sdk/openai-compatible" }))).toEqual({})
+    // the Copilot branch reads the API id as well
+    expect(
+      ProviderTransform.variants(keyed("my-copilot", "gemini-2.5-pro", { npm: "@ai-sdk/github-copilot" })),
+    ).toEqual({})
+  })
+
+  test("a key that names a family gives it to no model whose API id does not", () => {
+    expect(Object.keys(ProviderTransform.variants(keyed("qwen-alias", "relay-model")))).toEqual([
+      "low",
+      "medium",
+      "high",
+    ])
+    expect(Object.keys(ProviderTransform.variants(keyed("my-glm-5.2", "relay-model")))).toEqual([
+      "low",
+      "medium",
+      "high",
+    ])
+    expect(ProviderTransform.variants(keyed("my-glm", "glm-5.2"))).toEqual({
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+    // a Copilot key that names claude does not give the model the Claude tiers
+    const copilot = Object.values(
+      ProviderTransform.variants(keyed("claude-alias", "gpt-5", { npm: "@ai-sdk/github-copilot" })),
+    )
+    expect(copilot).toHaveLength(3)
+    for (const variant of copilot) expect(variant).toMatchObject({ reasoningSummary: "auto" })
+  })
+
+  test("the npm branches that read the id take it from the API id", () => {
+    // Azure: o1-mini has no tiers, wherever its deployment is keyed
+    expect(ProviderTransform.variants(keyed("my-o1", "o1-mini", { npm: "@ai-sdk/azure" }))).toEqual({})
+    // SAP: an Anthropic model behind a plain key
+    const sap = ProviderTransform.variants(
+      keyed("sap-alias", "anthropic--claude-4.5-sonnet", { npm: "@jerome-benoit/sap-ai-provider-v2" }),
+    )
+    expect(Object.keys(sap)).toEqual(["high", "max"])
+    expect(sap.high.modelParams.thinking).toMatchObject({ type: "enabled" })
+  })
+})
+
+describe("ProviderTransform.variants - reasoning toggle of the profile", () => {
+  const toggle = {
+    on: { thinking: { type: "enabled", budget_tokens: 2048 } },
+    off: { thinking: { type: "disabled" } },
+  }
+  const withToggle = { reasoning_mode: { toggle } }
+  const reasoningModel = (apiID: string, options: NonNullable<Parameters<typeof relayModel>[1]> = {}) => {
+    const model = relayModel(apiID, options)
+    return { ...model, capabilities: { ...model.capabilities, reasoning: true } }
+  }
+  const catalogEntry = (id: string, extra: Partial<ModelsDev.Model> = {}): ModelsDev.Model => ({
+    id,
+    name: id,
+    release_date: "2026-01-01",
+    attachment: false,
+    reasoning: true,
+    temperature: true,
+    tool_call: true,
+    limit: { context: 8_000, output: 1_000 },
+    modalities: { input: ["text"], output: ["text"] },
+    ...extra,
+  })
+
+  test("a configured toggle gives none and thinking, whatever the npm package is", () => {
+    for (const npm of [
+      "@ai-sdk/openai-compatible",
+      "@ai-sdk/openai",
+      "@ai-sdk/anthropic",
+      "@ai-sdk/google",
+      "@ai-sdk/amazon-bedrock",
+      "@openrouter/ai-sdk-provider",
+    ]) {
+      const model = reasoningModel("qwen3-max", { npm, profile: withToggle })
+      expect({ npm, variants: ProviderTransform.variants(model) }).toEqual({
+        npm,
+        variants: { none: toggle.off, thinking: toggle.on },
+      })
+    }
+  })
+
+  test("the toggle comes before the branches of a family", () => {
+    const glm = reasoningModel("glm-5.2", { providerID: "zhipuai", profile: withToggle })
+    expect(ProviderTransform.variants(glm)).toEqual({ none: toggle.off, thinking: toggle.on })
+    const claude = reasoningModel("claude-opus-4-6", {
+      providerID: "anthropic",
+      npm: "@ai-sdk/anthropic",
+      profile: withToggle,
+    })
+    expect(ProviderTransform.variants(claude)).toEqual({ none: toggle.off, thinking: toggle.on })
+    // a configured toggle also replaces the one a built-in rule declares
+    const m3 = reasoningModel("MiniMax-M3", { providerID: "minimax", npm: "@ai-sdk/anthropic", profile: withToggle })
+    expect(ProviderProfile.profileOf(m3).sources["reasoningMode.toggle"]).toBe("config")
+    expect(ProviderTransform.variants(m3)).toEqual({ none: toggle.off, thinking: toggle.on })
+  })
+
+  test("the variants are copies: changing them leaves the profile alone", () => {
+    const model = reasoningModel("qwen3-max", { profile: withToggle })
+    const first = ProviderTransform.variants(model)
+    first.thinking.thinking.type = "changed"
+    first.none.thinking.type = "changed"
+    expect(ProviderTransform.variants(model)).toEqual({ none: toggle.off, thinking: toggle.on })
+    expect(ProviderProfile.profileOf(model).reasoningMode.toggle).toEqual(toggle)
+  })
+
+  test("a toggle gives no variants to a model that does not reason", () => {
+    expect(ProviderTransform.variants(relayModel("qwen3-max", { profile: withToggle }))).toEqual({})
+  })
+
+  test("a fixture that has only the fields variants reads does not make the profile throw", () => {
+    // what a fixture leaves out is absent at run time, as in the partial models other tests pass in
+    const fixture = (apiID: string) => {
+      const model = reasoningModel(apiID)
+      for (const key of ["name", "cost", "limit", "status", "options", "headers", "release_date"]) {
+        Reflect.deleteProperty(model, key)
+      }
+      for (const key of ["temperature", "attachment", "toolcall", "input", "output", "interleaved"]) {
+        Reflect.deleteProperty(model.capabilities, key)
+      }
+      return model
+    }
+    expect(ProviderTransform.variants(fixture("MiniMax-M3"))).toEqual({
+      none: { thinking: { type: "disabled" } },
+      thinking: { thinking: { type: "adaptive" } },
+    })
+    expect(ProviderTransform.variants(fixture("qwen3-max"))).toEqual({})
+    expect(Object.keys(ProviderTransform.variants(fixture("some-model")))).toEqual(["low", "medium", "high"])
+  })
+
+  test("controls from the catalog alone leave the variants as they were", () => {
+    const controls: NonNullable<ModelsDev.Model["reasoning_options"]> = [
+      { type: "toggle" },
+      { type: "effort", values: ["low", "high"] },
+    ]
+    for (const [apiID, npm] of [
+      ["qwen3-max", "@ai-sdk/openai-compatible"],
+      ["gpt-5", "@ai-sdk/openai"],
+      ["glm-5.2", "@ai-sdk/openai-compatible"],
+      ["kimi-k2.5", "@ai-sdk/openai-compatible"],
+    ]) {
+      const plain = reasoningModel(apiID, { npm })
+      const declared = {
+        ...plain,
+        profile: resolveProfile({
+          providerID: "relay",
+          apiID,
+          npm,
+          base: fromCatalogEntry(catalogEntry(apiID, { reasoning_options: controls })),
+        }),
+      }
+      expect(ProviderProfile.profileOf(declared).reasoningMode.controls).toEqual([...controls])
+      expect(ProviderProfile.profileOf(declared).reasoningMode.toggle).toBeUndefined()
+      expect({ apiID, variants: ProviderTransform.variants(declared) }).toEqual({
+        apiID,
+        variants: ProviderTransform.variants(plain),
+      })
+    }
+  })
+
+  test("the built-in minimax-m3 rule still gives a model of the catalog its toggle", () => {
+    const profile = resolveProfile({
+      providerID: "minimax",
+      apiID: "MiniMax-M3",
+      npm: "@ai-sdk/anthropic",
+      base: fromCatalogEntry(catalogEntry("MiniMax-M3", { reasoning_options: [{ type: "toggle" }] })),
+    })
+    // the catalog declares the controls, the rule fills the request fragments the catalog does not carry
+    expect(profile.sources["reasoningMode.controls"]).toBe("catalog")
+    expect(profile.sources["reasoningMode.toggle"]).toBe("builtin:minimax-m3-toggle")
+    const model = { ...reasoningModel("MiniMax-M3", { providerID: "minimax", npm: "@ai-sdk/anthropic" }), profile }
+    expect(ProviderTransform.variants(model)).toEqual({
+      none: { thinking: { type: "disabled" } },
+      thinking: { thinking: { type: "adaptive" } },
+    })
+  })
+})
+
+describe("ProviderTransform.message - reasoning placeholder follows the model profile", () => {
+  const history = (): ModelMessage[] => [
+    { role: "user", content: "go" },
+    { role: "assistant", content: [{ type: "text", text: "plain" }] },
+    { role: "assistant", content: "bare string" },
+    {
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "kept" },
+        { type: "text", text: "answer" },
+      ],
+    },
+  ]
+  /** The reasoning texts of each assistant message. */
+  const reasoningOf = (msgs: ModelMessage[]) =>
+    msgs
+      .filter((msg) => msg.role === "assistant")
+      .map((msg) =>
+        Array.isArray(msg.content) ? msg.content.flatMap((part) => (part.type === "reasoning" ? [part.text] : [])) : [],
+      )
+
+  test("a deepseek model gets an empty reasoning on every assistant message that has none", () => {
+    for (const apiID of ["deepseek-chat", "DeepSeek-V4-Pro", "deepseek/deepseek-v4-flash"]) {
+      const result = ProviderTransform.message(history(), relayModel(apiID), {})
+      expect({ apiID, reasoning: reasoningOf(result) }).toEqual({ apiID, reasoning: [[""], [""], ["kept"]] })
+      expect(result[2]).toEqual({
+        role: "assistant",
+        content: [
+          { type: "text", text: "bare string" },
+          { type: "reasoning", text: "" },
+        ],
+      })
+    }
+    expect(ProviderProfile.profileOf(relayModel("DeepSeek-V4-Pro")).sources["reasoningMode.placeholder"]).toBe(
+      "builtin:reasoning-placeholder-deepseek",
+    )
+  })
+
+  test("another model keeps its history as it is", () => {
+    expect(reasoningOf(ProviderTransform.message(history(), relayModel("qwen3-max"), {}))).toEqual([[], [], ["kept"]])
+  })
+
+  test("the placeholder comes from the profile: configured on for any model, configured off for deepseek", () => {
+    const on = relayModel("qwen3-max", { profile: { reasoning_mode: { placeholder: true } } })
+    expect(reasoningOf(ProviderTransform.message(history(), on, {}))).toEqual([[""], [""], ["kept"]])
+    const off = relayModel("deepseek-chat", { profile: { reasoning_mode: { placeholder: false } } })
+    expect(reasoningOf(ProviderTransform.message(history(), off, {}))).toEqual([[], [], ["kept"]])
+    // the other keys of reasoning_mode do not switch the rule off
+    const other = relayModel("deepseek-chat", { profile: { reasoning_mode: { replay: "field" } } })
+    expect(reasoningOf(ProviderTransform.message(history(), other, {}))).toEqual([[""], [""], ["kept"]])
+  })
+
+  test("a Mistral model keeps returning before the placeholder", () => {
+    // the bridge ends normalizeMessages first, so even a configured placeholder is not reached
+    const model = relayModel("mistral-large-latest", { profile: { reasoning_mode: { placeholder: true } } })
+    expect(reasoningOf(ProviderTransform.message(history(), model, {}))).toEqual([[], [], ["kept"]])
   })
 })
