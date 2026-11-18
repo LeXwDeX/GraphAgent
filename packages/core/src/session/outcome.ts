@@ -11,7 +11,9 @@ import type { ToolOutcomeTable } from "./outcome.sql"
  *   (a repaired argument, a fuzzy edit match, ...). Each entry is a kind string;
  *   the statistics group by the string, so a new kind needs no schema change.
  * - `metadata.outcome` classifies a failed (`error` state) call. A completed call
- *   writes nothing: its outcome is derived by `toolOutcomeRow`.
+ *   writes nothing, with one exception: a user-run shell command that was cancelled
+ *   finishes `completed` (its partial output is the result) and records `"aborted"`.
+ *   Otherwise a completed call's outcome is derived by `toolOutcomeRow`.
  *
  * The `tool_outcome` table is a projection of both, written by the session projector.
  */
@@ -79,7 +81,10 @@ export function addCorrections(metadata: Record<string, unknown> | undefined, ..
 }
 
 function outcomeOf(state: FinishedToolState): ToolOutcomeKind {
-  if (state.status === "completed") return field(state.metadata, "hookDenied") === true ? "denied" : "ok"
+  if (state.status === "completed") {
+    if (field(state.metadata, "hookDenied") === true) return "denied"
+    return field(state.metadata, "outcome") === "aborted" ? "aborted" : "ok"
+  }
   const recorded = field(state.metadata, "outcome")
   return isOutcomeKind(recorded) ? recorded : "execution_error"
 }

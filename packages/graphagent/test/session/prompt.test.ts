@@ -8409,6 +8409,7 @@ unixNoLLMServer(
           const tool = completedTool(exit.value.parts)
           if (tool) {
             expect(tool.state.output).toContain("aborted before completion")
+            expect(tool.state.metadata.outcome).toBe("aborted")
           }
         }
       }),
@@ -8453,6 +8454,7 @@ unixNoLLMServer(
           const tool = completedTool(exit.value.parts)
           if (tool) {
             expect(tool.state.output).toContain("aborted before completion")
+            expect(tool.state.metadata.outcome).toBe("aborted")
           }
         }
       }),
