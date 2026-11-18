@@ -5,7 +5,8 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { SessionID, MessageID } from "../session/schema"
 import * as Truncate from "./truncate"
 import { ToolJsonSchema } from "./json-schema"
-import { formatSchemaFailures } from "./schema-error"
+import { describeSchemaFailures } from "./schema-error"
+import { ToolError } from "./tool-error"
 import { Agent } from "@/agent/agent"
 import type { ChildRuns as ChildRunsModule } from "@/session/child/run"
 
@@ -35,7 +36,7 @@ export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsEr
   detail: Schema.String,
 }) {
   override get message() {
-    return `The ${this.tool} tool was called with invalid arguments: ${this.detail} Please rewrite the input so it satisfies the expected schema.`
+    return ToolError.render({ kind: "invalid_arguments", tool: this.tool, detail: this.detail })
   }
 }
 
@@ -222,7 +223,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           ...(ctx.callID ? { "tool.call_id": ctx.callID } : {}),
         }
         const invalidArguments = (error: unknown, input: unknown) => {
-          const fallback = formatSchemaFailures(error)
+          const fallback = describeSchemaFailures(error)
           return new InvalidArgumentsError({
             tool: id,
             detail: toolInfo.formatValidationError

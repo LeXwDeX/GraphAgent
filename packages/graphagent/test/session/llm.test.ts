@@ -3,7 +3,7 @@ import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import path from "path"
-import { InvalidResponseDataError, InvalidToolInputError, tool, type ModelMessage } from "ai"
+import { InvalidResponseDataError, InvalidToolInputError, NoSuchToolError, tool, type ModelMessage } from "ai"
 import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
@@ -708,9 +708,142 @@ describe("session.llm.ai-sdk adapter", () => {
     if (toolError.type !== "tool-error") throw new Error("expected tool-error")
     expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
     if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
-      expect(toolError.error.message).toBe("Invalid input for tool lookup: bad json")
+      expect(toolError.error.message).toContain("are not valid JSON (5 characters)")
       expect(toolError.error.cause).toBe("Invalid input for tool lookup: bad json")
     }
+    expect(toolError.message).toContain("are not valid JSON (5 characters)")
+    expect(toolError.message).not.toContain("bad json")
+  })
+
+  test("renders NoSuchToolError as the unknown tool text with the active tool names", async () => {
+    const sdkText = "Model tried to call unavailable tool 'no_such_tool'. Available tools: lookup, read."
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-10",
+        toolName: "no_such_tool",
+        input: { query: "x" },
+        dynamic: true,
+        invalid: true,
+        error: new NoSuchToolError({ toolName: "no_such_tool", availableTools: ["lookup", "read"] }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-error",
+        toolCallId: "call-10",
+        toolName: "no_such_tool",
+        error: sdkText,
+        dynamic: true,
+      }),
+    ])
+
+    const toolError = events[1]
+    expect(toolError.type).toBe("tool-error")
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    const expected = 'Unknown tool "no_such_tool". Available tools: lookup, read. Use one of them.'
+    expect(toolError.message).toBe(expected)
+    expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+    if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
+      expect(toolError.error.message).toBe(expected)
+      expect(toolError.error.cause).toBe(sdkText)
+    }
+  })
+
+  test("lists no tools when the SDK reports none for an unknown tool", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-11",
+        toolName: "no_such_tool",
+        input: {},
+        dynamic: true,
+        invalid: true,
+        error: new NoSuchToolError({ toolName: "no_such_tool" }),
+      }),
+      uncheckedAdapterEvent({ type: "tool-error", toolCallId: "call-11", toolName: "no_such_tool", error: "sdk text" }),
+    ])
+
+    const toolError = events[1]
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.message).toBe('Unknown tool "no_such_tool". Available tools: (none). Use one of them.')
+  })
+
+  test("keeps the SDK text for an invalid call whose cause has no fixed text", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-12",
+        toolName: "lookup",
+        input: "{}",
+        dynamic: true,
+        invalid: true,
+        error: new Error("repair threw"),
+      }),
+      uncheckedAdapterEvent({ type: "tool-error", toolCallId: "call-12", toolName: "lookup", error: "sdk text" }),
+    ])
+
+    const toolError = events[1]
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.message).toBe("sdk text")
+    expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+  })
+
+  test("forwards only a bounded head of an invalid call's raw input", async () => {
+    const raw = "x".repeat(5000)
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-13",
+        toolName: "lookup",
+        input: raw,
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: raw, cause: new Error("bad json") }),
+      }),
+    ])
+
+    const call = events[0]
+    if (call.type !== "tool-call") throw new Error("expected tool-call")
+    expect(typeof call.input).toBe("string")
+    const input = String(call.input)
+    expect(input.length).toBeLessThan(400)
+    expect(input).toBe(`${"x".repeat(200)}… [5000 characters in total]`)
+  })
+
+  test("cuts an invalid call's raw input on code points and leaves short or valid input alone", async () => {
+    const wide = "😀".repeat(300)
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-14",
+        toolName: "lookup",
+        input: wide,
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: wide, cause: new Error("bad json") }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-15",
+        toolName: "lookup",
+        input: '{"que',
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: '{"que', cause: new Error("bad json") }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-16",
+        toolName: "lookup",
+        input: { query: "y".repeat(500) },
+      }),
+    ])
+
+    const [cut, short, valid] = events
+    if (cut.type !== "tool-call" || short.type !== "tool-call" || valid.type !== "tool-call")
+      throw new Error("expected tool-call events")
+    expect(cut.input).toBe(`${"😀".repeat(200)}… [${wide.length} characters in total]`)
+    expect(short.input).toBe('{"que')
+    expect(valid.input).toEqual({ query: "y".repeat(500) })
   })
 
   test("keeps provider-executed invalid tool errors unwrapped", async () => {
