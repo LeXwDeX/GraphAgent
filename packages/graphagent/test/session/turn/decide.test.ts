@@ -44,6 +44,7 @@ function signals(overrides: Partial<Decide.Signals> = {}): Decide.Signals {
     assistantFinished: true,
     userBeforeAssistant: true,
     assistantFinish: "stop",
+    pseudoToolCall: false,
     ...overrides,
   }
 }
@@ -240,6 +241,51 @@ describe("decide: Stop hooks", () => {
       kind: "finish",
       outcome: { type: "completed" },
     })
+  })
+})
+
+describe("decide: runtime hints", () => {
+  const hint = { kind: "hint", hint: "pseudo_tool_call" } as const
+
+  test("State.recordHint counts one kind without touching the others", () => {
+    const once = State.recordHint(State.initial({ stopCap: 3 }), "pseudo_tool_call")
+    expect(once.hints).toEqual({ pseudo_tool_call: 1 })
+    expect(State.initial({ stopCap: 3 }).hints).toEqual({ pseudo_tool_call: 0 })
+  })
+
+  test("a tool call written as text earns a hint before any Stop hook runs", () => {
+    expect(Decide.decide(state(), signals({ pseudoToolCall: true }))).toEqual(hint)
+    expect(Decide.decide(state(), signals({ pseudoToolCall: true, assistantFinish: "unknown" }))).toEqual(hint)
+  })
+
+  test("a hint already written this turn is not repeated", () => {
+    const hinted = State.recordHint(state(), "pseudo_tool_call")
+    expect(Decide.decide(hinted, signals({ pseudoToolCall: true }))).toEqual({
+      kind: "run_stop_hooks",
+      event: "Stop",
+    })
+    expect(Decide.decide(hinted, signals({ pseudoToolCall: true, stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "completed" },
+    })
+  })
+
+  test("a length finish never earns the pseudo tool call hint", () => {
+    const transition = Decide.decide(state(), signals({ pseudoToolCall: true, assistantFinish: "length" }))
+    expect(transition).toEqual({ kind: "run_stop_hooks", event: "Stop" })
+  })
+
+  test("text without a tool call marker earns no hint", () => {
+    expect(Decide.decide(state(), signals())).toEqual({ kind: "run_stop_hooks", event: "Stop" })
+  })
+
+  test("hintFor refuses a stopped, errored, blocked or final-step turn", () => {
+    const call = signals({ pseudoToolCall: true })
+    expect(Decide.hintFor(state(), call)).toBe("pseudo_tool_call")
+    expect(Decide.hintFor(State.markStopped(state()), call)).toBeUndefined()
+    expect(Decide.hintFor(state({ error: apiError() }), call)).toBeUndefined()
+    expect(Decide.hintFor(State.blockAgentInput(state()), call)).toBeUndefined()
+    expect(Decide.hintFor(State.markClosed(state()), call)).toBeUndefined()
   })
 })
 

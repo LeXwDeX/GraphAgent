@@ -25,7 +25,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
-import { LLMEvent } from "@graphagent/llm"
+import { LLMEvent, Usage } from "@graphagent/llm"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -883,6 +883,88 @@ itClassifiedProviderError.live("session.processor preserves classified native pr
   ),
 )
 
+// What the provider billed for a response the context window cut off (no step-finish follows it).
+const billedOverflow = { inputTokens: 1000, outputTokens: 500, reasoningTokens: 100, cacheReadInputTokens: 200 }
+const billedOverflowLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    organizer: () => Effect.succeed(undefined),
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.providerError({
+          message: "Provider finish_reason: model_context_window_exceeded",
+          classification: "context-overflow",
+          usage: billedOverflow,
+        }),
+      ),
+  }),
+)
+const itBilledOverflow = testEffect(
+  LayerNode.buildLayer(root, { replacements: [...replacements, LayerNode.replace(LLM.node, billedOverflowLLM)] }),
+)
+const pricedCfg = {
+  ...cfg,
+  provider: {
+    ...cfg.provider,
+    test: {
+      ...cfg.provider.test,
+      models: { "test-model": { ...cfg.provider.test.models["test-model"], cost: { input: 1, output: 2 } } },
+    },
+  },
+}
+
+itBilledOverflow.live("session.processor bills a context-overflow provider error and still compacts", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "billed overflow")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "billed overflow" }],
+          tools: {},
+        })
+
+        // Routing is unchanged: compaction, no error, and no step-finish part.
+        expect(value).toBe("compact")
+        expect(handle.message.error).toBeUndefined()
+        expect((yield* MessageV2.parts(msg.id)).some((part) => part.type === "step-finish")).toBe(false)
+
+        // The billed response is accounted and persisted.
+        const billed = Session.getUsage({ model: mdl, usage: new Usage(billedOverflow) })
+        expect(billed.cost).toBeGreaterThan(0)
+        const stored = yield* session.messages({ sessionID: chat.id })
+        const persisted = stored.find((item) => item.info.id === msg.id)?.info
+        if (persisted?.role !== "assistant") throw new Error("expected the assistant message")
+        expect(persisted.tokens).toMatchObject({
+          input: billed.tokens.input,
+          output: billed.tokens.output,
+          reasoning: billed.tokens.reasoning,
+          cache: billed.tokens.cache,
+        })
+        expect(persisted.cost).toBeCloseTo(billed.cost, 10)
+      }),
+    { config: pricedCfg },
+  ),
+)
+
 it.live("session.processor effect tests complete AI SDK tool calls when native flag is off", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
@@ -1627,11 +1709,13 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
         ).toBe("stop")
 
         const parts = yield* MessageV2.parts(msg.id)
-        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const texts = parts.filter((part): part is SessionV1.TextPart => part.type === "text")
         const reasoning = parts.find((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
-        expect(text?.text).toBe("partial")
+        // Three reconnects dropped the text of the earlier attempts; only the final attempt's partial output
+        // stays, and it follows that attempt's reasoning.
+        expect(texts.map((part) => part.text)).toEqual(["partial"])
         expect(reasoning?.text).toBe("thinking")
-        expect(parts.indexOf(text!)).toBeLessThan(parts.indexOf(reasoning!))
+        expect(parts.indexOf(texts[0])).toBeGreaterThan(parts.indexOf(reasoning!))
       }),
     { config: cfg },
   ),
