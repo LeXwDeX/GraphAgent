@@ -230,3 +230,111 @@ describe("lsp.spawn", () => {
     { config: { lsp: true } },
   )
 })
+
+describe("lsp.touchFile check status", () => {
+  it.instance("is disabled when LSP is not configured", () =>
+    LSP.Service.use((lsp) =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        expect(yield* lsp.touchFile(path.join(dir, "src", "inside.ts"), "document")).toBe("disabled")
+      }),
+    ),
+  )
+
+  it.instance(
+    "is disabled when LSP is turned off",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          expect(yield* lsp.touchFile(path.join(dir, "src", "inside.ts"), "document")).toBe("disabled")
+        }),
+      ),
+    { config: { lsp: false } },
+  )
+
+  it.instance(
+    "has no server for a file outside the project",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          expect(yield* lsp.touchFile(path.join(dir, "..", "outside.ts"), "document")).toBe("no_server")
+        }),
+      ),
+    { config: { lsp: true } },
+  )
+
+  it.instance(
+    "has no server when no configured server handles the file",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = path.join(dir, "sample.unhandled")
+          yield* Effect.promise(() => Bun.write(file, "sample\n"))
+          expect(yield* lsp.touchFile(file, "document")).toBe("no_server")
+        }),
+      ),
+    {
+      config: {
+        lsp: { fake: { command: [process.execPath, fakeServerPath], extensions: [".repro"] } },
+      },
+    },
+  )
+
+  it.instance(
+    "has no server when the file cannot be opened on the server",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          // A matching server exists, but the file is gone: the open fails and nothing was checked.
+          expect(yield* lsp.touchFile(path.join(dir, "missing.repro"), "document")).toBe("no_server")
+        }),
+      ),
+    {
+      config: {
+        lsp: { fake: { command: [process.execPath, fakeServerPath], extensions: [".repro"] } },
+      },
+    },
+  )
+
+  it.instance(
+    "is checked once the file is open when no diagnostics are waited for",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = path.join(dir, "sample.repro")
+          yield* Effect.promise(() => Bun.write(file, "sample\n"))
+          expect(yield* lsp.touchFile(file)).toBe("checked")
+        }),
+      ),
+    {
+      config: {
+        lsp: { fake: { command: [process.execPath, fakeServerPath], extensions: [".repro"] } },
+      },
+    },
+  )
+
+  // The real wait: the fake server never publishes diagnostics, so the document wait runs its full 5 seconds.
+  it.instance(
+    "times out when the server publishes no diagnostics for the file",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = path.join(dir, "sample.repro")
+          yield* Effect.promise(() => Bun.write(file, "sample\n"))
+          expect(yield* lsp.touchFile(file, "document")).toBe("timed_out")
+        }),
+      ),
+    {
+      config: {
+        lsp: { fake: { command: [process.execPath, fakeServerPath], extensions: [".repro"] } },
+      },
+    },
+    30_000,
+  )
+})

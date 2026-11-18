@@ -9,6 +9,7 @@ import { WriteTool } from "../../src/tool/write"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
+import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Format } from "../../src/format"
 import { FileState } from "@/session/file-state"
@@ -31,7 +32,11 @@ const ctx = {
   ask: () => Effect.void,
 }
 
+// What the mocked LSP reports about the check; afterEach puts it back.
+let mockedStatus: LSP.Diagnostic.CheckStatus = "checked"
+
 afterEach(async () => {
+  mockedStatus = "checked"
   await disposeAllInstances()
 })
 
@@ -46,6 +51,25 @@ const layer = Layer.mergeAll(
 )
 
 const it = testEffect(layer)
+
+let mockedDiagnostics: Record<string, Diagnostic[]> = {}
+const itWithLsp = testEffect(
+  Layer.mergeAll(
+    Layer.mock(LSP.Service, {
+      touchFile: () => Effect.sync(() => mockedStatus),
+      diagnostics: () => Effect.succeed(mockedDiagnostics),
+    }),
+    FSUtil.defaultLayer,
+    Format.defaultLayer,
+    EventV2Bridge.defaultLayer,
+    Truncate.defaultLayer,
+    Agent.defaultLayer,
+    FileState.defaultLayer,
+  ),
+)
+
+// The line every edit made with LSP off (the default) ends with.
+const lspOff = "\n\nnot checked: LSP disabled"
 
 const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
 
@@ -1481,7 +1505,7 @@ describe("tool.edit write-point checks (#1452)", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe("Edit applied successfully.")
+        expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
       }),
     )
 
@@ -1495,7 +1519,7 @@ describe("tool.edit write-point checks (#1452)", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe(`Edit applied successfully.\n${FileState.changedOutsideNote(result.title)}`)
+        expect(result.output).toBe(`Edit applied successfully.\n${FileState.changedOutsideNote(result.title)}${lspOff}`)
         expect(yield* load(filepath)).toBe("top = 1\nbottom = formatted elsewhere\n")
       }),
     )
@@ -1510,7 +1534,7 @@ describe("tool.edit write-point checks (#1452)", () => {
         yield* writeTool(filepath, "top = 0\n")
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe("Edit applied successfully.")
+        expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
       }),
     )
 
@@ -1522,7 +1546,7 @@ describe("tool.edit write-point checks (#1452)", () => {
         yield* patchTool("*** Begin Patch\n*** Add File: file.txt\n+top = 0\n*** End Patch")
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe("Edit applied successfully.")
+        expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
       }),
     )
 
@@ -1539,7 +1563,7 @@ describe("tool.edit write-point checks (#1452)", () => {
           const second = yield* run({ filePath: filepath, oldString: "b = 1", newString: "b = 2" })
           const third = yield* run({ filePath: filepath, oldString: "a = 2", newString: "a = 3" })
 
-          for (const result of [first, second, third]) expect(result.output).toBe("Edit applied successfully.")
+          for (const result of [first, second, third]) expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
           const final = yield* load(filepath)
           expect(final).toContain("const a = 3")
           expect(final).toContain("const b = 2")
@@ -1562,4 +1586,175 @@ describe("tool.edit write-point checks (#1452)", () => {
       },
     )
   })
+})
+
+// #1451: after an edit the result says whether the language server checked the file. A check that did not run is
+// not the same as one that found nothing.
+describe("tool.edit LSP check state (#1451)", () => {
+  const lines = (count: number) => Array.from({ length: count }, (_, i) => `line ${i + 1}`)
+  const diagnostic = (line: number, severity: Diagnostic["severity"] = 1, message = "boom"): Diagnostic => ({
+    severity,
+    message,
+    range: { start: { line: line - 1, character: 0 }, end: { line: line - 1, character: 1 } },
+  })
+
+  it.instance("says the check did not run when LSP is disabled, which is the default", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "alpha beta\n")
+
+      const result = yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
+
+      expect(result.output).toBe("Edit applied successfully.\n\nnot checked: LSP disabled")
+    }),
+  )
+
+  for (const [status, line] of [
+    ["disabled", "not checked: LSP disabled"],
+    ["no_server", "not checked: no language server"],
+    ["timed_out", "not checked: timed out"],
+  ] as const) {
+    itWithLsp.instance(`words the ${status} status as "${line}"`, () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "alpha beta\n")
+        mockedStatus = status
+        mockedDiagnostics = {}
+
+        const result = yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
+
+        expect(result.output).toBe(`Edit applied successfully.\n\n${line}`)
+      }),
+    )
+  }
+
+  itWithLsp.instance("is clean when the check ran and found nothing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.ts")
+      yield* put(filepath, "const a = 1\n")
+      mockedDiagnostics = {}
+
+      const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
+
+      expect(result.output).toBe("Edit applied successfully.\n\nchecked: clean")
+    }),
+  )
+
+  itWithLsp.instance("counts an error on the edited line and still reports it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.ts")
+      yield* put(filepath, "const a = 1\n")
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(1)] }
+
+      const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a: string = 1" })
+
+      expect(result.output).toBe(
+        [
+          "Edit applied successfully.",
+          "",
+          "checked: 1 error",
+          "",
+          "LSP errors detected in this file, please fix:",
+          `<diagnostics file="${filepath}">`,
+          "ERROR [1:1] boom",
+          "</diagnostics>",
+        ].join("\n"),
+      )
+    }),
+  )
+
+  itWithLsp.instance("counts every error near the edit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.ts")
+      yield* put(filepath, "const a = 1\nconst b = 2\n")
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(1), diagnostic(2, 1, "again")] }
+
+      const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a: string = 1" })
+
+      expect(result.output).toContain("\n\nchecked: 2 errors\n\nLSP errors detected in this file, please fix:\n")
+    }),
+  )
+
+  itWithLsp.instance("leaves errors elsewhere in the file and warnings out of the count", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "long.ts")
+      yield* put(filepath, lines(30).join("\n") + "\n")
+      // Only line 1 changes. The error on line 25 predates the edit; the warning on line 1 is below error severity.
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(25), diagnostic(1, 2, "careful")] }
+
+      const result = yield* run({ filePath: filepath, oldString: "line 1\n", newString: "changed\n" })
+
+      expect(result.output).toBe("Edit applied successfully.\n\nchecked: clean")
+    }),
+  )
+
+  itWithLsp.instance("does not turn diagnostics left over from before into a verdict when nothing ran", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.ts")
+      yield* put(filepath, "const a = 1\n")
+      mockedStatus = "timed_out"
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(1)] }
+
+      const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
+
+      expect(result.output.split("\n").slice(0, 3)).toEqual([
+        "Edit applied successfully.",
+        "",
+        "not checked: timed out",
+      ])
+      expect(result.output).toContain("\n\nLSP errors detected in this file, please fix:\n")
+    }),
+  )
+
+  itWithLsp.instance("puts the status line after the note about a file that changed outside the session", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "top = 0\nbottom = 0\n")
+      yield* (yield* FileState.Service).record(ctx.sessionID, filepath, "read")
+      yield* put(filepath, "top = 0\nbottom = formatted elsewhere\n")
+      mockedDiagnostics = {}
+
+      const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
+
+      expect(result.output).toBe(
+        `Edit applied successfully.\n${FileState.changedOutsideNote(result.title)}\n\nchecked: clean`,
+      )
+    }),
+  )
+
+  itWithLsp.instance("reports the state of a file created through an empty oldString", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fresh.ts")
+      mockedStatus = "no_server"
+
+      const result = yield* run({ filePath: filepath, oldString: "", newString: "const a = 1\n" })
+
+      expect(result.output).toBe("Edit applied successfully.\n\nnot checked: no language server")
+    }),
+  )
+
+  itWithLsp.instance(
+    "keeps the status line out of the title",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "alpha beta\n")
+        mockedStatus = "timed_out"
+
+        const result = yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
+
+        expect(result.title).toBe("file.txt")
+      }),
+    { git: true },
+  )
 })

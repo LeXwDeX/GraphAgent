@@ -365,10 +365,13 @@ export const ApplyPatchTool = Tool.define(
       // Notify LSP of file changes and collect diagnostics. Each touch may wait
       // up to the diagnostics timeout, so files settle concurrently rather than
       // stacking one wait per file.
-      yield* Effect.forEach(
+      const checked = yield* Effect.forEach(
         fileChanges.filter((change) => change.type !== "delete"),
-        (change) => lsp.touchFile(change.movePath ?? change.filePath, "document"),
-        { concurrency: 8, discard: true },
+        (change) =>
+          lsp
+            .touchFile(change.movePath ?? change.filePath, "document")
+            .pipe(Effect.map((status) => ({ change, status }))),
+        { concurrency: 8 },
       )
       const diagnostics = yield* lsp.diagnostics()
 
@@ -390,22 +393,25 @@ export const ApplyPatchTool = Tool.define(
         output += `\n${FileState.changedOutsideNote(shown)}`
       }
 
-      for (const change of fileChanges) {
-        if (change.type === "delete") continue
+      // Each written file gets a status line, ahead of the error blocks. The title keeps the result as it was
+      // before the status lines.
+      const head = output
+      const statusLines: string[] = []
+      let blocks = ""
+      for (const { change, status } of checked) {
         const target = change.movePath ?? change.filePath
-        const block = LSP.Diagnostic.afterEdit(
-          target,
-          diagnostics[FSUtil.normalizePath(target)] ?? [],
-          change.oldContent,
-          change.newContent,
-        )
-        if (!block) continue
         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
-        output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
+        const issues = diagnostics[FSUtil.normalizePath(target)] ?? []
+        const line = LSP.Diagnostic.checkLine(status, target, issues, change.oldContent, change.newContent)
+        statusLines.push(`${rel}: ${line}`)
+        const block = LSP.Diagnostic.afterEdit(target, issues, change.oldContent, change.newContent)
+        if (block) blocks += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
+      const title = head + blocks
+      output = statusLines.length > 0 ? `${head}\n\n${statusLines.join("\n")}${blocks}` : title
 
       return {
-        title: output,
+        title,
         metadata: {
           diff: totalDiff,
           files,

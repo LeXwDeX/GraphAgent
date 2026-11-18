@@ -344,15 +344,12 @@ export const EditTool = Tool.define(
 
           let output = "Edit applied successfully."
           if (outside) output += `\n${FileState.changedOutsideNote(relative)}`
-          yield* lsp.touchFile(filePath, "document")
+          const status = yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
-          const block = LSP.Diagnostic.afterEdit(
-            filePath,
-            diagnostics[normalizedFilePath] ?? [],
-            contentOld,
-            contentNew,
-          )
+          const issues = diagnostics[normalizedFilePath] ?? []
+          output += `\n\n${LSP.Diagnostic.checkLine(status, filePath, issues, contentOld, contentNew)}`
+          const block = LSP.Diagnostic.afterEdit(filePath, issues, contentOld, contentNew)
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           const metadata = { diagnostics, diff, filediff }
