@@ -178,6 +178,22 @@ describe("the PR row", () => {
     })
   }
 
+  // The tracker lists facts and no word (#1409), so a row is worded when it is drawn: one that was handed out in
+  // another language, a held warning for one, says the sentence of the language the interface has by then.
+  for (const [built, drawn] of [
+    ["zh-CN", "en"],
+    ["en", "zh-CN"],
+  ] as const) {
+    test(`words a row when it is drawn: built in ${built}, drawn in ${drawn}`, () => {
+      for (const spec of KINDS) {
+        setLanguage(built)
+        const made = spec.item()
+        setLanguage(drawn)
+        expect(bandRowText(layoutPrRow([made], 76)), spec.kind).toBe(`PR #1035  ${spec[drawn === "en" ? "en" : "zh"]}`)
+      }
+    })
+  }
+
   test("colors the outcome by what it was: passed gray, failed error, timed out warning, the rest muted", () => {
     const outcomes = [
       ["success", "✓ 通过", "success"],

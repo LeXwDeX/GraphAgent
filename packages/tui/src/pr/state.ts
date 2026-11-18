@@ -8,6 +8,11 @@
  * the server reports it, the root session's status and assistant messages, and `now`. The result also says when
  * the clock alone will change it (`nextAt`), so the caller registers exactly one `ticker.at` per row.
  *
+ * A line is made in two steps. `prLineFacts` decides what it is (kind, outcome, flags, the next clock boundary) and
+ * says nothing in any language; `prLineWords` puts the facts into the sentence of the interface language at the
+ * moment it is called. A caller that keeps a line keeps the facts and asks for the words when it draws or toasts,
+ * so a kept line follows a language switch and two of them compare equal across one. `prLineState` is both at once.
+ *
  * Only the PR number reaches the screen. The entry's `review` excerpt, `head` and `url` are not even part of the
  * input type; a later change that shows one of them must pass it through `remoteLine` (`util/remote-text`) first.
  *
@@ -87,14 +92,12 @@ export type PrPrefixToken = "success" | "error" | "warning" | "textMuted"
 /** Theme tokens the status sentence is drawn in. */
 export type PrStatusToken = "textMuted" | "warning"
 
-export interface PrLineState {
+/**
+ * What a line is, without a word of it: no text, no language. This is what a caller keeps (the tracker's held
+ * warnings), compares (equal facts draw the same row in either language) and hands to the marks.
+ */
+export interface PrLineFacts {
   readonly kind: PrLineKind
-  /** The whole line without colors: `prefix · status`, or either piece alone. Empty when nothing is drawn. */
-  readonly text: string
-  /** The outcome (`✓ passed`, `merged`, ...); absent while watching and when the server gave none. */
-  readonly prefix?: { readonly text: string; readonly token: PrPrefixToken }
-  /** The sentence after it (`CI 3/6`, `agent working`, ...). */
-  readonly status?: { readonly text: string; readonly token: PrStatusToken }
   /** The entry's outcome, for the marks and for toast transitions. */
   readonly outcome?: PrOutcome
   /** `warning` for the three sticky kinds. The prefix has its own token, so a timed-out line is not warning as a whole. */
@@ -106,6 +109,22 @@ export interface PrLineState {
   /** The next absolute time (epoch milliseconds) at which this result changes by the clock alone. */
   readonly nextAt?: number
 }
+
+/** The line in words, in the interface language of the moment it was made (`prLineWords`); never to be kept. */
+export interface PrLineWords {
+  /** The whole line without colors: `prefix · status`, or either piece alone. Empty when nothing is drawn. */
+  readonly text: string
+  /** The outcome (`✓ passed`, `merged`, ...); absent while watching and when the server gave none. */
+  readonly prefix?: { readonly text: string; readonly token: PrPrefixToken }
+  /** The sentence after it (`CI 3/6`, `agent working`, ...). */
+  readonly status?: { readonly text: string; readonly token: PrStatusToken }
+}
+
+/** The facts and their words in one value. */
+export interface PrLineState extends PrLineFacts, PrLineWords {}
+
+/** The CI counts a `watching` line states; a full `PrWatchEntry["checks"]` fits. */
+export type PrLineChecks = Pick<NonNullable<PrWatchEntry["checks"]>, "passed" | "total">
 
 const SEPARATOR = " · "
 
@@ -142,18 +161,50 @@ function prefixOf(outcome: PrOutcome | undefined): Prefix | undefined {
   return spec ? { text: t(spec.key), token: spec.token } : undefined
 }
 
-const muted = (key: MessageKey): Status => ({ text: t(key), token: "textMuted" })
-const warn = (key: MessageKey): Status => ({ text: t(key), token: "warning" })
+/** The sentence a kind says after the outcome. `watching` counts checks instead; `settled` and `removed` say none. */
+const STATUSES: ReadonlyMap<PrLineKind, { readonly key: MessageKey; readonly token: PrStatusToken }> = new Map([
+  ["awaiting", { key: "pr.status.awaiting", token: "textMuted" }],
+  ["notified", { key: "pr.status.notified", token: "textMuted" }],
+  ["working", { key: "pr.status.working", token: "textMuted" }],
+  ["handled", { key: "pr.status.handled", token: "textMuted" }],
+  ["noReply", { key: "pr.status.noReply", token: "warning" }],
+  ["turnError", { key: "pr.status.turnError", token: "warning" }],
+  ["unresponsive", { key: "pr.status.unresponsive", token: "warning" }],
+] as const)
 
-function line(kind: PrLineKind, pieces: { prefix?: Prefix; status?: Status }, extra: Extra = {}): PrLineState {
-  const sticky = STICKY_KINDS.has(kind)
-  const { prefix, status } = pieces
+function statusOf(kind: PrLineKind, checks: PrLineChecks | undefined): Status | undefined {
+  if (kind === "watching") {
+    const text =
+      checks !== undefined && checks.total > 0
+        ? t("pr.ci", { passed: checks.passed, total: checks.total })
+        : t("pr.ci.waiting")
+    return { text, token: "textMuted" }
+  }
+  const spec = STATUSES.get(kind)
+  return spec ? { text: t(spec.key), token: spec.token } : undefined
+}
+
+/**
+ * The words of a line, in the language the interface has now: the outcome's prefix, the kind's sentence and the two
+ * joined. Pure in its inputs and `t()`; the facts and the counts of a `watching` line are all it needs, so whoever
+ * kept those can draw the line again after a language switch. `prLineState`, the toasts and the band's row share it.
+ */
+export function prLineWords(facts: Pick<PrLineFacts, "kind" | "outcome">, checks?: PrLineChecks): PrLineWords {
+  const prefix = prefixOf(facts.outcome)
+  const status = statusOf(facts.kind, checks)
   const text = [prefix?.text, status?.text].filter((piece) => piece !== undefined).join(SEPARATOR)
+  return { text, ...(prefix ? { prefix } : {}), ...(status ? { status } : {}) }
+}
+
+/** Whether the outcome has a prefix to say; a newer server's outcome has none and an ended watch then draws nothing. */
+function hasPrefix(outcome: PrOutcome | undefined): boolean {
+  return outcome !== undefined && OUTCOME_PREFIXES.has(outcome)
+}
+
+function lineFacts(kind: PrLineKind, extra: Extra = {}): PrLineFacts {
+  const sticky = STICKY_KINDS.has(kind)
   return {
     kind,
-    text,
-    ...(prefix ? { prefix } : {}),
-    ...(status ? { status } : {}),
     ...(extra.outcome !== undefined ? { outcome: extra.outcome } : {}),
     tone: sticky ? "warning" : "default",
     sticky,
@@ -166,34 +217,23 @@ function finiteOr(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
 
-function watching(entry: PrLineEntry): PrLineState {
-  const checks = entry.checks
-  const text =
-    checks !== undefined && checks.total > 0
-      ? t("pr.ci", { passed: checks.passed, total: checks.total })
-      : t("pr.ci.waiting")
-  return line("watching", { status: { text, token: "textMuted" } })
-}
-
 /** The outcome is known: the notice is owed, delivered, or (after a restart) unaccounted for. */
-function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineState {
+function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineFacts {
   const { outcome, delivery } = entry
-  const prefix = prefixOf(outcome)
-  const make = (kind: PrLineKind, status?: Status, extra: Omit<Extra, "outcome"> = {}) =>
-    line(kind, { prefix, status }, { ...extra, outcome })
+  const make = (kind: PrLineKind, extra: Omit<Extra, "outcome"> = {}) => lineFacts(kind, { ...extra, outcome })
 
   // Owed: the clock starts when the watch entered `delivering`, which is the entry's last write.
   if (entry.phase === "delivering" || delivery?.state === "pending") {
     const unresponsiveAt = entry.updatedAt + PR_UNRESPONSIVE_MS
-    if (now >= unresponsiveAt) return make("unresponsive", warn("pr.status.unresponsive"))
-    return make("awaiting", muted("pr.status.awaiting"), { nextAt: unresponsiveAt })
+    if (now >= unresponsiveAt) return make("unresponsive")
+    return make("awaiting", { nextAt: unresponsiveAt })
   }
 
   // A settled watch the server reports no delivery for: nothing is known about the agent.
-  if (delivery?.state !== "delivered") return make("settled", undefined, { hidden: prefix === undefined })
+  if (delivery?.state !== "delivered") return make("settled", { hidden: !hasPrefix(outcome) })
 
-  if (delivery.noReply) return make("noReply", warn("pr.status.noReply"))
-  if (session.status === "busy" || session.status === "retry") return make("working", muted("pr.status.working"))
+  if (delivery.noReply) return make("noReply")
+  if (session.status === "busy" || session.status === "retry") return make("working")
 
   const deliveredAt = finiteOr(delivery.deliveredAt, entry.updatedAt)
   const since = session.assistants.filter((message) => message.created > deliveredAt)
@@ -201,19 +241,18 @@ function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineSt
   if (answers.length > 0) {
     const last = answers.reduce((latest, message) => (message.created >= latest.created ? message : latest))
     const hideAt = (last.completed ?? last.created) + PR_HANDLED_VISIBLE_MS
-    const status = muted("pr.status.handled")
-    return now >= hideAt ? make("handled", status, { hidden: true }) : make("handled", status, { nextAt: hideAt })
+    return now >= hideAt ? make("handled", { hidden: true }) : make("handled", { nextAt: hideAt })
   }
-  if (session.partial) return make("notified", muted("pr.status.notified"))
-  if (since.length > 0) return make("turnError", warn("pr.status.turnError"))
+  if (session.partial) return make("notified")
+  if (since.length > 0) return make("turnError")
 
   const unresponsiveAt = deliveredAt + PR_UNRESPONSIVE_MS
-  if (now >= unresponsiveAt) return make("unresponsive", warn("pr.status.unresponsive"))
-  return make("notified", muted("pr.status.notified"), { nextAt: unresponsiveAt })
+  if (now >= unresponsiveAt) return make("unresponsive")
+  return make("notified", { nextAt: unresponsiveAt })
 }
 
 /**
- * The line for one watch, first match wins:
+ * The facts of the line for one watch, first match wins:
  *
  * - `removed`: the watch was cancelled.
  * - `watching`: the watch is still running.
@@ -230,11 +269,20 @@ function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineSt
  * Every time boundary is `>=`: at exactly 3 minutes the agent is unresponsive, and at exactly 60 seconds after
  * its last error-free turn ended the handled line is hidden, so a callback registered at `nextAt` sees the new
  * result.
+ *
+ * No language is involved: the result is the same in every language, and no `t()` is read here, so a reactive
+ * caller does not depend on the language signal through this.
  */
-export function prLineState(entry: PrLineEntry, session: PrSession, now: number): PrLineState {
-  if (entry.phase === "cancelled") return line("removed", {}, { hidden: true })
-  if (entry.phase === "watching") return watching(entry)
+export function prLineFacts(entry: PrLineEntry, session: PrSession, now: number): PrLineFacts {
+  if (entry.phase === "cancelled") return lineFacts("removed", { hidden: true })
+  if (entry.phase === "watching") return lineFacts("watching")
   return settling(entry, session, now)
+}
+
+/** The facts of `prLineFacts` and their words (`prLineWords`) in the language of the moment, for a caller that draws at once. */
+export function prLineState(entry: PrLineEntry, session: PrSession, now: number): PrLineState {
+  const line = prLineFacts(entry, session, now)
+  return { ...line, ...prLineWords(line, entry.checks) }
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +318,7 @@ const OUTCOME_MARKS: ReadonlyMap<PrOutcome, PrMark> = new Map<PrOutcome, PrMark>
  * (awaiting, notified), `~` watching, else the outcome's mark (`handled` and `settled` keep theirs). A row that
  * is not drawn (`hidden`) has none.
  */
-export function prMark(state: PrLineState): PrMark | undefined {
+export function prMark(state: PrLineFacts): PrMark | undefined {
   if (state.hidden) return undefined
   if (state.sticky) return "!"
   switch (state.kind) {
@@ -338,7 +386,7 @@ export function prCompact(items: readonly PrCompactItem[], budget: number): PrCo
 export const PR_TAIL_BUDGET = 14
 
 export interface PrTailRow {
-  readonly state: PrLineState
+  readonly state: PrLineFacts
   readonly entry: Pick<PrWatchEntry, "number" | "checks">
 }
 
@@ -395,26 +443,33 @@ const OUTCOME_LEVELS: ReadonlyMap<PrOutcome, PrToastLevel> = new Map<PrOutcome, 
  * The toast for a transition from `previous` to `next`, if one is due: the outcome appearing (or changing), or
  * a sticky warning kind being entered. A warning wins when both happen at once. Nothing for a removed row, for
  * an unchanged state, or for any other change. `previous` is `undefined` for a watch seen the first time; a
- * caller that is loading a snapshot or refreshing after a reconnect does not call this at all.
+ * caller that is loading a snapshot or refreshing after a reconnect does not call this at all. Both states are
+ * facts: only the kind and the outcome are compared, and the toast is worded now, in the current language.
  */
 export function prToastFor(
-  previous: PrLineState | undefined,
-  next: PrLineState,
+  previous: PrLineFacts | undefined,
+  next: PrLineFacts,
   entry: Pick<PrWatchEntry, "watchID" | "number">,
 ): PrToast | undefined {
   if (next.kind === "removed") return undefined
-  if (next.sticky && next.status && previous?.kind !== next.kind) {
-    return {
-      key: `pr:${entry.watchID}:${next.kind}`,
-      text: t("pr.toast", { number: entry.number, text: next.status.text }),
-      level: "warning",
+  if (next.sticky && previous?.kind !== next.kind) {
+    const { status } = prLineWords(next)
+    if (status) {
+      return {
+        key: `pr:${entry.watchID}:${next.kind}`,
+        text: t("pr.toast", { number: entry.number, text: status.text }),
+        level: "warning",
+      }
     }
   }
-  if (next.outcome !== undefined && next.prefix && previous?.outcome !== next.outcome) {
-    return {
-      key: `pr:${entry.watchID}:${next.outcome}`,
-      text: t("pr.toast", { number: entry.number, text: next.prefix.text }),
-      level: OUTCOME_LEVELS.get(next.outcome) ?? "info",
+  if (next.outcome !== undefined && previous?.outcome !== next.outcome) {
+    const { prefix } = prLineWords(next)
+    if (prefix) {
+      return {
+        key: `pr:${entry.watchID}:${next.outcome}`,
+        text: t("pr.toast", { number: entry.number, text: prefix.text }),
+        level: OUTCOME_LEVELS.get(next.outcome) ?? "info",
+      }
     }
   }
   return undefined

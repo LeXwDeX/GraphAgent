@@ -12,7 +12,7 @@
 
 import { t } from "../i18n"
 import { formatReminderIn } from "../pr/reminder"
-import { prCompact, prMark, prTailMark, type PrCompactItem } from "../pr/state"
+import { prCompact, prLineWords, prMark, prTailMark, type PrCompactItem } from "../pr/state"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { remoteLine } from "../util/remote-text"
 import { withBackgroundMark } from "./background-mark"
@@ -70,9 +70,11 @@ function singleRow(item: PrBandItem, room: number, aw: AmbiguousWidth): BandRow 
     return rowOf([{ text: truncateCells(`${labelSpan.text}${numberSpan.text}`, room, aw), token: labelSpan.token }], aw)
   }
 
+  // The tracker keeps facts; the words are made here, in the language the interface has now.
+  const words = prLineWords(state, item.entry.checks)
   const said: Array<{ readonly text: string; readonly token: BandToken }> = []
-  if (state.prefix) said.push(state.prefix)
-  if (state.status) said.push(state.status)
+  if (words.prefix) said.push(words.prefix)
+  if (words.status) said.push(words.status)
 
   const spans: BandSpan[] = [...lead]
   let left = room - leadCells

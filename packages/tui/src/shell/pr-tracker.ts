@@ -5,8 +5,14 @@
  * What the status band shows about tracked PRs and reminders, and the toasts that go with it (#1036 F6).
  *
  * The tracker is the one owner of everything that moves with time or events: the hand-off judgement
- * (`prLineState`), the sticky warnings it keeps on screen after the server dropped their entries, the pending
+ * (`prLineFacts`), the sticky warnings it keeps on screen after the server dropped their entries, the pending
  * `ticker.at` and the toasts. The band only lays out what `items` and `reminder` return.
+ *
+ * Language. The tracker keeps and compares facts (kind, outcome, flags, the PR number and its CI counts) and never a
+ * translated word: a held warning is a plain copy of the facts it had, and the band puts them into the words of
+ * the interface language each time it draws (`prLineWords`). The tracker reads no `t()` while it judges, so a
+ * language switch re-runs nothing here: no row changes, no hold or dismissal moves, no toast is shown. A toast is
+ * worded when it is shown, in the language of that moment.
  *
  * Time. The tracker subscribes to neither `frame` nor `second`. Every state carries the next moment the clock alone
  * changes it, and the tracker keeps exactly one `ticker.at`, at the earliest of those (reminder minute boundaries
@@ -43,13 +49,13 @@ import type { Ticker } from "../context/ticker"
 import { formatReminderIn, reminderNextAt } from "../pr/reminder"
 import {
   prAlertDismissed,
-  prLineState,
+  prLineFacts,
   prToastFor,
   type PrAlert,
   type PrAssistant,
   type PrDismissContext,
+  type PrLineFacts,
   type PrLineKind,
-  type PrLineState,
   type PrSession,
   type PrToast,
 } from "../pr/state"
@@ -105,7 +111,7 @@ interface WatchState {
   readonly root: string
   readonly url: string
   readonly number: number
-  readonly state: PrLineState
+  readonly state: PrLineFacts
 }
 
 interface Core {
@@ -124,7 +130,7 @@ const NO_ASSISTANTS: readonly PrAssistant[] = []
 /** The toasts shown are remembered by key so that one watch never says the same thing twice; this bounds the memory. */
 const TOASTED_MAX = 256
 
-function rowOf(entry: PrWatchEntry, state: PrLineState): Row {
+function rowOf(entry: PrWatchEntry, state: PrLineFacts): Row {
   const checks = entry.checks
   return {
     startedAt: entry.startedAt,
@@ -132,7 +138,8 @@ function rowOf(entry: PrWatchEntry, state: PrLineState): Row {
       watchID: entry.watchID,
       url: entry.url,
       number: entry.number,
-      // Plain copies: the store's nodes are rewritten in place, and a held row must not follow them.
+      // Plain copies: the store's nodes are rewritten in place, and a held row must not follow them. Facts only: a held
+      // row keeps no word, so it is worded again, in the language of the day, every time the band draws it.
       entry: {
         number: entry.number,
         ...(checks
@@ -167,10 +174,10 @@ function sameItem(a: PrBandItem, b: PrBandItem): boolean {
         x.pending === y.pending &&
         x.failed === y.failed &&
         x.passed === y.passed)) &&
-    // Kind, outcome and text decide every token and flag the state carries.
+    // Kind and outcome decide every token, flag and word the state carries (the CI counts are compared above): a
+    // language switch changes none of them, so it is not a change of the row.
     a.state.kind === b.state.kind &&
-    a.state.outcome === b.state.outcome &&
-    a.state.text === b.state.text
+    a.state.outcome === b.state.outcome
   )
 }
 
@@ -194,7 +201,7 @@ function isTextPart(part: Part): part is Extract<Part, { type: "text" }> {
 export function createPrTracker(deps: PrTrackerDeps): PrTracker {
   const [tick, setTick] = createSignal(0)
   // The state each watch had when it was last folded in: what an event is compared with.
-  const committed = new Map<string, PrLineState>()
+  const committed = new Map<string, PrLineFacts>()
   const toasted = new Set<string>()
   // The assistant messages of each root as last seen while its history was loaded: the evidence of an answer that
   // outlives the history cache. Kept for the roots that still have watches or held warnings.
@@ -273,7 +280,7 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
       const cleared = (alert: PrAlert) => prAlertDismissed(alert, (context ??= dismissContext(root, entries)))
 
       for (const entry of Object.values(entries ?? {})) {
-        const state = prLineState(entry, session, now)
+        const state = prLineFacts(entry, session, now)
         states.set(entry.watchID, { root, url: entry.url, number: entry.number, state })
         if (state.nextAt !== undefined) wakes.push(state.nextAt)
         if (state.hidden) continue
@@ -407,7 +414,7 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
     // The store drops an event older than the entry it holds; so does this.
     const held = deps.data.pr_watch[entry.sessionID]?.[entry.watchID]
     if (held && held.updatedAt > entry.updatedAt) return
-    const next = prLineState(entry, sessionOf(entry.sessionID), deps.ticker.now())
+    const next = prLineFacts(entry, sessionOf(entry.sessionID), deps.ticker.now())
     const previous = committed.get(entry.watchID)
     committed.set(entry.watchID, next)
     // A watch of a root off screen is remembered, not announced: the line it feeds is not drawn.

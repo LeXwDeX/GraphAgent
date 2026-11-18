@@ -7,8 +7,9 @@ import { batch, createEffect, createRoot } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { setLanguage } from "../../src/i18n"
 import { reminderNextAt } from "../../src/pr/reminder"
-import { PR_HANDLED_VISIBLE_MS, PR_UNRESPONSIVE_MS } from "../../src/pr/state"
+import { PR_HANDLED_VISIBLE_MS, PR_UNRESPONSIVE_MS, prLineWords } from "../../src/pr/state"
 import { createPrTracker } from "../../src/shell/pr-tracker"
+import type { PrBandItem } from "../../src/shell/pr-tracker-context"
 import type { ToastOptions } from "../../src/ui/toast"
 
 // The tracker is driven directly, with no app around it: a fake ticker that only has `at` and `now` (the tracker
@@ -268,6 +269,11 @@ function kinds(h: Harness, root = ROOT) {
   return h.tracker.items(root).map((item) => `${item.watchID}:${item.state.kind}`)
 }
 
+/** What the band says of a row, in the current language: the tracker lists facts and keeps no words. */
+function said(item: PrBandItem) {
+  return prLineWords(item.state, item.entry.checks).text
+}
+
 describe("pr tracker: rows", () => {
   test("a watching entry shows its CI counts and starts no timer", () => {
     const h = mount()
@@ -276,7 +282,7 @@ describe("pr tracker: rows", () => {
     const [item, ...rest] = h.tracker.items(ROOT)
     expect(rest).toEqual([])
     expect(item.state.kind).toBe("watching")
-    expect(item.state.text).toBe("CI 4/6")
+    expect(said(item)).toBe("CI 4/6")
     expect(item.number).toBe(7)
     expect(item.url).toBe(URL)
     expect(item.entry).toEqual({ number: 7, checks: { total: 6, pending: 2, failed: 0, passed: 4 } })
@@ -395,7 +401,7 @@ describe("pr tracker: rows", () => {
 
     h.deliver(entry({ updatedAt: T0 + SECOND, checks: { total: 6, pending: 1, failed: 0, passed: 5 } }))
     expect(before.entry.checks?.passed).toBe(4)
-    expect(h.tracker.items(ROOT)[0].state.text).toBe("CI 5/6")
+    expect(said(h.tracker.items(ROOT)[0])).toBe("CI 5/6")
   })
 })
 
@@ -523,6 +529,105 @@ describe("pr tracker: held warnings", () => {
     h.replace(OTHER, [])
     expect(kinds(h, OTHER)).toEqual(["w9:unresponsive"])
     expect(h.tracker.items(ROOT)).toEqual([])
+  })
+})
+
+// The tracker keeps and compares facts and never a word (#1409): a warning it holds after the server dropped its entry
+// is worded by the band each time it draws, so it follows the language, and a switch is not an event for the tracker.
+describe("pr tracker: language", () => {
+  /** A warning first seen at `T0 + 200s` whose entry is then gone: only the tracker's held copy is on screen. */
+  function held() {
+    const h = mount({ start: T0 + 200 * SECOND })
+    h.replace(ROOT, [delivered(T0)])
+    h.replace(ROOT, [])
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    return h
+  }
+
+  test("a held row is facts and the PR's own numbers; it keeps no word", () => {
+    const h = held()
+    const [item] = h.tracker.items(ROOT)
+    expect(item.state).toEqual({
+      kind: "unresponsive",
+      outcome: "success",
+      tone: "warning",
+      sticky: true,
+      hidden: false,
+    })
+    expect(item).toMatchObject({ watchID: "w1", number: 7, url: URL, entry: { number: 7 } })
+    // The band words it, and says it in the language it has at that moment.
+    expect(said(item)).toBe("✓ passed · agent not responding")
+    setLanguage("zh-CN")
+    expect(said(item)).toBe("✓ 通过 · agent 未响应")
+  })
+
+  test("a switch changes nothing the tracker lists or does: the same rows, no reader woken, no toast, no timer", () => {
+    const h = held()
+    let runs = 0
+    createRoot((dispose) => {
+      disposers.push(dispose)
+      createEffect(() => {
+        h.tracker.items(ROOT)
+        runs++
+      })
+    })
+    const before = h.tracker.items(ROOT)
+    const timers = h.clock.pending()
+    expect(runs).toBe(1)
+
+    for (const language of ["zh-CN", "en", "zh-CN"] as const) {
+      setLanguage(language)
+      expect(h.tracker.items(ROOT)).toBe(before)
+    }
+    expect(runs).toBe(1)
+    expect(h.toasts).toEqual([])
+    expect(h.clock.pending()).toEqual(timers)
+  })
+
+  test("a switch does not move the hold: only the user clears the warning, and a cleared one stays cleared", () => {
+    const h = held()
+    setLanguage("zh-CN")
+    say(h, "msg_u1", T0 + 201 * SECOND, text("prt_1", "msg_u1", true))
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+
+    setLanguage("en")
+    say(h, "msg_u2", T0 + 202 * SECOND, text("prt_2", "msg_u2"))
+    expect(h.tracker.items(ROOT)).toEqual([])
+
+    setLanguage("zh-CN")
+    expect(h.tracker.items(ROOT)).toEqual([])
+    setLanguage("en")
+    expect(h.tracker.items(ROOT)).toEqual([])
+  })
+
+  test("a warning cleared while its entry is still there stays cleared when the switch and the same entry come again", () => {
+    const h = mount({ start: T0 + 200 * SECOND })
+    const stopped = delivered(T0, { delivery: { state: "delivered", deliveredAt: T0, noReply: true } })
+    h.replace(ROOT, [stopped])
+    say(h, "msg_u1", T0 + 201 * SECOND, text("prt_1", "msg_u1"))
+    expect(h.tracker.items(ROOT)).toEqual([])
+
+    setLanguage("zh-CN")
+    h.replace(ROOT, [stopped])
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a switch is not a transition: the next outcome and the clock's warning each toast once, in the language of that moment", () => {
+    const h = mount()
+    h.deliver(entry())
+    setLanguage("zh-CN")
+    expect(h.toasts).toEqual([])
+
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(delivered(T0 + SECOND))
+    expect(h.toasts.map((toast) => toast.text)).toEqual(["PR #7 ✓ 通过"])
+
+    setLanguage("en")
+    expect(h.toasts).toHaveLength(1)
+    h.clock.advanceTo(T0 + SECOND + PR_UNRESPONSIVE_MS)
+    expect(h.toasts.map((toast) => toast.text)).toEqual(["PR #7 ✓ 通过", "PR #7 agent not responding"])
+    expect(h.toasts[1]).toMatchObject({ level: "warning", dedupeKey: "pr:w1:unresponsive" })
   })
 })
 
