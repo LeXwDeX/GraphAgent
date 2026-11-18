@@ -53,6 +53,7 @@ import { it } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMEvent } from "@graphagent/llm"
 import { Stream } from "effect"
+import { HINT_TEXT } from "../../src/session/turn/hints"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -308,6 +309,74 @@ it.instance(
         expect(messages[0]?.info.role).toBe("user")
         expect(messages[1]?.info.role).toBe("assistant")
         expect(messages[1]?.info.id).toBe(looped.info.id)
+      }).pipe(Effect.provide(makePrompt(llmLayer)))
+    }),
+  { config: cfg },
+)
+
+const pseudoToolCallScript: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.textStart({ id: "text-1" }),
+  LLMEvent.textDelta({
+    id: "text-1",
+    text: 'Reading it now.\n<tool_call>{"name":"read","arguments":{}}</tool_call>',
+  }),
+  LLMEvent.textEnd({ id: "text-1" }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+
+/** Plain text of one model message, whatever shape the content has. */
+const messageText = (message: LLM.StreamInput["messages"][number] | undefined) => {
+  if (!message) return ""
+  if (typeof message.content === "string") return message.content
+  return message.content.map((part) => ("text" in part ? part.text : "")).join("")
+}
+
+it.instance(
+  "session.prompt loop answers a tool call written into the text with one runtime hint and a second step",
+  () =>
+    Effect.gen(function* () {
+      const requests: LLM.StreamInput["messages"][] = []
+      const llmLayer = Layer.succeed(
+        LLM.Service,
+        LLM.Service.of({
+          organizer: () => Effect.succeed(undefined),
+          stream: (input) => {
+            const script = requests.length === 0 ? pseudoToolCallScript : validScript
+            requests.push(input.messages)
+            return Stream.fromIterable(script)
+          },
+        }),
+      )
+      yield* Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Pseudo tool call" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "read the file" }],
+        })
+
+        const looped = yield* prompt.loop({ sessionID: chat.id })
+
+        expect(requests).toHaveLength(2)
+        expect(looped.info.role).toBe("assistant")
+        if (looped.info.role !== "assistant") throw new Error("expected an assistant reply")
+        expect(looped.info.error).toBeUndefined()
+        expect(looped.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+
+        // user, the assistant reply with the pseudo call, the runtime hint, the second reply.
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        expect(messages.map((message) => message.info.role)).toEqual(["user", "assistant", "user", "assistant"])
+
+        // The second request ends with the hint as a user message; the first request did not carry it.
+        expect(messageText(requests[0]?.at(-1))).not.toContain(HINT_TEXT.pseudo_tool_call)
+        const lastOfSecond = requests[1]?.at(-1)
+        expect(lastOfSecond?.role).toBe("user")
+        expect(messageText(lastOfSecond)).toContain(HINT_TEXT.pseudo_tool_call)
       }).pipe(Effect.provide(makePrompt(llmLayer)))
     }),
   { config: cfg },
