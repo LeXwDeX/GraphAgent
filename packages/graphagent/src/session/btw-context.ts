@@ -44,9 +44,10 @@ const isCompactionMarker = (msg: SessionV1.WithParts) =>
 /**
  * Applies a stashed revert without writing anything: the boundary message is
  * kept only when the revert names a part inside it, and everything after the
- * boundary is hidden. Mirrors the cleanup rules in `SessionRevert`.
+ * boundary is hidden. Mirrors the cleanup rules in `SessionRevert`. Shared with
+ * the loop analysis, which reads the same history view.
  */
-function applyRevert(history: SessionV1.WithParts[], revert: Session.Info["revert"] | undefined) {
+export function applyRevert(history: SessionV1.WithParts[], revert: Session.Info["revert"] | undefined) {
   if (!revert) return history
   const boundary = history.find((msg) => msg.info.id === revert.messageID)
   if (!boundary) return history
