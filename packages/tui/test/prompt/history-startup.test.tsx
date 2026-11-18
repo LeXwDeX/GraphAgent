@@ -6,6 +6,7 @@ import { expect, spyOn, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import path from "path"
 import { MAX_HISTORY_ENTRIES, PromptHistoryProvider, usePromptHistory, type PromptInfo } from "../../src/prompt/history"
+import * as persistence from "../../src/util/persistence"
 import { readText } from "../../src/util/persistence"
 import { FRAME_WAIT_MS, pause } from "../fixture/frames"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -40,6 +41,37 @@ function recalled(history: History) {
   }
   for (const input of [...inputs].reverse()) history.move(1, input)
   return inputs
+}
+
+type Write = { readonly kind: "write" | "append"; readonly target: string; readonly done: Promise<void> }
+
+/**
+ * Records every write the provider issues through the persistence helpers, with the promise of its completion, so a
+ * test can tell which writes happened and wait for all of them to land instead of sleeping.
+ */
+function recordWrites() {
+  const writes: Write[] = []
+  const realWrite = persistence.writeText
+  const realAppend = persistence.appendText
+  const write = spyOn(persistence, "writeText").mockImplementation((target, content) => {
+    const done = realWrite(target, content)
+    writes.push({ kind: "write", target, done })
+    return done
+  })
+  const append = spyOn(persistence, "appendText").mockImplementation((target, content) => {
+    const done = realAppend(target, content)
+    writes.push({ kind: "append", target, done })
+    return done
+  })
+  return {
+    to: (file: string) => writes.filter((item) => item.target === file),
+    /** Every write issued so far has finished, whether it succeeded or not. */
+    landed: () => Promise.allSettled(writes.map((item) => item.done)),
+    restore() {
+      write.mockRestore()
+      append.mockRestore()
+    },
+  }
 }
 
 /**
@@ -122,23 +154,30 @@ test("entries added while the startup read is pending stay recallable behind the
 
 test("the startup rewrite keeps entries added while the read was pending and never writes an ephemeral one", async () => {
   const seed = [entry("q0"), entry("q1")]
-  const fixture = await mountWithHeldRead(seed)
+  const writes = recordWrites()
   try {
-    fixture.history.append(entry("early"))
-    fixture.history.appendEphemeral(entry("/btw early"))
-    // A write straight to the file would have landed by now; the stale read that resolves after it must not undo it.
-    await Bun.sleep(30)
-    fixture.release()
+    const fixture = await mountWithHeldRead(seed)
+    try {
+      fixture.history.append(entry("early"))
+      fixture.history.appendEphemeral(entry("/btw early"))
+      // An append is issued synchronously by `append`, so one straight to the file would be recorded already. Nothing
+      // may touch the file before the read lands: the stale read resolving after it would undo it.
+      expect(writes.to(fixture.file)).toEqual([])
+      fixture.release()
 
-    const expected = [...seed, entry("early")]
-    await fixture.settled(expected)
-    // Neither the rewrite nor a late append changes it afterwards.
-    await Bun.sleep(30)
-    const text = await readText(fixture.file)
-    expect(text).toBe(jsonl(expected))
-    expect(text).not.toContain("/btw")
+      const expected = [...seed, entry("early")]
+      await waitFor(() => writes.to(fixture.file).length > 0, "the startup rewrite to be issued")
+      await writes.landed()
+      // The load's one rewrite persisted the early entry; no append followed it, so nothing changes the file afterwards.
+      expect(writes.to(fixture.file).map((item) => item.kind)).toEqual(["write"])
+      const text = await readText(fixture.file)
+      expect(text).toBe(jsonl(expected))
+      expect(text).not.toContain("/btw")
+    } finally {
+      await fixture.dispose()
+    }
   } finally {
-    await fixture.dispose()
+    writes.restore()
   }
 })
 
