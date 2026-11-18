@@ -1,9 +1,11 @@
 import { afterEach, describe, expect } from "bun:test"
 import { createHash } from "node:crypto"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
 import { WriteTool } from "../../src/tool/write"
+import { EditTool } from "../../src/tool/edit"
+import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { LSP } from "@/lsp/lsp"
 import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -65,6 +67,11 @@ const itWithDiagnostics = testEffect(
 
 const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
 
+// An existing file must have been read in this session before write replaces it.
+const markRead = Effect.fn("WriteToolTest.markRead")(function* (filepath: string, sessionID = ctx.sessionID) {
+  yield* (yield* FileState.Service).record(sessionID, filepath, "read")
+})
+
 const init = Effect.fn("WriteToolTest.init")(function* () {
   const info = yield* WriteTool
   return yield* info.init()
@@ -76,6 +83,28 @@ const run = Effect.fn("WriteToolTest.run")(function* (
 ) {
   const tool = yield* init()
   return yield* tool.execute(args, next)
+})
+
+const fail = Effect.fn("WriteToolTest.fail")(function* (
+  args: Tool.InferParameters<typeof WriteTool>,
+  next: Tool.Context = ctx,
+) {
+  const exit = yield* run(args, next).pipe(Effect.exit)
+  if (Exit.isFailure(exit)) {
+    const err = Cause.squash(exit.cause)
+    return err instanceof Error ? err : new Error(String(err))
+  }
+  throw new Error("expected write to fail")
+})
+
+const runEdit = Effect.fn("WriteToolTest.runEdit")(function* (args: Tool.InferParameters<typeof EditTool>) {
+  const tool = yield* (yield* EditTool).init()
+  return yield* tool.execute(args, ctx)
+})
+
+const runPatch = Effect.fn("WriteToolTest.runPatch")(function* (patchText: string) {
+  const tool = yield* (yield* ApplyPatchTool).init()
+  return yield* tool.execute({ patchText }, ctx)
 })
 
 describe("tool.write", () => {
@@ -122,6 +151,7 @@ describe("tool.write", () => {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "existing.txt")
         yield* Effect.promise(() => fs.writeFile(filepath, "old content", "utf-8"))
+        yield* markRead(filepath)
         const result = yield* run({ filePath: filepath, content: "new content" })
 
         expect(result.output).toContain("Wrote file successfully")
@@ -138,6 +168,7 @@ describe("tool.write", () => {
         const filepath = path.join(test.directory, "existing.cs")
         const bom = String.fromCharCode(0xfeff)
         yield* Effect.promise(() => fs.writeFile(filepath, `${bom}using System;\n`, "utf-8"))
+        yield* markRead(filepath)
 
         yield* run({ filePath: filepath, content: "using Up;\n" })
 
@@ -155,6 +186,7 @@ describe("tool.write", () => {
           const filepath = path.join(test.directory, "formatted.cs")
           const bom = String.fromCharCode(0xfeff)
           yield* Effect.promise(() => fs.writeFile(filepath, `${bom}using System;\n`, "utf-8"))
+          yield* markRead(filepath)
 
           yield* run({ filePath: filepath, content: "using Up;\n" })
 
@@ -223,6 +255,7 @@ describe("tool.write", () => {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "file.txt")
         yield* Effect.promise(() => fs.writeFile(filepath, "old", "utf-8"))
+        yield* markRead(filepath)
         const result = yield* run({ filePath: filepath, content: "new" })
 
         expect(result.metadata).toHaveProperty("filepath", filepath)
@@ -318,6 +351,7 @@ describe("tool.write", () => {
         const readonlyPath = path.join(test.directory, "readonly.txt")
         yield* Effect.promise(() => fs.writeFile(readonlyPath, "test", "utf-8"))
         yield* Effect.promise(() => fs.chmod(readonlyPath, 0o444))
+        yield* markRead(readonlyPath)
         const exit = yield* run({ filePath: readonlyPath, content: "new content" }).pipe(Effect.exit)
         expect(exit._tag).toBe("Failure")
       }),
@@ -433,4 +467,285 @@ describe("tool.write file state (#1452)", () => {
       },
     },
   )
+})
+
+describe("tool.write overwrite contract (#1452)", () => {
+  const readBytes = (filepath: string) => Effect.promise(() => fs.readFile(filepath))
+  const put = (filepath: string, content: string | Uint8Array) => Effect.promise(() => fs.writeFile(filepath, content))
+  const asked = () => {
+    const counter = { count: 0 }
+    return { counter, next: { ...ctx, ask: () => Effect.sync(() => void counter.count++) } }
+  }
+
+  describe("what an overwrite requires", () => {
+    it.instance("rejects replacing an existing file the session has not read", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.txt")
+        yield* put(filepath, "precious")
+        const { counter, next } = asked()
+
+        const error = yield* fail({ filePath: filepath, content: "clobbered" }, next)
+
+        expect(error.message).toBe(FileState.notReadMessage(filepath))
+        expect(error.message).toContain("was not read in this session")
+        expect((yield* readBytes(filepath)).toString()).toBe("precious")
+        expect(counter.count).toBe(0)
+      }),
+    )
+
+    it.instance("rejects replacing a file that changed after it was read", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.txt")
+        yield* put(filepath, "what the model saw")
+        yield* markRead(filepath)
+        yield* put(filepath, "what someone else wrote")
+        const { counter, next } = asked()
+
+        const error = yield* fail({ filePath: filepath, content: "clobbered" }, next)
+
+        expect(error.message).toBe(FileState.changedSinceReadMessage(filepath))
+        expect(error.message).toContain("changed after it was last read")
+        expect((yield* readBytes(filepath)).toString()).toBe("what someone else wrote")
+        expect(counter.count).toBe(0)
+      }),
+    )
+
+    it.instance("rejects a file another session read, not this one", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.txt")
+        yield* put(filepath, "shared")
+        yield* markRead(filepath, SessionID.make("ses_test-other-session"))
+
+        const error = yield* fail({ filePath: filepath, content: "clobbered" })
+
+        expect(error.message).toContain("was not read in this session")
+      }),
+    )
+
+    it.instance("accepts a file whose mtime moved but whose content did not", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.txt")
+        yield* put(filepath, "same bytes")
+        yield* markRead(filepath)
+        const later = new Date(Date.now() + 60_000)
+        yield* Effect.promise(() => fs.utimes(filepath, later, later))
+
+        yield* run({ filePath: filepath, content: "replaced" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("replaced")
+      }),
+    )
+
+    it.instance("creating a new file needs no read", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "new", "file.txt")
+
+        yield* run({ filePath: filepath, content: "fresh" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("fresh")
+      }),
+    )
+
+    it.instance("rejects a directory target", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const directory = path.join(test.directory, "dir")
+        yield* Effect.promise(() => fs.mkdir(directory))
+        yield* markRead(directory)
+
+        const error = yield* fail({ filePath: directory, content: "nope" })
+
+        expect(error.message).toBe(`Path is a directory, not a file: ${directory}`)
+      }),
+    )
+
+    it.instance("rejects an existing file that is not UTF-8 text, even after a read", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "latin1.txt")
+        const bytes = Buffer.from([0xff, 0xfe, 0x41, 0x80])
+        yield* put(filepath, bytes)
+        yield* markRead(filepath)
+
+        const error = yield* fail({ filePath: filepath, content: "text" })
+
+        expect(error.message).toContain("is not valid UTF-8 text")
+        expect(yield* readBytes(filepath)).toEqual(bytes)
+      }),
+    )
+
+    it.instance("rejects an existing file above the size limit before anything else", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "big.txt")
+        const size = FileState.MAX_EDITABLE_BYTES + 1
+        yield* put(filepath, Buffer.alloc(size, 97))
+        const { counter, next } = asked()
+
+        const unread = yield* fail({ filePath: filepath, content: "small" }, next)
+        yield* markRead(filepath)
+        const read = yield* fail({ filePath: filepath, content: "small" }, next)
+
+        for (const error of [unread, read]) {
+          expect(error.message).toBe(FileState.tooLargeMessage(filepath))
+          expect(error.message).toContain("10 MiB")
+        }
+        expect((yield* Effect.promise(() => fs.stat(filepath))).size).toBe(size)
+        expect(counter.count).toBe(0)
+      }),
+    )
+  })
+
+  describe("sequences that must keep working", () => {
+    it.instance("write, then write again", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "again.txt")
+
+        yield* run({ filePath: filepath, content: "one" })
+        yield* run({ filePath: filepath, content: "two" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("two")
+      }),
+    )
+
+    it.instance("edit, then write", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "edited.txt")
+        yield* put(filepath, "alpha beta\n")
+
+        yield* runEdit({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
+        yield* run({ filePath: filepath, content: "after edit\n" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("after edit\n")
+      }),
+    )
+
+    it.instance(
+      "edit, then write, when a formatter rewrote the edited file",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const filepath = path.join(test.directory, "formatted.ts")
+          yield* put(filepath, "const a = 1\n")
+
+          yield* runEdit({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
+          expect((yield* readBytes(filepath)).toString()).toContain("// formatted line")
+          yield* run({ filePath: filepath, content: "const b = 1\n" })
+
+          expect((yield* readBytes(filepath)).toString()).toStartWith("const b = 1\n")
+        }),
+      {
+        config: {
+          formatter: {
+            expand: {
+              extensions: [".ts"],
+              command: [
+                "node",
+                "-e",
+                "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(3), 'utf8')",
+                "$FILE",
+              ],
+            },
+          },
+        },
+      },
+    )
+
+    it.instance("apply_patch add, then write", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "patched.txt")
+
+        yield* runPatch("*** Begin Patch\n*** Add File: patched.txt\n+one\n*** End Patch")
+        yield* run({ filePath: filepath, content: "two\n" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("two\n")
+      }),
+    )
+  })
+
+  describe("encoding is kept", () => {
+    it.instance("a CRLF file stays CRLF, without doubling the carriage return", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "windows.txt")
+        yield* put(filepath, "one\r\ntwo\r\n")
+        yield* markRead(filepath)
+
+        yield* run({ filePath: filepath, content: "alpha\nbeta\r\ngamma\n" })
+
+        const text = (yield* readBytes(filepath)).toString()
+        expect(text).toBe("alpha\r\nbeta\r\ngamma\r\n")
+        expect(text).not.toContain("\r\r\n")
+      }),
+    )
+
+    it.instance("an LF file does not pick up carriage returns", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "unix.txt")
+        yield* put(filepath, "one\ntwo\n")
+        yield* markRead(filepath)
+
+        yield* run({ filePath: filepath, content: "alpha\r\nbeta\r\n" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("alpha\nbeta\n")
+      }),
+    )
+
+    it.instance("a BOM and CRLF are both kept", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "bom.cs")
+        const bom = String.fromCharCode(0xfeff)
+        yield* put(filepath, `${bom}using A;\r\nusing B;\r\n`)
+        yield* markRead(filepath)
+
+        yield* run({ filePath: filepath, content: "using C;\nusing D;\n" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe(`${bom}using C;\r\nusing D;\r\n`)
+      }),
+    )
+
+    it.instance("a new file keeps the content exactly as given", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "mixed.txt")
+
+        yield* run({ filePath: filepath, content: "one\r\ntwo\nthree\r\n" })
+
+        expect((yield* readBytes(filepath)).toString()).toBe("one\r\ntwo\nthree\r\n")
+      }),
+    )
+
+    it.instance("the permission diff shows the line changes, not every line", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "windows.txt")
+        yield* put(filepath, "one\r\ntwo\r\nthree\r\n")
+        yield* markRead(filepath)
+        const diffs: string[] = []
+        const next = {
+          ...ctx,
+          ask: (request: { metadata?: { diff?: string } }) =>
+            Effect.sync(() => void diffs.push(request.metadata?.diff ?? "")),
+        }
+
+        yield* run({ filePath: filepath, content: "one\nTWO\nthree\n" }, next)
+
+        expect(diffs).toHaveLength(1)
+        expect(diffs[0]).toContain("-two")
+        expect(diffs[0]).toContain("+TWO")
+        expect(diffs[0]).not.toContain("-one")
+        expect(diffs[0]).not.toContain("-three")
+      }),
+    )
+  })
 })

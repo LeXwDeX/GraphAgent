@@ -15,6 +15,7 @@ import { FileSystem } from "@graphagent/core/filesystem"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
+import type { SessionID } from "@/session/schema"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -28,6 +29,14 @@ export const ApplyPatchTool = Tool.define(
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
     const fileState = yield* FileState.Service
+
+    // Add File and Move replace an existing target, which the session must have read in its current state.
+    const requireOverwriteRead = Effect.fnUntraced(function* (sessionID: SessionID, target: string) {
+      if (!(yield* afs.existsSafe(target))) return
+      yield* fileState
+        .requireRead(sessionID, target)
+        .pipe(Effect.mapError((error) => new Error(`apply_patch verification failed: ${error.message}`)))
+    })
 
     const run = Effect.fn("ApplyPatchTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -77,6 +86,7 @@ export const ApplyPatchTool = Tool.define(
 
         switch (hunk.type) {
           case "add": {
+            yield* requireOverwriteRead(ctx.sessionID, filePath)
             const oldContent = ""
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
@@ -154,6 +164,7 @@ export const ApplyPatchTool = Tool.define(
             const movePath =
               target && FSUtil.normalizePath(target) !== FSUtil.normalizePath(filePath) ? target : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
+            if (movePath) yield* requireOverwriteRead(ctx.sessionID, movePath)
 
             fileChanges.push({
               filePath,

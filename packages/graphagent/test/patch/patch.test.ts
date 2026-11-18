@@ -90,6 +90,167 @@ describe("Patch namespace", () => {
 
       expect(() => Patch.parsePatch(invalidPatch)).toThrow("Invalid patch format")
     })
+
+    // #1452 B3: a line that fits no grammar position used to be dropped, so the
+    // patch reported success while the file got something else.
+    describe("lines without a prefix", () => {
+      test("a hunk line without a prefix names its line and the file", () => {
+        const patch = [
+          "*** Begin Patch",
+          "*** Update File: a.txt",
+          "@@",
+          " keep",
+          "oops",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ]
+
+        expect(() => Patch.parsePatch(patch.join("\n"))).toThrow(
+          'malformed line 5 in the hunk for a.txt: "oops". Start every hunk line with " ", "-" or "+" and resend the patch.',
+        )
+      })
+
+      test("a line before the first @@ names its line and the file", () => {
+        const patch = ["*** Begin Patch", "*** Update File: a.txt", "stray", "@@", "-old", "+new", "*** End Patch"]
+
+        expect(() => Patch.parsePatch(patch.join("\n"))).toThrow(
+          'malformed line 3 in the update for a.txt: "stray". Start each hunk with an "@@" line and resend the patch.',
+        )
+      })
+
+      test("an added-file line without + names its line and the file", () => {
+        const patch = ["*** Begin Patch", "*** Add File: b.txt", "+one", "two", "*** End Patch"]
+
+        expect(() => Patch.parsePatch(patch.join("\n"))).toThrow(
+          'malformed line 4 in the added file b.txt: "two". Start every line of an added file with "+" and resend the patch.',
+        )
+      })
+
+      test("counts lines from *** Begin Patch even when text comes before it", () => {
+        const patch = ["preamble", "*** Begin Patch", "*** Add File: b.txt", "+one", "two", "*** End Patch"]
+
+        expect(() => Patch.parsePatch(patch.join("\n"))).toThrow("malformed line 4 in the added file b.txt")
+      })
+
+      test("quotes at most 80 characters of the line", () => {
+        const long = "z".repeat(200)
+        const patch = ["*** Begin Patch", "*** Add File: b.txt", long, "*** End Patch"]
+
+        expect(() => Patch.parsePatch(patch.join("\n"))).toThrow(`"${"z".repeat(80)}". Start every line`)
+      })
+
+      test("blank lines, whitespace-only lines and CRLF blank lines are still skipped", () => {
+        const patch = [
+          "*** Begin Patch",
+          "",
+          "*** Update File: a.txt",
+          "",
+          "@@",
+          " keep",
+          "",
+          "\t",
+          "\r",
+          "-old",
+          "+new",
+          "",
+          "*** Add File: b.txt",
+          "",
+          "+one",
+          "\t",
+          "+two",
+          "",
+          "*** End Patch",
+        ]
+
+        const { hunks } = Patch.parsePatch(patch.join("\n"))
+
+        expect(hunks).toEqual([
+          {
+            type: "update",
+            path: "a.txt",
+            move_path: undefined,
+            chunks: [{ old_lines: ["keep", "old"], new_lines: ["keep", "new"], change_context: undefined }],
+          },
+          { type: "add", path: "b.txt", contents: "one\ntwo" },
+        ])
+      })
+
+      test("a whitespace-only line that starts with a space is still a context line", () => {
+        const patch = [
+          "*** Begin Patch",
+          "*** Update File: a.txt",
+          "@@",
+          " keep",
+          "   ",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ]
+
+        const { hunks } = Patch.parsePatch(patch.join("\n"))
+
+        expect(hunks[0]).toMatchObject({
+          chunks: [{ old_lines: ["keep", "  ", "old"], new_lines: ["keep", "  ", "new"] }],
+        })
+      })
+
+      test("git's no-newline marker is still skipped in a hunk and in an added file", () => {
+        const patch = [
+          "*** Begin Patch",
+          "*** Update File: a.txt",
+          "@@",
+          "-old",
+          "\\ No newline at end of file",
+          "+new",
+          "\\ No newline at end of file",
+          "*** Add File: b.txt",
+          "+one",
+          "\\ No newline at end of file",
+          "*** End Patch",
+        ]
+
+        const { hunks } = Patch.parsePatch(patch.join("\n"))
+
+        expect(hunks).toEqual([
+          {
+            type: "update",
+            path: "a.txt",
+            move_path: undefined,
+            chunks: [{ old_lines: ["old"], new_lines: ["new"], change_context: undefined }],
+          },
+          { type: "add", path: "b.txt", contents: "one" },
+        ])
+      })
+
+      test("*** End of File after a hunk is still accepted", () => {
+        const patch = [
+          "*** Begin Patch",
+          "*** Update File: a.txt",
+          "@@",
+          "-last",
+          "+end",
+          "*** End of File",
+          "*** End Patch",
+        ]
+
+        const { hunks } = Patch.parsePatch(patch.join("\n"))
+
+        expect(hunks).toHaveLength(1)
+        expect(hunks[0]).toMatchObject({ type: "update", chunks: [{ old_lines: ["last"], new_lines: ["end"] }] })
+      })
+
+      test("maybeParseApplyPatch reports the malformed line as a parse error", () => {
+        const patch = ["*** Begin Patch", "*** Add File: b.txt", "+one", "two", "*** End Patch"].join("\n")
+
+        const result = Patch.maybeParseApplyPatch(["apply_patch", patch])
+
+        expect(result.type).toBe(Patch.MaybeApplyPatch.PatchParseError)
+        if (result.type === Patch.MaybeApplyPatch.PatchParseError) {
+          expect(result.error.message).toContain("malformed line 4 in the added file b.txt")
+        }
+      })
+    })
   })
 
   describe("maybeParseApplyPatch", () => {

@@ -1018,3 +1018,45 @@ describe("tool.edit file state (#1452)", () => {
     }),
   )
 })
+
+describe("tool.edit size limit (#1452)", () => {
+  it.instance("rejects an existing file above 10 MiB and leaves it alone", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "big.txt")
+      const size = FileState.MAX_EDITABLE_BYTES + 1
+      yield* Effect.promise(() => fs.writeFile(filepath, Buffer.alloc(size, 97)))
+
+      const error = yield* fail({ filePath: filepath, oldString: "aaa", newString: "bbb" })
+
+      expect(error.message).toBe(FileState.tooLargeMessage(filepath))
+      expect(error.message).toContain("10 MiB")
+      expect((yield* Effect.promise(() => fs.stat(filepath))).size).toBe(size)
+    }),
+  )
+
+  it.instance("accepts a file of exactly 10 MiB", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "limit.txt")
+      const content = "needle" + "a".repeat(FileState.MAX_EDITABLE_BYTES - "needle".length)
+      yield* Effect.promise(() => fs.writeFile(filepath, content))
+
+      yield* run({ filePath: filepath, oldString: "needle", newString: "NEEDLE" })
+
+      expect((yield* load(filepath)).startsWith("NEEDLE")).toBe(true)
+    }),
+  )
+
+  it.instance("does not need a prior read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "unread.txt")
+      yield* put(filepath, "never read\n")
+
+      yield* run({ filePath: filepath, oldString: "never", newString: "still" })
+
+      expect(yield* load(filepath)).toBe("still read\n")
+    }),
+  )
+})

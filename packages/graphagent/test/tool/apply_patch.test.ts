@@ -96,6 +96,12 @@ const makeCtx = () => {
   return { ctx, calls }
 }
 
+// An existing Add File or Move target must have been read in this session before apply_patch replaces it.
+const markRead = (filepath: string, sessionID = baseCtx.sessionID) =>
+  Effect.gen(function* () {
+    yield* (yield* FileState.Service).record(sessionID, filepath, "read")
+  })
+
 const readText = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf-8"))
 const writeText = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content, "utf-8"))
 const makeDir = (dir: string) => Effect.promise(() => fs.mkdir(dir, { recursive: true }))
@@ -386,6 +392,7 @@ describe("tool.apply_patch freeform", () => {
       yield* makeDir(path.dirname(destination))
       yield* writeText(original, "from\n")
       yield* writeText(destination, "existing\n")
+      yield* markRead(destination)
 
       const patchText =
         "*** Begin Patch\n*** Update File: old/name.txt\n*** Move to: renamed/dir/name.txt\n@@\n-from\n+new\n*** End Patch"
@@ -403,6 +410,7 @@ describe("tool.apply_patch freeform", () => {
       const { ctx } = makeCtx()
       const target = path.join(test.directory, "duplicate.txt")
       yield* writeText(target, "old content\n")
+      yield* markRead(target)
 
       const patchText = "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch"
 
@@ -825,5 +833,243 @@ describe("tool.apply_patch file state (#1452)", () => {
         },
       },
     },
+  )
+})
+
+describe("tool.apply_patch overwrite contract (#1452)", () => {
+  const prefix = "apply_patch verification failed: "
+  const asks = () => {
+    const { ctx, calls } = makeCtx()
+    return { ctx, calls }
+  }
+
+  it.instance("Add File over an existing file the session has not read is rejected before anything is written", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = asks()
+      const target = path.join(test.directory, "duplicate.txt")
+      const bystander = path.join(test.directory, "bystander.txt")
+      yield* writeText(target, "old content\n")
+      yield* writeText(bystander, "before\n")
+
+      yield* expectFailure(
+        execute(
+          {
+            patchText:
+              "*** Begin Patch\n*** Update File: bystander.txt\n@@\n-before\n+after\n*** Add File: duplicate.txt\n+new content\n*** End Patch",
+          },
+          ctx,
+        ),
+        `${prefix}${FileState.notReadMessage(target)}`,
+      )
+
+      expect(yield* readText(target)).toBe("old content\n")
+      expect(yield* readText(bystander)).toBe("before\n")
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("Add File over an existing file succeeds once the session has read it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "duplicate.txt")
+      yield* writeText(target, "old content\n")
+      yield* markRead(target)
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch" }, ctx)
+
+      expect(yield* readText(target)).toBe("new content\n")
+    }),
+  )
+
+  it.instance("Add File over a file that changed after it was read is rejected", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "duplicate.txt")
+      yield* writeText(target, "what the model saw\n")
+      yield* markRead(target)
+      yield* writeText(target, "what someone else wrote\n")
+
+      yield* expectFailure(
+        execute({ patchText: "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch" }, ctx),
+        `${prefix}${FileState.changedSinceReadMessage(target)}`,
+      )
+
+      expect(yield* readText(target)).toBe("what someone else wrote\n")
+    }),
+  )
+
+  it.instance("Add File over a directory is rejected", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const directory = path.join(test.directory, "dir")
+      yield* makeDir(directory)
+
+      yield* expectFailure(
+        execute({ patchText: "*** Begin Patch\n*** Add File: dir\n+x\n*** End Patch" }, ctx),
+        `${prefix}Path is a directory, not a file: ${directory}`,
+      )
+    }),
+  )
+
+  it.instance("Move onto an existing destination the session has not read is rejected, and nothing moves", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = asks()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "to.txt")
+      yield* writeText(source, "from\n")
+      yield* writeText(destination, "existing\n")
+
+      yield* expectFailure(
+        execute(
+          {
+            patchText:
+              "*** Begin Patch\n*** Update File: from.txt\n*** Move to: to.txt\n@@\n-from\n+new\n*** End Patch",
+          },
+          ctx,
+        ),
+        `${prefix}${FileState.notReadMessage(destination)}`,
+      )
+
+      expect(yield* readText(source)).toBe("from\n")
+      expect(yield* readText(destination)).toBe("existing\n")
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("Move onto an existing destination succeeds once the session has read it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "to.txt")
+      yield* writeText(source, "from\n")
+      yield* writeText(destination, "existing\n")
+      yield* markRead(destination)
+
+      yield* execute(
+        {
+          patchText: "*** Begin Patch\n*** Update File: from.txt\n*** Move to: to.txt\n@@\n-from\n+new\n*** End Patch",
+        },
+        ctx,
+      )
+
+      yield* expectReadFailure(source)
+      expect(yield* readText(destination)).toBe("new\n")
+    }),
+  )
+
+  it.instance("Move to a destination that does not exist needs no read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const source = path.join(test.directory, "from.txt")
+      yield* writeText(source, "from\n")
+
+      yield* execute(
+        {
+          patchText:
+            "*** Begin Patch\n*** Update File: from.txt\n*** Move to: moved/to.txt\n@@\n-from\n+new\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect(yield* readText(path.join(test.directory, "moved", "to.txt"))).toBe("new\n")
+    }),
+  )
+
+  it.instance("Update File and a new Add File need no prior read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "modify.txt")
+      yield* writeText(target, "line1\nline2\n")
+
+      yield* execute(
+        {
+          patchText:
+            "*** Begin Patch\n*** Update File: modify.txt\n@@\n-line2\n+changed\n*** Add File: made.txt\n+made\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect(yield* readText(target)).toBe("line1\nchanged\n")
+      expect(yield* readText(path.join(test.directory, "made.txt"))).toBe("made\n")
+    }),
+  )
+
+  it.instance("an Update File above 10 MiB is not limited", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "big.txt")
+      const body = "x".repeat(FileState.MAX_EDITABLE_BYTES + 16)
+      yield* writeText(target, `head\n${body}\ntail\n`)
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Update File: big.txt\n@@\n-head\n+HEAD\n*** End Patch" }, ctx)
+
+      expect(yield* readText(target)).toBe(`HEAD\n${body}\ntail\n`)
+    }),
+  )
+})
+
+describe("tool.apply_patch malformed lines (#1452 B3)", () => {
+  it.instance("a hunk line without a prefix fails the call and leaves the file alone", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      const target = path.join(test.directory, "modify.txt")
+      yield* writeText(target, "keep\nold\n")
+
+      const patchText = "*** Begin Patch\n*** Update File: modify.txt\n@@\n keep\noops\n-old\n+new\n*** End Patch"
+
+      yield* expectFailure(execute({ patchText }, ctx), 'malformed line 5 in the hunk for modify.txt: "oops"')
+      expect(yield* readText(target)).toBe("keep\nold\n")
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("a line before the first @@ fails the call", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "modify.txt")
+      yield* writeText(target, "old\n")
+
+      const patchText = "*** Begin Patch\n*** Update File: modify.txt\n-old\n+new\n*** End Patch"
+
+      yield* expectFailure(execute({ patchText }, ctx), 'malformed line 3 in the update for modify.txt: "-old"')
+      expect(yield* readText(target)).toBe("old\n")
+    }),
+  )
+
+  it.instance("an Add File line without + fails the call and creates nothing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+
+      const patchText = "*** Begin Patch\n*** Add File: made.txt\n+one\ntwo\n*** End Patch"
+
+      yield* expectFailure(execute({ patchText }, ctx), 'malformed line 4 in the added file made.txt: "two"')
+      yield* expectReadFailure(path.join(test.directory, "made.txt"))
+    }),
+  )
+
+  it.instance("blank lines between hunk lines keep their old meaning", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "gap.txt")
+      yield* writeText(target, "a\nb\nc\n")
+
+      const patchText = "*** Begin Patch\n*** Update File: gap.txt\n@@\n a\n\n-b\n+B\n\n*** End Patch"
+
+      yield* execute({ patchText }, ctx)
+      expect(yield* readText(target)).toBe("a\nB\nc\n")
+    }),
   )
 })

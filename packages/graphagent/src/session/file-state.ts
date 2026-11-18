@@ -16,6 +16,10 @@
  *
  * `hash` is the sha256 of the file bytes; files larger than `MAX_HASHED_BYTES`
  * are not hashed and carry only size and mtime.
+ *
+ * Overwriting an existing file (`write`, and `apply_patch` Add File and Move
+ * onto an existing target) requires a record whose content still matches the
+ * disk (`requireRead`); creating a new file needs none.
  */
 import { createHash } from "node:crypto"
 import * as path from "node:path"
@@ -40,6 +44,22 @@ export interface Entry {
 /** Files above this size are recorded by size and mtime only. */
 export const MAX_HASHED_BYTES = 10 * 1024 * 1024
 
+/** `edit` and `write` load the whole file, so they refuse an existing file above this size. */
+export const MAX_EDITABLE_BYTES = 10 * 1024 * 1024
+
+const MAX_EDITABLE_LABEL = `${MAX_EDITABLE_BYTES / (1024 * 1024)} MiB`
+
+/** An existing file the session has no record of. */
+export const notReadMessage = (filePath: string) =>
+  `${filePath} already exists and was not read in this session. Read it first, then retry.`
+
+/** An existing file whose content differs from the session's last record of it. */
+export const changedSinceReadMessage = (filePath: string) =>
+  `${filePath} changed after it was last read in this session. Read it again, then retry.`
+
+export const tooLargeMessage = (filePath: string) =>
+  `${filePath} is larger than ${MAX_EDITABLE_LABEL}; edit and write do not load files this large. Use a shell command (sed, awk, python).`
+
 type State = Map<SessionID, Map<string, Entry>>
 
 /** Disk state without the recording tool. */
@@ -54,6 +74,12 @@ export function keyOf(filePath: string): string {
   }
 }
 
+/** Same content as the record: hashes decide when both sides have one, else size and mtime. */
+function matches(entry: Entry, current: Snapshot): boolean {
+  if (entry.hash !== undefined && current.hash !== undefined) return entry.hash === current.hash
+  return entry.size === current.size && entry.mtimeMs === current.mtimeMs
+}
+
 export interface Interface {
   /** The last recorded state of a file in this session, or undefined when none. */
   readonly get: (sessionID: SessionID, filePath: string) => Effect.Effect<Entry | undefined>
@@ -62,6 +88,15 @@ export interface Interface {
    * regular file, or that cannot be read, is left unrecorded.
    */
   readonly record: (sessionID: SessionID, filePath: string, source: Source) => Effect.Effect<void>
+  /**
+   * Compare the disk with the session's record: "unread" without a record,
+   * "changed" when the file is gone, is not a regular file or no longer
+   * matches, "same" otherwise. Hashes decide when both sides have one; larger
+   * files compare size and mtime.
+   */
+  readonly verify: (sessionID: SessionID, filePath: string) => Effect.Effect<"unread" | "changed" | "same">
+  /** Fail unless the file is a regular file the session has read and that still matches that record. */
+  readonly requireRead: (sessionID: SessionID, filePath: string) => Effect.Effect<void, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionFileState") {}
@@ -130,7 +165,24 @@ export const layer = Layer.effect(
       files.set(keyOf(filePath), { ...current, source })
     })
 
-    return Service.of({ get, record })
+    const verify: Interface["verify"] = Effect.fn("FileState.verify")(function* (sessionID, filePath) {
+      const sessions = yield* InstanceState.get(state)
+      const entry = sessions.get(sessionID)?.get(keyOf(filePath))
+      if (!entry) return "unread"
+      const current = yield* snapshot(filePath)
+      if (!current) return "changed"
+      return matches(entry, current) ? "same" : "changed"
+    })
+
+    const requireRead: Interface["requireRead"] = Effect.fn("FileState.requireRead")(function* (sessionID, filePath) {
+      const info = yield* fs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (info?.type === "Directory") yield* Effect.fail(new Error(`Path is a directory, not a file: ${filePath}`))
+      const status = yield* verify(sessionID, filePath)
+      if (status === "unread") yield* Effect.fail(new Error(notReadMessage(filePath)))
+      if (status === "changed") yield* Effect.fail(new Error(changedSinceReadMessage(filePath)))
+    })
+
+    return Service.of({ get, record, verify, requireRead })
   }),
 )
 

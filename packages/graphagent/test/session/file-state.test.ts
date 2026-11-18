@@ -200,3 +200,186 @@ describe("FileState", () => {
     )
   })
 })
+
+describe("FileState.verify", () => {
+  it.instance("is unread without a record, also for another session's record", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+
+      expect(yield* state.verify(sessionA, file)).toBe("unread")
+      yield* state.record(sessionB, file, "read")
+      expect(yield* state.verify(sessionA, file)).toBe("unread")
+      expect(yield* state.verify(sessionB, file)).toBe("same")
+    }),
+  )
+
+  it.instance("is same while the content is untouched, and changed once it differs", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      yield* state.record(sessionA, file, "read")
+      expect(yield* state.verify(sessionA, file)).toBe("same")
+
+      yield* put(file, "Content")
+
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+    }),
+  )
+
+  it.instance("judges a file of the same size and a different content as changed", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "aaaa")
+      yield* state.record(sessionA, file, "read")
+      const before = yield* Effect.promise(() => fs.stat(file))
+
+      yield* put(file, "aaab")
+      yield* Effect.promise(() => fs.utimes(file, before.atime, before.mtime))
+
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+    }),
+  )
+
+  it.instance("lets the hash decide, so a new mtime over the same bytes is still same", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      yield* state.record(sessionA, file, "read")
+
+      const later = new Date(Date.now() + 120_000)
+      yield* Effect.promise(() => fs.utimes(file, later, later))
+
+      expect(yield* state.verify(sessionA, file)).toBe("same")
+    }),
+  )
+
+  it.instance("is changed when the file is gone or became a directory", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      yield* state.record(sessionA, file, "read")
+
+      yield* Effect.promise(() => fs.rm(file))
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+
+      yield* Effect.promise(() => fs.mkdir(file))
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+    }),
+  )
+
+  it.instance("compares size and mtime above the hash limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "big.bin")
+      const size = FileState.MAX_HASHED_BYTES + 1
+      yield* put(file, Buffer.alloc(size, 97))
+      yield* state.record(sessionA, file, "read")
+      expect(yield* state.verify(sessionA, file)).toBe("same")
+
+      // Same size, same mtime: the bytes cannot be told apart without a hash.
+      const before = yield* Effect.promise(() => fs.stat(file))
+      yield* put(file, Buffer.alloc(size, 98))
+      yield* Effect.promise(() => fs.utimes(file, before.atime, before.mtime))
+      expect(yield* state.verify(sessionA, file)).toBe("same")
+
+      // A new mtime, or a new size, is a change.
+      const later = new Date(before.mtimeMs + 120_000)
+      yield* Effect.promise(() => fs.utimes(file, later, later))
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+      yield* Effect.promise(() => fs.utimes(file, before.atime, before.mtime))
+      yield* put(file, Buffer.alloc(size + 1, 97))
+      yield* Effect.promise(() => fs.utimes(file, before.atime, before.mtime))
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+    }),
+  )
+
+  it.instance("compares size and mtime when the file crossed the hash limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "grows.bin")
+      yield* put(file, "small")
+      yield* state.record(sessionA, file, "read")
+
+      yield* put(file, Buffer.alloc(FileState.MAX_HASHED_BYTES + 1, 97))
+
+      expect(yield* state.verify(sessionA, file)).toBe("changed")
+    }),
+  )
+})
+
+describe("FileState.requireRead", () => {
+  it.instance("passes for a file the session read that still matches", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      yield* state.record(sessionA, file, "read")
+
+      yield* state.requireRead(sessionA, file)
+    }),
+  )
+
+  it.instance("fails for an unread file with the not-read message", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+
+      const error = yield* state.requireRead(sessionA, file).pipe(Effect.flip)
+
+      expect(error.message).toBe(`${file} already exists and was not read in this session. Read it first, then retry.`)
+    }),
+  )
+
+  it.instance("fails for a changed file with the changed message", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      yield* state.record(sessionA, file, "read")
+      yield* put(file, "different")
+
+      const error = yield* state.requireRead(sessionA, file).pipe(Effect.flip)
+
+      expect(error.message).toBe(`${file} changed after it was last read in this session. Read it again, then retry.`)
+    }),
+  )
+
+  it.instance("fails for a directory before looking at records", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const directory = path.join(test.directory, "dir")
+      yield* Effect.promise(() => fs.mkdir(directory))
+
+      const error = yield* state.requireRead(sessionA, directory).pipe(Effect.flip)
+
+      expect(error.message).toBe(`Path is a directory, not a file: ${directory}`)
+    }),
+  )
+
+  it.instance("words the size refusal with the limit and the shell alternative", () =>
+    Effect.sync(() => {
+      expect(FileState.tooLargeMessage("/p/big.txt")).toBe(
+        "/p/big.txt is larger than 10 MiB; edit and write do not load files this large. Use a shell command (sed, awk, python).",
+      )
+      expect(FileState.MAX_EDITABLE_BYTES).toBe(10 * 1024 * 1024)
+    }),
+  )
+})

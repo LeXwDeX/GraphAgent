@@ -81,6 +81,12 @@ describe("Claude-formatted PermissionRequest input rewrite", () => {
         const replacement = path.join(instance.directory, `${name}-replacement.txt`)
         yield* Effect.promise(() => fs.writeFile(original, "ORIGINAL_CONTENT"))
         yield* Effect.promise(() => fs.writeFile(replacement, "REPLACEMENT_CONTENT"))
+        // write replaces an existing file only after this session has read it, both the requested path and the rewritten one.
+        if (name === "write") {
+          const state = yield* FileState.Service
+          yield* state.record(sessionID, original, "read")
+          yield* state.record(sessionID, replacement, "read")
+        }
         const audit = path.join(instance.directory, `${name}-hook-stdin.json`)
         const decision = {
           hookSpecificOutput: {

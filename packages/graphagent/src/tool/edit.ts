@@ -20,15 +20,15 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
 
-function normalizeLineEndings(text: string): string {
+export function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
 }
 
-function detectLineEnding(text: string): "\n" | "\r\n" {
+export function detectLineEnding(text: string): "\n" | "\r\n" {
   return text.includes("\r\n") ? "\r\n" : "\n"
 }
 
-function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
+export function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
   if (ending === "\n") return text
   return text.replaceAll("\n", "\r\n")
 }
@@ -231,6 +231,7 @@ export const EditTool = Tool.define(
               )
               if (!info) throw new Error(`File ${filePath} not found. Check the path with glob.`)
               if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
+              if (Number(info.size) > FileState.MAX_EDITABLE_BYTES) throw new Error(FileState.tooLargeMessage(filePath))
               const source = yield* Bom.readEditableFile(afs, filePath)
               contentOld = source.text
 

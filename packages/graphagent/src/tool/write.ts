@@ -11,10 +11,11 @@ import { Watcher } from "@graphagent/core/filesystem/watcher"
 import { Format } from "../format"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
-import { trimDiff } from "./edit"
+import { convertToLineEnding, detectLineEnding, normalizeLineEndings, trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
+import type { SessionID } from "@/session/schema"
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -22,6 +23,10 @@ export const Parameters = Schema.Struct({
     description: "The absolute path to the file to write (must be absolute, not relative)",
   }),
 })
+
+/** An overwrite keeps the line ending the file already had. */
+const keepLineEnding = (text: string, previous: string) =>
+  convertToLineEnding(normalizeLineEndings(text), detectLineEnding(previous))
 
 export const WriteTool = Tool.define(
   "write",
@@ -31,6 +36,14 @@ export const WriteTool = Tool.define(
     const events = yield* EventV2Bridge.Service
     const format = yield* Format.Service
     const fileState = yield* FileState.Service
+
+    // Replacing an existing file needs a read of its current content in this session.
+    const requireOverwritable = Effect.fnUntraced(function* (sessionID: SessionID, filepath: string) {
+      const info = yield* fs.stat(filepath)
+      if (Number(info.size) > FileState.MAX_EDITABLE_BYTES)
+        yield* Effect.fail(new Error(FileState.tooLargeMessage(filepath)))
+      yield* fileState.requireRead(sessionID, filepath)
+    })
 
     return {
       description: DESCRIPTION,
@@ -45,11 +58,12 @@ export const WriteTool = Tool.define(
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)
-          const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "" }
+          if (exists) yield* requireOverwritable(ctx.sessionID, filepath)
+          const source = exists ? yield* Bom.readEditableFile(fs, filepath) : { bom: false, text: "" }
           const next = Bom.split(params.content)
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
-          let contentNew = next.text
+          let contentNew = exists ? keepLineEnding(next.text, contentOld) : next.text
 
           const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
           yield* ctx.ask({
