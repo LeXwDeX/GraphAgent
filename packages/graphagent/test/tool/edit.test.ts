@@ -1,13 +1,17 @@
 import { afterEach, describe, expect } from "bun:test"
 import path from "path"
+import { createHash } from "node:crypto"
 import fs from "fs/promises"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import * as PlatformError from "effect/PlatformError"
 import { EditTool } from "../../src/tool/edit"
+import { WriteTool } from "../../src/tool/write"
+import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Format } from "../../src/format"
+import { FileState } from "@/session/file-state"
 import { Agent } from "../../src/agent/agent"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Truncate } from "@/tool/truncate"
@@ -38,9 +42,12 @@ const layer = Layer.mergeAll(
   EventV2Bridge.defaultLayer,
   Truncate.defaultLayer,
   Agent.defaultLayer,
+  FileState.defaultLayer,
 )
 
 const it = testEffect(layer)
+
+const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
 
 const init = Effect.fn("EditToolTest.init")(function* () {
   const info = yield* EditTool
@@ -659,6 +666,38 @@ describe("tool.edit", () => {
         expect(yield* load(filepath)).toBe("top = 1\nmiddle = keep\nbottom = 2\n")
       }),
     )
+
+    // #1452 B2: the lock used to stay held while a permission question waited for its answer.
+    it.instance("a permission question nobody has answered does not hold the file for other edits", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "top = 0\nmiddle = keep\nbottom = 0\n")
+        const asked = yield* Deferred.make<void>()
+        const answer = yield* Deferred.make<void>()
+        const waiting = {
+          ...ctx,
+          ask: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer))),
+        }
+
+        const first = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" }, waiting).pipe(
+          Effect.forkScoped,
+        )
+        yield* Deferred.await(asked)
+        const second = yield* run({ filePath: filepath, oldString: "bottom = 0", newString: "bottom = 2" }).pipe(
+          Effect.forkScoped,
+        )
+
+        const finished = yield* Fiber.await(second).pipe(Effect.timeoutOption("2 seconds"))
+        expect(Option.isSome(finished)).toBe(true)
+        expect(yield* load(filepath)).toBe("top = 0\nmiddle = keep\nbottom = 2\n")
+
+        // The first edit is answered at last and lands on the second edit's result.
+        yield* Deferred.succeed(answer, undefined)
+        yield* Fiber.join(first)
+        expect(yield* load(filepath)).toBe("top = 1\nmiddle = keep\nbottom = 2\n")
+      }),
+    )
   })
 
   describe("ambiguous matches", () => {
@@ -912,6 +951,436 @@ describe("tool.edit", () => {
         expect(error.message).toContain("one replacement per call")
         expect(yield* load(filepath)).toBe("alpha beta")
       }),
+    )
+  })
+})
+
+describe("tool.edit file state (#1452)", () => {
+  const recorded = Effect.fn("EditToolTest.recorded")(function* (filepath: string) {
+    return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+  })
+
+  it.instance("records the edited file under the edit source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "alpha beta\n")
+
+      yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
+
+      const entry = yield* recorded(filepath)
+      expect(entry?.source).toBe("edit")
+      expect(entry?.hash).toBe(sha256("ALPHA beta\n"))
+      expect(entry?.size).toBe(11)
+    }),
+  )
+
+  it.instance("records a file created through an empty oldString", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fresh.txt")
+
+      yield* run({ filePath: filepath, oldString: "", newString: "created\n" })
+
+      const entry = yield* recorded(filepath)
+      expect(entry?.source).toBe("edit")
+      expect(entry?.hash).toBe(sha256("created\n"))
+    }),
+  )
+
+  it.instance("records the BOM and CRLF bytes the file ended up with", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "windows.cs")
+      const bom = String.fromCharCode(0xfeff)
+      yield* put(filepath, `${bom}one\r\ntwo\r\n`)
+
+      yield* run({ filePath: filepath, oldString: "one", newString: "uno" })
+
+      const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+      expect(onDisk.toString("utf8")).toBe(`${bom}uno\r\ntwo\r\n`)
+      expect((yield* recorded(filepath))?.hash).toBe(sha256(onDisk))
+    }),
+  )
+
+  it.instance(
+    "records the state the formatter left, in both branches",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const existing = path.join(test.directory, "existing.ts")
+        const fresh = path.join(test.directory, "fresh.ts")
+        yield* put(existing, "const a = 1\n")
+
+        yield* run({ filePath: existing, oldString: "a = 1", newString: "a = 2" })
+        yield* run({ filePath: fresh, oldString: "", newString: "const b = 1\n" })
+
+        for (const filepath of [existing, fresh]) {
+          const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+          expect(onDisk.toString("utf8")).toContain("// formatted line")
+          const entry = yield* recorded(filepath)
+          expect(entry?.hash).toBe(sha256(onDisk))
+          expect(entry?.size).toBe(onDisk.byteLength)
+        }
+      }),
+    {
+      config: {
+        formatter: {
+          expand: {
+            extensions: [".ts"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(3), 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
+  )
+
+  it.instance("does not record a failed edit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "alpha")
+
+      yield* fail({ filePath: filepath, oldString: "missing", newString: "x" })
+
+      expect(yield* recorded(filepath)).toBeUndefined()
+    }),
+  )
+})
+
+describe("tool.edit size limit (#1452)", () => {
+  it.instance("rejects an existing file above 10 MiB and leaves it alone", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "big.txt")
+      const size = FileState.MAX_EDITABLE_BYTES + 1
+      yield* Effect.promise(() => fs.writeFile(filepath, Buffer.alloc(size, 97)))
+
+      const error = yield* fail({ filePath: filepath, oldString: "aaa", newString: "bbb" })
+
+      expect(error.message).toBe(FileState.tooLargeMessage(filepath))
+      expect(error.message).toContain("10 MiB")
+      expect((yield* Effect.promise(() => fs.stat(filepath))).size).toBe(size)
+    }),
+  )
+
+  it.instance("accepts a file of exactly 10 MiB", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "limit.txt")
+      const content = "needle" + "a".repeat(FileState.MAX_EDITABLE_BYTES - "needle".length)
+      yield* Effect.promise(() => fs.writeFile(filepath, content))
+
+      yield* run({ filePath: filepath, oldString: "needle", newString: "NEEDLE" })
+
+      expect((yield* load(filepath)).startsWith("NEEDLE")).toBe(true)
+    }),
+  )
+
+  it.instance("does not need a prior read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "unread.txt")
+      yield* put(filepath, "never read\n")
+
+      yield* run({ filePath: filepath, oldString: "never", newString: "still" })
+
+      expect(yield* load(filepath)).toBe("still read\n")
+    }),
+  )
+})
+
+describe("tool.edit write-point checks (#1452)", () => {
+  const recorded = Effect.fn("EditToolTest.recordedState")(function* (filepath: string) {
+    return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+  })
+  const markRead = Effect.fn("EditToolTest.markRead")(function* (filepath: string) {
+    yield* (yield* FileState.Service).record(ctx.sessionID, filepath, "read")
+  })
+  /** A context whose permission question runs `action` before it is answered. */
+  const askThen = (action: Effect.Effect<void>) => ({ ...ctx, ask: () => action })
+  const rewrite = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content))
+  const patchTool = Effect.fn("EditToolTest.patchTool")(function* (patchText: string) {
+    const tool = yield* (yield* ApplyPatchTool).init()
+    return yield* tool.execute({ patchText }, ctx)
+  })
+  const writeTool = Effect.fn("EditToolTest.writeTool")(function* (filePath: string, content: string) {
+    const tool = yield* (yield* WriteTool).init()
+    return yield* tool.execute({ filePath, content }, ctx)
+  })
+
+  describe("the shared path lock", () => {
+    // Holds the lock of `held` while `call` starts; reports whether it was still waiting shortly afterwards, then
+    // lets the lock go and waits for the call to finish.
+    const heldBack = <A, E, R>(held: string, call: Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const holder = yield* FileState.withLocks([held])(
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ).pipe(Effect.forkScoped)
+        yield* Deferred.await(entered)
+        const fiber = yield* call.pipe(Effect.forkScoped)
+        const early = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("150 millis"))
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(holder)
+        yield* Fiber.join(fiber)
+        return Option.isNone(early)
+      })
+
+    it.instance("holds an edit on that path back until the lock is free", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const held = path.join(test.directory, "held.txt")
+        yield* put(held, "held = 0\n")
+
+        const waited = yield* heldBack(held, run({ filePath: held, oldString: "held = 0", newString: "held = 1" }))
+
+        expect(waited).toBe(true)
+        expect(yield* load(held)).toBe("held = 1\n")
+      }),
+    )
+
+    it.instance("holds a write on that path back until the lock is free", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const held = path.join(test.directory, "held.txt")
+        yield* put(held, "held = 0\n")
+        yield* markRead(held)
+
+        const waited = yield* heldBack(held, writeTool(held, "written\n"))
+
+        expect(waited).toBe(true)
+        expect(yield* load(held)).toBe("written\n")
+      }),
+    )
+
+    it.instance("holds an apply_patch on that path back until the lock is free", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const held = path.join(test.directory, "held.txt")
+        yield* put(held, "held = 0\n")
+
+        const waited = yield* heldBack(
+          held,
+          patchTool("*** Begin Patch\n*** Update File: held.txt\n@@\n-held = 0\n+held = patched\n*** End Patch"),
+        )
+
+        expect(waited).toBe(true)
+        expect(yield* load(held)).toBe("held = patched\n")
+      }),
+    )
+
+    it.instance("holds an apply_patch back when only its move target is locked", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "source.txt")
+        const target = path.join(test.directory, "target.txt")
+        yield* put(source, "move me\n")
+
+        const waited = yield* heldBack(
+          target,
+          patchTool(
+            "*** Begin Patch\n*** Update File: source.txt\n*** Move to: target.txt\n@@\n-move me\n+moved\n*** End Patch",
+          ),
+        )
+
+        expect(waited).toBe(true)
+        expect(yield* load(target)).toBe("moved\n")
+      }),
+    )
+
+    it.instance("does not hold back calls on any other path", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const held = path.join(test.directory, "held.txt")
+        const free = path.join(test.directory, "free.txt")
+        yield* put(free, "free = 0\n")
+        const entered = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const holder = yield* FileState.withLocks([held])(
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ).pipe(Effect.forkScoped)
+        yield* Deferred.await(entered)
+
+        const finished = yield* Effect.all([
+          run({ filePath: free, oldString: "free = 0", newString: "free = 1" }),
+          writeTool(path.join(test.directory, "other.txt"), "other\n"),
+          patchTool("*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch"),
+        ]).pipe(Effect.timeoutOption("2 seconds"))
+
+        expect(Option.isSome(finished)).toBe(true)
+        expect(yield* load(free)).toBe("free = 1\n")
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(holder)
+      }),
+    )
+  })
+
+  describe("a file that changed while the question was open", () => {
+    it.instance("is edited around when the change is elsewhere, and the receipt says so", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "top = 0\nmiddle = keep\nbottom = 0\n")
+        yield* markRead(filepath)
+        const next = askThen(rewrite(filepath, "top = 0\nmiddle = changed elsewhere\nbottom = 0\n"))
+
+        const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" }, next)
+
+        expect(yield* load(filepath)).toBe("top = 1\nmiddle = changed elsewhere\nbottom = 0\n")
+        const lines = result.output.split("\n")
+        expect(lines[0]).toBe("Edit applied successfully.")
+        expect(lines[1]).toBe(FileState.changedOutsideNote(result.title))
+        expect(result.output).toContain("\nNote: this file changed outside this session after your last read: ")
+      }),
+    )
+
+    it.instance("reports the original error when the change removed the text to replace", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "top = 0\nbottom = 0\n")
+        yield* markRead(filepath)
+        const next = askThen(rewrite(filepath, "something else entirely\n"))
+
+        const exit = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" }, next).pipe(
+          Effect.exit,
+        )
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+        expect(error instanceof Error ? error.message : "").toContain("Could not find oldString in the file")
+        expect(yield* load(filepath)).toBe("something else entirely\n")
+      }),
+    )
+
+    it.instance("reports a file that disappeared as not found", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "top = 0\n")
+        const next = askThen(Effect.promise(() => fs.rm(filepath)))
+
+        const exit = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" }, next).pipe(
+          Effect.exit,
+        )
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+        expect(error instanceof Error ? error.message : "").toBe(
+          `File ${filepath} not found. Check the path with glob.`,
+        )
+      }),
+    )
+
+    it.instance("rejects creating a file that someone else created first", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "fresh.txt")
+        const next = askThen(rewrite(filepath, "created elsewhere\n"))
+
+        const exit = yield* run({ filePath: filepath, oldString: "", newString: "mine\n" }, next).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+        expect(error instanceof Error ? error.message : "").toBe(FileState.changedWhileAskingMessage(filepath))
+        expect(yield* load(filepath)).toBe("created elsewhere\n")
+      }),
+    )
+
+    it.instance("adds no note for a file the session never read", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "top = 0\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
+
+        expect(result.output).toBe("Edit applied successfully.")
+      }),
+    )
+
+    it.instance("adds a note when the file changed after the last read, even without a question in between", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "top = 0\nbottom = 0\n")
+        yield* markRead(filepath)
+        yield* put(filepath, "top = 0\nbottom = formatted elsewhere\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
+
+        expect(result.output).toBe(`Edit applied successfully.\n${FileState.changedOutsideNote(result.title)}`)
+        expect(yield* load(filepath)).toBe("top = 1\nbottom = formatted elsewhere\n")
+      }),
+    )
+  })
+
+  describe("edits that follow this session's own writes", () => {
+    it.instance("add no note after write", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+
+        yield* writeTool(filepath, "top = 0\n")
+        const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
+
+        expect(result.output).toBe("Edit applied successfully.")
+      }),
+    )
+
+    it.instance("add no note after apply_patch", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+
+        yield* patchTool("*** Begin Patch\n*** Add File: file.txt\n+top = 0\n*** End Patch")
+        const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
+
+        expect(result.output).toBe("Edit applied successfully.")
+      }),
+    )
+
+    it.instance(
+      "add no note for consecutive edits, also when a formatter rewrites the file each time",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const filepath = path.join(test.directory, "file.ts")
+          yield* put(filepath, "const a = 1\nconst b = 1\n")
+          yield* markRead(filepath)
+
+          const first = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
+          const second = yield* run({ filePath: filepath, oldString: "b = 1", newString: "b = 2" })
+          const third = yield* run({ filePath: filepath, oldString: "a = 2", newString: "a = 3" })
+
+          for (const result of [first, second, third]) expect(result.output).toBe("Edit applied successfully.")
+          const final = yield* load(filepath)
+          expect(final).toContain("const a = 3")
+          expect(final).toContain("const b = 2")
+          expect((yield* recorded(filepath))?.hash).toBe(sha256(final))
+        }),
+      {
+        config: {
+          formatter: {
+            expand: {
+              extensions: [".ts"],
+              command: [
+                "node",
+                "-e",
+                "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n', 'utf8')",
+                "$FILE",
+              ],
+            },
+          },
+        },
+      },
     )
   })
 })

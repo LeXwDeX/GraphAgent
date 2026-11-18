@@ -50,6 +50,7 @@ import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
+import { FileState } from "../session/file-state"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
@@ -685,6 +686,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Provider.defaultLayer),
       Layer.provide(LSP.defaultLayer),
       Layer.provide(Instruction.defaultLayer),
+      Layer.provide(FileState.defaultLayer),
       Layer.provide(FSUtil.defaultLayer),
       Layer.provide(Ripgrep.defaultLayer),
       Layer.provide(EventV2Bridge.defaultLayer),
@@ -723,6 +725,7 @@ export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer
   Provider.node,
   LSP.node,
   Instruction.node,
+  FileState.node,
   FSUtil.node,
   EventV2Bridge.node,
   httpClient,

@@ -35,8 +35,8 @@ import type { TurnOutcome } from "./turn/decide"
  *
  * - `transient`: rate limits, 5xx, network, incomplete protocol, and anything
  *   unrecognised. Time fixes it.
- * - `permanent`: resending cannot succeed (auth, a deterministic 4xx, other
- *   terminal errors).
+ * - `permanent`: resending cannot succeed (a spent quota or balance, auth, a
+ *   content refusal, a deterministic 4xx, other terminal errors).
  * - `reasoning_state`: the provider rejected the saved reasoning; dropping it
  *   (a reset) is the only way forward.
  * - `context`: the request does not fit. It stops as `context_exhausted`
@@ -60,16 +60,16 @@ export type Failure = { readonly [K in FailureKind]: FailureFields & { readonly 
 export type LadderFailure = Exclude<Failure, { readonly kind: "context" }>
 
 /**
- * Classifies one provider error. It reads `SessionRetry.classify` and
- * `SessionRetry.retryable` and adds no judgement of its own. The first row that
+ * Classifies one provider error. It reads the class `SessionRetry.classify`
+ * puts on its decision and adds no judgement of its own. The first row that
  * matches wins:
  *
  * 1. the provider rejected saved reasoning state: `reasoning_state`
- * 2. the dispatch table hands it to compaction (context overflow, 413): `context`
- * 3. `SessionRetry.retryable` reports it (rate limit, 5xx, network, incomplete
- *    protocol, a 4xx flagged transient): `transient`
- * 4. the dispatch table does not recognise it (`fallback` branch): `transient`
- * 5. the rest (`auth`, a deterministic 4xx, other `terminal` errors): `permanent`
+ * 2. the request does not fit (context overflow, 413): `context`
+ * 3. a rate limit, or time can fix it (5xx, network, incomplete protocol, a 4xx
+ *    flagged transient), or the dispatch table does not recognise it: `transient`
+ * 4. the rest (a spent quota or balance, rejected credentials, a content
+ *    refusal, a deterministic 4xx, other `terminal` errors): `permanent`
  *
  * `now` only matters for an HTTP-date `retry-after`; pass it for determinism.
  * A turn that died on a defect has no error to classify: leave `failure` out
@@ -79,7 +79,7 @@ export function failureOf(error: SessionRetry.Err, provider: string, now: number
   const decision = SessionRetry.classify(error, provider)
   const retryAfter = retryAfterOf(error, now)
   return {
-    kind: kindOf(error, provider, decision),
+    kind: kindOf(decision),
     code: error.name,
     ...(decision.status !== undefined ? { status: decision.status } : {}),
     message: decision.message,
@@ -87,12 +87,17 @@ export function failureOf(error: SessionRetry.Err, provider: string, now: number
   }
 }
 
-function kindOf(error: SessionRetry.Err, provider: string, decision: SessionRetry.RetryDecision): FailureKind {
+function kindOf(decision: SessionRetry.RetryDecision): FailureKind {
   if (decision.branch === "terminal" && decision.message === REASONING_STATE_MESSAGE) return "reasoning_state"
-  if (decision.branch === "compaction") return "context"
-  if (SessionRetry.retryable(error, provider)) return "transient"
-  if (decision.branch === "fallback") return "transient"
-  return "permanent"
+  switch (decision.class) {
+    case "context_overflow":
+      return "context"
+    case "rate_limited":
+    case "transient":
+      return "transient"
+    default:
+      return "permanent"
+  }
 }
 
 /** The server's own hint, from `retry-after-ms`, then `retry-after` (seconds or an HTTP date). */

@@ -366,6 +366,44 @@ describe("decide: outcomes", () => {
     })
   })
 
+  test("a content-filter API error -> content_filter outcome", () => {
+    const refused = new SessionV1.APIError({
+      message: "Output blocked by the content filter",
+      isRetryable: false,
+      statusCode: 400,
+      metadata: { type: "content_filter" },
+    }).toObject()
+    expect(Decide.decide(state({ error: refused }), signals({ stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "content_filter" },
+    })
+    // The refusal named in the body counts too, not only the metadata the native runtime sets.
+    const named = new SessionV1.APIError({
+      message: "Bad request",
+      isRetryable: false,
+      statusCode: 400,
+      responseBody:
+        '{"error":{"code":"data_inspection_failed","message":"Input data may contain inappropriate content."}}',
+    }).toObject()
+    expect(Decide.decide(state({ error: named }), signals({ stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "content_filter" },
+    })
+  })
+
+  test("other 400 API errors stay error outcomes", () => {
+    const invalid = new SessionV1.APIError({
+      message: "messages: required",
+      isRetryable: false,
+      statusCode: 400,
+      metadata: { type: "invalid_request_error" },
+    }).toObject()
+    expect(Decide.decide(state({ error: invalid }), signals({ stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "error", code: "APIError", retryable: false },
+    })
+  })
+
   test("budget exhausted outcome", () => {
     expect(
       Decide.decide(state(), signals({ stopHook: ran(false), stepInputChecked: true, budgetExhausted: true })),
