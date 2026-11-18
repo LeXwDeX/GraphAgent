@@ -681,6 +681,24 @@ describe("Instruction.system remote instructions", () => {
     }),
   )
 
+  it.live("logs a failed URL without its credentials, query or fragment", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpWithFiles({})
+      const requests: string[] = []
+      const logs: Logged[] = []
+      const secretURL = "https://user:pass-secret@rules.example.test/team.md?token=tok-secret#frag-secret"
+      const client = answering(requests, () => new Response("missing", { status: 404 }))
+      yield* Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        yield* svc.system({ sessionID: SessionID.descending(), turn: "msg_turn-1" })
+        expect(loggedFields(logs, "instruction url unavailable")).toEqual([
+          { url: "https://rules.example.test/team.md", reason: "HTTP 404" },
+        ])
+        expect(JSON.stringify(logs)).not.toMatch(/secret/)
+      }).pipe(recordLogs(logs), provideInstance(dir), Effect.provide(remoteInstructionLayer(dir, [secretURL], client)))
+    }),
+  )
+
   it.live("reports a transport failure as a network error and does not ask again", () =>
     Effect.gen(function* () {
       const dir = yield* tmpWithFiles({})

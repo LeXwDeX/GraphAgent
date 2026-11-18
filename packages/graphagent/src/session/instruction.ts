@@ -53,6 +53,13 @@ function failureReason(error: HttpClientError.HttpClientError | Cause.TimeoutErr
   return "network error"
 }
 
+/** The URL as a log may carry it: credentials, query and fragment can hold a token, so only the location stays. */
+function loggableURL(url: string): string {
+  if (!URL.canParse(url)) return "[unparsable url]"
+  const parsed = new URL(url)
+  return `${parsed.origin}${parsed.pathname}`
+}
+
 /** The block of one remote instruction: its text, or the statement that it could not be loaded. */
 function remoteBlock(url: string, answer: Fetched): string[] {
   if (!answer.ok)
@@ -199,7 +206,8 @@ export const layer: Layer.Layer<
         Effect.map((body): Fetched => ({ ok: true, text: new TextDecoder().decode(body) })),
         Effect.catch((error) => Effect.succeed<Fetched>({ ok: false, reason: failureReason(error) })),
       )
-      if (!answer.ok) yield* Effect.logWarning("instruction url unavailable", { url, reason: answer.reason })
+      if (!answer.ok)
+        yield* Effect.logWarning("instruction url unavailable", { url: loggableURL(url), reason: answer.reason })
       return answer
     })
 
