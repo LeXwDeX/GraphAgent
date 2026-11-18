@@ -12,6 +12,11 @@ export type SessionRoute = {
   type: "session"
   sessionID: string
   prompt?: PromptInfo
+  /**
+   * A jump the session view carries out once it is loaded: scroll to this message (to the end, for one that draws
+   * nothing). The view takes it off the route when it has jumped, so navigating again to the same message jumps again.
+   */
+  messageID?: string
 }
 
 export type DiffMode = "git" | "branch" | "last-turn"

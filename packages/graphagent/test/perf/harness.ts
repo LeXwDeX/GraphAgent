@@ -64,6 +64,7 @@ import {
   countingSnapshotLayer,
 } from "../lib/engine-probe"
 import type { FakeProvider } from "../lib/fake-provider"
+import { transactLayer } from "../dag/fixture/transact"
 
 // Layer graph for the H0 scenarios. It mirrors test/session/prompt-empty.test.ts
 // (the smallest SessionPrompt harness) with production defaults for runtime
@@ -338,7 +339,7 @@ export function makePerfLayer(
 export function makeDagPerfLayer(provider: FakeProvider) {
   const dagStore = DagStore.layer.pipe(Layer.provide(dbLayer))
   const dagProjector = DagProjector.layer.pipe(Layer.provide(eventLayer), Layer.provide(dbLayer))
-  const dag = Dag.layer.pipe(Layer.provide(bridgeLayer), Layer.provide(dagStore))
+  const dag = Dag.layer.pipe(Layer.provide(bridgeLayer), Layer.provide(dagStore), Layer.provide(transactLayer(dbLayer)))
   const dagSession = Session.layer.pipe(
     Layer.provide(Storage.defaultLayer),
     Layer.provide(dbLayer),

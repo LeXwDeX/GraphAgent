@@ -91,7 +91,13 @@ const CompactPrompt = Schema.Struct({
 // every authoring schema field must be representable on the wire.
 export const CompactBlock = Schema.Struct({
   id: Schema.String,
-  kind: Schema.Literals(["explore", "plan", "prototype", "debug", "coding", "verify", "review", "synthesize"]),
+  // The authoring list itself, so a kind cannot be added to one and forgotten in the other. The description is
+  // the one place the model is told what `compose` (#1158) is (the dag-patterns skill only says when to choose
+  // it). The engine's own marks on a compose node (`expand`, `join`, `compose_subtree`, `expanded_from`,
+  // `generated_helper`) have no field on this wire or in any authoring schema.
+  kind: Schema.Literals(DagBlocks.WORKFLOW_BLOCK_KINDS).annotate({
+    description: "compose: worker_type (required) is a composer agent; its plan runs as read-only workers",
+  }),
   depends_on: Schema.optional(Schema.Array(Schema.String)),
   instruction: Schema.optional(Schema.String),
   worker_type: Schema.optional(Schema.String),

@@ -16,6 +16,7 @@ import type { NodeConfig, NodeDefaults, WorkflowConfig } from "./dag"
 import { graphForm, liveGates } from "./blocks"
 import type { AcceptanceItem, LiveGate, LiveNode, PriorRound, ReviewGate, WorkflowBlock } from "./blocks"
 import { acceptanceFromCriteria, type AdmissionInput } from "./admission"
+import { DagCompose } from "./compose"
 import type { Config } from "@/config/config"
 import { DagTemplateInputs } from "./template-inputs"
 import { DagValidation } from "./validation"
@@ -143,8 +144,8 @@ export function make(options: Options = {}) {
       const sourceName = input.source.kind === "yaml" ? input.source.source : (input.source.source ?? "<inline>")
       // Only a start document owns the node ceiling; fragments inherit the
       // workflow's persisted one and are checked again by Dag.replan.
-      const userMaxTotalNodes =
-        input.action === "start" && options.config ? (yield* options.config.dagGlobal()).max_total_nodes : undefined
+      const userDag = options.config ? yield* options.config.dagGlobal() : undefined
+      const userMaxTotalNodes = input.action === "start" ? userDag?.max_total_nodes : undefined
       const key = cacheKey(input, profile, userMaxTotalNodes)
       // Environment catalogs are live state (models and agents may
       // change during the tool instance), so only portable results are safe
@@ -259,6 +260,25 @@ export function make(options: Options = {}) {
         profile === "environment" && options.loadEnvironment
           ? yield* options.loadEnvironment(input.environment ?? {})
           : undefined
+      // #1158: a compose block, or a node whose worker is a composer, becomes its split node and expansion
+      // slot here, where the agent catalog is at hand; the scheduler expands the slot when its split node
+      // settles. A composer that cannot be used is reported now, not found out at run time.
+      const composed = DagCompose.compileNodes(nodes, catalogs?.composers, DagCompose.limits(userDag))
+      // The environment profile starts workflows, so a compose block it had no catalog to compile is an error
+      // rather than a node that would run without expanding.
+      const uncompiled =
+        profile === "environment" && catalogs?.composers === undefined
+          ? DagCompose.uncompiledBlocks(composed.nodes)
+          : []
+      const composeErrors = [...composed.problems, ...uncompiled].map((problem) =>
+        DagValidation.diagnostic({
+          code: DagValidation.DIAGNOSTIC_CODES.dagInvalid,
+          path: problem.path,
+          message: problem.message,
+          hint: problem.hint,
+        }),
+      )
+      const graphNodes = composed.nodes
       const validation = yield* DagValidation.validatePostCompile({
         source: sourceName,
         profile,
@@ -268,7 +288,7 @@ export function make(options: Options = {}) {
           ...(userMaxTotalNodes !== undefined ? { user_max_total_nodes: userMaxTotalNodes } : {}),
           ...(nodeDefaults ? { node_defaults: nodeDefaults } : {}),
         },
-        nodes,
+        nodes: graphNodes,
         blocks: compiled.blocks,
         directory: input.environment?.directory,
         executionWorkspace: input.action === "start" ? undefined : input.executionWorkspace,
@@ -284,7 +304,7 @@ export function make(options: Options = {}) {
       const liveGateErrors =
         input.action === "extend" && input.live_nodes
           ? DagValidation.liveCheckpointGateDiagnostics({
-              fragment: nodes,
+              fragment: graphNodes,
               live: input.live_nodes,
               defaults: nodeDefaults,
               form: compiled.blocks === undefined ? "nodes" : "blocks",
@@ -293,10 +313,11 @@ export function make(options: Options = {}) {
       const errors = DagValidation.sortDiagnostics([
         ...validation.errors,
         ...compiled.diagnostics.filter((diagnostic) => diagnostic.severity === "error"),
+        ...composeErrors,
         ...liveGateErrors,
       ])
       const valid = errors.length === 0
-      const prepared = valid ? prepareGraph(decoded.value, nodes, nodeDefaults, review) : undefined
+      const prepared = valid ? prepareGraph(decoded.value, graphNodes, nodeDefaults, review) : undefined
       const result = {
         ...validation,
         valid,

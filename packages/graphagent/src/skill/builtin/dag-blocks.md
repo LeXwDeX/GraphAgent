@@ -132,9 +132,9 @@ Lanes, decision, `verify`, and `synthesize` default to the read-only
 `global-review`; it never delegates method to an external Skill.
 
 Judgment and acceptance gates (`plan`, debug diagnosis, `verify`, review
-decision, `synthesize`) default to required; volume lanes (`explore`,
-`prototype`, `coding`, debug evidence, independent review lanes) are optional,
-and `required` overrides. `review` and `synthesize` report to the parent by
+decision, `synthesize`) and writers (`prototype`, `coding`, fan-out packages)
+default to required; `explore`, debug evidence, and review lanes are optional;
+`required` overrides. `review` and `synthesize` report to the parent by
 default. A block after a review gate is conditioned on
 its accepted verdict; conditions handle one verdict reference, so fan multiple
 review lanes into one review block first.

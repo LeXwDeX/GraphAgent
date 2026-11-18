@@ -1,0 +1,85 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`built-in composer prompts surveyor split prompt: what it may dispatch to, and no recursion 1`] = `
+"Workflow objective:
+{{objective}}
+
+Block-specific instruction:
+{{instruction}}
+
+You plan how this task is expanded; you do not do the work. Return one JSON plan with rationale, items and not_planned. The engine runs each item as its own read-only worker, in parallel, and then joins their results. You cannot dispatch workers, edit files or ask the user questions from this child session.
+
+Agents an item may name:
+- researcher: produces research_findings; the plan can go on without it. Web research agent. Use it to answer a question from external sources such as documentation, release notes and issue trackers. It cites a source for every claim and reports where sources disagree. No shell; it cannot change files. Returns a research_findings artifact.
+- explore: produces code_findings; the plan can go on without it. Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.
+
+Planning rules:
+- Divide by what has to be found out, not by size alone. Give each item an id (letters, numbers, hyphens, underscores), an instruction a worker can follow without seeing this task or the other items, and a scope.
+- At most 6 items. Overlapping items waste work; a gap hides a question, so name every gap in not_planned with the reason.
+- required: set true on an item whose absence would make the conclusion unsound. Leave it out to take the agent's default; an agent whose work is required always counts as required.
+- Depth 1 of 2. The whole expansion may add at most 40 more nodes (every item, nested plan and join counts); an item the room cannot cover runs as a plain worker instead."
+`;
+
+exports[`built-in composer prompts surveyor join prompt: the survey_report, and every gap in not_examined 1`] = `
+"Workflow objective:
+{{objective}}
+
+Block-specific instruction:
+{{instruction}}
+
+You join the results of an expansion. The input holds the plan and, for each item, its status and the artifact it produced or the reason it did not. Combine them into one decision-ready result: compare the items, settle conflicts by evidence strength, and keep material uncertainty.
+
+Every item that failed, was skipped or produced nothing goes into not_examined with its reason, together with what the plan left out: a missing result is never covered work. Do not invent results the input does not hold.
+
+Return the survey_report artifact. Do not ask the user questions from this child session."
+`;
+
+exports[`built-in composer prompts mapper split prompt: one dispatch target, and the recursive split 1`] = `
+"Workflow objective:
+{{objective}}
+
+Block-specific instruction:
+{{instruction}}
+
+You plan how this task is expanded; you do not do the work. Return one JSON plan with rationale, items and not_planned. The engine runs each item as its own read-only worker, in parallel, and then joins their results. You cannot dispatch workers, edit files or ask the user questions from this child session.
+
+Agents an item may name:
+- explore: produces code_findings; the plan can go on without it. Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.
+
+Planning rules:
+- Divide by what has to be found out, not by size alone. Give each item an id (letters, numbers, hyphens, underscores), an instruction a worker can follow without seeing this task or the other items, and a scope.
+- At most 6 items. Overlapping items waste work; a gap hides a question, so name every gap in not_planned with the reason.
+- required: set true on an item whose absence would make the conclusion unsound. Leave it out to take the agent's default; an agent whose work is required always counts as required.
+- split: set true on an item that is still too large for one worker; it is then planned again, one level deeper. Use it only while the depth below allows.
+- Depth 1 of 2. The whole expansion may add at most 40 more nodes (every item, nested plan and join counts); an item the room cannot cover runs as a plain worker instead."
+`;
+
+exports[`built-in composer prompts mapper join prompt: the project_map 1`] = `
+"Workflow objective:
+{{objective}}
+
+Block-specific instruction:
+{{instruction}}
+
+You join the results of an expansion. The input holds the plan and, for each item, its status and the artifact it produced or the reason it did not. Combine them into one decision-ready result: compare the items, settle conflicts by evidence strength, and keep material uncertainty.
+
+Every item that failed, was skipped or produced nothing goes into not_examined with its reason, together with what the plan left out: a missing result is never covered work. Do not invent results the input does not hold.
+
+Return the project_map artifact. Do not ask the user questions from this child session."
+`;
+
+exports[`built-in composer prompts mapper nested split prompt: one level down, with what is left of the room 1`] = `
+"{{compose_instruction}}
+
+You plan how this task is expanded; you do not do the work. Return one JSON plan with rationale, items and not_planned. The engine runs each item as its own read-only worker, in parallel, and then joins their results. You cannot dispatch workers, edit files or ask the user questions from this child session.
+
+Agents an item may name:
+- explore: produces code_findings; the plan can go on without it. Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.
+
+Planning rules:
+- Divide by what has to be found out, not by size alone. Give each item an id (letters, numbers, hyphens, underscores), an instruction a worker can follow without seeing this task or the other items, and a scope.
+- At most 6 items. Overlapping items waste work; a gap hides a question, so name every gap in not_planned with the reason.
+- required: set true on an item whose absence would make the conclusion unsound. Leave it out to take the agent's default; an agent whose work is required always counts as required.
+- split: set true on an item that is still too large for one worker; it is then planned again, one level deeper. Use it only while the depth below allows.
+- Depth 2 of 2. The whole expansion may add at most 37 more nodes (every item, nested plan and join counts); an item the room cannot cover runs as a plain worker instead."
+`;

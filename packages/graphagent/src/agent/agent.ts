@@ -19,10 +19,12 @@ import PROMPT_ARCHITECT from "./prompt/architect.txt"
 import PROMPT_AUDITOR from "./prompt/auditor.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_MAPPER from "./prompt/mapper.txt"
 import PROMPT_PROTOTYPER from "./prompt/prototyper.txt"
 import PROMPT_RESEARCHER from "./prompt/researcher.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
+import PROMPT_SURVEYOR from "./prompt/surveyor.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
 import { AgentContract } from "./contract"
@@ -178,6 +180,20 @@ export const layer = Layer.effect(
           webfetch: "allow",
           websearch: "allow",
           read: "allow",
+          // Read-only workers still need the session bootstrap path.
+          skill: "allow",
+          "*_initial_instructions": "allow",
+          external_directory: readonlyExternalDirectory,
+        } as const
+
+        // The planning profile the composers share (#1158): they plan an expansion and join its results, and read the
+        // repository only to see what to split. No shell, no web and no file tool: a composer produces data and the
+        // engine does the rest (D4). It is read-only on every axis, so the DAG's writer catalog never lists it.
+        const planning = {
+          "*": "deny",
+          read: "allow",
+          grep: "allow",
+          glob: "allow",
           // Read-only workers still need the session bootstrap path.
           skill: "allow",
           "*_initial_instructions": "allow",
@@ -409,6 +425,42 @@ export const layer = Layer.effect(
             // No `execution` declaration on purpose (#1357): it verifies finished work and reports one finding set,
             // but its shell is `bash: allow` (see the permission note above), so it is read-only by its prompt and
             // not by its rules, and B-2 cannot be shown in code. The call decides, like for any other worker.
+          },
+          // The built-in composers (#1158). A composer only ever runs inside a DAG, as the `worker_type` of a
+          // `compose` block: its split node plans an expansion, the engine turns the plan into read-only workers
+          // from `dispatch`, and its join node merges their results into the declared artifact. `private`: no
+          // composer's plan can name it, and `task` refuses it (the registry keeps it out of that catalog).
+          surveyor: {
+            name: "surveyor",
+            permission: Permission.merge(defaults, Permission.fromConfig(planning), user),
+            description:
+              "Composer for a compose block (workflow only, never a task type): splits a question into angles or candidates, has a researcher or explore worker look into each, and joins the results into a survey_report with a comparison and a recommendation.",
+            prompt: PROMPT_SURVEYOR,
+            options: {},
+            mode: "subagent",
+            native: true,
+            contract: {
+              role: "composer",
+              visibility: "private",
+              output: { artifact: "survey_report" },
+              compose: { pattern: "fan_out", dispatch: ["researcher", "explore"], fallback: "researcher" },
+            },
+          },
+          mapper: {
+            name: "mapper",
+            permission: Permission.merge(defaults, Permission.fromConfig(planning), user),
+            description:
+              "Composer for a compose block (workflow only, never a task type): splits a codebase into modules, splits a module that is still too large once more, has an explore worker map each, and joins the results into a project_map.",
+            prompt: PROMPT_MAPPER,
+            options: {},
+            mode: "subagent",
+            native: true,
+            contract: {
+              role: "composer",
+              visibility: "private",
+              output: { artifact: "project_map" },
+              compose: { pattern: "recursive_split", dispatch: ["explore"], fallback: "explore" },
+            },
           },
           compaction: {
             name: "compaction",

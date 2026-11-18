@@ -18,7 +18,7 @@ Three terms worth knowing:
 - `workflow(action="draft")` renders a structured graph through the tool schema into a validated YAML spec — field-name mistakes are rejected by the provider, not discovered at validation time.
 - Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command (backed by the non-hidden `dag-auto` built-in skill) routes a requirement to a curated reference topology and retargets it to the task at hand. Five hidden `dag-*` reference skills — `dag-blocks`, `dag-nodes`, `dag-recovery`, `dag-patterns`, and `dag-policy` — carry the authoring, recovery, pattern, and policy contracts and load on demand.
 - The agent promotes to a workflow on its own judgment — the user need not ask — and declares the graph structure up front, mutating it at runtime only for structure that depends on results. When later work depends on items a node produces (for example one verifier per finding), the parent turns that node into a checkpoint, deduplicates and ranks the reported items, and adds only the needed item nodes with a bounded `extend`; `fan_out` is for writers from a plan's `packages`, not general per-item expansion.
-- Model tiers in `dag.model` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
+- Model tiers in `dag.model` follow the node's role, not its `required` flag: planning, verification, synthesis, review and composer nodes run on the `advanced` model; writers (fan-out packages included), exploration and compose-expansion children on `standard`.
 
 **Reliability**
 
@@ -46,13 +46,15 @@ that into a repeatable setup of your own.
 
 ### 1. Choose the model tiers — `dag.model` in `.agents/settings.json`
 
-Nodes never name their own model. The graph declares _which nodes are critical_
-and configuration decides _what runs them_:
+Nodes never name their own model. A node's role decides _which tier_ it runs on
+and configuration decides _which model_ each tier is:
 
 ```jsonc
 {
   "dag": {
-    // Critical nodes: required: true, plus review/arbiter workers.
+    // advanced: plan, verify, synthesize and review blocks, review/arbiter workers,
+    // composers; a hand-written node without a block takes it when required: true.
+    // standard: writers, exploration and the children of a compose expansion.
     "model": {
       "advanced": "anthropic/claude-sonnet-4-5",
       "standard": "anthropic/claude-haiku-4-5"

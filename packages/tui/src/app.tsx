@@ -1,6 +1,7 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
+import open from "open"
 import { Global } from "@graphagent/core/global"
 import { APP_TITLE } from "@graphagent/core/brand"
 import { Flag } from "@graphagent/core/flag/flag"
@@ -44,9 +45,11 @@ import { Main } from "./routes/session"
 import { Diff } from "./routes/diff"
 import { useDiffNavigation } from "./routes/diff/route"
 import { useDiffFooterHints } from "./routes/diff/footer-hints"
+import { resolveRootSessionID } from "./ask/ask-queue"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
 import { AgentPanel } from "./panel/agent"
+import { AgentsPanel } from "./panel/agents"
 import { BtwPanel } from "./panel/btw"
 import { ConfigPanel } from "./panel/config"
 import { HelpPanel } from "./panel/help"
@@ -60,21 +63,27 @@ import { SessionListPanel } from "./panel/sessions"
 import { CommandPalettePanel } from "./panel/palette"
 import { VariantPanel } from "./panel/variant"
 import { useDrawer } from "./shell/drawer"
-import { useFooterKeyHints } from "./shell/footer"
+import { subagentFooterHints, subagentNoticeReserve, useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
 import { dagIndicatorReserve } from "./shell/dag-indicator"
+import { sameSubagentView, subagentView } from "./shell/subagent-path"
 import { HookProgress } from "./shell/hook-progress"
+import { createPrTracker } from "./shell/pr-tracker"
+import { PrTrackerProvider } from "./shell/pr-tracker-context"
 import { SessionStatusBand } from "./shell/status-band"
 import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
+import { returnToParent, useOpenSubAgent } from "./session/navigate"
+import { siblingPosition } from "./session/siblings"
+import { subagentSiblings, subagentSource } from "./session/subagents"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { FooterToastProvider, serverToastText, useToast } from "./ui/toast"
-import { TickerProvider } from "./context/ticker-context"
+import { TickerProvider, useTicker } from "./context/ticker-context"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
@@ -165,6 +174,36 @@ export type TuiInput = {
 function LocalWithToast(props: ParentProps) {
   const toast = useToast()
   return <LocalProvider notify={(notice) => toast.show(notice)}>{props.children}</LocalProvider>
+}
+
+/**
+ * The tracked PRs and reminders the status band shows (#1036 F6), wired to the data layer, the clock, the footer
+ * toasts and the route. One tracker for the life of the app: it owns its event subscription and its one pending
+ * `ticker.at`, and the band reads it through `usePrTracker`.
+ */
+function PrTrackerScope(props: ParentProps) {
+  const route = useRoute()
+  const sync = useSync()
+  const project = useProject()
+  const event = useEvent()
+  const toast = useToast()
+  const tracker = createPrTracker({
+    data: sync.data,
+    ticker: useTicker(),
+    toast,
+    onPrWatchEvent: (listener) =>
+      event.on("pr.watch.updated", (payload, metadata) => {
+        // The store ignores an event routed to another workspace, and so does the tracker.
+        if (metadata.workspace !== undefined && metadata.workspace !== project.workspace.current()) return
+        listener(payload.properties)
+      }),
+    currentRoot: () =>
+      route.data.type === "session" ? resolveRootSessionID(sync.data.session, route.data.sessionID) : undefined,
+    openUrl: (url) => {
+      open(url).catch((error) => TuiLog.write("error", "Opening the pull request failed", { error: String(error) }))
+    },
+  })
+  return <PrTrackerProvider value={tracker}>{props.children}</PrTrackerProvider>
 }
 
 function errorMessage(error: unknown) {
@@ -321,7 +360,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                 <LocationProvider>
                                                                   <HomeSessionDestinationProvider>
                                                                     <BtwProvider>
-                                                                      <App onSnapshot={input.onSnapshot} />
+                                                                      <PrTrackerScope>
+                                                                        <App onSnapshot={input.onSnapshot} />
+                                                                      </PrTrackerScope>
                                                                     </BtwProvider>
                                                                   </HomeSessionDestinationProvider>
                                                                 </LocationProvider>
@@ -385,11 +426,66 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const promptRef = usePromptRef()
   const commands = useCommands()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
-  const disposeNotifications = createTuiNotifications({ event, sessions: sync.session, attention })
+  const openSubAgent = useOpenSubAgent()
+  const disposeNotifications = createTuiNotifications({
+    event,
+    sessions: sync.session,
+    attention,
+    subagent: {
+      toast,
+      viewing: () => (route.data.type === "session" ? route.data.sessionID : undefined),
+      currentRoot: () =>
+        route.data.type === "session" ? resolveRootSessionID(sync.data.session, route.data.sessionID) : undefined,
+      task: (sessionID) => sync.data.taskIndex[sessionID],
+      open: openSubAgent,
+      // The toast brings the user to the session whose transcript holds the report, scrolled to its message. That is
+      // not a sub-agent entry (no retry notice) even when a sub-agent's own run reported into the session.
+      openResult: (sessionID, messageID) => route.navigate({ type: "session", sessionID, messageID }),
+    },
+  })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
   const dagIndicator = useDagIndicator()
   const hookStatus = useHookStatus()
+  // A session with a parent is a sub-agent view (#1033): the top bar shows its path and the footer says it is read-only.
+  const subagent = createMemo(
+    () =>
+      route.data.type === "session"
+        ? subagentView(
+            {
+              session: (id) => sync.session.get(id),
+              task: (id) => sync.data.taskIndex[id],
+              summary: (id) => sync.data.summary[id],
+            },
+            route.data.sessionID,
+          )
+        : undefined,
+    undefined,
+    { equals: sameSubagentView },
+  )
+  // The path segments open their session on a click; the root is an ordinary session, the others are sub-agents.
+  const subagentPath = createMemo(() => {
+    const view = subagent()
+    if (!view) return undefined
+    return {
+      ...view,
+      onOpen: (sessionID: string) =>
+        sync.session.get(sessionID)?.parentID
+          ? openSubAgent(sessionID)
+          : route.navigate({ type: "session", sessionID }),
+    }
+  })
+  // `子 agent i/N` in the top bar: the order of the `/agents` list, which `←→` walks (`session/subagents.ts`). The order
+  // follows the states of the siblings, so the memo reads them; it passes on a new position only when the place changes.
+  const subagentPosition = createMemo(
+    () => {
+      if (route.data.type !== "session" || !subagent()) return undefined
+      const sessionID = route.data.sessionID
+      return siblingPosition(subagentSiblings(sync.data.session, sessionID, subagentSource(sync.data)), sessionID)
+    },
+    undefined,
+    { equals: (left, right) => left?.index === right?.index && left?.total === right?.total },
+  )
   const footerStatus = useFooterStatus(
     // The shared slot holds the hook progress only while a hook runs. The component renders nothing when idle, but
     // an element in the slot would still keep the idle key hints off the session footer.
@@ -397,7 +493,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       route.data.type === "session" && hookStatus.list(route.data.sessionID).length > 0 ? (
         <HookProgress sessionID={route.data.sessionID} />
       ) : undefined,
-    () => dagIndicatorReserve(dagIndicator(), dimensions().width, kv.get("ambiguous_width", 1) === 2 ? 2 : 1),
+    () => {
+      const ambiguousWidth = kv.get("ambiguous_width", 1) === 2 ? 2 : 1
+      const view = subagent()
+      return view
+        ? subagentNoticeReserve(view.kind, ambiguousWidth)
+        : dagIndicatorReserve(dagIndicator(), dimensions().width, ambiguousWidth)
+    },
   )
   const bottomZone = createBottomZoneState()
   const btw = useBtw()
@@ -630,6 +732,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <ModelPanel providerID={providerID} onConnectProvider={connectProvider} onVariant={() => openVariant()} />
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
+  // `/agents` lists the sub-agents of the root session in a main session and in a sub-agent view alike.
+  const openSubagentList = () => openPanel("agents", () => <AgentsPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
   const openTrustPanel = (mode: TrustPanelMode, imported?: readonly string[]) =>
     openPanel("trust", () => <TrustPanel mode={mode} imported={imported} />)
@@ -672,6 +776,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "workspace.list": openWorkspaceList,
     "model.list": () => openModelList(),
     "agent.list": openAgentList,
+    "agent.subagents": openSubagentList,
     "mcp.list": openMcpList,
     "trust.open": () => openTrustPanel("manage", sync.trust.importedReview?.ids),
     "provider.connect": connectProvider,
@@ -1038,6 +1143,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   event.on("session.deleted", (evt) => {
     if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
+      // A sub-agent session deleted while on screen leaves the user in its parent session; a root goes home.
+      const parentID = evt.properties.info.parentID
+      if (parentID) {
+        returnToParent(parentID, { kind: "deleted" }, { route, toast })
+        return
+      }
       route.navigate({ type: "home" })
       toast.show({
         text: "The current session was deleted",
@@ -1099,7 +1210,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
 
     return {
-      path: route.data.type === "session" ? sync.session.get(route.data.sessionID)?.title : undefined,
+      path:
+        route.data.type === "session" && !subagentPath() ? sync.session.get(route.data.sessionID)?.title : undefined,
+      subagent: subagentPath(),
+      position: subagentPosition(),
       right,
     }
   })
@@ -1139,11 +1253,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <AppFrame
           topBar={topBar()}
           footer={{
-            agent: local.agent.current()?.name,
-            agentAction: footerKeys().agent,
-            hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
+            // A sub-agent view has no agent to switch and no mode to toggle: its footer says it is read-only.
+            agent: subagent() ? undefined : local.agent.current()?.name,
+            agentAction: subagent() ? undefined : footerKeys().agent,
+            hints:
+              route.data.type === "diff"
+                ? diffFooterHints()
+                : subagent()
+                  ? subagentFooterHints(footerKeys().drawer, (subagentPosition()?.total ?? 0) > 1)
+                  : footerKeys().hints,
             meta: route.data.type === "home" ? homeMeta() : { trust: homeMeta().trust },
             dag: dagIndicator(),
+            subagent: subagent(),
             right: footerStatus(),
           }}
           statusBand={route.data.type === "session" ? <SessionStatusBand /> : undefined}

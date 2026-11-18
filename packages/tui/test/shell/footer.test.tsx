@@ -6,14 +6,24 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { testRender, useRenderer } from "@opentui/solid"
+import type { Event } from "@graphagent/sdk"
 import { createSignal, onCleanup, onMount, type JSX, type ParentProps } from "solid-js"
 import { TuiKeybind } from "../../src/config/keybind"
+import { createTuiNotifications } from "../../src/attention/notify"
 import { setLanguage } from "../../src/i18n"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
-import { Footer, useFooterKeyHints, type FooterHint } from "../../src/shell/footer"
+import { DEFAULT_THEME } from "../../src/context/theme"
+import {
+  Footer,
+  subagentFooterHints,
+  subagentNoticeReserve,
+  useFooterKeyHints,
+  type FooterHint,
+} from "../../src/shell/footer"
 import { useFooterStatus } from "../../src/shell/footer-status"
 import { FooterToastProvider, toastDuration, useToast, type ToastOptions } from "../../src/ui/toast"
 import { TickerProvider } from "../../src/context/ticker-context"
+import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
@@ -476,6 +486,91 @@ test("does not merge an expired dedupeKey", async () => {
   }
 })
 
+// The toast of a finished background run (#1058 7) is keyed by its sub-agent, so a second result of the same one inside ten
+// seconds is the same toast, with the second's text and click target, and its window starts over; later it is a new one.
+test("two results of one sub-agent inside ten seconds are one toast, refreshed by the second", async () => {
+  const { app, toast } = await renderToastStore()
+  const clock = spyOn(Date, "now").mockReturnValue(1_000)
+  const handlers: ((event: Event) => void)[] = []
+  const opened: string[][] = []
+  const dispose = createTuiNotifications({
+    event: {
+      on: (type, handler) => {
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- test double: the handler is kept for, and called with, the one event type it registered for.
+        if (type === "message.part.updated") handlers.push(handler as (event: Event) => void)
+        return () => {}
+      },
+    },
+    sessions: { get: (sessionID) => ({ title: sessionID, parentID: sessionID === "child" ? "root" : undefined }) },
+    attention: { notify: async () => ({}) },
+    subagent: {
+      toast: toast(),
+      viewing: () => "root",
+      currentRoot: () => "root",
+      task: () => ({ kind: "explore" }),
+      open: () => {},
+      openResult: (sessionID, messageID) => void opened.push([sessionID, messageID]),
+    },
+  })
+  const report = (endedAt: number): Event => ({
+    id: `event-${endedAt}`,
+    type: "message.part.updated",
+    properties: {
+      sessionID: "root",
+      time: endedAt,
+      part: {
+        id: `prt-${endedAt}`,
+        sessionID: "root",
+        messageID: `msg-${endedAt}`,
+        type: "text",
+        text: "<task_result>done</task_result>",
+        synthetic: true,
+        metadata: {
+          backgroundResult: {
+            childSessionID: "child",
+            status: "completed",
+            title: "scan",
+            initiator: "agent",
+            startedAt: 100,
+            endedAt,
+          },
+        },
+      },
+    },
+  })
+  const emit = (event: Event) => {
+    for (const handler of handlers) handler(event)
+  }
+  try {
+    emit(report(300))
+    const first = toast().currentToast
+    expect(first?.text).toBe("explore 已完成 · 点击查看")
+    expect(first?.dedupeKey).toBe("child")
+
+    // Four seconds on, the same sub-agent reports again: it is the toast that is showing, not one behind it.
+    clock.mockReturnValue(5_000)
+    emit(report(400))
+    expect(toast().currentToast?.id).toBe(first?.id)
+    expect(toast().queued).toHaveLength(0)
+    // The click goes where the later report is.
+    toast().currentToast?.onActivate?.()
+    expect(opened).toEqual([["root", "msg-400"]])
+
+    // The window ran from the second report: nine seconds later it is still one toast, and past ten it is a new one.
+    clock.mockReturnValue(14_000)
+    emit(report(500))
+    expect(toast().currentToast?.id).toBe(first?.id)
+    expect(toast().queued).toHaveLength(0)
+    clock.mockReturnValue(30_000)
+    emit(report(600))
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["explore 已完成 · 点击查看"])
+  } finally {
+    dispose()
+    clock.mockRestore()
+    app.renderer.destroy()
+  }
+})
+
 test("merges identical plain text even without a dedupeKey", async () => {
   const { app, toast } = await renderToastStore()
   try {
@@ -567,4 +662,188 @@ test("activates the footer toast on click", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+// ── Sub-agent view (#1033 3.3): the read-only notice and the keys of that view ───────────────────────────────────────
+
+function SubagentFooterFromKeymap(props: { kind?: string; right?: JSX.Element; trust?: number }) {
+  const keys = useFooterKeyHints()
+  return (
+    <Footer
+      subagent={{ kind: props.kind ?? "explore" }}
+      hints={subagentFooterHints(keys().drawer)}
+      meta={props.trust ? { trust: props.trust } : undefined}
+      right={props.right}
+    />
+  )
+}
+
+/** The footer row without the trailing blanks. */
+const row = (frame: string) => frame.split("\n")[0].trimEnd()
+
+test("a sub-agent footer says it is read-only and lists the keys of that view", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => <SubagentFooterFromKeymap />, { width: 120, state: tmp.path })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toEndWith("←→ 切换 · esc 返回 · ctrl+b 侧边栏")
+    // The agent to switch to and the command hints belong to the views that have a prompt.
+    expect(frame).not.toContain("切换 agent")
+    expect(frame).not.toContain("ctrl+p")
+    expect(frame).not.toContain("DAG")
+    expectWithin(frame, 120, 1)
+    expect(frame).toMatchSnapshot()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a sub-agent footer in English", async () => {
+  await using tmp = await shellState()
+  setLanguage("en")
+  const app = await render(() => <SubagentFooterFromKeymap />, { width: 120, state: tmp.path })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(row(frame)).toStartWith(" explore · read-only · only the main agent can message it")
+    expect(row(frame)).toEndWith("←→ switch · esc back · ctrl+b drawer")
+    expect(frame).toMatchSnapshot()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("at 80 columns the trailing hints give way before the notice is cut", async () => {
+  await using tmp = await shellState()
+  const zh = await render(() => <SubagentFooterFromKeymap />, { width: 80, state: tmp.path })
+  try {
+    const frame = zh.captureCharFrame()
+    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toEndWith("←→ 切换 · esc 返回")
+    expect(frame).not.toContain("侧边栏")
+    expect(frame).toMatchSnapshot()
+  } finally {
+    zh.renderer.destroy()
+  }
+
+  setLanguage("en")
+  const en = await render(() => <SubagentFooterFromKeymap />, { width: 80, state: tmp.path })
+  try {
+    const frame = en.captureCharFrame()
+    expect(row(frame)).toStartWith(" explore · read-only · only the main agent can message it")
+    expect(row(frame)).toEndWith("←→ switch · esc back")
+    expect(frame).toMatchSnapshot()
+  } finally {
+    en.renderer.destroy()
+  }
+})
+
+for (const language of ["zh-CN", "en"] as const) {
+  for (const ambiguousWidth of [1, 2] as const) {
+    test(`a sub-agent footer fits 80 columns in ${language} at ambiguous_width ${ambiguousWidth}`, async () => {
+      await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+      setLanguage(language)
+      const app = await render(() => <SubagentFooterFromKeymap kind="general-purpose" trust={2} />, {
+        width: 80,
+        state: tmp.path,
+      })
+
+      try {
+        const frame = app.captureCharFrame()
+        expectWithin(frame, 80, ambiguousWidth)
+        // The notice is whole at the left edge; what gives way is the right-hand hints and the trust reminder.
+        expect(row(frame)).toStartWith(
+          language === "en"
+            ? " general-purpose · read-only · only the main agent can message it"
+            : " general-purpose · 只读 · 子 agent 只接受主 agent 的通信",
+        )
+      } finally {
+        app.renderer.destroy()
+      }
+    })
+  }
+}
+
+test("a notice that does not fit is cut from its end, the kind last", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => <SubagentFooterFromKeymap />, { width: 40, state: tmp.path })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 ag…")
+    expectWithin(frame, 40, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the drawer hint follows the keymap, and a missing binding leaves it out", async () => {
+  await using tmp = await shellState()
+  const rebound = await render(() => <SubagentFooterFromKeymap />, {
+    width: 120,
+    state: tmp.path,
+    overrides: { session_drawer_toggle: "f9" },
+  })
+  try {
+    expect(row(rebound.captureCharFrame())).toEndWith("←→ 切换 · esc 返回 · f9 侧边栏")
+  } finally {
+    rebound.renderer.destroy()
+  }
+
+  const unbound = await render(() => <SubagentFooterFromKeymap />, {
+    width: 120,
+    state: tmp.path,
+    overrides: { session_drawer_toggle: "none" },
+  })
+  try {
+    const frame = unbound.captureCharFrame()
+    expect(row(frame)).toEndWith("←→ 切换 · esc 返回")
+    expect(frame).not.toContain("侧边栏")
+  } finally {
+    unbound.renderer.destroy()
+  }
+})
+
+test("the shared right slot replaces the hints and the notice stays", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => <SubagentFooterFromKeymap right={<text>status: indexing</text>} />, {
+    width: 120,
+    state: tmp.path,
+  })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toEndWith("status: indexing")
+    expect(frame).not.toContain("esc 返回")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("paints the notice with the text and muted colors, and no brand color", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => <SubagentFooterFromKeymap />, { width: 120, state: tmp.path })
+
+  try {
+    const palette = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME], "dark")
+    const spans = app.captureSpans().lines[0].spans
+    const colorOf = (needle: string) => spans.find((span) => span.text.includes(needle))?.fg
+    expect(colorOf("explore")?.equals(palette.text)).toBe(true)
+    expect(colorOf("只读")?.equals(palette.textMuted)).toBe(true)
+    expect(spans.some((span) => span.text.trim() !== "" && span.fg.equals(palette.primary))).toBe(false)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("holds back the notice's width from the toast that shares the row", () => {
+  // The notice is 47 cells wide in Chinese and 56 in English, plus the gap; 28 columns are held back already.
+  expect(subagentNoticeReserve("explore", 1)).toBe(47 + 1 - 28)
+  setLanguage("en")
+  expect(subagentNoticeReserve("explore", 1)).toBe(56 + 1 - 28)
+  // At ambiguous_width 2 the two `·` take a cell more each.
+  expect(subagentNoticeReserve("explore", 2)).toBe(56 + 2 + 1 - 28)
 })

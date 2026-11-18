@@ -489,3 +489,497 @@ written; where it conflicts with this section, this section wins.
 - The text above says that `loop.ts` and `dag.ts` only lose lines. PR3b's wiring
   could not avoid growing them: `loop.ts` by a net 25 lines, `dag.ts` by a net
   4. The logic itself lives in `runner-port.ts` and `runner-lease.ts`.
+
+## Amendment 2 (PR4a, #1029)
+
+What PR4a adds to this ADR and where it departs from it. The text above and
+Amendment 1 stay as written; where they conflict with this section, this section
+wins.
+
+### Decisions 2 and 6: race 3, and the clock watch
+
+- PR0's race 3 froze R1 alone, moved the wall clock past the TTL, and only then
+  started R2. That arrangement is the one of "a runner takes a lease over once it
+  has expired" in `dag-runner-lease.test.ts`, with the opposite expectation. By
+  the Consequences section a single runner that stalls past the TTL while the rest
+  of the machine runs on is taken over, and that is correct: the lease test stays.
+  Race 3 is now the case that decision 2 describes. R2 is already running, the
+  whole machine is suspended (both runners are frozen and the clock jumps past the
+  TTL), and both wake up together. R2 must not take over; R1's renewal succeeds at
+  the epoch it had and its settlement is accepted. A second case pins the other
+  half, that the rule is a delay and not a veto: a runner that never comes back
+  (R1 stays frozen) is taken over at the third round from the wake-up, the first
+  of which is the one that sees the jump.
+- One clock watch per instance measures the jump. `ReconcileDecide.noteClock(watch,
+  at, period)` is a pure state machine over `{ lastAt, quietUntil }`. A reading
+  jumps when it is more than two periods (60 s) after the latest one; exactly two
+  is not a jump, and neither is the first reading or a clock that went backwards.
+  A jump arms a quiet period of two periods from itself, and a reading is
+  `afterJump` when it jumps or falls inside the quiet period. `lastAt` is the
+  largest reading seen, so two fibers that feed one watch need not feed it in
+  order. `RunnerLease.make` keeps the watch, seeded at the start of the instance,
+  and exposes it as `noteClock`; the loop hands that to the reconciler.
+  `clockJumped` is gone; `classifyLease` and `noteClock` are pure and live with
+  `decide`.
+- Two feeds. Every tick feeds its reading, and every observation of the reconciler
+  feeds the reading it takes first. The first version measured the gap between two
+  ticks only and told "that round and the next". A machine that slept between the
+  observations of one round (after the first workflow was looked at, before the
+  second) left the later observation with a lease that looked expired and a round
+  that had been told no jump, and the runner took the workflow over. With the
+  observations feeding the watch, the later observation sees the jump itself.
+- The quiet period is wall-clock time, not a count of rounds. It is what the owner
+  has to renew a lease that the jump made look expired, whichever reading, a
+  tick's or an observation's, comes first after the jump. At the tick's pace it is
+  what "that round and the next" was: the round that sees the jump and the one 30 s
+  later hold back, the one after them preempts. `Round.afterClockJump` stays as the
+  caller's own verdict (the tick passes the one of its own reading, startup passes
+  false), and an observation is `afterClockJump` when either it or the watch says
+  so.
+- A round that is merely long is no jump: the tick does not wait for the round
+  (below), so the watch is fed every period however long a round takes.
+- Under the TestClock, `adjust` wakes the sleepers one at a time. A sleeping tick
+  is therefore woken at every period and never sees a gap; only a tick that is
+  parked when the clock moves does, as a real suspension stops the process in the
+  middle of whatever it was doing. `freeze()` parks a renewal, so race 3's R2
+  drives a workflow of its own, and the tick sequence test parks a scripted
+  renewal. No fixture change was needed.
+- A second rule to the same end, in the observation: the clock is read once, before
+  the lease row is read, and the lease is judged expired or live against that
+  reading. A process that is suspended in between (a round that was in flight when
+  the machine went to sleep) then sees the lease as it was before, which can only
+  make it look younger than it is. `dag-reconciler.test.ts` pins it with a stall
+  between the two reads.
+
+### Decision 6: two fibers
+
+- The renewal and the reconcile round run in two fibers of the instance, a
+  departure from decision 6's one. The tick (every 30 seconds) renews the leases
+  and reads the clock and does nothing else. It starts the round in a fiber of its
+  own, in the instance's scope, when none is in flight, and does not wait for it. A
+  tick that finds the previous round still running starts none and logs at debug
+  level. Startup runs a round itself and awaits it, so `init` still blocks on the
+  first reconciliation. `RunnerLease.make` keeps its inputs and takes an optional
+  `round`; its other additions are optional too.
+- Why. A round can wait for a worktree removal, the entry's lifecycle lock or a
+  user `WorktreeRemove` hook (`recoverWorkflow` and `reconcileWorkflow` do), and a
+  round that outlasted the TTL less one period delayed the next renewal past the
+  lease's expiry: another runner then took over a workflow that this one still
+  drove. Renewal is the owner's proof of life, and nothing may stand in front of it.
+- The fiber of a round is a child of the scope `RunnerLease.make` was given, so
+  closing the instance interrupts it, ahead of the release of the leases (the
+  release is the scope's first finalizer and runs last). A round that fails is
+  logged and the next tick starts another; a workflow that fails is logged and the
+  round carries on to the next one.
+- Cost. A round is no longer bounded by the renewal period, but it is still single:
+  one at a time per instance, and `reconcile(dagID)` single-flights the workflows
+  inside it. A round that never ends keeps the instance from reconciling again and
+  nothing else; each tick says so at debug level.
+
+### Decision 6, rows 2, 3, 4 and 6: the actions
+
+- Row 6 (`renew`) writes nothing: the renewals of the tick that started the round
+  ran ahead of it.
+- Row 3 (`evict`, lease lost) is the lease's own eviction (`RunnerLease.evict`,
+  the one the renewal's loss path runs). It is awaited and idempotent: an entry
+  that is gone by the time the eviction has its lock is left alone. It also reads
+  the lease row again under that lock, as the next section says.
+- Row 2 (`evict`, not owned) is the eviction of the session `Moved` handler,
+  extracted as `DagReconciler.movedEvictor`, and the `Moved` handler calls it. It
+  cancels the children that the node rows name, since the workflow stays in this
+  process, and it keeps the dag registration of the parent session, because the
+  new owner is an instance of the same process and registers the same key again.
+- Row 4 applies while the instance itself drives the workflow, as the table says
+  (the entry is cleaned up by the terminal handler); another runner's live lease
+  still wins over it (row 5).
+
+### Decision 6, row 3: the order of the reads, and the eviction's re-read
+
+- An observation reads the clock, the instance's entry, the lease row and then the
+  workflow row, in that order. `DagLease.held` joins the workflow row and has none
+  for a workflow that ended. Read after the workflow, a workflow that went terminal
+  in between looks like a live one whose lease is gone: row 3 evicts its entry, and
+  an eviction that takes the entry's `evalLock` before the `WorkflowTerminal`
+  handler does leaves the handler no entry, which skips the terminal worktree
+  settlement and the wake of the parent (the reason of Amendment 1's "no eviction
+  on a terminal workflow", which `refused` already keeps). Read before it, a missing
+  lease row of an entry means that the workflow had already ended, and the workflow
+  row read afterwards says so: row 1 (`noop`; for an instance that has an entry for
+  it, 4b-C makes it `retire`, below). A terminal workflow does not turn live in
+  between, bar the reopen of a completed one by an extend, which follows the
+  terminal wake that the handler sends after it took the entry.
+- The eviction of row 3 (`RunnerLease.Interface.evict`) reads the lease row again
+  once it holds the entry's `evalLock` and before it touches the entry, and leaves
+  the entry alone unless the row shows another holder. No row (the workflow ended),
+  a row that names the entry's token and a row that cannot be read (transient, the
+  next round looks again) all mean "not lost". This is `refused`'s own judgement
+  (Amendment 1), moved under the lock because the reconciler's verdict has waited
+  for it. The check is a parameter of the evictor (`stillLost`) and only the
+  reconciler's call passes it: `verify` and the renewal's loss path evict as before,
+  so PR2's `verify` still evicts the entry of a workflow that ended, and bringing
+  the two into line is left to PR4b, as Amendment 1 says.
+- Not covered: a workflow that ends inside the lock section, after the re-read. By
+  then another runner holds the lease, and the settlement of a workflow that this
+  runner lost is that runner's.
+
+### Decision 6, rows 8 and 9: orphan pending
+
+- `ORPHAN_PENDING_GRACE_MS` is 60 seconds, measured as `Clock.currentTimeMillis`
+  less `workflow.time_created`. `Dag.create` is one transaction, so a `pending` row
+  older than that with all its nodes `pending` comes from an older version, and the
+  grace period only keeps a writer that is still at it from being cut off. The row's
+  timestamp is `Date.now()` at creation, not the TestClock's, so tests make a legacy
+  row by moving `time_created` back, or by setting it to 0 under a TestClock. The
+  failure reason stays "orphan pending workflow recovered at startup", although a
+  tick can now terminalize an orphan too.
+- Owner-less rows. An older version could leave `directory = ""`, which
+  `ownsWorkflow` never owns (fail-closed). A `pending` row of this kind is treated
+  as owned by every instance, as `recoverOrphanPending` always did; any other
+  status stays unowned. Its location is unusable, so row 4 fails it at once, with
+  no grace period: the outcome it had before.
+- `recoverOrphanPending` is deleted. With the startup scan a round, it had no
+  caller. Its sequence (claim, the bare `WorkflowStarted`, `fail` through the port,
+  give the claim back) is the `terminalize-orphan` action, under the same
+  `recovering` reservation. The bare publish is still unfenced (Amendment 1,
+  PR4b).
+
+### Decision 6, row 10: adopt
+
+- `adopt` calls the loop's `recoverWorkflow` (claim, node-level reconciliation,
+  entry, first spawn), which keeps its own guards and the `recovering` reservation.
+  `reconcile(dagID)` is single-flight by itself (overlapping calls share one
+  evaluation; a call that joined an evaluation that was interrupted evaluates for
+  itself), and the two coexist until PR4b removes `recovering`.
+- A running workflow whose adoption ended without an entry (a recovery that could
+  not read a child session, which gives its claim back) used to wait for the next
+  instance load. It is retried at the next round now, and so is a workflow whose
+  holder's lease ran out while this instance was already up.
+- `Replanned`, `Moved` and `WorkflowStarted` still adopt through their own paths.
+  PR4b turns them into calls of `reconcile`.
+
+### Decision 8: line counts
+
+- `loop.ts` loses 65 lines (2494 to 2429): the orphan sweep, the body of the `Moved`
+  eviction and the startup scan are replaced by wiring. The new code is `reconcile-decide.ts`
+  and `reconciler.ts`.
+
+## Amendment 3 (PR4b, #1029)
+
+What PR4b adds to this ADR and where it departs from it. PR4b is delivered in
+parts, and each part writes the subsections it owns (named in their headings).
+The text above and Amendments 1 and 2 stay as written; where they conflict with
+this section, this section wins.
+
+### Decision 6: two entries, `reconcile` and `reconcileAfter` (4b-A)
+
+- The text above has every trigger call `reconcile(dagID)`, so that concurrent
+  triggers collapse into one evaluation. That is right for a caller that asks
+  "what is the state now" on its own schedule, the startup round and the tick.
+  It is wrong for a trigger that carries news. An event (`WorkflowStarted`, a
+  replan, a session `Moved`) is handled after its change was committed, and an
+  evaluation that began before the commit may be under way: joining it hands back
+  a verdict made from the state before the event. A `noop` for a workflow that was
+  `completed` when the evaluation read it and has been reopened by an extend since
+  (the replan finds no entry, and the workflow waits for the next tick); a `renew`
+  for an entry whose session has moved away; a `defer` for a workflow that was still
+  `pending` when the evaluation looked and has been started since.
+- `reconcile` keeps its meaning, and the case that pins it stays: three concurrent
+  calls, one observation. The startup round and the tick keep calling it.
+  `reconcileAfter(dagID)` is the second entry, for the event triggers. With nothing
+  under way it is `reconcile`. With an evaluation under way it waits for that
+  evaluation to end, however it ends (a verdict, a failure, an interruption: none
+  of them is its answer, and a failure is not its failure), and evaluates once
+  more. The calls that arrive during the same wait share that one re-evaluation
+  through a per-workflow slot that the first of them creates (its leader). A call
+  that arrives while the re-evaluation is running does not join it, because the
+  reads of the re-evaluation began before the call; it waits for the next one.
+- The re-evaluation runs in the fiber of its leader, which is the fiber of the
+  event handler, as the adoption did when the handlers called `recoverWorkflow`
+  themselves. A `reconcile` that arrives while a re-evaluation waits joins the
+  evaluation under way, and one that arrives during the re-evaluation joins that
+  one, so a trigger never holds a tick up.
+- Mechanism. The evaluations under way (flights) and the slots are two maps keyed
+  by workflow. Looking at the maps and registering in them is one synchronous
+  step; `reconcile` used to look and register in two consecutive steps of one
+  fiber, which holds only as long as the runtime does not yield between them. The
+  step in which a leader registers the flight of its re-evaluation also gives up
+  its slot, so a later call is never answered by an evaluation whose reads began
+  before it. Every flight and every slot is ended by a release step that always
+  runs, with the verdict, the failure, or "interrupted"; the calls that waited on
+  an interrupted one look again, as joiners of an interrupted flight always did,
+  so a leader that is cut off leaves its followers an answer.
+- Cost. A trigger now waits behind an evaluation of its own workflow that is under
+  way, which can be an adoption that waits for a worktree removal or a user hook.
+  The `WorkflowStarted` and `WorkflowReplanned` handlers call it inline, as they
+  ran the adoption itself before, so their subscriptions can be held up for as
+  long. The `Moved` handler forks its calls (below).
+
+### Decision 6, rows 2 and 10: the first wave, a replan and a move are triggers (4b-A)
+
+- `WorkflowStarted`: the handler no longer adopts. It calls `reconcileAfter`, and
+  the roughly 100 lines of `loop.ts` that duplicated `recoverWorkflow` for the
+  first wave (claim, entry, deletion-race re-check, confirm, first spawn) are
+  deleted. The steps that `recoverWorkflow` has and the first wave did not are
+  no-ops for a workflow that was just created: the node-level reconciliation skips
+  `pending` and `queued` nodes, there is no checkpoint and there are no message
+  continuations. The handler's status guard (running rows only) is the truth
+  table's now: a terminal row is row 1; a `pending` row is row 9, or row 8 for an
+  orphan, whose own `WorkflowStarted` the handler meets while the orphan's
+  evaluation is under way (the call waits for it and finds the workflow failed);
+  a `paused` or `stepping` row, which the guard left to the next round, is adopted
+  like any other. An unusable location is row 4 and another runner's live lease is
+  row 5, and neither claims.
+- `WorkflowReplanned`: the two places that called `recoverWorkflow` (no entry; an
+  entry that was dropped while the handler waited for its lock) call
+  `reconcileAfter`, the second one outside the entry's lock, which the evaluation
+  takes itself when it evicts or adopts.
+- Session `Moved`: the old owner's entries whose workflow the directory no longer
+  owns, and the new owner's non-terminal rows that have no entry, are each handed
+  to `reconcileAfter` in a fiber of their own, so that one evaluation that waits
+  holds up neither the other workflows of the session nor the next event. The old
+  owner's call ends in row 2, the eviction that `movedEvictor` has always made
+  (the children that the node rows name are cancelled, the dag registration is
+  kept); the new owner's in row 10. The wake nudge that follows is unchanged.
+
+### Decision 6: `recovering` is deleted (4b-A)
+
+- The in-process reservation of the loop had two jobs. One was to keep two
+  adoptions of a workflow from running at once. That is the single flight now that
+  every path which creates an entry comes through it: the one `runtimes.set` of
+  the loop is in `recoverWorkflow`, which only the reconciler's `adopt` calls
+  (`dag-location-guards.test.ts` pins both facts). The other was to keep the first
+  wave off an orphan whose `WorkflowStarted` the terminalization had just
+  published. The terminalization runs inside the flight of the orphan, so the
+  first-wave call waits for it and finds the workflow failed.
+- `recoverWorkflow` keeps a check for an entry that is there already, as the last
+  line of defense. It loses the branch that failed an unusable location: row 4
+  comes before row 10, so an adoption never saw one.
+
+### Decision 6, row 10: adopt reads the row again (4b-A)
+
+- The row that `adopt` is given is the observation's, older than the claim.
+  `recoverWorkflow` reads the workflow once it holds the claim and works from that
+  row (status, config, graph revision, execution directory). A workflow that is
+  gone or terminal then is not adopted, and the claim is given back.
+
+### Decision 3: the writes that bypass `Dag` commands (4b-A; completes Amendment 1)
+
+Amendment 1 listed four writes that carry no token. None of them takes one. They
+fall into two classes, plus the one that is replaced.
+
+- `WorkflowWorktreeSettled` is a durable-fact write. It is protected by the
+  write-once projection of `workflow.worktree` and by the `{graphRev, seq}`
+  episode fence: a settlement computed for an episode that a replan has since
+  reopened folds to a no-op. It cannot carry a token, because settlement runs
+  after the terminal event, when the entry is gone and the lease has been given
+  back, and a fence would refuse any token.
+- The captured-output receipts are durable-fact writes bound by the attempt
+  identity: `DagStore.setCapturedOutput` is one
+  `UPDATE ... WHERE child_session_id = ? AND status = 'running'`. A late receipt of
+  a runner that lost the lease reaches only the child session it created, and does
+  not reach a row that was given a new child session. There are four call sites,
+  in `spawn.ts`, in `recovery.ts` (two) and in `final-response.ts`, which
+  Amendment 1 did not list.
+- `NodeSafetyDenied` is an audit write. It records a tool denial that has already
+  happened, and the node goes on running, so a token would fence nothing worth
+  fencing. It has two publishers, `permission/safety-guard.ts` and
+  `permission/hook-guard.ts`; Amendment 1 named one.
+- The bare `WorkflowStarted` of the orphan's terminalization is not classified
+  here. It stays a runner write and is replaced by an atomic runner command in
+  4b-C.
+
+### Decision 7: the host sweep (4b-B)
+
+The host-level `DagSupervisionSweep` no longer assumes that the process's
+database owns every workflow row it can read. It reads the lease table
+(`DagLease.held`) and never writes it: it holds no lease and carries no token.
+
+- Workspace failure (`failUnusableWorkspaces`) acts only on a workflow with no
+  live lease: no row, or `expires_at <= now`, the boundary at which
+  `DagLease.claim` lets another runner take over. A live lease is left to its
+  holder, whoever it is, this process included; the holder's own reconcile
+  round judges the location (decision 6, row 4). The clock is read before the
+  lease row, in the reconciler's order. Only rows whose location is unusable
+  pay for the read.
+- A lease that cannot be read (a database defect such as `SQLITE_BUSY`) is not
+  "no lease": the row is logged and left for the next tick.
+- The node-timeout settle is unchanged. It is a durable-fact write bounded by
+  the attempt identity and reads no lease.
+- The fallback still holds: an instance that is torn down releases its leases
+  in its exit finalizer, and a dead process stops renewing, so its lease runs
+  out within the TTL. The case the sweep exists for, nobody driving the row,
+  still has no live lease.
+
+### Decision 3: the orphan's terminalization is one runner command (4b-C)
+
+The last write that 4b-A left unclassified, the bare `WorkflowStarted` of the orphan's
+terminalization, is fenced now. `Dag.failOrphan(dagID, reason)` does everything that row 8 has
+after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`WorkflowFailed`, then
+`NodeSkipped` for each node that is still `pending`).
+
+- It closes the first item of Amendment 1's "Decision 3: unfenced writes that bypass `Dag`
+  commands (left to PR4b)". The reconciler publishes nothing itself and is given no event bus any
+  more; `terminalizeOrphan` is the claim, `failOrphan` through the port of that claim, and the
+  give-back. It is a runner write like `fail` and is on the port: `RunnerPort.COMMANDS` has 13
+  commands now.
+- A refused token leaves neither event. Before, the `WorkflowStarted` went in ahead of the fence,
+  so a runner that lost its claim between the two writes left a `running` workflow with every node
+  `pending`. That is what a workflow that has just been started looks like, so whichever runner
+  adopts it drives its nodes. Nobody can observe that midpoint now, neither a reader nor the
+  first-wave handler (the notification of `WorkflowStarted` follows the commit that also failed the
+  workflow), and a crash between the two legs cannot leave it behind.
+- The guard admits `pending` and nothing else. `guardWorkflow` alone would let a `paused` workflow
+  through (paused -> running is legal), and no create sequence leaves one. Any other status is
+  refused with the transition rejection, and nothing is written.
+- The events do not change. There is no new type and no new version: `WorkflowStarted` is
+  projected from `pending` and `WorkflowFailed` from `running`, so a replay applies the same two
+  events in the same order. The reason is still "orphan pending workflow recovered at startup", on
+  the durable event, and the workflow is failed, not cancelled (an interrupted create).
+- The evaluation still runs in the workflow's flight (4b-A), so the first-wave call that the commit
+  raises waits for it and finds the workflow failed. It would find the same without waiting.
+- `dag.ts` grows by 29 lines, the command and its comments.
+
+### Decisions 2 and 5: `verify` does not evict a workflow that ended (4b-C)
+
+- `verify` answers as before: `false` when the lease row, read together with its workflow
+  (`DagLease.held`), does not name the entry's token. A workflow that is terminal or deleted has
+  no row for anybody, so that is its answer too.
+- What changed is what it does about `false`. It no longer evicts. It starts the reconciler's
+  judgement (the next section), and the truth table reads a workflow that ended as row 1: the
+  entry is retired, with the settlement of the worktree and the wake of the parent ("Decision 6,
+  row 1", below), not evicted, as `refused` has left it alone since Amendment 1. When another
+  holder shows, row 3 evicts it.
+  The spawn that asked ends either way: no child session, no node event.
+- This closes the departure that Amendment 1 recorded under "Decisions 2 and 5: no eviction on a
+  terminal workflow" ("PR2's `verify` still evicts on a terminal workflow; bringing the two into
+  line is left to PR4b"), and Amendment 2's repetition of it under "Decision 6, row 3: the order of
+  the reads, and the eviction's re-read". `verify`, the renewal, `refused` and the reconciler's
+  eviction now agree on a workflow that ended.
+
+### Decisions 2 and 6: a lost lease is news for the reconciler (4b-C)
+
+- `RunnerLease.make` takes an optional `reconcile`, and the loop wires it to
+  `reconciler.reconcileAfter`. A renewal that finds the row naming another token and a `verify`
+  that finds the lease not held each start `reconcile(dagID)`. Neither evicts directly any more.
+- The trailing entry, because a lost lease is news in the sense of 4b-A: an evaluation under way may
+  have read the lease row before the takeover, and joining it would hand back its older verdict.
+  Triggers for one workflow collapse in the reconciler's slots.
+- Each trigger is a fiber of the instance's scope that nobody waits for. The tick does not wait for
+  it (Amendment 2, "Decision 6: two fibers": a judgement that waits for the entry's lock or a user
+  hook must not hold a renewal back), and the spawn that asked returns `false` at once (the
+  eviction interrupts its fiber, which therefore cannot wait for it). A judgement that fails is
+  logged, and the next round, whose row 3 reads the same, looks again.
+- The verdict is `decide`'s. Another holder's row evicts through `RunnerLease.evict`, which reads
+  the row again under the entry's lock (`stillLost`), as the renewal's own eviction did; a workflow
+  that ended or was deleted is row 1, and its entry is retired ("Decision 6, row 1", below). A
+  renewal that cannot read (a database failure) is still no lost lease.
+- Fallback. Without a `reconcile`, a lost lease is evicted on the spot, as in PR2 (from a fiber of
+  the scope too, so the tick does not wait for it). A graph that builds `RunnerLease` with no
+  reconciler, as the unit graphs of `dag-runner-lease.test.ts` do, has nobody to judge. The loop
+  always passes one.
+- `refused` is unchanged. It has its own judgement (`heldByAnother`) and its own de-duplication,
+  and it already leaves a workflow that ended alone.
+- Another process ended the workflow before this runner's renewal noticed the loss. The terminal event
+  reaches the subscribers of the bus that published it, and another process's bus is not this one, so no
+  terminal handler runs in this process, and the failed renewal is the only news. Judged as `noop`, as row 1 was
+  at first, the entry would stay: the renewal fails at every tick, each trigger ends in row 1, and the children
+  that the entry started run to their end, their writes refused by the fence. Row 1 retires the entry instead
+  (the next section). When the workflow is still live at that renewal, which is the usual order (the other
+  runner took the lease and has not ended the workflow yet), the entry is evicted by row 3, as before.
+- `loop.ts` grows by 3 lines, the wiring.
+
+### Decision 6, row 1: the entry of a workflow that ended is retired (4b-C)
+
+- The row. A workflow that is terminal or gone is judged first, as before, and the verdict now depends on
+  whether the instance has an entry for it: `retire` when it has, `noop` when it has not. Row 1 stays ahead of
+  row 2, so a workflow that ended is retired whoever owns it and whatever its lease row says. The table's row 1
+  reads "`retire` if the instance has an entry, else `noop`", as row 2 reads for `evict`.
+- Why. Terminal events do not cross processes: when another process ended the workflow, no handler in this
+  one hears of it, and the entry has no other way out (see "a lost lease is news", above). `retire` is that
+  way out. It does what the `WorkflowTerminal` handlers do for an event this process did hear of.
+- One routine, two callers. `retireTerminal` in `loop.ts` is the body of the `WorkflowTerminal` handlers,
+  moved, and the reconciler's `retire` input is the same routine; the action runs in the workflow's flight, as an
+  eviction does. Under the entry's `evalLock` it reads the workflow row again (a live row means that the news is
+  stale, a late terminal event or a verdict made before an extend reopened the workflow, and the entry stays),
+  checks that the entry is still the table's, stops the children that the entry's own attempts recorded, interrupts the
+  fibers and watchers and drops the entry. Then, outside the lock and only for the call that dropped it, it gives the lease
+  back (`abandon`), settles the worktree, releases the dag registration of the parent session and nudges its
+  wake. The reason the children are stopped for is the durable status (completed, failed, cancelled; a row that is
+  gone is a deleted session); it used to follow the event type of the handler, which is the same in every order
+  but a stale event for a workflow that has ended differently since.
+- Once. Whichever call takes the entry's lock first retires it, and the other finds the entry gone or replaced and
+  ends there: the lease, the settlement, the registration and the wake follow once per entry, whether the handler
+  or the reconciler is first. A terminal event that arrives after the retirement finds no entry and takes the
+  entry-less path of the handler, unchanged. Its settlement is the durable-fact write of decision 3 (4b-A):
+  `workflow.worktree` is write-once, so a second settlement is a no-op. Its wake is a nudge, a notification whose
+  authority is the durable wake ledger, so a second one delivers nothing new. When another process settled and
+  woke already, this runner's settlement and nudge are the same no-ops: one effective settlement and one wake per
+  ended workflow, whoever runs them.
+- A row that is gone (the session was deleted in another process and the rows cascaded) takes the same path.
+  There is nothing to settle (the seam finds no row), the node rows that name the children are gone with it, so
+  no child is named, and the fibers are interrupted; the registration is released and the claim given back. The
+  handler's treatment of an entry whose row is missing was this already.
+- Without a `retire` given to the reconciler (the scripted collaborators of `dag-reconciler.test.ts`) row 1 does
+  nothing, as it did. The loop always gives one.
+- The round. A control op (a cancel) needs no lease, so another process that ends a workflow with one leaves this
+  runner's lease row alone: the renewal keeps succeeding, no spawn asks, and no event reaches this bus. `round` therefore
+  looks, after its scan of the live statuses, at every entry of the instance that the scan did not list, once per
+  workflow (a failing one is logged and skipped, as in the scan), and the tick's round reaches row 1 for such an entry
+  within one period. Before this, only the re-read of a spawn ever noticed it, which was the variant that the first
+  version of this section left open. It is `reconcile`, not `reconcileAfter`: the round asks what the state is now.
+- Which children. The children that the retirement stops are the ones the entry's own attempts recorded
+  (`Evictable.attemptChild`, as the eviction's are), not the ones the node rows name: once another runner took the
+  workflow over and restarted a node, the row names that runner's child, which this one must not touch. An attempt that
+  recorded none (its spawn had not created the child yet) falls back to the row, as the handler always did; that is the
+  one case in which the row's child can still be another runner's. For a workflow that ended it costs nothing (the
+  holder stops its own children), and the durable re-read under the lock keeps it from a workflow that is live again.
+- Not changed. `refused` still leaves a workflow that ended alone, and so does a renewal that cannot read.
+- `loop.ts` grows by 38 lines (2317 to 2355): the routine has its comments, and `settleWorkflowTerminal` moved up
+  ahead of the reconciler's construction.
+
+### Decision 3: `DagTransact` is required (4b-E)
+
+The last part of PR4b makes the transaction of decision 3 a dependency that `Dag.layer` cannot go without. Until now
+`Dag.layer` read `DagTransact.Service` with `Effect.serviceOption`, and without it `transact` ran the command's body as
+it stood: no `BEGIN IMMEDIATE`, no fence, and the window between the guard and the publish that decision 3 closes. The
+production layers always provided the service. The case without it was a harness that built `Dag.layer` out of mocked
+dependencies, so that harness ran a `Dag` that does not ship.
+
+- `dag.ts` takes the service with `yield* DagTransact.Service`, and `transact` is `DagTransact.underFence` for every
+  command. The type of `Dag.layer` names the dependency, so a graph that leaves it out no longer type-checks.
+  `Dag.defaultLayer` and `Dag.node` already provided it and are unchanged. `DagMessages` stays optional; it is not part of
+  4b-E.
+- Deleted: the `Option` branch, the "optional for now" comment, and the sentence of the terminal-settlement comment that
+  said the same decision ran unfenced without the service. `runner-port.ts` and the other runtime files had no branch for
+  a missing transaction. `dag.ts` loses 5 lines (2795 to 2790).
+- Every test graph that builds `Dag.layer` provides a real `DagTransact` over the database that its store and event bus
+  use: `transactLayer(database)` of the shared `test/dag/fixture/transact.ts`, or `DagTransact.defaultLayer` where the
+  graph is made of default layers. There is no stand-in that runs the body outside a transaction; it would put the
+  removed path back into the tests. A graph whose store and bus are `Layer.mock` doubles had no database at all. It gets
+  an in-memory one that only the transaction uses, and its commands still run on the doubles.
+- The loop graphs now run under a real fence. `RunnerLease.resolve` builds a `DagLease` over the graph's database when none
+  is provided, so every `DagLoop` in a test claims real leases and its runner port stamps each runner write with the token.
+  In a graph without `DagTransact` nothing consumed that token. The fence checks it now, and every such test passes
+  unchanged.
+- Deleted test: "a command without the transaction service runs as it did before (no transaction, a window)" in
+  `dag-transact.test.ts`, with the harness option that built that graph. Its subject is the path that no longer exists.
+- Tests a real transaction could expose. A body that waits holds SQLite's write reservation, and every other statement
+  on that connection queues behind it, so a test that parks a command's body on a latch while another fiber needs the
+  database would time out. Every graph above was searched for that shape (a bus `publish`, a store read, or a projector
+  that waits inside a command) and run. None needed a rewrite: the stops of these tests are on event subscriptions and
+  `listen` callbacks (delivered after the outermost commit), on child prompts, on the loop's own reads, and on the
+  delivery's `markWakeBatchReported`, all outside a command's body. The one test group that does wait inside the body is
+  `dag-workflow-lock.test.ts`, whose mock `getWorkflow` sleeps past `WORKFLOW_LOCK_TIMEOUT` inside the critical section.
+  It stands for a database read that takes too long, nothing else uses the in-memory connection of its graph, and it
+  keeps its assertions. It now also covers one more thing: the interruption by the lock timeout rolls the transaction
+  back, so the next command can begin its own.
+- The mixed graph of `dag-settle-cross-connection.test.ts` (store and bus on the default in-memory database, the mailbox
+  on a file) stays as it was; `DagTransact.defaultLayer` joins the store's database.
+- No assertion was loosened, and no test other than the one above was deleted.
+
+### Decision 8: line counts of `loop.ts` (4b-A)
+
+- `loop.ts` loses 114 lines (2428 to 2314): the duplicate first-wave adoption, the
+  `recovering` reservation with its uses and the unusable-location branch are
+  deleted, and the other triggers become calls of `reconcileAfter`. The new code
+  is in `reconciler.ts` (the two entries and their flights).

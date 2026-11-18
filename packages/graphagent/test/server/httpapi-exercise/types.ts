@@ -163,6 +163,8 @@ export type DagNodeSeed = {
   worker_type: string
   depends_on: string[]
   required: boolean
+  /** #1158 PR5: the slot of a compose expansion that generated the node; written into the workflow's definition. */
+  expanded_from?: string
 }
 
 /** Result of creating a DAG workflow fixture. */

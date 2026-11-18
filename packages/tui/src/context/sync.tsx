@@ -22,6 +22,8 @@ import type {
   Goal,
   DagWorkflowSummary,
   SessionDagMode,
+  PrWatchEntry,
+  SessionReminder,
   ReferenceInfo,
   ProjectTrustEntry,
   ProjectTrustDecision,
@@ -49,6 +51,7 @@ import {
 import { createStreamBuffer } from "./stream-buffer"
 import { importedEntryIds, snapshotTrust, type TrustSnapshot } from "./trust-import"
 import {
+  backgroundResultOf,
   createSummary,
   HYDRATED_MAX,
   mergeSession,
@@ -57,6 +60,7 @@ import {
   mergeToolPart,
   summarizeMessages,
   taskIndexEntry,
+  type BackgroundResult,
   type SessionSummary,
   type TaskIndexEntry,
   type ToolPartLike,
@@ -172,6 +176,25 @@ export const {
       goal: {
         [sessionID: string]: Goal | undefined
       }
+      /**
+       * The PR/MR watches of a session tree (#1036 F6), per root session (the one that registered them) and then per
+       * watch. `pr.watch.updated` upserts one entry; the read (`GET /session/:id/pr-watch`: the live watches and the ones
+       * that ended within the last 10 minutes) replaces the root's whole map, when the tree is first entered and on
+       * reconnect, since the event is not durable. An event never removes an entry: an ended watch stays until a read
+       * no longer returns it. The store does not say whether a change came from an event or from a read; what must
+       * react to events only (a toast) listens to the event.
+       */
+      pr_watch: {
+        [rootSessionID: string]: { [watchID: string]: PrWatchEntry }
+      }
+      /**
+       * The reminders of a session that can still fire or are owed, soonest first (`GET /session/:id/reminder`). No
+       * event carries them: a `lifecycle.transitioned` of the `reminder` domain reads the session's list again, and
+       * so do the first entry into its tree and a reconnect.
+       */
+      reminder: {
+        [sessionID: string]: SessionReminder[]
+      }
       message: {
         [sessionID: string]: Message[]
       }
@@ -270,6 +293,8 @@ export const {
       session_diff: {},
       todo: {},
       goal: {},
+      pr_watch: {},
+      reminder: {},
       message: {},
       part: {},
       lsp: [],
@@ -346,6 +371,14 @@ export const {
     // The mode snapshot read in flight per session. A newer read replaces it and the older answer is dropped; a
     // read that is still out also stands in for another one that only wants the snapshot to exist.
     const dagModeReads = new Map<string, symbol>()
+    // #1036 F6: the PR watch read in flight per root session. A newer read replaces it and the older answer is
+    // dropped. `touched` names the watches that events updated since the read began: they are newer than the answer.
+    const prWatchReads = new Map<string, { touched: Set<string> }>()
+    // The roots whose PR watches a read answered. An event that reaches a root first creates its map with that one
+    // watch, so holding a map does not mean the snapshot was read: the first entry still has to read it.
+    const prWatchLoaded = new Set<string>()
+    // The reminder read in flight per session; a newer read replaces it and the older answer is dropped.
+    const reminderReads = new Map<string, symbol>()
     // The session set last handed to the aggregator and its confirmation: a
     // second surface showing the same workflow must wait for the same answer
     // before it reads, or it would read ahead of the worker.
@@ -414,12 +447,12 @@ export const {
         }
         case "session.status": {
           const { sessionID, status } = event.properties
-          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, status))
+          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, status, Date.now()))
           break
         }
         case "session.idle": {
           const sessionID = event.properties.sessionID
-          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, { type: "idle" }))
+          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, { type: "idle" }, Date.now()))
           break
         }
         case "session.error": {
@@ -453,7 +486,7 @@ export const {
             mergeToolPart(summaryRaw.get(part.sessionID), part as ToolPartLike, seenTools(part.sessionID), at),
           )
           const task = taskIndexEntry(part as ToolPartLike)
-          if (task) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
+          if (task && writeTaskLink(task.childSessionID, task.entry)) wantJob(task.childSessionID)
           break
         }
       }
@@ -532,6 +565,10 @@ export const {
     function dropSession(sessionID: string) {
       dropDagOwner(sessionID)
       dagModeReads.delete(sessionID)
+      // A read still out must not bring the session's entries back.
+      prWatchReads.delete(sessionID)
+      prWatchLoaded.delete(sessionID)
+      reminderReads.delete(sessionID)
       const messages = store.message[sessionID] ?? []
       const partIDs = messages.flatMap((message) => (store.part[message.id] ?? []).map((part) => part.id))
       stream.clearParts(partIDs)
@@ -551,6 +588,8 @@ export const {
           delete draft.question[sessionID]
           delete draft.todo[sessionID]
           delete draft.goal[sessionID]
+          delete draft.pr_watch[sessionID]
+          delete draft.reminder[sessionID]
           delete draft.session_diff[sessionID]
           delete draft.dag[sessionID]
           delete draft.dagMode[sessionID]
@@ -584,12 +623,66 @@ export const {
     }
 
     /**
+     * Writes the link a Task part made. The part does not know how a background run ended, so the result the link
+     * already holds stays with it, unless the part started after that result ended (a resumed task's new run). Returns
+     * whether the link is a background one with no result: the state of its run is then asked for (`wantJob`).
+     */
+    function writeTaskLink(childSessionID: string, entry: TaskIndexEntry): boolean {
+      const held = store.taskIndex[childSessionID]
+      // A resumed task (`task_id`) starts a new run after the held result ended: that result belongs to the old run.
+      const result =
+        held?.result && !(entry.startedAt !== undefined && entry.startedAt > held.result.endedAt)
+          ? held.result
+          : undefined
+      setStore("taskIndex", childSessionID, reconcile(result ? { ...entry, result } : entry))
+      return entry.background === true && result === undefined
+    }
+
+    /**
+     * A finished background run is reported in a message the server adds to the parent session, not on its Task part:
+     * the result joins the link of the child it names. A child whose Task part was not seen yet gets a minimal link, so
+     * the result is not lost; the part's own write fills the rest and keeps the result. A result that ended earlier
+     * than the one held, or before the linked run started (a resumed task), does not replace it.
+     */
+    function writeBackgroundResult(parentSessionID: string, childSessionID: string, result: BackgroundResult) {
+      const held = store.taskIndex[childSessionID]
+      if (held?.result && held.result.endedAt > result.endedAt) return
+      // A result that ended before the linked run started belongs to an earlier run of a resumed task.
+      if (held?.startedAt !== undefined && held.startedAt > result.endedAt) return
+      if (held) {
+        setStore("taskIndex", childSessionID, "result", reconcile(result))
+        return
+      }
+      setStore(
+        "taskIndex",
+        childSessionID,
+        reconcile({
+          parentSessionID,
+          parentMessageID: result.messageID,
+          partID: result.partID,
+          description: result.title,
+          background: true,
+          initiator: result.initiator,
+          command: result.command,
+          result,
+        }),
+      )
+    }
+
+    /** A text part that reports a finished background run joins the link of the child it names. */
+    function noteBackgroundResult(part: Part) {
+      if (part.type !== "text") return
+      const found = backgroundResultOf(part)
+      if (found) writeBackgroundResult(part.sessionID, found.childSessionID, found.result)
+    }
+
+    /**
      * #886 5.4: recount a hydrated session from its loaded messages and relink
-     * its Task parts. Hydration and reconnect are the moments the event
-     * reducer cannot be trusted alone: it never saw the history of a cold
-     * session, and it missed whatever happened while disconnected. The seen
-     * set restarts from the snapshot so later live updates of the same tool
-     * parts are not counted twice.
+     * its Task parts and the results of its finished background runs. Hydration
+     * and reconnect are the moments the event reducer cannot be trusted alone:
+     * it never saw the history of a cold session, and it missed whatever
+     * happened while disconnected. The seen set restarts from the snapshot so
+     * later live updates of the same tool parts are not counted twice.
      */
     function rebuildSummary(sessionID: string, complete: boolean) {
       const snapshot = summarizeMessages(
@@ -597,8 +690,13 @@ export const {
       )
       batch(() => {
         writeSummary(sessionID, mergeSnapshot(summaryRaw.get(sessionID), sessionID, snapshot, complete))
-        for (const task of snapshot.tasks) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
+        for (const task of snapshot.tasks) writeTaskLink(task.childSessionID, task.entry)
+        // After the links: a result for a child whose Task part is outside the window gets a minimal link.
+        for (const found of snapshot.results) writeBackgroundResult(sessionID, found.childSessionID, found.result)
+        // A cold history names runs whose state no event reported: ask their jobs (one read for all of them).
+        for (const task of snapshot.tasks) wantJob(task.childSessionID)
       })
+      pullLifecycle()
       // A cut window knows only the newest tool parts; the ones the events
       // already counted stay in the set so their updates are not counted again.
       summarySeen.set(
@@ -673,6 +771,20 @@ export const {
         lifecycleQueued.set(key, { domain: entry.domain, id: entry.id })
     }
 
+    /**
+     * A background run ends without touching its Task part: its state comes from the job it owns, whose id is the
+     * child session's. Queues that job unless a result or a transition already accounts for the run. It is called
+     * while an event is handled, so the pull that follows the frame (`onFlush`) asks the owner, once for everything
+     * the frame queued. Nothing here waits or polls.
+     */
+    function wantJob(childID: string) {
+      const entry = store.taskIndex[childID]
+      if (entry?.background !== true || entry.result) return
+      const ref: LifecycleStateRef = { domain: "job", id: childID }
+      const key = lifecycleKey(ref)
+      if (!lifecycleRaw.has(key)) lifecycleQueued.set(key, ref)
+    }
+
     function applyLifecycleStates(
       answers: readonly LifecycleStateEntry[],
       stamps: ReadonlyMap<string, number>,
@@ -684,9 +796,12 @@ export const {
           const stamp = stamps.get(key)
           if (stamp === undefined || (lifecycleStamp.get(key) ?? 0) !== stamp) continue
           const isGoal = answer.domain === "goal"
+          // A background run's job may be new as well: the link asks for the jobs whose transition this client
+          // never saw (a Task part that arrived first, a reconnect). A deleted session takes its link with it.
+          const isJob = answer.domain === "job" && store.taskIndex[answer.id]?.background === true
           // Evicted or dropped while the read was out. A goal ref may be new:
           // the reconnect refill asks for the goals the store holds.
-          if (!isGoal && !lifecycleRaw.has(key)) continue
+          if (!isGoal && !isJob && !lifecycleRaw.has(key)) continue
           // A goal event since the read started is newer than the answer.
           if (isGoal && (ancillaryRevision.get(`${answer.id}:goal`) ?? 0) !== goalStamps.get(answer.id)) continue
           if (answer.state === null) {
@@ -697,8 +812,11 @@ export const {
             dropLifecycle([key])
             continue
           }
+          const held = lifecycleRaw.get(key)
+          const next = entryFromState(answer.state, held?.sessionID ?? (isGoal || isJob ? answer.id : undefined))
+          // The answer does not carry the reason a transition gave (`process_restart`); the same value keeps it.
           writeLifecycle(
-            entryFromState(answer.state, lifecycleRaw.get(key)?.sessionID ?? (isGoal ? answer.id : undefined)),
+            held?.reason !== undefined && held.value === next.value ? { ...next, reason: held.reason } : next,
           )
           if (isGoal) mirrorGoal(answer.id, answer.state.value)
         }
@@ -869,6 +987,110 @@ export const {
         ([ownerID, list]) => list.length > 0 && (ownerID === rootID || parentChain(ownerID).at(-1) === rootID),
       )
       if (on || owned) void fetchDagMode([rootID], true)
+    }
+
+    /**
+     * Take a `pr.watch.updated` entry in. The event is not durable and may arrive late, so one older than the entry
+     * held is dropped. The entry replaces the held one outright (reconcile): a `checks`, `delivery` or `review` that
+     * the new state no longer has must not linger.
+     */
+    function writePrWatch(entry: PrWatchEntry) {
+      const map = store.pr_watch[entry.sessionID]
+      const held = map?.[entry.watchID]
+      if (held && held.updatedAt > entry.updatedAt) return
+      prWatchReads.get(entry.sessionID)?.touched.add(entry.watchID)
+      // A path through a root that has no map yet cannot be set: the first watch of a root creates the map.
+      if (map) setStore("pr_watch", entry.sessionID, entry.watchID, reconcile(entry))
+      else setStore("pr_watch", entry.sessionID, { [entry.watchID]: entry })
+    }
+
+    /**
+     * Read the PR watches of root sessions and replace each root's map with the answer: a watch it does not return
+     * has ended for good, and is dropped. Entries that events delivered while the read was out are newer than the
+     * answer and stay, unless the answer carries a later state of the same watch; a held state newer than the
+     * answer's state of the same watch also stays. `onlyMissing` leaves out the roots
+     * a read already answered or that are being read (a map events created does not count); any other call reads
+     * again, and its answer wins over a read that was still out. A failed read keeps what the slice held, and the next trigger reads again.
+     */
+    function fetchPrWatch(rootIDs: readonly string[], onlyMissing = false) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        rootIDs
+          .filter((rootID) => !onlyMissing || !(prWatchLoaded.has(rootID) || prWatchReads.has(rootID)))
+          .map((rootID) => {
+            const read = { touched: new Set<string>() }
+            prWatchReads.set(rootID, read)
+            return sdk.client.session
+              .prWatch({ sessionID: rootID }, { headers: locationHeaders({ workspace }) })
+              .then((response) => {
+                if (disposed || prWatchReads.get(rootID) !== read) return
+                const entries = response.data?.entries
+                if (!entries) {
+                  TuiLog.write("error", "Loading the PR watches failed", {
+                    sessionID: rootID,
+                    status: response.response?.status,
+                  })
+                  return
+                }
+                const next: Record<string, PrWatchEntry> = {}
+                for (const entry of entries) next[entry.watchID] = entry
+                const held = store.pr_watch[rootID]
+                for (const watchID of read.touched) {
+                  const current = held?.[watchID]
+                  if (current && current.updatedAt >= (next[watchID]?.updatedAt ?? -Infinity)) next[watchID] = current
+                }
+                // An event taken in before the read began may also be newer than the answer's state of its watch.
+                for (const [watchID, entry] of Object.entries(next)) {
+                  const current = held?.[watchID]
+                  if (current && current.updatedAt > entry.updatedAt) next[watchID] = current
+                }
+                setStore("pr_watch", rootID, reconcile(next))
+                prWatchLoaded.add(rootID)
+              })
+              .catch((error) => {
+                TuiLog.write("error", "Loading the PR watches failed", { sessionID: rootID, error: String(error) })
+              })
+              .finally(() => {
+                if (prWatchReads.get(rootID) === read) prWatchReads.delete(rootID)
+              })
+          }),
+      ).then(() => undefined)
+    }
+
+    /**
+     * Read the reminders of sessions and replace each session's list with the answer. `onlyMissing`, a failed read
+     * and a newer read replacing one that is still out behave as in `fetchPrWatch`.
+     */
+    function fetchReminder(sessionIDs: readonly string[], onlyMissing = false) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        sessionIDs
+          .filter((sessionID) => !onlyMissing || !(sessionID in store.reminder || reminderReads.has(sessionID)))
+          .map((sessionID) => {
+            const read = Symbol(sessionID)
+            reminderReads.set(sessionID, read)
+            return sdk.client.session
+              .reminder({ sessionID }, { headers: locationHeaders({ workspace }) })
+              .then((response) => {
+                if (disposed || reminderReads.get(sessionID) !== read) return
+                const entries = response.data?.entries
+                if (!entries) {
+                  TuiLog.write("error", "Loading the reminders failed", {
+                    sessionID,
+                    status: response.response?.status,
+                  })
+                  return
+                }
+                setStore("reminder", sessionID, reconcile(entries))
+              })
+              .catch((error) => {
+                TuiLog.write("error", "Loading the reminders failed", { sessionID, error: String(error) })
+              })
+              .finally(() => {
+                if (reminderReads.get(sessionID) === read) reminderReads.delete(sessionID)
+              })
+          }),
+      ).then(() => undefined)
     }
 
     /** Workflow -> owning session over every surface; the first surface to name a workflow decides. */
@@ -1111,6 +1333,10 @@ export const {
           // #1032 7: a config write that disposes the instance sends this instead of `config.updated`, and the
           // bootstrap does not read the mode snapshots: every one held or being read is read again here.
           void fetchDagMode(dagModeRoots())
+          // #1036 F6: the watches and the reminders live in the instance too, and no event says what the new one
+          // holds: they are read again as after a reconnect (every root held, and the root of the route).
+          void refreshPrWatches()
+          void refreshReminders()
           break
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
@@ -1216,6 +1442,20 @@ export const {
 
         case "lifecycle.transitioned":
           mirrorTransition(event.properties)
+          // #1036 F6: no event carries the reminders; a transition of one says its session's list changed.
+          if (
+            event.properties.domain === "reminder" &&
+            event.properties.sessionID !== undefined &&
+            (workspace === undefined || workspace === project.workspace.current())
+          )
+            void fetchReminder([event.properties.sessionID])
+          break
+
+        // #1036 F6: the state of a PR/MR watch, published by the watch itself and not durable: a reconnect reads the
+        // watches again (`refreshPrWatches`). Session-summary scoped, so it arrives whether or not its session is loaded.
+        case "pr.watch.updated":
+          if (workspace !== undefined && workspace !== project.workspace.current()) break
+          writePrWatch(event.properties)
           break
 
         // ── DAG workflow summary ────────────────────────────────────
@@ -1390,6 +1630,7 @@ export const {
           touchPart(event.properties.part.sessionID, event.properties.part.id)
           // A snapshot supersedes whatever deltas were buffered for this part.
           stream.settle(event.properties.part.id)
+          noteBackgroundResult(event.properties.part)
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
             setStore("part", event.properties.part.messageID, [event.properties.part])
@@ -1627,9 +1868,10 @@ export const {
     }
 
     // #1069: the reconnect refill of the lifecycle mirror. Every ref the mirror
-    // holds, plus the goal of every session that has one, goes out in a single
-    // read. The answers are states: they correct the mirror and the goal status,
-    // while the goal itself is read in full by `refreshGoals` below.
+    // holds, plus the goal of every session that has one and the job of every
+    // background run no result has ended, goes out in a single read. The
+    // answers are states: they correct the mirror and the goal status, while the
+    // goal itself is read in full by `refreshGoals` below.
     const refreshLifecycle = (): Promise<void> => {
       lifecycleEpoch++
       lifecycleInFlight = false
@@ -1640,6 +1882,12 @@ export const {
       for (const [sessionID, goal] of Object.entries(store.goal)) {
         if (!goal) continue
         const ref: LifecycleStateRef = { domain: "goal", id: sessionID }
+        lifecycleQueued.set(lifecycleKey(ref), ref)
+      }
+      // The job of every background run no result has ended: the transition that would say may have been missed.
+      for (const [childID, entry] of Object.entries(store.taskIndex)) {
+        if (entry.background !== true || entry.result) continue
+        const ref: LifecycleStateRef = { domain: "job", id: childID }
         lifecycleQueued.set(lifecycleKey(ref), ref)
       }
       pullLifecycle()
@@ -1654,7 +1902,7 @@ export const {
     // slice refreshes in full on reconnect). Hydrated sessions are left out:
     // `sync` reloads their goal. Reads run a few at a time, and a newer
     // reconnect supersedes an older round.
-    const GOAL_REFRESH_CONCURRENCY = 4
+    const REFRESH_CONCURRENCY = 4
     let goalEpoch = 0
     const refreshGoal = (sessionID: string, epoch: number): Promise<void> => {
       // A goal event after the read began carries a newer snapshot than it.
@@ -1681,12 +1929,40 @@ export const {
       const sessionIDs = Object.entries(store.goal)
         .filter(([sessionID, goal]) => goal && !store.hydrated.includes(sessionID))
         .map(([sessionID]) => sessionID)
-      for (let start = 0; start < sessionIDs.length; start += GOAL_REFRESH_CONCURRENCY) {
+      for (let start = 0; start < sessionIDs.length; start += REFRESH_CONCURRENCY) {
         if (disposed || epoch !== goalEpoch) return
-        const round = sessionIDs.slice(start, start + GOAL_REFRESH_CONCURRENCY)
+        const round = sessionIDs.slice(start, start + REFRESH_CONCURRENCY)
         await Promise.all(round.map((sessionID) => refreshGoal(sessionID, epoch)))
       }
     }
+
+    // #1036 F6: the PR watches and the reminders mirror server state that no durable event carries, so what changed
+    // during a disconnect is known only by reading it again. Every session whose slice is held or being read is read
+    // in full, and so is the root of the route even when it holds nothing: its first read may have failed, or a watch
+    // may have been set while the stream was down. The answers replace what the slices held. Reads run a few at a
+    // time, and a newer reconnect supersedes an older round.
+    const refreshRounds = (held: () => Iterable<string>, read: (round: string[]) => Promise<void>) => {
+      let epoch = 0
+      return async (): Promise<void> => {
+        const mine = ++epoch
+        const sessionIDs = new Set(held())
+        const active = routeChain.at(-1)
+        if (active !== undefined) sessionIDs.add(active)
+        const ids = [...sessionIDs]
+        for (let start = 0; start < ids.length; start += REFRESH_CONCURRENCY) {
+          if (disposed || mine !== epoch) return
+          await read(ids.slice(start, start + REFRESH_CONCURRENCY))
+        }
+      }
+    }
+    const refreshPrWatches = refreshRounds(
+      () => [...Object.keys(store.pr_watch), ...prWatchReads.keys()],
+      (round) => fetchPrWatch(round),
+    )
+    const refreshReminders = refreshRounds(
+      () => [...Object.keys(store.reminder), ...reminderReads.keys()],
+      (round) => fetchReminder(round),
+    )
 
     // #1040: project-layer trust is global state. The change event only names
     // ids, so every notification re-reads the snapshot rather than merging.
@@ -1754,6 +2030,8 @@ export const {
     })
     onResync(refreshLifecycle)
     onResync(refreshGoals)
+    onResync(refreshPrWatches)
+    onResync(refreshReminders)
     onResync(refreshTrust)
 
     // #1032 7: a global config write that leaves the instance alone reaches the TUI as `config.updated` and as
@@ -1792,6 +2070,9 @@ export const {
       dagWatches.clear()
       dagReads.clear()
       dagModeReads.clear()
+      prWatchReads.clear()
+      prWatchLoaded.clear()
+      reminderReads.clear()
       ancillaryAttempts.clear()
       submissionAccepted.clear()
       unsubscribeStream()
@@ -1974,6 +2255,10 @@ export const {
           await result.session.sync(sessionID)
           if (disposed) return
           const rootID = routeChain.at(-1) ?? sessionID
+          // #1036 F6: the PR watches and the reminders hang off the root of the tree. The lines that show them draw
+          // without the reads, so the route does not wait for them; an event or a reconnect keeps them current after.
+          void fetchPrWatch([rootID], true)
+          void fetchReminder([rootID], true)
           await fetchDagSummaries(sessionTree(rootID), true)
           // The snapshot is for the status band and the /dag panel, which draw without it: the route does not wait.
           wantDagMode()

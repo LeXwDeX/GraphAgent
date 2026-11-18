@@ -1,0 +1,317 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`how it looks 80 by 24, in Chinese 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ 子 agent  3 个                                                               │
+│ › 筛选…                                                                      │
+│ 前台                                                                         │
+│ › ● explore · 扫描破坏性变更               主 agent  运行中 · 工具 7 · 1m 5s │
+│ 任务：扫描破坏性变更                                                         │
+│                                                                              │
+│ 已结束                                                                       │
+│   ✗ review · 复核最终补丁                  —         失败 · 工具 3 · 1m 0s   │
+│   ✓ build · 重新生成 SDK                   主 agent  已完成 · 工具 12 · 14s  │
+│ up 上移 · down 下移 · enter 选择 · ctrl+r 请主 agent 处理 · escape 关闭      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`how it looks 120 by 40, in Chinese 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 子 agent  3 个                                                                                               /agents │
+│ › 筛选…                                                                                                              │
+│ 前台                                                                                                                 │
+│ › ● explore · 扫描破坏性变更                                                       主 agent  运行中 · 工具 7 · 1m 5s │
+│ 任务：扫描破坏性变更                                                                                                 │
+│                                                                                                                      │
+│ 已结束                                                                                                               │
+│   ✗ review · 复核最终补丁                                                          —         失败 · 工具 3 · 1m 0s   │
+│   ✓ build · 重新生成 SDK                                                           主 agent  已完成 · 工具 12 · 14s  │
+│ up 上移 · down 下移 · enter 选择 · ctrl+r 请主 agent 处理 · escape 关闭                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+"
+`;
+
+exports[`how it looks 80 by 24, in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Subagents  3                                                                 │
+│ › Filter…                                                                    │
+│ Foreground                                                                   │
+│ › ● explore · 扫描破坏性变更           main agent  running · tools 7 · 1m 5s │
+│ Task: 扫描破坏性变更                                                         │
+│                                                                              │
+│ Finished                                                                     │
+│   ✗ review · 复核最终补丁              —           failed · tools 3 · 1m 0s  │
+│   ✓ build · 重新生成 SDK               main agent  done · tools 12 · 14s     │
+│ up Previous · down Next · enter Select · ctrl+r Ask main agent · escape Clo… │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`how it looks 120 by 40, in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Subagents  3                                                                                                 /agents │
+│ › Filter…                                                                                                            │
+│ Foreground                                                                                                           │
+│ › ● explore · 扫描破坏性变更                                                   main agent  running · tools 7 · 1m 5s │
+│ Task: 扫描破坏性变更                                                                                                 │
+│                                                                                                                      │
+│ Finished                                                                                                             │
+│   ✗ review · 复核最终补丁                                                      —           failed · tools 3 · 1m 0s  │
+│   ✓ build · 重新生成 SDK                                                       main agent  done · tools 12 · 14s     │
+│ up Previous · down Next · enter Select · ctrl+r Ask main agent · escape Close                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+"
+`;
+
+exports[`how it looks a cold start, 80 by 24 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ 子 agent  3 个                                                               │
+│ › 筛选…                                                                      │
+│ 已结束                                                                       │
+│ ›   explore · 扫描破坏性变更                    主 agent  — · 工具 — · 8s    │
+│ 任务：扫描破坏性变更                                                         │
+│     review · 复核最终补丁                       —         — · 工具 — · 1m 0s │
+│     build · 重新生成 SDK                        主 agent  — · 工具 — · 14s   │
+│ up 上移 · down 下移 · enter 选择 · ctrl+r 请主 agent 处理 · escape 关闭      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`background runs: how the list looks 80 by 24, in Chinese 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ 子 agent  7 个 · 1 个后台运行 · 1 个排队                                     │
+│ › 筛选…                                                                      │
+│ 后台                                                                         │
+│ › ● review · 未提交改动                    你发起    运行中 · 工具 12 · 55s  │
+│ 任务：未提交改动                                                             │
+│   ○ explore · 清理过期依赖                 主 agent  排队中 · 工具 — · —     │
+│                                                                              │
+│ 前台                                                                         │
+│   ● explore · 扫描破坏性变更               主 agent  运行中 · 工具 7 · 1m 5s │
+│                                                                              │
+│ 已结束                                                                       │
+│ up 上移 · down 下移 · enter 选择 · ctrl+r 请主 agent 处理 · escape 关闭      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`background runs: how the list looks 120 by 40, in Chinese 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 子 agent  7 个 · 1 个后台运行 · 1 个排队                                                                     /agents │
+│ › 筛选…                                                                                                              │
+│ 后台                                                                                                                 │
+│ › ● review · 未提交改动                                                            你发起    运行中 · 工具 12 · 55s  │
+│ 任务：未提交改动                                                                                                     │
+│   ○ explore · 清理过期依赖                                                         主 agent  排队中 · 工具 — · —     │
+│                                                                                                                      │
+│ 前台                                                                                                                 │
+│   ● explore · 扫描破坏性变更                                                       主 agent  运行中 · 工具 7 · 1m 5s │
+│                                                                                                                      │
+│ 已结束                                                                                                               │
+│   ✗ review · 复核最终补丁                                                          —         失败 · 工具 3 · 1m 0s   │
+│   ✓ build · 重新生成 SDK                                                           主 agent  已完成 · 工具 12 · 14s  │
+│   ✗ general · 生成 nix 哈希                                                        主 agent  已中断 · 工具 6 · 22s   │
+│   ✓ explore · 列出过期依赖                                                         主 agent  已完成 · 工具 8 · 1m 0s │
+│ up 上移 · down 下移 · enter 选择 · ctrl+r 请主 agent 处理 · escape 关闭                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+"
+`;
+
+exports[`background runs: how the list looks 80 by 24, in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Subagents  7 · 1 background running · 1 queued                               │
+│ › Filter…                                                                    │
+│ Background                                                                   │
+│ › ● review · 未提交改动              you         running · tools 12 · 55s    │
+│ Task: 未提交改动                                                             │
+│   ○ explore · 清理过期依赖           main agent  queued · tools — · —        │
+│                                                                              │
+│ Foreground                                                                   │
+│   ● explore · 扫描破坏性变更         main agent  running · tools 7 · 1m 5s   │
+│                                                                              │
+│ Finished                                                                     │
+│ up Previous · down Next · enter Select · ctrl+r Ask main agent · escape Clo… │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`background runs: how the list looks 120 by 40, in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Subagents  7 · 1 background running · 1 queued                                                               /agents │
+│ › Filter…                                                                                                            │
+│ Background                                                                                                           │
+│ › ● review · 未提交改动                                                      you         running · tools 12 · 55s    │
+│ Task: 未提交改动                                                                                                     │
+│   ○ explore · 清理过期依赖                                                   main agent  queued · tools — · —        │
+│                                                                                                                      │
+│ Foreground                                                                                                           │
+│   ● explore · 扫描破坏性变更                                                 main agent  running · tools 7 · 1m 5s   │
+│                                                                                                                      │
+│ Finished                                                                                                             │
+│   ✗ review · 复核最终补丁                                                    —           failed · tools 3 · 1m 0s    │
+│   ✓ build · 重新生成 SDK                                                     main agent  done · tools 12 · 14s       │
+│   ✗ general · 生成 nix 哈希                                                  main agent  interrupted · tools 6 · 22s │
+│   ✓ explore · 列出过期依赖                                                   main agent  done · tools 8 · 1m 0s      │
+│ up Previous · down Next · enter Select · ctrl+r Ask main agent · escape Close                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+"
+`;

@@ -9,6 +9,7 @@ import { AgentContract } from "@/agent/contract"
 import type { Provider } from "@/provider/provider"
 import { DagSection } from "@/config/dag-section"
 import { Dag } from "./dag"
+import { DagCompose } from "./compose"
 import { DagConfig } from "./config"
 import { DagModel } from "./model"
 import { DagValidation } from "./validation"
@@ -47,6 +48,8 @@ export const makeCatalogLoader =
             tier: DagConfig.tierModel(config, {
               required: node.required ?? defaults?.required ?? Dag.DEFAULT_WORKFLOW_CONFIG.nodeRequired,
               workerType: node.worker_type,
+              definition: node.definition,
+              graph: node.graph,
             }),
             agent: agentsByName.get(node.worker_type)?.model,
             parent: context.parent ? { modelID: context.parent.id, providerID: context.parent.providerID } : undefined,
@@ -63,6 +66,8 @@ export const makeCatalogLoader =
         writer_types: new Set(
           agentCatalog.filter((agent) => AgentContract.isWriterAgent(agent)).map((agent) => agent.name),
         ),
+        // #1158: which agents are composers, and whether the effective catalog lets each one run.
+        composers: DagCompose.catalogFrom(agentCatalog),
         resolveModel,
       }
     })

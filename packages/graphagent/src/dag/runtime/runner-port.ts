@@ -48,8 +48,10 @@ import type { Dag } from "../dag"
  *     host sweep, which holds no lease.
  * `pause` and `extend` appear in both lists: the runner's own use of them (the
  * recovery pause, fan-out planning) goes through the port, a user's does not.
- * `fail` has only runner callers (an orphan `pending` workflow and
- * `orchestrator_unresponsive`).
+ * `fail` has only runner callers (`orchestrator_unresponsive`), and so has
+ * `failOrphan`, the orphan `pending` workflow's terminalization: pending ->
+ * running -> failed in one fenced transaction, the command that replaced the bare
+ * `WorkflowStarted` the reconciler used to publish ahead of `fail`.
  */
 
 /**
@@ -70,6 +72,7 @@ export const COMMANDS = [
   "pause",
   "pauseForCheckpoint",
   "fail",
+  "failOrphan",
 ] as const satisfies ReadonlyArray<keyof Dag.Interface>
 
 const COMMAND_SET: ReadonlySet<string | symbol> = new Set(COMMANDS)

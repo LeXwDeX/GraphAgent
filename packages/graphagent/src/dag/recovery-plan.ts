@@ -105,9 +105,16 @@ export function planRecovery(
   const reused = new Set(
     current.filter((node) => !affected.has(node.id) && node.status === "completed").map((node) => node.id),
   )
+  // #1158: a node an expansion generated names the slot that generated it (`expanded_from`), and recovery renames a slot
+  // together with the join node it became. A node that recovery reuses is otherwise left as it is, but this name
+  // follows the slot, so no node in the new graph names an attempt that no longer counts.
+  const followSlot = (node: NodeConfig): NodeConfig =>
+    node.expanded_from === undefined || mapID(node.expanded_from) === node.expanded_from
+      ? node
+      : { ...node, expanded_from: mapID(node.expanded_from) }
   const updatedNodes = activeConfig.map((node): NodeConfig => {
     const replacement = replacements.find((item) => item.previous === node.id)
-    if (!replacement) return node
+    if (!replacement) return followSlot(node)
     const old = currentByID.get(node.id)!
     // #945: reused upstream outputs carry the fingerprint they were produced
     // from. A mismatch with the current target is explicit stale evidence.
@@ -146,6 +153,21 @@ export function planRecovery(
       conditionNode && remap.has(conditionNode)
         ? node.condition!.replace(/^(\s*)([^.\s]+)/, (_, space: string) => `${space}${mapID(conditionNode)}`)
         : node.condition
+    // #1158: a compose slot names its split node, and a join node names the split node and the child of each item. A
+    // node is recovered together with every node that depends on it, so a recovered split node or child brings its slot
+    // or join node along, and the record has to name the attempts that now count. The ids of a join record are also
+    // the keys the join node reads its inputs under, and its prompt describes each of them: a key that names a node
+    // recovery replaces follows it, so the record, the inputs and the prompt keep naming the same attempts.
+    const joinRenames = new Map<string, string>()
+    for (const id of node.join === undefined ? [] : [node.join.plan, ...node.join.items.map((item) => item.node)])
+      if (mapID(id) !== id) joinRenames.set(id, mapID(id))
+    const mapVariable = (variable: string) => joinRenames.get(variable) ?? variable
+    const joinPrompt =
+      node.prompt_template.inline === undefined || joinRenames.size === 0
+        ? undefined
+        : node.prompt_template.inline.replace(/\n- "([^"\n]*)": /g, (line, id: string) =>
+            joinRenames.has(id) ? `\n- "${joinRenames.get(id)}": ` : line,
+          )
     const { restart: _restart, cancel: _cancel, ...definition } = node
     return {
       ...definition,
@@ -155,13 +177,25 @@ export function planRecovery(
       // and external prompt assets. Only their source attempts change.
       input_mapping: Object.fromEntries(
         Object.entries(node.input_mapping ?? Object.fromEntries(node.depends_on.map((id) => [id, id]))).map(
-          ([variable, source]) => [variable, mapSource(source)],
+          ([variable, source]) => [mapVariable(variable), mapSource(source)],
         ),
       ),
       ...(condition !== undefined ? { condition } : {}),
       ...(node.fan_out !== undefined ? { fan_out: mapID(node.fan_out) } : {}),
+      ...(node.expand !== undefined ? { expand: mapID(node.expand) } : {}),
+      ...(node.expanded_from !== undefined ? { expanded_from: mapID(node.expanded_from) } : {}),
+      ...(node.join !== undefined
+        ? {
+            join: {
+              ...node.join,
+              plan: mapID(node.join.plan),
+              items: node.join.items.map((item) => ({ ...item, node: mapID(item.node) })),
+            },
+          }
+        : {}),
       prompt_template: {
         ...node.prompt_template,
+        ...(joinPrompt !== undefined ? { inline: joinPrompt } : {}),
         input: {
           ...node.prompt_template.input,
           __workflow_recovery: recoveryContext,

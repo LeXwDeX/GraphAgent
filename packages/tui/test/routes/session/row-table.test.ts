@@ -7,12 +7,16 @@ import { createStore, produce } from "solid-js/store"
 import type { AssistantMessage, Message, Part, ReasoningPart, TextPart, ToolPart, UserMessage } from "@graphagent/sdk"
 import { createStreamBuffer } from "../../../src/context/stream-buffer"
 import { renderUserTextPart } from "../../../src/i18n/receipt"
+import { backgroundCard } from "../../../src/session/background-card"
 import { createRowTable, type RowTable } from "../../../src/routes/session/row-table"
 import {
   createSessionViewState,
   createTextFacts,
+  delegationFoldID,
+  foldRowKey,
   rowRevision,
   type Row,
+  type SessionViewState,
   type TextFactsCache,
 } from "../../../src/routes/session/rows"
 import { hideToolDetails } from "../../../src/routes/session/tool-attention"
@@ -285,6 +289,12 @@ function reference(input: {
       if (body || parts.some((part) => part.type === "compaction")) {
         rows.push([`user:${message.id}`, "user", message.id, undefined])
         chars.set(`user:${message.id}`, textLines(body))
+      }
+      for (const part of parts) {
+        const card = part.type === "text" && part.synthetic ? backgroundCard(part) : undefined
+        if (!card) continue
+        rows.push([`part:${part.id}`, "result", message.id, part.id])
+        chars.set(`part:${part.id}`, textLines(card.body))
       }
       continue
     }
@@ -712,4 +722,338 @@ describe("the summary of the last assistant message", () => {
         expect(shapeOf(rig.table())).toEqual(rig.reference())
       },
     ))
+})
+
+describe("the record of a sub-agent", () => {
+  /** A table over a two-message record with the two inputs a sub-agent view gives it. */
+  function record<T>(
+    run: (rig: {
+      table: () => RowTable
+      view: SessionViewState
+      setDelegation: (value: { messageID: string; description: string } | undefined) => void
+      setHandback: (value: number | undefined) => void
+    }) => T,
+    entries: Entry[] = [
+      { info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_u", "scan the changelog\nread only")] },
+      { info: assistantMessage("msg_a", 2), parts: [text("msg_a", "prt_a", "found two")] },
+    ],
+  ) {
+    return createRoot((dispose) => {
+      try {
+        const [delegation, setDelegation] = createSignal<{ messageID: string; description: string } | undefined>({
+          messageID: "msg_u",
+          description: "scan",
+        })
+        const [handback, setHandback] = createSignal<number | undefined>()
+        const view = createSessionViewState()
+        const table = createRowTable({
+          messages: () => entries.map((entry) => entry.info),
+          parts: (messageID) => entries.find((entry) => entry.info.id === messageID)?.parts ?? [],
+          readPartText: (part) => ("text" in part ? part.text : ""),
+          view,
+          showDetails: () => true,
+          lastAssistantID: () => undefined,
+          revertMessageID: () => undefined,
+          revertRevision: () => 0,
+          reverted: () => false,
+          delegation,
+          handback,
+        })
+        return run({ table, view, setDelegation, setHandback })
+      } finally {
+        dispose()
+      }
+    })
+  }
+
+  test("the delegated user message is one task row, with its own key, and keeps its message", () =>
+    record(({ table }) => {
+      const rows = table().rows
+      const task = rows.find((row) => row.kind === "delegation")
+      expect(task).toMatchObject({ key: "delegation:msg_u", messageID: "msg_u", kind: "delegation" })
+      // It stands where the user row would, and there is no user row besides it.
+      expect(rows[0]).toBe(task!)
+      expect(rows.some((row) => row.kind === "user")).toBe(false)
+      // The height estimate reads the same text the user row would have: its longest line.
+      expect(table().chars.get("delegation:msg_u")).toBe("scan the changelog".length)
+      expect(table().chars.has("user:msg_u")).toBe(false)
+    }))
+
+  test("the task row folds under its own key, which is its partID, and a pinned row is found by it", () =>
+    record(({ table }) => {
+      const task = table().rows[0]
+      expect(task.partID).toBe("delegation:msg_u")
+      expect(task.partID).toBe(task.key)
+      expect(task.partID).toBe(delegationFoldID("msg_u"))
+      // The key `pinnedKeys` pins for the flag of a part is the key of the row that folds under it.
+      expect(foldRowKey(task.partID!)).toBe(task.key)
+      const answer = table().rows.find((row) => row.kind === "text")!
+      expect(foldRowKey(answer.partID!)).toBe(answer.key)
+    }))
+
+  test("opening the task block moves its revision, closing it gives the revision back", () =>
+    record(({ table, view }) => {
+      const closed = table().rows[0]
+      view.set(delegationFoldID("msg_u"), "expanded", true)
+      const open = table().rows[0]
+      expect(open).not.toBe(closed)
+      expect(open.revision).not.toBe(closed.revision)
+      expect(open).toMatchObject({ key: closed.key, partID: closed.partID, kind: "delegation" })
+
+      view.set(delegationFoldID("msg_u"), "expanded", false)
+      expect(table().rows[0].revision).toBe(closed.revision)
+    }))
+
+  test("a block that is opened elsewhere in the transcript leaves the task row as it was", () =>
+    record(({ table, view }) => {
+      const before = table().rows
+      view.set("prt_a", "expanded", true)
+      view.set("prt_somewhere_else", "errorExpanded", true)
+      const after = table().rows
+      for (const [index, row] of before.entries()) expect(after[index]).toBe(row)
+    }))
+
+  test("only the flag of the delegated message opens the task row", () =>
+    record(({ table, view, setDelegation }) => {
+      const closed = table().rows[0].revision
+      view.set(delegationFoldID("msg_other"), "expanded", true)
+      expect(table().rows[0].revision).toBe(closed)
+      // Without a task block the message is a user row, which folds under nothing, whatever the flag says.
+      setDelegation(undefined)
+      view.set(delegationFoldID("msg_u"), "expanded", true)
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      expect(table().rows[0].partID).toBeUndefined()
+    }))
+
+  test("the revision moves with the description, which can wrap, and with the prompt", () =>
+    record(({ table, setDelegation }) => {
+      const before = table().rows[0].revision
+      setDelegation({ messageID: "msg_u", description: "scan every changelog for breaking changes" })
+      expect(table().rows[0].revision).not.toBe(before)
+      setDelegation({ messageID: "msg_u", description: "scan" })
+      expect(table().rows[0].revision).toBe(before)
+    }))
+
+  test("a row that did not change keeps its identity when the description does", () =>
+    record(({ table, setDelegation }) => {
+      const answer = table().rows.find((row) => row.kind === "text")!
+      setDelegation({ messageID: "msg_u", description: "something else" })
+      expect(table().rows.find((row) => row.kind === "text")).toBe(answer)
+    }))
+
+  test("without a delegation, or for another message, every user message stays a user row", () =>
+    record(({ table, setDelegation }) => {
+      setDelegation(undefined)
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      setDelegation({ messageID: "msg_other", description: "scan" })
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+    }))
+
+  test("only a user message with a row can be the task: nothing is invented for an empty one", () =>
+    record(
+      ({ table }) => {
+        expect(table().rows.some((row) => row.kind === "delegation")).toBe(false)
+      },
+      [
+        { info: userMessage("msg_u", 1), parts: [] },
+        { info: assistantMessage("msg_a", 2), parts: [text("msg_a", "prt_a", "found two")] },
+      ],
+    ))
+
+  test("the closing row is the last one, only when the agent is done, and it carries the revision it is given", () =>
+    record(({ table, setHandback }) => {
+      expect(table().rows.some((row) => row.kind === "handback")).toBe(false)
+      setHandback(7)
+      const rows = table().rows
+      expect(rows.at(-1)).toMatchObject({
+        key: "handback:ses_table",
+        messageID: "msg_a",
+        kind: "handback",
+        revision: 7,
+      })
+      expect(rows.filter((row) => row.kind === "handback")).toHaveLength(1)
+      setHandback(8)
+      expect(table().rows.at(-1)?.revision).toBe(8)
+      setHandback(undefined)
+      expect(table().rows.some((row) => row.kind === "handback")).toBe(false)
+    }))
+
+  test("a record with no rows has no closing row either", () =>
+    record(({ table, setHandback }) => {
+      setHandback(7)
+      expect(table().rows).toEqual([])
+    }, []))
+
+  test("the closing row does not take the place of the message it follows", () =>
+    record(({ table, setHandback }) => {
+      const before = table().rows
+      setHandback(7)
+      const after = table().rows
+      expect(after.slice(0, -1)).toEqual(before)
+      for (const [index, row] of before.entries()) expect(after[index]).toBe(row)
+    }))
+})
+
+/** What the server reports of a background run that ended, in the metadata of the message it adds. */
+const report = (status: "completed" | "error" | "interrupted") => ({
+  childSessionID: "ses_child",
+  title: "Scan",
+  status,
+  startedAt: 1_000,
+  endedAt: 66_000,
+})
+
+/** The text part of the message the server adds to a session when a background run ends. */
+function result(
+  messageID: string,
+  id: string,
+  body: string,
+  status: "completed" | "error" | "interrupted" = "completed",
+  extra: Partial<TextPart> = {},
+): TextPart {
+  const tag = status === "completed" ? "task_result" : "task_error"
+  return text(
+    messageID,
+    id,
+    `<task id="ses_child" state="completed">\n<summary>Background task: Scan</summary>\n<${tag}>\n${body}\n</${tag}>\n</task>`,
+    { synthetic: true, metadata: { backgroundResult: report(status) }, ...extra },
+  )
+}
+
+describe("the card of a background result", () => {
+  /** A prompt, the turn that started the run, and the message the server added when it ended. */
+  const session = (body = "found\nmore", extra: Entry[] = []): Entry[] => [
+    { info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_q", "scan it")] },
+    { info: assistantMessage("msg_a", 2), parts: [text("msg_a", "prt_ans", "started it")] },
+    { info: userMessage("msg_r", 3), parts: [result("msg_r", "prt_res", body)] },
+    ...extra,
+  ]
+
+  test("a message whose part reports a run is one card row, which folds under its part and stands where the message does", () =>
+    withTable(session(), (rig) => {
+      const rows = rig.table().rows
+      expect(rows.map((row) => row.kind)).toEqual(["user", "text", "meta", "result"])
+      const card = rows[3]
+      expect(card).toMatchObject({ key: "part:prt_res", messageID: "msg_r", partID: "prt_res", kind: "result" })
+      // The key `pinnedKeys` pins for the flag the part folds under is the row's own, so an open card stays mounted.
+      expect(foldRowKey(card.partID!)).toBe(card.key)
+      // The height estimate reads the longest line of what the run left, not the notice around it.
+      expect(rig.table().chars.get("part:prt_res")).toBe("found".length)
+      expect(shapeOf(rig.table())).toEqual(rig.reference())
+    }))
+
+  test("a synthetic message with no metadata has no row, whatever its text says", () => {
+    const entries = session("found", [
+      {
+        info: userMessage("msg_s", 4),
+        parts: [text("msg_s", "prt_s", "Summarize the task tool output above.", { synthetic: true })],
+      },
+      {
+        info: userMessage("msg_l", 5),
+        parts: [{ ...result("msg_l", "prt_l", "looks like one"), metadata: undefined }],
+      },
+      {
+        info: userMessage("msg_m", 6),
+        parts: [result("msg_m", "prt_m", "written by the user", "completed", { synthetic: undefined })],
+      },
+    ])
+    return withTable(entries, (rig) => {
+      const rows = rig.table().rows
+      expect(rows.filter((row) => row.kind === "result").map((row) => row.key)).toEqual(["part:prt_res"])
+      // The first two have no row of any kind. The third has the metadata but is not synthetic: it is the user's
+      // text, a user row, and the metadata makes no card of it.
+      expect(rows.some((row) => row.messageID === "msg_s" || row.messageID === "msg_l")).toBe(false)
+      expect(rows.find((row) => row.messageID === "msg_m")?.kind).toBe("user")
+      expect(shapeOf(rig.table())).toEqual(rig.reference())
+    })
+  })
+
+  test("a message of the user's words and a result has the user row first, then the card", () => {
+    const entries: Entry[] = [
+      {
+        info: userMessage("msg_u", 1),
+        parts: [text("msg_u", "prt_q", "scan it"), result("msg_u", "prt_res", "found")],
+      },
+    ]
+    return withTable(entries, (rig) => {
+      expect(rig.table().rows.map((row) => [row.key, row.kind])).toEqual([
+        ["user:msg_u", "user"],
+        ["part:prt_res", "result"],
+      ])
+      expect(shapeOf(rig.table())).toEqual(rig.reference())
+    })
+  })
+
+  test("a message with two results has a card for each, under its own part", () => {
+    const entries: Entry[] = [
+      {
+        info: userMessage("msg_r", 1),
+        parts: [result("msg_r", "prt_one", "first"), result("msg_r", "prt_two", "second", "error")],
+      },
+    ]
+    return withTable(entries, (rig) => {
+      expect(rig.table().rows.map((row) => [row.key, row.partID])).toEqual([
+        ["part:prt_one", "prt_one"],
+        ["part:prt_two", "prt_two"],
+      ])
+    })
+  })
+
+  test("the revision moves with what the card shows and with being open, and nothing else moves with it", () =>
+    withTable(session(), (rig) => {
+      const [before] = rig.table().rows.slice(-1)
+      const others = rig.table().rows.slice(0, -1)
+
+      rig.view.set("prt_res", "expanded", true)
+      const open = rig.table().rows.at(-1)!
+      expect(open.revision).not.toBe(before.revision)
+      expect(open).toMatchObject({ key: before.key, partID: before.partID, kind: "result" })
+      rig.view.set("prt_res", "expanded", false)
+      expect(rig.table().rows.at(-1)!.revision).toBe(before.revision)
+
+      // What the run left changes the revision, and what the card says of the run does too.
+      const reword = (change: (part: TextPart) => TextPart) =>
+        rig.setStore("part", "msg_r", (parts) => parts.map((part) => (part.type === "text" ? change(part) : part)))
+      reword((part) => ({ ...part, text: part.text.replace("found", "found more") }))
+      const body = rig.table().rows.at(-1)!.revision
+      expect(body).not.toBe(before.revision)
+      reword((part) => ({ ...part, metadata: { backgroundResult: report("error") } }))
+      expect(rig.table().rows.at(-1)!.revision).not.toBe(body)
+
+      // The rows of the other messages are the very rows they were.
+      rig.view.set("prt_res", "expanded", true)
+      rig
+        .table()
+        .rows.slice(0, -1)
+        .forEach((row, index) => expect(row).toBe(others[index]))
+    }))
+
+  test("a flag of another block leaves the card as it was", () =>
+    withTable(session(), (rig) => {
+      const before = rig.table().rows.at(-1)!
+      rig.view.set("prt_ans", "expanded", true)
+      rig.view.set("prt_somewhere_else", "errorExpanded", true)
+      expect(rig.table().rows.at(-1)).toBe(before)
+    }))
+
+  test("a card past the revert boundary is hidden with its message, and is back when the boundary is lifted", () =>
+    withTable(session(), (rig) => {
+      rig.setRevertMessageID("msg_r")
+      expect(rig.table().rows.some((row) => row.kind === "result")).toBe(false)
+      expect(shapeOf(rig.table())).toEqual(rig.reference())
+      rig.setRevertMessageID(undefined)
+      expect(rig.table().rows.some((row) => row.kind === "result")).toBe(true)
+      expect(shapeOf(rig.table())).toEqual(rig.reference())
+    }))
+
+  test("a result that arrives later adds its card and touches no other message's rows", () =>
+    withTable(session().slice(0, 2), (rig) => {
+      expect(rig.table().rows.some((row) => row.kind === "result")).toBe(false)
+      const before = rig.table().rows
+      rig.setStore("message", (messages) => [...messages, userMessage("msg_r", 3)])
+      rig.setStore("part", "msg_r", [result("msg_r", "prt_res", "found")])
+      const after = rig.table().rows
+      expect(after.slice(0, -1)).toEqual(before)
+      expect(after.at(-1)).toMatchObject({ key: "part:prt_res", kind: "result" })
+    }))
 })

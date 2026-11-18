@@ -1,11 +1,21 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { createMemo, Show } from "solid-js"
+import { createMemo, For, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
+import { t } from "../i18n"
+import { subagentMarkerToken } from "../session/subagents"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import {
+  DESCRIPTION_SEPARATOR,
+  PATH_SEPARATOR,
+  SUBAGENT_SWITCH_KEYS,
+  layoutSubagentPath,
+  type SubagentPathPart,
+  type SubagentView,
+} from "./subagent-path"
 
 /** Right-hand information shown by the top bar. Empty parts are omitted. */
 export type TopBarRight = {
@@ -14,9 +24,25 @@ export type TopBarRight = {
   context?: string
 }
 
+/** The path of a sub-agent view (#1033 2): the sessions above it, then the sub-agent itself. */
+export type TopBarSubagent = SubagentView & {
+  /** Opens the session of an ancestor segment when that segment is clicked. */
+  onOpen?: (sessionID: string) => void
+}
+
+/** Place of the viewed sub-agent among its siblings. */
+export type TopBarPosition = {
+  index: number
+  total: number
+}
+
 export type TopBarProps = {
   /** Session title after the `›` separator. */
   path?: string
+  /** Replaces `path` while a sub-agent is viewed. */
+  subagent?: TopBarSubagent
+  /** Shown on the right of a sub-agent view, with the keys that move it unless it is the only one. */
+  position?: TopBarPosition
   right?: TopBarRight
 }
 
@@ -27,8 +53,18 @@ const PADDING = 2
 const GAP = 2
 const MARK = "GraphAgent"
 const MARK_PREFIX = `◇─◆ ${MARK}`
-const PATH_SEPARATOR = " › "
 const PART_SEPARATOR = " · "
+const POSITION_GAP = "  "
+
+/** The position text and the keys that move it within `budget` cells; the keys are the first to go. */
+function positionBlock(position: TopBarPosition | undefined, budget: number, ambiguousWidth: AmbiguousWidth) {
+  if (!position || budget <= 0) return undefined
+  const text = t("subagent.position", { index: position.index, total: position.total })
+  const keys = position.total > 1 ? SUBAGENT_SWITCH_KEYS : ""
+  if (keys && cellWidth(text + POSITION_GAP + keys, ambiguousWidth) <= budget) return { text, keys }
+  const shown = truncateCells(text, budget, ambiguousWidth)
+  return shown ? { text: shown, keys: "" } : undefined
+}
 
 export function TopBar(props: TopBarProps) {
   const { theme } = useTheme()
@@ -55,24 +91,51 @@ export function TopBar(props: TopBarProps) {
     const visible = () => parts.filter((part) => included.has(part.key)).map((part) => part.text!)
     const maxRight = Math.max(0, inner - markWidth - GAP)
 
-    while (visible().length > 0 && cellWidth(visible().join(PART_SEPARATOR), aw) > maxRight) {
+    // Where the viewer is among the siblings outranks the model details: those give way while it stays.
+    const place = positionBlock(props.position, maxRight, aw)
+    const placeWidth = place ? cellWidth(place.text + (place.keys ? POSITION_GAP + place.keys : ""), aw) : 0
+    const subagent = props.subagent
+    // The path of a sub-agent view outranks them too: the model shown here is the user's, not the sub-agent's, so it
+    // gets only what is left beside the whole path, and is dropped rather than cut.
+    const pathWidth = subagent
+      ? (layoutSubagentPath({ ...subagent, budget: Number.MAX_SAFE_INTEGER, ambiguousWidth: aw })?.width ?? 0) +
+        cellWidth(PATH_SEPARATOR, aw)
+      : 0
+    const partsBudget = Math.max(
+      0,
+      (subagent ? maxRight - pathWidth : maxRight) - (placeWidth > 0 ? placeWidth + GAP : 0),
+    )
+
+    while (visible().length > 0 && cellWidth(visible().join(PART_SEPARATOR), aw) > partsBudget) {
       if (included.has("model")) included.delete("model")
       else if (included.has("context")) included.delete("context")
+      else if (subagent) included.delete("reasoning")
       else break
     }
 
     let right = visible().join(PART_SEPARATOR)
-    if (cellWidth(right, aw) > maxRight) right = truncateCells(right, maxRight, aw)
+    if (cellWidth(right, aw) > partsBudget) right = truncateCells(right, partsBudget, aw)
 
-    const content = inner - (right ? cellWidth(right, aw) + GAP : 0)
+    const placeGap = right && place ? GAP : 0
+    const rightWidth = cellWidth(right, aw) + placeGap + placeWidth
+    const content = inner - (rightWidth > 0 ? rightWidth + GAP : 0)
     const pathBudget = content - markWidth - cellWidth(PATH_SEPARATOR, aw)
-    const path = props.path && pathBudget > 0 ? truncateCells(props.path, pathBudget, aw) : undefined
-    const left = MARK_PREFIX + (path ? PATH_SEPARATOR + path : "")
-    const gap = right ? Math.max(GAP, inner - cellWidth(left, aw) - cellWidth(right, aw)) : 0
+    const subpath =
+      subagent && pathBudget > 0
+        ? layoutSubagentPath({ ...subagent, budget: pathBudget, ambiguousWidth: aw })
+        : undefined
+    const path = !subagent && props.path && pathBudget > 0 ? truncateCells(props.path, pathBudget, aw) : undefined
+    const leftWidth = subpath
+      ? markWidth + cellWidth(PATH_SEPARATOR, aw) + subpath.width
+      : cellWidth(MARK_PREFIX + (path ? PATH_SEPARATOR + path : ""), aw)
+    const gap = rightWidth > 0 ? Math.max(GAP, inner - leftWidth - rightWidth) : 0
 
     return {
       right,
+      place,
+      placeGap,
       path: path || undefined,
+      subpath,
       gap,
     }
   })
@@ -89,12 +152,82 @@ export function TopBar(props: TopBarProps) {
           <span style={{ fg: theme.text }}>{layout().path}</span>
         </Show>
       </text>
-      <Show when={layout().right}>
+      <Show when={layout().subpath}>
+        {(subpath) => <SubagentPath parts={subpath().parts} onOpen={props.subagent?.onOpen} />}
+      </Show>
+      <Show when={layout().right || layout().place}>
         <box width={layout().gap} flexShrink={0} />
-        <text fg={theme.textMuted} wrapMode="none">
-          {layout().right}
-        </text>
+        <Show when={layout().right}>
+          <text fg={theme.textMuted} wrapMode="none">
+            {layout().right}
+          </text>
+        </Show>
+        <Show when={layout().place}>
+          {(place) => (
+            <>
+              <box width={layout().placeGap} flexShrink={0} />
+              <text wrapMode="none">
+                <span style={{ fg: theme.textMuted }}>{place().text}</span>
+                <Show when={place().keys}>
+                  <span style={{ fg: theme.textDim }}>{POSITION_GAP + place().keys}</span>
+                </Show>
+              </text>
+            </>
+          )}
+        </Show>
       </Show>
     </box>
+  )
+}
+
+/** The segments of a sub-agent path, each after its separator; the ancestors can be clicked to open them. */
+function SubagentPath(props: { parts: readonly SubagentPathPart[]; onOpen?: (sessionID: string) => void }) {
+  const { theme } = useTheme()
+  return (
+    <For each={props.parts}>
+      {(part) => (
+        <>
+          <text fg={theme.textMuted} wrapMode="none">
+            {PATH_SEPARATOR}
+          </text>
+          <PathPart part={part} onOpen={props.onOpen} />
+        </>
+      )}
+    </For>
+  )
+}
+
+/** One segment. A part is fixed for the life of its node: a new layout makes new parts. */
+function PathPart(props: { part: SubagentPathPart; onOpen?: (sessionID: string) => void }) {
+  const { theme } = useTheme()
+  const part = props.part
+  if (part.type === "ancestor") {
+    const id = part.id
+    return (
+      <text fg={theme.text} wrapMode="none" onMouseUp={() => props.onOpen?.(id)}>
+        {part.text}
+      </text>
+    )
+  }
+  if (part.type === "fold") {
+    return (
+      <text fg={theme.textDim} wrapMode="none">
+        {part.text}
+      </text>
+    )
+  }
+  return (
+    <text fg={theme.text} wrapMode="none">
+      <Show when={part.marker}>
+        {(marker) => <span style={{ fg: theme[subagentMarkerToken(marker())] }}>{part.glyph}</span>}
+      </Show>
+      <b>{part.kind}</b>
+      <Show when={part.description}>
+        <span style={{ fg: theme.textMuted }}>{DESCRIPTION_SEPARATOR + part.description}</span>
+      </Show>
+      <Show when={part.tag}>
+        <span style={{ fg: theme.textMuted }}>{DESCRIPTION_SEPARATOR + part.tag}</span>
+      </Show>
+    </text>
   )
 }

@@ -5,17 +5,21 @@ import { expect, test } from "bun:test"
 import type { Part, ReasoningPart, TextPart, ToolPart } from "@graphagent/sdk"
 import {
   completedOutput,
+  delegationFolds,
   errorDenied,
   foldFlag,
   genericShowsBlock,
   outputCharCap,
   reasoningFolds,
+  resultCardFolds,
   shellOutput,
   toolFailed,
   toolMetadata,
   type FoldEnv,
   type FoldSource,
 } from "../../../src/routes/session/fold"
+import { DELEGATION_PROMPT_LINES } from "../../../src/routes/session/rows"
+import { collapseToolOutput } from "../../../src/util/collapse-tool-output"
 
 /**
  * What can fold, as `view.expand.toggle` reads it from the parts of a transcript. The blocks draw from the same
@@ -189,6 +193,57 @@ test("the block rule of a generic tool", () => {
   expect(genericShowsBlock(undefined, undefined, true)).toBe(false)
 })
 
+test("the prompt of a task block folds past its lines, and past the characters those lines take", () => {
+  expect(DELEGATION_PROMPT_LINES).toBe(8)
+  expect(delegationFolds("scan the changelog", 100)).toBe(false)
+  expect(delegationFolds("", 100)).toBe(false)
+  expect(delegationFolds(lines(DELEGATION_PROMPT_LINES), 100)).toBe(false)
+  expect(delegationFolds(lines(DELEGATION_PROMPT_LINES + 1), 100)).toBe(true)
+
+  const cap = outputCharCap(DELEGATION_PROMPT_LINES, 100)
+  expect(cap).toBe(752)
+  expect(delegationFolds("x".repeat(cap), 100)).toBe(false)
+  expect(delegationFolds("x".repeat(cap + 1), 100)).toBe(true)
+})
+
+test("the prompt of a task block folds by the width of the view: a wider one shows more of it", () => {
+  const prompt = "x".repeat(outputCharCap(DELEGATION_PROMPT_LINES, 100) + 1)
+  expect(delegationFolds(prompt, 100)).toBe(true)
+  expect(delegationFolds(prompt, 200)).toBe(false)
+  // The least width the cap is taken from: a narrow view still shows twenty characters to a line.
+  expect(delegationFolds("x".repeat(160), 10)).toBe(false)
+  expect(delegationFolds("x".repeat(161), 10)).toBe(true)
+})
+
+test("the prompt of a task block counts characters, not the units a character takes in a string", () => {
+  const cap = outputCharCap(DELEGATION_PROMPT_LINES, 100)
+  // Each takes two UTF-16 units: the string is longer than the cap, the text is not.
+  const emoji = "\u{1F600}".repeat(cap - 1)
+  expect(emoji.length).toBeGreaterThan(cap)
+  expect(delegationFolds(emoji, 100)).toBe(false)
+  expect(delegationFolds(`${emoji}\u{1F600}\u{1F600}`, 100)).toBe(true)
+  expect(delegationFolds("请".repeat(cap), 100)).toBe(false)
+  expect(delegationFolds("请".repeat(cap + 1), 100)).toBe(true)
+})
+
+test("the fold of a task block is the one its block draws: it folds exactly when the output is cut", () => {
+  const prompts = [
+    "",
+    "short",
+    lines(DELEGATION_PROMPT_LINES),
+    lines(DELEGATION_PROMPT_LINES + 1),
+    `${lines(DELEGATION_PROMPT_LINES)}\n`,
+    "x".repeat(900),
+    "请".repeat(700),
+  ]
+  for (const width of [10, 60, 100, 200]) {
+    for (const prompt of prompts) {
+      const cap = outputCharCap(DELEGATION_PROMPT_LINES, width)
+      expect(delegationFolds(prompt, width)).toBe(collapseToolOutput(prompt, DELEGATION_PROMPT_LINES, cap).overflow)
+    }
+  }
+})
+
 test("the metadata of a call is the stored one, with the running preview laid over its output", () => {
   const stored = tool("bash", completed("", { output: "stored", exit: 0 }))
   expect(toolMetadata(stored, () => undefined)).toEqual({ output: "stored", exit: 0 })
@@ -207,4 +262,45 @@ test("only a finished call has an output", () => {
   expect(completedOutput(completed("done"))).toBe("done")
   expect(completedOutput(failed("boom"))).toBeUndefined()
   expect(completedOutput({ status: "running", input: {}, time: { start: 1 } })).toBeUndefined()
+})
+
+/** A card as `backgroundCard` makes one of a result: the body, and the first line of it that has text. */
+const resultOf = (body: string) => ({
+  body,
+  firstLine:
+    body
+      .split("\n")
+      .find((line) => line.trim())
+      ?.trim() ?? "",
+})
+
+test("the card of a background result folds when it has a second line", () => {
+  expect(resultCardFolds(resultOf("All clear."), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf(""), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("found\nmore"), 100, 1)).toBe(true)
+  // A blank line between is a line too: opening the card shows a paragraph the preview does not.
+  expect(resultCardFolds(resultOf("found\n\nmore"), 100, 1)).toBe(true)
+  expect(resultCardFolds(resultOf("found\nmore"), 100, 2)).toBe(true)
+})
+
+test("the card of a background result folds when its first line is wider than the room the preview has", () => {
+  // The preview has the content width less the border, the padding and the indent: 100 - 4 - 2 cells, and a cell
+  // fewer when the border is two cells wide.
+  expect(resultCardFolds(resultOf("x".repeat(94)), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("x".repeat(95)), 100, 1)).toBe(true)
+  expect(resultCardFolds(resultOf("x".repeat(93)), 100, 2)).toBe(false)
+  expect(resultCardFolds(resultOf("x".repeat(94)), 100, 2)).toBe(true)
+  // Cells, not characters: a wide character takes two.
+  expect(resultCardFolds(resultOf("请".repeat(47)), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("请".repeat(48)), 100, 1)).toBe(true)
+  // A glyph of ambiguous width takes two at that setting: the same line fits at one and is cut at two.
+  expect(resultCardFolds(resultOf("·".repeat(90)), 100, 1)).toBe(false)
+  expect(resultCardFolds(resultOf("·".repeat(90)), 100, 2)).toBe(true)
+})
+
+test("the card of a background result folds by the width of the view: a wider one has room for the line", () => {
+  const line = resultOf("x".repeat(95))
+  expect(resultCardFolds(line, 100, 1)).toBe(true)
+  expect(resultCardFolds(line, 101, 1)).toBe(false)
+  expect(resultCardFolds(line, 20, 1)).toBe(true)
 })

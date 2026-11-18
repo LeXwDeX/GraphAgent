@@ -30,6 +30,7 @@ import { TestInstance } from "../fixture/fixture"
 import { builtinEntry } from "../fixture/tool-registry"
 import { ProviderTest } from "../fake/provider"
 import { testEffect } from "../lib/effect"
+import { transactLayer } from "../dag/fixture/transact"
 
 /**
  * #1031 M7, end to end through the tool pipeline. An unattended run (a DAG
@@ -49,7 +50,7 @@ const events = EventV2.layer.pipe(Layer.provide(database))
 const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
 const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const store = DagStore.layer.pipe(Layer.provide(database))
-const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
 
 // Every hook event of the run, in order. The hook wants a confirmation for the
 // `write` tool only.

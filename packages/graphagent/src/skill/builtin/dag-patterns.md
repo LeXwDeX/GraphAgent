@@ -1,15 +1,22 @@
 # DAG Patterns
 
-These patterns illustrate common cases; none is a required template or node
-minimum, and workflows can combine or simplify them. Every YAML block is start
-content: save, validate with
-`{ action: "spec", operation: "validate", spec_path: "<file>.yaml" }`, then start with
-`{ action: "run", operation: "start", spec_path: "<file>.yaml" }`. Load skill dag-blocks for
+These patterns are examples, not required templates or node minimums; combine or
+simplify them. Save a YAML block, validate it with
+`{ action: "spec", operation: "validate", spec_path }`, then start it with
+`{ action: "run", operation: "start", spec_path }`. Load skill dag-blocks for
 fields and skill dag-policy for gates and models.
+
+## Choosing a composition
+
+- Two or three independent read-only jobs: `task` each; no workflow.
+- Shape known when writing the graph (pipeline, generate then check): blocks or a template.
+- Width known only after looking (research angles, exploring by module): a `compose` block with `worker_type: surveyor` (angles or candidates) or `mapper` (modules, split again when too big). It adds a plan and a join call; the engine expands it into read-only workers.
+- Parallel writes: `coding` with `fan_out`.
+- Several viewpoints or adversarial review: a review block's `lenses` and `skeptics`.
 
 ## 1. Staged pipeline with gate
 
-Sequential phases; a gate blocks downstream work until quality is confirmed.
+Sequential phases; a gate blocks later work until quality is confirmed.
 
 ```yaml
 config:
@@ -29,10 +36,9 @@ config:
     - { id: implement, name: implement, worker_type: build, depends_on: [gate], condition: 'gate.output.verdict == "ACCEPT"', prompt_template: { inline: "Implement based on approved findings." } }
 ```
 
-The gate is `required: true`, so execution or output-contract failure cancels
-the workflow. A successful non-ACCEPT verdict does not fail the node; the
-condition skips `implement`, and the verdict gives the parent a
-replan or stop decision.
+The `required: true` gate cancels the workflow on execution or output-contract
+failure. A successful non-ACCEPT verdict does not fail the node; the condition
+skips `implement` and the parent decides whether to replan or stop.
 
 ## 2. Parallel fan-out
 
@@ -48,22 +54,22 @@ config:
     - { id: assemble, name: assemble, worker_type: build, depends_on: [migrate-auth, migrate-server], prompt_template: { inline: "Run integration tests and assemble a summary." } }
 ```
 
-`migrate-*` nodes run concurrently, bounded by `max_concurrency`; `assemble`
-waits for both. Non-required worker failures do not cancel the workflow —
-`assemble` still runs and reports which migrations failed.
+`migrate-*` run concurrently (bounded by `max_concurrency`); `assemble` waits for
+both. Non-required worker failures do not cancel the workflow; `assemble` still
+runs and reports them.
 
 ## 3. Adversarial review
 
-Multiple reviewers help when distinct expertise or independent scrutiny adds
-evidence. An arbiter resolves conflicts; this example gates follow-up on its
-verdict, while a read-only review can finish with the parent's findings.
-See the Verdict Disposal Contract in skill dag-recovery.
+Reviewers help when distinct expertise or independent scrutiny adds evidence.
+An arbiter resolves conflicts; here its verdict gates follow-up, while a
+read-only review can end with the parent's findings. See skill dag-recovery's
+Verdict Disposal Contract.
 
 ```yaml
 config:
   name: adversarial-review
   nodes:
-    - { id: implement, name: implement, worker_type: build, depends_on: [], prompt_template: { inline: "Implement the requested change per the task description." }, required: true }
+    - { id: implement, name: implement, worker_type: build, depends_on: [], prompt_template: { inline: "Implement the requested change." }, required: true }
     - { id: review-arch, name: review-arch, worker_type: general, depends_on: [implement], prompt_template: { inline: "Review architecture. Report evidence-backed findings and unverified claims." } }
     - { id: review-logic, name: review-logic, worker_type: general, depends_on: [implement], prompt_template: { inline: "Review logic. Report evidence-backed findings and unverified claims." } }
     - id: arbitrate
@@ -74,16 +80,14 @@ config:
       report_to_parent: true
       output_schema:
         { type: object, required: [verdict, summary, findings, required_actions], properties: { verdict: { type: string, enum: [ACCEPT, REVISE, REJECT, BLOCKED] }, summary: { type: string }, findings: { type: array }, required_actions: { type: array } } }
-      prompt_template: { inline: "Two reviewers produced findings. Submit one structured ACCEPT, REVISE, REJECT, or BLOCKED decision with deduplicated findings and required actions." }
-    - { id: deep-dive, name: deep-dive, worker_type: general, depends_on: [arbitrate], condition: 'arbitrate.output.verdict != "ACCEPT"', report_to_parent: true, prompt_template: { inline: "The arbiter did not accept. Verify each required action against the code and produce a corrected, evidence-backed action plan." } }
+      prompt_template: { inline: "Merge both reviews into one structured ACCEPT, REVISE, REJECT, or BLOCKED decision with deduplicated findings and required actions." }
+    - { id: deep-dive, name: deep-dive, worker_type: general, depends_on: [arbitrate], condition: 'arbitrate.output.verdict != "ACCEPT"', report_to_parent: true, prompt_template: { inline: "Verify each required action against the code and produce a corrected action plan." } }
 ```
 
-The reviewers are optional `general` workers, so they prefer `standard`. The
-arbiter prefers `advanced` because it is `required: true`: execution failure
-means the artifact could not be confidently accepted, while a successful
-business verdict must still be interpreted. On ACCEPT the conditioned
-`deep-dive` is skipped; otherwise it runs with the arbiter's findings, so a
-non-ACCEPT outcome never silently terminalizes the graph.
+Hand-written `general` nodes take `advanced` only when `required: true`: the
+arbiter does, the reviewers do not. On ACCEPT the conditioned `deep-dive` is skipped;
+otherwise it runs with the arbiter's findings, so a non-ACCEPT outcome never
+silently terminalizes the graph.
 
 ## 4. Diverge-converge
 
@@ -101,46 +105,43 @@ config:
 ## Cross-domain composition
 
 The Router and workflow library own route and execution choices. These examples
-apply when several domain references seem useful after choosing a DAG; domain
+apply once a DAG is chosen and several domain references seem useful; domain
 overlap does not itself require one.
 
-Match examples to the final artifact:
+Match examples to the artifact:
 
-- Product decision: keep product planning as the backbone; technical
-  feasibility is evidence, not a second route.
-- Implementation-ready design: keep technical design as the backbone; product
-  context supplies constraints.
-- Changed code: keep project development as the backbone unless an unknown
-  defect first requires causal diagnosis.
-- Defect repair: keep debug and repair as the backbone; repair, regression
-  proof, and review stay in that graph.
-- Verdict: code review for a pinned change, security/performance audit for
-  those evidence domains, technical design for a proposed system or migration.
+- Product decision: product planning is the backbone; technical feasibility is
+  evidence, not a second route.
+- Implementation-ready design: technical design is the backbone; product context
+  supplies constraints.
+- Changed code: project development is the backbone unless an unknown defect
+  needs causal diagnosis first.
+- Defect repair: debug and repair are the backbone; repair, regression proof,
+  and review stay in that graph.
+- Verdict: code review for a pinned change, security/performance audit for those
+  domains, technical design for a proposed system or migration.
 
-Security, performance, and review can add secondary assurance to
-implementation or repair artifacts; their checks may fit existing work without a
-separate workflow. Address the evidence gap rather than attach every domain's
-process.
+Security, performance, and review can add secondary assurance to implementation
+or repair artifacts, often inside existing work rather than a separate workflow.
+Address the evidence gap, not every domain's process. Add the smallest
+assurance slice:
 
-Add the smallest assurance slice:
-
-- Keep a primary reference for objective clarity; secondary references
-  suggest a focused evidence lane or gate. Retarget borrowed instructions;
-  never copy wholesale.
-- A security-sensitive feature keeps the development backbone and adds scoped
-  threat, authorization, secret, or supply-chain checks before review.
-- A security defect keeps the debug backbone and adds exploitability and
-  boundary verification around the causal repair.
-- A performance repair keeps the debug or development backbone and adds a
-  repeatable baseline plus before/after measurement.
-- A dependency or release review keeps the review backbone and adds only
-  relevant provenance and reachability evidence.
+- One primary reference sets the objective; secondary ones suggest a focused
+  evidence lane or gate. Retarget borrowed instructions; never copy wholesale.
+- Security-sensitive feature: development backbone plus scoped threat,
+  authorization, secret, or supply-chain checks before review.
+- Security defect: debug backbone plus exploitability and boundary verification
+  around the causal repair.
+- Performance repair: debug or development backbone plus a repeatable baseline
+  and before/after measurement.
+- Dependency or release review: review backbone plus relevant provenance and
+  reachability evidence.
 
 Reuse evidence while valid. Extra review or synthesis nodes help when they
 resolve uncertainty, not as ceremonial endpoints. Unordered writers share one
 workspace: give them disjoint write sets or serialize them with real
 dependencies. Compiler-bound reviews retain their fingerprint contracts.
-Composition does not redefine block fields, verdicts, repair, or recovery; load
+Composition does not redefine block fields, verdicts, repair, or recovery; see
 skill dag-blocks and skill dag-recovery. Interpret non-ACCEPT results against
-the requested outcome: a report, direct follow-up, or graph adaptation may be
-appropriate. Changing domains does not reset budgets or authorize new work.
+the requested outcome (a report, follow-up, or graph adaptation). Changing
+domains does not reset budgets or authorize new work.

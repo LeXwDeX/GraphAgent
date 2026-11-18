@@ -101,8 +101,20 @@ export const layer = Layer.effect(
         const states = new Map<string, WorkflowState>()
         // Mailbox-only changes: the row is unchanged, but agent_messages moved.
         const dirty = new Map<string, Set<string>>()
+        // #1158: the `expanded_from` marks live in the workflow's persisted definition, not in a node row. Reading them
+        // parses the whole definition, which only a graph change rewrites, so the last one read is kept per workflow
+        // and reused while its text is the same.
+        const expansions = new Map<string, { readonly config: string; readonly marks: ReadonlyMap<string, string> }>()
 
         const serialize = (view: DagSummary.NodeView) => JSON.stringify(view)
+
+        const marksOf = (workflowID: string, config: string) => {
+          const known = expansions.get(workflowID)
+          if (known?.config === config) return known.marks
+          const marks = DagNodeView.expandedFrom(config)
+          expansions.set(workflowID, { config, marks })
+          return marks
+        }
 
         const markDirty = (workflowID: string, nodeID: string) => {
           const set = dirty.get(workflowID) ?? new Set<string>()
@@ -110,12 +122,16 @@ export const layer = Layer.effect(
           dirty.set(workflowID, set)
         }
 
-        const readViews = (rows: ReadonlyArray<DagStore.NodeRow>, ownerSessionID: string) =>
+        const readViews = (
+          rows: ReadonlyArray<DagStore.NodeRow>,
+          ownerSessionID: string,
+          marks: ReadonlyMap<string, string>,
+        ) =>
           Effect.gen(function* () {
             const views = new Map<string, DagSummary.NodeView>()
             if (rows.length === 0) return views
             if (messages._tag === "None") {
-              for (const row of rows) views.set(row.id, DagNodeView.base(row))
+              for (const row of rows) views.set(row.id, DagNodeView.base(row, marks.get(row.id)))
               return views
             }
             const first = rows[0]
@@ -138,7 +154,7 @@ export const layer = Layer.effect(
               .pipe(Effect.catchCause(() => Effect.succeed({ ok: false as const })))
             const byNode: ReadonlyMap<string, DagMessages.Metadata> = batch.ok ? batch.value : new Map()
             for (const row of rows)
-              views.set(row.id, DagNodeView.observed(DagNodeView.base(row), byNode.get(row.id)))
+              views.set(row.id, DagNodeView.observed(DagNodeView.base(row, marks.get(row.id)), byNode.get(row.id)))
             return views
           })
 
@@ -178,14 +194,17 @@ export const layer = Layer.effect(
             if (wf?.projectId !== ctx.project.id) {
               states.delete(workflowID)
               dirty.delete(workflowID)
+              expansions.delete(workflowID)
               return
             }
             if (wf.directory !== "" && DagLocation.canonicalDirectory(wf.directory) !== DagLocation.canonicalDirectory(ctx.directory)) {
               states.delete(workflowID)
               dirty.delete(workflowID)
+              expansions.delete(workflowID)
               return
             }
             const rows = yield* store.getCurrentNodes(workflowID)
+            const marks = marksOf(workflowID, wf.config)
             const previous = states.get(workflowID)
             const seq = (previous?.seq ?? 0) + 1
             const resync = previous === undefined || previous.graphRev !== wf.graphRev
@@ -194,13 +213,14 @@ export const layer = Layer.effect(
               states.set(workflowID, {
                 seq,
                 graphRev: wf.graphRev,
-                rows: new Map(rows.map((row) => [row.id, serialize(DagNodeView.base(row))])),
+                rows: new Map(rows.map((row) => [row.id, serialize(DagNodeView.base(row, marks.get(row.id)))])),
               })
               emit(workflowID, wf.sessionId, wf.graphRev, seq, [], [], true, workspace)
               return
             }
 
-            const base = new Map(rows.map((row) => [row.id, serialize(DagNodeView.base(row))]))
+            // The mark is part of what a row is compared by, so a node whose slot was renamed is pushed again.
+            const base = new Map(rows.map((row) => [row.id, serialize(DagNodeView.base(row, marks.get(row.id)))]))
             const rowByID = new Map(rows.map((row) => [row.id, row]))
             const removed = [...previous.rows.keys()].filter((id) => !base.has(id))
             // Candidates: rows whose durable projection changed, plus nodes a
@@ -219,7 +239,7 @@ export const layer = Layer.effect(
             const candidateRows = [...candidates]
               .map((id) => rowByID.get(id))
               .filter((row): row is DagStore.NodeRow => row !== undefined)
-            const views = yield* readViews(candidateRows, wf.sessionId)
+            const views = yield* readViews(candidateRows, wf.sessionId, marks)
             for (const row of candidateRows) {
               const view = views.get(row.id)!
               const serialized = serialize(view)

@@ -6,14 +6,30 @@ export * as DagNodeView from "./node-view"
 import type { DagMessages } from "@graphagent/core/dag/messages"
 import type { DagStore } from "@graphagent/core/dag/store"
 import type { DagSummary } from "@graphagent/schema/dag-summary"
+import { parseWorkflowConfig } from "./dag"
 import { DagLocation } from "./location"
+
+/**
+ * The `expanded_from` of every node of a workflow that has one (#1158), read from
+ * the workflow's persisted definition: a node row has no definition columns, so the
+ * mark can only come from `config`. A workflow no compose expansion has touched has
+ * none, and neither has one whose definition is empty or unreadable, so this never
+ * fails and an unreadable definition costs a client the grouping and nothing else.
+ */
+export function expandedFrom(config: string): ReadonlyMap<string, string> {
+  const marks = new Map<string, string>()
+  for (const node of parseWorkflowConfig(config)?.nodes ?? [])
+    if (typeof node.expanded_from === "string") marks.set(node.id, node.expanded_from)
+  return marks
+}
 
 /**
  * The one node-row projection shared by the HTTP `dag.nodes` endpoints and the
  * incremental `dag.workflow.nodes.updated` push. Keeping it here means the
- * fetched table and the pushed rows cannot drift.
+ * fetched table and the pushed rows cannot drift. `expanded` is the node's entry
+ * of `expandedFrom`; it is left out of the view when the node has none.
  */
-export function base(row: DagStore.NodeRow): DagSummary.NodeView {
+export function base(row: DagStore.NodeRow, expanded?: string): DagSummary.NodeView {
   return {
     id: row.id,
     workflow_id: row.workflowId,
@@ -22,6 +38,7 @@ export function base(row: DagStore.NodeRow): DagSummary.NodeView {
     status: row.status,
     required: row.required,
     depends_on: row.dependsOn,
+    ...(expanded !== undefined ? { expanded_from: expanded } : {}),
     ...(row.modelId !== null ? { model_id: row.modelId } : {}),
     ...(row.modelProviderId !== null ? { model_provider_id: row.modelProviderId } : {}),
     ...(row.childSessionId !== null ? { child_session_id: row.childSessionId } : {}),

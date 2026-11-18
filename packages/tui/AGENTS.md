@@ -23,10 +23,14 @@
 packages/tui/src/
   app.tsx               # provider 树与 AppFrame 装配（F1 3.3）
   shell/                # 骨架（F1）：app-frame、top-bar、footer（及 footer-status、dag-indicator、hook-progress）、
-                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行）；bottom-zone（F3）；pr-line（F6，未落地）
+                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行，F6 的 PR 行与提醒行）；bottom-zone（F3）；
+                        #   subagent-path（子 agent 视图的顶栏路径与溢出折叠，F5；后台运行的标签见 6.4 的“子 agent 视图的后台标签”，#1058）；
+                        #   pr-line.tsx（F6：PR 行、提醒行与状态带选行的纯布局函数）；
+                        #   background-mark.ts（#1058：状态带的后台标记与后台行的纯布局，状态带与抽屉共用其中的后台运行计数与命名）；
+                        #   pr-tracker.ts、pr-tracker-context.tsx（F6：PR 与提醒的跟踪，状态带只经后者读它）
   panel/                # 面板模板与具体面板（F3）：
                         #   shell.tsx（PanelShell）、list.tsx、settings.tsx、detail.tsx、host.tsx（PanelHost）
-                        #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4 已落地）
+                        #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4 已落地）、panel/agents.tsx（/agents，F5 已落地）
   ask/                  # ask-queue.ts：询问区队列；local.tsx、local-ask.tsx：confirm/choice（F3）
   commands/             # registry.ts、server-args.ts（另有 catalog.ts、context.tsx、palette.ts）：/ 命令注册表（F3）；
                         #   命令 run 回调可经 useSDK() 发写请求
@@ -38,11 +42,15 @@ packages/tui/src/
                         #   ticker.ts、sdk.tsx、route.tsx、theme.tsx …
   routes/               # home.tsx（及 home/）、session/、diff/
                         #   session/index.tsx 的 Main 按 parentID 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
-                        #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
-  session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
+                        #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、result-card.ts（后台结果卡的版面纯函数）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
+  session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）、
+                        #   subagents.ts（子 agent 的 kind、描述、状态标记、/agents 的行模型与分组序等纯函数，顶栏、面板与同级键共用，F5、#1058）
+                        #   subagent-record.ts（子 agent 记录的任务块与结束行的判定和文字）
+                        #   background.ts（后台 Task 的状态与耗时的纯函数：状态取值 结果 > job > 摘要，#1058）
+                        #   background-card.ts（后台结果卡的纯函数：只按 part 的 metadata 认结果，取正文、首行与标题，#1058）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
   dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4 已落地）
-  pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
+  pr/                   # state.ts：prLineState、短标记、toast 与警示清除的纯函数；reminder.ts：提醒倒计时的纯函数（F6）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
   ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）、toast.tsx、adaptive-markdown.tsx
@@ -60,20 +68,29 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 
 目录职责（一句话）与落地 Issue：
 
-- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），其余行（PR、信任）与 `pr-line`（F6）未落地。
+- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；F5 已落 `subagent-path`（子 agent 视图顶栏路径的纯布局函数，顶栏与页脚的子 agent 分支用它）；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），PR 行、提醒行与它们的纯布局 `pr-line.tsx` 已落地（F6，#1036），信任行未落地。`pr-tracker.ts` 是 PR 与提醒的跟踪（交接判断、警示保留、`ticker.at` 一次性回调、toast 都在这里），`pr-tracker-context.tsx` 是状态带读它的只读接口；状态带只排版 tracker 给出的结果。
   - 输入框（`Prompt`）画在 `bottom-zone` 的输入框槽里：主区 → 状态带槽 → 输入框 → 页脚，抽屉只覆盖主区（F4 PR0，#1032）。`home`、`session` 路由在 setup 里调用 `useBottomZoneOptional()?.setComposer({ render })` 装入自己的 `Prompt`（草稿、提交、焦点的接线仍留在路由里），卸载时调用返回的撤销函数（只撤销自己装的那一份）。`render` 在槽里创建，不在路由的 provider 树里，只能读到应用级 context；路由自己提供的（会话的 `LocationProvider`，`@` 文件搜索靠它定位目录）要在 `render` 里重新提供。
   - `AppFrame` 的 `statusBand`、`bottomZone`、`drawer` 经 `Slot` 只构造一次：直接写 `<Show when={props.x}>{props.x}</Show>` 会把 prop 里的 JSX 构造两次，多出来的一份不上屏却一直在跑（面板、输入框、key layer 都会重复）。
-- `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`/dag` 面板 `panel/dag.tsx` 已落地（F4）。
+- `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`/dag` 面板 `panel/dag.tsx` 已落地（F4），`/agents` 面板 `panel/agents.tsx` 已落地（F5，只读数据层已有的会话、`taskIndex`、作业状态与摘要，打开时不加载子会话）。
+  - `ListPanel` 的选中按条目 `id` 记，不按下标：条目换位，或 `group` getter 随数据换组，选中都跟着条目走；选中的条目消失时选中留在原下标（截到列表末尾），那个位置上的条目从此是被选中的。没传 `selectionKey` 的列表保持原样：`items` 一变，选中回到 `current` 或第一项。传了 `selectionKey` 的列表（自己筛选条目的所有者，如 `/agents`，传它筛选用的文字）`items` 变化不重置选中，只在 `selectionKey` 变化（模板自己过滤的列表还包括模板的过滤文字变化）时回到 `current` 或第一项。
+  - `/agents` 的分组（#1058 6）：列表是根会话的直接子会话，分三组，空组不显示组头。顺序固定：后台（后台运行中，其次排队，其次状态未知）→ 前台（仍在运行的前台子 agent）→ 已结束（其余：后台完成、失败、已中断、已取消，前台完成、失败，以及状态未知的前台会话，它们不被说成在运行）；组内按开始时间倒序，同刻按 id 升序。分组、排序、行模型都在 `session/subagents.ts`（`subagentRows`），面板只排版；组头走 `ListItem.group`，且是随行状态变化的 getter。默认选中第一行，所以有后台运行中的子 agent 时落在其中最新的那一个（运行中排在排队之前），状态带的点击靠这一点。选中按子 agent 的 id 记：某个子 agent 的状态迁移让顺序变了（换组、换位），选中仍在原来那个子 agent 上，`⏎`、`ctrl+r` 作用于它；选中的子 agent 消失（会话被删）时选中留在原位置（截到末行）；只有用户改过滤文字才回到第一行（`/agents` 把过滤文字作为 `selectionKey` 交给 `ListPanel`）；只是状态词或耗时变了同样不动选中。
+  - 列：状态符号（● 运行、○ 排队、✓ 完成、✗ 失败、已中断、已取消；排队用 `statusQueued`，状态未知不画符号）、`kind · 描述`、发起者（`background.row.byUser`/`byAgent`；没有 Task 链接的会话，如 DAG 节点，是 `—`）、状态文字 · 工具次数 · 耗时。后台运行的状态取 `backgroundStatus`，其词沿用 `subagent.state.*`，只有排队、已中断、已取消用 `background.agents.status.*`；排队的运行没有耗时（`—`，不读时钟），后台运行的耗时取 Task 调用的开始时刻（续跑的任务会话很老），已上报结果的取服务端的起止之差；F5 的冷启动规则（`—`、不说 0）不变。发起者与状态两列各按本列最宽的一行对齐，名称取剩余宽度，80 列下 `ambiguous_width` 为 1 和 2 都不溢出。
+  - 标题区计数 `N · a 个后台运行 · q 个排队`（`background.agents.count`、`.count.running`、`.count.queued` 三个键，为 0 的段省略，`a`、`q` 只数状态已知的后台运行）：标题是 JSX（`ListPanelProps.title` 接受 JSX），计数用 `textMuted`，按标题行剩余宽度截断；没有子 agent 时不画计数。
+  - 选中行下方的详情（`ListItem.description` 可以是多行；`ListPanel` 把每一项的行与详情包在同一个列里，滚动到该项时详情一并进入视口，不会被裁掉）：第一行是委托 prompt；已有结果上报的后台运行再加一行 `结果：{首行} · 结果已回注`，首行取根会话已加载的结果消息里 `<task_result>`/`<task_error>` 之间的第一个非空行（`backgroundResultLine`），消息没加载时不猜，只写 `结果已回注`；已中断而没有结果上报的写 `未回注（已中断）`。运行中、排队、前台和其余状态没有这一行。
+  - `ctrl+r`（`subagent.relay`）仍是唯一动作，预填按选中行的状态选模板（`subagentRelayText`，只预填不发送，经 `prefillRootPrompt`）：后台运行中或排队 `background.prefill.cancel`（带 `task_id`，让主 agent 用 task 工具的 cancel）；后台完成 `background.prefill.continue`；后台失败、已中断、已取消 `background.prefill.retry`（原因取子会话摘要错误的第一行，没有则用状态词）；前台与状态未知的后台沿用 F5 的 `subagent.relay.prefill`。没有停止、重试等控制键；`⏎` 进入、`esc` 关闭不变。
 - `ask/`：权限、提问、`confirm`、`choice` 的队列（F3）。权限与提问的展示组件在 `routes/session/`（`permission.tsx`、`question.tsx`），经 `ask-surface.tsx` 汇入队列；`confirm`、`choice` 的展示组件在 `ask/local.tsx`，调用入口 `askConfirm`、`askChoice` 在 `ask/local-ask.tsx`。
 - `commands/`：内置与服务端命令的统一注册表（F3）。
 - `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
 - `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
-- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
+  - Task 行（`routes/session/index.tsx` 的 `Task`，#1058）：标题行是 `{agent} Task — {描述}` 加发起者与前后台标记（读 `taskIndex[child]`，没有链接时读 Task part 的 metadata）；后台运行的状态行由 `backgroundStatus` 决定，每个状态一条固定文案和一个颜色 token，`unknown` 与前台行一样；前台行文案不变，但全部走 `t()`，键在 `subagent.row.*`，后台行的键在 `background.row.*`。已结束的行耗时是结果上报的起止之差，不读时钟。
+  - 后台结果卡（`routes/session/index.tsx` 的 `BackgroundResultCard`，#1058）：运行结束后服务端加进会话的那条用户消息（文本 part 带 `metadata.backgroundResult`）画成一张卡，不再随合成文本隐藏；窗口化与非窗口化两条路径都画。只有 metadata 认卡，文本里写了 `<task_result>` 不算，命令留给模型的 “Summarize…” 等没有 metadata 的合成文本仍不出行。折叠态两行（标题行带状态与耗时，首行预览加提示），`ctrl+o` 展开全文（与助手文本同一个 `AdaptiveMarkdown`），点击进入子 agent（`openSubAgent`，不发请求）；提示里的键名取 `view.expand.toggle` 的当前绑定（`ctx.shortcuts.expand`）。文案键在 `background.card.*`。这条消息仍是合成文本：消息跳转、最近用户消息、撤销回填输入框、`panel/message`、`panel/fork`、`panel/timeline`、排队消息与 PR 跟踪继续把它排除在用户的话之外；`/copy`、`/export` 把卡写成 `### 标题` 加正文。
+  - 会话路由的跳转（#1058 7）：`SessionRoute.messageID` 是一次性的跳转请求，点后台运行结果的 toast 时由 `app.tsx` 的 `openResult` 带上。`routes/session/index.tsx` 等该会话的激活结束（激活以滚到末尾收尾，跳转要排在它之后；路由带 `messageID` 时，切换会话排的 50 ms 滚到底也不排）再滚到那条消息（每次切换会话先清掉“已激活”，所以回到之前看过的会话时，跳转等的是这一次的激活）：窗口化的转录走行表（`scrollToMessageID`），未窗口化的转录按节点 id（用户消息、任务块与后台结果卡有，结果卡的 id 是它所在消息的 id）；所以点 toast 落在结果卡上。画不出来的消息（没有 `backgroundResult` 的 synthetic 文字不成行）没有位置，跳到转录末尾。滚完就把 `messageID` 从路由上摘掉（`navigate` 时不带它），所以再次请求同一条消息会再滚一次；不设定时器，由激活完成的信号和 `messageID` 的变化触发。
+- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`、`fold.ts`（`dagFold`：由节点的 `expanded_from`、波次和已展开的槽算出工作流的可见行顺序，见 6.4）；`pr/` 已有 `state.ts`、`reminder.ts`（F6）。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
-- `session/`：会话级辅助函数。目前只有预填落地 `prefill.ts`；同级排序 `siblings.ts`、导航 `navigate.ts` 随 F5。
-- `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒。
+- `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，是创建序的基础排序）；子 agent 的 `i/N`、`←→`、`<leader>down` 与 `/agents` 共用 `subagents.ts` 的分组序（`subagentChildren`、`subagentSiblings`，顺序随子 agent 的状态变化，`←→` 因此按列表从上到下走）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；子 agent 的 `kind`、描述、状态标记（符号与颜色 token）和 `/agents` 的行模型、分组序、详情与预填文字 `subagents.ts`（顶栏、面板、同级键、提醒共用的唯一实现；`subagentSource(sync.data)` 把 Task 链接、作业状态与摘要三处接成行的来源）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）；后台结果卡 `background-card.ts`（`backgroundCard(part, kind?)` 认出结果、取 `<task_result>`/`<task_error>` 里的正文与首行，不信文本、只认 metadata；`backgroundCardTitle` 出标题行的字，`/copy` 与卡共用）；后台 Task 的状态 `background.ts`（`backgroundStatus` 按“服务端上报的结果 > 运行所属 job 的状态 > 子会话摘要”取值，先匹配者胜，后来的来源不改写先来的；`queued` 是推断：job 在跑而子会话没跑过一轮、没调过工具，服务端不上报排队；三处都没有说法时为 `unknown`。`backgroundElapsed` 对进行中的运行取 `now - startedAt`，对已结束的取结果上报的起止之差，不知道时返回空，不取负值）。
+- `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒：权限请求（任何运行方式）和后台运行的结果到达（#1058 7，见 6.5）；前台子 agent 的结束不弹 toast，子 agent 结束的声音与系统通知（`agent_completed`）不变。
 - `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。
 - `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
 - `component/`：冻结。迁移前的现有组件（输入框、`PatchDiff`、`Spinner` 等）留在原处，不得新增文件；F1–F6 全部合并时应为空或只剩明确列出的遗留。
@@ -127,7 +144,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不可见会话只留 `SessionSummary`，完整消息只在 `hydrated`（LRU，基础上限 `HYDRATED_MAX = 4`，实际上限 `max(HYDRATED_MAX, 父链长度 + 1)`）里。当前会话与全部祖先不被驱逐。`session.deleted` 要同时清 `message`、`part`、`summary`、`hydrated`。
 - 进入会话的固定顺序：向 interest 聚合器登记 → `await setInterest` 确认 → `sync.session.sync(sessionID)` → 之后的事件与快照幂等合并。
 - interest 只经唯一聚合器 `context/interest.ts` 登记（来源键：当前会话与父链、F5 子 agent 视图、F4 正在显示的工作流的归属会话）。聚合后每帧至多一次 `setInterest`。检查：`grep -rn "setInterest" packages/tui/src` 只命中 `context/interest.ts` 与 `context/` 内的接入处。
-- 重连：唯一入口是 `context/sync.tsx` 提供的 `onResync(fn)` 注册表；F4、F6 等功能注册各自的刷新函数，不自建重连监听。`reconnected` 后所有 `hydrated` 会话重新 `sync`，buffer 清空，已加载会话的摘要由快照重建；其余数据片（`dag` 汇总、`goal`、`pr_watch`、`dagNodes`、`dagMode`）各自全量刷新（`dag` 汇总与 `dagMode` 在同一个刷新里读完，之后路由的根还缺快照而需要时补取；`dagRunning` 没有读口，由这两处读取带回）。快照加载与重连刷新不得触发 toast（F6 2.4）。新增数据片必须在同一 PR 里向 `onResync` 注册刷新函数；只存在客户端内存、服务端没有读口的片除外，如 `dag_focus`（用户在 `/dag` 面板里选过、打开过的工作流，按根会话记，会话删除时清掉），没有可刷新的东西。
+- 重连：唯一入口是 `context/sync.tsx` 提供的 `onResync(fn)` 注册表；F4、F6 等功能注册各自的刷新函数，不自建重连监听。`reconnected` 后所有 `hydrated` 会话重新 `sync`，buffer 清空，已加载会话的摘要由快照重建；其余数据片（`dag` 汇总、`goal`、`pr_watch`、`reminder`、`dagNodes`、`dagMode`）各自全量刷新（`dag` 汇总与 `dagMode` 在同一个刷新里读完，之后路由的根还缺快照而需要时补取；`dagRunning` 没有读口，由这两处读取带回）。快照加载与重连刷新不得触发 toast（F6 2.4）。新增数据片必须在同一 PR 里向 `onResync` 注册刷新函数；只存在客户端内存、服务端没有读口的片除外，如 `dag_focus`（用户在 `/dag` 面板里选过、打开过的工作流，按根会话记，会话删除时清掉），没有可刷新的东西。
 - 禁止轮询 DAG 节点或 PR 状态。拉取触发点只有：首次需要、`resync`、`graphRev` 跳变、重连（F4 2.1）。
 
 ### 新增一种服务端事件的接入步骤
@@ -176,8 +193,8 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   订阅方式沿用 F2 方案 5 的 `subscribe()`；没有订阅者不创建定时器，窗口失焦时 `frame` 暂停。
 
 - 只有 `context/ticker.ts`、`context/frame-clock.ts`（帧对齐回退）和 `terminal-win32.ts`（平台适配，不在渲染路径）允许出现 `setTimeout`/`setInterval`。检查：`grep -rln "setInterval\|setTimeout" packages/tui/src` 只命中这三个文件。新增白名单必须改本规范，并在 PR 里说明理由。组件内计时、自建轮询一律禁止。
-- toast 时长、提问倒计时（F3）、已用时间（F4）、PR 的"3 分钟未响应"与"60 秒隐藏"（F6）全部用 `second` 或 `at`。
-- P15（空闲 0 帧）在没有任何秒级显示可见时成立；显示秒级耗时的组件只在可见时订阅 `second`。
+- toast 时长、提问倒计时（F3）、已用时间（F4）、PR 的"3 分钟未响应"与"60 秒隐藏"、提醒倒计时（F6）全部用 `second` 或 `at`；F6 的三项都在 PR tracker 里用 `at`，状态带不订阅。
+- P15（空闲 0 帧）在没有任何秒级显示可见时成立；显示秒级耗时的组件只在可见时订阅 `second`。后台 Task 行（#1058）只在“运行中且位于视口内（`ctx.isVisible`）”时订阅：排队、已结束、滚出视口的行不订阅，状态变了或滚出视口就取消。
 - 唯一允许的动画：braille spinner 按固定间隔换帧。不用 `TextAttributes.BLINK`，不做按时间改变透明度的循环动画，不留 `createFadeIn`。
 - `Spinner` 只在位于视口内时订阅 `frame`。"位于视口内"由行表和视口区间判断，不是"是否挂载"（overscan、末尾行、`streaming` 行都是挂载状态但不一定可见）。
 
@@ -192,13 +209,13 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 ### 消息列表
 
 - 行数 ≥ `WINDOW_MIN_ROWS`（2000，依据见 `test/perf/README.md` 的“窗口化阈值”：OpenTUI 0.8.3 上约 2000 行以内全挂载满足全部延迟预算，窗口化的滚动反而更贵）时窗口化：视口上下各 `PART_OVERSCAN = 6` 行，末尾 `TAIL_ALWAYS = 4` 行始终挂载，`streaming` 行、选中行、展开中的行始终挂载。未挂载的连续行合并成一个占位盒。
-- 行模型是 `Row { key, messageID, partID?, kind, revision }`，`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice`。
-- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以内容宽度向上取整加边距，`tool` 2 行，`reasoning` 折叠态 1 行，`user` 按文本行数加内边距，其余 3 行（F2 3.3）。
+- 行模型是 `Row { key, messageID, partID?, kind, revision }`，`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice | delegation | handback | result`；`delegation`、`handback` 只在子 agent 视图出现，`result` 是后台结果卡，键 `part:<partID>`（part 是那条合成文本），折叠 id 就是该 part id，所以 `foldRowKey` 不变；`delegation` 是该会话第一条用户消息（会话窗口里的第一条）改画成的“任务 · 来自主会话”块，取代同一条消息的 `user` 行，`handback` 是结束后追加在表尾的一行，二者都由 `createRowTable` 的 `delegation`、`handback` 入参给出；`revision` 分别取被取代的 `user` 行的 revision 加 Task 描述和展开标志、取那一行的文字（切换语言会重新测量）。`delegation` 行没有 part：它的 `partID` 就是它的 key，也是它在 `SessionViewState` 里的折叠 id（`delegation:<messageID>`，`delegationFoldID`），所以提示词按 `ctrl+o` 或点击都能展开（见下）。
+- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以内容宽度向上取整加边距，`tool` 2 行，`reasoning` 折叠态 1 行，`user` 按文本行数加内边距，`delegation` 按提示词折行数加 5 行（折叠态至多 `DELEGATION_PROMPT_LINES` 行加一行省略号，展开态取全部折行数；会折叠的提示词在其下另有空行加提示行共 2 行，展开与否都在），`handback` 2 行，`result` 折叠态 5 行（上方空行、上下内边距、标题、预览）、展开态按正文折行数加 7 行，其余 3 行（F2 3.3）。
 - 行表按消息增量维护（`routes/session/row-table.ts`）：每条消息一个 memo，只读自己的 parts，store 写入或一帧流式只重算它所属的那一条消息，`rowData` 只在某条消息贡献的行变了时重算。已结束的 part（有 `time.end`）读快照（`settledPartText`），不订阅 stream version；正在写入的 part 只在还没有可显示的文字时订阅，出现首批文字后不再订阅。新代码不得在行表或行内组件里对已结束的 part 调用 `readPartText`，也不得在行表里为未变化的 part 重新派生文本（`createTextFacts` 按文本缓存）。
 - 正在写入的 text/reasoning 行，`revision` 不含正文，只含 `done` 等标志，结束时按全文计算一次。正文变化会让每帧都产生新的 `Row`，使该行每帧重挂载、其后的行全部失效；它的高度靠挂载后的实测（`streaming` 行始终挂载）。`chars`（高度估算）因此只在该行出现与结束时更新。
 - 窗口化的行是否挂载经 `createSelector` 逐行询问（`pinned`、末尾、视口三个选择器），视口移动一行只唤醒进出窗口的那几行；`gaps` 用普通循环计算，内容相同的 map 不替换。不要让每一行都读同一个会随滚动变化的 signal。
 - 组件内局部状态（展开、选中）一律提升到 `SessionViewState = Map<partID, …>`，卸载后再挂载不丢。滚动定位走行表，不依赖渲染节点。
-- 可折叠的块（点击展开的推理、工具输出、工具错误）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定，挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
+- 可折叠的块（点击展开的推理、工具输出、工具错误，子 agent 视图任务块的提示词，以及后台结果卡）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空；任务块没有 part，判定是 `delegationFolds(text, width)`（提示词超过 `DELEGATION_PROMPT_LINES` 行或这些行在内容宽度下的字符上限，与工具输出同一个 `outputOverflows`；块用 `ctx.width`，`foldOfRow` 用同一个 `contentWidth()`），`foldOfRow` 对 `delegation` 行在它为真时返回 `expanded`；结果卡的判定是 `resultCardFolds(card, width, ambiguousWidth)`（正文不止一行，或首行比预览行的余宽宽；余宽随 `ambiguous_width`，因为卡的左边框 `┃` 是 Ambiguous 字形），`foldOfRow` 对 `result` 行同样返回 `expanded`，点击卡不折叠它，而是进入子 agent。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定（折叠 id 经 `foldRowKey` 换成行 key：part 行是 `part:<partID>`，任务块就是它自己的 id），挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
 - 宽度变化使缓存失效。
 - 窗口化转录保持视口内容不动：视口之上的行高变化（未测过的行首次挂载并被测量、行被展开或收起）用 OpenTUI 原生的 `scroll.anchor(行节点)` 保持锚点，由布局在同一帧里调整偏移；不用 `scroll.scrollBy(delta)`，它要等下一帧测到新高度才补偿，每次修正先跳一帧再跳回（#1277 实测 44 次跳动变成 96 次）。`SessionTranscript` 的窗口控制器每个 pass 锚定视口顶部所在的行（该行须已被上一次布局放好）；贴底时不锚定，让滚动盒继续跟随新内容。
 - 窗口按布局之后的偏移取：行表已经知道、布局尚未应用的变化（行集合变了，或某行的 `revision` 变了，例如展开）折算进偏移再算窗口，否则视口里的行会被卸载一帧，屏幕上出现空白。测量不在其中，它读的是已被锚定的布局。
@@ -240,7 +257,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - `slash.name` 以内置优先；服务端同名命令隐藏并写一条日志。别名只保留通用习惯用法。
 - `enabled` 是函数，不触发重新注册。命令列表不依赖 `useKeymapSelector`。
-- 子 agent 视图只允许不改子会话、也不向子会话发请求的命令。`scope` 含 `subagent` 的集合是 F5（#1033）3.3 列出的 12 个（`/new`、`/sessions`、`/copy`、`/export`、`/agents`、`/config`、`/theme`、`/status`、`/help`、`/sidebar`、`/dag`、`/exit`）。扩大它需要修订 F5 与本文。
+- 子 agent 视图只允许不改子会话、也不向子会话发请求的命令。`scope` 含 `subagent` 的集合是 F5（#1033）3.3 列出的 12 个（`/new`、`/sessions`、`/copy`、`/export`、`/agents`、`/config`、`/theme`、`/status`、`/help`、`/sidebar`、`/dag`、`/exit`）。扩大它需要修订 F5 与本文。调试类命令（`app.debug`、`app.console`、`app.heap_snapshot`）只在 `home`、`session`，不在子 agent 视图的面板里；键位照常可用。会改会话或向会话发请求的键（撤销、重做、压缩、后台化、重命名、分叉）在子 agent 视图里随命令一并关闭，`enabled` 取 `!readOnly()`，`test/routes/session/subagent-keys.test.tsx` 逐键验证。
 - 必填参数的命令，从命令面板选中时只把 `/名字 ` 填入输入框并聚焦，不直接执行。
 - 需要编辑一小段文字的操作（重命名、编辑排队消息）用"回填输入框"：预填文本、状态行显示"正在编辑：… · esc 取消"、`⏎` 提交、`esc` 放弃并恢复原草稿。不新增输入对话框（F3 5.4）。
 - 不恢复无斜杠的 `exit`、`quit`、`:q` 退出捷径。
@@ -277,10 +294,10 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 状态带（`shell/status-band.tsx`，单文件）：
 
-- 高度 0–2 行，不占用时高度为 0，不留空行。属于根会话；子 agent 视图显示根会话的工作流与目标；home 不显示。
-- 窄终端（< 100 列）合并为一行。行的优先级与让位顺序以 F4（#1032）方案 1 和 F6（#1036）2.2 为准：DAG 行行尾先让位的是 `/dag` 提示 → 预算段 → 费用 → 并发段 → 阶段名 → 计数压缩 → 标题截断；进度条与模式标记（≤ 8 列）、非警示 PR 短标记（≤ 14 列）不让位。PR 警示态一定单独占一行，窄终端单行时 PR 警示 > DAG > 目标。
-- 只读：点击 DAG 行只打开 `/dag`；点击 PR 行只用系统浏览器打开 URL。
-- DAG 行（F4 PR2）：显示策略 kv `dag_band`（`auto` 默认，有活跃或未确认失败的工作流才显示；`always`；`hidden`），`always` 且没有工作流时显示一行“没有工作流”；`/dag` 面板（panel id `dag`）打开时隐藏，目标行不受影响。主工作流用 `selectMainWorkflow`，其余折叠成行尾 `+N 个`；用户在面板里选过、打开过的工作流记在 `sync.dag.focus`（面板写，状态带只读）。当前波用 `dagCurrentWave`，进度条用 `layoutDagBar`，节点表未加载时按汇总计数画。点击 DAG 行经命令注册表执行 `dag.open`。状态带由 `app.tsx` 以表达式传给 `AppFrame` 的 `statusBand`，不经 memo：槽在 `BottomZoneProvider` 里创建它，它才读得到面板栈。让位（预算为正常档时；警告与耗尽档的例外见下）：先去 `/dag` 提示，再预算、tokens、并发，再 `+N 个`，再波次，再等待主 agent，再把计数压成 `n/m`，再把标题截到 12 列；这之后进度条才收窄，并取走剩余的全部宽度。颜色：行首 `◆` 用 `primary`，进度条按状态 token，说明文字 `textMuted`，分隔符与提示 `textDim`，失败数 `error`、暂停 `statusPaused`；运行中的数量不用品牌色。
+- 高度 0–2 行，不占用时高度为 0，不留空行（画不出内容的行同样不占行）。属于根会话；子 agent 视图显示根会话的工作流、目标、PR 与提醒；home 不显示。
+- 窄终端（< 100 列）合并为一行。行的优先级与让位顺序以 F4（#1032）方案 1 和 F6（#1036）2.2 为准：DAG 行行尾先让位的是后台标记（#1058）→ `/dag` 提示 → 预算段 → 费用 → 并发段 → 阶段名 → 计数压缩 → 标题截断；进度条与模式标记（≤ 8 列）、非警示 PR 短标记（≤ 14 列）不让位。PR 警示态一定单独占一行，窄终端单行时 PR 警示 > DAG > 目标。行的优先级与选取由 `pr-line.tsx` 的 `chooseBandRows` 统一给出，见下面“PR 行与提醒行”。
+- 只读：点击 DAG 行只打开 `/dag`；点击 PR 行只用系统浏览器打开 URL；点击后台标记或后台行只打开 `/agents`。
+- DAG 行（F4 PR2）：显示策略 kv `dag_band`（`auto` 默认，有活跃或未确认失败的工作流才显示；`always`；`hidden`），`always` 且没有工作流时显示一行“没有工作流”；`/dag` 面板（panel id `dag`）打开时隐藏，目标行不受影响。主工作流用 `selectMainWorkflow`，其余折叠成行尾 `+N 个`；用户在面板里选过、打开过的工作流记在 `sync.dag.focus`（面板写，状态带只读）。当前波用 `dagCurrentWave`，进度条用 `layoutDagBar`，节点表未加载时按汇总计数画。点击 DAG 行经命令注册表执行 `dag.open`。状态带由 `app.tsx` 以表达式传给 `AppFrame` 的 `statusBand`，不经 memo：槽在 `BottomZoneProvider` 里创建它，它才读得到面板栈。让位（预算为正常档时；警告与耗尽档的例外见下）：先去后台标记（#1058），再去 `/dag` 提示，再预算、tokens、并发，再 `+N 个`，再波次，再等待主 agent，再把计数压成 `n/m`，再把标题截到 12 列；这之后进度条才收窄，并取走剩余的全部宽度。颜色：行首 `◆` 用 `primary`，进度条按状态 token，说明文字 `textMuted`，分隔符与提示 `textDim`，失败数 `error`、暂停 `statusPaused`；运行中的数量不用品牌色。
 - DAG 模式的显示（F4 PR4，#1032 7；只读，数据都由数据层的现成切片派生，状态带不自己取数）：行尾自左向右依次是等待主 agent（`warning`）、模式标记、用量段、`+N 个`、`/dag` 提示。
   - 模式标记：模式取根会话自己的 `dagMode`（`session.updated` 维护）；开时 `模式开`（`text`），关而有工作流在跑（`running`、`stepping`）时暗色 `模式关`（`textDim`），其余情况没有标记；至多 8 列，不让位，只有窄到进度条也放不下时才最后去掉，不用品牌色。
   - 用量段：全进程并发 `running/cap`、`{tokens} tok`、`预算 {百分比}%`，预算段按档位着色（正常 `textMuted`、警告 `warning`、耗尽 `error`），未设预算不显示百分比；费用段没有数据来源，不做。档位与服务端同一刀（`dag/mode.ts` 的 `dagBudgetTier`：用量 ≥ 预算为耗尽，≥ ⌊预算 × `warn_ratio`⌋ 为警告）。用量取根会话自己各工作流摘要的 `tokens` 之和（事件驱动），在其上叠 `store.dagMode` 快照（预算、`warnRatio`、`limits`）：快照在路由进入的会话树有 DAG 模式开或有工作流时取一次（进入树、该树来了摘要事件、根会话的模式变为开，三个时刻；在途读不重复发），会话的预算字段变化（`session.updated`）、全局 `dag` 配置变化（`config.updated` 的 `keys` 含 `dag`；该事件不经 `useEvent`，数据层直接听 SDK 事件源）与重连时再取（重连时路由的根没有快照而按上述条件需要时，也在此时补取），没有轮询；普通会话与首页不产生读取。并发段的 `running` 是全进程的计数，摘要事件只给它所属的那个会话带上，所以取全进程最近一次的报告（`sync.data.dagRunning`：任一会话的摘要或汇总读取里的 `concurrencyRunning`，或快照的 `limits.running`，以后到者为准），其次才是根会话自己摘要里的，再其次是快照里的（`dagUsage` 的 `running` 输入）。
@@ -288,14 +305,40 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - 等待主 agent：任一工作流 `checkpointPending` 且（根会话空闲，或其最近一个回合以 `error` 结束，读 `turn_settled`）。
   - 预算 toast 只有服务端 `DagBudget` 发出的那一份（`tui.toast.show`）；TUI 不为档位变化、快照加载或重连刷新自弹 toast，只按档位着色（#1032 D6）。服务端 toast 的消息已以标题开头时只显示一次（`ui/toast.tsx` 的 `serverToastText`）。
   - `/dag` 面板的对应部分：summary 区第一行是模式行（`DAG 模式：开/关 · 运行 x/y（全进程） · 节点上限 n · token 用量/预算`，token 段按预算档位着色，放不下时截断不换行）；计数行之后是该工作流的质量行（`quality` 的 `reviews`、`stillOpen`、`completeness`，按工作流计数，`null` 时没有）、预算耗尽时对暂停的工作流（非检查点）说明恢复条件、以及 `coverageCount > 0` 时的“覆盖与截断”块（至多 4 个失败、跳过、取消、中止的节点及原因，其余只计数；服务端的计数还含不对应节点的条目，单独说明，不新增服务端读口）。
-- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，DAG 行优先，没有 DAG 行时才显示目标行。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。缺目标文字或缺状态的目标体（`isGoalShown` 为假，含服务端把“没有目标”回成 null 的情形）不画行、不占高度，也不抛错：行布局里抛出的错误会让状态带所有行停止更新。
-- 无 `setInterval`、无定时拉取；已用时间用 `ticker.second`。状态带本身不订阅 `ticker`：运行段是静态字符。
+- `/dag` 面板折叠展开生成的子节点（#1158 PR5）：折叠规则只在 `dag/fold.ts` 的 `dagFold` 里定义，面板只画它给出的行。
+  - 归属与画法：compose 展开生成的节点带 `expanded_from`（线上字段名，`DagNodeRow` 原样保留）；被在场节点的 `expanded_from` 指到的节点是展开槽（slot，展开后即同 id 的 join 节点）。子孙画在槽下，不在自己的波位置：波列留空，缩进（每层 2 格）写在名称格里，状态符号仍占一列；`▸`/`▾` 列只在工作流里有槽时才预留，没有标记的工作流渲染与此前逐字节相同；`expanded_from` 过期（指向的槽不在场）的节点按顶层画。
+  - 折叠状态：默认折叠，已展开的槽里的嵌套槽同样折叠。状态放在组件外，同 `DagPanelState.expanded`（`unfolded`、`toggleUnfolded`），键为 `nodeKey(workflowID, slotID)`。槽行折叠与展开时都显示槽自己（join）的状态和直接子节点数（`dagmode.panel.fold.child` 与 `.children` 两个键，英文单复数分开）。
+  - 按键：槽行上 `space` 折叠或展开，经 `DetailPanel` 的 `onToggle` 与 `DetailRow.toggleLabel`（有 `toggleLabel` 的行按 `space` 调 `onToggle`，选中时显示 `space` 提示；其他行不变）；`⏎` 行为不变。选中的节点被折起时，选中移到可见的祖先槽（`dagFold` 的 `hidden`）。
+  - 提示行让位：槽行上折叠提示取代 `o` 详情提示（键本身仍可用）；窄于 120 列（`SLOT_REQUEST_HINT_WIDTH`）时 `i` 提示也让位，仍保留关闭提示。
+  - 进度条、计数与当前波仍按全部节点算，不论折叠；行上的波号不重排，整波折在槽下时，摘要里的波次可能没有对应的可见行。
+  - 只读：折叠与展开只改视图，`dag.*` 写请求与 `session.command` 均为 0；`test/panel/dag.test.tsx` 的 `the panel is read-only` 用例覆盖。
+- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，按下面的优先级取第一行，没有更高的行时才显示目标行；宽终端有 PR 警示行和 DAG 行时目标行让位给抽屉（`DrawerGoal` 始终显示根会话的目标）。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。缺目标文字或缺状态的目标体（`isGoalShown` 为假，含服务端把“没有目标”回成 null 的情形）不画行、不占高度，也不抛错：行布局里抛出的错误会让状态带所有行停止更新。
+- PR 行与提醒行（F6，#1036 2）：数据来自 `usePrTracker()` 的 `items(root)`、`reminder(root)`（根会话；没有 provider 时没有 PR、没有提醒）。状态带不算 PR 状态与时间，只排版 tracker 给出的结果，也不订阅任何时钟。纯布局都在 `shell/pr-line.tsx`（`layoutPrRow`、`layoutReminderRow`、`prTailText`、`prOpenUrl`、`chooseBandRows`），测试在 `test/shell/pr-line.test.ts`。
+  - 选行：优先级 PR 警示 > DAG > PR（非警示，只在没有 DAG 行时）> 目标 > 提醒，至多 2 行，窄终端（< 100 列）只取第一行；画不出内容（宽度为 0）的行不占行。有 DAG 行且 PR 都非警示时，PR 不单独成行，`prTailMark` 的短标记（≤ 14 列，`textMuted`）作为不让位的一组接在 DAG 行行尾（`/dag` 提示之后），与模式标记一样只在最后一级（超出规格的极窄终端）让位；`dag_band=always` 的“没有工作流”行同样带它。有 PR 警示且有 DAG 行时，宽终端是 PR 警示行加 DAG 行，窄终端只有 PR 警示行；被警示挤出窄状态带的工作流不再向 `sync.dag.watch` 声明。`/dag` 面板打开与 `dag_band` 只管 DAG 行，PR 行和提醒行与目标行一样不受影响。
+  - PR 行：一个 PR 写成 `PR #1035  ✓ 通过 · agent 处理中`，标签 `textMuted`、编号 `text`，结果与说明各用 `prLineState` 给的 token，分隔符 `textDim`；警示态（`tone` 为 `warning`）标签与编号用 `warning`；监视中是 `CI 4/6` 或“等待 CI”（`textMuted`）。多个 PR 压成 `PR !#1040 ~#1036 ✓#1035 +2`（`prCompact`，警示在前，有警示用 `warning`，否则 `textMuted`），放不下的计入 `+k`。放不下时从行尾截断（`truncateCells`），先截说明，再截结果；只用主题 token，不用 `primary`；`ambiguous_width` 为 1 和 2 时都不超宽。
+  - 提醒行：`提醒 · {time}后 · {text}`，到期为 `提醒 · 已到期 · {text}`（`reminder.band.in`、`reminder.band.due`），`textMuted`，到期用 `warning`；提醒文字在行尾，放不下时截它（经 `remoteLine` 去转义）。不可点击。
+  - 点击 PR 行：用系统浏览器（`open`）打开第一个 PR（警示的在前）的 URL，只放行 `http`、`https`，选区守卫与点击 DAG 行相同，不产生任何请求；`open` 失败时没有可显示的出口，`.catch(() => {})` 留空。
+- 后台标记与后台行（#1058 4）：数据来自根会话的后台 Task（`session/background.ts` 的 `backgroundItems`，状态取值 结果 > job > 摘要）。只数运行中与排队中的后台运行（`running`、`queued`）：未知、已结束的运行、前台运行，以及 watch_pr、DAG、hook 都不计入。纯布局在 `shell/background-mark.ts`，选行与落位仍由 `chooseBandRows` 统一给出；状态带不订阅任何时钟，所以不显示耗时（耗时在抽屉）。
+  - 标记：`◇ 后台 n`，有排队时 `◇ 后台 n·排k`（英文 `◇ bg n`、`◇ bg n·qk`，键 `background.band.mark`、`background.band.markQueued`），数字至多 99，`textMuted`。宽度 ≤ 12 列（`ambiguous_width` 为 2 时 ≤ 14 列，`◇` 与 `·` 为 Ambiguous）：带排队的写法超出预算时退回不带排队的写法（中文在 n ≥ 10 时），所以预算对任何计数成立，`test/shell/background-mark.test.ts` 在两种语言、两种宽度下核对。
+  - 落位：接在已选中的行里第一条非警示行的行尾，排在 PR 短标记之后。警示行不带它：PR 警示行，以及预算在警告或耗尽档的 DAG 行（`dagUsageAlert`，与 `DAG_ALERT_CHAIN` 同一判断）；信任行未落地，落地时同样不带。DAG 行与 `always` 的“没有工作流”行里它是最后一组，是 `DagLevel.background`，在两条让位链的最前，早于 `/dag` 提示让位，且整行放不下就不画；目标行、PR 行、提醒行在原有排版之外接它：只在行里剩得下两格间隔加标记时才接在行尾（目标行在 `/goal` 提示之后），剩不下就不画，不占目标文字、PR、提醒的任何一列。
+  - 后台行：只在没有任何别的行被选中时出现，优先级最低（有 PR 警示行时不出现）：`◇ 后台 n · kind 描述 · kind 描述 · +k`，行尾 `/agents`（`background.band.row` 只是其中的“后台 n”）；描述经 `remoteLine`，kind 至多 12 列。放不下时先截描述（每条至少留 6 列，较长的先截），再把第二项并入 `+k`，再去第一项，最后去 `/agents`。
+  - 窄终端（< 100 列）既无标记也无后台行，抽屉的“后台任务”区块列出它们。`n` 为 0 时二者都消失，状态带因此为空则高度为 0。
+  - 可见性：属于根会话，子 agent 视图同样显示。`dag_band=hidden` 与 `/dag` 面板打开只去掉 DAG 行（`target()` 的门控只管 DAG 行），标记落到余下的行上，没有余下的行时用后台行。
+  - 点击：标记是行里独立的一段（`BandSpan.action` 为 `agents`，`BandLine` 把它画成自己的 `<text>`），点击标记和点击后台行都经命令注册表运行 `agent.subagents`（与点击 DAG 行运行 `dag.open` 同一做法，有选区时不触发）；点标记时该行自己的点击（`/dag`、PR 页面）不再触发。不产生任何请求。
+- 无 `setInterval`、无定时拉取。状态带不订阅任何时钟（`ticker.frame`、`second`、`at` 都不用）：运行段是静态字符；PR 的“3 分钟未响应”“60 秒隐藏”与提醒倒计时全在 PR tracker 里，每行至多一个 `ticker.at` 一次性回调，到点由 tracker 更新它给出的结果，状态带随之重排。根会话的消息历史未加载（没打开过，或已被 LRU 逐出）时，tracker 只用上次加载时见过的回复作为“已处理”的证据；没见到回复不算未响应，也不算回合出错，3 分钟计时等历史加载后再判。
 - 新增一行或一类标记时：写出显示条件、颜色 token、窄屏让位位置，并在 F4/F6 对应方案里登记（修订本文）。
+
+子 agent 视图的后台标签（#1058 8，`shell/subagent-path.ts`、`shell/top-bar.tsx`）：
+
+- 后台运行的视图在顶栏路径的当前段末尾追加标签，前台不加：`background.row.background`（`后台`）；从前台转入后台的 `background.row.promoted`（`后台（已转）`）。数据来自 Task 链接的 `background`、`promoted`（`SubagentLookup.task` 取这两项，`SubagentView.execution` 带出，`sameSubagentView` 比较它，memo 才会随之更新）；没有链接的会话（DAG 节点）没有标签。
+- 标签用 `DESCRIPTION_SEPARATOR` 接在描述之后，颜色 `textMuted`，计入当前段宽度，所以顶栏给模型信息留的余宽也随之减少（模型信息本来就先让位）。
+- 标签最先让位：只有整条路径不截断时才画，放不下就是前台运行的那一条（描述、中间段、根标题照旧按 `layoutSubagentPath` 的顺序让位），不会画半个标签。`test/shell/subagent-path.test.ts` 的逐宽度用例核对这一点：任何预算下，带标签的布局要么是不带标签的布局加上完整的标签，要么与它逐项相同。
 
 抽屉（`shell/drawer.tsx`）：
 
 - 默认隐藏，覆盖在主区右侧 40 列，从顶栏下沿到底区上沿，不盖底区与页脚，不挤压主区（`contentWidth` 不变）。宽 < 60 时整屏只显示"终端太小"，抽屉不设宽度回退分支（已删除 F4 5.1 的"宽 − 4"）。关闭方式：`esc`、点击背景（有文本选区时不关）、再按开关键、`/sidebar`。背景点击不用覆盖主区的命中盒（它会吞掉转录的滚轮与选区），而是 `AppFrame` 主区列的 `onMouseUp`：点击从落点冒泡上来，抽屉是兄弟节点，自己的点击不会到这里；只在抽屉显示时传 `onDrawerBackdrop`。子 agent 视图同样能开抽屉，`esc` 先关抽屉再返回父会话。
-- 区块顺序固定：会话、上下文、费用、目标、待办、修改的文件、服务（F4 5.2），最底一行是 `<开关键> 关闭`；“修改的文件”本期隐藏（#1032 D8：H5 之后数据源基本为空），重新启用时按 5.2 的回合结束后 HTTP `diff` 取数；DAG 模式状态一行（`DAG 模式 开 {key}` / `DAG 模式 关`，`{key}` 取 `session.dagmode.toggle` 的实际绑定）在费用与目标之间，只读、不可点击，子 agent 视图没有这一行。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、费用、待办、文件跟随子会话；目标始终是根会话；LSP、MCP 全局）。
+- 区块顺序固定：会话、上下文、费用、目标、后台任务（#1058 5）、待办、修改的文件、服务（F4 5.2），最底一行是 `<开关键> 关闭`；“修改的文件”本期隐藏（#1032 D8：H5 之后数据源基本为空），重新启用时按 5.2 的回合结束后 HTTP `diff` 取数；DAG 模式状态一行（`DAG 模式 开 {key}` / `DAG 模式 关`，`{key}` 取 `session.dagmode.toggle` 的实际绑定）在费用与目标之间，只读、不可点击，子 agent 视图没有这一行。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、费用、待办、文件跟随子会话；目标与后台任务始终是根会话；LSP、MCP 全局）。
+  - 后台任务区块（`routes/session/drawer.tsx` 的 `DrawerBackground`）：位置在目标与待办之间；数据来源是根会话的后台 Task（`taskIndex`、job 的 lifecycle 镜像、子会话摘要，状态由 `session/background.ts` 判定），只列运行中与排队中的运行，已结束的在 `/agents`；空状态为隐藏（不占位、不占间隔）；子 agent 视图里仍显示根会话的后台任务（同目标区块）。标题 `后台任务 n`（`background.drawer.title`，n 是运行中加排队中的全部，不设上限），至多 3 行，运行中的在前、排队的在后，各自新到旧；每行是标记（运行 `●` 用 `statusRunning`，排队 `○` 用 `statusQueued`，都是静态字符）、`kind · 描述`（名字同 `/agents`，描述经 `remoteLine`）和运行中那一行右对齐的耗时（`formatDagDuration`：`58s`、`2m 14s`，排队的没有耗时）；超出的在最后一行写 `… 还有 k 个 · /agents`（`background.drawer.more`）。每行按 `DRAWER_TEXT_CELLS`（抽屉宽 − 6，留出内边距与滚动条列）用 `truncateCells` 截断，先截描述，窄到名字与耗时放不下时去掉耗时。耗时只在抽屉打开且列出的行里有运行中的时订阅一份 `ticker.second`（排队的没有耗时，不订阅）；抽屉关闭时区块不创建，订阅为 0。纯逻辑在 `drawer-model.ts` 的 `backgroundSection`、`backgroundRunLine`，测试在 `test/routes/session/drawer-model.test.ts`、`drawer-content.test.tsx`。
 - 区块是纯展示函数组件。抽屉关闭时不创建任何区块组件、不订阅任何数据。抽屉里不放任何操作按钮。
 - 显示策略 kv `drawer_mode`（`hidden` 默认 / `auto` / `always`），不读旧 kv `sidebar`。`auto` 跟随实时宽度（> 120 列打开）。开关键、`/sidebar`、`esc`、背景点击只改内存里的手动状态（`useDrawer`，按 kv 实例各一份，不落盘），当次运行内优先于 `drawer_mode`；在 `/config` 改策略（`drawer.setMode`）时清掉手动状态，新策略立即生效（#1032 D7）。
 
@@ -312,6 +355,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 变体颜色：`info` 用 `text`，`success` 用 `success`，`warning` 用 `warning`，`error` 用 `error`。
 - 超宽错误被截断，完整文本写日志并进 `/status` 的"最近消息"（最近 20 条），页脚附 `… /status`。
 - 来源侧的去重规则：预算警告档每会话每档至多一次（F4 7.1），这一份由服务端发出，TUI 不自弹第二份；PR 状态只在事件引起的迁移时弹，快照加载与重连刷新不弹，`cancelled` 不弹（F6 2.4）。
+- 后台运行结束的 toast（#1058 7，`attention/notify.ts`）：触发是结果 part 的 `message.part.updated` 事件（通过 `backgroundResultOf` 的 synthetic 文本，服务端写进启动该运行的会话），不是子会话的 `session.status`/`session.error`；快照加载、hydrate、重连刷新不走事件通路，所以不弹，同一子会话同一 `endedAt` 的结果重复到达也只弹一次。只对当前根会话的树，正在看那个子会话时不弹；完成用 `background.toast.done`（`success`），失败与已中断用 `background.toast.failed`（`error`），`dedupeKey` 是子会话 id。点击（`onActivate`）把用户带到结果所在的会话并滚到结果消息（`openResult(sessionID, messageID)`，跳转见 `routes/` 一节），落在结果卡上。toast 只能用鼠标点击激活（`shell/footer-status.tsx` 的 `onMouseDown`），没有键位，所以文案写“点击查看”，不写 `⏎`：主会话输入框有焦点时 `⏎` 会提交草稿。同一子会话 10 秒内的第二个结果与第一个合并（`dedupeKey` 相同，`ui/toast.tsx` 的 `merge` 换成第二个的文字与点击目标并重新起算窗口，不叠成两个）；第一个已经消失（成功 4 秒、失败 8 秒之后）就是一个新 toast。前台子 agent 的结束不弹，权限请求的 toast（`subagent.toast.permission`，点击进入该子 agent）不变。
 - 服务端 `tui.toast.show` 事件走同一入口。
 
 必须写的测试：页脚位置快照；排队与溢出；`dedupeKey` 合并；`onActivate`；超长截断。
@@ -332,7 +376,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 只预填，永不自动提交。文本生成在功能目录（`dag/prefill.ts` 等纯函数），落地动作统一调用 `session/prefill.ts` 的 `prefillRootPrompt(text)`：导航到根会话 → 追加到草稿末尾并另起一行（不覆盖）→ 聚焦输入框 → 不提交。F3、F4、F5 的预填都调用它，不另写落地逻辑。
 - 文字经 `t()` 生成，随界面语言变化。
 - 模板出现与否只按显示状态筛选（如 `retry` 只对 `failed` 节点），仅为减少无效请求，不是权限判断。是否执行由主 agent 决定。
-- 新增一种模板：在 `dag/prefill.ts` 的 `DagRequestKind` 加一个值，并改 `dagRequestKinds`（出现条件）与 `dagRequestText`（文字）；两种语言各补键。非 DAG 用途在对应功能目录新建纯函数，同样经 `prefillRootPrompt`。审阅时核对：`grep -rn "prefillRootPrompt" packages/tui/src` 应命中全部预填调用点，组件里没有直接写输入框内容的预填代码。
+- 新增一种模板：在 `dag/prefill.ts` 的 `DagRequestKind` 加一个值，并改 `dagRequestKinds`（出现条件）与 `dagRequestText`（文字）；两种语言各补键。非 DAG 用途在对应功能目录新建纯函数，同样经 `prefillRootPrompt`（先例：`session/subagents.ts` 的 `subagentRelayText`，按子 agent 的状态选 `background.prefill.*` 或 `subagent.relay.prefill`）。审阅时核对：`grep -rn "prefillRootPrompt" packages/tui/src` 应命中全部预填调用点，组件里没有直接写输入框内容的预填代码。
 - 子会话权限询问的"拒绝并请主 agent 转达"：先回复一次不带说明的 `reject`，再回根会话预填"请转告子 agent <kind · 描述>："。
 
 必须写的测试：出现条件；预填结果与焦点；`session.prompt` 调用为 0；有草稿时追加；两种语言各一份快照。
@@ -374,7 +418,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 所有用户可见文字走 `t("key", params)`，包括命令标题与描述、面板标题与按键提示、toast、页脚、状态带、询问区、空状态、预填文字。命令分类等枚举用键，不用中文字面量。
 - 不翻译：代码标识符、命令名（`/new`）、键名、`/config` 语言行的选项文字（`简体中文`、`English`）。
-- 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`）。
+- 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`、`background.row.*`、`background.card.*`、`background.band.*`、`background.drawer.*`、`background.agents.*`、`background.prefill.*`、`background.toast.*`）。
 - `i18n/zh-CN.ts` 与 `i18n/en.ts` 两张表键集合必须完全相同，每个键的占位符集合相同，没有空字符串。一致性测试由 F1 提供；缺任何一个键测试失败。
 - 禁止在组件里拼接中文字符串。带变量的文案用占位符，不用字符串拼接。检查：F1 的 AST 扫描测试遍历 `packages/tui/src`（排除 `i18n/`）的字符串字面量与 JSX 文本，不得出现 CJK 字符（注释不计）。
 - 按键名放进文案时用 `{key}` 占位，由 keymap 当前绑定填入；后备文本里不含 `{key}`。
@@ -386,9 +430,10 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 只读视图的定义是：TUI 在该视图里没有任何路径产生会改变对应对象的写请求。
 
-- DAG（`/dag` 面板、状态带、抽屉）：不调用任何 `dag.*` 写接口。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn '"message"' packages/tui/src/dag` 为空。测试：在 SDK mock 下完成全部可达操作（选择、展开、`⏎`、`i`、切标签、点击状态带、开关抽屉）后，`dag.*` 写请求与 `session.command` 均为 0。唯一的写入口是主会话视图里 `<leader>d`，它恰好发一次 `session.command`（`/dag-mode on|off`），状态以服务端为准，TUI 不自存模式状态。
-- 子 agent 视图（判定口径 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断。测试：触发所有可达操作后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
-- PR 行：点击只调用 `open` 打开 PR URL，不复制、不产生写请求（mock 计数 0）。
+- DAG（`/dag` 面板、状态带、抽屉）：不调用任何 `dag.*` 写接口。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn '"message"' packages/tui/src/dag` 为空。测试：在 SDK mock 下完成全部可达操作（选择、展开、`space` 折叠/展开子树、`⏎`、`i`、切标签、点击状态带、开关抽屉）后，`dag.*` 写请求与 `session.command` 均为 0。唯一的写入口是主会话视图里 `<leader>d`，它恰好发一次 `session.command`（`/dag-mode on|off`），状态以服务端为准，TUI 不自存模式状态。
+- 子 agent 视图（判定口径 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断；用户消息块不可点击（点击不打开操作列表，选中文本照常可复制）；任务块的提示词折叠时，点击只展开或收起它（视图状态，不发请求，有选中文本时不翻转）。测试：触发所有可达操作（点击消息、命令面板里每个不离开视图的命令、会话键、`←→`、滚轮、`esc`，`test/app-subagent-readonly.test.tsx`）后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
+- PR 行：点击只调用 `open` 打开 PR URL（只放行 `http`、`https`），不复制、不产生写请求（mock 计数 0）。
+- 后台标记与后台行：点击只运行命令 `agent.subagents`（打开 `/agents` 面板），不产生写请求（mock 计数 0）；抽屉的后台任务区块里没有任何可点击的东西。
 - "请主 agent 处理"= 预填主会话输入框，不提交（见 6.7）。任何停止、取消、重试、调超时都只能这样表达。
 - 询问区例外：对已存在的待决请求作选择（`permission.reply`、`question.reply`）不算向子 agent 发送对话内容，回复使用请求自己的 `sessionID`。子会话来源的请求只有选项，没有自由文本。TUI 不识别也不过滤 DAG 节点的请求，自动裁决只在服务端做一次，`ask/` 下不得出现 DAG 相关分支：`grep -rniE "dag" packages/tui/src/ask` 为空。
 - 远端字符串（PR 检查名、标题、review 文本、服务端错误等）显示前去掉控制字符与 ANSI 转义。F6 现状更严：PR 行不拉取也不显示 PR 标题和检查名称，review 文本服务端用 `safeReview` 净化后，TUI 渲染前再去一次。以后若加标题，必须先去转义。测试：含控制字符的 fixture 经净化后输出无转义序列。

@@ -1581,6 +1581,11 @@ export type Config = {
        */
       warn_ratio?: number | "Infinity" | "-Infinity" | "NaN"
     }
+    compose?: {
+      max_children?: number
+      max_depth?: number
+      max_subtree_nodes?: number
+    }
     safety?: {
       extra?: Array<{
         /**
@@ -2383,6 +2388,7 @@ export type DagNode = {
   status: string
   required: boolean
   depends_on: Array<string>
+  expanded_from?: string
   model_id?: string
   model_provider_id?: string
   child_session_id?: string

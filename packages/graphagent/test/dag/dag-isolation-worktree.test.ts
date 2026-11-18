@@ -140,7 +140,6 @@ function makeHarness(
   }
   const store: Partial<DagStore.Interface> = {
     getWorkflow: Effect.fn("s")(() => Effect.succeed(makeWorkflowRow({ directory: target }))),
-    tryClaimAdoption: Effect.fn("s")(() => Effect.succeed(true)),
     getNode: Effect.fn("s")((_dagID: string, nodeID: string) =>
       Effect.succeed(makeNodeRow({ id: nodeID, status: "queued", replanAttempts: 0 })),
     ),

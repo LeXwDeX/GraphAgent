@@ -29,6 +29,7 @@ import { SessionStatus } from "@/session/status"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 function userData(created: number): Omit<SessionV1.User, "id" | "sessionID"> {
   return {
@@ -65,7 +66,7 @@ function restartLayer(filename: string, probe: Probe) {
     : rawStore
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const session = Layer.unwrap(
     Effect.gen(function* () {

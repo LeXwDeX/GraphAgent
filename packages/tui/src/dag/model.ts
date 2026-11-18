@@ -29,6 +29,12 @@ export interface DagNodeRow {
   readonly status: string
   readonly required: boolean
   readonly depends_on: readonly string[]
+  /**
+   * The id of the compose expansion slot whose plan generated this node (#1158). The slot becomes the join node under
+   * the same id, so the panel folds the nodes naming it under that row. Absent on every other node and on rows of an
+   * older server.
+   */
+  readonly expanded_from?: string
   readonly child_session_id?: string
   /** Per-attempt execution location. */
   readonly directory?: string
@@ -69,6 +75,7 @@ export function dagNodeRow(node: DagNode): DagNodeRow {
     status: node.status,
     required: node.required,
     depends_on: [...node.depends_on],
+    ...(node.expanded_from !== undefined ? { expanded_from: node.expanded_from } : {}),
     ...(node.child_session_id !== undefined ? { child_session_id: node.child_session_id } : {}),
     ...(node.directory !== undefined ? { directory: node.directory } : {}),
     ...(node.head !== undefined ? { head: node.head } : {}),

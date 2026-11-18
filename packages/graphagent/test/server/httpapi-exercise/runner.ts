@@ -418,6 +418,7 @@ function createDagFixture(sessionID: SessionID, title: string | undefined, nodes
             depends_on: n.depends_on,
             required: n.required,
             prompt_template: { inline: n.id },
+            ...(n.expanded_from !== undefined ? { expanded_from: n.expanded_from } : {}),
           })),
         },
       })

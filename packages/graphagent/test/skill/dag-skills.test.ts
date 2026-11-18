@@ -397,6 +397,28 @@ describe("dag-patterns", () => {
     expect(patterns).toContain("never silently terminalizes the graph")
   })
 
+  test("says which composition to reach for: task, blocks or a template, compose, fan_out, review lenses (#1158)", () => {
+    const patterns = flat(content("dag-patterns"))
+    expect(patterns).toContain("## Choosing a composition")
+    // Two or three independent read-only jobs need no workflow (D8).
+    expect(patterns).toContain("Two or three independent read-only jobs: `task` each; no workflow.")
+    // A shape that is known when the graph is written is blocks or a template, not a composer (D5).
+    expect(patterns).toContain(
+      "Shape known when writing the graph (pipeline, generate then check): blocks or a template.",
+    )
+    // A width that is known only after looking is a compose block, and both built-in composers are named.
+    expect(patterns).toContain("Width known only after looking")
+    expect(patterns).toContain("a `compose` block with `worker_type: surveyor`")
+    expect(patterns).toContain("or `mapper`")
+    expect(patterns).toContain("the engine expands it into read-only workers")
+    expect(patterns).toContain("Parallel writes: `coding` with `fan_out`.")
+    expect(patterns).toContain("a review block's `lenses` and `skeptics`")
+    // The section comes before the example patterns it chooses between.
+    expect(patterns.indexOf("## Choosing a composition")).toBeLessThan(
+      patterns.indexOf("## 1. Staged pipeline with gate"),
+    )
+  })
+
   test("keeps cross-domain composition separate from route selection", () => {
     const patterns = flat(content("dag-patterns"))
     expect(patterns).toContain("The Router and workflow library own route and execution choices")

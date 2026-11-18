@@ -31,6 +31,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef } from "@/effect/instance-ref"
 import { Worktree } from "@/worktree"
+import { transactLayer } from "./fixture/transact"
 
 const roots: string[] = []
 
@@ -128,7 +129,7 @@ function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory) {
       : (bridge ?? EventV2Bridge.defaultLayer.pipe(Layer.provide(Layer.merge(database, events))))
   return Layer.provideMerge(
     Dag.layer,
-    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridgeLayer),
+    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridgeLayer, transactLayer(database)),
   )
 }
 

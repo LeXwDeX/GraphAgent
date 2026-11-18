@@ -14,6 +14,7 @@ export const WORKFLOW_BLOCK_KINDS = [
   "verify",
   "review",
   "synthesize",
+  "compose",
 ] as const
 
 export type WorkflowBlockKind = (typeof WORKFLOW_BLOCK_KINDS)[number]
@@ -73,7 +74,8 @@ export const AcceptanceItems = Schema.Array(AcceptanceItem)
 export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")({
   id: Schema.String.annotate({ description: "Unique block identifier; dependencies target block IDs" }),
   kind: Schema.Literals(WORKFLOW_BLOCK_KINDS).annotate({
-    description: "Composable workflow block; debug and review expand into evidence-gathering subgraphs",
+    description:
+      "Composable workflow block; debug and review expand into evidence-gathering subgraphs, compose into a plan and the read-only workers it names",
   }),
   depends_on: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "Block IDs this block waits for. Defaults to []",
@@ -82,7 +84,8 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
     description: "Task-specific instruction added to the block's built-in execution contract",
   }),
   worker_type: Schema.optional(Schema.String).annotate({
-    description: "Optional configured agent override; defaults from the block kind",
+    description:
+      "Optional configured agent override; defaults from the block kind. Required for compose: the composer agent that plans the expansion",
   }),
   worker_config: Schema.optional(
     Schema.Struct({
@@ -94,7 +97,7 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
   }),
   required: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Whether failure is terminal. Decision and verification blocks default to true; volume blocks to false",
+      "Whether failure is terminal. Decision, verification and writer (coding, prototype) blocks default to true; exploration blocks to false",
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -409,11 +412,17 @@ const DIFF_REVIEW_SCHEMA = {
 
 const WRITER_KINDS = new Set<WorkflowBlockKind>(["coding", "prototype"])
 
+/** The kinds whose failure is terminal when the block does not say: judging and accepting work, and writers (D9:
+ * code that failed to be written fails the workflow at the writer, not later at a verification that read a
+ * placeholder). A `fan_out` writer's package writers and aggregator inherit the value. Every other kind is optional. */
+const REQUIRED_BY_DEFAULT = new Set<WorkflowBlockKind>(["plan", "verify", "synthesize", ...WRITER_KINDS])
+
 /** Read-only profiles may judge but never change the workspace. Strict review
  * lanes and arbitration must use one of these; anything else is treated as
  * write-capable. Mirrors the isolation validation's static catalog so a block
  * compile and a persisted graph agree. The built-in read-only workers
- * `researcher` and `architect` (#1158) are profiles like `explore`. */
+ * `researcher` and `architect` (#1158) are profiles like `explore`, and so are
+ * the built-in composers `surveyor` and `mapper`, which only plan and join. */
 const READ_ONLY_PROFILES = new Set([
   "plan",
   "explore",
@@ -423,6 +432,8 @@ const READ_ONLY_PROFILES = new Set([
   "verification",
   "researcher",
   "architect",
+  "surveyor",
+  "mapper",
 ])
 
 export function isReadOnlyProfile(workerType: string) {
@@ -436,11 +447,16 @@ export function isReviewWorker(workerType: string) {
   return workerType === "review" || workerType.startsWith("review-")
 }
 
-/** The `researcher` (#1158) has no shell and no file tool, so, like the auditor, it
- * can never write the workspace. `explore` and `architect` keep a shell and are
- * not listed: they are read-only profiles that still run with writes allowed. */
+const READ_ONLY_WORKERS = new Set(["auditor", "researcher", "architect", "surveyor", "mapper"])
+
+/** The `researcher` and the built-in composers `surveyor` and `mapper` (#1158) have no
+ * shell and no file tool, so, like the auditor, they can never write the workspace.
+ * The `architect` keeps a shell like the auditor but has no file tool and only
+ * proposes a design, so it also denies writes by default; a plan block may then
+ * name it under the strict gate (#1158 PR6). `explore` keeps a shell and is not
+ * listed: it is a read-only profile that still runs with writes allowed. */
 export function isReadOnlyWorker(workerType: string) {
-  return isReviewWorker(workerType) || workerType === "auditor" || workerType === "researcher"
+  return isReviewWorker(workerType) || READ_ONLY_WORKERS.has(workerType)
 }
 
 /** The effective workspace-write policy of a node. An explicit
@@ -475,7 +491,9 @@ export function isWriterNode(
 const SHELL_DISCIPLINE =
   "Bound any long-running or potentially silent shell command with `timeout <seconds>`, and stream progress (`--reporter=dot`-style or write output to a file you tail); never pipe unbounded output through a silent buffer such as a bare `| tail`."
 
-const BLOCK_CONTRACTS: Record<WorkflowBlockKind, string> = {
+// A compose block has no contract of its own: it is the task statement, and the composer's split and join prompts
+// (DagCompose) say what the planner and the joiner do.
+const BLOCK_CONTRACTS: Record<Exclude<WorkflowBlockKind, "compose">, string> = {
   explore:
     `Inspect the target read-only and prefer primary repository or runtime evidence. Separate confirmed facts, inferences, and unknowns; map ownership, constraints, conventions, and file references. Return an evidence map that downstream blocks can cite. Do not implement or hide unresolved uncertainty. ${SHELL_DISCIPLINE}`,
   plan: "Produce a decision- or implementation-ready plan from repository evidence and dependency outputs. State the selected boundary, ordered options or work packages, dependencies, acceptance checks, falsifiers, and unresolved risks. Stop rather than inventing a user-owned product decision. Do not implement.",
@@ -549,7 +567,7 @@ function compileBlock(
   options: WorkflowBlockCompileOptions,
 ): NodeConfig[] {
   const dependencies = block.depends_on ?? []
-  const required = block.required ?? (block.kind === "plan" || block.kind === "verify" || block.kind === "synthesize")
+  const required = block.required ?? REQUIRED_BY_DEFAULT.has(block.kind)
   const reviewDependency = dependencies.find(
     (dependency) => blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
   )
@@ -567,6 +585,33 @@ function compileBlock(
   // dependencies only, so every node that carries it must list this one.
   const gateReference = reviewDependency ?? liveGate?.id
   const drivesFanOut = block.kind === "plan" && blocks.some((candidate) => candidate.fan_out === block.id)
+
+  if (block.kind === "compose") {
+    // One node that carries the task statement. The Workflow Authoring Check compiles it, with the agent
+    // catalog at hand, into the split node and the expansion slot (DagCompose.compileNodes): the plan
+    // schema and the prompts depend on the composer, which only the catalog can tell.
+    return [
+      node({
+        id: block.id,
+        name: `${block.id}: compose`,
+        workerType: block.worker_type ?? "",
+        dependencies,
+        objective,
+        instruction: block.instruction,
+        contract: "",
+        closing: "",
+        required,
+        reportToParent: block.report_to_parent ?? false,
+        adversarial: false,
+        workerConfig: block.worker_config,
+        condition,
+        skipOk: condition !== undefined ? true : undefined,
+        // A composer only produces data, so this node is not a writer before the catalog compiles it either.
+        workspaceWrites: "deny",
+        blockKind: block.kind,
+      }),
+    ]
+  }
 
   if (block.kind === "debug") {
     const evidenceID = `${block.id}--evidence`
@@ -924,6 +969,10 @@ function node(input: {
   aggregatesWriters?: boolean
   /** The compiler chose this helper node's worker; no author override applies. */
   generatedHelper?: "aggregate" | "evidence"
+  /** The last paragraph of the prompt; defaults to the dependency-evidence reminder every block ends with. */
+  closing?: string
+  /** Withholds the file tools from the node's child; unset keeps the agent's own permission. */
+  workspaceWrites?: NodeConfig["workspace_writes"]
 }): NodeConfig {
   // issue #387: an instruction equal to the objective (after trim and
   // line-ending normalization) would render the same content twice in the
@@ -956,7 +1005,8 @@ function node(input: {
         input.contract,
         adversarial,
         input.priorPrompt ?? "",
-        "Use dependency outputs as evidence and return a concise artifact that downstream blocks can consume. Do not ask the user questions from this child session.",
+        input.closing ??
+          "Use dependency outputs as evidence and return a concise artifact that downstream blocks can consume. Do not ask the user questions from this child session.",
       ]
         .filter(Boolean)
         .join("\n\n"),
@@ -984,6 +1034,7 @@ function node(input: {
     ...(input.reviewNewFindings !== undefined ? { review_new_findings: input.reviewNewFindings } : {}),
     ...(input.aggregatesWriters ? { aggregates_writers: true } : {}),
     ...(input.generatedHelper ? { generated_helper: input.generatedHelper } : {}),
+    ...(input.workspaceWrites ? { workspace_writes: input.workspaceWrites } : {}),
   }
 }
 
@@ -1011,7 +1062,14 @@ export function nonWriterWorkerOverride(
   kind: WorkflowBlockKind,
   workerType: string | undefined,
 ): string | undefined {
-  if (WRITER_KINDS.has(kind) || workerType === undefined || workerType === defaultBlockWorker(kind))
+  // A composer only produces data: its nodes are compiled with workspace_writes deny, so whatever the
+  // agent's own rules say it never writes, and naming one is not an escalation.
+  if (
+    kind === "compose" ||
+    WRITER_KINDS.has(kind) ||
+    workerType === undefined ||
+    workerType === defaultBlockWorker(kind)
+  )
     return undefined
   return workspaceWritesOf(undefined, workerType) === "allow" ? workerType : undefined
 }
@@ -1038,6 +1096,9 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
       }
     })
     if (block.fan_out !== undefined) requireValidFanOut(block, graph.blocks)
+    if (block.kind === "compose" && (block.worker_type === undefined || block.worker_type.trim() === "")) {
+      throw new Error(`Block "${block.id}" (compose) requires worker_type: the composer agent that plans its expansion`)
+    }
     if (block.kind !== "review") {
       if (block.lenses !== undefined)
         throw new Error(`Block "${block.id}" declares lenses, which only review blocks support`)

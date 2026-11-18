@@ -51,11 +51,11 @@ export const Dag = Schema.Struct({
     Schema.Struct({
       advanced: Schema.optional(Schema.String).annotate({
         description:
-          'Model ("provider/model") for critical nodes: required: true and review/arbiter workers. A project setting overrides the user-level value.',
+          'Model ("provider/model") for judging nodes: plan, verify, synthesize and review blocks, review/arbiter workers and composer nodes; a hand-written node without a block takes it when required: true. A project setting overrides the user-level value.',
       }),
       standard: Schema.optional(Schema.String).annotate({
         description:
-          'Model ("provider/model") for every other worker node. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value.',
+          'Model ("provider/model") for every other worker node: writers, exploration and compose children. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value.',
       }),
     }),
   ).annotate({
@@ -91,6 +91,25 @@ export const Dag = Schema.Struct({
     }),
   ).annotate({
     description: "DAG token budget. Global config only: values from project-level configuration are ignored.",
+  }),
+  compose: Schema.optional(
+    Schema.Struct({
+      max_children: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 12 }))).annotate({
+        description:
+          "Most items one composer plan may hold (2-12, default 6). Global config only: values from project-level configuration are ignored.",
+      }),
+      max_depth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3 }))).annotate({
+        description:
+          "Deepest composer nesting; a top-level compose block is depth 1 (1-3, default 2). Global config only: values from project-level configuration are ignored.",
+      }),
+      max_subtree_nodes: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 80 }))).annotate({
+        description:
+          "Most nodes one top-level compose block may expand into, nested expansions included (10-80, default 40). Global config only: values from project-level configuration are ignored.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "Limits on composer expansion (#1158). Global config only: values from project-level configuration are ignored.",
   }),
   safety: Schema.optional(
     Schema.Struct({

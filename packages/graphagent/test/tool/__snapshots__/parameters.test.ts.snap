@@ -788,6 +788,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                         "type": "string",
                       },
                       "kind": {
+                        "description": "compose: worker_type (required) is a composer agent; its plan runs as read-only workers",
                         "enum": [
                           "explore",
                           "plan",
@@ -797,6 +798,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                           "verify",
                           "review",
                           "synthesize",
+                          "compose",
                         ],
                         "type": "string",
                       },

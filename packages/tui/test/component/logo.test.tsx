@@ -9,6 +9,7 @@ import { Logo } from "../../src/component/logo"
 import { LOGO_AGENT, LOGO_GAP, LOGO_GRAPH, LOGO_MINI, LOGO_MIN_COLUMNS, LOGO_MIN_ROWS } from "../../src/logo"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { ShellContexts, shellState } from "../shell/contexts"
+import { readFrame } from "../routes/dag-mode-harness"
 
 const GRAPH_WIDTH = 41
 const GLYPHS = /[█╗╔╝╚║═]/
@@ -25,10 +26,18 @@ async function renderLogo(size: { width: number; height: number }, state: string
     ),
     size,
   )
-  await settled
-  await app.renderOnce()
-  await app.renderOnce()
-  return app
+  try {
+    await settled
+    await app.renderOnce()
+    // Every case draws something (the wordmark or the one-line mark). On a slow runner the frame can still be blank
+    // after a fixed number of renders, so read until it is not, with a bound (#1397). `readFrame` re-renders and
+    // retries while the native buffer is still busy presenting the previous frame.
+    for (let attempt = 0; attempt < 100 && (await readFrame(app)).trim() === ""; attempt++) await Bun.sleep(10)
+    return app
+  } catch (error) {
+    app.renderer.destroy()
+    throw error
+  }
 }
 
 type App = Awaited<ReturnType<typeof renderLogo>>

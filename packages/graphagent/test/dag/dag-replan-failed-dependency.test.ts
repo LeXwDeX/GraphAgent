@@ -7,6 +7,7 @@ import { Database } from "@graphagent/core/database/database"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
 import { EventV2 } from "@graphagent/core/event"
 import { Project } from "@graphagent/core/project"
@@ -23,6 +24,7 @@ const persistence = Layer.mergeAll(
   EventV2.defaultLayer,
   DagProjector.defaultLayer,
   DagStore.defaultLayer,
+  DagTransact.defaultLayer,
   EventV2Bridge.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
 )

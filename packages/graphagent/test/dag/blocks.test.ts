@@ -43,7 +43,8 @@ describe("workflow blocks", () => {
     expect(nodes[1]?.prompt_template.inline).not.toContain("Skill")
     expect(nodes.map((node) => ({ id: node.id, required: node.required }))).toEqual([
       { id: "map", required: false },
-      { id: "build", required: false },
+      // D9 (#1158 PR4a): a writer block that leaves `required` out is required.
+      { id: "build", required: true },
       { id: "verify", required: true },
     ])
   })
@@ -616,7 +617,9 @@ describe("workflow blocks", () => {
     expect(nodes.find((node) => node.id === "package-b")?.depends_on).toEqual(["map-b"])
   })
 
-  it("routes volume blocks to the standard tier and decision blocks to the advanced tier", () => {
+  // #1158 PR4a: the tier follows the block's role, not its required flag. Writers are required by default (D9) and
+  // still run on the standard tier; a debug block's evidence node and the writers' aggregator are standard-tier work as well, its diagnosis judges.
+  it("routes writers and exploration to the standard tier and judging blocks to the advanced tier", () => {
     const nodes = DagBlocks.compileWorkflowBlocks({
       objective: "Deliver a reviewed project change",
       blocks: [
@@ -635,7 +638,7 @@ describe("workflow blocks", () => {
         node.id,
         DagConfig.tierModel(
           { model: { advanced: "test/advanced", standard: "test/standard" } },
-          { required: node.required ?? false, workerType: node.worker_type },
+          { required: node.required ?? false, workerType: node.worker_type, definition: node, graph: nodes },
         )?.modelID,
       ]),
     )
@@ -647,7 +650,7 @@ describe("workflow blocks", () => {
       "diagnose--evidence": "standard",
       diagnose: "advanced",
       build: "standard",
-      "decision--aggregate": "advanced",
+      "decision--aggregate": "standard",
       verify: "advanced",
       "decision--standards": "advanced",
       "decision--intent": "advanced",
@@ -657,10 +660,10 @@ describe("workflow blocks", () => {
     expect(Object.fromEntries(nodes.map((node) => [node.id, node.required]))).toEqual({
       map: false,
       plan: true,
-      experiment: false,
+      experiment: true,
       "diagnose--evidence": false,
       diagnose: true,
-      build: false,
+      build: true,
       "decision--aggregate": true,
       verify: true,
       "decision--standards": false,

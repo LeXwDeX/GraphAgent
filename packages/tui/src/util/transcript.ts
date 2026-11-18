@@ -1,4 +1,6 @@
 import type { AssistantMessage, Part, Provider, UserMessage } from "@graphagent/sdk"
+import { backgroundResultOf } from "../context/session-summary"
+import { backgroundCard, backgroundCardTitle } from "../session/background-card"
 import { Locale } from "./locale"
 import * as Model from "./model"
 
@@ -9,6 +11,8 @@ export type TranscriptOptions = {
   providers?: Provider[]
   /** Store snapshot plus un-settled stream deltas (#886 5.3). */
   readText?: (part: Part) => string
+  /** The kind of agent that ran in a child session, for the title of a background result; unknown ones read `agent`. */
+  taskKind?: (childSessionID: string) => string | undefined
 }
 
 export type SessionInfo = {
@@ -54,7 +58,9 @@ export function formatMessage(
   let result = ""
 
   if (msg.role === "user") {
-    result += `## User\n\n`
+    // A message the server added to report a background run is not the user's: its card heading stands alone.
+    const reported = parts.every((part) => part.type === "text" && part.synthetic) && parts.some(isResultPart)
+    if (!reported) result += `## User\n\n`
   } else {
     result += formatAssistantHeader(msg, options.assistantMetadata, providers ?? options.providers)
   }
@@ -83,11 +89,23 @@ export function formatAssistantHeader(
   return `## Assistant (${Locale.titlecase(msg.agent)} · ${modelName}${duration ? ` · ${duration}` : ""})\n\n`
 }
 
+function isResultPart(part: Part): boolean {
+  return part.type === "text" && backgroundResultOf(part) !== undefined
+}
+
 export function formatPart(part: Part, options: TranscriptOptions): string {
   const text = () => options.readText?.(part) ?? (part.type === "text" || part.type === "reasoning" ? part.text : "")
 
   if (part.type === "text" && !part.synthetic) {
     return `${text()}\n\n`
+  }
+
+  // The rest of the synthetic text is left out, except the result of a finished background run: the card the
+  // transcript shows, as a block of its own, its title as a heading and what the run left under it.
+  if (part.type === "text") {
+    const found = backgroundResultOf(part)
+    const card = found && backgroundCard(part, options.taskKind?.(found.childSessionID))
+    return card ? `### ${backgroundCardTitle(card)}\n\n${card.body ? `${card.body}\n\n` : ""}` : ""
   }
 
   if (part.type === "reasoning") {

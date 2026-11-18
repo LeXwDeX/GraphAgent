@@ -79,8 +79,8 @@ describe("the prototype block", () => {
     // The writer contract is unchanged: its output is the implementation record.
     expect(node.output_schema).toEqual(DagBlocks.IMPLEMENTATION_SCHEMA)
     expect(node.block).toBe("prototype")
-    // `required` for writer blocks is PR3's to change, not this PR's.
-    expect(node.required).toBe(false)
+    // D9 (#1158 PR4a): a writer block that leaves `required` out is required.
+    expect(node.required).toBe(true)
     expect(node.report_to_parent).toBe(false)
   })
 
@@ -161,14 +161,19 @@ describe("the read-only workers in the static catalogs", () => {
   it("denies workspace writes to the researcher by default: it has no shell and no file tool", () => {
     expect(DagBlocks.workspaceWritesOf(undefined, "researcher")).toBe("deny")
     expect(DagBlocks.workspaceWritesOf(undefined, "prototyper")).toBe("allow")
-    // The architect keeps a shell, so it is treated like explore, which still runs with writes allowed.
-    expect(DagBlocks.workspaceWritesOf(undefined, "architect")).toBe("allow")
+    // The architect keeps a shell but has no file tool, so like the auditor it denies writes by default.
+    expect(DagBlocks.workspaceWritesOf(undefined, "architect")).toBe("deny")
+    // explore keeps a shell and still runs with writes allowed.
+    expect(DagBlocks.workspaceWritesOf(undefined, "explore")).toBe("allow")
   })
 
   it("lets a block run on the researcher under the strict gate without a write-capable-override error", () => {
     const strictOptions = { review_gate: "strict" as const }
     expect(DagBlocks.nonWriterWorkerOverride("explore", "researcher")).toBeUndefined()
     expect(() => compile([{ id: "survey", kind: "explore", worker_type: "researcher" }], strictOptions)).not.toThrow()
+    // A plan block on the architect is not an escalation either (#1158 PR6 research-to-prototype).
+    expect(DagBlocks.nonWriterWorkerOverride("plan", "architect")).toBeUndefined()
+    expect(() => compile([{ id: "architecture", kind: "plan", worker_type: "architect" }], strictOptions)).not.toThrow()
     // A worker that can write is still refused there.
     expect(() => compile([{ id: "survey", kind: "explore", worker_type: "prototyper" }], strictOptions)).toThrow(
       'overrides its worker to write-capable "prototyper"',

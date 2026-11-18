@@ -37,6 +37,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { awaitWithTimeout, pollWithTimeout } from "../lib/effect"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const DIRECTORY = process.cwd()
 const PROJECT_ID = "project-1"
@@ -79,7 +80,7 @@ function baseLayers() {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const automation = ExclusiveRegistry.layer.pipe(Layer.provide(status))
   return {
     database,

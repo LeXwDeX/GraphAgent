@@ -78,6 +78,19 @@ it.instance("built-in agents carry the contracts the Issue assigns them", () =>
     })
     // The prototyper writes, so it is private; its failure is derived, not declared.
     expect(declared.prototyper).toEqual({ role: "worker", visibility: "private", output: { artifact: "prototype" } })
+    // The two composers only run inside a DAG; neither is ever a dispatch target.
+    expect(declared.surveyor).toEqual({
+      role: "composer",
+      visibility: "private",
+      output: { artifact: "survey_report" },
+      compose: { pattern: "fan_out", dispatch: ["researcher", "explore"], fallback: "researcher" },
+    })
+    expect(declared.mapper).toEqual({
+      role: "composer",
+      visibility: "private",
+      output: { artifact: "project_map" },
+      compose: { pattern: "recursive_split", dispatch: ["explore"], fallback: "explore" },
+    })
     // Everything else declares nothing and takes the defaults.
     for (const name of ["build", "plan", "general", "compaction", "title", "summary"]) {
       expect(declared[name]).toBeUndefined()
@@ -120,6 +133,22 @@ it.instance("effective contract snapshot of the built-in catalog", () =>
         visibility: "private",
         failure: "fail",
         output: { artifact: "prototype", task: true },
+      },
+      // The composers plan and join and cannot write, so their failure derives to `skip`; the artifact is the one
+      // their join node produces, and `task` calls never owe it (a composer is not a task type).
+      surveyor: {
+        role: "composer",
+        visibility: "private",
+        failure: "skip",
+        output: { artifact: "survey_report", task: true },
+        compose: { pattern: "fan_out", dispatch: ["researcher", "explore"], fallback: "researcher" },
+      },
+      mapper: {
+        role: "composer",
+        visibility: "private",
+        failure: "skip",
+        output: { artifact: "project_map", task: true },
+        compose: { pattern: "recursive_split", dispatch: ["explore"], fallback: "explore" },
       },
       compaction: { role: "worker", visibility: "private", failure: "skip" },
       title: { role: "worker", visibility: "private", failure: "skip" },
@@ -312,9 +341,18 @@ it.instance("a user explore.md that opens edit makes explore private and is diag
     })
     expect(AgentContract.effective(explore).visibility).toBe("private")
 
+    // The built-in `mapper` dispatches to `explore` alone, so it goes with it; the `surveyor` still has the researcher.
     const diagnostics = AgentContract.diagnose(agents)
-    expect(diagnostics.map((item) => [item.agent, item.code])).toEqual([["explore", "public_writable"]])
+    expect(diagnostics.map((item) => [item.agent, item.code])).toEqual([
+      ["explore", "public_writable"],
+      ["mapper", "composer_unavailable"],
+    ])
     expect(diagnostics[0]?.message).toContain('"explore" was overridden to allow writing files')
+    expect(diagnostics[1]?.message).toContain('composer "mapper" is unavailable')
+    expect(AgentContract.composerAvailability(agents, "surveyor")).toEqual({
+      available: true,
+      dispatch: ["researcher"],
+    })
 
     // The same sentence reaches the log channel when the catalog is built.
     expect(lines.some((line) => line.includes('"explore" was overridden to allow writing files'))).toBe(true)
@@ -330,12 +368,15 @@ it.instance(
       for (const name of ["explore", "auditor", "researcher", "architect"]) {
         expect(effective[name]?.visibility, name).toBe("private")
       }
-      // The prototyper and review declared private already: nothing to diagnose for them.
-      expect(AgentContract.diagnose(agents).map((item) => item.agent)).toEqual([
-        "architect",
-        "auditor",
-        "explore",
-        "researcher",
+      // The prototyper and review declared private already: nothing to diagnose for them. Both built-in composers
+      // lose every agent they dispatch to, so they are unusable until the user narrows that permission again.
+      expect(AgentContract.diagnose(agents).map((item) => [item.agent, item.code])).toEqual([
+        ["architect", "public_writable"],
+        ["auditor", "public_writable"],
+        ["explore", "public_writable"],
+        ["mapper", "composer_unavailable"],
+        ["researcher", "public_writable"],
+        ["surveyor", "composer_unavailable"],
       ])
     }),
   { config: { permission: { edit: "allow" } } },
@@ -359,8 +400,10 @@ it.instance(
       expect(availability.reason).toContain('composer "panel" is unavailable')
       expect(availability.reason).toContain('"explore" was overridden to allow writing files')
       expect(lines.some((line) => line.includes('composer "panel" is unavailable'))).toBe(true)
+      // The built-in `mapper` dispatches to `explore` alone, so it is unusable for the same reason.
       expect(AgentContract.diagnose(agents).map((item) => [item.agent, item.code])).toEqual([
         ["explore", "public_writable"],
+        ["mapper", "composer_unavailable"],
         ["panel", "composer_unavailable"],
       ])
     }),

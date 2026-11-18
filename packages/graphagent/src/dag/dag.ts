@@ -173,6 +173,66 @@ export interface NodeConfig {
   /** Direct dependency whose `packages` output fans this writer out at
    * admission; cleared by the expansion that replaces this node. */
   fan_out?: string
+  /** #1158: the expansion slot of a compose block or a composer node, naming its
+   * split node. A node that carries it is never to be spawned as authored: at
+   * admission the split node's plan replaces it with the expanded subtree and the
+   * join node under its id, as `fan_out` does for a writer
+   * (`DagComposeExpansion`, in the loop's admission seam). Written by the
+   * compiler (`DagCompose`), never by an author; no model-writable node schema
+   * has the field. A recovery points it at the recovered split node, and a
+   * replan can neither change nor clear it
+   * (`ReplanDefinition.changedEngineOwnedFields`). */
+  expand?: string
+  /** #1158: what the join node of an expanded slot joins. Written at expansion,
+   * in the same extend that replaces the slot, so the join's admission check and
+   * the coverage section read the plan's items without reparsing the plan: the
+   * split node the plan came from, per item the child node that runs it, its agent
+   * and whether the item's work is required (the child's own `required` also
+   * depends on the block, so it is not that), and the reason when the plan was not
+   * expanded and one fallback worker took the whole task. Never authored. The ids
+   * in it are also the keys of the join node's `input_mapping` and the keys its
+   * prompt describes. A recovery points `plan` and every `node` at the attempts
+   * that now count, and the keys with them; a replan can neither change nor clear
+   * it, as with `expand`. An item the plan asked to split further is one of two
+   * things: `nested` when its node is the join node of a nested expansion (its
+   * `agent` is then the composer that joins it), or `unsplit` when it runs as one
+   * worker after all, with the reason the engine did not split it (the deepest
+   * level or no room left in the subtree). */
+  join?: {
+    plan: string
+    items: { id: string; node: string; agent: string; required: boolean; nested?: true; unsplit?: string }[]
+    degraded?: string
+  }
+  /** #1158: the mark of a node a compose expansion generated, nested expansions
+   * included: its children, nested split nodes and slots, and fallback workers.
+   * The author's own nodes do not carry it: the block's split node, its slot and
+   * the join node that slot becomes. `root` is the id the top-level slot had when
+   * it was expanded and only groups one block's subtree: it is a key, not a
+   * reference, so a recovery that renames the slot leaves it alone. `depth` is the
+   * level of the plan the node takes part in: the plan a worker's item came from, or
+   * for a nested split node and slot the plan they make, one deeper than the plan
+   * that listed the item. The expansion reads both from the persisted graph alone
+   * (`DagCompose.positionOf`): the slot's own mark is its depth, and the marked
+   * nodes of the current graph are what `dag.compose.max_subtree_nodes` has been
+   * spent on. Planning the same persisted graph again, after a crash or a recovery,
+   * therefore writes the same ids and definitions, and siblings share the quota in
+   * the order they are expanded. Written by the expansion, never by an author; no
+   * model-writable node schema has the field. A replan can neither change nor
+   * clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+  compose_subtree?: { root: string; depth: number }
+  /** #1158: the id of the expansion slot whose plan generated this node, which is what
+   * lets a client group an expansion's nodes under it (`NodeView.expanded_from`). It is
+   * on the nodes that carry `compose_subtree`: the children of the plan, the fallback
+   * worker, and a nested split node and slot, which name the slot of the plan that
+   * listed the item (the outer one). The children of a nested slot name the nested slot,
+   * the node that expanded them, and the join node a slot becomes keeps the mark the slot
+   * had. The author's own nodes, the block's split node and its top-level slot, carry
+   * none. Unlike `compose_subtree.root`, which only groups, this is a reference to a
+   * node of the graph: a recovery that renames the slot renames it on every node that
+   * names it, the ones it reuses included (`planRecovery`). Written by the expansion,
+   * never by an author; no model-writable node schema has the field. A replan can
+   * neither change nor clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+  expanded_from?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow
@@ -207,8 +267,9 @@ export interface NodeConfig {
   /** The compiler-generated fan-out aggregator under a review block id. */
   aggregates_writers?: boolean
   /** Compiler-generated helper node: its worker was chosen by block
-   * compilation, not by an authored worker override. */
-  generated_helper?: "aggregate" | "evidence"
+   * compilation (or by a fan-out expansion, for its aggregator), not by an
+   * authored worker override. The model tier reads it (`DagConfig.tierOf`). */
+  generated_helper?: "aggregate" | "evidence" | "split"
   /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
    * unset for hand-authored review nodes, whose outputs keep the pre-arbitration
    * shape (no dispositions). */
@@ -660,6 +721,17 @@ export interface Interface {
   ) => Effect.Effect<void, Error>
   readonly fail: (dagID: string, reason: string) => Effect.Effect<void, Error>
   /**
+   * Terminalize an orphan `pending` workflow (ADR-0008 Amendment 3, 4b-C): the
+   * legal pending -> running -> failed sequence in ONE transaction, a runner
+   * write that carries the lease token like `fail`. The projector accepts
+   * `WorkflowFailed` only from running or stepping, so `WorkflowStarted` has
+   * to land first; in one transaction nothing can observe the `running` midpoint
+   * and a refused fence leaves neither event. Failed, not cancelled (an
+   * interrupted create), with `reason` in the durable event. Rejects a workflow
+   * that is not `pending`: this is not `failUnrecoverable`.
+   */
+  readonly failOrphan: (dagID: string, reason: string) => Effect.Effect<void, Error>
+  /**
    * Fail a workflow whose execution location is unusable outside the normal
    * control flow (its directory disappeared or was never stamped). Unlike
    * `fail`, this also legalizes the pending→running and paused→running legs
@@ -807,7 +879,7 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const store = yield* DagStore.Service
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
-    const transactService = yield* Effect.serviceOption(DagTransact.Service)
+    const transactService = yield* DagTransact.Service
     const withMailbox = <A, E, R>(
       dagID: string,
       reason: string | undefined | ((result: A) => string | undefined),
@@ -822,11 +894,8 @@ export const layer = Layer.effect(
           .withLock(dagID)(Effect.suspend(() => body(lockWitness)))
           .pipe(Effect.timeout(WORKFLOW_LOCK_TIMEOUT))
     // ADR-0008 decision 3: the guard and the publish of a write run in ONE
-    // IMMEDIATE transaction (`DagTransact`), so nothing can change the workflow
-    // between them. The service is optional for now, like `DagMessages`: the
-    // production layers always provide it, and the many harnesses that mock this
-    // layer's dependencies run the body as it stands. PR4b makes it required,
-    // with the removal of the old paths.
+    // IMMEDIATE transaction (`DagTransact`, a required service), so nothing can
+    // change the workflow between them.
     //
     // A runner write carries its lease token (ADR-0008 decision 4): the runner
     // port provides it around the call (`DagTransact.Fence`) and `underFence`
@@ -834,8 +903,7 @@ export const layer = Layer.effect(
     const transact = <A, E, R>(
       dagID: string,
       body: Effect.Effect<A, E, R>,
-    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> =>
-      Option.isSome(transactService) ? DagTransact.underFence(transactService.value, dagID, body) : body
+    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> => DagTransact.underFence(transactService, dagID, body)
     // A command that changes workflow state: the in-process lock queues it, then
     // one transaction carries its guard and its publish.
     const command =
@@ -1343,6 +1411,22 @@ export const layer = Layer.effect(
     })
 
     /**
+     * The orphan's terminalization (ADR-0008 Amendment 3, 4b-C): `WorkflowStarted`
+     * legalizes the pending -> running leg that the projector requires of a
+     * `WorkflowFailed`, and `fail` takes it from there, in the one transaction
+     * of the command. The guard admits `pending` alone: `guardWorkflow` would let a
+     * `paused` workflow through (paused -> running is legal), which no create
+     * sequence leaves behind.
+     */
+    const failOrphan = Effect.fn("Dag.failOrphan")(function* (lock: WorkflowLock, dagID: string, reason: string) {
+      const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
+      if (workflow.status !== WorkflowStatus.PENDING)
+        yield* Effect.fail(new InvalidTransitionError(dagID, workflow.status, WorkflowStatus.RUNNING))
+      yield* events.publish(DagEvent.WorkflowStarted, { dagID: ID.make(dagID), timestamp: yield* DateTime.now })
+      yield* fail(lock, dagID, reason)
+    })
+
+    /**
      * Terminalize a workflow that can never progress. The projector accepts
      * WorkflowFailed only from running/stepping, so a pending row takes the
      * legal pending→running leg and a paused row the paused→running leg
@@ -1393,8 +1477,7 @@ export const layer = Layer.effect(
       // transaction. The command's `transact` owns that transaction; a nested
       // events.publish uses a savepoint on the same connection, so a recover
       // in another process cannot advance the graph between the reads and the
-      // terminal write. Without the service (unit harnesses), the same
-      // decision runs unfenced.
+      // terminal write.
       const terminalize = Effect.gen(function* () {
         const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
         if (!workflow || isTerminalWorkflowStatusValue(workflow.status))
@@ -1518,6 +1601,22 @@ export const layer = Layer.effect(
 
       const nodeStatusById = new Map(nodes.map((n) => [n.id, n.status]))
       const definitionErrors: string[] = []
+      // #1158: `expand` and `join` are the engine's marks on a compose node, and no definition a caller writes in can
+      // carry them, so restating such a node drops them. A pending node is replaced by its restatement and a running
+      // one is redefined by a restart, which is where a mark would be lost and the node would go on as an ordinary
+      // one (a slot spawned as authored, a join node no longer checked). A running or queued node that is neither is
+      // held by the admitted-field guard below, and a terminal one keeps its definition.
+      for (const next of normalizedFragment.nodes) {
+        const status = nodeStatusById.get(next.id)
+        if (next.cancel || !(status === NodeStatus.PENDING || (status === NodeStatus.RUNNING && next.restart))) continue
+        const current = cfgById.get(next.id)
+        if (!current) continue
+        const marks = ReplanDefinition.changedEngineOwnedFields(current, next)
+        if (marks.length === 0) continue
+        definitionErrors.push(
+          `Node "${next.id}" carries ${marks.join(", ")}, which belongs to the engine's compose expansion; a replan cannot change or clear it. Cancel the node (cancel: true) and add a replacement under a new id`,
+        )
+      }
       for (const next of normalizedFragment.nodes) {
         if (next.cancel || next.restart) continue
         const status = nodeStatusById.get(next.id)
@@ -2680,6 +2779,8 @@ export const layer = Layer.effect(
       complete: (dagID, options) =>
         command(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
       fail: (dagID, reason) => command(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
+      failOrphan: (dagID, reason) =>
+        command(dagID)((lock) => withMailbox(dagID, "failed", failOrphan(lock, dagID, reason))),
       failUnrecoverable: (dagID, reason) =>
         command(dagID)((lock) =>
           // An `ignored` outcome means the workflow moved or terminalized

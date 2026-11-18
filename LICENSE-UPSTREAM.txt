@@ -1200,7 +1200,6 @@ packages/tui/src/routes/home.tsx
 packages/tui/src/routes/session/index.tsx
 packages/tui/src/routes/session/permission.tsx
 packages/tui/src/routes/session/question.tsx
-packages/tui/src/routes/session/subagent-footer.tsx
 packages/tui/src/runtime.tsx
 packages/tui/src/terminal-win32.ts
 packages/tui/src/theme/assets/aura.json
