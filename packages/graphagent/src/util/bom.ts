@@ -20,12 +20,11 @@ export const readFile = Effect.fn("Bom.readFile")(function* (fs: FSUtil.Interfac
 })
 
 /**
- * Reads text that will be rewritten in place. Lenient decoding would turn every
- * non-UTF-8 byte (GBK, Latin-1, binary) into U+FFFD and write that back across
- * the whole file, so undecodable input is refused instead.
+ * Decodes the bytes of text that will be rewritten in place. Lenient decoding
+ * would turn every non-UTF-8 byte (GBK, Latin-1, binary) into U+FFFD and write
+ * that back across the whole file, so undecodable input is refused instead.
  */
-export const readEditableFile = Effect.fn("Bom.readEditableFile")(function* (fs: FSUtil.Interface, filePath: string) {
-  const bytes = yield* fs.readFile(filePath)
+export function decodeEditable(bytes: Uint8Array, filePath: string) {
   try {
     return split(new TextDecoder("utf-8", { ignoreBOM: true, fatal: true }).decode(bytes))
   } catch {
@@ -33,6 +32,11 @@ export const readEditableFile = Effect.fn("Bom.readEditableFile")(function* (fs:
       `${filePath} is not valid UTF-8 text. Editing it here would corrupt its non-UTF-8 bytes; use a shell tool that preserves the file's encoding (for example iconv) instead.`,
     )
   }
+}
+
+/** Reads text that will be rewritten in place; see `decodeEditable`. */
+export const readEditableFile = Effect.fn("Bom.readEditableFile")(function* (fs: FSUtil.Interface, filePath: string) {
+  return decodeEditable(yield* fs.readFile(filePath), filePath)
 })
 
 export const syncFile = Effect.fn("Bom.syncFile")(function* (fs: FSUtil.Interface, filePath: string, bom: boolean) {

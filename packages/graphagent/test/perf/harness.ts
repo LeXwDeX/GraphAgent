@@ -36,6 +36,7 @@ import { BackgroundJob } from "@/background/job"
 import { Todo } from "@/session/todo"
 import { Question } from "@/question"
 import { ToolRegistry } from "@/tool/registry"
+import { FileState } from "@/session/file-state"
 import { Truncate } from "@/tool/truncate"
 import { SettingsHook } from "@/hook"
 import { Dag } from "@/dag/dag"
@@ -257,6 +258,7 @@ const makeStacks = (
     Layer.provide(Git.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
+    Layer.provide(FileState.defaultLayer),
     Layer.provide(flags),
     Layer.provideMerge(todo),
     Layer.provideMerge(question),
@@ -384,6 +386,7 @@ export function makeDagPerfLayer(provider: FakeProvider) {
     Layer.provide(Git.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
+    Layer.provide(FileState.defaultLayer),
     Layer.provide(flags),
     Layer.provideMerge(dagTodo),
     Layer.provideMerge(dagQuestion),

@@ -10,6 +10,7 @@ import { SessionHooks } from "@/hook/session-hooks"
 import { Permission } from "@/permission"
 import { SessionTools } from "@/session/tools"
 import { ReadTool } from "@/tool/read"
+import { FileState } from "@/session/file-state"
 import { WriteTool } from "@/tool/write"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "@/mcp"
@@ -39,6 +40,7 @@ const hookLayer = SettingsHook.layer.pipe(
 const toolDependencies = Layer.mergeAll(
   FSUtil.defaultLayer,
   EventV2Bridge.defaultLayer,
+  FileState.defaultLayer,
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
   Layer.mock(LSP.Service, { touchFile: () => Effect.void, diagnostics: () => Effect.succeed({}) }),
   Layer.mock(Format.Service, { file: () => Effect.succeed(false) }),
@@ -79,6 +81,12 @@ describe("Claude-formatted PermissionRequest input rewrite", () => {
         const replacement = path.join(instance.directory, `${name}-replacement.txt`)
         yield* Effect.promise(() => fs.writeFile(original, "ORIGINAL_CONTENT"))
         yield* Effect.promise(() => fs.writeFile(replacement, "REPLACEMENT_CONTENT"))
+        // write replaces an existing file only after this session has read it, both the requested path and the rewritten one.
+        if (name === "write") {
+          const state = yield* FileState.Service
+          yield* state.record(sessionID, original, "read")
+          yield* state.record(sessionID, replacement, "read")
+        }
         const audit = path.join(instance.directory, `${name}-hook-stdin.json`)
         const decision = {
           hookSpecificOutput: {

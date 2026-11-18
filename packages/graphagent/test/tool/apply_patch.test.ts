@@ -1,12 +1,15 @@
 import { describe, expect } from "bun:test"
 import path from "path"
+import { createHash } from "node:crypto"
 import * as fs from "fs/promises"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { LSP } from "@/lsp/lsp"
 import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Format } from "../../src/format"
+import { EngineProcess } from "@/session/engine-process"
+import { FileState } from "@/session/file-state"
 import { Agent } from "../../src/agent/agent"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Truncate } from "@/tool/truncate"
@@ -22,6 +25,7 @@ const it = testEffect(
     EventV2Bridge.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    FileState.defaultLayer,
   ),
 )
 
@@ -37,6 +41,7 @@ const itWithDiagnostics = testEffect(
     EventV2Bridge.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    FileState.defaultLayer,
   ),
 )
 
@@ -91,6 +96,12 @@ const makeCtx = () => {
 
   return { ctx, calls }
 }
+
+// An existing Add File or Move target must have been read in this session before apply_patch replaces it.
+const markRead = (filepath: string, sessionID = baseCtx.sessionID) =>
+  Effect.gen(function* () {
+    yield* (yield* FileState.Service).record(sessionID, filepath, "read")
+  })
 
 const readText = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf-8"))
 const writeText = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content, "utf-8"))
@@ -382,6 +393,7 @@ describe("tool.apply_patch freeform", () => {
       yield* makeDir(path.dirname(destination))
       yield* writeText(original, "from\n")
       yield* writeText(destination, "existing\n")
+      yield* markRead(destination)
 
       const patchText =
         "*** Begin Patch\n*** Update File: old/name.txt\n*** Move to: renamed/dir/name.txt\n@@\n-from\n+new\n*** End Patch"
@@ -399,6 +411,7 @@ describe("tool.apply_patch freeform", () => {
       const { ctx } = makeCtx()
       const target = path.join(test.directory, "duplicate.txt")
       yield* writeText(target, "old content\n")
+      yield* markRead(target)
 
       const patchText = "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch"
 
@@ -681,6 +694,7 @@ describe("tool.apply_patch diagnostics", () => {
       EventV2Bridge.defaultLayer,
       Truncate.defaultLayer,
       Agent.defaultLayer,
+      FileState.defaultLayer,
     ),
   )
 
@@ -705,5 +719,807 @@ describe("tool.apply_patch diagnostics", () => {
         expect(peak).toBeGreaterThan(1)
       }),
     { git: true },
+  )
+})
+
+describe("tool.apply_patch file state (#1452)", () => {
+  const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
+  const recorded = Effect.fn("ApplyPatchToolTest.recorded")(function* (filepath: string) {
+    return yield* (yield* FileState.Service).get(baseCtx.sessionID, filepath)
+  })
+
+  it.instance("records an added file under the apply_patch source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Add File: added.txt\n+fresh\n*** End Patch" }, ctx)
+
+      const entry = yield* recorded(path.join(test.directory, "added.txt"))
+      expect(entry?.source).toBe("apply_patch")
+      expect(entry?.hash).toBe(sha256("fresh\n"))
+      expect(entry?.size).toBe(6)
+    }),
+  )
+
+  it.instance("records an updated file with the bytes it ended up with", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "update.txt")
+      const bom = String.fromCharCode(0xfeff)
+      yield* writeText(target, `${bom}one\ntwo\n`)
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Update File: update.txt\n@@\n-one\n+uno\n*** End Patch" }, ctx)
+
+      const onDisk = yield* Effect.promise(() => fs.readFile(target))
+      expect(onDisk.toString("utf8")).toBe(`${bom}uno\ntwo\n`)
+      const entry = yield* recorded(target)
+      expect(entry?.source).toBe("apply_patch")
+      expect(entry?.hash).toBe(sha256(onDisk))
+    }),
+  )
+
+  it.instance("records the destination of a move and not the removed source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "moved", "to.txt")
+      yield* writeText(source, "keep\nold\n")
+
+      yield* execute(
+        {
+          patchText:
+            "*** Begin Patch\n*** Update File: from.txt\n*** Move to: moved/to.txt\n@@\n keep\n-old\n+new\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect((yield* recorded(destination))?.hash).toBe(sha256("keep\nnew\n"))
+      expect(yield* recorded(source)).toBeUndefined()
+    }),
+  )
+
+  it.instance("does not record a deleted file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "gone.txt")
+      yield* writeText(target, "bye\n")
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch" }, ctx)
+
+      expect(yield* recorded(target)).toBeUndefined()
+    }),
+  )
+
+  it.instance(
+    "records the state the formatter left for every edited file",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const existing = path.join(test.directory, "existing.ts")
+        yield* writeText(existing, "const a = 1\n")
+
+        yield* execute(
+          {
+            patchText:
+              "*** Begin Patch\n*** Add File: added.ts\n+const b = 1\n*** Update File: existing.ts\n@@\n-const a = 1\n+const a = 2\n*** End Patch",
+          },
+          ctx,
+        )
+
+        for (const filepath of [existing, path.join(test.directory, "added.ts")]) {
+          const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+          expect(onDisk.toString("utf8")).toContain("// formatted line")
+          const entry = yield* recorded(filepath)
+          expect(entry?.hash).toBe(sha256(onDisk))
+          expect(entry?.size).toBe(onDisk.byteLength)
+        }
+      }),
+    {
+      config: {
+        formatter: {
+          expand: {
+            extensions: [".ts"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(3), 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
+  )
+})
+
+describe("tool.apply_patch overwrite contract (#1452)", () => {
+  const prefix = "apply_patch verification failed: "
+  const asks = () => {
+    const { ctx, calls } = makeCtx()
+    return { ctx, calls }
+  }
+
+  it.instance("Add File over an existing file the session has not read is rejected before anything is written", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = asks()
+      const target = path.join(test.directory, "duplicate.txt")
+      const bystander = path.join(test.directory, "bystander.txt")
+      yield* writeText(target, "old content\n")
+      yield* writeText(bystander, "before\n")
+
+      yield* expectFailure(
+        execute(
+          {
+            patchText:
+              "*** Begin Patch\n*** Update File: bystander.txt\n@@\n-before\n+after\n*** Add File: duplicate.txt\n+new content\n*** End Patch",
+          },
+          ctx,
+        ),
+        `${prefix}${FileState.notReadMessage(target)}`,
+      )
+
+      expect(yield* readText(target)).toBe("old content\n")
+      expect(yield* readText(bystander)).toBe("before\n")
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("Add File over an existing file succeeds once the session has read it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "duplicate.txt")
+      yield* writeText(target, "old content\n")
+      yield* markRead(target)
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch" }, ctx)
+
+      expect(yield* readText(target)).toBe("new content\n")
+    }),
+  )
+
+  it.instance("Add File over a file that changed after it was read is rejected", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "duplicate.txt")
+      yield* writeText(target, "what the model saw\n")
+      yield* markRead(target)
+      yield* writeText(target, "what someone else wrote\n")
+
+      yield* expectFailure(
+        execute({ patchText: "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch" }, ctx),
+        `${prefix}${FileState.changedSinceReadMessage(target)}`,
+      )
+
+      expect(yield* readText(target)).toBe("what someone else wrote\n")
+    }),
+  )
+
+  it.instance("Add File over a directory is rejected", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const directory = path.join(test.directory, "dir")
+      yield* makeDir(directory)
+
+      yield* expectFailure(
+        execute({ patchText: "*** Begin Patch\n*** Add File: dir\n+x\n*** End Patch" }, ctx),
+        `${prefix}Path is a directory, not a file: ${directory}`,
+      )
+    }),
+  )
+
+  it.instance("Move onto an existing destination the session has not read is rejected, and nothing moves", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = asks()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "to.txt")
+      yield* writeText(source, "from\n")
+      yield* writeText(destination, "existing\n")
+
+      yield* expectFailure(
+        execute(
+          {
+            patchText:
+              "*** Begin Patch\n*** Update File: from.txt\n*** Move to: to.txt\n@@\n-from\n+new\n*** End Patch",
+          },
+          ctx,
+        ),
+        `${prefix}${FileState.notReadMessage(destination)}`,
+      )
+
+      expect(yield* readText(source)).toBe("from\n")
+      expect(yield* readText(destination)).toBe("existing\n")
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("Move onto an existing destination succeeds once the session has read it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "to.txt")
+      yield* writeText(source, "from\n")
+      yield* writeText(destination, "existing\n")
+      yield* markRead(destination)
+
+      yield* execute(
+        {
+          patchText: "*** Begin Patch\n*** Update File: from.txt\n*** Move to: to.txt\n@@\n-from\n+new\n*** End Patch",
+        },
+        ctx,
+      )
+
+      yield* expectReadFailure(source)
+      expect(yield* readText(destination)).toBe("new\n")
+    }),
+  )
+
+  it.instance("Move to a destination that does not exist needs no read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const source = path.join(test.directory, "from.txt")
+      yield* writeText(source, "from\n")
+
+      yield* execute(
+        {
+          patchText:
+            "*** Begin Patch\n*** Update File: from.txt\n*** Move to: moved/to.txt\n@@\n-from\n+new\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect(yield* readText(path.join(test.directory, "moved", "to.txt"))).toBe("new\n")
+    }),
+  )
+
+  it.instance("Update File and a new Add File need no prior read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "modify.txt")
+      yield* writeText(target, "line1\nline2\n")
+
+      yield* execute(
+        {
+          patchText:
+            "*** Begin Patch\n*** Update File: modify.txt\n@@\n-line2\n+changed\n*** Add File: made.txt\n+made\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect(yield* readText(target)).toBe("line1\nchanged\n")
+      expect(yield* readText(path.join(test.directory, "made.txt"))).toBe("made\n")
+    }),
+  )
+
+  it.instance("an Update File above 10 MiB is not limited", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = asks()
+      const target = path.join(test.directory, "big.txt")
+      const body = "x".repeat(FileState.MAX_EDITABLE_BYTES + 16)
+      yield* writeText(target, `head\n${body}\ntail\n`)
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Update File: big.txt\n@@\n-head\n+HEAD\n*** End Patch" }, ctx)
+
+      expect(yield* readText(target)).toBe(`HEAD\n${body}\ntail\n`)
+    }),
+  )
+})
+
+describe("tool.apply_patch malformed lines (#1452 B3)", () => {
+  it.instance("a hunk line without a prefix fails the call and leaves the file alone", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      const target = path.join(test.directory, "modify.txt")
+      yield* writeText(target, "keep\nold\n")
+
+      const patchText = "*** Begin Patch\n*** Update File: modify.txt\n@@\n keep\noops\n-old\n+new\n*** End Patch"
+
+      yield* expectFailure(execute({ patchText }, ctx), 'malformed line 5 in the hunk for modify.txt: "oops"')
+      expect(yield* readText(target)).toBe("keep\nold\n")
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("a line before the first @@ fails the call", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "modify.txt")
+      yield* writeText(target, "old\n")
+
+      const patchText = "*** Begin Patch\n*** Update File: modify.txt\n-old\n+new\n*** End Patch"
+
+      yield* expectFailure(execute({ patchText }, ctx), 'malformed line 3 in the update for modify.txt: "-old"')
+      expect(yield* readText(target)).toBe("old\n")
+    }),
+  )
+
+  it.instance("an Add File line without + fails the call and creates nothing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+
+      const patchText = "*** Begin Patch\n*** Add File: made.txt\n+one\ntwo\n*** End Patch"
+
+      yield* expectFailure(execute({ patchText }, ctx), 'malformed line 4 in the added file made.txt: "two"')
+      yield* expectReadFailure(path.join(test.directory, "made.txt"))
+    }),
+  )
+
+  it.instance("blank lines between hunk lines keep their old meaning", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "gap.txt")
+      yield* writeText(target, "a\nb\nc\n")
+
+      const patchText = "*** Begin Patch\n*** Update File: gap.txt\n@@\n a\n\n-b\n+B\n\n*** End Patch"
+
+      yield* execute({ patchText }, ctx)
+      expect(yield* readText(target)).toBe("a\nB\nc\n")
+    }),
+  )
+})
+
+describe("tool.apply_patch write-point checks (#1452)", () => {
+  const prefix = "apply_patch verification failed: "
+  const rewrite = (filepath: string, content: string) => writeText(filepath, content)
+  /** A context whose permission question runs `action` before it is answered. */
+  const askThen = (action: Effect.Effect<void>): ToolCtx => ({ ...baseCtx, ask: () => action })
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+
+  describe("a source that changed after the last read", () => {
+    it.instance(
+      "is patched as it is now, with a note after the summary line",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const target = path.join(test.directory, "update.txt")
+          yield* writeText(target, "one\ntwo\n")
+          yield* markRead(target)
+          yield* writeText(target, "one\ntwo\nadded elsewhere\n")
+
+          const result = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, ctx)
+
+          expect(yield* readText(target)).toBe("uno\ntwo\nadded elsewhere\n")
+          expect(result.output.split("\n").slice(0, 3)).toEqual([
+            "Success. Updated the following files:",
+            "M update.txt",
+            FileState.changedOutsideNote("update.txt"),
+          ])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "is named by its destination in the note when the patch moves it",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const source = path.join(test.directory, "from.txt")
+          yield* writeText(source, "keep\nold\n")
+          yield* markRead(source)
+          yield* writeText(source, "keep\nold\nadded elsewhere\n")
+
+          const result = yield* execute(
+            {
+              patchText: patch("*** Update File: from.txt", "*** Move to: moved/to.txt", "@@", " keep", "-old", "+new"),
+            },
+            ctx,
+          )
+
+          expect(yield* readText(path.join(test.directory, "moved", "to.txt"))).toBe("keep\nnew\nadded elsewhere\n")
+          expect(result.output.split("\n").slice(0, 3)).toEqual([
+            "Success. Updated the following files:",
+            "M moved/to.txt",
+            FileState.changedOutsideNote("moved/to.txt"),
+          ])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "gets one note per changed file, after all the summary lines",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const changed = path.join(test.directory, "changed.txt")
+          const same = path.join(test.directory, "same.txt")
+          yield* writeText(changed, "a\n")
+          yield* writeText(same, "b\n")
+          yield* markRead(changed)
+          yield* markRead(same)
+          yield* writeText(changed, "a\nx\n")
+
+          const result = yield* execute(
+            {
+              patchText: patch(
+                "*** Update File: changed.txt",
+                "@@",
+                "-a",
+                "+A",
+                "*** Update File: same.txt",
+                "@@",
+                "-b",
+                "+B",
+              ),
+            },
+            ctx,
+          )
+
+          expect(result.output.split("\n")).toEqual([
+            "Success. Updated the following files:",
+            "M changed.txt",
+            "M same.txt",
+            FileState.changedOutsideNote("changed.txt"),
+          ])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "gets no note when the session never read it, or after its own earlier patch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const target = path.join(test.directory, "update.txt")
+          yield* writeText(target, "one\ntwo\nthree\n")
+
+          const first = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, ctx)
+          const second = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-two", "+dos") }, ctx)
+
+          expect(first.output).toBe("Success. Updated the following files:\nM update.txt")
+          expect(second.output).toBe("Success. Updated the following files:\nM update.txt")
+        }),
+      { git: true },
+    )
+  })
+
+  describe("a file that changed while the question was open", () => {
+    it.instance("fails an Update on a changed source and writes none of the other files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "source.txt")
+        const other = path.join(test.directory, "other.txt")
+        yield* writeText(source, "one\n")
+        yield* writeText(other, "before\n")
+
+        yield* expectFailure(
+          execute(
+            {
+              patchText: patch(
+                "*** Update File: other.txt",
+                "@@",
+                "-before",
+                "+after",
+                "*** Update File: source.txt",
+                "@@",
+                "-one",
+                "+uno",
+                "*** Add File: made.txt",
+                "+made",
+              ),
+            },
+            askThen(rewrite(source, "one, edited elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(source)}`,
+        )
+
+        expect(yield* readText(source)).toBe("one, edited elsewhere\n")
+        expect(yield* readText(other)).toBe("before\n")
+        yield* expectReadFailure(path.join(test.directory, "made.txt"))
+      }),
+    )
+
+    it.instance("fails an Add File over a file that changed, and one over a file that appeared", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const existing = path.join(test.directory, "existing.txt")
+        const appearing = path.join(test.directory, "appearing.txt")
+        const bystander = path.join(test.directory, "bystander.txt")
+        yield* writeText(existing, "what the model read\n")
+        yield* writeText(bystander, "before\n")
+        yield* markRead(existing)
+
+        yield* expectFailure(
+          execute(
+            {
+              patchText: patch(
+                "*** Update File: bystander.txt",
+                "@@",
+                "-before",
+                "+after",
+                "*** Add File: existing.txt",
+                "+clobbered",
+              ),
+            },
+            askThen(rewrite(existing, "someone else\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(existing)}`,
+        )
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Add File: appearing.txt", "+mine") },
+            askThen(rewrite(appearing, "created elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(appearing)}`,
+        )
+
+        expect(yield* readText(existing)).toBe("someone else\n")
+        expect(yield* readText(appearing)).toBe("created elsewhere\n")
+        expect(yield* readText(bystander)).toBe("before\n")
+      }),
+    )
+
+    it.instance("fails a Delete of a file that changed, and a file that vanished", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const changed = path.join(test.directory, "changed.txt")
+        const vanishing = path.join(test.directory, "vanishing.txt")
+        yield* writeText(changed, "what the model saw\n")
+        yield* writeText(vanishing, "soon gone\n")
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Delete File: changed.txt") },
+            askThen(rewrite(changed, "edited elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(changed)}`,
+        )
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Delete File: vanishing.txt") },
+            askThen(Effect.promise(() => fs.rm(vanishing))),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(vanishing)}`,
+        )
+
+        expect(yield* readText(changed)).toBe("edited elsewhere\n")
+      }),
+    )
+
+    it.instance("fails a Move whose destination changed, leaving the source in place", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "from.txt")
+        const destination = path.join(test.directory, "to.txt")
+        yield* writeText(source, "from\n")
+        yield* writeText(destination, "what the model read\n")
+        yield* markRead(destination)
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", "-from", "+new") },
+            askThen(rewrite(destination, "someone else\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(destination)}`,
+        )
+
+        expect(yield* readText(source)).toBe("from\n")
+        expect(yield* readText(destination)).toBe("someone else\n")
+      }),
+    )
+
+    it.instance("fails a Move to a destination that appeared", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "from.txt")
+        const destination = path.join(test.directory, "to.txt")
+        yield* writeText(source, "from\n")
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", "-from", "+new") },
+            askThen(rewrite(destination, "created elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(destination)}`,
+        )
+
+        expect(yield* readText(source)).toBe("from\n")
+        expect(yield* readText(destination)).toBe("created elsewhere\n")
+      }),
+    )
+
+    it.instance("applies the patch when nothing changed in between", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "update.txt")
+        yield* writeText(target, "one\n")
+
+        yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, askThen(Effect.void))
+
+        expect(yield* readText(target)).toBe("uno\n")
+      }),
+    )
+  })
+
+  describe("the path locks", () => {
+    it.instance("are not held while the question is open, and are free afterwards", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "update.txt")
+        yield* writeText(target, "one\n")
+        const held: number[] = []
+        const next: ToolCtx = {
+          ...baseCtx,
+          ask: () =>
+            Effect.gen(function* () {
+              held.push(yield* EngineProcess.fileLocks.size)
+            }),
+        }
+
+        yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, next)
+
+        expect(held).toEqual([0])
+        expect(yield* EngineProcess.fileLocks.size).toBe(0)
+      }),
+    )
+
+    it.instance("are released when a check fails", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "update.txt")
+        yield* writeText(target, "one\n")
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") },
+            askThen(rewrite(target, "changed\n")),
+          ),
+        )
+
+        expect(yield* EngineProcess.fileLocks.size).toBe(0)
+      }),
+    )
+  })
+})
+
+// #1452 review finding: the check under the path locks used the session's record for an add or move target, which
+// another call of the same session replaces while this call's permission question is open.
+describe("tool.apply_patch call-local baseline (#1452)", () => {
+  const prefix = "apply_patch verification failed: "
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+  const original = "what the model read\n"
+
+  /** A context whose permission question stays open until `answer` is completed. */
+  const waiting = Effect.gen(function* () {
+    const asked = yield* Deferred.make<void>()
+    const answer = yield* Deferred.make<void>()
+    const next: ToolCtx = {
+      ...baseCtx,
+      ask: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer))),
+    }
+    return { next, asked, answer }
+  })
+
+  it.instance("refuses an Add File over a file another patch of the same session replaced during the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "existing.txt")
+      const bystander = path.join(test.directory, "bystander.txt")
+      yield* writeText(target, original)
+      yield* writeText(bystander, "before\n")
+      yield* markRead(target)
+      const second = yield* waiting
+      const pending = yield* execute(
+        {
+          patchText: patch(
+            "*** Update File: bystander.txt",
+            "@@",
+            "-before",
+            "+after",
+            "*** Add File: existing.txt",
+            "+second writer",
+          ),
+        },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      yield* execute(
+        { patchText: patch("*** Update File: existing.txt", "@@", "-what the model read", "+first writer") },
+        ctx,
+      )
+      // The session's record now describes what is on disk: a check against it would pass.
+      yield* (yield* FileState.Service).requireSame(baseCtx.sessionID, target)
+      yield* Deferred.succeed(second.answer, undefined)
+
+      yield* expectFailure(Fiber.join(pending), `${prefix}${FileState.changedWhileAskingMessage(target)}`)
+      expect(yield* readText(target)).toBe("first writer\n")
+      expect(yield* readText(bystander)).toBe("before\n")
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+
+  it.instance("refuses a Move onto a file another patch of the same session replaced during the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "to.txt")
+      yield* writeText(source, "from\n")
+      yield* writeText(destination, original)
+      yield* markRead(destination)
+      const second = yield* waiting
+      const pending = yield* execute(
+        { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", "-from", "+moved") },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      yield* execute(
+        { patchText: patch("*** Update File: to.txt", "@@", "-what the model read", "+first writer") },
+        ctx,
+      )
+      yield* (yield* FileState.Service).requireSame(baseCtx.sessionID, destination)
+      yield* Deferred.succeed(second.answer, undefined)
+
+      yield* expectFailure(Fiber.join(pending), `${prefix}${FileState.changedWhileAskingMessage(destination)}`)
+      expect(yield* readText(source)).toBe("from\n")
+      expect(yield* readText(destination)).toBe("first writer\n")
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+
+  it.instance("refuses an Add File when the session's record was refreshed to a version the call did not plan on", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "existing.txt")
+      yield* writeText(target, original)
+      yield* markRead(target)
+      const second = yield* waiting
+      const pending = yield* execute(
+        { patchText: patch("*** Add File: existing.txt", "+second writer") },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      // Another process changes the file and the session reads the new version before the question is answered.
+      yield* writeText(target, "changed elsewhere\n")
+      yield* markRead(target)
+      yield* Deferred.succeed(second.answer, undefined)
+
+      yield* expectFailure(Fiber.join(pending), `${prefix}${FileState.changedWhileAskingMessage(target)}`)
+      expect(yield* readText(target)).toBe("changed elsewhere\n")
+    }),
+  )
+
+  it.instance("still replaces the target when nothing touched it during the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "existing.txt")
+      yield* writeText(target, original)
+      yield* markRead(target)
+      const second = yield* waiting
+      const pending = yield* execute(
+        { patchText: patch("*** Add File: existing.txt", "+second writer") },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      yield* Deferred.succeed(second.answer, undefined)
+      yield* Fiber.join(pending)
+
+      expect(yield* readText(target)).toBe("second writer\n")
+    }),
   )
 })

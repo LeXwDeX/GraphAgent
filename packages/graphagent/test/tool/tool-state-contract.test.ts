@@ -17,10 +17,6 @@ const TOOL_SOURCES = new Bun.Glob("src/tool/**/*.ts")
 // A stale entry fails the test: the file must still declare and mutate it.
 const DECLARED_STATE = new Map<string, string>([
   [
-    "src/tool/edit.ts:locks",
-    "process-global edit mutex: edits of one absolute path must serialize across directory instances",
-  ],
-  [
     "src/tool/json-schema.ts:cache",
     "derived schema memo: WeakMap keyed by schema identity, pure derivation, no runtime state",
   ],

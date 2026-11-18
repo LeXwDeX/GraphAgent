@@ -21,6 +21,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { isManagedOutputFileRef } from "@/dag/runtime/output-ref"
 import { ReadTool } from "@/tool/read"
+import { FileState } from "@/session/file-state"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { SessionInbox } from "@/session/inbox"
 import { Instruction } from "@/session/instruction"
@@ -162,6 +163,7 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
             Layer.mergeAll(
               FSUtil.defaultLayer,
               Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
+              FileState.defaultLayer,
               Layer.mock(LSP.Service, { touchFile: () => Effect.void }),
               Layer.mock(Truncate.Service, { output: (content) => Effect.succeed({ content, truncated: false }) }),
               agent,
