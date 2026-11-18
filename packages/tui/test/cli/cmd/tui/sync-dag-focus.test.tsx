@@ -104,6 +104,7 @@ describe("tui sync dag focus memory", () => {
             info: {
               id: "ses_gone",
               slug: "ses_gone",
+              role: "root",
               title: "ses_gone",
               projectID: "proj_test",
               directory,

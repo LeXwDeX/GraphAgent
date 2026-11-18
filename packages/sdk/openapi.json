@@ -11147,6 +11147,10 @@
             "type": "string",
             "pattern": "^ses"
           },
+          "role": {
+            "type": "string",
+            "enum": ["root", "task_child", "dag_node"]
+          },
           "summary": {
             "type": "object",
             "properties": {
@@ -11296,7 +11300,7 @@
             "type": "boolean"
           }
         },
-        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "required": ["id", "slug", "projectID", "directory", "role", "title", "version", "time"],
         "additionalProperties": false
       },
       "SessionDagMode": {

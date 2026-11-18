@@ -16,6 +16,7 @@ function setup(subagent?: SubagentReminders) {
     id,
     title,
     slug: id,
+    role: parentID ? "task_child" : "root",
     projectID: "project",
     directory: "/workspace",
     ...(parentID && { parentID }),

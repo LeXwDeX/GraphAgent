@@ -44,6 +44,7 @@ const sessionDirectory = "/repo/session"
 const session: Session = {
   id: sessionID,
   slug: "diff-route",
+  role: "root",
   projectID: "proj_test",
   directory: sessionDirectory,
   title: "Diff route",

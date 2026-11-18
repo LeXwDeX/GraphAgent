@@ -86,6 +86,7 @@ test("variant panel moves from default to a reasoning variant and closes", async
           {
             id: "s1",
             slug: "s1",
+            role: "root",
             projectID: "proj_test",
             directory: "/repo",
             title: "Session",

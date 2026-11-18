@@ -64,6 +64,7 @@ const routeSession = {
   id: routeSessionID,
   title: "event cleanup",
   slug: "test-session",
+  role: "root" as const,
   projectID: "proj_test",
   time: { created: 0, updated: 0 },
   version: "1.17.11",
@@ -1080,7 +1081,13 @@ test("resuming a session restores its persisted model locally without a model sw
 
 test("session attention follows real typing, background child navigation, and unmount", async () => {
   const childID = "ses_attention_child"
-  const child = { ...routeSession, id: childID, parentID: routeSessionID, title: "Background child" }
+  const child = {
+    ...routeSession,
+    id: childID,
+    parentID: routeSessionID,
+    role: "task_child" as const,
+    title: "Background child",
+  }
   const updates: Array<{ sessionID: string; value: SessionAttentionInput }> = []
   const parentMessage = {
     info: {

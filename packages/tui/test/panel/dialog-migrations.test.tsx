@@ -57,6 +57,7 @@ function sessionFixture(parentID?: string): Session {
   return {
     id: sessionID,
     slug: "dialog",
+    role: parentID ? "task_child" : "root",
     projectID: "proj_test",
     directory: "/repo/session",
     title: "Dialog session",

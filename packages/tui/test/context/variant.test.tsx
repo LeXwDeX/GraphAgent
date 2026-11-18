@@ -212,6 +212,7 @@ async function mount(
       id,
       title: id,
       slug: id,
+      role: "root" as const,
       projectID: "proj_test",
       time: { created: 0, updated: 0 },
       version: "1",

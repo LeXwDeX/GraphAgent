@@ -120,6 +120,7 @@ describe("tui sync settled turns", () => {
             info: {
               id: "ses_a",
               slug: "a",
+              role: "root",
               projectID: "proj_test",
               directory,
               title: "a",

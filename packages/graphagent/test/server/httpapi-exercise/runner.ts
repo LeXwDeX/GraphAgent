@@ -141,6 +141,8 @@ function withContext<A, E>(
                 svc.create({
                   title: input?.title,
                   parentID: input?.parentID,
+                  // #1288: a seeded child is the subagent of a task call, which is how the task tool creates one.
+                  ...(input?.parentID ? { role: "task_child" as const } : {}),
                   model: input?.model
                     ? { id: ModelV2.ID.make(input.model.id), providerID: ProviderV2.ID.make(input.model.providerID) }
                     : undefined,

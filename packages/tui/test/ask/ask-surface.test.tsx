@@ -21,6 +21,7 @@ function session(id: string, parentID?: string, title = id): Session {
   return {
     id,
     slug: id,
+    role: parentID ? "task_child" : "root",
     projectID: "proj_test",
     directory: `/repo/${id}`,
     title,

@@ -42,6 +42,7 @@ function session(id: string, title: string, updated: number, workspaceID?: strin
   return {
     id,
     slug: id,
+    role: "root",
     projectID: "proj_test",
     directory: "/repo",
     title,

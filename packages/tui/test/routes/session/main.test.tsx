@@ -43,6 +43,7 @@ const sessions: Record<string, Session> = {
   [sessionA]: {
     id: sessionA,
     slug: "main-a",
+    role: "root",
     projectID: "proj_test",
     directory,
     title: "Session A",
@@ -52,6 +53,7 @@ const sessions: Record<string, Session> = {
   [sessionB]: {
     id: sessionB,
     slug: "main-b",
+    role: "root",
     projectID: "proj_test",
     directory,
     title: "Session B",

@@ -10,6 +10,7 @@ import { json, mount, wait } from "./sync-fixture"
 const sessionOld = {
   id: "ses_aaa111",
   slug: "old",
+  role: "root" as const,
   projectID: "proj_test",
   title: "old",
   time: { created: 1, updated: 1 },
@@ -20,6 +21,7 @@ const sessionOld = {
 const sessionMid = {
   id: "ses_bbb222",
   slug: "mid",
+  role: "root" as const,
   projectID: "proj_test",
   title: "mid",
   time: { created: 2, updated: 2 },
@@ -30,6 +32,7 @@ const sessionMid = {
 const sessionNew = {
   id: "ses_ccc333",
   slug: "new",
+  role: "root" as const,
   projectID: "proj_test",
   title: "new",
   time: { created: 3, updated: 3 },
