@@ -4,7 +4,7 @@
 export * as McpConfig from "./config"
 
 import { Cause, Exit, Schema } from "effect"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import { ConfigMCP } from "@graphagent/core/config/mcp"
@@ -59,6 +59,57 @@ export function load(root: string): Servers {
     Object.assign(servers, readLayer(layer.file))
   }
   return servers
+}
+
+/**
+ * Signature of the layer files `load` reads: size and modification time of each, `absent` for a missing one.
+ * It changes whenever a layer file is written, created or removed. A file that cannot be stat'ed reads as
+ * absent, as it does for `load`.
+ */
+export function signature(root: string): string {
+  return layers(root)
+    .map((layer) => fileSignature(layer.file))
+    .join("|")
+}
+
+function fileSignature(file: string): string {
+  try {
+    const stat = statSync(file, { throwIfNoEntry: false })
+    return stat === undefined ? "absent" : `${stat.size}:${stat.mtimeMs}`
+  } catch {
+    return "absent"
+  }
+}
+
+/** The servers of the layer files, and why they could not be read when that is the case. */
+export interface Cached {
+  readonly servers: Servers
+  /** Set by the first call that sees a layer file it cannot read; a call for the same content has none. */
+  readonly error?: unknown
+}
+
+/**
+ * `load` for a caller that runs on every step: the files are read again only when their signature changes.
+ * A file that cannot be read leaves the last valid servers in place (none before the first valid read), and the
+ * failure is reported once for that content, not on every call.
+ */
+export function cached(read: (root: string) => Servers = load): (root: string) => Cached {
+  let last: { readonly signature: string; readonly servers: Servers } | undefined
+  let failure: string | undefined
+  return (root) => {
+    const current = signature(root)
+    if (last?.signature === current) return { servers: last.servers }
+    if (failure === current) return { servers: last?.servers ?? {} }
+    try {
+      const servers = read(root)
+      last = { signature: current, servers }
+      failure = undefined
+      return { servers }
+    } catch (error) {
+      failure = current
+      return { servers: last?.servers ?? {}, error }
+    }
+  }
 }
 
 /** The project-layer document as written, before schema decoding. */

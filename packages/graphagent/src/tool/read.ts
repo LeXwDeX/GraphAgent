@@ -8,7 +8,10 @@ import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import { FileState } from "@/session/file-state"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import type { Provider } from "@/provider/provider"
+import { ModelContext } from "./model-context"
 import { DIR as TRUNCATION_DIR, formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
 
 const DEFAULT_READ_LIMIT = 2000
@@ -16,6 +19,7 @@ const MAX_LINE_LENGTH = 2000
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
+const MAX_PDF_BYTES = 10 * 1024 * 1024
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
 class ReadStop extends Schema.TaggedError<ReadStop>()("ReadStop", {}) {}
@@ -45,6 +49,22 @@ export const Parameters = Schema.Struct({
       "Character offset within each displayed line (1-indexed); combine it with maxLineLength to continue a long line past the character cap",
   }),
 })
+
+/**
+ * Why a media file cannot be attached, with the shell command that gets its content instead; `undefined` when it can.
+ * Said here: left to the request, a file the model cannot take only turns into an error line one turn later (#1447).
+ */
+function attachmentRefusal(filepath: string, isImage: boolean, size: number, model: Provider.Model | undefined) {
+  if (model && !model.capabilities.input[isImage ? "image" : "pdf"]) {
+    const who = `${model.providerID}/${model.api.id}`
+    return isImage
+      ? `Cannot attach ${filepath}: ${who} does not accept image input. Inspect it with the shell tool: file "${filepath}"`
+      : `Cannot attach ${filepath}: ${who} does not accept PDF input. Extract text with the shell tool: pdftotext -layout "${filepath}" -`
+  }
+  if (!isImage && size > MAX_PDF_BYTES)
+    return `PDF ${filepath} is ${formatSize(size)}, over the ${formatSize(MAX_PDF_BYTES)} limit. Extract pages: pdftotext -f 1 -l 20 -layout "${filepath}" -`
+  return undefined
+}
 
 const LINE_NOTICE_BUDGET = 512
 
@@ -105,13 +125,14 @@ type Metadata = {
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | LSP.Service | FileState.Service | Scope.Scope
 >(
   "read",
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
+    const fileState = yield* FileState.Service
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
@@ -440,18 +461,29 @@ export const ReadTool = Tool.define<
         }
       }
 
-      const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
       const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
 
       const mime = sniffAttachmentMime(sample, FSUtil.mimeType(filepath))
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
+      const isMedia = isImage || isPdfAttachment(mime)
+      // A refused read must not claim the nearby instruction files: nothing would carry them to the model.
+      if (isMedia) {
+        const refusal = attachmentRefusal(filepath, isImage, Number(stat.size), ModelContext.modelOf(ctx.extra))
+        if (refusal) return yield* Effect.fail(new Error(refusal))
+      }
+      const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
 
-      if (isImage || isPdfAttachment(mime)) {
+      if (isMedia) {
         const bytes = yield* fs.readFile(filepath)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
+        // The nearby instructions are claimed as loaded, so they must reach the model here too (#1447).
+        const reminder =
+          loaded.length > 0
+            ? `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`
+            : ""
         return {
           title,
-          output: msg,
+          output: msg + reminder,
           metadata: {
             preview: msg,
             truncated: false,
@@ -471,6 +503,10 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
+      // The record must describe the version this read consumes: freeze it before reading, and record only if the
+      // file is still that version afterwards. Recording whatever is on disk later could hand the model's
+      // authority to overwrite a version it never saw.
+      const seen = yield* fileState.baseline(filepath)
       const total = params.page !== undefined && params.page < 0 ? yield* countFileLines(filepath) : undefined
       const { offset, limit } = yield* resolvePage(params, total)
       const file = yield* lines(filepath, {
@@ -511,6 +547,7 @@ export const ReadTool = Tool.define<
       output += "\n</content>"
 
       yield* warm(filepath)
+      if (seen) yield* fileState.record(ctx.sessionID, filepath, "read", seen)
 
       if (loaded.length > 0) {
         output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`

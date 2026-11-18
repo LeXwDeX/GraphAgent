@@ -12,6 +12,7 @@ import { EventTable } from "../event/sql"
 import { LayerNode } from "../effect/layer-node"
 import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "./sql"
 import { SessionTable } from "../session/sql"
+import { UNPRICED_SQL } from "../session/usage"
 import { isTerminalWorkflowStatusValue, PAUSE_REASON_ARCHIVED, WORKFLOW_TERMINAL_STATUS_VALUES } from "./core/types"
 
 // ============================================================================
@@ -157,6 +158,18 @@ export interface WorkflowSummary {
    * to its latest child session. */
   tokens: number
   tokensCacheRead: number
+  /** #1475: the same attempt sessions as `tokens`, itemised for display;
+   * `tokens` equals `tokensInput + tokensCacheWrite + tokensOutput + tokensReasoning`. */
+  tokensInput: number
+  tokensOutput: number
+  tokensReasoning: number
+  tokensCacheWrite: number
+  /** #1475: Σ `session.cost` over the same attempt sessions, never negative.
+   * Display only; an unpriced session adds nothing to it (`costUnknown`). */
+  cost: number
+  /** #1475: an attempt session recorded tokens at zero cost (`UNPRICED_SQL`),
+   * so its price is unknown and not counted in `cost`. */
+  costUnknown: boolean
   /** #1027 D6: durable checkpoint pause awaiting the main agent. */
   checkpointPending: boolean
 }
@@ -458,11 +471,21 @@ export const layer = Layer.effect(
       // LEFT JOIN keeps an attempt whose session row was already cleaned up;
       // its usage then contributes nothing instead of dropping the workflow.
       // One constant query, like the two aggregations above.
+      // #1475: the itemised tokens, the cost and the unpriced flag sum the same
+      // rows as `tokens` and `tokensCacheRead`, whose definition does not move.
+      // `costUnknown` is the `max` of the one `UNPRICED_SQL` test (`rootUsage`
+      // uses it too); a missing session row (LEFT JOIN) is NULL, never unpriced.
       const usageRows = yield* db
         .select({
           workflowId: DagNodeAttemptTable.workflow_id,
           tokens: sql<number>`coalesce(sum(${SessionTable.tokens_input} + ${SessionTable.tokens_cache_write} + ${SessionTable.tokens_output} + ${SessionTable.tokens_reasoning}), 0)`,
           tokensCacheRead: sql<number>`coalesce(sum(${SessionTable.tokens_cache_read}), 0)`,
+          tokensInput: sql<number>`coalesce(sum(${SessionTable.tokens_input}), 0)`,
+          tokensOutput: sql<number>`coalesce(sum(${SessionTable.tokens_output}), 0)`,
+          tokensReasoning: sql<number>`coalesce(sum(${SessionTable.tokens_reasoning}), 0)`,
+          tokensCacheWrite: sql<number>`coalesce(sum(${SessionTable.tokens_cache_write}), 0)`,
+          cost: sql<number>`max(0, coalesce(sum(${SessionTable.cost}), 0))`,
+          costUnknown: sql<number>`coalesce(max(CASE WHEN ${UNPRICED_SQL} THEN 1 ELSE 0 END), 0)`,
         })
         .from(DagNodeAttemptTable)
         .innerJoin(WorkflowTable, eq(DagNodeAttemptTable.workflow_id, WorkflowTable.id))
@@ -493,6 +516,12 @@ export const layer = Layer.effect(
         escalatedNodes: escalatedByWorkflow.get(wf.id) ?? 0,
         tokens: usageByWorkflow.get(wf.id)?.tokens ?? 0,
         tokensCacheRead: usageByWorkflow.get(wf.id)?.tokensCacheRead ?? 0,
+        tokensInput: usageByWorkflow.get(wf.id)?.tokensInput ?? 0,
+        tokensOutput: usageByWorkflow.get(wf.id)?.tokensOutput ?? 0,
+        tokensReasoning: usageByWorkflow.get(wf.id)?.tokensReasoning ?? 0,
+        tokensCacheWrite: usageByWorkflow.get(wf.id)?.tokensCacheWrite ?? 0,
+        cost: usageByWorkflow.get(wf.id)?.cost ?? 0,
+        costUnknown: (usageByWorkflow.get(wf.id)?.costUnknown ?? 0) > 0,
         // A checkpoint pause is recorded with its own durable reason, so a
         // plain manual pause is not reported as waiting for the main agent.
         checkpointPending: wf.status === "paused" && wf.pause_reason === "checkpoint",

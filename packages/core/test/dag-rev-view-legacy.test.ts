@@ -117,6 +117,12 @@ describe("Train A rev-view — legacy rows render unchanged (A-p4 PIN)", () => {
           escalatedNodes: 0,
           tokens: 0,
           tokensCacheRead: 0,
+          tokensInput: 0,
+          tokensOutput: 0,
+          tokensReasoning: 0,
+          tokensCacheWrite: 0,
+          cost: 0,
+          costUnknown: false,
           checkpointPending: false,
         })
 

@@ -365,6 +365,8 @@ export interface EngineProcess {
   readonly prWatch: PrWatchLiveState
   /** What this process's reminder clocks know: sessions with a due reminder, and the clocks to wake (#1072). */
   readonly reminder: ReminderLiveState
+  /** One lock per file path, shared by `edit`, `write` and `apply_patch` across every layer graph (#1452). */
+  readonly fileLocks: KeyedMutex.KeyedMutex<string>
 }
 
 const makeRunnerIdentity = (): RunnerIdentity => {
@@ -392,6 +394,7 @@ export const EngineProcess: EngineProcess = {
   children: { byRun: new Map(), bySession: new Map(), reports: new Map(), parents: new Set() },
   prWatch: { watches: new Map(), progress: new Map() },
   reminder: { due: new Set(), clocks: new Set() },
+  fileLocks: KeyedMutex.makeUnsafe<string>(),
 }
 
 /**

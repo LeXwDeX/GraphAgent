@@ -714,6 +714,22 @@ describe("ProviderTransform.options - setCacheKey", () => {
     })
   }
 
+  // The OpenAI-compatible SDK writes unknown provider options into the request body as they are named, so the
+  // opt-in key has to be the wire name.
+  test("should set the snake-case cache key for the OpenAI-compatible SDK when setCacheKey is true", () => {
+    const result = ProviderTransform.options({
+      model: {
+        ...mockModel,
+        providerID: "custom",
+        api: { id: "gpt-5", url: "https://example.com", npm: "@ai-sdk/openai-compatible" },
+      },
+      sessionID,
+      providerOptions: { setCacheKey: true },
+    })
+    expect(result.prompt_cache_key).toBe(sessionID)
+    expect(result.promptCacheKey).toBeUndefined()
+  })
+
   test("should set promptCacheKey for the Mistral SDK", () => {
     const result = ProviderTransform.options({
       model: { ...mockModel, providerID: "custom", api: { ...mockModel.api, npm: "@ai-sdk/mistral" } },

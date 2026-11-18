@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import { pathToFileURL } from "node:url"
 import { expect, mock, beforeEach, afterAll } from "bun:test"
-import { Cause, Context, Effect, Exit, Layer } from "effect"
+import { Cause, Context, Effect, Exit, Layer, Logger } from "effect"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Project } from "@graphagent/core/project"
@@ -275,6 +275,7 @@ afterAll(() => {
 
 // Import after mocks
 const { MCP } = await import("../../src/mcp/index")
+const { McpConfig } = await import("../../src/mcp/config")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
 
 const it = testEffect(MCP.defaultLayer)
@@ -623,6 +624,45 @@ it.instance(
         expect(Object.keys(after).some((key) => key.includes("next_tool"))).toBe(true)
         expect(Object.keys(after).some((key) => key.includes("test_tool"))).toBe(false)
         expect(serverState.listToolsCalls).toBe(2)
+      }),
+    ),
+  { mcp: {} },
+)
+
+// ========================================================================
+// Test: an unreadable mcp.json does not fail the request (Issue #1458)
+// ========================================================================
+
+it.instance(
+  "tools() keeps the last valid servers when mcp.json becomes unreadable",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        lastCreatedClientName = "cache-server"
+        getOrCreateClientState("cache-server")
+        yield* mcp.add("cache-server", { type: "local", command: ["echo", "test"] })
+
+        const before = yield* mcp.tools()
+        expect(Object.keys(before).some((key) => key.includes("test_tool"))).toBe(true)
+
+        yield* Effect.promise(() => fs.writeFile(McpConfig.projectFile(directory), "{ not json"))
+        const warnings: unknown[] = []
+        const collector = Logger.make((entry) => {
+          if (entry.logLevel === "Warn") warnings.push(entry.message)
+        })
+        const after = yield* mcp.tools().pipe(Effect.provide(Logger.layer([collector])))
+        const again = yield* mcp.tools().pipe(Effect.provide(Logger.layer([collector])))
+
+        expect(Object.keys(after)).toEqual(Object.keys(before))
+        expect(Object.keys(again)).toEqual(Object.keys(before))
+        // The same broken file is reported once, not on every step, and the warning names the file and the reason.
+        const reported = warnings.filter(
+          (message) => Array.isArray(message) && String(message[0]).includes("mcp.json cannot be read"),
+        )
+        expect(reported).toHaveLength(1)
+        expect(JSON.stringify(reported[0])).toContain("not valid JSONC")
+        expect(JSON.stringify(reported[0])).toContain(JSON.stringify(McpConfig.projectFile(directory)).slice(1, -1))
       }),
     ),
   { mcp: {} },

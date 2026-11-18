@@ -195,6 +195,12 @@ export type DagWorkflowSummary = {
   escalatedNodes: number | "Infinity" | "-Infinity" | "NaN"
   tokens?: number
   tokensCacheRead?: number
+  tokensInput?: number
+  tokensOutput?: number
+  tokensReasoning?: number
+  tokensCacheWrite?: number
+  cost?: number
+  costUnknown?: boolean
   concurrencyRunning?: number
   coverageCount?: number
   checkpointPending?: boolean

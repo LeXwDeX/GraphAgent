@@ -34,6 +34,7 @@ import { BackgroundJob } from "@/background/job"
 import { Todo } from "../../src/session/todo"
 import { Question } from "../../src/question"
 import { ToolRegistry } from "@/tool/registry"
+import { FileState } from "@/session/file-state"
 import { Truncate } from "@/tool/truncate"
 import { SettingsHook, type HookPayload } from "@/hook"
 import { Dag } from "@/dag/dag"
@@ -211,6 +212,7 @@ const registry = ToolRegistry.layer.pipe(
   Layer.provide(Git.defaultLayer),
   Layer.provide(Ripgrep.defaultLayer),
   Layer.provide(Format.defaultLayer),
+  Layer.provide(FileState.defaultLayer),
   Layer.provide(flags),
   Layer.provideMerge(todo),
   Layer.provideMerge(question),

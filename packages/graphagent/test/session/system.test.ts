@@ -478,34 +478,60 @@ describe("session.system integration (real SettingsHook)", () => {
   )
 })
 
-const goalState = Schema.decodeUnknownSync(GoalState.Info)({
-  goal: "ship the feature",
-  status: "active",
-  turns_used: 3,
-  max_turns: 20,
-  created_at: 1000,
-  last_turn_at: 2000,
-  consecutive_parse_failures: 0,
-  subgoals: [],
-})
+const goalWithStatus = (status: "active" | "done") =>
+  Schema.decodeUnknownSync(GoalState.Info)({
+    goal: "ship the feature",
+    status,
+    turns_used: 3,
+    max_turns: 20,
+    created_at: 1000,
+    last_turn_at: 2000,
+    consecutive_parse_failures: 0,
+    subgoals: [],
+  })
 
-const withGoal = testEffect(
-  SystemPrompt.layer.pipe(
-    Layer.provide(LocationServiceMap.layer),
-    Layer.provide(Layer.mock(MCP.Service, { instructions: () => Effect.succeed([]) })),
-    Layer.provide(Layer.mock(Skill.Service, { available: () => Effect.succeed([]) })),
-    Layer.provide(Layer.mock(Goal.Service, { load: () => Effect.succeed(goalState) })),
-  ),
+const goalState = goalWithStatus("active")
+
+// SystemPrompt.layer without Goal.Service: the entry point degrades to the same note.
+const withoutGoalService = SystemPrompt.layer.pipe(
+  Layer.provide(LocationServiceMap.layer),
+  Layer.provide(Layer.mock(MCP.Service, { instructions: () => Effect.succeed([]) })),
+  Layer.provide(Layer.mock(Skill.Service, { available: () => Effect.succeed([]) })),
 )
 
+const withGoalState = (state: GoalState.Info | undefined) =>
+  withoutGoalService.pipe(Layer.provide(Layer.mock(Goal.Service, { load: () => Effect.succeed(state) })))
+
+const withGoal = testEffect(withGoalState(goalState))
+
 describe("session.system goal", () => {
-  withGoal.effect("keeps the goal mechanism in the system prompt and the live state in runtime context", () =>
+  withGoal.effect("keeps the goal note constant and the live state in runtime context", () =>
     Effect.gen(function* () {
       const goal = yield* (yield* SystemPrompt.Service).goal(SessionID.make("ses_goal_context"))
-      expect(goal.system.join("\n")).toContain("# Autonomous goals")
-      expect(goal.system.join("\n")).not.toContain("Turns: 3/20")
+      expect(goal.system).toEqual([SystemPrompt.GOAL_NOTE])
       expect(goal.context.join("\n")).toContain("## Current Goal (autonomous loop)")
       expect(goal.context.join("\n")).toContain("Turns: 3/20")
     }),
   )
+
+  // The goal text appears and disappears with /goal; the system prefix must not.
+  for (const [name, layer] of [
+    ["no goal state", withGoalState(undefined)],
+    ["a done goal", withGoalState(goalWithStatus("done"))],
+    ["no Goal.Service", withoutGoalService],
+  ] as const) {
+    testEffect(layer).effect(`returns the goal note and no live state for ${name}`, () =>
+      Effect.gen(function* () {
+        const goal = yield* (yield* SystemPrompt.Service).goal(SessionID.make("ses_goal_none"))
+        expect(goal.system).toEqual([SystemPrompt.GOAL_NOTE])
+        expect(goal.context).toEqual([])
+      }),
+    )
+  }
+
+  test("the goal note names the goal tool and points at the live state block", () => {
+    expect(SystemPrompt.GOAL_NOTE).toBe(
+      'Autonomous goals are managed with the goal tool. When a goal exists, its live state is the latest "Current Goal" block in a <runtime_context> message.',
+    )
+  })
 })

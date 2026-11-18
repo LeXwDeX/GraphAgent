@@ -2262,6 +2262,13 @@ const scenarios: Scenario[] = [
           typeof summary.tokensCacheRead === "number" && summary.tokensCacheRead >= 0,
           "summary should have tokensCacheRead as a non-negative number",
         )
+        // #1475: the same attempt sessions itemised and priced; a fresh fixture has none, so every
+        // figure is zero and nothing is unpriced.
+        for (const key of ["tokensInput", "tokensOutput", "tokensReasoning", "tokensCacheWrite", "cost"]) {
+          const value = summary[key]
+          check(typeof value === "number" && value >= 0, `summary should have ${key} as a non-negative number`)
+        }
+        check(summary.costUnknown === false, "a fresh fixture has no unpriced attempt")
         check(summary.checkpointPending === false, "a fresh fixture is not checkpoint-pending")
         // #1027 D6b: coverage counts the engine's entries for the snapshot (the
         // failed node b); quality is null outside the strict review gate.

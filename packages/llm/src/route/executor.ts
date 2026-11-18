@@ -230,6 +230,17 @@ const responseHttp = (input: {
     rateLimit: input.rateLimit,
   })
 
+/**
+ * A content-policy refusal is a client error that is neither a credential failure nor a rate limit. The word
+ * `safety` is matched whole: parameter names such as `safety_settings` and a 5xx that merely mentions it are not one.
+ */
+const isContentPolicy = (status: number, body: string) =>
+  status >= 400 &&
+  status < 500 &&
+  status !== 401 &&
+  status !== 429 &&
+  /content[-_\s]?policy|content_filter|\bsafety\b/i.test(body)
+
 const statusReason = (input: {
   readonly status: number
   readonly message: string
@@ -238,7 +249,7 @@ const statusReason = (input: {
   readonly http: HttpContext
 }) => {
   const body = input.http.body ?? ""
-  if (/content[-_\s]?policy|content_filter|safety/i.test(body)) {
+  if (isContentPolicy(input.status, body)) {
     return new ContentPolicyReason({ message: input.message, http: input.http })
   }
   if (input.status === 401) {
