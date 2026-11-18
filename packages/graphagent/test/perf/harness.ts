@@ -97,25 +97,30 @@ const summary = Layer.succeed(
   }),
 )
 
-const lsp = Layer.succeed(
-  LSP.Service,
-  LSP.Service.of({
-    init: () => Effect.void,
-    status: () => Effect.succeed([]),
-    hasClients: () => Effect.succeed(false),
-    touchFile: () => Effect.void,
-    diagnostics: () => Effect.succeed({}),
-    hover: () => Effect.succeed([]),
-    definition: () => Effect.succeed([]),
-    references: () => Effect.succeed([]),
-    implementation: () => Effect.succeed([]),
-    documentSymbol: () => Effect.succeed([]),
-    workspaceSymbol: () => Effect.succeed([]),
-    prepareCallHierarchy: () => Effect.succeed([]),
-    incomingCalls: () => Effect.succeed([]),
-    outgoingCalls: () => Effect.succeed([]),
-  }),
-)
+/** An LSP service with no clients; `overrides` replace single operations, for a test that needs one to wait or fail. */
+export const stubLsp = (overrides: Partial<LSP.Interface> = {}) =>
+  Layer.succeed(
+    LSP.Service,
+    LSP.Service.of({
+      init: () => Effect.void,
+      status: () => Effect.succeed([]),
+      hasClients: () => Effect.succeed(false),
+      touchFile: () => Effect.void,
+      diagnostics: () => Effect.succeed({}),
+      hover: () => Effect.succeed([]),
+      definition: () => Effect.succeed([]),
+      references: () => Effect.succeed([]),
+      implementation: () => Effect.succeed([]),
+      documentSymbol: () => Effect.succeed([]),
+      workspaceSymbol: () => Effect.succeed([]),
+      prepareCallHierarchy: () => Effect.succeed([]),
+      incomingCalls: () => Effect.succeed([]),
+      outgoingCalls: () => Effect.succeed([]),
+      ...overrides,
+    }),
+  )
+
+const lsp = stubLsp()
 
 const mcp = Layer.succeed(
   MCP.Service,
@@ -215,7 +220,7 @@ const sessionLayer = Session.layer.pipe(
   Layer.provide(DagMessages.defaultLayer),
 )
 
-const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
+const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>, lspLayer: Layer.Layer<LSP.Service>) =>
   Layer.mergeAll(
     dbLayer,
     bridgeLayer,
@@ -229,7 +234,7 @@ const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
     Permission.defaultLayer,
     Config.defaultLayer,
     ProviderSvc.defaultLayer,
-    lsp,
+    lspLayer,
     mcp,
     FSUtil.defaultLayer,
     BackgroundJob.defaultLayer,
@@ -244,8 +249,9 @@ const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
 const makeStacks = (
   hooks: Layer.Layer<SettingsHook.Service>,
   shell: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>,
+  lspLayer: Layer.Layer<LSP.Service>,
 ) => {
-  const deps = makeDeps(hooks)
+  const deps = makeDeps(hooks, lspLayer)
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
   const registry = ToolRegistry.layer.pipe(
@@ -281,6 +287,8 @@ export interface PerfLayerOptions {
    * stub, which reports no configured events.
    */
   readonly hooks?: Layer.Layer<SettingsHook.Service>
+  /** LSP service; defaults to `stubLsp()`, which reports nothing at once. */
+  readonly lsp?: Layer.Layer<LSP.Service>
 }
 
 /** Build the perf layer for one fake provider instance. */
@@ -291,6 +299,7 @@ export function makePerfLayer(
   const { deps, registry, trunc } = makeStacks(
     options?.hooks ?? hookRecorderLayer,
     options?.shell ?? CrossSpawnSpawner.defaultLayer,
+    options?.lsp ?? lsp,
   )
   const proc = SessionProcessor.layer.pipe(
     Layer.provide(summary),

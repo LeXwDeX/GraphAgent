@@ -274,7 +274,13 @@ export function makeShell(deps: ShellDeps) {
                 time: { ...mutablePart.state.time, end: completed },
                 input: mutablePart.state.input,
                 title: "",
-                metadata: { ...finalMetadata, output, ...truncationMetadata(bounded) },
+                // A cancelled command still completes with its partial output; `outcome` books it as aborted (#1473).
+                metadata: {
+                  ...finalMetadata,
+                  output,
+                  ...truncationMetadata(bounded),
+                  ...(aborted ? { outcome: "aborted" } : {}),
+                },
                 attachments: finalAttachments,
                 output,
               }

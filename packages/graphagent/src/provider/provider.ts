@@ -11,6 +11,7 @@ import { ProviderAdapters } from "./adapter/registry"
 import { serviceUse } from "@graphagent/core/effect/service-use"
 import { type LanguageModelV3 } from "@ai-sdk/provider"
 import { ModelsDev } from "@graphagent/core/models-dev"
+import { fromCatalogEntry, ModelProfile, resolveProfile } from "@graphagent/core/model-profile"
 import { Auth } from "../auth"
 import { Env } from "../env"
 import { APP_NAME, APP_TITLE, HOMEPAGE_URL } from "@graphagent/core/brand"
@@ -27,6 +28,7 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import { isRecord } from "@/util/record"
 import { optionalOmitUndefined } from "@graphagent/core/schema"
 import { ProviderTransform } from "./transform"
+import { ProviderProfile } from "./profile"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { ModelStatus } from "./model-status"
@@ -928,6 +930,7 @@ export const Model = Schema.Struct({
   options: Schema.Record(Schema.String, Schema.Any),
   headers: Schema.Record(Schema.String, Schema.String),
   release_date: Schema.String,
+  profile: optionalOmitUndefined(ModelProfile),
   variants: optionalOmitUndefined(Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Any))),
 }).annotate({ identifier: "Model" })
 export type Model = Types.DeepMutable<Schema.Schema.Type<typeof Model>>
@@ -1059,6 +1062,8 @@ interface State {
   }
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
+  /** `<providerID>/<modelID>` of the models whose incomplete profile was already reported for this instance. */
+  profileWarned: Set<string>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Provider") {}
@@ -1098,7 +1103,26 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   return result
 }
 
-function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model): Model {
+/**
+ * The profile of a catalog entry: its own data, resolved through the profile rules. The catalog path lends no alias
+ * from other providers, so only the entry itself speaks for the model.
+ */
+function catalogModelProfile(provider: ModelsDev.Provider, model: ModelsDev.Model): ModelProfile {
+  return resolveProfile({
+    providerID: provider.id,
+    apiID: model.id,
+    npm: model.provider?.npm ?? provider.npm ?? "@ai-sdk/openai-compatible",
+    releaseDate: model.release_date,
+    base: fromCatalogEntry(model),
+  })
+}
+
+/**
+ * `withProfile: false` leaves the profile off the returned model, but it still takes part in the variants: the
+ * public catalog lists thousands of unconnected models, and a profile on each would add megabytes to the response.
+ */
+function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model, withProfile = true): Model {
+  const profile = catalogModelProfile(provider, model)
   const base: Model = {
     id: ModelV2.ID.make(model.id),
     providerID: ProviderV2.ID.make(provider.id),
@@ -1114,48 +1138,38 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
     options: {},
     cost: cost(model.cost),
     limit: {
-      context: model.limit.context,
+      context: profile.context ?? 0,
       input: model.limit.input,
-      output: model.limit.output,
+      output: profile.output ?? 0,
     },
     capabilities: {
       temperature: model.temperature ?? false,
-      reasoning: model.reasoning ?? false,
+      reasoning: profile.reasoning,
       attachment: model.attachment ?? false,
       toolcall: model.tool_call ?? true,
-      input: {
-        text: model.modalities?.input?.includes("text") ?? false,
-        audio: model.modalities?.input?.includes("audio") ?? false,
-        image: model.modalities?.input?.includes("image") ?? false,
-        video: model.modalities?.input?.includes("video") ?? false,
-        pdf: model.modalities?.input?.includes("pdf") ?? false,
-      },
-      output: {
-        text: model.modalities?.output?.includes("text") ?? false,
-        audio: model.modalities?.output?.includes("audio") ?? false,
-        image: model.modalities?.output?.includes("image") ?? false,
-        video: model.modalities?.output?.includes("video") ?? false,
-        pdf: model.modalities?.output?.includes("pdf") ?? false,
-      },
+      input: ProviderProfile.modalityFlags(profile.modalities.input),
+      output: ProviderProfile.modalityFlags(profile.modalities.output),
       interleaved: model.interleaved ?? false,
     },
     release_date: model.release_date ?? "",
+    profile,
     variants: {},
   }
 
   return {
-    ...base,
+    ...(withProfile ? base : omit(base, ["profile"])),
     variants: mapValues(ProviderTransform.variants(base), (v) => v),
   }
 }
 
-export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
+export function fromModelsDevProvider(provider: ModelsDev.Provider, options?: { profile?: boolean }): Info {
+  const withProfile = options?.profile !== false
   const models: Record<string, Model> = {}
   for (const [key, model] of Object.entries(provider.models)) {
-    models[key] = fromModelsDevModel(provider, model)
+    models[key] = fromModelsDevModel(provider, model, withProfile)
     for (const [mode, opts] of Object.entries(model.experimental?.modes ?? {})) {
       const id = `${model.id}-${mode}`
-      const base = fromModelsDevModel(provider, model)
+      const base = fromModelsDevModel(provider, model, withProfile)
       models[id] = {
         ...base,
         id: ModelV2.ID.make(id),
@@ -1181,6 +1195,31 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
     options: {},
     models,
   }
+}
+
+const PROFILE_HINT_KEYS = {
+  context: "limit.context",
+  output: "limit.output",
+  modalities: "modalities",
+  reasoning: "reasoning",
+}
+
+/**
+ * Reports once per model and instance that its profile has capabilities no source declares, and where to declare
+ * them. Called when a model is looked up, not at startup, so the catalog is never audited as a whole.
+ */
+function warnIncompleteProfile(warned: Set<string>, providerID: ProviderV2.ID, info: Model) {
+  const key = `${providerID}/${info.id}`
+  if (warned.has(key)) return Effect.void
+  warned.add(key)
+  const missing = ProviderProfile.profileOf(info).missing
+  if (missing.length === 0) return Effect.void
+  const keys = missing.map((item) => PROFILE_HINT_KEYS[item]).join(", ")
+  return Effect.logWarning("model profile incomplete", {
+    model: key,
+    missing,
+    hint: `Declare ${keys} under provider.${providerID}.models.${info.id} in graphagent.json, for example {"limit":{"context":128000,"output":8192}}`,
+  })
 }
 
 function modelSuggestions(provider: Info | undefined, modelID: ModelV2.ID, enableExperimentalModels: boolean) {
@@ -1229,7 +1268,7 @@ export const layer = Layer.effect(
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
         const modelsDev = yield* modelsDevSvc.get()
-        const catalog = mapValues(modelsDev, fromModelsDevProvider)
+        const catalog = mapValues(modelsDev, (item) => fromModelsDevProvider(item))
         const database = mapValues(catalog, toPublicInfo)
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
@@ -1296,11 +1335,11 @@ export const layer = Layer.effect(
             return Object.fromEntries(
               Object.entries(next).map(([id, model]) => [
                 id,
-                {
+                ProviderProfile.syncProfile({
                   ...model,
                   id: ModelV2.ID.make(id),
                   providerID,
-                },
+                }),
               ]),
             )
           })
@@ -1332,6 +1371,15 @@ export const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+            const profile = resolveProfile({
+              providerID,
+              apiID,
+              npm: apiNpm,
+              releaseDate: model.release_date ?? existingModel?.release_date ?? "",
+              base: existingModel ? ProviderProfile.profileOf(existingModel) : undefined,
+              config: model,
+              catalog: modelsDev,
+            })
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
               api: {
@@ -1344,7 +1392,7 @@ export const layer = Layer.effect(
               providerID: ProviderV2.ID.make(providerID),
               capabilities: {
                 temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
-                reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
+                reasoning: profile.reasoning,
                 attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
                 toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
                 forcedToolChoice:
@@ -1353,23 +1401,8 @@ export const layer = Layer.effect(
                     : model.tool_choice
                       ? "required"
                       : "none",
-                input: {
-                  text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
-                  audio: model.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
-                  image: model.modalities?.input?.includes("image") ?? existingModel?.capabilities.input.image ?? false,
-                  video: model.modalities?.input?.includes("video") ?? existingModel?.capabilities.input.video ?? false,
-                  pdf: model.modalities?.input?.includes("pdf") ?? existingModel?.capabilities.input.pdf ?? false,
-                },
-                output: {
-                  text: model.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? true,
-                  audio:
-                    model.modalities?.output?.includes("audio") ?? existingModel?.capabilities.output.audio ?? false,
-                  image:
-                    model.modalities?.output?.includes("image") ?? existingModel?.capabilities.output.image ?? false,
-                  video:
-                    model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
-                  pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
-                },
+                input: ProviderProfile.modalityFlags(profile.modalities.input),
+                output: ProviderProfile.modalityFlags(profile.modalities.output),
                 interleaved:
                   model.interleaved ??
                   existingModel?.capabilities.interleaved ??
@@ -1393,13 +1426,14 @@ export const layer = Layer.effect(
               }),
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {
-                context: model.limit?.context ?? existingModel?.limit?.context ?? 0,
+                context: profile.context ?? 0,
                 input: model.limit?.input ?? existingModel?.limit?.input,
-                output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
+                output: profile.output ?? 0,
               },
               headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
               family: model.family ?? existingModel?.family ?? "",
               release_date: model.release_date ?? existingModel?.release_date ?? "",
+              profile,
               variants: {},
             }
             const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})
@@ -1579,6 +1613,7 @@ export const layer = Layer.effect(
           websocketFetches,
           modelLoaders,
           varsLoaders,
+          profileWarned: new Set<string>(),
         }
       }),
     )
@@ -1605,7 +1640,7 @@ export const layer = Layer.effect(
       const connected = yield* list()
       const credentials = yield* auth.all().pipe(Effect.orDie)
       const providers = Object.assign(
-        mapValues(filtered, (item) => fromModelsDevProvider(item)),
+        mapValues(filtered, (item) => fromModelsDevProvider(item, { profile: false })),
         connected,
       )
       return {
@@ -1795,6 +1830,7 @@ export const layer = Layer.effect(
           : modelSuggestions(s.catalog[providerID], modelID, runtimeFlags.enableExperimentalModels)
         return yield* new ModelNotFoundError({ providerID, modelID, suggestions })
       }
+      yield* warnIncompleteProfile(s.profileWarned, providerID, info)
       return info
     })
 

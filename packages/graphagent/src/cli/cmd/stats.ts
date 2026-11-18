@@ -9,6 +9,7 @@ import { costLabel, formatCost, unpriced } from "@graphagent/core/util/cost"
 import { Project } from "@/project/project"
 import { InstanceRef } from "@/effect/instance-ref"
 import { t } from "@graphagent/tui/i18n"
+import { outcomeLimit, printOutcomes } from "./stats-outcomes"
 
 /** One root session with the usage of its whole tree (`--roots`). */
 export interface RootUsageRow {
@@ -79,6 +80,9 @@ export const StatsCommand = effectCmd({
       .option("models", {
         describe: t("cli.stats.option.models"),
       })
+      .option("outcomes", {
+        describe: t("cli.stats.option.outcomes"),
+      })
       .option("project", {
         describe: t("cli.stats.option.project"),
         type: "string",
@@ -97,6 +101,10 @@ export const StatsCommand = effectCmd({
       modelLimit = args.models
     }
     displayStats(stats, args.tools, modelLimit)
+    const outcomes = outcomeLimit(args.outcomes)
+    if (outcomes !== undefined) {
+      yield* printOutcomes(outcomes, { days: args.days, project: args.project, currentProject: ctx.project })
+    }
   }),
 })
 

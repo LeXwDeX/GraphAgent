@@ -195,6 +195,7 @@ describe("tool.shell", () => {
           command: "echo test",
         })
         expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.outcome).toBeUndefined()
         expect(result.metadata.output).toContain("test")
       }),
     ),
@@ -1145,6 +1146,7 @@ describe("tool.shell abort", () => {
           )
           expect(res.output).toContain("before")
           expect(res.output).toContain("aborted before completion")
+          expect(res.metadata.outcome).toBe("aborted")
           expect(collected.length).toBeGreaterThan(0)
         }),
       ),
@@ -1412,6 +1414,7 @@ describe("tool.shell silence guard", () => {
           )
           expect(res.output).toContain("before")
           expect(res.output).toContain("aborted before completion")
+          expect(res.metadata.outcome).toBe("aborted")
         }),
       ).pipe(Effect.provide(RuntimeFlags.layer({ bashSilenceWarnMs: 300 }))),
     15_000,

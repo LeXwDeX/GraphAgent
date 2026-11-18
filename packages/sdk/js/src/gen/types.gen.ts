@@ -992,12 +992,79 @@ export type Model = {
     [key: string]: string
   }
   release_date: string
+  profile?: ModelProfile
   variants?: {
     [key: string]: {
       [key: string]: unknown
     }
   }
 }
+
+export type ModelProfile = {
+  context?: number
+  output?: number
+  modalities: {
+    input: Array<"text" | "audio" | "image" | "video" | "pdf">
+    output: Array<"text" | "audio" | "image" | "video" | "pdf">
+  }
+  reasoning: boolean
+  vendor?: string
+  effectiveContext?: number
+  toolCallId: {
+    charset: "any" | "alnum_dash" | "alnum"
+    length?: number
+  }
+  userAfterToolResult: "allow" | "bridge"
+  toolResultMedia: "all" | "image" | "none"
+  cacheMarker: "explicit" | "none"
+  reasoningMode: {
+    controls: Array<ReasoningControl>
+    toggle?: {
+      on: {
+        [key: string]: unknown
+      }
+      off: {
+        [key: string]: unknown
+      }
+    }
+    placeholder: boolean
+    replay: "none" | "field" | "signed" | "encrypted"
+    inlineTag?: string
+  }
+  sampling: {
+    temperature?: number
+    topP?: number
+    topK?: number
+  }
+  finishReasons: {
+    [key: string]: "content-filter" | "stream_error" | "context_overflow"
+  }
+  editTools: "edit" | "apply_patch"
+  toolLimits: {
+    maxTools?: number
+    nameMaxLength?: number
+    namePattern?: string
+  }
+  schemaFixes: Array<"openai" | "moonshot" | "gemini">
+  sources: {
+    [key: string]: string
+  }
+  missing: Array<"context" | "output" | "modalities" | "reasoning">
+}
+
+export type ReasoningControl =
+  | {
+      type: "toggle"
+    }
+  | {
+      type: "effort"
+      values: Array<string>
+    }
+  | {
+      type: "budget_tokens"
+      min?: number
+      max?: number
+    }
 
 export type PermissionRequest = {
   id: string
@@ -1470,20 +1537,6 @@ export type ModelProfileOverride = {
   }
   schema_fixes?: Array<"openai" | "moonshot" | "gemini">
 }
-
-export type ReasoningControl =
-  | {
-      type: "toggle"
-    }
-  | {
-      type: "effort"
-      values: Array<string>
-    }
-  | {
-      type: "budget_tokens"
-      min?: number
-      max?: number
-    }
 
 /**
  * Log level
