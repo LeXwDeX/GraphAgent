@@ -12,8 +12,12 @@ import { TRUNCATION_DIR } from "./truncation-dir"
 
 const RETENTION = Duration.days(7)
 
+/** The caps of one tool result: what a window of 256_000 tokens or more gets, and a call without a model. */
 export const MAX_LINES = 2000
 export const MAX_BYTES = 50 * 1024
+/** The smallest budget a window can shrink the caps to. */
+export const MIN_BYTES = 4096
+export const MIN_LINES = 200
 /** Lines in one `read` page when the caller does not pass a limit. */
 export const PAGE_LINES = 200
 /** Largest per-line fetch the read tool accepts; longer lines need the shell. */
@@ -63,6 +67,8 @@ export interface Options {
   maxLines?: number
   maxBytes?: number
   direction?: "head" | "tail"
+  /** Context window in tokens of the model that reads the result; the default budget follows it. */
+  context?: number
 }
 
 export interface Interface {
@@ -79,12 +85,36 @@ export interface Interface {
    */
   readonly output: (text: string, options?: Options, agent?: Agent.Info) => Effect.Effect<Result>
   /**
-   * Resolved truncation limits: values from `tool_output` in the GraphAgent config, or MAX_LINES / MAX_BYTES if unset.
+   * Resolved truncation limits. A value set under `tool_output` in the GraphAgent config wins; otherwise the budget
+   * of the window (`budgetFor`) when `context` is given, or MAX_LINES / MAX_BYTES when there is no window.
    */
-  readonly limits: () => Effect.Effect<{ maxLines: number; maxBytes: number }>
+  readonly limits: (input?: { context?: number }) => Effect.Effect<{ maxLines: number; maxBytes: number }>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Truncate") {}
+
+/**
+ * The output budget of a model: a twentieth of its window in tokens at four bytes a token, so one result takes
+ * at most a twentieth of the window, between MIN_BYTES and MAX_BYTES. The line limit scales with the bytes.
+ */
+export function budgetFor(context: number): { maxLines: number; maxBytes: number } {
+  const maxBytes = Math.max(MIN_BYTES, Math.min(MAX_BYTES, Math.floor(context / 5)))
+  const maxLines = Math.max(MIN_LINES, Math.floor((MAX_LINES * maxBytes) / MAX_BYTES))
+  return { maxLines, maxBytes }
+}
+
+/**
+ * How many of the first `items` fit `maxBytes`, each counted with the newline that follows it; at least one when
+ * there is any, so a list always shows something.
+ */
+export function fitItems(items: readonly string[], maxBytes: number): number {
+  let used = 0
+  for (let index = 0; index < items.length; index++) {
+    used += Buffer.byteLength(items[index], "utf-8") + 1
+    if (used > maxBytes) return Math.max(1, index)
+  }
+  return items.length
+}
 
 export function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
@@ -337,18 +367,20 @@ export const layer = Layer.effect(
       )
     })
 
-    const limits = Effect.fn("Truncate.limits")(function* () {
+    const limits = Effect.fn("Truncate.limits")(function* (input?: { context?: number }) {
+      const derived =
+        input?.context === undefined ? { maxLines: MAX_LINES, maxBytes: MAX_BYTES } : budgetFor(input.context)
       const configSvc = yield* Effect.serviceOption(Config.Service)
-      if (Option.isNone(configSvc)) return { maxLines: MAX_LINES, maxBytes: MAX_BYTES }
+      if (Option.isNone(configSvc)) return derived
       const cfg = yield* configSvc.value.get().pipe(Effect.catch(() => Effect.succeed(undefined)))
       return {
-        maxLines: cfg?.tool_output?.max_lines ?? MAX_LINES,
-        maxBytes: cfg?.tool_output?.max_bytes ?? MAX_BYTES,
+        maxLines: cfg?.tool_output?.max_lines ?? derived.maxLines,
+        maxBytes: cfg?.tool_output?.max_bytes ?? derived.maxBytes,
       }
     })
 
     const output = Effect.fn("Truncate.output")(function* (text: string, options: Options = {}, _agent?: Agent.Info) {
-      const resolved = yield* limits()
+      const resolved = yield* limits({ context: options.context })
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
       const direction = options.direction ?? "head"

@@ -10,6 +10,7 @@ import { jsonSchema, tool } from "ai"
 import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { MCP } from "@/mcp"
+import type { Provider } from "@/provider/provider"
 import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { SafetyGuard } from "@/permission/safety-guard"
@@ -95,23 +96,25 @@ const ALLOW_ALL = [{ permission: "*", pattern: "*", action: "allow" as const }]
 type Tools = Record<string, { execute: (args: unknown, options: unknown) => Promise<unknown> }>
 
 /** The tools of one session as the model's runtime would run them, wrapped by the real pipeline. */
-const resolveTools = Effect.gen(function* () {
-  const instance = yield* TestInstance
-  const sessionID = SessionID.descending()
-  return (yield* SessionTools.resolve({
-    agent: { name: "general", permission: ALLOW_ALL, options: {} } as never,
-    model: ProviderTest.model(),
-    session: { id: sessionID, directory: instance.directory, permission: [] } as never,
-    processor: {
-      message: { id: MessageID.ascending(), sessionID },
-      updateToolCall: () => Effect.succeed(undefined),
-      completeToolCall: () => Effect.void,
-    } as never,
-    bypassAgentCheck: false,
-    messages: [],
-    promptOps: {} as never,
-  })) as unknown as Tools
-})
+const resolveToolsFor = (model: Provider.Model) =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const sessionID = SessionID.descending()
+    return (yield* SessionTools.resolve({
+      agent: { name: "general", permission: ALLOW_ALL, options: {} } as never,
+      model,
+      session: { id: sessionID, directory: instance.directory, permission: [] } as never,
+      processor: {
+        message: { id: MessageID.ascending(), sessionID },
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      } as never,
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+    })) as unknown as Tools
+  })
+const resolveTools = resolveToolsFor(ProviderTest.model())
 
 /** What a rejected call tells the model: the text of the error the tool's promise ends in. */
 const rejection = (tools: Tools, name: string, args: unknown = {}) =>
@@ -149,6 +152,26 @@ describe("boundErrorCause (#1446)", () => {
       const saved = savedPath(bounded.message)
       expect(saved).toBeDefined()
       expect(yield* Effect.promise(() => Bun.file(saved!).text())).toBe("e".repeat(LONG))
+    }),
+  )
+
+  // The cut follows the window of the model whose call failed (#1448).
+  it.live("bounds an error at the byte budget of the window it is given", () =>
+    Effect.gen(function* () {
+      const truncate = yield* Truncate.Service
+      const error = new Error("e".repeat(20_000))
+
+      const exit = yield* boundErrorCause(truncate, agent, Cause.fail(error), 32_000).pipe(Effect.exit)
+      if (!Exit.isFailure(exit)) throw new Error("expected a failure")
+      const bounded = Cause.squash(exit.cause)
+      if (!(bounded instanceof Error)) throw new Error("expected an Error")
+      expect(Buffer.byteLength(bounded.message.split("\n\n[truncated:")[0], "utf-8")).toBe(6_400)
+      expect(savedPath(bounded.message)).toBeDefined()
+
+      // The same text without a window is under the 50 KB cap and passes as it was.
+      const bare = yield* boundErrorCause(truncate, agent, Cause.fail(error)).pipe(Effect.exit)
+      if (!Exit.isFailure(bare)) throw new Error("expected a failure")
+      expect(Cause.squash(bare.cause)).toBe(error)
     }),
   )
 
@@ -245,6 +268,28 @@ describe("a tool error that reaches the model (#1446)", () => {
       expect(message).toContain("Full output: ")
       expect(message.length).toBeLessThan(60_000)
       expect(yield* Effect.promise(() => Bun.file(savedPath(message)!).text())).toBe("r".repeat(LONG))
+    }),
+  )
+
+  // Each of the three sources that bound an error passes the window of the model it runs under (#1448).
+  it.instance("the error of every tool source is cut at the budget of the model's window", () =>
+    Effect.gen(function* () {
+      size = 20_000
+      const small = yield* resolveToolsFor(ProviderTest.model({ limit: { context: 32_000, output: 4_096 } }))
+      const wide = yield* resolveTools
+      const calls: Array<[string, unknown]> = [
+        ["boom", {}],
+        ["srv_boom", {}],
+        ["read_mcp_resource", { server: "srv", uri: "file:///a" }],
+      ]
+
+      for (const [name, args] of calls) {
+        const cut = yield* rejection(small, name, args)
+        expect(cut).toContain("Full output: ")
+        expect(Buffer.byteLength(cut.split("\n\n[truncated:")[0], "utf-8")).toBe(6_400)
+        // The 200K window of the default test model holds the whole text.
+        expect(yield* rejection(wide, name, args)).not.toContain("Full output: ")
+      }
     }),
   )
 

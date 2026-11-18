@@ -98,6 +98,9 @@ export type Transition =
 /** The fourth consecutive automatic compaction is refused (three already ran). */
 export const AUTO_COMPACTION_LIMIT = 3
 
+/** A request the provider still rejects as too large after this many consecutive compactions ends the turn. */
+export const OVERFLOW_RECOVERY_LIMIT = 2
+
 const NEUTRAL_HOOK: HookStopDecision = { blocked: false, preventContinuation: false }
 
 /** A completion candidate matches the pre-refactor `needsStop`/Stop gate condition. */
@@ -187,6 +190,16 @@ export function hintFor(state: TurnState, signals: Signals): HintKind | undefine
 export function decideOverflow(state: TurnState, signals: { readonly overflow: boolean }): Transition {
   if (!signals.overflow) return { kind: "step" }
   if (state.compactions >= AUTO_COMPACTION_LIMIT) return { kind: "finish", outcome: { type: "context_overflow" } }
+  return { kind: "compact" }
+}
+
+/**
+ * Answer to the provider rejecting a request as too large: compact and retry until `OVERFLOW_RECOVERY_LIMIT`
+ * consecutive recoveries have run, then stop with the same outcome as the pre-step gate.
+ */
+export function decideOverflowRecovery(state: TurnState): Transition {
+  if (state.overflowRecoveries >= OVERFLOW_RECOVERY_LIMIT)
+    return { kind: "finish", outcome: { type: "context_overflow" } }
   return { kind: "compact" }
 }
 

@@ -5,6 +5,7 @@ import { addCorrections } from "@graphagent/core/session/outcome"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { SessionID, MessageID } from "../session/schema"
 import * as Truncate from "./truncate"
+import { ModelContext } from "./model-context"
 import { ToolJsonSchema } from "./json-schema"
 import { describeSchemaFailures } from "./schema-error"
 import { ToolError } from "./tool-error"
@@ -286,7 +287,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
             return repaired ? { ...result, metadata } : result
           }
           const agent = yield* agents.get(ctx.agent)
-          const truncated = yield* truncate.output(result.output, {}, agent)
+          const truncated = yield* truncate.output(result.output, { context: ModelContext.contextOf(ctx.extra) }, agent)
           return {
             ...result,
             output: truncated.content,

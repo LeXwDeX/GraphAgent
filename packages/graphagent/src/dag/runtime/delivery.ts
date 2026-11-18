@@ -36,6 +36,7 @@ import { DagLocation } from "../location"
 import { DagModeReader } from "../mode-read"
 import { deliverReport, isDisplayOnlyCompletion, selectReportNode, workflowWorktreeText } from "./report-delivery"
 import { workflowResultCall } from "@/tool/workflow/result-call"
+import { headChars } from "@/util/text"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -759,7 +760,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
                 ? node.output
                 : (node.errorReason ?? (node.output == null ? "(no output)" : JSON.stringify(node.output)))
             const truncated = durableResult.length > 500
-            const output = durableResult.slice(0, 500)
+            const output = headChars(durableResult, 500)
             const state = displayState(node)
             // D11: cancellation is identified only by the structured
             // display state; do not render it as "failed (cancelled)".
@@ -768,7 +769,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
             // so the parent can answer "when did this arrive?".
             const at = new Date(node.completedAt ?? node.startedAt ?? node.timeUpdated ?? Date.now()).toISOString()
             const retrieval = truncated
-              ? `\nComplete output: call ${workflowResultCall(node.workflowId, node.id)}.`
+              ? `\nShowing the first ${output.length} of ${durableResult.length} characters. Complete output: call ${workflowResultCall(node.workflowId, node.id)}. Pass the reply's next_cursor as cursor to read the next page.`
               : ""
             const safety = nodeSafetyWakeLine(node.safetyDenials?.total ?? 0)
             return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}${safety}`

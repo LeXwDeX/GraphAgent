@@ -22,6 +22,7 @@ import { Shell } from "@graphagent/core/shell"
 import { ShellID } from "./shell/id"
 import { ShellNormalize } from "./shell/normalize"
 
+import { ModelContext } from "./model-context"
 import * as Truncate from "./truncate"
 import { addCorrections } from "@graphagent/core/session/outcome"
 import { ChildProcess } from "effect/process"
@@ -592,7 +593,8 @@ export const ShellTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const background = input.background
-      const limits = yield* trunc.limits()
+      // The preview of a long output is a share of the window of the model that ran the command.
+      const limits = yield* trunc.limits({ context: ModelContext.contextOf(ctx.extra) })
       const keep = limits.maxBytes * 2
       let full = ""
       let last = ""
@@ -990,8 +992,7 @@ export const ShellTool = Tool.define(
         const cfg = yield* config.get()
         const shell = Shell.acceptable(cfg.shell)
         const name = Shell.name(shell)
-        const limits = yield* trunc.limits()
-        const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs, silenceWarnMs)
+        const prompt = ShellPrompt.render(name, process.platform, defaultTimeoutMs, silenceWarnMs)
         yield* Effect.logInfo("shell tool using shell", { shell })
 
         return {

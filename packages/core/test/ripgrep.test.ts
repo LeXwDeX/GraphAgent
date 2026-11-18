@@ -409,6 +409,41 @@ describe("Ripgrep", () => {
     ),
   )
 
+  it.live("lists glob matches in path order when sorted", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const names = Array.from({ length: 30 }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`)
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "a-dir"))
+            await fs.mkdir(path.join(tmp.path, "sub"))
+            // Made in an order that is not the path order.
+            await Promise.all([
+              ...names.toReversed().map((name) => fs.writeFile(path.join(tmp.path, name), "x\n")),
+              fs.writeFile(path.join(tmp.path, "sub", "inner.txt"), "x\n"),
+              fs.writeFile(path.join(tmp.path, "sub", "aaa.txt"), "x\n"),
+              fs.writeFile(path.join(tmp.path, "a-dir", "z.txt"), "x\n"),
+            ])
+          })
+
+          const entries = yield* (yield* Ripgrep.Service).glob({
+            cwd: tmp.path,
+            pattern: "*.txt",
+            limit: 100,
+            sorted: true,
+          })
+          expect(entries.map((entry) => String(entry.path))).toEqual([
+            "a-dir/z.txt",
+            ...names,
+            "sub/aaa.txt",
+            "sub/inner.txt",
+          ])
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("surfaces directory traversal failures instead of a partial-success result", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
