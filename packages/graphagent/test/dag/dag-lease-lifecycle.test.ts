@@ -23,6 +23,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
 import { EngineProcess, ExclusiveRegistry } from "@/session/engine-process"
+import { SessionInbox } from "@/session/inbox"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
@@ -198,11 +199,13 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   // DagLoop.layer consumes the lease internally (its Layer.provide does not
   // re-expose it). Merge the SAME module-level layer at the top so the test

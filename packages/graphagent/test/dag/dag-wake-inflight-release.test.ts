@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- mocked service slices use `as never` shims.
-// Regression: DagLoop.deliverWake must release its per-session `wakeInFlight`
-// reservation through an Effect finalizer. A generator `finally` does not run
-// when the delivery fiber is interrupted (the 7-minute `tryDeliverWake` lease),
-// fails, or dies, so the reservation used to leak and every later wake for
-// that parent session was parked in `wakePending` until process restart.
+// Regression: the DAG wake claim must give its session back to the inbox
+// however it ends. The inbox drain holds the session for as long as the claim
+// runs and releases it with a finalizer, and the claim bounds itself with the
+// 7-minute lease (`tryDeliverWake`). When a delivery fiber was interrupted by
+// that lease, failed, or died, the in-flight reservation DagDelivery used to
+// keep leaked and every later wake for that parent session was parked until
+// process restart (#1344 replaced the reservation by the inbox's session lock).
+// So after each ending a later wake must still reach the parent, and where the
+// claim has ended, the session must be free for another source as well.
 import { describe, expect, it } from "bun:test"
 import { Deferred, Effect, Layer, Option, Queue } from "effect"
 import * as TestClock from "effect/testing/TestClock"
@@ -27,6 +31,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox, type InboxSource } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -65,6 +70,21 @@ function node(id: string): NodeConfig {
     required: true,
     prompt_template: { inline: id },
     report_to_parent: true,
+  }
+}
+
+/** A source behind dag.delivery (5) that only records which sessions it was asked to claim. */
+function probeSource(claims: string[]): InboxSource {
+  return {
+    id: "reminder",
+    priority: 10,
+    mode: "join_or_start",
+    hint: () => true,
+    claim: (sessionID) =>
+      Effect.sync(() => {
+        claims.push(sessionID)
+        return false
+      }),
   }
 }
 
@@ -154,16 +174,19 @@ const scenario = (mode: "none" | "expire" | "defect") =>
             hooks: {},
           }),
       })
+      const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
       const loopLayer = DagLoop.layer.pipe(
         Layer.provide(base),
         Layer.provide(session),
         Layer.provide(prompt),
         Layer.provide(agent),
+        Layer.provide(inbox),
       )
 
       yield* Effect.gen(function* () {
         const dagSvc = yield* Dag.Service
         const loop = yield* DagLoop.Service
+        const inboxSvc = yield* SessionInbox.Service
         const db = yield* Database.Service
         const storeSvc = yield* DagStore.Service
         yield* db.db
@@ -207,6 +230,13 @@ const scenario = (mode: "none" | "expire" | "defect") =>
           // The parent turn itself then finishes normally (session idle again).
           yield* Deferred.succeed(wakeA!.release, undefined)
           yield* takeReal(parentSettled, 500)
+
+          // The claim is over, by completing or by the lease: the inbox drain
+          // gave the session back, so another source can claim it now.
+          const claims: string[] = []
+          yield* inboxSvc.register(probeSource(claims))
+          yield* inboxSvc.nudge(SessionID.make("ses_parent"))
+          expect(claims).toContain("ses_parent")
         }
 
         // Workflow B later completes for the same, now-idle parent session.
@@ -239,7 +269,7 @@ const scenario = (mode: "none" | "expire" | "defect") =>
         expect(wakeB?.text).toContain("Second")
         expect((yield* storeSvc.getWorkflow(second))?.wakeReported).toBe(true)
       }).pipe(
-        Effect.provide(Layer.mergeAll(base, loopLayer)),
+        Effect.provide(Layer.mergeAll(base, loopLayer, inbox)),
         Effect.provideService(InstanceRef, {
           directory: process.cwd(),
           worktree: process.cwd(),
@@ -250,8 +280,8 @@ const scenario = (mode: "none" | "expire" | "defect") =>
     }).pipe(Effect.provide(TestClock.layer())),
   )
 
-describe("DagLoop wake in-flight reservation release", () => {
-  it("delivers a later wake is delivered when the first wake turn finishes within the lease", async () => {
+describe("DagLoop wake claim release under the inbox session lock", () => {
+  it("delivers a later wake when the first wake turn finishes within the lease", async () => {
     await scenario("none")
   })
   it("delivers later wakes after a wake delivery hits the 7-minute lease timeout", async () => {
