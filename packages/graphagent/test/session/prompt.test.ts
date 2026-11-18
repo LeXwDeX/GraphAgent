@@ -94,6 +94,7 @@ import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
+import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
 import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -7491,6 +7492,28 @@ unixNoLLMServer(
     ),
   { config: cfg },
   30_000,
+)
+
+// The shell is gone, but a process it started is still in its process group.
+unixNoLLMServer(
+  "shell stops a process the killed command left running",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const { prompt, run, chat } = yield* boot()
+      const { command, file } = yield* killedShell(dir)
+      const result = yield* prompt.shell({ sessionID: chat.id, agent: "build", command })
+
+      expect(result.info.role).toBe("assistant")
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      expect(tool.state.output).toContain("before")
+      expect(tool.state.output).toContain("Command terminated by signal SIGKILL")
+      yield* expectLeftBehindStopped(file)
+      yield* run.assertNotBusy(chat.id)
+    }),
+  { config: cfg },
 )
 
 unixNoLLMServer(

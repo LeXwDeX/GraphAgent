@@ -18,6 +18,7 @@ import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { testEffect } from "../lib/effect"
 import { truncateFailingWith } from "../lib/truncate"
+import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
 import { Tool } from "@/tool/tool"
 import { SafetyGuard } from "@/permission/safety-guard"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -1300,6 +1301,31 @@ describe("tool.shell signal termination", () => {
         20_000,
       )
     }
+
+    // The shell is gone, but a process it started is still in its process
+    // group. The result must not wait for it, and it must not outlive the call.
+    it.live(
+      "stops a process the killed command left running",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* tmpdirScoped()
+          const { command, file } = yield* killedShell(tmp)
+          yield* runIn(
+            tmp,
+            Effect.gen(function* () {
+              const started = Date.now()
+              const result = yield* run({ command, timeout: 10_000 })
+              expect(Date.now() - started).toBeLessThan(2_000)
+              expect(result.output).toContain("before")
+              expect(result.output).toContain("Command terminated by signal SIGKILL")
+              expect(result.output).not.toContain("exceeding timeout")
+              expect(result.metadata.exit).toBe(null)
+            }),
+          )
+          yield* expectLeftBehindStopped(file)
+        }),
+      20_000,
+    )
   }
 })
 

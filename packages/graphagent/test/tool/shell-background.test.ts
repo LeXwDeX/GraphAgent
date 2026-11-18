@@ -18,6 +18,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
+import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
@@ -291,6 +292,33 @@ describe("shell background mode", () => {
         20_000,
       )
     }
+
+    // The shell is gone, but a process it started is still in its process
+    // group. The job ends at once and must not leave that process running.
+    it.live(
+      "stops a process the killed background command left running",
+      (): Effect.Effect<void, unknown, ShellTestServices> =>
+        Effect.gen(function* () {
+          const tmp = yield* tmpdirScoped()
+          const { command: cmd, file } = yield* killedShell(tmp)
+          yield* provideInstance(tmp)(
+            Effect.gen(function* () {
+              const shell = yield* init()
+              yield* shell.execute({ command: cmd, background: true }, promptCtx)
+              const output = yield* awaitWithTimeout(
+                hooks.started[0].run.pipe(Effect.orDie),
+                "background shell did not end",
+                "10 seconds",
+              )
+              expect(output).toContain("before")
+              expect(hooks.wakes).toHaveLength(1)
+              expect(hooks.wakes[0].payload).toContain(`Background shell terminated by signal SIGKILL: ${cmd}`)
+            }),
+          )
+          yield* expectLeftBehindStopped(file)
+        }),
+      20_000,
+    )
   }
 
   it.live(

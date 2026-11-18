@@ -416,6 +416,25 @@ describe("tool.apply_patch freeform", () => {
         execute({ patchText }, ctx),
         "apply_patch verification failed: Failed to read file to update",
       )
+      yield* expectFailure(execute({ patchText }, ctx), "missing.txt. Check the path with glob.")
+    }),
+  )
+
+  it.instance("reports a stat failure other than a missing file instead of a failed read", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      yield* writeText(path.join(test.directory, "regular.txt"), "content\n")
+      // A regular file in the middle of the path makes stat fail with ENOTDIR, not NotFound.
+      const patchText = "*** Begin Patch\n*** Update File: regular.txt/child.txt\n@@\n-nope\n+better\n*** End Patch"
+
+      const exit = yield* Effect.exit(execute({ patchText }, ctx))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const text = Cause.pretty(exit.cause)
+      expect(text).toContain("ENOTDIR")
+      expect(text).not.toContain("Failed to read file to update")
+      expect(text).not.toContain("Check the path with glob")
     }),
   )
 

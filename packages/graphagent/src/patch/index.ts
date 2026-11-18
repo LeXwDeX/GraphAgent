@@ -339,6 +339,21 @@ export function deriveNewContentsFromChunks(
   }
 }
 
+const RESEND_HINT = "Read the file again and resend the patch with exact context lines."
+const MISSING_LINES_SHOWN = 20
+
+/** The lines a chunk expected, bounded to the first 20, followed by what to do next. */
+function missingLinesMessage(filePath: string, oldLines: string[]): string {
+  const more =
+    oldLines.length > MISSING_LINES_SHOWN ? [`... (${oldLines.length - MISSING_LINES_SHOWN} more lines)`] : []
+  return [
+    `Failed to find expected lines in ${filePath}:`,
+    ...oldLines.slice(0, MISSING_LINES_SHOWN),
+    ...more,
+    RESEND_HINT,
+  ].join("\n")
+}
+
 function computeReplacements(
   originalLines: string[],
   filePath: string,
@@ -352,7 +367,7 @@ function computeReplacements(
     if (chunk.change_context) {
       const contextIdx = seekSequence(originalLines, [chunk.change_context], lineIndex)
       if (contextIdx === -1) {
-        throw new Error(`Failed to find context '${chunk.change_context}' in ${filePath}`)
+        throw new Error(`Failed to find context '${chunk.change_context}' in ${filePath}. ${RESEND_HINT}`)
       }
       lineIndex = contextIdx + 1
     }
@@ -385,7 +400,7 @@ function computeReplacements(
       replacements.push([found, pattern.length, newSlice])
       lineIndex = found + pattern.length
     } else {
-      throw new Error(`Failed to find expected lines in ${filePath}:\n${chunk.old_lines.join("\n")}`)
+      throw new Error(missingLinesMessage(filePath, chunk.old_lines))
     }
   }
 

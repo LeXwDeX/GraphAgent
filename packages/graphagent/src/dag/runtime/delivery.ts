@@ -35,6 +35,7 @@ import { Dag, parseWorkflowConfig } from "../dag"
 import { DagLocation } from "../location"
 import { DagModeReader } from "../mode-read"
 import { deliverReport, isDisplayOnlyCompletion, selectReportNode, workflowWorktreeText } from "./report-delivery"
+import { workflowResultCall } from "@/tool/workflow/result-call"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -114,30 +115,29 @@ export interface Environment {
   readonly database: Database.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly messages: DagMessages.Interface | undefined
-  /** The per-instance inbox this delivery registers with. Absent in isolated
-   * unit graphs; those graphs keep the init scan and the 30s sweep. */
-  readonly inbox: SessionInbox.Interface | undefined
+  /** The per-instance inbox: delivery registers its claim with it, and every
+   * trigger (an event, the startup scan) reaches delivery by nudging it. */
+  readonly inbox: SessionInbox.Interface
   readonly entries: (dagID: string) => Entry | undefined
   readonly lastAssistantMessage: (childSessionID: string) => Effect.Effect<SessionV1.WithParts | undefined, Error>
 }
 
 export interface Interface {
-  /** One serialized delivery attempt: durable wakes first, then the agent
-   * mailbox. A wake admission ends the attempt; the turn-end idle event
-   * triggers the next one. */
-  readonly drain: (sessionID: string) => Effect.Effect<void>
-  /** Claim form of `drain`: true only when a wake or mailbox admission
-   * actually happened, so the inbox can fall through to the next source.
+  /** The claim of the `dag.delivery` inbox source: one delivery attempt,
+   * durable wakes first, then the agent mailbox. A wake admission ends the
+   * attempt; the turn-end idle event triggers the next one. True only when a
+   * wake or mailbox admission actually happened, so the inbox can fall through
+   * to the next source. The inbox's per-session drain is the only caller, and
+   * it holds the session for as long as the claim runs, so attempts for one
+   * session never overlap and never run beside another source's claim.
    * `claimEpoch` is the inbox drain's cancellation-epoch observation; an ESC
    * after that capture fences the wake admission instead of delivering into
    * it. */
   readonly deliver: (sessionID: string, claimEpoch?: number) => Effect.Effect<boolean, unknown>
-  /** Fire-and-forget trigger: nudge is idempotent and safe to call for every
-   * event source. The in-flight reservations coalesce concurrent attempts. */
-  readonly nudge: (sessionID: string) => Effect.Effect<void>
   /** Startup scan: paused-workflow reminders plus a mailbox sweep over every
-   * ledger page, for messages queued while no instance was listening. The
-   * periodic fallback is the inbox tick (`scanSessions`). */
+   * ledger page, for messages queued while no instance was listening. Each
+   * session found is nudged through the inbox. The periodic fallback is the
+   * inbox tick (`scanSessions`). */
   readonly scan: () => Effect.Effect<void>
   /** Durable scan for the inbox tick: sessions in this directory with an
    * unreported wake, a due paused reminder, or a queued main-mailbox message.
@@ -146,16 +146,28 @@ export interface Interface {
   readonly scanSessions: () => Effect.Effect<ReadonlyArray<string>>
 }
 
-/** Pre-instance forward target. DagLoop's state builder installs a real
- * delivery before any event, recovery, or handler path can use it; these
- * no-ops only answer calls made while the instance is still constructing. */
-export const unavailable: Interface = {
-  drain: () => Effect.void,
-  deliver: () => Effect.succeed(false),
-  nudge: () => Effect.void,
-  scan: () => Effect.void,
-  scanSessions: () => Effect.succeed([] as ReadonlyArray<string>),
-}
+// A delivery handler must never die: a dead handler would drop its trigger
+// until the next idle event or the 30s tick.
+const guarded =
+  (event: string) =>
+  <A, E, R>(self: Effect.Effect<A, E, R>) =>
+    self.pipe(Effect.catchCause((cause) => Effect.logWarning("DagDelivery handler failed", { event, cause })))
+
+/**
+ * The trigger of every DAG event source (#1344): nudge the session through the
+ * inbox, whose `dag.delivery` source runs the claim. `inbox.nudge` resolves only
+ * after the drain it starts or joins ends, and that drain awaits the admitted
+ * model turn (or its 7-minute lease), so it is forked here: the event stream
+ * that nudges must stay free to take the next event. The inbox serializes drains
+ * per session (a nudge that arrives mid-drain only marks one more pass), and the
+ * fiber belongs to `scope`, so disposing the instance interrupts it.
+ */
+export const nudger =
+  (inbox: SessionInbox.Interface, scope: Scope.Scope) =>
+  (sessionID: string): Effect.Effect<void> =>
+    inbox
+      .nudge(SessionID.make(sessionID))
+      .pipe(guarded("DeliveryNudge"), Effect.forkIn(scope), Effect.asVoid)
 
 /** #1031 M7: the node-result wake states its own denial count. */
 export function nodeSafetyWakeLine(total: number) {
@@ -186,8 +198,7 @@ export function incompleteRequiredWakeLine(lines: readonly string[], answered: b
  * Single DAG delivery scheduler (E1/D7). It owns both ledgers without
  * unifying them: the durable wake marker (`wake_reported`, admitted ==
  * delivered, #321) and `agent_message` (confirmed by `associate`, not by
- * admission). Ordering is wake first, mailbox second; the two in-flight
- * reservations below each exist exactly once, in this module.
+ * admission). Ordering is wake first, mailbox second.
  *
  * PR3 makes this module a `dag.delivery` inbox source (priority 5, idle_only)
  * and registers the hint-only `dag.mailbox.step` step source. The inbox owns
@@ -196,6 +207,14 @@ export function incompleteRequiredWakeLine(lines: readonly string[], answered: b
  * through the inbox claim. The inbox's 30-second tick (whose scan lists due
  * paused reminders and queued mailboxes) is the only periodic fallback
  * (#1027 D5).
+ *
+ * #1344: the inbox is also the only trigger and the only serialization.
+ * Every event source and the startup scan nudge the session through it, and
+ * the claim runs inside the inbox's per-session drain: one claim per session
+ * at a time, a nudge that arrives mid-claim becomes exactly one more pass, and
+ * another source's claim on the same session never runs beside it. Delivery
+ * keeps no in-flight set of its own; the claim only bounds its lifetime (the
+ * 7-minute lease below), since the drain holds the session while it runs.
  *
  * Every terminal workflow is delivered to the parent session once. Only a
  * completed workflow whose parent-visible output is an ordinary delivery leaf
@@ -221,15 +240,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     lastAssistantMessage,
   } = environment
 
-  // Same boundary as the DagLoop event handlers: a delivery handler must
-  // never die, or its coalescing reservation would be lost for the process.
-  const guarded =
-    (event: string) =>
-    <A, E, R>(self: Effect.Effect<A, E, R>) =>
-      self.pipe(Effect.catchCause((cause) => Effect.logWarning("DagDelivery handler failed", { event, cause })))
+  const nudge = nudger(inbox, scope)
 
-  const wakeInFlight = new Set<string>()
-  const wakePending = new Set<string>()
   // Cache the receipt only as an optimization. Exact durable message/part
   // lookup below survives a crash between admission and wake marking.
   const deliveredWakeSummaries = new Map<string, string>()
@@ -465,19 +477,17 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   // live idle gate is still authoritative, and a skipped nudge is recovered
   // by the turn-end idle or the 30s tick.
   const notifyInboxAfterReport = (sessionID: string): Effect.Effect<void> =>
-    inbox === undefined
-      ? Effect.void
-      : status.get(SessionID.make(sessionID)).pipe(
-          Effect.flatMap((info) => (info.type === "idle" ? inbox.nudge(SessionID.make(sessionID)) : Effect.void)),
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.void
-              : Effect.logWarning("DAG display report inbox nudge failed", {
-                  sessionID,
-                  cause: Cause.pretty(cause),
-                }),
-          ),
-        )
+    status.get(SessionID.make(sessionID)).pipe(
+      Effect.flatMap((info) => (info.type === "idle" ? inbox.nudge(SessionID.make(sessionID)) : Effect.void)),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.void
+          : Effect.logWarning("DAG display report inbox nudge failed", {
+              sessionID,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    )
 
   /**
    * #1289: whether the owner session is archived. An archived session is not
@@ -497,7 +507,6 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     )
   })
 
-  let tryDeliverWake: (sessionID: string, claimEpoch?: number) => Effect.Effect<boolean> = () => Effect.succeed(false)
   const deliverWake = Effect.fn("DagDelivery.deliverWake")(function* (sessionID: string, claimEpoch?: number) {
     // Cross-instance guard via the execution-location authority: wake
     // delivery is store-global (idle Status events, node-terminal
@@ -508,22 +517,17 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     // after a session deletion (the durable rows are gone).
     if (!(yield* DagLocation.ownsSession(sessionID, directory))) return false
     if (!(yield* sessionNotificationOwned(sessionID))) return false
-    if (wakeInFlight.has(sessionID)) {
-      wakePending.add(sessionID)
-      return false
-    }
-    wakeInFlight.add(sessionID)
     // A display-only completion report writes no turn, so no idle event
-    // follows it. Remember the fact and re-trigger the inbox after this
-    // wake reservation is released (the finalizer below); nudging while
-    // wakeInFlight is set would only bounce off the reservation.
+    // follows it. Remember the fact and re-trigger the inbox once this attempt
+    // ends (the finalizer below): the nudge folds into one more pass of the
+    // drain that runs this claim, which reaches the mailbox and the other
+    // sources.
     let reportDelivered = false
     // Re-read after each stable batch so rows committed during delivery
-    // remain a separate batch. The reservation is released by an Effect
-    // finalizer, not a generator `finally`: Effect does not resume a
-    // generator's `finally` when the fiber is interrupted (the lease
-    // timeout below), fails, or dies, so a generator release would leak
-    // the reservation and park every later wake in `wakePending`.
+    // remain a separate batch. The follow-up is an Effect finalizer, not a
+    // generator `finally`: Effect does not resume a generator's `finally` when
+    // the fiber is interrupted (the lease timeout below), fails, or dies. The
+    // session itself is the inbox drain's to hold and release, on every exit.
     return yield* Effect.gen(function* () {
       let admitted = false
       const deliveredUnresponsiveDagIDs = new Set<string>()
@@ -533,9 +537,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         const hasUnreported = batch.nodes.length > 0 || batch.workflows.length > 0
 
         if (!hasUnreported) {
-          // A terminal event can commit between either query. Coalesce
-          // its trigger into another durable read before declaring idle.
-          if (wakePending.delete(sessionID)) continue
+          // A terminal event can commit between either query; its nudge
+          // folds into one more inbox pass, which reads the durable rows
+          // again after this attempt ends.
           // D7: if we delivered at least one wake in this call and no more
           // unreported rows remain, check for orchestrator-unresponsive.
           // #5: scoped per-workflow — only fail the workflow whose node
@@ -764,7 +768,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
             // so the parent can answer "when did this arrive?".
             const at = new Date(node.completedAt ?? node.startedAt ?? node.timeUpdated ?? Date.now()).toISOString()
             const retrieval = truncated
-              ? `\nComplete output: call workflow result with workflow_id="${node.workflowId}" and node_id="${node.id}".`
+              ? `\nComplete output: call ${workflowResultCall(node.workflowId, node.id)}.`
               : ""
             const safety = nodeSafetyWakeLine(node.safetyDenials?.total ?? 0)
             return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}${safety}`
@@ -953,30 +957,20 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       }
     }).pipe(
       Effect.ensuring(
-        Effect.suspend(() => {
-          const retry = wakePending.delete(sessionID)
-          wakeInFlight.delete(sessionID)
-          // Both follow-ups run only after the reservation is gone: a retry
-          // would otherwise bounce off `wakeInFlight`, and a report nudge
-          // would be answered by a claim that skips mailbox work.
-          const retryFiber = retry
-            ? tryDeliverWake(sessionID).pipe(guarded("WakePendingRetry"), Effect.forkIn(scope), Effect.asVoid)
-            : Effect.void
-          const notifyFiber = reportDelivered
+        Effect.suspend(() =>
+          reportDelivered
             ? notifyInboxAfterReport(sessionID).pipe(Effect.forkIn(scope), Effect.asVoid)
-            : Effect.void
-          return Effect.all([retryFiber, notifyFiber], { discard: true })
-        }),
+            : Effect.void,
+        ),
       ),
     )
   })
-  // The in-flight reservation must have a finite lifetime even when a
-  // parent turn or a dependency never settles. Timing out interrupts the
-  // old delivery fiber; its `Effect.ensuring` finalizer releases the
-  // reservation (and re-forks a wake that was queued behind it), so a
-  // queued or periodic stimulus retries through the ordinary idle
-  // admission gate.
-  tryDeliverWake = (sessionID, claimEpoch) =>
+  // The claim must have a finite lifetime even when a parent turn or a
+  // dependency never settles: the inbox holds the session for as long as it
+  // runs. Timing out interrupts the delivery fiber and ends the claim, so the
+  // next trigger (a nudge, the turn-end idle, the 30s tick) retries through the
+  // ordinary idle admission gate.
+  const tryDeliverWake = (sessionID: string, claimEpoch?: number) =>
     deliverWake(sessionID, claimEpoch).pipe(
       Effect.timeoutOption("7 minutes"),
       Effect.flatMap(
@@ -990,94 +984,90 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       ),
     )
 
-  const mailboxInFlight = new Set<string>()
   const deliverAgentMessages = Effect.fn("DagDelivery.deliverAgentMessages")(
     function* (sessionID: string, inboxClaimEpoch?: number) {
-      // An inbox drain passes the epoch observed before its sources ran; poll
-      // and mailbox-change triggers have none, so those attempts capture their
-      // own observation before any durable read.
+      // An inbox drain passes the epoch observed before its sources ran; a
+      // caller without one captures its own observation before any durable
+      // read.
       const claimEpoch = inboxClaimEpoch ?? SessionCancellation.epoch(sessionID)
-      if (!messages || mailboxInFlight.has(sessionID)) return false
-      mailboxInFlight.add(sessionID)
-      return yield* Effect.gen(function* () {
-        if ((yield* status.get(SessionID.make(sessionID))).type !== "idle") return false
-        const caller = { projectID, directory, sessionID }
-        const queued = yield* messages.receive(caller, { limit: 64, queuedOnly: true })
-        if (!queued.ok) return false
-        const message = queued.value.find((item) => item.state === "queued")
-        if (!message || message.recipient.kind !== "main") return false
-        // #1289: the message stays queued for an archived owner.
-        if (yield* sessionArchived(sessionID)) return false
-        const history = yield* sessions.messages({ sessionID: SessionID.make(sessionID), limit: 20 })
-        const latestAssistant = history
-          .filter((item) => item.info.role === "assistant")
-          .toSorted((a, b) => (MessageV2.before(a.info, b.info) ? -1 : MessageV2.before(b.info, a.info) ? 1 : 0))
-          .at(-1)
-        if (
-          latestAssistant?.info.role === "assistant" &&
-          (latestAssistant.info.error || ["error", "content-filter"].includes(latestAssistant.info.finish ?? ""))
-        ) {
-          const mailboxInputs = new Set(queued.value.map((item) => item.transcriptID))
-          const newContext = history.some((item) => {
-            if (
-              item.info.role !== "user" ||
-              !MessageV2.before(latestAssistant.info, item.info) ||
-              mailboxInputs.has(item.info.id)
-            )
-              return false
-            return !item.parts.some((part) => {
-              if (part.type !== "text") return false
-              const envelope = Option.getOrUndefined(parseJsonOption(part.text))
-              return (
-                typeof envelope === "object" &&
-                envelope !== null &&
-                "kind" in envelope &&
-                envelope.kind === "dag_agent_message"
-              )
-            })
-          })
-          // A retained queue cannot reset a failed execution every poll.
-          // A later host-admitted prompt advances context; this predicate
-          // grants no permissions and infers no human provenance.
-          if (!newContext) return false
-        }
-        // The mailbox lease is separate from workflow lifecycle ownership:
-        // accepted node reports survive source completion and cancellation.
-        const owner = { kind: "dag" as const, id: `agent-mailbox:${message.recipient.id}` }
-        yield* automation.register(SessionID.make(sessionID), owner)
-        return yield* Effect.gen(function* () {
-          const token = yield* automation.claim(SessionID.make(sessionID), { kind: "dag" })
-          if (Option.isNone(token)) return false
-          const admitted = yield* SessionPrompt.admitIdleUnderFence(
-            prompts,
-            automation,
-            token.value,
-            {
-              sessionID: SessionID.make(sessionID),
-              messageID: MessageID.make(message.transcriptID),
-              parts: [
-                {
-                  id: PartID.make(message.partID),
-                  type: "text",
-                  text: DagMessages.renderMessage(message),
-                  synthetic: true,
-                },
-              ],
-            },
-            undefined,
-            undefined,
-            claimEpoch,
+      if (!messages) return false
+      if ((yield* status.get(SessionID.make(sessionID))).type !== "idle") return false
+      const caller = { projectID, directory, sessionID }
+      const queued = yield* messages.receive(caller, { limit: 64, queuedOnly: true })
+      if (!queued.ok) return false
+      const message = queued.value.find((item) => item.state === "queued")
+      if (!message || message.recipient.kind !== "main") return false
+      // #1289: the message stays queued for an archived owner.
+      if (yield* sessionArchived(sessionID)) return false
+      const history = yield* sessions.messages({ sessionID: SessionID.make(sessionID), limit: 20 })
+      const latestAssistant = history
+        .filter((item) => item.info.role === "assistant")
+        .toSorted((a, b) => (MessageV2.before(a.info, b.info) ? -1 : MessageV2.before(b.info, a.info) ? 1 : 0))
+        .at(-1)
+      if (
+        latestAssistant?.info.role === "assistant" &&
+        (latestAssistant.info.error || ["error", "content-filter"].includes(latestAssistant.info.finish ?? ""))
+      ) {
+        const mailboxInputs = new Set(queued.value.map((item) => item.transcriptID))
+        const newContext = history.some((item) => {
+          if (
+            item.info.role !== "user" ||
+            !MessageV2.before(latestAssistant.info, item.info) ||
+            mailboxInputs.has(item.info.id)
           )
-          // A fenced skip/cancel committed nothing: the agent message stays
-          // queued and the next trigger retries it.
-          if (admitted.tag !== "admitted") return false
-          // Admission alone leaves delivery queued. SessionPrompt freezes
-          // and associates the actual model input, then advances delivery.
-          yield* automation.unregister(SessionID.make(sessionID), owner)
-          yield* admitted.turn
-          return true
-        }).pipe(Effect.ensuring(automation.unregister(SessionID.make(sessionID), owner)))
-      }).pipe(Effect.ensuring(Effect.sync(() => mailboxInFlight.delete(sessionID))))
+            return false
+          return !item.parts.some((part) => {
+            if (part.type !== "text") return false
+            const envelope = Option.getOrUndefined(parseJsonOption(part.text))
+            return (
+              typeof envelope === "object" &&
+              envelope !== null &&
+              "kind" in envelope &&
+              envelope.kind === "dag_agent_message"
+            )
+          })
+        })
+        // A retained queue cannot reset a failed execution every poll.
+        // A later host-admitted prompt advances context; this predicate
+        // grants no permissions and infers no human provenance.
+        if (!newContext) return false
+      }
+      // The mailbox lease is separate from workflow lifecycle ownership:
+      // accepted node reports survive source completion and cancellation.
+      const owner = { kind: "dag" as const, id: `agent-mailbox:${message.recipient.id}` }
+      yield* automation.register(SessionID.make(sessionID), owner)
+      return yield* Effect.gen(function* () {
+        const token = yield* automation.claim(SessionID.make(sessionID), { kind: "dag" })
+        if (Option.isNone(token)) return false
+        const admitted = yield* SessionPrompt.admitIdleUnderFence(
+          prompts,
+          automation,
+          token.value,
+          {
+            sessionID: SessionID.make(sessionID),
+            messageID: MessageID.make(message.transcriptID),
+            parts: [
+              {
+                id: PartID.make(message.partID),
+                type: "text",
+                text: DagMessages.renderMessage(message),
+                synthetic: true,
+              },
+            ],
+          },
+          undefined,
+          undefined,
+          claimEpoch,
+        )
+        // A fenced skip/cancel committed nothing: the agent message stays
+        // queued and the next trigger retries it.
+        if (admitted.tag !== "admitted") return false
+        // Admission alone leaves delivery queued. SessionPrompt freezes
+        // and associates the actual model input, then advances delivery.
+        yield* automation.unregister(SessionID.make(sessionID), owner)
+        yield* admitted.turn
+        return true
+      }).pipe(Effect.ensuring(automation.unregister(SessionID.make(sessionID), owner)))
     },
     Effect.timeoutOption("7 minutes"),
     Effect.map(Option.getOrElse(() => false)),
@@ -1089,8 +1079,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   // It runs at startup, where one pass can afford to walk the whole ledger:
   // a page is capped and ordered by session ID, so stopping at the first one
   // would hide every later recipient behind mailboxes that keep their queue
-  // (a failed turn waits for new host context). The inbox tick owns the
-  // periodic fallback (#1027 D5).
+  // (a failed turn waits for new host context). Each recipient is nudged
+  // through the inbox, which runs the claim. The inbox tick owns the periodic
+  // fallback (#1027 D5).
   const sweepMailboxes = Effect.gen(function* () {
     if (!messages) return
     let after: string | undefined
@@ -1101,9 +1092,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         limit: MAILBOX_PAGE_SIZE,
         afterSessionID: after,
       })
-      for (const endpoint of page) {
-        yield* deliverAgentMessages(endpoint.sessionID).pipe(guarded("AgentMailboxAdmission"), Effect.forkIn(scope))
-      }
+      for (const endpoint of page) yield* nudge(endpoint.sessionID)
       const last = page.at(-1)?.sessionID
       // A short page is the end of the ledger; a cursor that did not move
       // (a store that ignores it) must not spin.
@@ -1132,10 +1121,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     )
     for (const sessionID of pausedSessions) {
       if (!(yield* DagLocation.ownsSession(sessionID, directory))) continue
-      yield* tryDeliverWake(sessionID, SessionCancellation.epoch(sessionID)).pipe(
-        guarded("PausedReminder"),
-        Effect.forkIn(scope),
-      )
+      yield* nudge(sessionID)
     }
   }).pipe(guarded("PausedReminderSweep"))
 
@@ -1203,47 +1189,25 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       ),
     )
 
-  /** One serialized attempt: durable wakes first, mailbox second only when no
-   * wake work remains. The boolean is the inbox claim's "did anything
-   * happen". A wake reservation that is still held (or queued behind one)
-   * must not fall through to the mailbox: that would turn wake-first into
-   * mailbox-first and race the wake retry against a busy session. */
+  /** One attempt: durable wakes first, mailbox second only when the wake attempt
+   * did not admit. The boolean is the inbox claim's "did anything happen". The
+   * inbox drain runs one claim per session at a time; a nudge that arrived
+   * meanwhile is one more pass from the top, so the wake is always tried
+   * before the mailbox. */
   const deliver = (sessionID: string, claimEpoch?: number): Effect.Effect<boolean, unknown> =>
     Effect.gen(function* () {
       const delivered = yield* tryDeliverWake(sessionID, claimEpoch)
       if (delivered) return true
-      if (wakeInFlight.has(sessionID) || wakePending.has(sessionID)) return false
       // The mailbox attempt reuses the drain's epoch observation when the
       // caller has one, so an ESC during the wake attempt fences it too.
       return yield* deliverAgentMessages(sessionID, claimEpoch)
     })
 
-  /** One serialized attempt: durable wakes first, mailbox second when no wake
-   * was admitted. */
-  const drain = (sessionID: string): Effect.Effect<void> =>
-    deliver(sessionID).pipe(guarded("DeliveryDrain"), Effect.asVoid)
-
-  /** Every event source only nudges; the in-flight reservations join repeats. */
-  const nudge = (sessionID: string): Effect.Effect<void> =>
-    drain(sessionID).pipe(guarded("DeliveryNudge"), Effect.forkIn(scope), Effect.asVoid)
-
-  /** Nudge for one queued mailbox message. With an inbox the nudge is routed to
-   * the instance that owns the directory (another process can share the
-   * database). `inbox.nudge` resolves only after that drain ends, and the drain
-   * awaits the admitted model turn (or its 7-minute lease), so it is forked
-   * here exactly like the local `nudge`: the change stream must stay free to
-   * take the next recipient's event. The inbox already coalesces repeats per
-   * session (a nudge during a drain only marks one more pass), and the fiber
-   * belongs to the instance scope, so disposing the instance interrupts it. */
-  const nudgeRecipient = (sessionID: string): Effect.Effect<void> =>
-    inbox
-      ? inbox.nudge(SessionID.make(sessionID)).pipe(guarded("MailboxChangeNudge"), Effect.forkIn(scope), Effect.asVoid)
-      : nudge(sessionID)
-
   // H2 owns the nudge port: a queued message in this instance's directory
-  // nudges its recipient (`nudgeRecipient`). The subscription may be an
-  // unimplemented test mock; it must never kill the instance. Without an inbox
-  // (isolated unit graphs) the local drain is the only target.
+  // nudges its recipient through the inbox, which is routed to the instance
+  // that owns the session's directory (another process can share the
+  // database). The subscription may be an unimplemented test mock; it must
+  // never kill the instance.
   if (messages) {
     yield* Effect.suspend(() => {
       const mailbox = messages
@@ -1251,7 +1215,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         Stream.filter((change) => change.kind === "queued"),
         Stream.runForEach((change) =>
           change.directory !== "" && DagLocation.canonicalDirectory(change.directory) === DagLocation.canonicalDirectory(directory)
-            ? nudgeRecipient(change.recipientSessionID)
+            ? nudge(change.recipientSessionID)
             : Effect.void,
         ),
       )
@@ -1265,31 +1229,31 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     )
   }
 
+  // Priority 5 runs before goal.continue (10): a DAG wake/mailbox item is
+  // time-sensitive and must claim the boundary first. The hint is always
+  // true because there is no cheap in-memory index that survives a restart;
+  // ownership and the idle gate live in `deliver`/the inbox claim.
+  yield* inbox.register({
+    id: "dag.delivery",
+    priority: 5,
+    mode: "idle_only",
+    hint: () => true,
+    scan: () => scanSessions().pipe(Effect.map((ids) => ids.map((id) => SessionID.make(id)))),
+    claim: (sessionID, ctx) => deliver(sessionID, ctx.claimEpoch),
+  })
+  // Hint-only for now: E1's freeze/associate remains the only delivery and
+  // confirmation path. A false hint would skip `clearBoundaryApproval` and
+  // let `check_step_input` keep resuming on queued revisions, so PR3
+  // registers the port with a conservative true hint and no provider.
+  yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => true })
+
   // Startup scan: cover messages queued before this instance subscribed (or by
   // a crashed peer) and paused reminders that came due while it was down. Runs
-  // once here; the durable fallback afterwards is the inbox 30s tick, whose
-  // `dag.delivery` scan also lists due paused reminders (#1027 D5).
+  // once here, after the registration above: the scan only nudges the inbox,
+  // and a drain that ran before the source was registered would skip it. The
+  // durable fallback afterwards is the inbox 30s tick, whose `dag.delivery`
+  // scan also lists due paused reminders (#1027 D5).
   yield* scan()
 
-  if (inbox) {
-    // Priority 5 runs before goal.continue (10): a DAG wake/mailbox item is
-    // time-sensitive and must claim the boundary first. The hint is always
-    // true because there is no cheap in-memory index that survives a restart;
-    // ownership and the idle gate live in `deliver`/the inbox claim.
-    yield* inbox.register({
-      id: "dag.delivery",
-      priority: 5,
-      mode: "idle_only",
-      hint: () => true,
-      scan: () => scanSessions().pipe(Effect.map((ids) => ids.map((id) => SessionID.make(id)))),
-      claim: (sessionID, ctx) => deliver(sessionID, ctx.claimEpoch),
-    })
-    // Hint-only for now: E1's freeze/associate remains the only delivery and
-    // confirmation path. A false hint would skip `clearBoundaryApproval` and
-    // let `check_step_input` keep resuming on queued revisions, so PR3
-    // registers the port with a conservative true hint and no provider.
-    yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => true })
-  }
-
-  return { drain, deliver, nudge, scan, scanSessions }
+  return { deliver, scan, scanSessions }
 })

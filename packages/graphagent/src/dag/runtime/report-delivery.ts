@@ -28,6 +28,7 @@ import { finalAssistantText, parseFinalResponse } from "./final-response"
 import { isRecord } from "@/util/record"
 import { before, isLocalCommand } from "@/session/message-v2"
 import { reportIdentity } from "../report-identity"
+import { workflowResultCall } from "@/tool/workflow/result-call"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 import type { DagEvent } from "@graphagent/schema/dag-event"
 
@@ -94,12 +95,12 @@ export function isDisplayOnlyCompletion(config: WorkflowConfig, nodes: readonly 
 export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagStore.NodeRow[]) {
   return [
     `Workflow "${workflow.title}" completed. Results:`,
+    `Read a node's output with ${workflowResultCall(workflow.id, "<node_id>")}.`,
     ...nodes
       .filter((node) => !node.superseded)
       .toSorted((a, b) => a.id.localeCompare(b.id))
       .map(
-        (node) =>
-          `- ${node.name} (${node.status})${node.staleTarget ? " [stale target]" : ""}: workflow result workflow_id="${workflow.id}" node_id="${node.id}"`,
+        (node) => `- ${node.name} (${node.status})${node.staleTarget ? " [stale target]" : ""}: node_id="${node.id}"`,
       ),
   ].join("\n")
 }
