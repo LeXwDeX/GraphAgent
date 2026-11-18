@@ -9,6 +9,7 @@ import { ManualClock } from "@opentui/core/testing"
 import type { Part } from "@graphagent/sdk"
 import { createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
+import { limitRendererListeners } from "../../src/util/renderer"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
 import { EditorContextProvider } from "../../src/context/editor"
@@ -344,6 +345,10 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
   }
 
   const app = await testRender(() => <Harness />, { width: 100, height: 30, clock, gatherStats: true })
+  // `renderOnce` waits for the next frame with a `frame` and a `destroy` listener that it removes once the frame lands,
+  // and the scenarios overlap those waits: 11 and 13 at the peak, bounded and released. The app's limit covers them, so
+  // a real leak still warns while this noise does not (#1425).
+  limitRendererListeners(app.renderer)
   app.renderer.requestRender()
   await app.renderOnce()
   // A fixed frame count timed out on a machine running other work; wait for the

@@ -106,7 +106,7 @@ import { createTuiAttention } from "./attention"
 import { createTuiNotifications } from "./attention/notify"
 import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
-import { destroyRenderer } from "./util/renderer"
+import { destroyRenderer, limitRendererListeners } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { TuiLog } from "./util/log"
 
@@ -412,6 +412,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const route = useRoute()
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
+  // Each mounted `useTerminalDimensions()` caller holds a `resize` listener on the renderer; the screens together pass
+  // the ten Node warns about. The limit is set here, before the first listener is attached (they attach on mount).
+  limitRendererListeners(renderer)
   const local = useLocal()
   const kv = useKV()
   const keymap = useGraphagentKeymap()

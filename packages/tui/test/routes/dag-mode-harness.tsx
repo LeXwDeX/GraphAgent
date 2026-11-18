@@ -32,6 +32,7 @@ import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import type { BottomZoneStateApi } from "../../src/shell/bottom-zone"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
+import { limitRendererListeners } from "../../src/util/renderer"
 import { tmpdir } from "../fixture/fixture"
 import { readFrame, readSpans } from "../fixture/frames"
 import { RouteFrame } from "../fixture/route-frame"
@@ -184,6 +185,8 @@ export async function mountRoute(options: MountOptions) {
   const app = await testRender(
     () => {
       const renderer = useRenderer()
+      // As the app root does (`App` in app.tsx): a full screen holds more `resize` listeners than Node's default ten.
+      limitRendererListeners(renderer)
       keymap = createDefaultOpenTuiKeymap(renderer)
       onCleanup(registerGraphagentKeymap(keymap, renderer, config))
       return (
