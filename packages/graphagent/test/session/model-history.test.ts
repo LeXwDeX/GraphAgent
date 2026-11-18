@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { ModelV2 } from "@graphagent/core/model"
+import { resolveProfile } from "@graphagent/core/model-profile"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import type { ModelMessage } from "ai"
@@ -46,6 +47,17 @@ const model: Provider.Model = {
   release_date: "2026-01-01",
 }
 
+/** `model` with a profile that declares where tool result media goes, as a configuration would. */
+const withMedia = (value: "all" | "image" | "none"): Provider.Model => ({
+  ...model,
+  profile: resolveProfile({
+    providerID,
+    apiID: model.api.id,
+    npm: model.api.npm,
+    config: { profile: { tool_result_media: value } },
+  }),
+})
+
 const sessionID = SessionID.make("ses_model_history")
 const messageID = MessageID.make("msg_model_history")
 const partID = PartID.make("prt_model_history")
@@ -82,6 +94,14 @@ describe("ModelHistory cache primitives", () => {
     expect(bucket(model, { toolOutputMaxChars: 10 })).not.toBe(bucket(model))
     expect(bucket({ ...model, api: { ...model.api, npm: "@ai-sdk/xai" } })).not.toBe(bucket(model))
     expect(bucket({ ...model, api: { ...model.api, id: "other" } })).not.toBe(bucket(model))
+  })
+
+  test("keys the bucket by the toolResultMedia of the profile", () => {
+    expect(bucket(withMedia("all"))).toBe(bucket(withMedia("all")))
+    expect(bucket(withMedia("image"))).not.toBe(bucket(withMedia("all")))
+    expect(bucket(withMedia("none"))).not.toBe(bucket(withMedia("image")))
+    // a model without a profile is keyed by what the rules give it, `all` for @ai-sdk/openai
+    expect(bucket(model)).toBe(bucket(withMedia("all")))
   })
 
   test("changes the content digest with any wire-visible field", () => {
@@ -289,6 +309,21 @@ describe("MessageV2 conversion cache", () => {
     expect(await run(input, { cache: "verify" })).toHaveLength(2)
     // verify converts once incrementally and once through the batched oracle
     expect(conversions() - verifying).toBe(4)
+
+    forgetSession(EngineProcess.runtimes.modelHistory, cacheSession)
+  })
+
+  test("separates cache entries by the toolResultMedia of the profile", async () => {
+    const input = conversation()
+    await MessageV2.toModelMessages(input, withMedia("all"))
+    const before = conversions()
+
+    expect(await MessageV2.toModelMessages(input, withMedia("none"))).toHaveLength(2)
+    expect(conversions() - before).toBe(2)
+
+    const warm = conversions()
+    expect(await MessageV2.toModelMessages(input, withMedia("none"))).toHaveLength(2)
+    expect(conversions() - warm).toBe(0)
 
     forgetSession(EngineProcess.runtimes.modelHistory, cacheSession)
   })

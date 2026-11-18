@@ -5,6 +5,8 @@ import { LLMRequestPrep } from "@/session/llm/request"
 import { TodoReminders } from "@/session/todo-reminders"
 import { RuntimeContext } from "@/session/runtime-context"
 import { ProviderV2 } from "@graphagent/core/provider"
+import { resolveProfile, type ModelProfileOverride } from "@graphagent/core/model-profile"
+import { ProviderProfile } from "@/provider/profile"
 import type { Provider } from "@/provider/provider"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { ModelV2 } from "@graphagent/core/model"
@@ -6377,5 +6379,287 @@ describe("ProviderTransform.message - provider-executed tool history", () => {
     expect(JSON.stringify(ProviderTransform.message(hostedHistory, anthropicModel, {}))).toContain(
       '"providerExecuted":true',
     )
+  })
+})
+
+/** A complete model on a relay platform; the tests vary only the API id, the provider, the npm package and the profile. */
+const relayModel = (
+  apiID: string,
+  options: { providerID?: string; npm?: string; profile?: ModelProfileOverride } = {},
+): Provider.Model => {
+  const providerID = options.providerID ?? "relay"
+  const npm = options.npm ?? "@ai-sdk/openai-compatible"
+  return {
+    id: ModelV2.ID.make(`${providerID}/${apiID}`),
+    providerID: ProviderV2.ID.make(providerID),
+    api: { id: apiID, url: "https://relay.example.com/v1", npm },
+    name: apiID,
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 0, output: 0 },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "",
+    ...(options.profile === undefined
+      ? {}
+      : { profile: resolveProfile({ providerID, apiID, npm, config: { profile: options.profile } }) }),
+  }
+}
+
+describe("ProviderTransform case-insensitive family", () => {
+  // A relay platform keeps the case of the vendor's id, so the family has to be read from the lowercased API id.
+  const toolHistory = (id: string): ModelMessage[] => [
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "read", input: {} }] },
+    {
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "ok" } }],
+    },
+  ]
+
+  test("tool call id", () => {
+    const m = relayModel("Claude-Sonnet-4")
+    expect(ProviderTransform.toolCallID("call.1:x", m)).toBe("call_1_x")
+    expect(ProviderTransform.message(toolHistory("call.1:x"), m, {})).toMatchObject([
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1_x" }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1_x" }] },
+    ])
+  })
+
+  test("cache marker", () => {
+    for (const apiID of ["Claude-Sonnet-4", "claude-sonnet-4"]) {
+      const result = ProviderTransform.message(
+        [
+          { role: "system", content: "You are a helpful assistant" },
+          { role: "user", content: "Hello" },
+        ],
+        relayModel(apiID),
+        {},
+      )
+      expect(result[0].providerOptions?.anthropic?.cacheControl).toEqual({ type: "ephemeral" })
+    }
+  })
+})
+
+describe("ProviderTransform.message - request shaping follows the model profile", () => {
+  const call = (id: string) => ({
+    role: "assistant" as const,
+    content: [{ type: "tool-call" as const, toolCallId: id, toolName: "read", input: {} }],
+  })
+  const result = (id: string) => ({
+    role: "tool" as const,
+    content: [
+      {
+        type: "tool-result" as const,
+        toolCallId: id,
+        toolName: "read",
+        output: { type: "text" as const, value: "ok" },
+      },
+    ],
+  })
+  const ids = (msgs: ModelMessage[]) =>
+    msgs.flatMap((msg) =>
+      Array.isArray(msg.content) ? msg.content.flatMap((part) => ("toolCallId" in part ? [part.toolCallId] : [])) : [],
+    )
+  const roles = (msgs: ModelMessage[]) => msgs.map((msg) => msg.role)
+
+  test("the tool call id charset comes from the profile", () => {
+    const length = relayModel("qwen3-max", { profile: { tool_call_id: { charset: "alnum", length: 12 } } })
+    expect(ProviderTransform.toolCallID("call.1:x", length)).toBe("call1x000000")
+    expect(ids(ProviderTransform.message([call("call.1:x"), result("call.1:x")], length, {}))).toEqual([
+      "call1x000000",
+      "call1x000000",
+    ])
+
+    const dash = relayModel("qwen3-max", { profile: { tool_call_id: { charset: "alnum_dash" } } })
+    expect(ProviderTransform.toolCallID("a.b:c-d_e", dash)).toBe("a_b_c-d_e")
+
+    // alnum without a length only strips; it neither cuts nor pads
+    const strip = relayModel("qwen3-max", { profile: { tool_call_id: { charset: "alnum" } } })
+    expect(ProviderTransform.toolCallID("call.1:xyz_0123456789", strip)).toBe("call1xyz0123456789")
+
+    // a configured `any` switches the Claude rule off
+    const any = relayModel("claude-sonnet-4", { profile: { tool_call_id: { charset: "any" } } })
+    expect(ProviderTransform.toolCallID("call.1:x", any)).toBe("call.1:x")
+    expect(ids(ProviderTransform.message([call("call.1:x"), result("call.1:x")], any, {}))).toEqual([
+      "call.1:x",
+      "call.1:x",
+    ])
+  })
+
+  test("mapToolCallIDs shapes the ids of tool calls and tool results without touching the input", () => {
+    const input: ModelMessage[] = [{ role: "user", content: "go" }, call("a.b:c"), result("a.b:c")]
+    const before = structuredClone(input)
+    const mapped = ProviderTransform.mapToolCallIDs(input, relayModel("Claude-Sonnet-4"))
+    expect(ids(mapped)).toEqual(["a_b_c", "a_b_c"])
+    expect(mapped[0]).toBe(input[0])
+    expect(input).toEqual(before)
+    expect(ids(ProviderTransform.mapToolCallIDs(input, relayModel("codestral-latest")))).toEqual([
+      "abc000000",
+      "abc000000",
+    ])
+  })
+
+  test("the built-in charsets match the replaced algorithms", () => {
+    expect(ProviderTransform.toolCallID("call.1:x", relayModel("Claude-Sonnet-4"))).toBe("call_1_x")
+    expect(ProviderTransform.toolCallID("toolu_01CBhTTz95qkd9LJMdC9sf8t", relayModel("Codestral-Latest"))).toBe(
+      "toolu01CB",
+    )
+    expect(ProviderTransform.toolCallID("a.b", relayModel("Codestral-Latest"))).toBe("ab0000000")
+    expect(ProviderTransform.toolCallID("a.b", relayModel("anything", { providerID: "mistral" }))).toBe("ab0000000")
+    expect(ProviderTransform.toolCallID("call.1:x", relayModel("qwen3-max"))).toBe("call.1:x")
+    // Claude wins over Mistral when an id names both
+    expect(ProviderTransform.toolCallID("call.1:x", relayModel("claude-mistral-x"))).toBe("call_1_x")
+  })
+
+  test("a user message after a tool result is bridged when the profile says so", () => {
+    const history = (): ModelMessage[] => [
+      { role: "user", content: "go" },
+      call("t1"),
+      result("t1"),
+      { role: "user", content: "next" },
+    ]
+    const bridged = ProviderTransform.message(
+      history(),
+      relayModel("qwen3-max", { profile: { user_after_tool_result: "bridge" } }),
+      {},
+    )
+    expect(roles(bridged)).toEqual(["user", "assistant", "tool", "assistant", "user"])
+    expect(bridged[3]).toEqual({ role: "assistant", content: [{ type: "text", text: "Done." }] })
+
+    // the built-in Mistral rule bridges, a configured allow turns it off, and the ids are still shaped
+    expect(roles(ProviderTransform.message(history(), relayModel("mistral-large-latest"), {}))).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "user",
+    ])
+    const allowed = ProviderTransform.message(
+      history(),
+      relayModel("mistral-large-latest", { profile: { user_after_tool_result: "allow" } }),
+      {},
+    )
+    expect(roles(allowed)).toEqual(["user", "assistant", "tool", "user"])
+    expect(ids(allowed)).toEqual(["t10000000", "t10000000"])
+
+    // a tool message that ends the history gets no bridge
+    const trailing = ProviderTransform.message(
+      [{ role: "user", content: "go" }, call("t1"), result("t1")],
+      relayModel("qwen3-max", { profile: { user_after_tool_result: "bridge" } }),
+      {},
+    )
+    expect(roles(trailing)).toEqual(["user", "assistant", "tool"])
+  })
+
+  test("the cache marker comes from the profile", () => {
+    const system = (): ModelMessage[] => [
+      { role: "system", content: "You are a helpful assistant" },
+      { role: "user", content: "Hello" },
+    ]
+    const marked = ProviderTransform.message(
+      system(),
+      relayModel("qwen3-max", { profile: { cache_marker: "explicit" } }),
+      {},
+    )
+    expect(marked[0].providerOptions?.anthropic?.cacheControl).toEqual({ type: "ephemeral" })
+    expect(ProviderTransform.message(system(), relayModel("qwen3-max"), {})[0].providerOptions).toBeUndefined()
+  })
+
+  test("the sampling defaults come from the profile", () => {
+    const configured = relayModel("kimi-k2", { profile: { sampling: { temperature: 0.2, top_k: 10 } } })
+    expect(ProviderTransform.temperature(configured)).toBe(0.2)
+    expect(ProviderTransform.topP(configured)).toBeUndefined()
+    expect(ProviderTransform.topK(configured)).toBe(10)
+    // a configured block replaces the built-in rule as a whole, so a value left out is not sent
+    const emptied = relayModel("gemini-2.5-pro", { profile: { sampling: {} } })
+    expect(ProviderTransform.temperature(emptied)).toBeUndefined()
+    expect(ProviderTransform.topK(emptied)).toBeUndefined()
+  })
+})
+
+describe("ProviderTransform sampling defaults - profile rule", () => {
+  const sampling = (m: Provider.Model) => ({
+    temperature: ProviderTransform.temperature(m),
+    topP: ProviderTransform.topP(m),
+    topK: ProviderTransform.topK(m),
+  })
+
+  test("kimi-k2", () => {
+    const m = relayModel("kimi-k2-0905-preview", { providerID: "moonshotai" })
+    expect(sampling(m)).toEqual({ temperature: 0.6, topP: undefined, topK: undefined })
+    expect(sampling(relayModel("kimi-k2-thinking", { providerID: "moonshotai" }))).toEqual({
+      temperature: 1,
+      topP: undefined,
+      topK: undefined,
+    })
+    expect(ProviderProfile.profileOf(m).sampling).toEqual({ temperature: 0.6 })
+    expect(ProviderProfile.profileOf(relayModel("Kimi-K2-0905-Preview")).sources.sampling).toBe(
+      "builtin:sampling-defaults",
+    )
+  })
+
+  test("kimi-k2.5", () => {
+    for (const id of ["kimi-k2.5", "kimi-k2p5", "kimi-k2-5", "Kimi-K2.5"]) {
+      expect(sampling(relayModel(id, { providerID: "moonshotai" }))).toEqual({
+        temperature: 1,
+        topP: 0.95,
+        topK: undefined,
+      })
+    }
+    expect(ProviderProfile.profileOf(relayModel("kimi-k2.5")).sampling).toEqual({ temperature: 1, topP: 0.95 })
+  })
+
+  test("minimax-m2", () => {
+    expect(sampling(relayModel("MiniMax-M2", { providerID: "minimax" }))).toEqual({
+      temperature: 1,
+      topP: 0.95,
+      topK: 20,
+    })
+    for (const id of ["MiniMax-M2.1", "minimax-m21", "MiniMax-M2.5", "minimax-m25"]) {
+      expect(sampling(relayModel(id, { providerID: "minimax" }))).toEqual({ temperature: 1, topP: 0.95, topK: 40 })
+    }
+    expect(ProviderProfile.profileOf(relayModel("MiniMax-M2")).sampling).toEqual({
+      temperature: 1,
+      topP: 0.95,
+      topK: 20,
+    })
+  })
+
+  test("deepseek-v4-flash", () => {
+    expect(sampling(relayModel("deepseek-v4-flash", { providerID: "deepseek" }))).toEqual({
+      temperature: undefined,
+      topP: 0.95,
+      topK: undefined,
+    })
+    expect(ProviderTransform.topP(relayModel("deepseek/DeepSeek-V4-Flash-0731", { providerID: "openrouter" }))).toBe(
+      0.95,
+    )
+    expect(ProviderProfile.profileOf(relayModel("deepseek-v4-flash", { providerID: "deepseek" })).sampling).toEqual({
+      topP: 0.95,
+    })
+    // no default for the same model behind another provider
+    const other = ProviderProfile.profileOf(relayModel("deepseek/deepseek-v4-flash", { providerID: "openrouter" }))
+    expect(other.sampling).toEqual({})
+    expect(other.sources.sampling).toBeUndefined()
+  })
+
+  test("a model no branch names has no sampling defaults", () => {
+    const profile = ProviderProfile.profileOf(relayModel("gpt-5", { providerID: "openai" }))
+    expect(profile.sampling).toEqual({})
+    expect(profile.sources.sampling).toBeUndefined()
+    expect(sampling(relayModel("claude-sonnet-4", { providerID: "anthropic" }))).toEqual({
+      temperature: undefined,
+      topP: undefined,
+      topK: undefined,
+    })
   })
 })

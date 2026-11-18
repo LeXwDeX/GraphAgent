@@ -17,7 +17,7 @@ import { SessionRole } from "../role"
 import type { Agent } from "../../agent/agent"
 import type { Command } from "@/command"
 import { Provider } from "@/provider/provider"
-import { ProviderTransform } from "@/provider/transform"
+import { ProviderProfile } from "@/provider/profile"
 import { Permission } from "@/permission"
 import { MCP } from "../../mcp"
 import type { LSP } from "@/lsp/lsp"
@@ -1957,7 +1957,7 @@ export function makePrepare(deps: PrepareDeps) {
       messages: modelMsgs,
       state: runtimeState,
       events: runtimeEvents,
-      afterTool: !ProviderTransform.mistralFamily(model),
+      afterTool: ProviderProfile.profileOf(model).userAfterToolResult === "allow",
     })
     if (runtime.ledger.length > 0) runtimeContextBySession.set(sessionID, runtime.ledger)
     else runtimeContextBySession.delete(sessionID)

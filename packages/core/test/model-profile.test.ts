@@ -14,6 +14,7 @@ import {
   type BuiltinRule,
   type ProfileConfig,
   type ProfilePatch,
+  type RuleInput,
 } from "@graphagent/core/model-profile"
 import { BUILTIN_RULES } from "@graphagent/core/model-profile-builtin"
 import type { ModelsDev } from "@graphagent/core/models-dev"
@@ -681,6 +682,340 @@ describe("shipped rule edit-tools-apply-patch", () => {
     const other = resolved("claude-sonnet-4")
     expect(other.editTools).toBe("edit")
     expect(other.sources.editTools).toBeUndefined()
+  })
+})
+
+describe("shipped request shaping rules", () => {
+  // The predicates and algorithms these rules replace, as they stood at 296a1a5d0 with the lookups lowercased (B1).
+  const FAMILIES = ["mistral", "devstral", "codestral", "pixtral", "mixtral"]
+  const isClaude = (apiID: string) => apiID.toLowerCase().includes("claude")
+  const isMistral = (providerID: string, apiID: string) =>
+    providerID === "mistral" || FAMILIES.some((family) => apiID.toLowerCase().includes(family))
+  const isAnthropicCaching = (providerID: string, apiID: string, npm?: string) => {
+    const id = apiID.toLowerCase()
+    return (
+      providerID === "anthropic" ||
+      providerID === "google-vertex-anthropic" ||
+      id.includes("anthropic") ||
+      id.includes("claude") ||
+      npm === "@ai-sdk/anthropic" ||
+      npm === "@ai-sdk/alibaba"
+    )
+  }
+  const GEMINI_SAMPLING = [
+    /gemini-2[.-]5(?:[.-]|$)/,
+    /gemini-3-(?:flash|pro)(?:[.-]|$)/,
+    /gemini-3[.-]1(?:[.-]|$)/,
+    /gemini-3[.-]5-flash(?!-lite)(?:[.-]|$)/,
+  ]
+  const temperature = (providerID: string, apiID: string) => {
+    const id = apiID.toLowerCase()
+    if (id.includes("north-mini-code")) return 1.0
+    if (id.includes("claude")) return undefined
+    if (id.includes("gemini")) return GEMINI_SAMPLING.some((model) => model.test(id)) ? 1.0 : undefined
+    if (id.includes("glm-4.6")) return 1.0
+    if (id.includes("glm-4.7")) return 1.0
+    if (id.includes("minimax-m2")) return 1.0
+    if (id.includes("kimi-k2")) {
+      if (["thinking", "k2.", "k2p", "k2-5"].some((s) => id.includes(s))) return 1.0
+      return 0.6
+    }
+    return undefined
+  }
+  const topP = (providerID: string, apiID: string) => {
+    const id = apiID.toLowerCase()
+    if (id.includes("gemini")) return GEMINI_SAMPLING.some((model) => model.test(id)) ? 0.95 : undefined
+    if (["minimax-m2", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"].some((s) => id.includes(s))) return 0.95
+    if (
+      ["deepseek-v4-flash-0731", "deepseek-v4-flash:0731"].some((name) => id.includes(name)) ||
+      (id.includes("deepseek-v4-flash") && providerID === "deepseek")
+    ) {
+      return 0.95
+    }
+    return undefined
+  }
+  const topK = (providerID: string, apiID: string) => {
+    const id = apiID.toLowerCase()
+    if (id.includes("minimax-m2")) {
+      if (["m2.", "m25", "m21"].some((s) => id.includes(s))) return 40
+      return 20
+    }
+    if (id.includes("gemini")) return GEMINI_SAMPLING.some((model) => model.test(id)) ? 64 : undefined
+    return undefined
+  }
+  const media = (npm: string | undefined, apiID: string, mime: string) => {
+    if (npm === "@ai-sdk/anthropic") return true
+    if (npm === "@ai-sdk/openai") return true
+    if (npm === "@ai-sdk/amazon-bedrock/mantle") return true
+    if (npm === "@ai-sdk/amazon-bedrock") return mime.startsWith("image/")
+    if (npm === "@ai-sdk/xai") return mime.startsWith("image/")
+    if (npm === "@ai-sdk/google-vertex/anthropic") return true
+    if (npm === "@ai-sdk/google") {
+      const id = apiID.toLowerCase()
+      return id.includes("gemini-3") && !id.includes("gemini-2")
+    }
+    return false
+  }
+  /** What the profile says about one attachment: `all` sends everything inline, `image` only `image/*`. */
+  const allows = (mode: ModelProfile["toolResultMedia"], mime: string) =>
+    mode === "all" || (mode === "image" && mime.startsWith("image/"))
+
+  const PROVIDERS = ["relay", "mistral", "anthropic", "google-vertex-anthropic", "deepseek", "openrouter", "google"]
+  const NPMS = [
+    undefined,
+    "@ai-sdk/openai-compatible",
+    "@ai-sdk/anthropic",
+    "@ai-sdk/alibaba",
+    "@ai-sdk/openai",
+    "@ai-sdk/amazon-bedrock",
+    "@ai-sdk/amazon-bedrock/mantle",
+    "@ai-sdk/xai",
+    "@ai-sdk/google",
+    "@ai-sdk/google-vertex/anthropic",
+    "@ai-sdk/gateway",
+  ]
+  const IDS = [
+    "",
+    "m",
+    "gpt-5",
+    "o3",
+    "qwen3-max",
+    "Qwen3.8-27B",
+    "claude-sonnet-4",
+    "Claude-Sonnet-4",
+    "CLAUDE-OPUS-4-6",
+    "anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-opus-4-6-v1",
+    "arn:aws:bedrock:xxx:yyy:application-inference-profile/zzz",
+    "anthropic/claude-sonnet-4",
+    "claude-mistral-x",
+    "mistral-large-latest",
+    "Mistral-Large",
+    "ministral-8b-latest",
+    "devstral-small",
+    "Codestral-Latest",
+    "pixtral-large-latest",
+    "open-mixtral-8x22b",
+    "north-mini-code-1-0-latest",
+    "North-Mini-Code-1-0-latest",
+    "gemini-2.5-pro",
+    "gemini-2-5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-image",
+    "gemini-3.1-pro-preview",
+    "gemini-3-1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3-5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-4-pro",
+    "gemini-future",
+    "Gemini-2.5-Pro",
+    "google/gemini-2.5-flash",
+    "glm-4.5",
+    "glm-4.6",
+    "GLM-4.6",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-5",
+    "minimax-m2",
+    "MiniMax-M2",
+    "minimax-m2.1",
+    "minimax-m21",
+    "MiniMax-M2.5",
+    "minimax-m25",
+    "minimax-m3",
+    "kimi-k2",
+    "kimi-k2-0905-preview",
+    "kimi-k2-thinking",
+    "kimi-k2.5",
+    "kimi-k2p5",
+    "kimi-k2-5",
+    "kimi-k2.6",
+    "Kimi-K2.5",
+    "kimi-k1.5",
+    "moonshotai/kimi-k2.5",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4-flash:0731",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash-0731",
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "deepseek-v4-pro",
+  ]
+  const resolved = (providerID: string, apiID: string, npm?: string) =>
+    resolveProfile({ providerID, apiID, ...(npm === undefined ? {} : { npm }) })
+  const shipped = (name: string) => BUILTIN_RULES.find((item) => item.name === name)
+
+  test("each rule is shipped once, after edit-tools-apply-patch, and cites the code it replaces", () => {
+    const names = BUILTIN_RULES.map((item) => item.name)
+    expect(names).toEqual([
+      "edit-tools-apply-patch",
+      "tool-call-id-claude",
+      "tool-call-id-mistral",
+      "cache-marker-anthropic",
+      "sampling-defaults",
+      "tool-result-media",
+    ])
+    const transform = "296a1a5d0:packages/graphagent/src/provider/transform.ts"
+    expect(shipped("tool-call-id-claude")?.source).toBe(`${transform}:101,238`)
+    expect(shipped("tool-call-id-mistral")?.source).toBe(`${transform}:95,105,269`)
+    expect(shipped("cache-marker-anthropic")?.source).toBe(`${transform}:748-751,754-755`)
+    expect(shipped("sampling-defaults")?.source).toBe(`${transform}:794-845`)
+    expect(shipped("tool-result-media")?.source).toBe("296a1a5d0:packages/graphagent/src/session/message-v2.ts:206-218")
+  })
+
+  test("a rule reads only the API id as a string; provider and npm are compared, never taken apart", () => {
+    for (const name of [
+      "tool-call-id-claude",
+      "tool-call-id-mistral",
+      "cache-marker-anthropic",
+      "sampling-defaults",
+      "tool-result-media",
+    ]) {
+      const rule = shipped(name)
+      expect(rule).toBeDefined()
+      // A fixture may lack the provider and the npm package; a rule must not throw on either.
+      const noProvider: RuleInput = { providerID: "relay", apiID: "X" }
+      Reflect.deleteProperty(noProvider, "providerID")
+      expect(() => rule?.match(noProvider)).not.toThrow()
+      expect(() => rule?.match({ providerID: "relay", apiID: "X" })).not.toThrow()
+      expect(() => rule?.match({ providerID: "relay", apiID: "", npm: "" })).not.toThrow()
+    }
+  })
+
+  test("tool-call-id-claude: alnum_dash for exactly the ids that name claude, ignoring case", () => {
+    for (const id of IDS) {
+      const profile = resolved("relay", id)
+      expect(profile.toolCallId.charset === "alnum_dash").toBe(isClaude(id))
+      if (isClaude(id)) {
+        expect(profile.toolCallId).toEqual({ charset: "alnum_dash" })
+        expect(profile.sources.toolCallId).toBe("builtin:tool-call-id-claude")
+      }
+    }
+    expect(resolved("relay", "Claude-Sonnet-4").toolCallId).toEqual({ charset: "alnum_dash" })
+    expect(resolved("relay", "gpt-5").toolCallId).toEqual({ charset: "any" })
+  })
+
+  test("tool-call-id-mistral: alnum of length 9 and a bridge for exactly the Mistral family", () => {
+    for (const providerID of PROVIDERS) {
+      for (const id of IDS) {
+        const profile = resolved(providerID, id)
+        expect(profile.userAfterToolResult).toBe(isMistral(providerID, id) ? "bridge" : "allow")
+        if (isMistral(providerID, id) && !isClaude(id)) {
+          expect(profile.toolCallId).toEqual({ charset: "alnum", length: 9 })
+          expect(profile.sources.toolCallId).toBe("builtin:tool-call-id-mistral")
+        }
+        if (isMistral(providerID, id)) expect(profile.sources.userAfterToolResult).toBe("builtin:tool-call-id-mistral")
+      }
+    }
+    // The first rule that names toolCallId wins, so a Claude id keeps alnum_dash while the bridge still applies.
+    const both = resolved("relay", "claude-mistral-x")
+    expect(both.toolCallId).toEqual({ charset: "alnum_dash" })
+    expect(both.userAfterToolResult).toBe("bridge")
+    expect(resolved("mistral", "anything").toolCallId).toEqual({ charset: "alnum", length: 9 })
+    expect(resolved("relay", "Codestral-Latest").toolCallId).toEqual({ charset: "alnum", length: 9 })
+  })
+
+  test("cache-marker-anthropic: explicit for the union of the replaced provider, id and npm conditions", () => {
+    for (const providerID of PROVIDERS) {
+      for (const npm of NPMS) {
+        for (const id of IDS) {
+          const profile = resolved(providerID, id, npm)
+          expect(profile.cacheMarker).toBe(isAnthropicCaching(providerID, id, npm) ? "explicit" : "none")
+        }
+      }
+    }
+    // The configuration keys the old code also read stay in the reader, not in the rule.
+    expect(resolved("relay", "qwen3-max").sources.cacheMarker).toBeUndefined()
+    expect(resolved("relay", "Claude-Sonnet-4", "@ai-sdk/openai-compatible").sources.cacheMarker).toBe(
+      "builtin:cache-marker-anthropic",
+    )
+  })
+
+  test("sampling-defaults: the values of the replaced temperature, topP and topK, for every provider and id", () => {
+    for (const providerID of PROVIDERS) {
+      for (const id of IDS) {
+        const profile = resolved(providerID, id)
+        const expected = {
+          temperature: temperature(providerID, id),
+          topP: topP(providerID, id),
+          topK: topK(providerID, id),
+        }
+        expect({ ...profile.sampling }).toEqual(expected)
+        const any = Object.values(expected).some((value) => value !== undefined)
+        // No branch names the model: the rule does not match and leaves the field without a source.
+        expect<string | undefined>(profile.sources.sampling).toBe(any ? "builtin:sampling-defaults" : undefined)
+      }
+    }
+    // Keys with an undefined value are left out, so the profile never carries them.
+    expect(resolved("relay", "kimi-k2").sampling).toEqual({ temperature: 0.6 })
+    expect(Object.keys(resolved("relay", "kimi-k2").sampling)).toEqual(["temperature"])
+    expect(resolved("relay", "gpt-5").sampling).toEqual({})
+  })
+
+  test("sampling-defaults: a configured block replaces the rule as a whole", () => {
+    const config: ProfileConfig = { profile: { sampling: { top_p: 0.5 } } }
+    const profile = resolveProfile({ providerID: "relay", apiID: "kimi-k2.5", config })
+    expect(profile.sampling).toEqual({ topP: 0.5 })
+    expect(profile.sources.sampling).toBe("config")
+    expect(
+      resolveProfile({ providerID: "relay", apiID: "gemini-2.5-pro", config: { profile: { sampling: {} } } }).sampling,
+    ).toEqual({})
+  })
+
+  test("tool-result-media: all, image or none exactly as the replaced npm branches decided", () => {
+    const mimes = ["image/png", "image/jpeg", "application/pdf", "audio/mpeg", "video/mp4"]
+    for (const npm of NPMS) {
+      for (const id of IDS) {
+        const profile = resolved("relay", id, npm)
+        for (const mime of mimes) expect(allows(profile.toolResultMedia, mime)).toBe(media(npm, id, mime))
+        if (profile.toolResultMedia === "none") expect(profile.sources.toolResultMedia).toBeUndefined()
+        else expect(profile.sources.toolResultMedia).toBe("builtin:tool-result-media")
+      }
+    }
+    expect(resolved("relay", "x", "@ai-sdk/anthropic").toolResultMedia).toBe("all")
+    expect(resolved("relay", "x", "@ai-sdk/openai").toolResultMedia).toBe("all")
+    expect(resolved("relay", "x", "@ai-sdk/amazon-bedrock/mantle").toolResultMedia).toBe("all")
+    expect(resolved("relay", "x", "@ai-sdk/google-vertex/anthropic").toolResultMedia).toBe("all")
+    expect(resolved("relay", "x", "@ai-sdk/amazon-bedrock").toolResultMedia).toBe("image")
+    expect(resolved("relay", "x", "@ai-sdk/xai").toolResultMedia).toBe("image")
+    expect(resolved("relay", "x", "@ai-sdk/openai-compatible").toolResultMedia).toBe("none")
+  })
+
+  test("tool-result-media: google gives all only for gemini-3 ids that do not name gemini-2", () => {
+    const google = (apiID: string) => resolved("google", apiID, "@ai-sdk/google").toolResultMedia
+    expect(google("gemini-3-pro-preview")).toBe("all")
+    expect(google("Gemini-3.1-Pro")).toBe("all")
+    expect(google("gemini-2.5-pro")).toBe("none")
+    expect(google("gemini-3-and-gemini-2")).toBe("none")
+    expect(google("gemma-3")).toBe("none")
+    expect(resolved("google", "gemini-3-pro-preview", "@ai-sdk/openai-compatible").toolResultMedia).toBe("none")
+  })
+
+  test("a configured value wins over each of these rules", () => {
+    const profile = resolveProfile({
+      providerID: "mistral",
+      apiID: "Claude-Mistral",
+      npm: "@ai-sdk/anthropic",
+      config: {
+        profile: {
+          tool_call_id: { charset: "any" },
+          user_after_tool_result: "allow",
+          cache_marker: "none",
+          tool_result_media: "none",
+          sampling: { temperature: 0.3 },
+        },
+      },
+    })
+    expect(profile.toolCallId).toEqual({ charset: "any" })
+    expect(profile.userAfterToolResult).toBe("allow")
+    expect(profile.cacheMarker).toBe("none")
+    expect(profile.toolResultMedia).toBe("none")
+    expect(profile.sampling).toEqual({ temperature: 0.3 })
+    for (const key of ["toolCallId", "userAfterToolResult", "cacheMarker", "toolResultMedia", "sampling"]) {
+      expect(profile.sources[key]).toBe("config")
+    }
   })
 })
 
