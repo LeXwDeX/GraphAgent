@@ -203,6 +203,8 @@ export type McpSource = Readonly<{
   /** Claude-style `mcp__server__tool` name used by hook matchers. */
   canonicalName: string
   requiresUserInteraction: boolean
+  /** The key before it was shortened or made unique (#1459); only such a key has one. Its deny and ask rules apply. */
+  baseKey?: string
 }>
 export type McpResourceSource = Readonly<{ kind: "mcp-resource"; op: McpResourceOp; registrationID: string }>
 export type ToolSource = BuiltinSource | DirectShellSource | McpSource | McpResourceSource
@@ -633,6 +635,7 @@ RequestCache.set(
             source: binding.source,
             canonicalName: McpCatalog.canonicalToolName(binding),
             requiresUserInteraction: binding.requiresUserInteraction === true,
+            ...(binding.baseKey === undefined ? {} : { baseKey: binding.baseKey }),
           },
           effects: "unknown",
           description: item.description ?? "",
@@ -658,7 +661,14 @@ RequestCache.set(
         }
       }
 
-      const disabled = Permission.disabledByPolicy([...entries.keys()], nativePermission, configuredPermission)
+      const disabled = Permission.disabledTools(
+        [...entries].map(([id, entry]) => ({
+          id,
+          alias: entry.source.kind === "mcp" ? entry.source.baseKey : undefined,
+        })),
+        nativePermission,
+        configuredPermission,
+      )
       const resolved = [...entries.values()].filter(
         (entry) => input.user?.tools?.[entry.id] !== false && !disabled.has(entry.id),
       )

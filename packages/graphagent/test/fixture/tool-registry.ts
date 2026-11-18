@@ -79,6 +79,7 @@ export function mcpEntries(items: Record<string, AITool>): Extract<ToolEntry, { 
           source: binding?.source ?? "unknown",
           canonicalName: McpCatalog.canonicalToolName({ server, tool }),
           requiresUserInteraction: binding?.requiresUserInteraction === true,
+          ...(binding?.baseKey === undefined ? {} : { baseKey: binding.baseKey }),
         },
         effects: "unknown" as const,
         description: item.description ?? "",

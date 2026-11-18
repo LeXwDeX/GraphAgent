@@ -86,6 +86,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     const source = entriesByID.get(toolName)?.source
     return source?.kind === "mcp" && source.requiresUserInteraction
   }
+  // A rewritten MCP key keeps the deny and ask rules written for the key it had before (#1459).
+  const keyAlias = (toolName: string | undefined) => {
+    const source = toolName === undefined ? undefined : entriesByID.get(toolName)?.source
+    return source?.kind === "mcp" && source.baseKey !== undefined ? { alias: source.baseKey } : {}
+  }
   // The `dag.permission: "ask"` tier hands MCP server tools to the user (#1324). A request
   // cannot tell such a tool from a built-in by its key, so the mark is made here, from the
   // registry entry; permission evaluation trusts `metadata.source` and nothing else.
@@ -196,6 +201,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
             toolInput: args,
             toolName,
             ...(toolName === undefined ? {} : hookIdentity(toolName)),
+            ...keyAlias(toolName),
             // A forced ask is never settled by a hook allow, bypass, acceptEdits, remembered or configured
             // allow; deny rules and dontAsk still apply first.
             ...(toolName !== undefined && needsForcedAsk(toolName) ? { force: true } : {}),
