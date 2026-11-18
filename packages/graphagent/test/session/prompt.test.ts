@@ -7871,6 +7871,56 @@ function requestSystem(input: { messages?: unknown; system?: unknown }) {
   return JSON.stringify([input.system ?? null, ...messages.filter((message) => role(message) === "system")])
 }
 
+it.instance("holds instruction files for a user message, so an edit mid-turn waits for the next one", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const registry = yield* ToolRegistry.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const file = path.join(dir, "AGENTS.md")
+    yield* writeText(file, "# Rules one")
+    const chat = yield* sessions.create({
+      title: "Instruction turns",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    // The turn's own tool call edits the file between its two model requests.
+    const glob = (yield* registry.all()).find((item) => item.id === "glob")
+    if (!glob) throw new Error("glob tool is not registered")
+    const original = glob.execute.bind(glob)
+    glob.execute = (args, ctx) =>
+      original(args, ctx).pipe(Effect.tap(() => Effect.promise(() => Bun.write(file, "# Rules two, now longer"))))
+    yield* Effect.addFinalizer(() => Effect.sync(() => void (glob.execute = original)))
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "run a multi-step turn" }],
+    })
+    yield* llm.tool("glob", { pattern: "**/instruction-turns-missing" })
+    yield* llm.text("done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const [first, second] = (yield* llm.inputs).map(requestSystem)
+    expect(first).toContain("# Rules one")
+    // The edit happened between the requests, yet the prefix is byte-for-byte the same.
+    expect(second).toBe(first)
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "start the next turn" }],
+    })
+    yield* llm.text("done again")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const third = requestSystem((yield* llm.inputs)[2])
+    expect(third).toContain("# Rules two, now longer")
+    expect(third).not.toContain("# Rules one")
+  }),
+)
+
 withMemoryContext.instance("sends MEMORY data in the trailing runtime context, not the system prompt", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

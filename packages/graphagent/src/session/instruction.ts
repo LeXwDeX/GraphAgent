@@ -3,8 +3,8 @@ import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { httpClient } from "@graphagent/core/effect/layer-node-platform"
 import path from "path"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { Effect, Layer, Context, Option, Scope } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
+import { Cause, Effect, Layer, Context, Option, Scope } from "effect"
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
 import { Config } from "@/config/config"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SettingsHook } from "@/hook"
@@ -35,12 +35,48 @@ function extract(messages: SessionV1.WithParts[]) {
   return paths
 }
 
+const REMOTE_TIMEOUT_MS = 5000
+
+/** What a remote instruction URL gave back. Kept for the rest of the session: a URL is asked once, a failure included. */
+type Fetched = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
+
+/** A session's instruction text as of one user message. `remote` outlives it: the answers stay for the session. */
+interface Snapshot {
+  readonly turn: string
+  readonly text: string[]
+  readonly remote: Map<string, Fetched>
+}
+
+function failureReason(error: HttpClientError.HttpClientError | Cause.TimeoutError): string {
+  if (Cause.isTimeoutError(error)) return `timeout after ${REMOTE_TIMEOUT_MS} ms`
+  if (error.reason._tag === "StatusCodeError") return `HTTP ${error.reason.response.status}`
+  return "network error"
+}
+
+/** The block of one remote instruction: its text, or the statement that it could not be loaded. */
+function remoteBlock(url: string, answer: Fetched): string[] {
+  if (!answer.ok)
+    return [
+      Injection.wrap(
+        "instruction-file",
+        `These instructions could not be loaded (${answer.reason}) and are not part of this session.`,
+        { path: url, status: "unavailable" },
+      ),
+    ]
+  return answer.text ? [Injection.wrap("instruction-file", answer.text, { path: url })] : []
+}
+
 export interface Interface {
   readonly clear: (messageID: MessageID) => Effect.Effect<void>
   /** A committed compaction: the next system prompt reloads instruction files and announces them as "compact". */
   readonly markCompacted: (sessionID: string) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
-  readonly system: (input?: { sessionID: string }) => Effect.Effect<string[], FSUtil.Error>
+  /**
+   * The instruction files and remote instructions as system text. With a `sessionID` and `turn` (the latest user
+   * message) the text is fixed for the user message: the files are read again, and a change logged, only when
+   * `turn` differs from the previous request's or after a compaction. A remote URL is asked once per session.
+   */
+  readonly system: (input?: { sessionID: string; turn?: string }) => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
   readonly resolve: (
     messages: SessionV1.WithParts[],
@@ -84,6 +120,8 @@ export const layer: Layer.Layer<
           announced: new Set<string>(),
           compactions: 0,
           compacted: new Set<string>(),
+          /** Per session: the instruction text the current user message runs on, and the remote answers so far. */
+          snapshots: new Map<string, Snapshot>(),
           /** File identity → content, so a second request with an unchanged file skips the read. */
           files: RequestCache.make<{ readonly signature: string; readonly content: string }>(INSTRUCTION_CACHE_BYTES),
           scope,
@@ -99,6 +137,7 @@ export const layer: Layer.Layer<
             const sessionID = data.sessionID
             if (typeof sessionID !== "string") return Effect.void
             s.compacted.delete(sessionID)
+            s.snapshots.delete(sessionID)
             for (const key of s.announced) {
               if (key.startsWith(`${sessionID}:`)) s.announced.delete(key)
             }
@@ -152,14 +191,16 @@ export const layer: Layer.Layer<
       return content
     })
 
+    // One request: the answer is a result either way, and a failure is logged here, where it happens once.
     const fetch = Effect.fnUntraced(function* (url: string) {
-      const res = yield* http.execute(HttpClientRequest.get(url)).pipe(
-        Effect.timeout(5000),
-        Effect.catch(() => Effect.succeed(null)),
+      const answer = yield* http.execute(HttpClientRequest.get(url)).pipe(
+        Effect.timeout(REMOTE_TIMEOUT_MS),
+        Effect.flatMap((res) => res.arrayBuffer),
+        Effect.map((body): Fetched => ({ ok: true, text: new TextDecoder().decode(body) })),
+        Effect.catch((error) => Effect.succeed<Fetched>({ ok: false, reason: failureReason(error) })),
       )
-      if (!res) return ""
-      const body = yield* res.arrayBuffer.pipe(Effect.catch(() => Effect.succeed(new ArrayBuffer(0))))
-      return new TextDecoder().decode(body)
+      if (!answer.ok) yield* Effect.logWarning("instruction url unavailable", { url, reason: answer.reason })
+      return answer
     })
 
     const markCompacted = Effect.fn("Instruction.markCompacted")(function* (sessionID: string) {
@@ -215,23 +256,63 @@ export const layer: Layer.Layer<
       return paths
     })
 
-    const system = Effect.fn("Instruction.system")(function* (input?: { sessionID: string }) {
+    // The text this user message already runs on, if the request is a later one of it: nothing is read, fetched or
+    // announced, so a file edited meanwhile changes nothing until the next user message or a compaction.
+    const snapshotHit = Effect.fnUntraced(function* (input?: { sessionID: string; turn?: string }) {
+      if (input?.turn === undefined) return undefined
+      const s = yield* InstanceState.get(state)
+      const snapshot = s.snapshots.get(input.sessionID)
+      if (snapshot?.turn !== input.turn || s.compacted.has(input.sessionID)) return undefined
+      return snapshot
+    })
+
+    // Keeps what a request was built from. A text that differs from the previous snapshot's is a change the
+    // session lives through: it is logged, once per change. A request that names no user message is kept with
+    // an empty turn, which no later request can match.
+    const remember = Effect.fnUntraced(function* (
+      input: { sessionID: string; turn?: string } | undefined,
+      text: string[],
+      remote: Map<string, Fetched>,
+      paths: string[],
+    ) {
+      if (!input) return
+      const s = yield* InstanceState.get(state)
+      const previous = s.snapshots.get(input.sessionID)
+      if (previous && (previous.text.length !== text.length || previous.text.some((item, i) => item !== text[i])))
+        yield* Effect.logInfo("session instruction files changed", {
+          "session.id": input.sessionID,
+          paths,
+          bytes: Buffer.byteLength(text.join("")),
+        })
+      s.snapshots.set(input.sessionID, { turn: input.turn ?? "", text, remote })
+      s.compacted.delete(input.sessionID)
+    })
+
+    const system = Effect.fn("Instruction.system")(function* (input?: { sessionID: string; turn?: string }) {
+      const hit = yield* snapshotHit(input)
+      if (hit) return Array.from(hit.text)
       const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
       const urls = (config.instructions ?? []).filter(
         (item) => item.startsWith("https://") || item.startsWith("http://"),
       )
+      const s = yield* InstanceState.get(state)
 
       const files = yield* Effect.forEach(Array.from(paths), read, { concurrency: 8 })
-      const remote = yield* Effect.forEach(urls, fetch, { concurrency: 4 })
+      // A URL is asked once per session: only those the session has no answer for yet.
+      const remote = (input && s.snapshots.get(input.sessionID)?.remote) ?? new Map<string, Fetched>()
+      yield* Effect.forEach(
+        Array.from(new Set(urls)).filter((url) => !remote.has(url)),
+        (url) => fetch(url).pipe(Effect.map((answer) => remote.set(url, answer))),
+        { concurrency: 4, discard: true },
+      )
 
       // SettingsHook: InstructionsLoaded — observation only (the official event runs in the background), so it
       // never delays the model request. Once per file/version; after a committed compaction the files actually
       // reloaded here are announced again with load_reason "compact".
       if (callSettings && input?.sessionID) {
         const sessionID = input.sessionID
-        const s = yield* InstanceState.get(state)
         const compact = s.compacted.delete(sessionID)
         const batch = compact ? ++s.compactions : 0
         const loaded = Array.from(paths).flatMap((item, i) => (files[i] ? [{ path: item, content: files[i] }] : []))
@@ -272,14 +353,23 @@ export const layer: Layer.Layer<
           )
       }
 
-      return [
+      const blocks = [
         ...Array.from(paths).flatMap((item, i) =>
-          files[i] ? [Injection.wrap("instruction-file", files[i], { path: item })] : [],
+          files[i] ? [{ path: item, text: Injection.wrap("instruction-file", files[i], { path: item }) }] : [],
         ),
-        ...urls.flatMap((item, i) =>
-          remote[i] ? [Injection.wrap("instruction-file", remote[i], { path: item })] : [],
-        ),
+        ...urls.flatMap((item) => {
+          const answer = remote.get(item)
+          return (answer ? remoteBlock(item, answer) : []).map((text) => ({ path: item, text }))
+        }),
       ]
+      const text = blocks.map((block) => block.text)
+      yield* remember(
+        input,
+        text,
+        remote,
+        blocks.map((block) => block.path),
+      )
+      return text
     })
 
     const find = Effect.fn("Instruction.find")(function* (dir: string) {
@@ -307,9 +397,11 @@ export const layer: Layer.Layer<
 
       const target = path.resolve(filepath)
       let current = path.dirname(target)
+      // A sibling directory that merely starts with the root's name is not inside it; `/` already ends in a separator.
+      const inside = root.endsWith(path.sep) ? root : root + path.sep
 
       // Walk upward from the file being read and attach nearby instruction files once per message.
-      while (current.startsWith(root) && current !== root) {
+      while (current !== root && current.startsWith(inside)) {
         const found = yield* find(current)
         if (!found || found === target || sys.has(found) || already.has(found)) {
           current = path.dirname(current)

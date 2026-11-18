@@ -95,10 +95,16 @@ cliIt.live(
           }
         }
       }
-      const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
-        .trim()
-        .split("\n")
-        .map((line) => decodeRecord(JSON.parse(line)))
+      // InstructionsLoaded is background observation: a hook process may still be writing its row when the last
+      // turn returns, so wait for all four instead of reading once.
+      const rows = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const lines = (await fs.readFile(audit, "utf8").catch(() => "")).trim().split("\n").filter(Boolean)
+          return lines.length >= 4 ? lines.map((line) => decodeRecord(JSON.parse(line))) : undefined
+        }),
+        "InstructionsLoaded rows",
+        "10 seconds",
+      )
       expect(
         rows.map((row) => ({ session: row.session, reason: row.reason, value: row.value, removed: row.removed })),
       ).toEqual(
