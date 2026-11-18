@@ -49,7 +49,7 @@ packages/tui/src/
                         #   background.ts（后台 Task 的状态与耗时的纯函数：状态取值 结果 > job > 摘要，#1058）
                         #   background-card.ts（后台结果卡的纯函数：只按 part 的 metadata 认结果，取正文、首行与标题，#1058）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
-  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4 已落地）
+  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts、mode.ts（DAG 模式的预算档位与用量）、fold.ts（dagFold：展开槽的可见行，#1158）（F4 已落地）
   pr/                   # state.ts：prLineState、短标记、toast 与警示清除的纯函数；reminder.ts：提醒倒计时的纯函数（F6）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
