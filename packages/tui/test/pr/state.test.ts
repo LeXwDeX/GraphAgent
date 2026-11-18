@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { PrWatchEntry } from "@graphagent/sdk"
+import { createMemo, createRoot } from "solid-js"
 import { setLanguage } from "../../src/i18n"
 import {
   PR_HANDLED_VISIBLE_MS,
@@ -11,7 +12,9 @@ import {
   PR_UNRESPONSIVE_MS,
   prAlertDismissed,
   prCompact,
+  prLineFacts,
   prLineState,
+  prLineWords,
   prMark,
   prTailMark,
   prToastFor,
@@ -544,6 +547,212 @@ describe("English", () => {
     expect(text(delivered(), idle([failed(T0 + SECOND)]), T0 + 2 * SECOND)).toBe("✓ passed · agent turn failed")
     expect(text(delivered(), idle(), T0)).toBe("✓ passed · agent notified")
     expect(text(delivered({ outcome: "deadline" }), idle(), T0)).toBe("timed out · agent notified")
+  })
+})
+
+// The line is decided once and worded when it is shown (#1409): what a caller keeps is the facts, and a kept line
+// follows a language switch because its words are made again, never because they were kept.
+describe("facts and words", () => {
+  interface Shape {
+    readonly kind: PrLineKind
+    readonly entry: PrWatchEntry
+    readonly session: PrSession
+    readonly now: number
+    readonly zh: string
+    readonly en: string
+  }
+
+  /** One line of every kind, how it is judged and what it says in each language. */
+  const SHAPES: readonly Shape[] = [
+    {
+      kind: "watching",
+      entry: watching({ checks: { total: 6, pending: 2, failed: 1, passed: 3 } }),
+      session: idle(),
+      now: T0,
+      zh: "CI 3/6",
+      en: "CI 3/6",
+    },
+    {
+      kind: "awaiting",
+      entry: owed(),
+      session: idle(),
+      now: T0,
+      zh: "✓ 通过 · 等待 agent 接收",
+      en: "✓ passed · waiting for the agent",
+    },
+    {
+      kind: "notified",
+      entry: delivered(),
+      session: idle(),
+      now: T0 + SECOND,
+      zh: "✓ 通过 · 已通知 agent",
+      en: "✓ passed · agent notified",
+    },
+    {
+      kind: "working",
+      entry: delivered(),
+      session: busy(),
+      now: T0 + SECOND,
+      zh: "✓ 通过 · agent 处理中",
+      en: "✓ passed · agent working",
+    },
+    {
+      kind: "handled",
+      entry: delivered(),
+      session: idle([answer(T0 + SECOND)]),
+      now: T0 + 2 * SECOND,
+      zh: "✓ 通过 · agent 已处理",
+      en: "✓ passed · agent handled it",
+    },
+    {
+      kind: "noReply",
+      entry: delivered({}, T0, { noReply: true }),
+      session: idle(),
+      now: T0,
+      zh: "✓ 通过 · 已通知 · 会话已中止，未自动继续",
+      en: "✓ passed · notified · session stopped, not resumed",
+    },
+    {
+      kind: "turnError",
+      entry: delivered(),
+      session: idle([failed(T0 + SECOND)]),
+      now: T0 + 2 * SECOND,
+      zh: "✓ 通过 · agent 回合出错",
+      en: "✓ passed · agent turn failed",
+    },
+    {
+      kind: "unresponsive",
+      entry: delivered(),
+      session: idle(),
+      now: T0 + 3 * MINUTE,
+      zh: "✓ 通过 · agent 未响应",
+      en: "✓ passed · agent not responding",
+    },
+    {
+      kind: "settled",
+      entry: delivered({ delivery: undefined }),
+      session: idle(),
+      now: T0,
+      zh: "✓ 通过",
+      en: "✓ passed",
+    },
+    { kind: "removed", entry: entry({ phase: "cancelled" }), session: idle(), now: T0, zh: "", en: "" },
+  ]
+
+  const LANGUAGES = ["zh-CN", "en"] as const
+
+  test("the facts say no word, and are the same in every language", () => {
+    for (const shape of SHAPES) {
+      const made = LANGUAGES.map((language) => {
+        setLanguage(language)
+        return prLineFacts(shape.entry, shape.session, shape.now)
+      })
+      expect(made[0].kind, shape.kind).toBe(shape.kind)
+      expect(made[0], shape.kind).toEqual(made[1])
+      for (const word of ["text", "prefix", "status"]) expect(Object.keys(made[0]), shape.kind).not.toContain(word)
+    }
+  })
+
+  test("judging a line reads no language: a computation over the facts does not re-run on a switch, one over the words does", () => {
+    let judged = 0
+    let worded = 0
+    const dispose = createRoot((off) => {
+      createMemo(() => {
+        judged++
+        return SHAPES.map((shape) => prLineFacts(shape.entry, shape.session, shape.now))
+      })
+      createMemo(() => {
+        worded++
+        return SHAPES.map((shape) =>
+          prLineWords(prLineFacts(shape.entry, shape.session, shape.now), shape.entry.checks),
+        )
+      })
+      return off
+    })
+    try {
+      expect([judged, worded]).toEqual([1, 1])
+      setLanguage("en")
+      expect([judged, worded]).toEqual([1, 2])
+    } finally {
+      dispose()
+    }
+  })
+
+  test("a line is its facts and their words", () => {
+    for (const language of LANGUAGES) {
+      setLanguage(language)
+      for (const shape of SHAPES) {
+        const facts = prLineFacts(shape.entry, shape.session, shape.now)
+        expect(prLineState(shape.entry, shape.session, shape.now), `${shape.kind} in ${language}`).toEqual({
+          ...facts,
+          ...prLineWords(facts, shape.entry.checks),
+        })
+      }
+    }
+  })
+
+  test("the words follow the language of the call, not the one the facts were made in", () => {
+    for (const [made, drawn] of [
+      ["zh-CN", "en"],
+      ["en", "zh-CN"],
+    ] as const) {
+      for (const shape of SHAPES) {
+        setLanguage(made)
+        const facts = prLineFacts(shape.entry, shape.session, shape.now)
+        setLanguage(drawn)
+        expect(prLineWords(facts, shape.entry.checks).text, `${shape.kind}: made in ${made}`).toBe(
+          shape[drawn === "en" ? "en" : "zh"],
+        )
+      }
+    }
+  })
+
+  test("the words and tokens of a line only depend on its kind, its outcome and the CI counts", () => {
+    for (const shape of SHAPES) {
+      const facts = prLineFacts(shape.entry, shape.session, shape.now)
+      // Whatever else the facts carry (the clock boundary, the flags), the words are the same without it.
+      const bare = { kind: facts.kind, ...(facts.outcome !== undefined ? { outcome: facts.outcome } : {}) }
+      expect(prLineWords(bare, shape.entry.checks), shape.kind).toEqual(prLineWords(facts, shape.entry.checks))
+    }
+  })
+
+  test("a watching line counts the checks it is given and waits for CI otherwise", () => {
+    expect(prLineWords({ kind: "watching" }, { passed: 3, total: 6 })).toEqual({
+      text: "CI 3/6",
+      status: { text: "CI 3/6", token: "textMuted" },
+    })
+    for (const checks of [undefined, { passed: 0, total: 0 }]) {
+      expect(prLineWords({ kind: "watching" }, checks).text).toBe("等待 CI")
+    }
+    setLanguage("en")
+    expect(prLineWords({ kind: "watching" }).text).toBe("waiting for CI")
+  })
+
+  test("a sticky kind is all the words a held warning needs: its kind and its outcome", () => {
+    expect(prLineWords({ kind: "unresponsive", outcome: "failure" })).toEqual({
+      text: "✗ 失败 · agent 未响应",
+      prefix: { text: "✗ 失败", token: "error" },
+      status: { text: "agent 未响应", token: "warning" },
+    })
+    setLanguage("en")
+    expect(prLineWords({ kind: "turnError", outcome: "merged" })).toEqual({
+      text: "merged · agent turn failed",
+      prefix: { text: "merged", token: "textMuted" },
+      status: { text: "agent turn failed", token: "warning" },
+    })
+    expect(prLineWords({ kind: "noReply" }).text).toBe("notified · session stopped, not resumed")
+  })
+
+  test("a toast is worded when it is made, whatever language the facts were made in", () => {
+    setLanguage("zh-CN")
+    const before = prLineFacts(delivered(), idle(), T0 + SECOND)
+    const next = prLineFacts(delivered(), idle(), T0 + 3 * MINUTE)
+    setLanguage("en")
+    expect(prToastFor(before, next, { watchID: "w", number: 7 })).toEqual({
+      key: "pr:w:unresponsive",
+      text: "PR #7 agent not responding",
+      level: "warning",
+    })
   })
 })
 

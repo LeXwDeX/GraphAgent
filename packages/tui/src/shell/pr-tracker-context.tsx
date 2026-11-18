@@ -3,7 +3,7 @@
 
 import type { PrWatchEntry } from "@graphagent/sdk"
 import { createContext, useContext } from "solid-js"
-import type { PrLineState } from "../pr/state"
+import type { PrLineFacts } from "../pr/state"
 
 /** One tracked PR the status band shows for a root session (#1036 F6). */
 export interface PrBandItem {
@@ -12,8 +12,12 @@ export interface PrBandItem {
   readonly url: string
   readonly number: number
   readonly entry: Pick<PrWatchEntry, "number" | "checks">
-  /** Never hidden: an item whose state is hidden is not listed. */
-  readonly state: PrLineState
+  /**
+   * What the row is, in no language: the band words it when it draws (`prLineWords` with `entry.checks`), so a row
+   * the tracker keeps, a held warning included, follows the interface language. Never hidden: an item whose state is
+   * hidden is not listed.
+   */
+  readonly state: PrLineFacts
 }
 
 /** The nearest reminder of a root session, as the status band draws it. */

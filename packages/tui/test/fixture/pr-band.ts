@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { PrWatchEntry } from "@graphagent/sdk"
-import { prLineState, type PrAssistant, type PrSession } from "../../src/pr/state"
+import { prLineFacts, type PrAssistant, type PrSession } from "../../src/pr/state"
 import type { PrBandItem } from "../../src/shell/pr-tracker-context"
 
-/** Tracked PRs as the status band is handed them: a watch entry and the state `prLineState` makes of it at `T0`. */
+/** Tracked PRs as the status band is handed them: a watch entry and the facts `prLineFacts` makes of it at `T0`. */
 
 export const T0 = 1_700_000_000_000
 export const MINUTE = 60_000
@@ -41,7 +41,7 @@ export function bandItem(
     url: base.url,
     number: base.number,
     entry: base,
-    state: prLineState(base, { ...session, assistants }, T0),
+    state: prLineFacts(base, { ...session, assistants }, T0),
   }
 }
 

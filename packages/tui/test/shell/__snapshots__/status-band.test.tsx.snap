@@ -133,3 +133,7 @@ exports[`the background runs at 80 and 120 columns draws the mark after the PR m
 exports[`the background runs at 80 and 120 columns draws the mark on the goal row in en at 120x40 1`] = `"  ◎ Goal  ship the upgrade                                                        turn 6/30 · Active  /goal  ◇ bg 2·q1"`;
 
 exports[`the background runs at 80 and 120 columns draws the row of the runs alone in en at 120x40 1`] = `"  ◇ bg 2 · review 未提交改动 · explore 扫描依赖                                                                /agents"`;
+
+exports[`a held PR warning follows the language the band words it again after each switch, at 80 columns, with no toast and no request 1`] = `"  PR #1035  ✓ 通过 · agent 未响应"`;
+
+exports[`a held PR warning follows the language the band words it again after each switch, at 80 columns, with no toast and no request 2`] = `"  PR #1035  ✓ passed · agent not responding"`;
