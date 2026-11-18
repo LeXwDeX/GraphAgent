@@ -48,7 +48,7 @@ import { SettingsHook } from "@/hook"
 import type { HookPayload } from "@/hook"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookTranscript } from "@/hook/transcript"
-import { hookToolStop } from "@/hook/trigger-result"
+import { hookBlock, hookToolStop } from "@/hook/trigger-result"
 import type { Question } from "@/question"
 import { InstanceState } from "@/effect/instance-state"
 import { MessageID, PartID, SessionID } from "../schema"
@@ -1943,11 +1943,11 @@ export function makePrepare(deps: PrepareDeps) {
       purpose: "conversation",
     }
     if (agentMessages && agentSnapshot) yield* associateAgentSnapshot({ agentMessages, identity, agentSnapshot, msgs })
-    runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)))
+    runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)).map((text) => hookBlock([text])))
     // Async hooks contribute at the next model boundary without manufacturing a user turn.
     if (settingsHook?.drainAsync) {
       const queued = yield* settingsHook.drainAsync(sessionID)
-      runtimeEvents.push(...queued.additionalContexts)
+      runtimeEvents.push(...queued.additionalContexts.map((text) => hookBlock([text])))
     }
     // Runtime context goes into the history, before any assistant prefill, so the system prefix stays
     // constant and each request extends the previous one.

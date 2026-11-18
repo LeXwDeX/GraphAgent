@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { SettingsHook, HOOK_REWAKE_SENTINEL } from "@/hook"
+import { SettingsHook, HOOK_REWAKE_LEGACY_SENTINEL, HOOK_REWAKE_SENTINEL, isHookRewake } from "@/hook"
 import { HookRewake } from "@/hook/rewake"
 import { HookRewakeLive } from "@/hook/rewake-live"
 import { SessionHooks } from "@/hook/session-hooks"
@@ -175,8 +175,11 @@ describe("hook-async-rewake", () => {
         )
         expect(rewakeCalls[0].sessionID).toBe("sess-4-3")
         expect(rewakeCalls[0].text.startsWith(HOOK_REWAKE_SENTINEL)).toBe(true)
+        // The prompt is one block with source="hook"; the hook's own words sit inside it.
+        expect(rewakeCalls[0].text).toStartWith('<system-reminder source="hook">\nAsync hook completed (command: ')
         expect(rewakeCalls[0].text).toContain("rewake-payload-4-3")
-        expect(rewakeCalls[0].text).toContain("</system-reminder>")
+        expect(rewakeCalls[0].text).toEndWith("\n</system-reminder>")
+        expect(isHookRewake(rewakeCalls[0].text)).toBe(true)
       }),
     {
       init: writeSettingsTo({
@@ -464,10 +467,32 @@ describe("hook-async-rewake", () => {
   it.instance("HOOK_REWAKE_SENTINEL is a stable prefix of rewake prompts", () =>
     Effect.gen(function* () {
       expect(typeof HOOK_REWAKE_SENTINEL).toBe("string")
-      expect(HOOK_REWAKE_SENTINEL.length).toBeGreaterThan(0)
-      expect(HOOK_REWAKE_SENTINEL.startsWith("<system-reminder>")).toBe(true)
+      expect(HOOK_REWAKE_SENTINEL).toBe('<system-reminder source="hook">\nAsync hook completed')
+      expect(HOOK_REWAKE_LEGACY_SENTINEL).toBe("<system-reminder>\nAsync hook completed")
     }),
   )
+
+  // Sessions persisted before the source attribute hold the old prefix; both must still keep UserPromptSubmit
+  // hooks from running on a rewake.
+  test("isHookRewake recognizes the current and the legacy prefix, and nothing else", () => {
+    expect(isHookRewake('<system-reminder source="hook">\nAsync hook completed (command: x, event: Stop):\nout')).toBe(
+      true,
+    )
+    expect(
+      isHookRewake("<system-reminder>\nAsync hook completed (command: x, event: Stop):\nout\n</system-reminder>"),
+    ).toBe(true)
+    expect(isHookRewake(`${HOOK_REWAKE_SENTINEL} attached content`)).toBe(true)
+    expect(isHookRewake(`${HOOK_REWAKE_LEGACY_SENTINEL} attached content`)).toBe(true)
+    for (const text of [
+      "",
+      "Async hook completed",
+      '<system-reminder source="runtime">\nAsync hook completed',
+      '<system-reminder source="hook">\nSomething else',
+      ` ${HOOK_REWAKE_SENTINEL}`,
+      "please run <system-reminder>\nAsync hook completed",
+    ])
+      expect(isHookRewake(text)).toBe(false)
+  })
 
   // ── 4.7: once async session entry retires after success ──────
   const marker47 = tmp("once-4-7.txt")

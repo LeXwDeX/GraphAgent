@@ -13,7 +13,9 @@ import path from "path"
 import { createHash } from "crypto"
 import { writeFileSync } from "fs"
 import { Effect } from "effect"
+import { Injection } from "@graphagent/core/system-context/injection"
 import * as Log from "@/util/log"
+import { headChars } from "@/util/text"
 import { SessionID } from "@/session/schema"
 import { descriptorFor } from "../config/chain"
 import { HookTranscript } from "../transcript"
@@ -30,7 +32,14 @@ const log = Log.create({ service: "hook.settings" })
 // Sentinel prefix for rewake prompts. UserPromptSubmit hook processing skips
 // prompts whose text starts with this prefix, preventing hook → rewake → hook
 // loops. The prefix must match the opening of buildRewakePrompt exactly.
-export const HOOK_REWAKE_SENTINEL = "<system-reminder>\nAsync hook completed"
+export const HOOK_REWAKE_SENTINEL = `${Injection.open("hook")}\nAsync hook completed`
+/** The prefix before the source attribute existed; sessions that persisted a rewake prompt then still hold it. */
+export const HOOK_REWAKE_LEGACY_SENTINEL = "<system-reminder>\nAsync hook completed"
+
+/** Whether the text is a rewake prompt, in the current format or in the one older sessions persisted. */
+export function isHookRewake(text: string): boolean {
+  return text.startsWith(HOOK_REWAKE_SENTINEL) || text.startsWith(HOOK_REWAKE_LEGACY_SENTINEL)
+}
 
 const CONTEXT_LIMIT = 10_000
 const CONTEXT_PREVIEW_LIMIT = 2_000
@@ -39,28 +48,29 @@ const CONTEXT_PREVIEW_LIMIT = 2_000
  * tags so hook output cannot close the host envelope. Over-limit text is kept
  * whole in `spillDir` when available; what reaches the model is its path plus a
  * 2,000-character preview. Without a writable directory the value is truncated
- * in place so the cap still holds.
+ * in place so the cap still holds. A cut never splits a surrogate pair.
  */
 export function sanitizeHookContext(text: string, spillDir?: string): string {
-  const escaped = text
-    .replaceAll("<system-reminder>", "&lt;system-reminder>")
-    .replaceAll("</system-reminder>", "&lt;/system-reminder>")
+  const escaped = Injection.escape(text)
   if (escaped.length <= CONTEXT_LIMIT) return escaped
   if (spillDir) {
     const file = path.join(spillDir, `context-${createHash("sha256").update(text).digest("hex").slice(0, 16)}.txt`)
     try {
       writeFileSync(file, text, { mode: 0o600 })
-      return `Full context saved to ${file}\n\n${escaped.slice(0, CONTEXT_PREVIEW_LIMIT)}`
+      return `Full context saved to ${file}\n\n${headChars(escaped, CONTEXT_PREVIEW_LIMIT)}`
     } catch {
       // An unwritable scratchpad must not fail the hook; fall back to truncation.
     }
   }
-  return `${escaped.slice(0, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
+  return `${headChars(escaped, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
 }
 
 function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string, spillDir?: string): string {
   const cmd = descriptorFor(entry)
-  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content, spillDir)}\n</system-reminder>`
+  return Injection.wrap(
+    "hook",
+    `Async hook completed (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content, spillDir)}`,
+  )
 }
 
 // `TriggerResult` and `landSystemMessages` live in `./trigger-result` (a

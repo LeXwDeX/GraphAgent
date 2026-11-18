@@ -163,8 +163,8 @@ export interface HookCommand {
   /**
    * Implies background execution. When the hook completes with rewake-worthy output
    * (exit code 2 stderr, `systemMessage`, `decision:"block"` reason, or
-   * `additionalContext`), a synthetic steer prompt wrapping the output in a
-   * `<system-reminder>` is admitted to the originating session, re-waking the agent.
+   * `additionalContext`), a synthetic steer prompt wrapping the output in a block with
+   * `source="hook"` is admitted to the originating session, re-waking the agent.
    * Rewake is suppressed for `SessionEnd` and when no `sessionID` is available.
    */
   asyncRewake?: boolean

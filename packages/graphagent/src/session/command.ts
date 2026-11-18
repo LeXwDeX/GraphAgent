@@ -17,6 +17,7 @@ import { DagModeReader, type Snapshot as DagModeSnapshot } from "@/dag/mode-read
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SettingsHook } from "@/hook"
+import { hookBlock } from "@/hook/trigger-result"
 import { Memory } from "@/memory/memory"
 import { shellVerdict } from "@/project/trust/command-shell"
 import { ProjectTrust } from "@/project/trust/service"
@@ -618,7 +619,7 @@ export function makeCommand(deps: CommandDeps) {
                   messageID: responsePart.messageID,
                   sessionID: input.sessionID,
                   type: "text",
-                  text: ctx,
+                  text: hookBlock([ctx]),
                   synthetic: true,
                 } satisfies SessionV1.TextPart)
               }
@@ -845,7 +846,7 @@ export function makeCommand(deps: CommandDeps) {
     if (expansion) {
       yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
       for (const text of expansion.additionalContexts) {
-        parts.push({ type: "text", text, synthetic: true } as (typeof parts)[number])
+        parts.push({ type: "text", text: hookBlock([text]), synthetic: true } as (typeof parts)[number])
       }
     }
     const userAgent = isSubtask ? (input.agent ?? (yield* agents.defaultInfo()).name) : agent.name
