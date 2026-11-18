@@ -10,7 +10,9 @@
  *   (`<config dir>/workflows/prompts/`)
  * - `inline` → used directly as the template source (no filesystem round-trip)
  *
- * Both paths go through `{{var}}` interpolation and `sanitize()`.
+ * Both paths go through `{{var}}` interpolation. Static input (`ref.input`) goes in as written; a dynamic value
+ * (an upstream node's output) goes in as an `<upstream-output>` block (`envelope.ts`) whose content is not
+ * rewritten, only escaped where it could pose as part of the envelope.
  *
  * The template library is NOT loaded at startup. Files are read lazily at
  * resolve time — if no node references a template, zero files are read.
@@ -20,7 +22,7 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { DagPaths } from "../paths"
-import { sanitizeInput } from "./sanitize"
+import { upstreamBlock } from "./envelope"
 
 export interface TemplateRef {
   id?: string
@@ -66,16 +68,22 @@ export function renderTemplate(
   dynamicInput: Record<string, unknown> = {},
 ) {
   return Effect.gen(function* () {
-    const input = sanitizeInput({ ...dynamicInput, ...ref.input })
+    // A dynamic value that is null or undefined stays what it is: its placeholder is unresolved. Every other one
+    // is delivered as an upstream block; a static key of the same name wins and is delivered as written.
+    const wrapped = Object.fromEntries(
+      Object.entries(dynamicInput).map(([key, value]) => [
+        key,
+        value === null || value === undefined ? value : upstreamBlock(key, value),
+      ]),
+    )
+    const input = { ...wrapped, ...ref.input }
     const raw = yield* readTemplateSource(ref, projectDir)
-    const interpolatedDynamicKeys = placeholderKeys(raw).filter((key) =>
-      Object.hasOwn(dynamicInput, key)
-      && !Object.hasOwn(ref.input ?? {}, key)
-      && input[key] !== null
-      && input[key] !== undefined
-      // Context can omit a value only when interpolation delivered it intact.
-      // In particular, review evidence may be rewritten by this sanitizer.
-      && (input[key] === dynamicInput[key] || JSON.stringify(input[key]) === JSON.stringify(dynamicInput[key])),
+    const interpolatedDynamicKeys = placeholderKeys(raw).filter(
+      (key) =>
+        Object.hasOwn(dynamicInput, key) &&
+        !Object.hasOwn(ref.input ?? {}, key) &&
+        dynamicInput[key] !== null &&
+        dynamicInput[key] !== undefined,
     )
     return { ...interpolate(raw, input), interpolatedDynamicKeys }
   })

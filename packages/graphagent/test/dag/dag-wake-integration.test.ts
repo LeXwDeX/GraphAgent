@@ -32,6 +32,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
 import { DagLoop, isPausedReminderDue } from "@/dag/runtime/loop"
 import { DagPaths } from "@/dag/paths"
+import { upstreamBlock } from "@/dag/templates/envelope"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -925,7 +926,9 @@ describe("DagLoop atomic wake integration", () => {
 
           const summary = yield* takeWithin(childPrompts, "summary node did not start")
           expect(summary.title).toBe("summary")
-          expect(promptText(summary.input)).toContain("汇总结果：A 和 B")
+          expect(promptText(summary.input)).toContain(
+            `汇总结果：${upstreamBlock("node-a", "A")} 和 ${upstreamBlock("node-b", "B")}`,
+          )
           expect(promptText(summary.input)).not.toContain("{{node-a}}")
           expect(promptText(summary.input)).not.toContain("{{node-b}}")
           yield* Deferred.succeed(summary.release, "A and B")
