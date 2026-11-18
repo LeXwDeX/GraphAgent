@@ -9866,9 +9866,49 @@
             },
             "required": ["input", "output", "reasoning", "cache"],
             "additionalProperties": false
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/StepFinishMetrics"
           }
         },
         "required": ["id", "sessionID", "messageID", "type", "reason", "cost", "tokens"],
+        "additionalProperties": false
+      },
+      "StepFinishMetrics": {
+        "type": "object",
+        "properties": {
+          "prepareMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "requestMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "ttftMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "toolCalls": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "toolErrors": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "retries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": ["prepareMs", "requestMs", "ttftMs", "toolCalls", "toolErrors", "retries"],
         "additionalProperties": false
       },
       "StepStartPart": {

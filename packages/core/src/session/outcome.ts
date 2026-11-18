@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SessionV1 } from "../v1/session"
-import type { ToolOutcomeTable } from "./outcome.sql"
+import type { SessionStepTable, ToolOutcomeTable } from "./outcome.sql"
 
 /**
  * #1473: the harness's own account of a tool call, kept in `ToolPart.state.metadata`.
@@ -14,6 +14,7 @@ import type { ToolOutcomeTable } from "./outcome.sql"
  *   writes nothing: its outcome is derived by `toolOutcomeRow`.
  *
  * The `tool_outcome` table is a projection of both, written by the session projector.
+ * The `session_step` table projects the `metrics` of `step-finish` parts the same way.
  */
 export const TOOL_OUTCOME_KINDS = [
   "ok",
@@ -26,6 +27,7 @@ export const TOOL_OUTCOME_KINDS = [
 export type ToolOutcomeKind = (typeof TOOL_OUTCOME_KINDS)[number]
 
 export type ToolOutcomeRow = typeof ToolOutcomeTable.$inferInsert
+export type SessionStepRow = typeof SessionStepTable.$inferInsert
 
 // The part as the `PartUpdated` event carries it; a mutable `SessionV1.Part` is assignable to it.
 type EventPart = (typeof SessionV1.Event.PartUpdated.Type)["data"]["part"]
@@ -107,5 +109,28 @@ export function toolOutcomeRow(
     outcome: invalid ? "validation_error" : outcomeOf(state),
     corrections: correctionsOf(state.metadata),
     truncated: field(state.metadata, "truncated") === true,
+  }
+}
+
+/**
+ * The `session_step` row of a part, or `undefined` unless it is a `step-finish`
+ * part that carries `metrics` (one finished before the metrics existed has none).
+ */
+export function sessionStepRow(
+  part: EventPart,
+  model: { providerID: string; modelID: string },
+): SessionStepRow | undefined {
+  if (part.type !== "step-finish" || !part.metrics) return undefined
+  return {
+    part_id: part.id,
+    session_id: part.sessionID,
+    provider_id: model.providerID,
+    model_id: model.modelID,
+    prepare_ms: part.metrics.prepareMs,
+    request_ms: part.metrics.requestMs,
+    ttft_ms: part.metrics.ttftMs,
+    tool_calls: part.metrics.toolCalls,
+    tool_errors: part.metrics.toolErrors,
+    retries: part.metrics.retries,
   }
 }

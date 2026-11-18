@@ -13,6 +13,7 @@ import { HistoryView } from "./history/view"
 import { MessageV2 } from "./message-v2"
 import { PartID } from "./schema"
 import type { Session } from "./session"
+import type { StepStats } from "./step-metrics"
 import { classifyToolError } from "./tool-outcome"
 
 export type ToolCall = {
@@ -36,6 +37,8 @@ export interface ToolCallScope {
   toolcalls: Record<string, ToolCall>
   blocked: boolean
   shouldBreak: boolean
+  /** The step in progress; the processor replaces it as a whole when the step finishes. */
+  stepStats: StepStats
 }
 
 export interface ToolCallDeps {
@@ -183,6 +186,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
           },
         })
         cacheWrittenPart(call, part, match.call.version + 1)
+        ctx.stepStats.toolCalls += 1
         yield* settleToolCall(toolCallID)
       }),
     )
@@ -208,6 +212,8 @@ export function makeToolCalls(deps: ToolCallDeps) {
             },
           })
           cacheWrittenPart(call, part, match.call.version + 1)
+          ctx.stepStats.toolCalls += 1
+          ctx.stepStats.toolErrors += 1
           if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
           }
@@ -296,6 +302,8 @@ export function makeToolCalls(deps: ToolCallDeps) {
             time: { start: "time" in part.state ? part.state.time.start : end, end },
           },
         })
+        ctx.stepStats.toolCalls += 1
+        ctx.stepStats.toolErrors += 1
       }),
     )
   })

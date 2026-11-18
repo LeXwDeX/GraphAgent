@@ -7,7 +7,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { Project } from "@/project/project"
 import { InstanceRef } from "@/effect/instance-ref"
 import { t } from "@graphagent/tui/i18n"
-import { outcomeLimit, printOutcomes } from "./stats-outcomes"
+import { modelStepRows, outcomeLimit, printOutcomes, queryModelSteps, type ModelSteps } from "./stats-outcomes"
 
 interface SessionStats {
   totalSessions: number
@@ -81,11 +81,12 @@ export const StatsCommand = effectCmd({
     } else if (typeof args.models === "number") {
       modelLimit = args.models
     }
-    displayStats(stats, args.tools, modelLimit)
+    const filter = { days: args.days, project: args.project, currentProject: ctx.project }
+    const { db } = yield* Database.Service
+    const steps = modelLimit === undefined ? undefined : yield* queryModelSteps(db, filter)
+    displayStats(stats, args.tools, modelLimit, steps)
     const outcomes = outcomeLimit(args.outcomes)
-    if (outcomes !== undefined) {
-      yield* printOutcomes(outcomes, { days: args.days, project: args.project, currentProject: ctx.project })
-    }
+    if (outcomes !== undefined) yield* printOutcomes(outcomes, filter)
   }),
 })
 
@@ -300,7 +301,12 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
   return stats
 })
 
-export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit?: number) {
+export function displayStats(
+  stats: SessionStats,
+  toolLimit?: number,
+  modelLimit?: number,
+  steps?: Record<string, ModelSteps>,
+) {
   const width = 56
 
   // Labels are translated, so measure by display width (CJK is two columns).
@@ -365,6 +371,10 @@ export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit
       console.log(renderRow("  " + t("cli.stats.row.cacheRead"), formatNumber(usage.tokens.cache.read)))
       console.log(renderRow("  " + t("cli.stats.row.cacheWrite"), formatNumber(usage.tokens.cache.write)))
       console.log(renderRow("  " + t("cli.stats.row.cost"), `$${usage.cost.toFixed(4)}`))
+      const modelSteps = steps?.[model]
+      if (modelSteps) {
+        for (const [label, value] of modelStepRows(modelSteps)) console.log(renderRow("  " + label, value))
+      }
       console.log("├────────────────────────────────────────────────────────┤")
     }
     // Remove last separator and add bottom border

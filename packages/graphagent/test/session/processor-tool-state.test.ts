@@ -25,6 +25,7 @@ import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
+import { SessionStepTable } from "@graphagent/core/session/outcome.sql"
 import { LLMEvent } from "@graphagent/llm"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Tool } from "../../src/tool/tool"
@@ -570,6 +571,141 @@ failures.it.effect(
           "call-thrown": { outcome: "execution_error" },
           "call-text": { outcome: "execution_error" },
         })
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: each step-finish part carries the metrics of its step
+// ---------------------------------------------------------------------------
+
+const okCall = (id: string, tool: string): LLMEvent[] => [
+  LLMEvent.toolInputStart({ id, name: tool }),
+  LLMEvent.toolInputDelta({ id, name: tool, text: `{"query":"${id}"}` }),
+  LLMEvent.toolInputEnd({ id, name: tool }),
+  LLMEvent.toolCall({ id, name: tool, input: { query: id } }),
+  LLMEvent.toolResult({
+    id,
+    name: tool,
+    result: { type: "json", value: { title: tool, output: "ok", metadata: {} } },
+  }),
+]
+
+const stepFinishes = (parts: Part[]) =>
+  parts.filter((part): part is SessionV1.StepFinishPart => part.type === "step-finish")
+
+const metered = scripted([
+  [
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.textStart({ id: "text-1" }),
+    LLMEvent.textDelta({ id: "text-1", text: "looking" }),
+    LLMEvent.textEnd({ id: "text-1" }),
+    ...okCall("call-ok", "lookup"),
+    ...failedCall("call-thrown", "search", new Error("boom")),
+    ...failedCall("call-text", "grep", "plain text failure"),
+    LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+    LLMEvent.stepStart({ index: 1 }),
+    ...okCall("call-again", "lookup"),
+    LLMEvent.stepFinish({ index: 1, reason: "tool-calls" }),
+    LLMEvent.stepStart({ index: 2 }),
+    LLMEvent.textStart({ id: "text-2" }),
+    LLMEvent.textDelta({ id: "text-2", text: "done" }),
+    LLMEvent.textEnd({ id: "text-2" }),
+    LLMEvent.stepFinish({ index: 2, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ],
+])
+
+metered.it.effect(
+  "session.processor counts a step's tool calls and failures into its step-finish metrics, and the next step starts at zero",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "three steps")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        expect(yield* handle.process(input(chat.id, parent, mdl))).toBe("continue")
+
+        const finishes = stepFinishes(yield* MessageV2.parts(msg.id))
+        expect(finishes.map((part) => part.metrics)).toEqual([
+          expect.objectContaining({ toolCalls: 3, toolErrors: 2, retries: 0 }),
+          expect.objectContaining({ toolCalls: 1, toolErrors: 0, retries: 0 }),
+          expect.objectContaining({ toolCalls: 0, toolErrors: 0, retries: 0 }),
+        ])
+        // Durable events encode these as integers; a fractional or negative duration would have failed the settle.
+        for (const part of finishes) {
+          for (const key of ["prepareMs", "requestMs", "ttftMs"] as const) {
+            const value = part.metrics?.[key]
+            expect(Number.isInteger(value)).toBe(true)
+            expect(value).toBeGreaterThanOrEqual(0)
+          }
+        }
+        // A step that streamed no token has no time to the first token.
+        expect(finishes[1].metrics?.ttftMs).toBe(0)
+
+        // The projector books the same numbers under the assistant message's model.
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(SessionStepTable).all().pipe(Effect.orDie)
+        expect(rows).toHaveLength(3)
+        for (const row of rows) expect(row).toMatchObject({ provider_id: "test", model_id: "test-model" })
+        const byPart = new Map(rows.map((row) => [row.part_id, row]))
+        for (const part of finishes) {
+          expect(byPart.get(part.id)).toMatchObject({
+            prepare_ms: part.metrics?.prepareMs,
+            request_ms: part.metrics?.requestMs,
+            ttft_ms: part.metrics?.ttftMs,
+            tool_calls: part.metrics?.toolCalls,
+            tool_errors: part.metrics?.toolErrors,
+            retries: part.metrics?.retries,
+          })
+        }
+      }),
+    { config: cfg },
+  ),
+)
+
+// The first process ends with its call still running, so the forced abort lands after the step finished, in the
+// counts of the step that never came. The next process must not report it as its own.
+const carried = scripted([hanging, lifecycle])
+
+carried.it.effect(
+  "session.processor drops the counts left over from a finished step when the next process starts",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "leftover")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const gate = yield* gateAtLast(carried.control, hanging)
+        const first = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* runningPart(msg.id)
+        yield* Deferred.succeed(gate, undefined)
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if ((yield* persistedStatus(msg.id)) === "error") break
+          yield* TestClock.adjust("300 millis")
+          yield* realYield
+        }
+        expect(yield* persistedStatus(msg.id)).toBe("error")
+        yield* Fiber.join(first)
+
+        carried.control.gate = undefined
+        yield* handle.process(input(chat.id, parent, mdl))
+
+        const finishes = stepFinishes(yield* MessageV2.parts(msg.id))
+        // The abort happened after the first step's metrics were taken, so neither step reports it.
+        expect(finishes.map((part) => part.metrics)).toEqual([
+          expect.objectContaining({ toolCalls: 0, toolErrors: 0 }),
+          expect.objectContaining({ toolCalls: 1, toolErrors: 0 }),
+        ])
       }),
     { config: cfg },
   ),

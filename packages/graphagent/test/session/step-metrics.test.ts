@@ -2,16 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect, test } from "bun:test"
-import { Effect, Logger } from "effect"
-import { SessionID } from "../../src/session/schema"
+import { Effect, Logger, Schema } from "effect"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { MessageID, SessionID } from "../../src/session/schema"
 import {
   counters,
   explainFingerprintChange,
+  finishMetricsOf,
   fingerprintOf,
+  makeStepStats,
   recordGitSpawn,
   recordStep,
   StepMetricsRing,
+  stepFinishPart,
+  stepMetricsOf,
   type StepMetrics,
+  type StepMetricsInput,
 } from "../../src/session/step-metrics"
 
 const session = (name: string) => SessionID.make(`ses_${name}`)
@@ -159,4 +165,112 @@ test("does not log when the prefix is stable", async () => {
   )
 
   expect(fingerprintLog(logs)).toBeUndefined()
+})
+
+// ---------------------------------------------------------------------------
+// #1473: the step-finish metrics
+// ---------------------------------------------------------------------------
+
+const usage = { cost: 0.5, tokens: { input: 11, output: 22, reasoning: 0, cache: { read: 33, write: 44 } } }
+
+/** The processor's marks of one step: 30.5 ms of preparation, a first token at +49.5 ms, a finish at +119.75 ms. */
+const marks = (overrides: Partial<StepMetricsInput> = {}): StepMetricsInput => ({
+  sessionID: session("marks"),
+  step: 3,
+  processStartedAt: 100,
+  stepStartedAt: 130.5,
+  firstTokenAt: 180,
+  now: 250.25,
+  usage,
+  base: { sqlCount: 10, commits: 2, gitSpawns: 1 },
+  current: { sqlCount: 17, commits: 5, gitSpawns: 4 },
+  fingerprint: fingerprintOf({ tools: [], system: ["s"], messages: [] }),
+  ...overrides,
+})
+
+test("stepMetricsOf keeps the record the processor built inline before the metrics moved out of it", () => {
+  const input = marks()
+  expect(stepMetricsOf(input)).toEqual({
+    sessionID: input.sessionID,
+    step: 3,
+    prepareMs: input.stepStartedAt - input.processStartedAt,
+    requestMs: input.now - input.stepStartedAt,
+    ttftMs: (input.firstTokenAt ?? 0) - input.stepStartedAt,
+    cacheRead: 33,
+    cacheWrite: 44,
+    input: 11,
+    sqlCount: input.current.sqlCount - input.base.sqlCount,
+    commits: input.current.commits - input.base.commits,
+    gitSpawns: input.current.gitSpawns - input.base.gitSpawns,
+    fingerprint: input.fingerprint,
+  })
+})
+
+test("stepMetricsOf reports a step that streamed no token as 0 ms to the first token", () => {
+  expect(stepMetricsOf(marks({ firstTokenAt: undefined })).ttftMs).toBe(0)
+})
+
+test("finishMetricsOf rounds the durations to whole milliseconds and carries the step's counts", () => {
+  const stats = { toolCalls: 4, toolErrors: 1, retries: 2 }
+  const metrics = finishMetricsOf(stepMetricsOf(marks()), stats)
+  expect(metrics).toEqual({ prepareMs: 31, requestMs: 120, ttftMs: 50, toolCalls: 4, toolErrors: 1, retries: 2 })
+  // The durable event encodes against the schema, so the rounded value must pass it.
+  expect(Schema.is(SessionV1.StepFinishMetrics)(metrics)).toBe(true)
+  // The raw `performance.now()` differences do not.
+  expect(Number.isInteger(stepMetricsOf(marks()).requestMs)).toBe(false)
+})
+
+test("finishMetricsOf never yields a value the integer schema would reject", () => {
+  const odd = { ...stepMetricsOf(marks()), prepareMs: -0.4, requestMs: Number.NaN, ttftMs: Number.POSITIVE_INFINITY }
+  const metrics = finishMetricsOf(odd, makeStepStats())
+  expect(metrics).toEqual({ prepareMs: 0, requestMs: 0, ttftMs: 0, toolCalls: 0, toolErrors: 0, retries: 0 })
+  expect(Schema.is(SessionV1.StepFinishMetrics)(metrics)).toBe(true)
+})
+
+test("makeStepStats starts every call with its own zero counts", () => {
+  const first = makeStepStats()
+  first.toolCalls += 2
+  expect(makeStepStats()).toEqual({ toolCalls: 0, toolErrors: 0, retries: 0 })
+})
+
+test("stepFinishPart builds the part the processor used to write inline, and adds the metrics when there are any", () => {
+  const message = { id: MessageID.make("msg_step"), sessionID: session("part") }
+  const base = { message, reason: "stop", snapshot: "tree", usage }
+  const metrics = { prepareMs: 1, requestMs: 2, ttftMs: 0, toolCalls: 0, toolErrors: 0, retries: 0 }
+
+  const plain = stepFinishPart({ ...base, metrics: undefined })
+  expect(plain).toEqual({
+    id: expect.stringMatching(/^prt/),
+    type: "step-finish",
+    messageID: message.id,
+    sessionID: message.sessionID,
+    reason: "stop",
+    snapshot: "tree",
+    tokens: usage.tokens,
+    cost: usage.cost,
+  })
+  expect("metrics" in plain).toBe(false)
+
+  expect(stepFinishPart({ ...base, metrics }).metrics).toEqual(metrics)
+  expect(stepFinishPart({ ...base, metrics }).id).not.toBe(plain.id)
+})
+
+test("a step-finish part written before the metrics existed still decodes", () => {
+  const old = {
+    id: "prt_old",
+    sessionID: "ses_old",
+    messageID: "msg_old",
+    type: "step-finish",
+    reason: "stop",
+    cost: 0,
+    tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+  const decode = Schema.decodeUnknownSync(SessionV1.StepFinishPart)
+  const decoded: unknown = decode(old)
+  expect(decoded).toEqual(old)
+  const fractional = {
+    ...old,
+    metrics: { prepareMs: 1.5, requestMs: 2, ttftMs: 0, toolCalls: 0, toolErrors: 0, retries: 0 },
+  }
+  expect(() => decode(fractional)).toThrow()
 })

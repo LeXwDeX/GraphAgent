@@ -8,6 +8,7 @@ import {
   TOOL_OUTCOME_KINDS,
   addCorrections,
   correctionsOf,
+  sessionStepRow,
   toolOutcomeRow,
   type ToolOutcomeKind,
 } from "@graphagent/core/session/outcome"
@@ -160,5 +161,43 @@ describe("toolOutcomeRow", () => {
       "arguments_truncated",
     ]
     expect([...TOOL_OUTCOME_KINDS]).toEqual(expected)
+  })
+})
+
+describe("sessionStepRow", () => {
+  const metrics = { prepareMs: 12, requestMs: 340, ttftMs: 90, toolCalls: 3, toolErrors: 1, retries: 2 }
+  const finish = (withMetrics?: typeof metrics): SessionV1.StepFinishPart => ({
+    id: SessionV1.PartID.make("prt_step_row"),
+    sessionID,
+    messageID,
+    type: "step-finish",
+    reason: "stop",
+    cost: 0,
+    tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    ...(withMetrics ? { metrics: withMetrics } : {}),
+  })
+
+  test("maps each metric to its snake_case column and takes the model from the caller", () => {
+    expect(sessionStepRow(finish(metrics), model)).toEqual({
+      part_id: SessionV1.PartID.make("prt_step_row"),
+      session_id: sessionID,
+      provider_id: "provider",
+      model_id: "model",
+      prepare_ms: 12,
+      request_ms: 340,
+      ttft_ms: 90,
+      tool_calls: 3,
+      tool_errors: 1,
+      retries: 2,
+    })
+  })
+
+  test("a step-finish part from before the metrics existed has no row", () => {
+    expect(sessionStepRow(finish(), model)).toBeUndefined()
+  })
+
+  test("only a step-finish part has a row", () => {
+    expect(sessionStepRow(toolPart("edit", completed()), model)).toBeUndefined()
+    expect(toolOutcomeRow(finish(metrics), model)).toBeUndefined()
   })
 })

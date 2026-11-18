@@ -14,7 +14,17 @@ import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { isOverflow, serializedTools } from "./overflow"
-import { counters, fingerprintOf, recordStep, type PrefixFingerprint } from "./step-metrics"
+import {
+  counters,
+  finishMetricsOf,
+  fingerprintOf,
+  makeStepStats,
+  recordStep,
+  stepFinishPart,
+  stepMetricsOf,
+  type PrefixFingerprint,
+  type StepStats,
+} from "./step-metrics"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry, EmptyResponseError, IncompleteResponseError, IncompleteReasoningResponseError } from "./retry"
@@ -115,6 +125,8 @@ interface ProcessorContext extends Input {
   stepToolActivity: boolean
   /** Newest last; the doom-loop check only needs the last three call signatures. */
   recentToolSignatures: { name: string; input: string }[]
+  /** The step in progress (#1473); replaced as a whole when the step finishes. */
+  stepStats: StepStats
 }
 
 type StreamEvent = LLMEvent
@@ -391,6 +403,7 @@ export const layer = Layer.effect(
         needsCompaction: false,
         stepToolActivity: false,
         recentToolSignatures: [],
+        stepStats: makeStepStats(),
       }
       let aborted = false
       let deferred = false
@@ -476,27 +489,26 @@ export const layer = Layer.effect(
       // entry) so settle writes and tool work between steps stay
       // attributed to the step that caused them.
       const recordStepMetrics = Effect.fnUntraced(function* (usage: ReturnType<typeof Session.getUsage>) {
-        const fingerprint = metricsFingerprint
-        if (fingerprint) {
-          const current = counters()
-          const now = performance.now()
-          metricsStep += 1
-          yield* recordStep({
-            sessionID: ctx.sessionID,
-            step: metricsStep,
-            prepareMs: metricsStepStartedAt - metricsProcessStartedAt,
-            requestMs: now - metricsStepStartedAt,
-            ttftMs: metricsFirstTokenAt === undefined ? 0 : metricsFirstTokenAt - metricsStepStartedAt,
-            cacheRead: usage.tokens.cache.read,
-            cacheWrite: usage.tokens.cache.write,
-            input: usage.tokens.input,
-            sqlCount: current.sqlCount - metricsCounterBase.sqlCount,
-            commits: current.commits - metricsCounterBase.commits,
-            gitSpawns: current.gitSpawns - metricsCounterBase.gitSpawns,
-            fingerprint,
-          })
-          metricsCounterBase = current
-        }
+        if (!metricsFingerprint) return undefined
+        const current = counters()
+        metricsStep += 1
+        const step = stepMetricsOf({
+          sessionID: ctx.sessionID,
+          step: metricsStep,
+          processStartedAt: metricsProcessStartedAt,
+          stepStartedAt: metricsStepStartedAt,
+          firstTokenAt: metricsFirstTokenAt,
+          now: performance.now(),
+          usage,
+          base: metricsCounterBase,
+          current,
+          fingerprint: metricsFingerprint,
+        })
+        metricsCounterBase = current
+        yield* recordStep(step)
+        const metrics = finishMetricsOf(step, ctx.stepStats)
+        ctx.stepStats = makeStepStats()
+        return metrics
       })
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
@@ -721,20 +733,17 @@ export const layer = Layer.effect(
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
             accumulateUsage(ctx.assistantMessage, usage)
-            yield* recordStepMetrics(usage)
+            const metrics = yield* recordStepMetrics(usage)
             // One settle batch: the step-finish part, the assistant message and
             // the optional patch part commit as a single durable transaction.
             const settled: SessionV1.Part[] = [
-              {
-                id: PartID.ascending(),
+              stepFinishPart({
+                message: ctx.assistantMessage,
                 reason: value.reason,
                 snapshot: completedSnapshot,
-                messageID: ctx.assistantMessage.id,
-                sessionID: ctx.assistantMessage.sessionID,
-                type: "step-finish",
-                tokens: usage.tokens,
-                cost: usage.cost,
-              },
+                usage,
+                metrics,
+              }),
             ]
             if (ctx.snapshot && ctx.stepToolActivity) {
               const patch = yield* snapshot.patch(ctx.snapshot)
@@ -827,7 +836,8 @@ export const layer = Layer.effect(
 
       // A retry retains the assistant message but must close partial parts and
       // discard unexecuted tool placeholders before the next attempt starts.
-      const settleRetryAttempt = Effect.fn("SessionProcessor.settleRetryAttempt")(function* () {
+      const settleRetryAttempt = Effect.fn("SessionProcessor.settleRetryAttempt")(function* (attempt: number) {
+        ctx.stepStats.retries = attempt
         if (ctx.attempt.openText) {
           const end = Date.now()
           ctx.attempt.openText.time = { start: ctx.attempt.openText.time?.start ?? end, end }
@@ -966,6 +976,7 @@ export const layer = Layer.effect(
         metricsStepStartedAt = metricsProcessStartedAt
         metricsFirstTokenAt = undefined
         metricsCounterBase = counters()
+        ctx.stepStats = makeStepStats()
         metricsFingerprint = fingerprintOf({
           tools: serializedTools(streamInput.tools),
           system: streamInput.system,
@@ -1173,7 +1184,7 @@ export const layer = Layer.effect(
                             }).toObject()
                           : parse(error),
                 set: (info) =>
-                  settleRetryAttempt().pipe(
+                  settleRetryAttempt(info.attempt).pipe(
                     Effect.andThen(
                       status.set(ctx.sessionID, {
                         type: "retry",
