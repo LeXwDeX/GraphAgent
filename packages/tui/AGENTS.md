@@ -334,7 +334,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 排队由服务端报，客户端不推断：job 的 lifecycle 状态区分 `queued`（子 run 在等并发槽）与 `running`（已占槽）。`lifecycle.transitioned` 与 `POST /lifecycle/states` 都带它；状态带 `since`：`queued` 的 `since` 是开始排队的时刻，`running` 的是真正开始运行的时刻。
 - `backgroundStatus` 按服务端的话取：`queued` 就是排队；带 `since` 的 `running` 就是运行中，子会话还没 busy、也没调过工具同样如此。服务端没有这个状态（旧服务端从不说 `queued`，它的 `running` 也没有 `since`）时，才退回原来的推断：子会话既不是 busy/retry、`toolCalls` 又为 0，判为排队。`since` 的有无就是区分两者的标记；`entryFromTransition` 只在转入或转出 `queued` 的事件里给它，其余由随后的 `POST /lifecycle/states` 的回答带来。
-- 耗时不含排队：运行中的从 job 的 `since` 起算（`backgroundRunningAt`），已结束的从结果的 `runningAt`（服务端写进 `metadata.backgroundResult`；只有在进程内见到这次结束的结果带它，重启后补发的没有）起算，都没有时取 Task 调用的开始时刻。排队的运行没有耗时。排序仍按 Task 调用的开始时刻，先来先排。
+- 耗时不含排队：运行中的从 job 的 `since` 起算（`backgroundRunningAt`），已结束的从结果的 `runningAt`（服务端写进 `metadata.backgroundResult`，由结束记录存在 `child_run.outcome` 里，所以重启后补发的结果同样带它；运行从未开始、进程异常退出后被恢复的运行，以及记录它之前的旧行没有）起算，都没有时取 Task 调用的开始时刻。排队的运行没有耗时。排序仍按 Task 调用的开始时刻，先来先排。
 - 测试在 `test/session/background.test.ts`（含“并发上限为 1，连发 3 个”与旧服务端两组）、`test/cli/cmd/tui/sync-background.test.tsx`（事件与回答的整条链）、`test/shell/status-band.test.tsx`、`test/routes/session/drawer-content.test.tsx`、`test/panel/agents.test.tsx`（三个界面）。
 
 子 agent 视图的后台标签（#1058 8，`shell/subagent-path.ts`、`shell/top-bar.tsx`）：

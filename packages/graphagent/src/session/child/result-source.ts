@@ -106,6 +106,7 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
     // ordinary background work.
     const childSessionID = SessionID.make(row.child_session_id)
     const result = Store.parseReport(row.outcome)
+    const runningAt = Store.parseRunningAt(row.outcome)
     const initiator = result?.initiator ?? "agent"
     const notice = ChildNotice.resultNotice({ childSessionID, outcome, report: result })
     const text = initiator === "user" ? `${ChildNotice.userBackgroundNotice(result?.command)}\n\n${notice}` : notice
@@ -130,11 +131,12 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
               title: result?.title ?? "background task",
               status: outcome.type,
               // The run was registered, and queued, at `time_created`; `runningAt` is when it began, after the wait
-              // for its slot. Only a result this process saw the run end in has it (the ledger row does not keep it):
-              // one delivered after a restart, or of a run lost with its process, has none, and a reader times the
-              // run from `startedAt`.
+              // for its slot (#1407). The ending row keeps it (#1426), so a result delivered after a restart carries
+              // the same time as one delivered by the process that saw the run end. Where the row has none (a run
+              // lost with its process, which recovery ends without an entry to read it from; a run that never began;
+              // a row written before the ending kept it) a reader times the run from `startedAt`.
               startedAt: row.time_created,
-              ...(report?.runningAt === undefined ? {} : { runningAt: report.runningAt }),
+              ...(runningAt === undefined ? {} : { runningAt }),
               endedAt: row.time_ended ?? now,
             },
           },

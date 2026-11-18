@@ -1607,7 +1607,11 @@ describe("tool.task", () => {
       expect((yield* jobs.wait({ id: result.metadata.sessionID })).info?.output).toBe("background done")
       const ended = yield* endedRun(child)
       expect(ended.reported_at).toBeNull()
-      expect(ended.outcome).toEqual({ type: "completed", report: { title: "inspect bug", text: "background done" } })
+      expect(ended.outcome).toEqual({
+        type: "completed",
+        runningAt: expect.any(Number),
+        report: { title: "inspect bug", text: "background done" },
+      })
       // The parent is told once, by the ledger.
       expect(yield* delivery.claim(chat.id)).toBe(true)
       expect(noticeOf(delivery.admitted[0])).toContain("background done")
@@ -2275,7 +2279,11 @@ describe("tool.task child runs", () => {
       yield* jobs.cancel(child)
 
       const ended = yield* endedRun(child)
-      expect(ended.outcome).toEqual({ type: "cancelled", by: { kind: "engine", reason: "job-cancelled" } })
+      expect(ended.outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "engine", reason: "job-cancelled" },
+        runningAt: expect.any(Number),
+      })
       expect((yield* jobs.get(child))?.status).toBe("cancelled")
       expect(ChildRegistry.activeFor(child)).toBeUndefined()
       yield* Fiber.interrupt(fiber)
@@ -2369,6 +2377,7 @@ describe("tool.task child runs", () => {
       // The one run ends once, with the result of the last input: that is what the ledger owes the parent.
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "completed",
+        runningAt: expect.any(Number),
         report: { title: "inspect bug", text: "second done" },
       })
       expect(yield* runsOf(child)).toHaveLength(1)
@@ -2545,7 +2554,11 @@ describe("tool.task child runs", () => {
 
       expect(result.output).toContain(`<task id="${child}" state="cancelled">`)
       const ended = yield* endedRun(child)
-      expect(ended.outcome).toEqual({ type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_cancel" } })
+      expect(ended.outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+        runningAt: expect.any(Number),
+      })
       expect((yield* jobs.get(child))?.status).toBe("cancelled")
       // The child's turn was told to stop, with a reason naming the main agent.
       yield* pollWithTimeout(
@@ -2663,6 +2676,7 @@ describe("tool.task child runs", () => {
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "cancelled",
         by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+        runningAt: expect.any(Number),
       })
       expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
       yield* Deferred.succeed(release, undefined)
@@ -2740,6 +2754,7 @@ describe("tool.task child runs", () => {
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "completed",
+        runningAt: expect.any(Number),
         report: { title: "inspect bug", text: "late answer" },
       })
       expect(yield* delivery.claim(chat.id)).toBe(true)
@@ -2817,6 +2832,7 @@ describe("tool.task child runs", () => {
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "cancelled",
         by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+        runningAt: expect.any(Number),
       })
     }),
   )
@@ -2887,6 +2903,7 @@ describe("tool.task child runs", () => {
       expect((yield* endedRun(child, 1)).outcome).toEqual({
         type: "cancelled",
         by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+        runningAt: expect.any(Number),
       })
       expect(yield* endedRun(child, 2)).toMatchObject({
         owner_id: "call_resume",
@@ -2952,6 +2969,7 @@ describe("tool.task child runs", () => {
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({ status: "completed" })
       expect((yield* endedRun(child, 2)).outcome).toEqual({
         type: "completed",
+        runningAt: expect.any(Number),
         report: { title: "inspect bug", text: "second answer" },
       })
     }),
@@ -3024,7 +3042,11 @@ describe("tool.task child runs", () => {
         // Well inside the five second bound: the call's own exit frees it, not the fallback.
         "2 seconds",
       )
-      expect((yield* runsOf(child))[0]?.outcome).toEqual({ type: "cancelled", by: { kind: "engine", reason: "test" } })
+      expect((yield* runsOf(child))[0]?.outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "engine", reason: "test" },
+        runningAt: expect.any(Number),
+      })
     }),
   )
 
@@ -3050,6 +3072,7 @@ describe("tool.task child runs", () => {
       if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("already finished")
       expect((yield* runsOf(child))[0]?.outcome).toEqual({
         type: "completed",
+        runningAt: expect.any(Number),
         report: { title: "inspect bug", text: "late answer" },
       })
       // Told once: the late cancel changed neither the run nor what the parent heard.
