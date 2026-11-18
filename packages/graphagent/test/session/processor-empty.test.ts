@@ -404,6 +404,37 @@ partialNetwork.it.effect(
   ),
 )
 
+// #1473: each empty response settles its own step-finish before the retry is
+// scheduled, so a retry is booked once, in the step that follows it.
+const twiceEmpty = scripted([emptyUnknown, emptyUnknown, validScript])
+
+twiceEmpty.it.effect(
+  "session.processor books each retry of an empty response once across step-finish metrics",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "say something")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        expect(yield* Fiber.join(run)).toBe("continue")
+
+        expect(twiceEmpty.count()).toBe(3)
+        const retries = (yield* MessageV2.parts(msg.id))
+          .filter((part): part is SessionV1.StepFinishPart => part.type === "step-finish")
+          .map((part) => part.metrics?.retries ?? 0)
+        expect(retries).toEqual([0, 1, 1])
+      }),
+    { config: cfg },
+  ),
+)
+
 // ---------------------------------------------------------------------------
 // Recovery: empty attempt is retried and a valid follow-up continues the turn
 // ---------------------------------------------------------------------------

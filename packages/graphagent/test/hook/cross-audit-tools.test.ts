@@ -313,6 +313,8 @@ describe("PreToolUse feedback survives PostToolUse output replacement", () => {
         ),
       )
       expect(result.output).toContain("CROSS_AUDIT_PRE_CTX")
+      // The Pre context sits in a block with source="hook", ahead of the (replaced) result (#1456).
+      expect(result.output).toStartWith('<system-reminder source="hook">\nCROSS_AUDIT_PRE_CTX\n</system-reminder>\n\n')
       expect(result.output).toContain("CROSS_AUDIT_REPLACED")
       expect(result.output).not.toContain("WRITE_COMPLETE")
       const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
@@ -461,6 +463,7 @@ describe("PreToolUse additionalContext stays with a rejected or failed tool resu
       )
       expect(result.output).toContain("CROSS_AUDIT_DENY")
       expect(result.output).toContain("CROSS_AUDIT_PRE_CTX")
+      expect(result.output).toContain('<system-reminder source="hook">\nCROSS_AUDIT_PRE_CTX\n</system-reminder>')
       // A complete tool result: a command-driven subtask writes it as it is (#1350).
       expect(result.title).toBe("write")
     }),

@@ -219,6 +219,40 @@ describe("DatabaseMigration", () => {
     )
   })
 
+  test("baseline contains session_step keyed by part, cascading with it, with session and model indexes", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        const columns = yield* db.all<{ name: string; type: string; notnull: number; pk: number }>(
+          sql`PRAGMA table_info(session_step)`,
+        )
+        expect(columns.map((column) => [column.name, column.type, column.notnull, column.pk])).toEqual([
+          ["part_id", "TEXT", 0, 1],
+          ["session_id", "TEXT", 1, 0],
+          ["provider_id", "TEXT", 1, 0],
+          ["model_id", "TEXT", 1, 0],
+          ["prepare_ms", "INTEGER", 1, 0],
+          ["request_ms", "INTEGER", 1, 0],
+          ["ttft_ms", "INTEGER", 1, 0],
+          ["tool_calls", "INTEGER", 1, 0],
+          ["tool_errors", "INTEGER", 1, 0],
+          ["retries", "INTEGER", 1, 0],
+        ])
+        expect(yield* db.all(sql`PRAGMA foreign_key_list(session_step)`)).toMatchObject([
+          { table: "part", from: "part_id", to: "id", on_delete: "CASCADE" },
+        ])
+        const indexes = yield* db.all<{ name: string }>(
+          sql`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'session_step' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+        )
+        expect(indexes.map((index) => index.name)).toEqual(["session_step_model_idx", "session_step_session_idx"])
+        const modelIndex = yield* db.all<{ name: string }>(sql`PRAGMA index_info(session_step_model_idx)`)
+        expect(modelIndex.map((column) => column.name)).toEqual(["provider_id", "model_id"])
+      }),
+    )
+  })
+
   test("enforces the active child-run partial unique index", async () => {
     await run(
       Effect.gen(function* () {

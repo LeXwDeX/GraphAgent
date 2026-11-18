@@ -3,8 +3,9 @@
 
 import { DatabaseMetrics } from "@graphagent/core/database/metrics"
 import { Hash } from "@graphagent/core/util/hash"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect } from "effect"
-import type { SessionID } from "./schema"
+import { PartID, type SessionID } from "./schema"
 
 /**
  * HS14 (#1028 PR1): per-step observability for prompt-cache stability.
@@ -97,6 +98,107 @@ export interface StepCounters {
 export function counters(): StepCounters {
   const database = DatabaseMetrics.snapshot()
   return { sqlCount: database.sqlCount, commits: database.commits, gitSpawns }
+}
+
+/** The usage of one provider request as `Session.getUsage` reports it. */
+export interface StepUsage {
+  readonly cost: number
+  readonly tokens: SessionV1.StepFinishPart["tokens"]
+}
+
+export interface StepMetricsInput {
+  readonly sessionID: SessionID
+  readonly step: number
+  /** `performance.now()` marks of the processor: process entry, request start, first streamed token, step end. */
+  readonly processStartedAt: number
+  readonly stepStartedAt: number
+  readonly firstTokenAt: number | undefined
+  readonly now: number
+  readonly usage: StepUsage
+  /** The counters at the previous step end (or process entry), and now. */
+  readonly base: StepCounters
+  readonly current: StepCounters
+  readonly fingerprint: PrefixFingerprint
+}
+
+/** The in-memory record of one step: timing and usage from the processor's marks, counters scoped to the step. */
+export function stepMetricsOf(input: StepMetricsInput): StepMetrics {
+  return {
+    sessionID: input.sessionID,
+    step: input.step,
+    prepareMs: input.stepStartedAt - input.processStartedAt,
+    requestMs: input.now - input.stepStartedAt,
+    ttftMs: input.firstTokenAt === undefined ? 0 : input.firstTokenAt - input.stepStartedAt,
+    cacheRead: input.usage.tokens.cache.read,
+    cacheWrite: input.usage.tokens.cache.write,
+    input: input.usage.tokens.input,
+    sqlCount: input.current.sqlCount - input.base.sqlCount,
+    commits: input.current.commits - input.base.commits,
+    gitSpawns: input.current.gitSpawns - input.base.gitSpawns,
+    fingerprint: input.fingerprint,
+  }
+}
+
+/**
+ * #1473: the tool and retry counts of the step in progress. The tool-call state
+ * machine counts the calls that reach a terminal state. `retries` counts the
+ * retries scheduled since the last step-finish: an empty response settles its
+ * own step-finish before it is retried, so each retry is booked once, in the
+ * step that follows it. The processor
+ * starts a fresh one when the step finishes and when a run begins.
+ */
+export interface StepStats {
+  toolCalls: number
+  toolErrors: number
+  retries: number
+}
+
+export function makeStepStats(): StepStats {
+  return { toolCalls: 0, toolErrors: 0, retries: 0 }
+}
+
+/**
+ * Durable events encode `NonNegativeInt`, so a `performance.now()` difference is rounded, and a value that is
+ * negative or not finite becomes 0 instead of failing the publish.
+ */
+function wholeMs(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0
+}
+
+/** What a `step-finish` part persists of one step: whole-millisecond timings and the step's tool and retry counts. */
+export function finishMetricsOf(step: StepMetrics, stats: StepStats): SessionV1.StepFinishMetrics {
+  return {
+    prepareMs: wholeMs(step.prepareMs),
+    requestMs: wholeMs(step.requestMs),
+    ttftMs: wholeMs(step.ttftMs),
+    toolCalls: stats.toolCalls,
+    toolErrors: stats.toolErrors,
+    retries: stats.retries,
+  }
+}
+
+export interface StepFinishInput {
+  readonly message: Pick<SessionV1.Assistant, "id" | "sessionID">
+  readonly reason: string
+  readonly snapshot: string | undefined
+  readonly usage: StepUsage
+  /** Left off the part when absent, so a step that took no metrics persists exactly what it did before. */
+  readonly metrics: SessionV1.StepFinishMetrics | undefined
+}
+
+/** The `step-finish` part that settles one provider request. */
+export function stepFinishPart(input: StepFinishInput): SessionV1.StepFinishPart {
+  return {
+    id: PartID.ascending(),
+    reason: input.reason,
+    snapshot: input.snapshot,
+    messageID: input.message.id,
+    sessionID: input.message.sessionID,
+    type: "step-finish",
+    tokens: input.usage.tokens,
+    cost: input.usage.cost,
+    ...(input.metrics ? { metrics: input.metrics } : {}),
+  }
 }
 
 function stable(value: unknown): unknown {

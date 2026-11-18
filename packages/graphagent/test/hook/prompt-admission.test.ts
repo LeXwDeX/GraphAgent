@@ -847,6 +847,10 @@ it.live("ordinary async JSON reaches the next V1 model call without a user HookM
       expect(inputs).toHaveLength(2)
       expect(JSON.stringify(inputs[1])).toContain("ASYNC_SYSTEM_TO_MODEL")
       expect(JSON.stringify(inputs[1])).toContain("ASYNC_CONTEXT_TO_MODEL")
+      // Async hook output reaches the model in a block with source="hook" (#1456).
+      expect(JSON.stringify(inputs[1])).toContain(
+        JSON.stringify('<system-reminder source="hook">\nASYNC_CONTEXT_TO_MODEL\n</system-reminder>').slice(1, -1),
+      )
       expect(message).not.toHaveBeenCalled()
     }),
     { git: true, config: providerCfg },

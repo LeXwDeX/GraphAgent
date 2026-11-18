@@ -2,16 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
-import { ENVELOPE_TAGS, UPSTREAM_HEADER, escapeEnvelopeTags, upstreamBlock } from "@/dag/templates/envelope"
+import { Injection } from "@graphagent/core/system-context/injection"
+import { UPSTREAM_HEADER, escapeEnvelopeTags, upstreamBlock } from "@/dag/templates/envelope"
 
-describe("ENVELOPE_TAGS", () => {
-  it("is the one table of the three tags a dynamic value may not carry", () => {
-    expect([...ENVELOPE_TAGS]).toEqual(["system-reminder", "upstream-output", "engine-facts"])
+describe("the envelope tags", () => {
+  it("are the one table of the three tags a dynamic value may not carry, owned by Injection (#1456)", () => {
+    expect([...Injection.ESCAPED_TAGS]).toEqual(["system-reminder", "upstream-output", "engine-facts"])
+  })
+
+  it("are escaped by the one escape: escapeEnvelopeTags is Injection.escape", () => {
+    const text = '<system-reminder source="hook">x</UPSTREAM-OUTPUT> <engine-facts> <system-reminders>'
+    expect(escapeEnvelopeTags(text)).toBe(Injection.escape(text))
   })
 })
 
 describe("escapeEnvelopeTags", () => {
-  for (const tag of ENVELOPE_TAGS) {
+  for (const tag of Injection.ESCAPED_TAGS) {
     it(`writes the "<" of ${tag} opening and closing tags as &lt;`, () => {
       expect(escapeEnvelopeTags(`<${tag}>body</${tag}>`)).toBe(`&lt;${tag}>body&lt;/${tag}>`)
     })

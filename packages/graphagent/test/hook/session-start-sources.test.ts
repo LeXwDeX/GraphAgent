@@ -212,7 +212,27 @@ it.live("resume fires once on the first admission of a pre-existing top-level se
       const messages = yield* sessions.messages({ sessionID: session.id })
       const users = syntheticTexts(messages)
       // [seeded, first, second]
-      expect(users).toEqual([[], ["ctx-resume"], []])
+      // The hook's context is written into the history in a block with source="hook" (#1456).
+      expect(users).toEqual([[], ['<system-reminder source="hook">\nctx-resume\n</system-reminder>'], []])
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("the resume context of a /goal command turn is written in its hook block (#1456)", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Pre-existing goal", permission: [] })
+      yield* seedHistory(sessions, session.id)
+      yield* llm.text("working on it")
+
+      yield* prompt.command({ sessionID: session.id, command: "goal", arguments: "write the docs" })
+
+      expect(forSession(session.id)).toEqual(["resume"])
+      const texts = syntheticTexts(yield* sessions.messages({ sessionID: session.id })).flat()
+      expect(texts).toEqual(['<system-reminder source="hook">\nctx-resume\n</system-reminder>'])
     }),
     { git: true, config: providerCfg },
   ),
@@ -274,7 +294,7 @@ it.live("startup still fires from SessionLifecycle.create and no resume follows 
 
       expect(forSession(session.id)).toEqual(["startup"])
       const users = syntheticTexts(yield* sessions.messages({ sessionID: session.id }))
-      expect(users).toEqual([[], ["ctx-startup"], []])
+      expect(users).toEqual([[], ['<system-reminder source="hook">\nctx-startup\n</system-reminder>'], []])
     }),
     { git: true, config: providerCfg },
   ),

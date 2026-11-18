@@ -63,6 +63,7 @@ import { DagConfig } from "../config"
 import { DagSection } from "@/config/dag-section"
 import { spawnNode, makeDeadlineWatcher } from "./spawn"
 import { DagComposeExpansion } from "./compose-expansion"
+import { UpstreamBound } from "./upstream-bound"
 import { collectChangeFacts, renderChangeFacts } from "./change-facts"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
@@ -80,6 +81,7 @@ import { normalizeOutput } from "./verdict"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
 import { artifactPermissionBase, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
+import { Truncate } from "@/tool/truncate"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
@@ -167,6 +169,8 @@ const serviceLayer = Layer.effect(
     const promptSvc = yield* SessionPrompt.Service
     const childRuns = yield* promptSvc.children
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
+    // #1453: spills an oversized upstream string to disk. Optional: without it a value is handed over whole.
+    const truncate = Option.getOrUndefined(yield* Effect.serviceOption(Truncate.Service))
     const statusSvc = yield* SessionStatus.Service
     // The shared per-instance inbox: it owns the one idle subscription and is
     // the only way a wake or a queued agent message reaches the parent session
@@ -658,12 +662,16 @@ const serviceLayer = Layer.effect(
               }
             }
 
+            // #1453: the prompt gets the head of an oversized upstream string and a pointer to the rest. The review
+            // input above was judged on the whole text, and so is the fingerprint handed to the spawn below.
+            const injected = yield* UpstreamBound.bound(resolvedMapping, truncate?.save)
+
             // #943: a node workspace overrides the workflow workspace for
             // prompt assets, DAG settings and the child session.
             const nodeDirectory = nodeConfig.workspace ?? executionBase
             const nodeDagConfig = nodeDirectory === executionBase ? dagConfig : yield* loadDagConfig(nodeDirectory)
             const resolved = yield* nodeConfig?.prompt_template
-              ? renderTemplate(nodeConfig.prompt_template, nodeDirectory, resolvedMapping).pipe(
+              ? renderTemplate(nodeConfig.prompt_template, nodeDirectory, injected).pipe(
                   Effect.tap((result) =>
                     result.text.trim() === ""
                       ? Effect.logWarning("DAG node resolved template is empty", { dagID, nodeID })
@@ -729,7 +737,7 @@ const serviceLayer = Layer.effect(
 
             const interpolatedKeys = new Set(resolved.interpolatedDynamicKeys)
             const remainingContext = Object.fromEntries(
-              Object.entries(resolvedMapping).filter(([key]) => !interpolatedKeys.has(key)),
+              Object.entries(injected).filter(([key]) => !interpolatedKeys.has(key)),
             )
             if (Object.keys(remainingContext).length > 0) {
               promptParts.push({ type: "text", text: `\n\nContext:\n${upstreamBlock("context", remainingContext)}` })
@@ -2369,6 +2377,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Session.defaultLayer),
   Layer.provide(SessionPrompt.defaultLayer),
   Layer.provide(Permission.defaultLayer),
+  Layer.provide(Truncate.defaultLayer),
   Layer.provide(SessionStatus.defaultLayer),
   Layer.provide(HookStartContext.defaultLayer),
   Layer.provide(HookLifecycle.defaultLayer),
@@ -2386,6 +2395,7 @@ export const node = LayerNode.make(layer, [
   Session.node,
   SessionPrompt.node,
   Permission.node,
+  Truncate.node,
   SessionStatus.node,
   SessionInbox.node,
   HookStartContext.node,

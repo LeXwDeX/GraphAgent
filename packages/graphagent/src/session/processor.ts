@@ -14,7 +14,17 @@ import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { isOverflow, serializedTools } from "./overflow"
-import { counters, fingerprintOf, recordStep, type PrefixFingerprint } from "./step-metrics"
+import {
+  counters,
+  finishMetricsOf,
+  fingerprintOf,
+  makeStepStats,
+  recordStep,
+  stepFinishPart,
+  stepMetricsOf,
+  type PrefixFingerprint,
+  type StepStats,
+} from "./step-metrics"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry, EmptyResponseError, IncompleteResponseError, IncompleteReasoningResponseError } from "./retry"
@@ -28,6 +38,7 @@ import type { Provider } from "@/provider/provider"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { HistoryView } from "./history/view"
 import { LLMError, Usage, type LLMEvent } from "@graphagent/llm"
 import { makeToolCalls, type ToolCall } from "./processor-tool-calls"
@@ -45,6 +56,17 @@ import { discardFailedText } from "./processor-discard"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
+
+/**
+ * The step-end compaction check with the process's output-token cap, so it reserves the same output budget as the
+ * pre-step gate (`SessionCompaction.isOverflow`); `flags` is absent where no runtime flags are provided.
+ */
+function stepOverflow(
+  flags: RuntimeFlags.Info | undefined,
+  input: Omit<Parameters<typeof isOverflow>[0], "outputTokenMax">,
+) {
+  return isOverflow({ ...input, outputTokenMax: flags?.outputTokenMax })
+}
 
 /** Accumulate one provider request's usage into the assistant message that owns both requests. */
 function accumulateUsage(message: SessionV1.Assistant, usage: ReturnType<typeof Session.getUsage>) {
@@ -126,6 +148,8 @@ interface ProcessorContext extends Input {
   stepToolActivity: boolean
   /** Newest last; the doom-loop check only needs the last three call signatures. */
   recentToolSignatures: { name: string; input: string }[]
+  /** The step in progress (#1473); replaced as a whole when the step finishes. */
+  stepStats: StepStats
 }
 
 type StreamEvent = LLMEvent
@@ -296,6 +320,7 @@ export const layer = Layer.effect(
     const status = yield* SessionStatus.Service
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
+    const flags = Option.getOrUndefined(yield* Effect.serviceOption(RuntimeFlags.Service))
 
     // Doom-loop guard: ask for permission when the last three tool calls are identical.
     const checkDoomLoop = Effect.fnUntraced(function* (
@@ -402,6 +427,7 @@ export const layer = Layer.effect(
         needsCompaction: false,
         stepToolActivity: false,
         recentToolSignatures: [],
+        stepStats: makeStepStats(),
       }
       let aborted = false
       let deferred = false
@@ -488,27 +514,26 @@ export const layer = Layer.effect(
       // entry) so settle writes and tool work between steps stay
       // attributed to the step that caused them.
       const recordStepMetrics = Effect.fnUntraced(function* (usage: ReturnType<typeof Session.getUsage>) {
-        const fingerprint = metricsFingerprint
-        if (fingerprint) {
-          const current = counters()
-          const now = performance.now()
-          metricsStep += 1
-          yield* recordStep({
-            sessionID: ctx.sessionID,
-            step: metricsStep,
-            prepareMs: metricsStepStartedAt - metricsProcessStartedAt,
-            requestMs: now - metricsStepStartedAt,
-            ttftMs: metricsFirstTokenAt === undefined ? 0 : metricsFirstTokenAt - metricsStepStartedAt,
-            cacheRead: usage.tokens.cache.read,
-            cacheWrite: usage.tokens.cache.write,
-            input: usage.tokens.input,
-            sqlCount: current.sqlCount - metricsCounterBase.sqlCount,
-            commits: current.commits - metricsCounterBase.commits,
-            gitSpawns: current.gitSpawns - metricsCounterBase.gitSpawns,
-            fingerprint,
-          })
-          metricsCounterBase = current
-        }
+        if (!metricsFingerprint) return undefined
+        const current = counters()
+        metricsStep += 1
+        const step = stepMetricsOf({
+          sessionID: ctx.sessionID,
+          step: metricsStep,
+          processStartedAt: metricsProcessStartedAt,
+          stepStartedAt: metricsStepStartedAt,
+          firstTokenAt: metricsFirstTokenAt,
+          now: performance.now(),
+          usage,
+          base: metricsCounterBase,
+          current,
+          fingerprint: metricsFingerprint,
+        })
+        metricsCounterBase = current
+        yield* recordStep(step)
+        const metrics = finishMetricsOf(step, ctx.stepStats)
+        ctx.stepStats = makeStepStats()
+        return metrics
       })
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
@@ -730,20 +755,17 @@ export const layer = Layer.effect(
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
             accumulateUsage(ctx.assistantMessage, usage)
-            yield* recordStepMetrics(usage)
+            const metrics = yield* recordStepMetrics(usage)
             // One settle batch: the step-finish part, the assistant message and
             // the optional patch part commit as a single durable transaction.
             const settled: SessionV1.Part[] = [
-              {
-                id: PartID.ascending(),
+              stepFinishPart({
+                message: ctx.assistantMessage,
                 reason: value.reason,
                 snapshot: completedSnapshot,
-                messageID: ctx.assistantMessage.id,
-                sessionID: ctx.assistantMessage.sessionID,
-                type: "step-finish",
-                tokens: usage.tokens,
-                cost: usage.cost,
-              },
+                usage,
+                metrics,
+              }),
               ...takeTruncatedInputs(value.reason),
             ]
             if (ctx.snapshot && ctx.stepToolActivity) {
@@ -763,7 +785,7 @@ export const layer = Layer.effect(
             ctx.snapshot = undefined
             if (
               !ctx.assistantMessage.summary &&
-              isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
+              stepOverflow(flags, { cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
             ) {
               ctx.needsCompaction = true
             }
@@ -838,6 +860,7 @@ export const layer = Layer.effect(
       // A retry retains the assistant message but must close partial parts and
       // discard unexecuted tool placeholders before the next attempt starts.
       const settleRetryAttempt = Effect.fn("SessionProcessor.settleRetryAttempt")(function* () {
+        ctx.stepStats.retries += 1
         if (ctx.attempt.openText) {
           const end = Date.now()
           ctx.attempt.openText.time = { start: ctx.attempt.openText.time?.start ?? end, end }
@@ -976,6 +999,7 @@ export const layer = Layer.effect(
         metricsStepStartedAt = metricsProcessStartedAt
         metricsFirstTokenAt = undefined
         metricsCounterBase = counters()
+        ctx.stepStats = makeStepStats()
         metricsFingerprint = requestFingerprint(streamInput)
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
@@ -1286,6 +1310,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Image.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(RuntimeFlags.defaultLayer),
   ),
 )
 
@@ -1300,6 +1325,7 @@ export const node = LayerNode.make(layer, [
   SessionStatus.node,
   Image.node,
   EventV2Bridge.node,
+  RuntimeFlags.node,
 ])
 
 export * as SessionProcessor from "./processor"

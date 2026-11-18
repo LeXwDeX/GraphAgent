@@ -74,6 +74,9 @@ export interface ApplyResultArgs {
 export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
   const { payload, ctx, scratchpadDir, result, addContext, entry, json, exitBlock, rawStdout, exitCode, succeeded } =
     args
+  // A reason for blocking or denying reaches the model as `[Post-tool hook blocked] <reason>` and the like, so it is
+  // escaped and bounded exactly like additionalContext (#1456).
+  const blockText = exitBlock === undefined ? undefined : sanitizeHookContext(exitBlock, scratchpadDir)
   // Exit-code-2 block beats stdout decision
   const observational = new Set<HookEvent>([
     "Setup",
@@ -92,28 +95,27 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     "WorktreeCreate",
     "WorktreeRemove",
   ])
-  if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event))
-    result.systemMessages.push(sanitizeHookContext(exitBlock, scratchpadDir))
-  if (exitBlock && payload.event !== "PermissionRequest" && !observational.has(payload.event)) {
-    result.blocked = { reason: exitBlock, command: commandText(entry) }
+  if (blockText && SHOW_STDERR_EVENTS.has(payload.event)) result.systemMessages.push(blockText)
+  if (blockText && payload.event !== "PermissionRequest" && !observational.has(payload.event)) {
+    result.blocked = { reason: blockText, command: commandText(entry) }
     // A failed or exit-2 PreToolUse hook is a deny that outranks defer, and no JSON
     // from any hook can lift it.
     if (payload.event === "PreToolUse") {
       result.permissionDecision = "deny"
-      result.permissionDecisionReason = exitBlock
+      result.permissionDecisionReason = blockText
       result.updatedInput = undefined
     }
   }
-  if (exitBlock && payload.event === "PermissionRequest" && entry.onFailure === "block" && exitCode !== 2)
-    result.permissionRequestDecision = { behavior: "deny", message: exitBlock }
+  if (blockText && payload.event === "PermissionRequest" && entry.onFailure === "block" && exitCode !== 2)
+    result.permissionRequestDecision = { behavior: "deny", message: blockText }
   if (payload.event === "Elicitation" || payload.event === "ElicitationResult") {
-    if (exitBlock) {
+    if (blockText) {
       result.elicitation = { action: "decline" }
       result.blocked = undefined
     }
   }
   if (payload.event === "WorktreeCreate" && exitCode !== undefined && exitCode !== 0)
-    result.blocked = { reason: exitBlock ?? "Worktree creation hook failed", command: commandText(entry) }
+    result.blocked = { reason: blockText ?? "Worktree creation hook failed", command: commandText(entry) }
   if (
     payload.event === "WorktreeRemove" &&
     exitCode !== undefined &&
@@ -121,7 +123,7 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     existsSync(payload.worktreePath ?? payload.path ?? "")
   ) {
     result.worktreeRemoveFailed = true
-    result.blocked = { reason: exitBlock ?? "Worktree removal hook failed", command: commandText(entry) }
+    result.blocked = { reason: blockText ?? "Worktree removal hook failed", command: commandText(entry) }
   }
   if (payload.event === "PreModelSwitch" && exitCode === null)
     result.blocked = { reason: "Model-switch hook timed out", command: commandText(entry) }
@@ -176,7 +178,8 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     "PreModelSwitch",
   ])
   if (json.decision === "block" && topLevelBlockEvents.has(payload.event) && !result.blocked) {
-    result.blocked = { reason: json.reason ?? "Blocked by hook", command: commandText(entry) }
+    const reason = json.reason === undefined ? "Blocked by hook" : sanitizeHookContext(json.reason, scratchpadDir)
+    result.blocked = { reason, command: commandText(entry) }
   }
   if ((payload.event === "Elicitation" || payload.event === "ElicitationResult") && json.decision === "block") {
     result.elicitation = { action: "decline" }
@@ -194,7 +197,7 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     payload.event !== "ElicitationResult"
   ) {
     result.preventContinuation = true
-    if (json.stopReason && !result.stopReason) result.stopReason = json.stopReason
+    if (json.stopReason && !result.stopReason) result.stopReason = sanitizeHookContext(json.stopReason, scratchpadDir)
   }
 
   if (
@@ -266,12 +269,13 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     payload.event === "PreToolUse"
       ? (hsoDecision ?? (json.decision ? (json.decision === "approve" ? "allow" : "deny") : undefined))
       : undefined
-  const preReason =
+  const preReasonRaw =
     hsoDecision !== undefined && hso && "permissionDecisionReason" in hso
       ? hso.permissionDecisionReason
       : hsoDecision === undefined
         ? json.reason
         : undefined
+  const preReason = preReasonRaw === undefined ? undefined : sanitizeHookContext(preReasonRaw, scratchpadDir)
   if (payload.event === "PreToolUse" && preDecision) {
     const incoming = preDecision
     const current = result.permissionDecision

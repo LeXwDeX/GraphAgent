@@ -476,14 +476,12 @@ export const ReadTool = Tool.define<
       if (isMedia) {
         const bytes = yield* fs.readFile(filepath)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
-        // The nearby instructions are claimed as loaded, so they must reach the model here too (#1447).
-        const reminder =
-          loaded.length > 0
-            ? `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`
-            : ""
+        // The nearby instructions are claimed as loaded, so they must reach the model here too (#1447). Each
+        // file arrives in its own instruction-file block.
+        const nearby = loaded.length > 0 ? `\n\n${loaded.map((item) => item.content).join("\n\n")}` : ""
         return {
           title,
-          output: msg + reminder,
+          output: msg + nearby,
           metadata: {
             preview: msg,
             truncated: false,
@@ -550,7 +548,7 @@ export const ReadTool = Tool.define<
       if (seen) yield* fileState.record(ctx.sessionID, filepath, "read", seen)
 
       if (loaded.length > 0) {
-        output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`
+        output += `\n\n${loaded.map((item) => item.content).join("\n\n")}`
       }
 
       return {

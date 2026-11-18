@@ -58,6 +58,8 @@ export interface TurnState {
   readonly stop: StopState
   /** Consecutive automatic compactions; the fourth is refused. */
   readonly compactions: number
+  /** Consecutive automatic compactions that answered the provider rejecting a request as too large. */
+  readonly overflowRecoveries: number
   /**
    * One-shot grant to skip the finished exit and run exactly one more model
    * step. Replaces the old `forceContinue` flag; consumed by `beginStep`.
@@ -78,6 +80,7 @@ export function initial(input: { stopCap: number }): TurnState {
     agentInput: "open",
     stop: { active: false, continuations: 0, cap: input.stopCap },
     compactions: 0,
+    overflowRecoveries: 0,
     continuing: undefined,
     final: "none",
     hints: { pseudo_tool_call: 0 },
@@ -184,6 +187,17 @@ export function recordAutoCompaction(state: TurnState): TurnState {
 export function resetAutoCompactions(state: TurnState): TurnState {
   if (state.compactions === 0) return state
   return { ...state, compactions: 0 }
+}
+
+/** A compaction was started because the provider rejected the request as too large. */
+export function recordOverflowRecovery(state: TurnState): TurnState {
+  return { ...state, overflowRecoveries: state.overflowRecoveries + 1 }
+}
+
+/** A request got through, or was not rejected for size: the recovery streak is over. */
+export function resetOverflowRecoveries(state: TurnState): TurnState {
+  if (state.overflowRecoveries === 0) return state
+  return { ...state, overflowRecoveries: 0 }
 }
 
 export * as State from "./state"

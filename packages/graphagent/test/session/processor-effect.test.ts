@@ -195,6 +195,16 @@ const native = testEffect(
   }),
 )
 
+// The step-end compaction check must read the same output reserve as the pre-step gate, which honors this cap.
+const outputCapped = testEffect(
+  LayerNode.buildLayer(LayerNode.group([root, LayerNode.make(TestLLMServer.layer, [])]), {
+    replacements: [
+      LayerNode.replace(SessionSummary.node, summary),
+      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ outputTokenMax: 8_000 })),
+    ],
+  }),
+)
+
 const providerErrorLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -269,6 +279,7 @@ const nativeCompactionProcessor = Effect.fn("test.nativeCompactionProcessor")(fu
   const provider = yield* Provider.Service
   const model = {
     ...(yield* provider.getModel(ref.providerID, ref.modelID)),
+    profile: undefined,
     limit: { context: 32_000, output: 4_000 },
   }
   const handle = yield* processors.create({ assistantMessage: msg, sessionID: msg.sessionID, model })
@@ -424,7 +435,7 @@ it.live("session.processor effect tests stop after token overflow requests compa
         const parent = yield* user(chat.id, "compact")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const base = yield* provider.getModel(ref.providerID, ref.modelID)
-        const mdl = { ...base, limit: { context: 20, output: 10 } }
+        const mdl = { ...base, profile: undefined, limit: { context: 20, output: 10 } }
         const handle = yield* processors.create({
           assistantMessage: msg,
           sessionID: chat.id,
@@ -456,6 +467,57 @@ it.live("session.processor effect tests stop after token overflow requests compa
       }),
     { config: (url) => providerCfg(url) },
   ),
+)
+
+// 100_000 input tokens against a 128_000 window: above the default 96_000 line (32_000 reserved for output),
+// below the 120_000 line that a GRAPHAGENT_OUTPUT_TOKEN_MAX of 8_000 leaves.
+const stepEndCompaction = (expected: "compact" | "continue") =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.text("after", { usage: { input: 100_000, output: 0 } })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "compact")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const base = yield* provider.getModel(ref.providerID, ref.modelID)
+        const mdl = { ...base, profile: undefined, limit: { context: 128_000, output: 32_000 } }
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "compact" }],
+          tools: {},
+        })
+
+        expect(value).toBe(expected)
+      }),
+    { config: (url) => providerCfg(url) },
+  )
+
+it.live("session.processor effect tests reserve the default output budget at step end", () =>
+  stepEndCompaction("compact"),
+)
+
+outputCapped.live("session.processor effect tests honor GRAPHAGENT_OUTPUT_TOKEN_MAX at step end", () =>
+  stepEndCompaction("continue"),
 )
 
 it.live("session.processor effect tests capture reasoning from http mock", () =>

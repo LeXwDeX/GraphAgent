@@ -953,8 +953,13 @@ describe("tool.read loaded instructions", () => {
 
       const result = yield* exec(dir, { filePath: path.join(dir, "subdir", "nested", "test.txt") })
       expect(result.output).toContain("test content")
-      expect(result.output).toContain("system-reminder")
-      expect(result.output).toContain("Test Instructions")
+      // The nearby file arrives as its own instruction-file block; the tool adds no wrapper of its own (#1456).
+      const agents = path.join(dir, "subdir", "AGENTS.md")
+      expect(result.output).toEndWith(
+        `\n\n<system-reminder source="instruction-file" path="${agents}">\n# Test Instructions\nDo something special.\n</system-reminder>`,
+      )
+      expect(result.output).not.toContain('source="reminder"')
+      expect(result.output.match(/<system-reminder/g)).toHaveLength(1)
       expect(result.metadata.loaded).toBeDefined()
       expect(result.metadata.loaded).toContain(path.join(dir, "subdir", "AGENTS.md"))
     }),
@@ -978,8 +983,9 @@ describe("tool.read loaded instructions", () => {
           { ...ctx, messageID: MessageID.make(`msg_${name}`) },
         )
         expect(result.output).toStartWith(preview)
-        expect(result.output).toContain("<system-reminder>")
-        expect(result.output).toContain("Test Instructions")
+        expect(result.output).toBe(
+          `${preview}\n\n<system-reminder source="instruction-file" path="${path.join(dir, "subdir", "AGENTS.md")}">\n# Test Instructions\nDo something special.\n</system-reminder>`,
+        )
         expect(result.metadata.preview).toBe(preview)
         expect(result.metadata.loaded).toEqual([path.join(dir, "subdir", "AGENTS.md")])
         expect(result.attachments?.length).toBe(1)

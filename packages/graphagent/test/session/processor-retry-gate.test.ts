@@ -593,3 +593,108 @@ spentNative.it.effect(
     { config: cfg },
   ),
 )
+
+// ---------------------------------------------------------------------------
+// #1473: the step that finally goes through reports the retries it needed
+// ---------------------------------------------------------------------------
+
+const stepFinishes = (parts: Part[]) =>
+  parts.filter((part): part is SessionV1.StepFinishPart => part.type === "step-finish")
+
+const retried = scripted([
+  partialThenDisconnect("first", { ended: true }),
+  partialThenDisconnect("second", { ended: true }),
+  recoveredScript,
+])
+
+retried.it.effect(
+  "session.processor counts the retries of a step in its step-finish metrics",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        expect(yield* Fiber.join(running)).toBe("continue")
+
+        expect(retried.count()).toBe(3)
+        // Only the attempt that went through settles a step-finish; it reports both retries before it.
+        const finishes = stepFinishes(yield* MessageV2.parts(msg.id))
+        expect(finishes).toHaveLength(1)
+        expect(finishes[0].metrics).toMatchObject({ retries: 2, toolCalls: 0, toolErrors: 0 })
+      }),
+    { config: cfg },
+  ),
+)
+
+// An attempt cut off after the model began a tool call, before it was admitted: the placeholder is aborted
+// while the retry is set up, and that abort belongs to the step that follows.
+const placeholder = scripted([
+  Stream.concat(
+    Stream.fromIterable([
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+      LLMEvent.toolInputDelta({ id: "call-1", name: "lookup", text: '{"query":' }),
+    ]),
+    Stream.fail(proxyError("upstream_disconnected")),
+  ),
+  recoveredScript,
+])
+
+placeholder.it.effect(
+  "session.processor counts the abort of an unexecuted placeholder as a failed call of the retried step",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        expect(yield* Fiber.join(running)).toBe("continue")
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const calls = toolParts(parts)
+        expect(calls).toHaveLength(1)
+        expect(calls[0].state.status).toBe("error")
+        expect(stepFinishes(parts)[0].metrics).toMatchObject({ retries: 1, toolCalls: 1, toolErrors: 1 })
+      }),
+    { config: cfg },
+  ),
+)
+
+const smooth = scripted([recoveredScript])
+
+smooth.it.effect(
+  "session.processor reports no retries for a step that went through the first time",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        expect(yield* handle.process(input(chat.id, parent, mdl))).toBe("continue")
+
+        expect(stepFinishes(yield* MessageV2.parts(msg.id)).map((part) => part.metrics)).toEqual([
+          expect.objectContaining({ retries: 0, toolCalls: 0, toolErrors: 0 }),
+        ])
+      }),
+    { config: cfg },
+  ),
+)

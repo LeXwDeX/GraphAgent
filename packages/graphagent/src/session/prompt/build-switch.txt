@@ -1,3 +1,1 @@
-<system-reminder>
 Your mode has changed from plan to build. You may edit files, run shell commands, and use the available tools. The read-only restriction has ended.
-</system-reminder>

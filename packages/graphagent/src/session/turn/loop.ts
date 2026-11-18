@@ -26,7 +26,7 @@ import { ChildRegistry } from "../child/registry"
 import type { SessionCompaction } from "../compaction"
 import type { Instruction } from "../instruction"
 import { MessageV2 } from "../message-v2"
-import { measured } from "../overflow"
+import { estimatePendingToolOutputTokens, measured } from "../overflow"
 import type { Handle as ProcessorHandle, SessionProcessor } from "../processor"
 import { MessageID, PartID, type SessionID } from "../schema"
 import { Session } from "../session"
@@ -52,24 +52,6 @@ import { Stop } from "./stop"
  * effect runs only when the pre-refactor inline code ran it, so H0 engine
  * counters and admission behavior stay unchanged.
  */
-
-function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messageIndex: number) {
-  const current = messages[messageIndex]
-  if (!current || current.info.role !== "assistant") return 0
-
-  let pending = 0
-  for (const part of current.parts) {
-    if (part.type !== "tool") continue
-    const content =
-      part.state.status === "completed" && part.state.time.compacted === undefined
-        ? part.state.output
-        : part.state.status === "error"
-          ? part.state.error
-          : undefined
-    if (content) pending += Token.estimate(content)
-  }
-  return pending
-}
 
 export interface LoopDeps {
   readonly sessions: Session.Interface
@@ -497,6 +479,37 @@ function makeOverflowGate(deps: LoopDeps) {
   })
 }
 
+/**
+ * Recovery from the provider rejecting a request as too large: one more automatic compaction, then the request is
+ * retried, at most `OVERFLOW_RECOVERY_LIMIT` times in a row. The pre-step gate cannot bound this, because it judges the
+ * request before it is sent and never sees a rejection. A step the provider did not reject for size ends the streak.
+ * The stop message names the likeliest cause, a window larger than the model really has; it goes to the user only.
+ */
+function makeOverflowRecovery(deps: LoopDeps) {
+  const { events } = deps
+  return Effect.fnUntraced(function* (input: {
+    sessionID: SessionID
+    model: Provider.Model
+    state: TurnState
+    result: SessionProcessor.Result
+    /** The assistant message of the rejected request; it records the stop reason instead of a bare failure name. */
+    message: SessionV1.Assistant
+  }): Effect.fn.Return<TurnState> {
+    // Same reading as `settleAttempt`: a rejected request leaves the message without a finish, while a "compact" after
+    // a finished step is the post-step usage check.
+    const rejected = input.result === "compact" && input.message.finish === undefined
+    if (!rejected) return State.resetOverflowRecoveries(input.state)
+    if (Decide.decideOverflowRecovery(input.state).kind !== "finish") return State.recordOverflowRecovery(input.state)
+    const { providerID, id: modelID } = input.model
+    const error = new SessionV1.ContextOverflowError({
+      message: `Provider rejected the request as too large after ${Decide.OVERFLOW_RECOVERY_LIMIT} consecutive automatic compactions. If ${providerID}/${modelID} has a smaller context window than assumed, declare it with provider.${providerID}.models.${modelID}.limit.context in graphagent.json.`,
+    })
+    input.message.error = error.toObject()
+    yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: input.message.error })
+    throw error
+  })
+}
+
 type ModelStepResult = {
   readonly state: TurnState
   readonly outcome: "break" | "continue"
@@ -506,6 +519,7 @@ type ModelStepResult = {
 
 function makeModelStep(deps: LoopDeps) {
   const { prepareFns, settleFns, instruction } = deps
+  const recover = makeOverflowRecovery(deps)
   return Effect.fnUntraced(function* (input: {
     sessionID: SessionID
     session: Session.Info
@@ -568,6 +582,7 @@ function makeModelStep(deps: LoopDeps) {
           }),
         ),
       )
+      state = yield* recover({ sessionID: input.sessionID, model: input.model, state, result, message: input.msg })
       const settled = yield* settleFns.settleAttempt({
         sessionID: input.sessionID,
         lastUser: input.lastUser,

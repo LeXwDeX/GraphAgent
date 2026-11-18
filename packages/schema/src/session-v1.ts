@@ -243,6 +243,26 @@ export const StepStartPart = Schema.Struct({
 }).annotate({ identifier: "StepStartPart" })
 export type StepStartPart = Types.DeepMutable<Schema.Schema.Type<typeof StepStartPart>>
 
+/**
+ * #1473: what one provider request cost, in whole milliseconds and counts. Durable events encode their payload
+ * against this schema, so a fractional or negative duration would fail the publish.
+ */
+export const StepFinishMetrics = Schema.Struct({
+  /** From the start of the turn's processing to the request being sent. */
+  prepareMs: NonNegativeInt,
+  /** From the request being sent to the step finishing. */
+  requestMs: NonNegativeInt,
+  /** From the request being sent to the first streamed token; 0 when no token streamed. */
+  ttftMs: NonNegativeInt,
+  /** Tool calls that reached a terminal state in this step, failed ones included. */
+  toolCalls: NonNegativeInt,
+  /** Of those, the calls that ended in an error or were aborted. */
+  toolErrors: NonNegativeInt,
+  /** Retries of the provider request before this step went through. */
+  retries: NonNegativeInt,
+}).annotate({ identifier: "StepFinishMetrics" })
+export type StepFinishMetrics = Types.DeepMutable<Schema.Schema.Type<typeof StepFinishMetrics>>
+
 export const StepFinishPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("step-finish"),
@@ -259,6 +279,7 @@ export const StepFinishPart = Schema.Struct({
       write: Schema.Finite,
     }),
   }),
+  metrics: Schema.optional(StepFinishMetrics),
 }).annotate({ identifier: "StepFinishPart" })
 export type StepFinishPart = Types.DeepMutable<Schema.Schema.Type<typeof StepFinishPart>>
 
