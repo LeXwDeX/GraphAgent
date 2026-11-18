@@ -14,7 +14,7 @@ import { useOptionalTicker } from "../../context/ticker-context"
 import { t } from "../../i18n"
 import { useCommandShortcut } from "../../keymap"
 import { backgroundItems } from "../../session/background"
-import { isRoot } from "../../session/role"
+import { isRoot, isSubagent } from "../../session/role"
 import { isGoalShown } from "../../shell/status-band"
 import type { AmbiguousWidth } from "../../ui/width"
 import { remoteLine } from "../../util/remote-text"
@@ -27,21 +27,22 @@ import {
   contextBarCells,
   contextTone,
   contextUsage,
-  costText,
   goalLine,
   sameBackgroundSection,
   services,
   todoCount,
   todoMark,
+  usageLines,
   type BackgroundRunRow,
 } from "./drawer-model"
 
 /**
  * The drawer's sections (#1032 5.2), in their fixed order: session, context, cost, the DAG mode line, goal,
  * background runs, todo, services. Each is a plain display component over `useSync()`; nothing in the drawer is
- * clickable. The context, cost and todo follow the session on screen, a sub-agent's included; the goal and the
- * background runs are always the root session's; LSP and MCP are global. The modified-files section is left out for
- * now (#1032 D8): since H5 its data source is mostly empty.
+ * clickable. The context and todo follow the session on screen, a sub-agent's included; the cost is the whole task
+ * tree's, with a line of the session's own on a sub-agent's screen (#1475); the goal and the background runs are
+ * always the root session's; LSP and MCP are global. The modified-files section is left out for now (#1032 D8): since
+ * H5 its data source is mostly empty.
  */
 
 function Heading(props: { title: string; detail?: string }) {
@@ -137,15 +138,36 @@ function DrawerContext(props: { sessionID: string }) {
   )
 }
 
-function DrawerCost(props: { sessionID: string }) {
+/**
+ * What the whole task tree on screen has used (#1475): the cost and the tokens of the root, its sub-agents and its DAG
+ * nodes, read from the server (`GET /session/:id/usage`) for the root of the tree, whichever session of it is shown.
+ * A sub-agent's screen adds a last line with what that session has used by itself. Display only, nothing to click.
+ * The usage is read only while this section is mounted, that is while the drawer is open: the effect below counts the
+ * root as watched and lets go of it when the drawer closes or another tree comes on screen.
+ */
+function DrawerCost(props: { sessionID: string; rootID: string }) {
   const sync = useSync()
+  const kv = useKV()
   const { theme } = useTheme()
-  const cost = createMemo(() => costText(sync.session.get(props.sessionID)?.cost))
+  createEffect(() => {
+    onCleanup(sync.usage.watch(props.rootID))
+  })
+  const session = createMemo(() => sync.session.get(props.sessionID))
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
+  const lines = createMemo(() =>
+    usageLines(sync.data.usage[props.rootID], session(), isSubagent(session()), ambiguousWidth()),
+  )
 
   return (
     <box>
       <Heading title={t("drawer.cost")} />
-      <text fg={theme.textMuted}>{cost()}</text>
+      <For each={lines()}>
+        {(line) => (
+          <text fg={theme.textMuted} wrapMode="none">
+            {line}
+          </text>
+        )}
+      </For>
     </box>
   )
 }
@@ -369,7 +391,7 @@ export function SessionDrawer(props: { sessionID: string }) {
           <box flexShrink={0} gap={1} paddingRight={1}>
             <DrawerSession sessionID={props.sessionID} />
             <DrawerContext sessionID={props.sessionID} />
-            <DrawerCost sessionID={props.sessionID} />
+            <DrawerCost sessionID={props.sessionID} rootID={rootID()} />
             <DrawerDagMode sessionID={props.sessionID} />
             <DrawerGoal rootID={rootID()} />
             <DrawerBackground rootID={rootID()} />

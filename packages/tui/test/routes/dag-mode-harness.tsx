@@ -4,7 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { Session, SessionDagMode } from "@graphagent/sdk"
+import type { Session, SessionDagMode, SessionUsage } from "@graphagent/sdk"
 import { onCleanup, type JSX } from "solid-js"
 import { unwrap } from "solid-js/store"
 import { TuiConfigProvider } from "../../src/config"
@@ -78,6 +78,30 @@ export function dagModeStatus(extra: Partial<SessionDagMode> = {}): SessionDagMo
   }
 }
 
+/** The usage of a task tree as the server sums it (`GET /session/:id/usage`); nothing used unless `extra` says so. */
+export function usageFixture(rootID: string, extra: Partial<SessionUsage> = {}): SessionUsage {
+  return {
+    rootID,
+    sessions: 1,
+    cost: 0,
+    costUnknown: false,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    ...extra,
+  }
+}
+
+/** The top of `sessionID`'s parent chain among `sessions`: the root the usage endpoint answers for any session of a tree. */
+function rootOfFixture(sessions: readonly Session[], sessionID: string) {
+  const byID = new Map(sessions.map((item) => [item.id, item]))
+  let current = sessionID
+  for (let depth = 0; depth < sessions.length; depth++) {
+    const parentID = byID.get(current)?.parentID
+    if (!parentID) break
+    current = parentID
+  }
+  return current
+}
+
 const agent = { name: "build", mode: "primary", permission: [], options: {}, native: true }
 const provider = {
   id: "test",
@@ -109,6 +133,11 @@ export type MountOptions = {
   withAgentAndModel?: boolean
   /** Reply to `GET /session/:id/dag-mode`; defaults to an available status. */
   dagMode?: (sessionID: string) => Response | SessionDagMode | Promise<Response | SessionDagMode>
+  /**
+   * Reply to `GET /session/:id/usage`; defaults to the root of the session's tree with nothing used. The real endpoint
+   * answers for any session of a tree with its root's total, so the default names the root, not the session asked.
+   */
+  usage?: (sessionID: string) => Response | SessionUsage | undefined | Promise<Response | SessionUsage | undefined>
   /** Reply to `POST /session/:id/command`. */
   command?: (body: unknown) => Response
   /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
@@ -160,6 +189,10 @@ export async function mountRoute(options: MountOptions) {
       if (url.pathname === `/session/${item.id}/attention`) return json({})
       if (url.pathname === `/session/${item.id}/dag-mode`) {
         const reply = (await options.dagMode?.(item.id)) ?? dagModeStatus()
+        return reply instanceof Response ? reply : json(reply)
+      }
+      if (url.pathname === `/session/${item.id}/usage`) {
+        const reply = (await options.usage?.(item.id)) ?? usageFixture(rootOfFixture(sessions, item.id))
         return reply instanceof Response ? reply : json(reply)
       }
       if (url.pathname === `/session/${item.id}/command`) {

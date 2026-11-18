@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import type { Goal, Message, Session } from "@graphagent/sdk"
+import type { GlobalEvent, Goal, Message, Session, SessionUsage } from "@graphagent/sdk"
 import type { CapturedFrame, RGBA } from "@opentui/core"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createSignal, Show } from "solid-js"
@@ -17,10 +17,11 @@ import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth } from "../../../src/ui/width"
 import { RUN_START, endRun, runSessionID, seedRun } from "../../fixture/background-runs"
 import { directory, json } from "../../fixture/tui-sdk"
-import { mountRoute, sessionFixture, type MountOptions } from "../dag-mode-harness"
+import { mountRoute, sessionFixture, usageFixture, type MountOptions } from "../dag-mode-harness"
 
 // What the drawer's sections show and in what order (#1032 5.2): session, context, cost, the mode line, goal, todo,
-// services, then the key that closes it. Empty sections are left out; the modified files are not shown (#1032 D8).
+// services, then the key that closes it. Empty sections are left out; the modified files are not shown (#1032 D8). The
+// cost is the whole task tree's, read from the server for the root of the tree (#1475).
 
 const ROOT = "ses_content_root"
 const CHILD = "ses_content_child"
@@ -103,19 +104,27 @@ type Data = {
   context?: Record<string, number>
   lsp?: readonly unknown[]
   mcp?: Record<string, unknown>
+  /** What the server sums for the tree, whichever session of it is asked about; nothing used without it. */
+  usage?: SessionUsage
 }
 
 async function mountDrawer(
-  options: { root?: Partial<Session>; sessionID?: string; data?: Data } & Partial<MountOptions> = {},
+  options: {
+    root?: Partial<Session>
+    child?: Partial<Session>
+    sessionID?: string
+    data?: Data
+  } & Partial<MountOptions> = {},
 ) {
-  const { root, sessionID, data = {}, ...rest } = options
+  const { root, child, sessionID, data = {}, ...rest } = options
   const width = rest.width ?? 120
   const harness = await mountRoute({
     route: { type: "session", sessionID: sessionID ?? ROOT },
     sessions: [
       sessionFixture(ROOT, { title: "依赖升级", cost: 1.5, time: { created: 1, updated: 9 }, ...root }),
-      sessionFixture(CHILD, { parentID: ROOT, title: "子任务", cost: 0.25 }),
+      sessionFixture(CHILD, { parentID: ROOT, title: "子任务", cost: 0.25, ...child }),
     ],
+    usage: () => data.usage,
     handler: (url) => {
       if (url.pathname === "/config/providers") return json(providers)
       if (url.pathname === "/lsp") return json(data.lsp ?? [])
@@ -164,6 +173,27 @@ async function column(harness: Mount, width: number, ready: (lines: string[]) =>
 }
 
 const has = (needle: string) => (lines: string[]) => lines.some((line) => line.includes(needle))
+
+let sequence = 0
+/** A turn that ended in `sessionID`: the moment its usage was last written, and what makes the drawer read it again. */
+function settledTurn(sessionID: string): GlobalEvent {
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- synthetic fixture: only the fields the sync layer reads are populated.
+  return {
+    directory,
+    project: "proj_test",
+    payload: {
+      id: `evt_drawer_usage_${++sequence}`,
+      type: "session.turn.settled",
+      properties: {
+        sessionID,
+        turnID: `turn_${sequence}`,
+        outcome: { type: "completed" },
+        steps: 1,
+        timeEnded: sequence,
+      },
+    },
+  } as GlobalEvent
+}
 const palette = () => resolveTheme(DEFAULT_THEMES[DEFAULT_THEME], "dark")
 
 function colorOf(frame: CapturedFrame, needle: string): RGBA | undefined {
@@ -185,6 +215,11 @@ const FULL: Data = {
   context: { [ROOT]: 849 },
   lsp: [{ id: "typescript", name: "TypeScript", root: directory, status: "connected" }],
   mcp: { github: { status: "connected" }, search: { status: "connected" }, broken: { status: "failed", error: "x" } },
+  usage: usageFixture(ROOT, {
+    sessions: 4,
+    cost: 1.5,
+    tokens: { input: 12_345, output: 3_400, reasoning: 800, cache: { read: 1_200_000, write: 30_000 } },
+  }),
 }
 
 describe("the drawer's sections", () => {
@@ -195,7 +230,7 @@ describe("the drawer's sections", () => {
         const lines = await column(
           harness,
           width,
-          (all) => has("85%")(all) && has("跑 CI")(all) && has("MCP 已连接")(all),
+          (all) => has("85%")(all) && has("跑 CI")(all) && has("MCP 已连接")(all) && has("缓存 读")(all),
           "every section",
         )
         expect(lines).toMatchSnapshot()
@@ -217,7 +252,7 @@ describe("the drawer's sections", () => {
       const lines = await column(
         harness,
         120,
-        (all) => has("85%")(all) && has("MCP 2 connected")(all) && has("Todo 1/3")(all),
+        (all) => has("85%")(all) && has("MCP 2 connected")(all) && has("Todo 1/3")(all) && has("Cache r")(all),
         "every section",
       )
       expect(lines).toMatchSnapshot()
@@ -229,7 +264,7 @@ describe("the drawer's sections", () => {
   test("leave out what has no data, and show the context as a dash before the first answer", async () => {
     const harness = await mountDrawer()
     try {
-      const lines = await column(harness, 120, (all) => has("$1.50")(all) && has("ctrl+b 关闭")(all), "the drawer")
+      const lines = await column(harness, 120, (all) => has("$0.00")(all) && has("ctrl+b 关闭")(all), "the drawer")
       expect(lines.some((line) => line.trim() === "—")).toBe(true)
       for (const absent of ["目标", "待办", "服务", "LSP", "MCP", "修改的文件"]) expect(has(absent)(lines)).toBe(false)
     } finally {
@@ -295,48 +330,342 @@ describe("the context bar", () => {
 })
 
 describe("a sub-agent session's drawer", () => {
-  test("follows the sub-agent for context, cost and todo, and shows the root session's goal", async () => {
+  test("follows the sub-agent for context and todo, and shows the root session's goal and the tree's cost", async () => {
     const harness = await mountDrawer({
       sessionID: CHILD,
       data: {
         goal: GOAL,
         todo: { [ROOT]: FULL.todo![ROOT], [CHILD]: [{ content: "子任务待办", status: "pending", priority: "high" }] },
         context: { [ROOT]: 849, [CHILD]: 499 },
+        usage: FULL.usage,
       },
     })
     try {
       const lines = await column(
         harness,
         120,
-        (all) => has("子任务待办")(all) && has("全部依赖")(all) && has("50%")(all),
+        (all) => has("子任务待办")(all) && has("全部依赖")(all) && has("50%")(all) && has("本会话")(all),
         "the sub-agent's drawer",
       )
       expect(has("跑 CI")(lines)).toBe(false)
       expect(has("85%")(lines)).toBe(false)
-      expect(has("$0.25")(lines)).toBe(true)
-      expect(has("$1.50")(lines)).toBe(false)
       expect(has("DAG 模式")(lines)).toBe(false)
+      // The cost is the tree's, the root's own figure is not shown; the sub-agent's own comes last.
+      expect(has("$1.50")(lines)).toBe(true)
+      expect(lines.some((line) => line.trim() === "本会话 $0.25")).toBe(true)
     } finally {
       await harness.dispose()
     }
   })
 })
 
-for (const aw of [1, 2] as const) {
-  for (const language of ["zh-CN", "en"] as const) {
-    test(`every drawer row fits its 40 columns at 80 columns, ${language}, ambiguous_width ${aw}`, async () => {
+// ── The cost section (#1475) ────────────────────────────────────────────────────────────────────────────────────
+//
+// The cost and the tokens of the whole task tree the screen's session belongs to, read for the tree's root: the same
+// figures whichever session of the tree is on screen. A sub-agent's screen adds what that session used by itself.
+
+const COST_SECTION = ["费用", "$1.50", "输入 12K · 输出 3.4K", "推理 800", "缓存 读 1.2M · 写 30K"]
+
+/** The `count` lines of a drawer column from the cost heading on, trimmed: the heading and the lines under it. */
+function costSection(lines: string[], count: number) {
+  const from = lines.findIndex((line) => line.trim() === "费用" || line.trim() === "Cost")
+  return from === -1 ? [] : lines.slice(from, from + count).map((line) => line.trim())
+}
+
+describe("the cost section", () => {
+  test("shows the tree's cost and tokens, not the root session's own figure", async () => {
+    // The root session row says $1.50 on its own; the tree, with its sub-agents, has cost more.
+    const harness = await mountDrawer({
+      data: { usage: usageFixture(ROOT, { cost: 4.25, tokens: FULL.usage!.tokens }) },
+    })
+    try {
+      const lines = await column(harness, 120, has("缓存 读"), "the cost section")
+      expect(costSection(lines, 5)).toEqual([
+        "费用",
+        "$4.25",
+        "输入 12K · 输出 3.4K",
+        "推理 800",
+        "缓存 读 1.2M · 写 30K",
+      ])
+      expect(has("$1.50")(lines)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is the same on a sub-agent's screen, with the session's own cost under it", async () => {
+    const harness = await mountDrawer({ sessionID: CHILD, data: { usage: FULL.usage } })
+    try {
+      const lines = await column(harness, 120, has("本会话"), "the cost section")
+      expect(costSection(lines, 6)).toEqual([...COST_SECTION, "本会话 $0.25"])
+      // It asked for the root's usage: one read, for the root, never for the sub-agent.
+      expect(harness.requested.filter((request) => request.endsWith("/usage"))).toEqual([`GET /session/${ROOT}/usage`])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says the same in English", async () => {
+    setLanguage("en")
+    const harness = await mountDrawer({ language: "en", sessionID: CHILD, data: { usage: FULL.usage } })
+    try {
+      const lines = await column(harness, 120, has("This session"), "the cost section")
+      expect(costSection(lines, 6)).toEqual([
+        "Cost",
+        "$1.50",
+        "In 12K · Out 3.4K",
+        "Reasoning 800",
+        "Cache r 1.2M · w 30K",
+        "This session $0.25",
+      ])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  for (const [language, unknown] of [
+    ["zh-CN", "未知"],
+    ["en", "unknown"],
+  ] as const) {
+    test(`names a price nobody has instead of showing it as free, ${language}`, async () => {
       setLanguage(language)
-      const harness = await mountDrawer({ width: 80, language, kv: { ambiguous_width: aw }, data: FULL })
+      const known = await mountDrawer({
+        language,
+        data: { usage: usageFixture(ROOT, { cost: 1.5, costUnknown: true }) },
+      })
       try {
-        const lines = await column(harness, 80, has("85%"), "the drawer")
-        for (const line of lines) expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_WIDTH)
-        // The left 40 columns are the main area's: nothing of the drawer spills into them.
-        const frame = await harness.waitForFrame(() => true, "the frame")
-        for (const row of rowsOf(frame)) expect(row.slice(0, 80 - DRAWER_WIDTH).trim()).toBe("")
+        const lines = await column(known, 120, has(unknown), "the unknown cost")
+        expect(costSection(lines, 5)[1]).toBe(`$1.50 + ${unknown}`)
       } finally {
-        await harness.dispose()
+        await known.dispose()
+      }
+
+      // Nothing priced at all: the word alone, never `$0.00`.
+      const none = await mountDrawer({
+        language,
+        sessionID: CHILD,
+        // The sub-agent recorded tokens at no cost; so did the tree.
+        child: { cost: 0, tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } },
+        data: { usage: usageFixture(ROOT, { cost: 0, costUnknown: true }) },
+      })
+      try {
+        const lines = await column(none, 120, has(language === "en" ? "This session" : "本会话"), "the unknown cost")
+        const section = costSection(lines, 6)
+        expect(section[1]).toBe(unknown)
+        expect(section[5]).toBe(language === "en" ? `This session ${unknown}` : `本会话 ${unknown}`)
+        expect(has("$0.00")(lines)).toBe(false)
+      } finally {
+        await none.dispose()
       }
     })
+  }
+
+  test("keeps a fraction of a cent: $0.0027 is not $0.00", async () => {
+    const harness = await mountDrawer({ data: { usage: usageFixture(ROOT, { cost: 0.0027 }) } })
+    try {
+      const lines = await column(harness, 120, has("缓存 读"), "the cost section")
+      expect(costSection(lines, 5)[1]).toBe("$0.0027")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is a dash, and nothing else, until the usage is read; a failed read leaves it so", async () => {
+    const harness = await mountDrawer({ data: FULL, usage: () => new Response("nope", { status: 500 }) })
+    try {
+      const lines = await column(harness, 120, has("MCP 已连接"), "the drawer")
+      await harness.settle()
+      expect(harness.requested.filter((request) => request.endsWith("/usage"))).not.toEqual([])
+      expect(costSection(lines, 2)).toEqual(["费用", "—"])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is read again when a turn settles in the tree, and shows the new figures", async () => {
+    let cost = 1.5
+    const harness = await mountDrawer({
+      sessionID: CHILD,
+      data: FULL,
+      usage: () => usageFixture(ROOT, { cost, tokens: FULL.usage!.tokens }),
+    })
+    try {
+      await column(harness, 120, has("$1.50"), "the first figures")
+      cost = 2.75
+      harness.events.emit(settledTurn(CHILD))
+      const lines = await column(harness, 120, has("$2.75"), "the new figures")
+      expect(has("$1.50")(lines)).toBe(false)
+      expect(harness.requested.filter((request) => request.endsWith("/usage"))).toEqual([
+        `GET /session/${ROOT}/usage`,
+        `GET /session/${ROOT}/usage`,
+      ])
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is read only while the drawer is open: closed, a settled turn asks for nothing; opened again, it reads", async () => {
+    const [open, setOpen] = createSignal(true)
+    const harness = await mountDrawer({
+      data: FULL,
+      view: () => (
+        <>
+          <Bindings />
+          <Show when={open()}>
+            <Drawer>
+              <SessionDrawer sessionID={ROOT} />
+            </Drawer>
+          </Show>
+        </>
+      ),
+    })
+    const reads = () => harness.requested.filter((request) => request.endsWith("/usage")).length
+    try {
+      await column(harness, 120, has("缓存 读"), "the open drawer")
+      expect(reads()).toBe(1)
+
+      setOpen(false)
+      await harness.waitForFrame((frame) => !frame.includes("上下文"), "the closed drawer")
+      harness.events.emit(settledTurn(ROOT))
+      harness.events.emit(settledTurn(CHILD))
+      await harness.settle()
+      await Bun.sleep(60)
+      expect(reads()).toBe(1)
+
+      // A reconnect while it is closed asks for nothing either.
+      harness.events.reconnect()
+      await harness.settle()
+      await Bun.sleep(60)
+      expect(reads()).toBe(1)
+
+      setOpen(true)
+      await column(harness, 120, has("缓存 读"), "the drawer opened again")
+      await harness.waitForFrame(() => reads() === 2, "the second read")
+      expect(reads()).toBe(2)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the tree on screen: another tree's usage is read when it comes up, and the old one is let go", async () => {
+    const OTHER = "ses_content_other"
+    const [shown, setShown] = createSignal(ROOT)
+    const harness = await mountDrawer({
+      data: FULL,
+      sessions: [
+        sessionFixture(ROOT, { title: "依赖升级", cost: 1.5, time: { created: 1, updated: 9 } }),
+        sessionFixture(CHILD, { parentID: ROOT, title: "子任务", cost: 0.25 }),
+        sessionFixture(OTHER, { title: "另一棵树", cost: 7.5 }),
+      ],
+      usage: (id) => usageFixture(id, { cost: id === OTHER ? 7.5 : 1.5, tokens: FULL.usage!.tokens }),
+      view: () => (
+        <>
+          <Bindings />
+          <Drawer>
+            <SessionDrawer sessionID={shown()} />
+          </Drawer>
+        </>
+      ),
+    })
+    const reads = () => harness.requested.filter((request) => request.endsWith("/usage"))
+    try {
+      await column(harness, 120, has("$1.50"), "the first tree")
+      expect(reads()).toEqual([`GET /session/${ROOT}/usage`])
+
+      setShown(OTHER)
+      await column(harness, 120, has("$7.50"), "the other tree")
+      expect(reads()).toEqual([`GET /session/${ROOT}/usage`, `GET /session/${OTHER}/usage`])
+
+      // The first tree is let go: a turn settling in it asks for nothing, one in the tree on screen does.
+      harness.events.emit(settledTurn(CHILD))
+      await harness.settle()
+      await Bun.sleep(60)
+      expect(reads()).toHaveLength(2)
+      harness.events.emit(settledTurn(OTHER))
+      await harness.waitForFrame(() => reads().length === 3, "the read for the tree on screen")
+      expect(reads().at(-1)).toBe(`GET /session/${OTHER}/usage`)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("listens to no clock: with the section on screen the ticker has no subscriber, and the figures arrive once", async () => {
+    const clock = clockTicker(NOW)
+    const harness = await mountDrawer({ data: FULL, ticker: clock.ticker })
+    try {
+      await column(harness, 120, has("缓存 读"), "the cost section")
+      await harness.settle()
+      await Bun.sleep(60)
+      expect(clock.calls).toEqual({ frame: 0, second: 0, released: 0 })
+      // Nothing polls: the one read the section made at the start is the only one.
+      expect(harness.requested.filter((request) => request.endsWith("/usage"))).toHaveLength(1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a click anywhere in the section sends nothing and asks for nothing more", async () => {
+    const harness = await mountDrawer({ sessionID: CHILD, data: FULL })
+    try {
+      const before = await column(harness, 120, has("本会话"), "the cost section")
+      const reads = harness.requested.filter((request) => request.endsWith("/usage")).length
+      // The section is at the top of the column: rows 1 to 14 cover it, whatever its height.
+      for (let row = 1; row <= 14; row++) await harness.app.mockMouse.click(120 - DRAWER_WIDTH + 4, row)
+      await harness.settle()
+      expect(columnOf(await harness.waitForFrame(() => true, "the frame"), 120)).toEqual(before)
+      expect(harness.writes()).toEqual([])
+      expect(harness.commands()).toEqual([])
+      expect(harness.requested.filter((request) => request.endsWith("/usage")).length).toBe(reads)
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+/** The worst a tree can say: a cost with a part nobody priced and figures that need every digit. */
+const WORST = usageFixture(ROOT, {
+  cost: 12_345.67,
+  costUnknown: true,
+  tokens: {
+    input: 987_654_321,
+    output: 123_456_789,
+    reasoning: 999_999_999,
+    cache: { read: 888_888_888, write: 777_777_777 },
+  },
+})
+
+for (const width of [80, 120] as const) {
+  for (const aw of [1, 2] as const) {
+    for (const language of ["zh-CN", "en"] as const) {
+      for (const [screen, sessionID] of [
+        ["the root", ROOT],
+        ["a sub-agent", CHILD],
+      ] as const) {
+        test(`every drawer row fits its 40 columns at ${width} columns, ${screen}, ${language}, ambiguous_width ${aw}`, async () => {
+          setLanguage(language)
+          const mark = language === "en" ? "Cache r" : "缓存 读"
+          const harness = await mountDrawer({
+            width,
+            language,
+            sessionID,
+            kv: { ambiguous_width: aw },
+            data: { ...FULL, context: { [ROOT]: 849, [CHILD]: 849 }, usage: WORST },
+          })
+          try {
+            const lines = await column(harness, width, (all) => has("85%")(all) && has(mark)(all), "the drawer")
+            // The cost section is on screen with its figures, so the widths below measure it.
+            expect(has("$12,345.67")(lines)).toBe(true)
+            for (const line of lines) expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_WIDTH)
+            // The columns left of the drawer are the main area's: nothing of the drawer spills into them.
+            const frame = await harness.waitForFrame(() => true, "the frame")
+            for (const row of rowsOf(frame)) expect(row.slice(0, width - DRAWER_WIDTH).trim()).toBe("")
+          } finally {
+            await harness.dispose()
+          }
+        })
+      }
+    }
   }
 }
 
