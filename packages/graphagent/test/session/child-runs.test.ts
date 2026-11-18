@@ -141,15 +141,17 @@ describe("ChildRuns.start", () => {
       expect(yield* handle.markRunning).toBe(true)
       expect((yield* runRows(db, child))[0]?.state).toBe("running")
       expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
-      // It began after the wait, which is the run's own clock, and the row keeps only what it always did.
+      // It began after the wait, which is the run's own clock. The `running` write is the state alone: the moment is
+      // kept by the ending row (#1426), not by a column of its own.
       expect(ChildRegistry.activeFor(child)?.runningAt).toBe(75)
       expect(ChildRegistry.waiting(ChildRegistry.activeFor(child)!)).toBe(false)
       expect(Object.keys((yield* runRows(db, child))[0])).not.toContain("running_at")
+      expect((yield* runRows(db, child))[0]?.outcome).toBeNull()
 
       expect(yield* handle.settle({ type: "completed" })).toBe(true)
       const ended = (yield* runRows(db, child))[0]
       expect(ended?.state).toBe("ended")
-      expect(ended?.outcome).toEqual({ type: "completed" })
+      expect(ended?.outcome).toEqual({ type: "completed", runningAt: 75 })
       expect(ended?.time_ended).not.toBeNull()
       // A detached run that finished is owed to the result ledger (`child.result`): the parent has not been told yet.
       expect(ended?.reported_at).toBeNull()
@@ -212,6 +214,26 @@ describe("dag node runs", () => {
       yield* handle.settle({ type: "completed" })
       // The DAG delivers its own result: the ending is already reported.
       expect((yield* runRows(db, child))[0]?.reported_at).not.toBeNull()
+    }),
+  )
+
+  it.effect("keeps no moment of beginning in the node's ending row: its result is the DAG's, not the ledger's", () =>
+    Effect.gen(function* () {
+      const { db, scoped, newChild } = yield* setup("dag-began")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: dagOwner(),
+        detached: false,
+        permission: { ask: "auto" },
+      })
+      yield* TestClock.adjust("30 millis")
+      yield* handle.markRunning
+      // The registry knows when the node's run began (#1407); only a task's ending row keeps it (#1426).
+      expect(ChildRegistry.activeFor(child)?.runningAt).toBe(30)
+
+      yield* handle.settle({ type: "completed" })
+      expect((yield* runRows(db, child))[0]?.outcome).toEqual({ type: "completed" })
     }),
   )
 
@@ -496,7 +518,8 @@ describe("run settlement races", () => {
       ])
 
       expect([first, second]).toEqual([true, false])
-      expect((yield* runRows(db, child))[0]?.outcome).toEqual({ type: "completed" })
+      // The test clock stands at 0 when the run begins.
+      expect((yield* runRows(db, child))[0]?.outcome).toEqual({ type: "completed", runningAt: 0 })
     }),
   )
 
@@ -517,7 +540,11 @@ describe("run settlement races", () => {
       const rows = yield* runRows(db, child)
       expect(rows).toHaveLength(1)
       expect(rows[0]?.state).toBe("ended")
-      expect(rows[0]?.outcome).toEqual({ type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_2" } })
+      expect(rows[0]?.outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_2" },
+        runningAt: 0,
+      })
       expect(yield* handle.settled).toEqual({
         type: "cancelled",
         by: { kind: "main_agent_tool", toolCallID: "call_2" },
@@ -558,7 +585,7 @@ describe("ChildRuns.cancel", () => {
       expect(yield* handle.cancelled).toEqual(by)
       const row = (yield* runRows(db, child))[0]
       expect(row?.state).toBe("ended")
-      expect(row?.outcome).toEqual({ type: "cancelled", by })
+      expect(row?.outcome).toEqual({ type: "cancelled", by, runningAt: 0 })
       expect(row?.reported_at).toBe(row?.time_ended ?? -1)
       // The child's own turn is cancelled with a reason naming who asked.
       yield* Effect.yieldNow
@@ -703,7 +730,8 @@ describe("a cancelled run keeps its child session reserved", () => {
         [1, "ended", true],
         [2, "queued", true],
       ])
-      expect(rows[0]?.outcome).toEqual({ type: "cancelled", by })
+      // The real clock: the moment the cancelled run had begun is a time, not a number to name.
+      expect(rows[0]?.outcome).toEqual({ type: "cancelled", by, runningAt: expect.any(Number) })
       yield* second.settle({ type: "completed" })
     }),
   )
@@ -1194,7 +1222,7 @@ describe("registry cleanup", () => {
       expect(ChildRegistry.activeFor(here)).toBeUndefined()
       const row = (yield* runRows(db, here))[0]
       expect(row?.state).toBe("ended")
-      expect(row?.outcome).toEqual({ type: "interrupted", reason: "instance-disposed" })
+      expect(row?.outcome).toEqual({ type: "interrupted", reason: "instance-disposed", runningAt: 0 })
       expect(ChildRegistry.activeFor(elsewhere)?.phase).toBe("queued")
       expect((yield* runRows(db, elsewhere))[0]?.state).toBe("queued")
     }),
@@ -1222,7 +1250,7 @@ describe("registry cleanup", () => {
       expect(EngineProcess.children.byRun.size).toBe(0)
       const row = (yield* runRows(db, child))[0]
       expect(row?.state).toBe("ended")
-      expect(row?.outcome).toEqual({ type: "interrupted", reason: "runtime-closed" })
+      expect(row?.outcome).toEqual({ type: "interrupted", reason: "runtime-closed", runningAt: 0 })
     }),
   )
 })

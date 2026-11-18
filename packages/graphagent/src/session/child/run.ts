@@ -156,17 +156,16 @@ const reportEnding = (ctx: Ctx, entry: ActiveChildRun, outcome: ChildRunOutcome,
   if (entry.ownerKind !== "task") return
   if (outcome.type !== "completed" && outcome.type !== "error") return
   const directory = entry.directory === undefined ? undefined : DagLocation.canonicalDirectory(entry.directory)
-  Registry.record({
-    runID: entry.id,
-    parentSessionID: entry.parentSessionID,
-    directory,
-    epoch,
-    owner: ctx.owner,
-    // When the run left the queue, for the result the delivery writes (#1407). Memory only: the ledger row keeps what
-    // it always did, so a result delivered after a restart has no such time and is timed from the run's start.
-    ...(entry.runningAt === undefined ? {} : { runningAt: entry.runningAt }),
-  })
+  Registry.record({ runID: entry.id, parentSessionID: entry.parentSessionID, directory, epoch, owner: ctx.owner })
 }
+
+/**
+ * The moment a run left the queue, for its ending row (#1407, #1426): the result the ledger delivers is timed from it,
+ * and the delivery may come from another process than the one that saw the run end, so the row has to keep it. Only a
+ * task's: its result is the ledger's, a DAG node's is delivered by the DAG. None for a run that never began.
+ */
+const beganFor = (entry: ActiveChildRun): number | undefined =>
+  entry.ownerKind === "task" ? entry.runningAt : undefined
 
 /**
  * After the ending write: a result that is owed to the ledger (a detached run
@@ -222,7 +221,7 @@ const finish = (
         options.persist === false
           ? Effect.void
           : Clock.currentTimeMillis.pipe(
-              Effect.flatMap((now) => Store.endRun(ctx.db, entry.id, outcome, now, options.report)),
+              Effect.flatMap((now) => Store.endRun(ctx.db, entry.id, outcome, now, options.report, beganFor(entry))),
               Effect.flatMap((ended) => settleReport(ctx, entry, ended)),
               Effect.catchCause((cause) =>
                 Effect.sync(() => Registry.dropReport(entry.id)).pipe(
