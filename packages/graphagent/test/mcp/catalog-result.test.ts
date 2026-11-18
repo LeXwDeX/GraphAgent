@@ -5,9 +5,10 @@ import { describe, expect, test } from "bun:test"
 import type { Client } from "@modelcontextprotocol/client"
 import { convertTool } from "@/mcp/catalog"
 import { mcpHookOptions } from "@/mcp/elicitation-binding"
+import { isRecord } from "@/util/record"
 
 // A client that only answers `callTool`, with the result the test gives it.
-const answering = (result: unknown) => ({ callTool: async () => result }) as unknown as Client
+const answering = (result: unknown): Client => Object.assign(Object.create(null), { callTool: async () => result })
 const definition = { name: "probe", description: "", inputSchema: { type: "object" as const, properties: {} } }
 const options = () => ({ toolCallId: "call-1", messages: [], abortSignal: new AbortController().signal })
 
@@ -17,24 +18,34 @@ const run = (result: unknown, hook = false) => {
   return Promise.resolve(tool.execute!({}, hook ? mcpHookOptions(next) : next))
 }
 
+// The message of the error a call rejects with.
+const failureOf = async (result: unknown) => {
+  const failure = await run(result).then(
+    () => undefined,
+    (error: unknown) => error,
+  )
+  expect(failure).toBeInstanceOf(Error)
+  return failure instanceof Error ? failure.message : ""
+}
+
+// The text of every content item of a returned result.
+const textsOf = (out: unknown): string[] =>
+  isRecord(out) && Array.isArray(out.content)
+    ? out.content.flatMap((item) => (isRecord(item) && typeof item.text === "string" ? [item.text] : []))
+    : []
+
 const structured = { count: 2, items: ["a", "b"] }
 
 describe("convertTool results", () => {
   test("an error keeps its text and says what else it carried", async () => {
-    const result = {
+    const message = await failureOf({
       isError: true,
       content: [
         { type: "text", text: "the call failed" },
         { type: "audio", data: Buffer.alloc(2048).toString("base64"), mimeType: "audio/wav" },
         { type: "resource_link", name: "log", uri: "file:///tmp/log.txt" },
       ],
-    }
-    const failure = await run(result).then(
-      () => undefined,
-      (error: unknown) => error,
-    )
-    expect(failure).toBeInstanceOf(Error)
-    const message = (failure as Error).message
+    })
     expect(message).toContain("the call failed")
     expect(message).toContain("[MCP audio omitted: audio/wav, 2 KB]")
     expect(message).toContain(
@@ -43,32 +54,25 @@ describe("convertTool results", () => {
   })
 
   test("an error with no text still names what it carried", async () => {
-    const failure = await run({
+    const message = await failureOf({
       isError: true,
       content: [{ type: "audio", data: "AAAA", mimeType: "audio/wav" }],
-    }).then(
-      () => undefined,
-      (error: unknown) => error,
-    )
-    expect((failure as Error).message).toBe("[MCP audio omitted: audio/wav, 3 B]")
+    })
+    expect(message).toBe("[MCP audio omitted: audio/wav, 3 B]")
   })
 
   test("an error with no content keeps its generic message", async () => {
-    const failure = await run({ isError: true, content: [] }).then(
-      () => undefined,
-      (error: unknown) => error,
-    )
-    expect((failure as Error).message).toBe("MCP tool returned an error")
+    expect(await failureOf({ isError: true, content: [] })).toBe("MCP tool returned an error")
   })
 
   test("structuredContent is shown beside content, not instead of it", async () => {
-    const result = { content: [{ type: "text", text: "summary" }], structuredContent: structured }
-    const out = (await run(result)) as { content: Array<{ type: string; text: string }>; structuredContent: unknown }
-    expect(out.content).toHaveLength(2)
-    expect(out.content[0]).toEqual({ type: "text", text: "summary" })
-    expect(out.content[1]?.text).toBe(`structuredContent:\n${JSON.stringify(structured, null, 2)}`)
-    expect(out.content[1]?.text.split("\n").length).toBeGreaterThan(3)
-    expect(out.structuredContent).toEqual(structured)
+    const out = await run({ content: [{ type: "text", text: "summary" }], structuredContent: structured })
+    const texts = textsOf(out)
+    expect(texts).toHaveLength(2)
+    expect(texts[0]).toBe("summary")
+    expect(texts[1]).toBe(`structuredContent:\n${JSON.stringify(structured, null, 2)}`)
+    expect(texts[1]?.split("\n").length).toBeGreaterThan(3)
+    expect(out).toHaveProperty("structuredContent", structured)
   })
 
   test("a text item that is the same JSON is not repeated", async () => {
@@ -85,10 +89,9 @@ describe("convertTool results", () => {
   })
 
   test("a call from a hook still gets one compact JSON line", async () => {
-    const result = { content: [{ type: "text", text: "summary" }], structuredContent: structured }
-    const out = (await run(result, true)) as { content: Array<{ type: string; text: string }> }
-    expect(out.content).toEqual([{ type: "text", text: JSON.stringify(structured) }])
-    expect(out.content[0]?.text).not.toContain("\n")
+    const out = await run({ content: [{ type: "text", text: "summary" }], structuredContent: structured }, true)
+    expect(textsOf(out)).toEqual([JSON.stringify(structured)])
+    expect(textsOf(out)[0]).not.toContain("\n")
   })
 
   test("a call from a hook without structuredContent is returned as it is", async () => {

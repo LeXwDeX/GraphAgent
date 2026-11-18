@@ -1697,7 +1697,7 @@ describe("tool.shell output normalization", () => {
   const ESC = String.fromCharCode(27)
   // A command that writes exactly `text`. Codes keep quote characters out of the command line.
   const emit = (text: string) =>
-    exec(`process.stdout.write(String.fromCharCode(${[...text].map((char) => char.charCodeAt(0)).join(",")}))`)
+    exec(`process.stdout.write(String.fromCharCode(${Array.from(text, (_, i) => text.charCodeAt(i)).join(",")}))`)
   const savedPath = (output: string) => /^path: (.+)$/m.exec(output)?.[1]
 
   it.live("folds carriage-return frames and says so", () =>
