@@ -34,8 +34,11 @@ interface FileChange {
   bom: boolean
   /** BOM of the file as read; the source for update, move and delete. */
   oldBom: boolean
-  /** The add or move target existed when planned, and the session had read it. */
-  existed: boolean
+  /**
+   * The add or move target as the call saw it, when it existed and the session had read it. The call's own
+   * baseline, compared with the disk under the locks: the session's record may have been replaced by then.
+   */
+  targetBaseline?: FileState.Baseline
   /** Under the locks: the source no longer matched the session's last record of it. */
   outside: boolean
 }
@@ -53,27 +56,26 @@ export const ApplyPatchTool = Tool.define(
     const verificationFailed = (message: string) => new Error(`apply_patch verification failed: ${message}`)
     const changedWhileAsking = (target: string) => verificationFailed(FileState.changedWhileAskingMessage(target))
 
-    // Add File and Move replace an existing target, which the session must have read in its current state.
-    // Returns whether the target exists.
+    // Add File and Move replace an existing target, which the session must have read in its current state. Returns
+    // the target as seen here (the call's baseline for the check under the locks), or undefined when it does not
+    // exist. The record is checked against that same observation.
     const requireOverwriteRead = Effect.fnUntraced(function* (sessionID: SessionID, target: string) {
-      const existed = yield* afs.existsSafe(target)
-      if (existed) {
-        yield* fileState
-          .requireRead(sessionID, target)
-          .pipe(Effect.mapError((error) => verificationFailed(error.message)))
-      }
-      return existed
+      if (!(yield* afs.existsSafe(target))) return undefined
+      const baseline = yield* fileState.baseline(target)
+      yield* fileState
+        .requireRead(sessionID, target, baseline)
+        .pipe(Effect.mapError((error) => verificationFailed(error.message)))
+      return baseline
     })
 
     // Under the path locks the disk must still hold what the call planned against: an add or move target as the
-    // session read it, or still absent, and a source file with the content the patch was derived from.
+    // call saw it, or still absent, and a source file with the content the patch was derived from.
     const requireTargetUnchanged = Effect.fnUntraced(function* (
-      sessionID: SessionID,
       target: string,
-      existed: boolean,
+      baseline: FileState.Baseline | undefined,
     ) {
-      if (existed)
-        yield* fileState.requireSame(sessionID, target).pipe(Effect.mapError(() => changedWhileAsking(target)))
+      if (baseline)
+        yield* fileState.requireBaseline(target, baseline).pipe(Effect.mapError(() => changedWhileAsking(target)))
       else if (yield* afs.existsSafe(target)) yield* Effect.fail(changedWhileAsking(target))
     })
 
@@ -81,7 +83,7 @@ export const ApplyPatchTool = Tool.define(
     const recheck = Effect.fnUntraced(function* (sessionID: SessionID, changes: ReadonlyArray<FileChange>) {
       for (const change of changes) {
         if (change.type === "add") {
-          yield* requireTargetUnchanged(sessionID, change.filePath, change.existed)
+          yield* requireTargetUnchanged(change.filePath, change.targetBaseline)
           continue
         }
         const read = change.type === "delete" ? Bom.readFile : Bom.readEditableFile
@@ -97,7 +99,7 @@ export const ApplyPatchTool = Tool.define(
         if (change.type !== "delete") {
           change.outside = (yield* fileState.verify(sessionID, change.filePath)) === "changed"
         }
-        if (change.movePath) yield* requireTargetUnchanged(sessionID, change.movePath, change.existed)
+        if (change.movePath) yield* requireTargetUnchanged(change.movePath, change.targetBaseline)
       }
     })
 
@@ -139,7 +141,7 @@ export const ApplyPatchTool = Tool.define(
 
         switch (hunk.type) {
           case "add": {
-            const existed = yield* requireOverwriteRead(ctx.sessionID, filePath)
+            const targetBaseline = yield* requireOverwriteRead(ctx.sessionID, filePath)
             const oldContent = ""
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
@@ -163,7 +165,7 @@ export const ApplyPatchTool = Tool.define(
               deletions,
               bom: next.bom,
               oldBom: false,
-              existed,
+              targetBaseline,
               outside: false,
             })
 
@@ -220,7 +222,7 @@ export const ApplyPatchTool = Tool.define(
             const movePath =
               target && FSUtil.normalizePath(target) !== FSUtil.normalizePath(filePath) ? target : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
-            const existed = movePath ? yield* requireOverwriteRead(ctx.sessionID, movePath) : false
+            const targetBaseline = movePath ? yield* requireOverwriteRead(ctx.sessionID, movePath) : undefined
 
             fileChanges.push({
               filePath,
@@ -233,7 +235,7 @@ export const ApplyPatchTool = Tool.define(
               deletions,
               bom,
               oldBom: source.bom,
-              existed,
+              targetBaseline,
               outside: false,
             })
 
@@ -266,7 +268,6 @@ export const ApplyPatchTool = Tool.define(
               deletions,
               bom: source.bom,
               oldBom: source.bom,
-              existed: false,
               outside: false,
             })
 

@@ -37,18 +37,25 @@ export const WriteTool = Tool.define(
     const format = yield* Format.Service
     const fileState = yield* FileState.Service
 
-    // Replacing an existing file needs a read of its current content in this session.
-    const requireOverwritable = Effect.fnUntraced(function* (sessionID: SessionID, filepath: string) {
+    // Replacing an existing file needs a read of its current content in this session. The bytes read here are what
+    // the call plans against: they are checked against the session's record, and kept as the call's own baseline
+    // for the check under the path lock.
+    const readOverwriteTarget = Effect.fnUntraced(function* (sessionID: SessionID, filepath: string) {
       const info = yield* fs.stat(filepath)
+      if (info.type === "Directory") yield* Effect.fail(new Error(FileState.directoryMessage(filepath)))
       if (Number(info.size) > FileState.MAX_EDITABLE_BYTES)
         yield* Effect.fail(new Error(FileState.tooLargeMessage(filepath)))
-      yield* fileState.requireRead(sessionID, filepath)
+      const bytes = yield* fs.readFile(filepath)
+      const baseline = FileState.baselineOf(bytes)
+      yield* fileState.requireRead(sessionID, filepath, baseline)
+      return { ...Bom.decodeEditable(bytes, filepath), baseline }
     })
 
-    // Under the path lock, the disk must still hold what the call planned against: the file as the session read it,
-    // or no file at all. The question that was asked in between could have taken a while.
-    const requireUnchanged = Effect.fnUntraced(function* (sessionID: SessionID, filepath: string, existed: boolean) {
-      if (existed) yield* fileState.requireSame(sessionID, filepath)
+    // Under the path lock, the disk must still hold what the call planned against: the bytes it read, or no file at
+    // all. The question that was asked in between could have taken a while, and another call of this session may
+    // have replaced the file and the session's record meanwhile, so the call's own baseline decides, not the record.
+    const requireUnchanged = Effect.fnUntraced(function* (filepath: string, baseline: FileState.Baseline | undefined) {
+      if (baseline) yield* fileState.requireBaseline(filepath, baseline)
       else if (yield* fs.existsSafe(filepath))
         yield* Effect.fail(new Error(FileState.changedWhileAskingMessage(filepath)))
     })
@@ -66,8 +73,8 @@ export const WriteTool = Tool.define(
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)
-          if (exists) yield* requireOverwritable(ctx.sessionID, filepath)
-          const source = exists ? yield* Bom.readEditableFile(fs, filepath) : { bom: false, text: "" }
+          const target = exists ? yield* readOverwriteTarget(ctx.sessionID, filepath) : undefined
+          const source = target ?? { bom: false, text: "" }
           const next = Bom.split(params.content)
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
@@ -86,7 +93,7 @@ export const WriteTool = Tool.define(
 
           yield* FileState.withLocks([filepath])(
             Effect.gen(function* () {
-              yield* requireUnchanged(ctx.sessionID, filepath, exists)
+              yield* requireUnchanged(filepath, target?.baseline)
               yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
               if (yield* format.file(filepath)) {
                 // Keep the post-format text: diagnostics and afterEdit use disk line

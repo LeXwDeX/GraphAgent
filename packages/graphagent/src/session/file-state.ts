@@ -29,6 +29,13 @@
  * wait therefore never blocks another writer, and what a call changed is
  * checked at the point where it is written. There is no cross-process lock and
  * no file watching: another process can still change a file between two reads.
+ *
+ * What a call planned against is its own `Baseline`, taken from the bytes it
+ * read before it asks. The session's record cannot play that part: another
+ * call of the same session may replace the file and the record while the
+ * question is open, and a check against the new record would then pass for a
+ * call that still holds the old content and the old approval diff. For the same
+ * reason a read records only the version it consumed (`record` with `expected`).
  */
 import { createHash } from "node:crypto"
 import * as path from "node:path"
@@ -43,11 +50,19 @@ import { SessionID } from "./schema"
 
 export type Source = "read" | "write" | "edit" | "apply_patch"
 
-export interface Entry {
+/**
+ * One version of a file as a call saw it: the sha256 of its bytes (absent above
+ * `MAX_HASHED_BYTES`), its size, and its mtime when it came from the disk.
+ */
+export interface Baseline {
   /** sha256 hex of the file bytes; absent for files larger than `MAX_HASHED_BYTES`. */
   readonly hash?: string
-  readonly mtimeMs: number
+  readonly mtimeMs?: number
   readonly size: number
+}
+
+export interface Entry extends Baseline {
+  readonly mtimeMs: number
   readonly source: Source
 }
 
@@ -58,6 +73,8 @@ export const MAX_HASHED_BYTES = 10 * 1024 * 1024
 export const MAX_EDITABLE_BYTES = 10 * 1024 * 1024
 
 const MAX_EDITABLE_LABEL = `${MAX_EDITABLE_BYTES / (1024 * 1024)} MiB`
+
+export const directoryMessage = (filePath: string) => `Path is a directory, not a file: ${filePath}`
 
 /** An existing file the session has no record of. */
 export const notReadMessage = (filePath: string) =>
@@ -110,10 +127,17 @@ export const withLocks =
       return keys.reduceRight((inner, key) => EngineProcess.fileLocks.withLock(key)(inner), effect)
     })
 
-/** Same content as the record: hashes decide when both sides have one, else size and mtime. */
-function matches(entry: Entry, current: Snapshot): boolean {
-  if (entry.hash !== undefined && current.hash !== undefined) return entry.hash === current.hash
-  return entry.size === current.size && entry.mtimeMs === current.mtimeMs
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+
+/** The baseline of bytes a call has read itself. */
+export function baselineOf(bytes: Uint8Array): Baseline {
+  return { hash: sha256(bytes), size: bytes.byteLength }
+}
+
+/** Same version: hashes decide when both sides have one, else size and mtime. */
+function sameVersion(a: Baseline, b: Baseline): boolean {
+  if (a.hash !== undefined && b.hash !== undefined) return a.hash === b.hash
+  return a.size === b.size && a.mtimeMs === b.mtimeMs
 }
 
 export interface Interface {
@@ -121,9 +145,11 @@ export interface Interface {
   readonly get: (sessionID: SessionID, filePath: string) => Effect.Effect<Entry | undefined>
   /**
    * Record the file's current disk state. Never fails: a path that is not a
-   * regular file, or that cannot be read, is left unrecorded.
+   * regular file, or that cannot be read, is left unrecorded. With `expected`
+   * the file is recorded only when it still is that version, so a read records
+   * the version it consumed and not one that replaced it afterwards.
    */
-  readonly record: (sessionID: SessionID, filePath: string, source: Source) => Effect.Effect<void>
+  readonly record: (sessionID: SessionID, filePath: string, source: Source, expected?: Baseline) => Effect.Effect<void>
   /**
    * Compare the disk with the session's record: "unread" without a record,
    * "changed" when the file is gone, is not a regular file or no longer
@@ -131,10 +157,19 @@ export interface Interface {
    * files compare size and mtime.
    */
   readonly verify: (sessionID: SessionID, filePath: string) => Effect.Effect<"unread" | "changed" | "same">
-  /** Fail unless the file is a regular file the session has read and that still matches that record. */
-  readonly requireRead: (sessionID: SessionID, filePath: string) => Effect.Effect<void, Error>
+  /**
+   * Fail unless the file is a regular file the session has read and that still
+   * matches that record. `observed` is the caller's own reading of the file; it
+   * is checked against the record instead of reading the disk again, so the
+   * check and the caller's plan are about the same bytes.
+   */
+  readonly requireRead: (sessionID: SessionID, filePath: string, observed?: Baseline) => Effect.Effect<void, Error>
   /** Fail with `changedWhileAskingMessage` unless the disk still matches the session's record. */
   readonly requireSame: (sessionID: SessionID, filePath: string) => Effect.Effect<void, Error>
+  /** The file as it is now, to keep as a call's own baseline; undefined when it is not a readable regular file. */
+  readonly baseline: (filePath: string) => Effect.Effect<Baseline | undefined>
+  /** Fail with `changedWhileAskingMessage` unless the file still is the version `baseline` describes. */
+  readonly requireBaseline: (filePath: string, baseline: Baseline) => Effect.Effect<void, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionFileState") {}
@@ -177,11 +212,7 @@ export const layer = Layer.effect(
         const size = Number(info.size)
         if (size > MAX_HASHED_BYTES) return { mtimeMs, size } satisfies Snapshot
         const bytes = yield* fs.readFile(filePath)
-        return {
-          hash: createHash("sha256").update(bytes).digest("hex"),
-          mtimeMs,
-          size: bytes.byteLength,
-        } satisfies Snapshot
+        return { hash: sha256(bytes), mtimeMs, size: bytes.byteLength } satisfies Snapshot
       },
       Effect.catch(() => Effect.succeed(undefined)),
     )
@@ -191,17 +222,20 @@ export const layer = Layer.effect(
       return sessions.get(sessionID)?.get(keyOf(filePath))
     })
 
-    const record: Interface["record"] = Effect.fn("FileState.record")(function* (sessionID, filePath, source) {
-      const current = yield* snapshot(filePath)
-      if (!current) return
-      const sessions = yield* InstanceState.get(state)
-      let files = sessions.get(sessionID)
-      if (!files) {
-        files = new Map()
-        sessions.set(sessionID, files)
-      }
-      files.set(keyOf(filePath), { ...current, source })
-    })
+    const record: Interface["record"] = Effect.fn("FileState.record")(
+      function* (sessionID, filePath, source, expected) {
+        const current = yield* snapshot(filePath)
+        if (!current) return
+        if (expected && !sameVersion(expected, current)) return
+        const sessions = yield* InstanceState.get(state)
+        let files = sessions.get(sessionID)
+        if (!files) {
+          files = new Map()
+          sessions.set(sessionID, files)
+        }
+        files.set(keyOf(filePath), { ...current, source })
+      },
+    )
 
     const verify: Interface["verify"] = Effect.fn("FileState.verify")(function* (sessionID, filePath) {
       const sessions = yield* InstanceState.get(state)
@@ -209,16 +243,24 @@ export const layer = Layer.effect(
       if (!entry) return "unread"
       const current = yield* snapshot(filePath)
       if (!current) return "changed"
-      return matches(entry, current) ? "same" : "changed"
+      return sameVersion(entry, current) ? "same" : "changed"
     })
 
-    const requireRead: Interface["requireRead"] = Effect.fn("FileState.requireRead")(function* (sessionID, filePath) {
-      const info = yield* fs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-      if (info?.type === "Directory") yield* Effect.fail(new Error(`Path is a directory, not a file: ${filePath}`))
-      const status = yield* verify(sessionID, filePath)
-      if (status === "unread") yield* Effect.fail(new Error(notReadMessage(filePath)))
-      if (status === "changed") yield* Effect.fail(new Error(changedSinceReadMessage(filePath)))
-    })
+    const requireRead: Interface["requireRead"] = Effect.fn("FileState.requireRead")(
+      function* (sessionID, filePath, observed) {
+        const info = yield* fs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (info?.type === "Directory") yield* Effect.fail(new Error(directoryMessage(filePath)))
+        const entry = yield* get(sessionID, filePath)
+        if (!entry) {
+          yield* Effect.fail(new Error(notReadMessage(filePath)))
+        } else {
+          const current = observed ?? (yield* snapshot(filePath))
+          if (!current || !sameVersion(entry, current)) {
+            yield* Effect.fail(new Error(changedSinceReadMessage(filePath)))
+          }
+        }
+      },
+    )
 
     const requireSame: Interface["requireSame"] = Effect.fn("FileState.requireSame")(function* (sessionID, filePath) {
       if ((yield* verify(sessionID, filePath)) !== "same") {
@@ -226,7 +268,20 @@ export const layer = Layer.effect(
       }
     })
 
-    return Service.of({ get, record, verify, requireRead, requireSame })
+    const baseline: Interface["baseline"] = Effect.fn("FileState.baseline")(function* (filePath) {
+      return yield* snapshot(filePath)
+    })
+
+    const requireBaseline: Interface["requireBaseline"] = Effect.fn("FileState.requireBaseline")(
+      function* (filePath, expected) {
+        const current = yield* snapshot(filePath)
+        if (!current || !sameVersion(expected, current)) {
+          yield* Effect.fail(new Error(changedWhileAskingMessage(filePath)))
+        }
+      },
+    )
+
+    return Service.of({ get, record, verify, requireRead, requireSame, baseline, requireBaseline })
   }),
 )
 

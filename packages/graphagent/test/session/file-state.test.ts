@@ -532,3 +532,240 @@ describe("FileState.withLocks", () => {
     }),
   )
 })
+
+describe("FileState baselines", () => {
+  it.instance("baselineOf is the sha256 and size of the bytes a call read", () =>
+    Effect.sync(() => {
+      const bytes = Buffer.from("\uFEFFcontent\r\n", "utf8")
+
+      expect(FileState.baselineOf(bytes)).toEqual({ hash: sha256(bytes), size: bytes.byteLength })
+    }),
+  )
+
+  it.instance("baseline is the file as it is now: hash, size and mtime", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+
+      const baseline = yield* state.baseline(file)
+
+      expect(baseline?.hash).toBe(sha256("content"))
+      expect(baseline?.size).toBe(7)
+      expect(baseline?.mtimeMs).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("baseline is undefined for a directory and for a missing file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const directory = path.join(test.directory, "dir")
+      yield* Effect.promise(() => fs.mkdir(directory))
+
+      expect(yield* state.baseline(directory)).toBeUndefined()
+      expect(yield* state.baseline(path.join(test.directory, "missing.txt"))).toBeUndefined()
+    }),
+  )
+
+  it.instance("baseline above the hash limit keeps size and mtime and no hash", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "big.bin")
+      yield* put(file, Buffer.alloc(FileState.MAX_HASHED_BYTES + 1, 97))
+
+      const baseline = yield* state.baseline(file)
+
+      expect(baseline?.hash).toBeUndefined()
+      expect(baseline?.size).toBe(FileState.MAX_HASHED_BYTES + 1)
+      expect(baseline?.mtimeMs).toBeGreaterThan(0)
+    }),
+  )
+})
+
+describe("FileState.requireBaseline", () => {
+  const permissionWait = (file: string) =>
+    `${file} changed while this call waited for permission. Read it again, then retry.`
+
+  it.instance("passes while the file is the version the baseline describes, whatever its mtime", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      const baseline = yield* state.baseline(file)
+      if (!baseline) throw new Error("expected a baseline")
+
+      yield* state.requireBaseline(file, baseline)
+      const later = new Date(Date.now() + 120_000)
+      yield* Effect.promise(() => fs.utimes(file, later, later))
+      yield* state.requireBaseline(file, baseline)
+      yield* state.requireBaseline(file, FileState.baselineOf(Buffer.from("content")))
+    }),
+  )
+
+  it.instance("fails once the content differs, the file is gone, or it became a directory", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      const baseline = FileState.baselineOf(Buffer.from("content"))
+
+      yield* put(file, "Content")
+      expect((yield* state.requireBaseline(file, baseline).pipe(Effect.flip)).message).toBe(permissionWait(file))
+
+      yield* Effect.promise(() => fs.rm(file))
+      expect((yield* state.requireBaseline(file, baseline).pipe(Effect.flip)).message).toBe(permissionWait(file))
+
+      yield* Effect.promise(() => fs.mkdir(file))
+      expect((yield* state.requireBaseline(file, baseline).pipe(Effect.flip)).message).toBe(permissionWait(file))
+    }),
+  )
+
+  // The finding behind this API: another call of the same session replaces the file and the session's record
+  // while the first call waits for permission. The record then agrees with the disk, the baseline does not.
+  it.instance("is not satisfied by a session record that was replaced in the meantime", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "what the first call planned against")
+      yield* state.record(sessionA, file, "read")
+      const baseline = yield* state.baseline(file)
+      if (!baseline) throw new Error("expected a baseline")
+
+      yield* put(file, "what the second call wrote")
+      yield* state.record(sessionA, file, "write")
+
+      yield* state.requireSame(sessionA, file)
+      expect((yield* state.requireBaseline(file, baseline).pipe(Effect.flip)).message).toBe(permissionWait(file))
+    }),
+  )
+
+  it.instance("compares size and mtime above the hash limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "big.bin")
+      yield* put(file, Buffer.alloc(FileState.MAX_HASHED_BYTES + 1, 97))
+      const baseline = yield* state.baseline(file)
+      if (!baseline) throw new Error("expected a baseline")
+      yield* state.requireBaseline(file, baseline)
+
+      const later = new Date((baseline.mtimeMs ?? 0) + 120_000)
+      yield* Effect.promise(() => fs.utimes(file, later, later))
+
+      expect((yield* state.requireBaseline(file, baseline).pipe(Effect.flip)).message).toBe(permissionWait(file))
+    }),
+  )
+})
+
+describe("FileState.record with an expected version", () => {
+  it.instance("records the file while it still is the expected version", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      const expected = yield* state.baseline(file)
+
+      yield* state.record(sessionA, file, "read", expected)
+
+      expect((yield* state.get(sessionA, file))?.hash).toBe(sha256("content"))
+    }),
+  )
+
+  it.instance("leaves the file unrecorded when another version replaced it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "what the read consumed")
+      const expected = yield* state.baseline(file)
+
+      yield* put(file, "what replaced it afterwards")
+      yield* state.record(sessionA, file, "read", expected)
+
+      expect(yield* state.get(sessionA, file)).toBeUndefined()
+      expect((yield* state.requireRead(sessionA, file).pipe(Effect.flip)).message).toContain(
+        "was not read in this session",
+      )
+    }),
+  )
+
+  it.instance("keeps an older record when the new version is not recorded", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "first version")
+      yield* state.record(sessionA, file, "read")
+      const expected = yield* state.baseline(file)
+      yield* put(file, "second version")
+      yield* state.record(sessionA, file, "read", expected)
+
+      expect((yield* state.get(sessionA, file))?.hash).toBe(sha256("first version"))
+      expect((yield* state.requireRead(sessionA, file).pipe(Effect.flip)).message).toContain(
+        "changed after it was last read",
+      )
+    }),
+  )
+
+  it.instance("compares size and mtime above the hash limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "big.bin")
+      const size = FileState.MAX_HASHED_BYTES + 1
+      yield* put(file, Buffer.alloc(size, 97))
+      const expected = yield* state.baseline(file)
+
+      yield* state.record(sessionA, file, "read", expected)
+      expect((yield* state.get(sessionA, file))?.size).toBe(size)
+
+      yield* state.record(sessionB, file, "read", { size: size + 1, mtimeMs: expected?.mtimeMs })
+      expect(yield* state.get(sessionB, file)).toBeUndefined()
+    }),
+  )
+})
+
+describe("FileState.requireRead with an observed version", () => {
+  it.instance("checks the record against what the caller observed, not against the disk again", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "what the session read")
+      yield* state.record(sessionA, file, "read")
+
+      yield* state.requireRead(sessionA, file, FileState.baselineOf(Buffer.from("what the session read")))
+      const error = yield* state
+        .requireRead(sessionA, file, FileState.baselineOf(Buffer.from("what the caller read")))
+        .pipe(Effect.flip)
+
+      expect(error.message).toBe(`${file} changed after it was last read in this session. Read it again, then retry.`)
+    }),
+  )
+
+  it.instance("still refuses a directory and a file without a record", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const directory = path.join(test.directory, "dir")
+      const unread = path.join(test.directory, "unread.txt")
+      yield* Effect.promise(() => fs.mkdir(directory))
+      yield* put(unread, "content")
+      const observed = FileState.baselineOf(Buffer.from("content"))
+
+      expect((yield* state.requireRead(sessionA, directory, observed).pipe(Effect.flip)).message).toBe(
+        `Path is a directory, not a file: ${directory}`,
+      )
+      expect((yield* state.requireRead(sessionA, unread, observed).pipe(Effect.flip)).message).toContain(
+        "was not read in this session",
+      )
+    }),
+  )
+})

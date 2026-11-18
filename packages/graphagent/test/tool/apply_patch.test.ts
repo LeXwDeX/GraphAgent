@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test"
 import path from "path"
 import { createHash } from "node:crypto"
 import * as fs from "fs/promises"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { LSP } from "@/lsp/lsp"
 import type { Diagnostic } from "@/lsp/client"
@@ -1390,4 +1390,136 @@ describe("tool.apply_patch write-point checks (#1452)", () => {
       }),
     )
   })
+})
+
+// #1452 review finding: the check under the path locks used the session's record for an add or move target, which
+// another call of the same session replaces while this call's permission question is open.
+describe("tool.apply_patch call-local baseline (#1452)", () => {
+  const prefix = "apply_patch verification failed: "
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+  const original = "what the model read\n"
+
+  /** A context whose permission question stays open until `answer` is completed. */
+  const waiting = Effect.gen(function* () {
+    const asked = yield* Deferred.make<void>()
+    const answer = yield* Deferred.make<void>()
+    const next: ToolCtx = {
+      ...baseCtx,
+      ask: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer))),
+    }
+    return { next, asked, answer }
+  })
+
+  it.instance("refuses an Add File over a file another patch of the same session replaced during the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "existing.txt")
+      const bystander = path.join(test.directory, "bystander.txt")
+      yield* writeText(target, original)
+      yield* writeText(bystander, "before\n")
+      yield* markRead(target)
+      const second = yield* waiting
+      const pending = yield* execute(
+        {
+          patchText: patch(
+            "*** Update File: bystander.txt",
+            "@@",
+            "-before",
+            "+after",
+            "*** Add File: existing.txt",
+            "+second writer",
+          ),
+        },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      yield* execute(
+        { patchText: patch("*** Update File: existing.txt", "@@", "-what the model read", "+first writer") },
+        ctx,
+      )
+      // The session's record now describes what is on disk: a check against it would pass.
+      yield* (yield* FileState.Service).requireSame(baseCtx.sessionID, target)
+      yield* Deferred.succeed(second.answer, undefined)
+
+      yield* expectFailure(Fiber.join(pending), `${prefix}${FileState.changedWhileAskingMessage(target)}`)
+      expect(yield* readText(target)).toBe("first writer\n")
+      expect(yield* readText(bystander)).toBe("before\n")
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+
+  it.instance("refuses a Move onto a file another patch of the same session replaced during the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "to.txt")
+      yield* writeText(source, "from\n")
+      yield* writeText(destination, original)
+      yield* markRead(destination)
+      const second = yield* waiting
+      const pending = yield* execute(
+        { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", "-from", "+moved") },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      yield* execute(
+        { patchText: patch("*** Update File: to.txt", "@@", "-what the model read", "+first writer") },
+        ctx,
+      )
+      yield* (yield* FileState.Service).requireSame(baseCtx.sessionID, destination)
+      yield* Deferred.succeed(second.answer, undefined)
+
+      yield* expectFailure(Fiber.join(pending), `${prefix}${FileState.changedWhileAskingMessage(destination)}`)
+      expect(yield* readText(source)).toBe("from\n")
+      expect(yield* readText(destination)).toBe("first writer\n")
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+
+  it.instance("refuses an Add File when the session's record was refreshed to a version the call did not plan on", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "existing.txt")
+      yield* writeText(target, original)
+      yield* markRead(target)
+      const second = yield* waiting
+      const pending = yield* execute(
+        { patchText: patch("*** Add File: existing.txt", "+second writer") },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      // Another process changes the file and the session reads the new version before the question is answered.
+      yield* writeText(target, "changed elsewhere\n")
+      yield* markRead(target)
+      yield* Deferred.succeed(second.answer, undefined)
+
+      yield* expectFailure(Fiber.join(pending), `${prefix}${FileState.changedWhileAskingMessage(target)}`)
+      expect(yield* readText(target)).toBe("changed elsewhere\n")
+    }),
+  )
+
+  it.instance("still replaces the target when nothing touched it during the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "existing.txt")
+      yield* writeText(target, original)
+      yield* markRead(target)
+      const second = yield* waiting
+      const pending = yield* execute(
+        { patchText: patch("*** Add File: existing.txt", "+second writer") },
+        second.next,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(second.asked)
+
+      yield* Deferred.succeed(second.answer, undefined)
+      yield* Fiber.join(pending)
+
+      expect(yield* readText(target)).toBe("second writer\n")
+    }),
+  )
 })

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import { createHash } from "node:crypto"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
 import { WriteTool } from "../../src/tool/write"
@@ -859,6 +859,123 @@ describe("tool.write write-point checks (#1452)", () => {
       yield* fail({ filePath: filepath, content: "clobbered" }, askThen(rewrite(filepath, "changed")))
 
       expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+})
+
+// #1452 review finding: a call's check under the path lock used the session's record, which another call of the
+// same session replaces while this call's permission question is open. Each call now keeps its own baseline.
+describe("tool.write call-local baseline (#1452)", () => {
+  const original = "what the model read\n"
+  const text = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf8"))
+  const sessionRecord = (filepath: string) =>
+    Effect.gen(function* () {
+      return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+    })
+
+  // What another call of the same session does to the file while the first write's question is open.
+  const others = {
+    write: {
+      run: (filepath: string) => run({ filePath: filepath, content: "replaced by write\n" }),
+      result: "replaced by write\n",
+    },
+    edit: {
+      run: (filepath: string) =>
+        runEdit({ filePath: filepath, oldString: "what the model read", newString: "replaced by edit" }),
+      result: "replaced by edit\n",
+    },
+    apply_patch: {
+      run: (filepath: string) =>
+        runPatch(
+          `*** Begin Patch\n*** Update File: ${path.basename(filepath)}\n@@\n-what the model read\n+replaced by apply_patch\n*** End Patch`,
+        ),
+      result: "replaced by apply_patch\n",
+    },
+  } as const
+
+  for (const name of ["write", "edit", "apply_patch"] as const) {
+    const other = others[name]
+    it.instance(
+      `refuses an overwrite whose file ${name} of the same session replaced while its question was open`,
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const filepath = path.join(test.directory, "existing.txt")
+          yield* Effect.promise(() => fs.writeFile(filepath, original))
+          yield* markRead(filepath)
+          const asked = yield* Deferred.make<void>()
+          const answer = yield* Deferred.make<void>()
+          const waiting = {
+            ...ctx,
+            ask: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer))),
+          }
+          const second = yield* fail({ filePath: filepath, content: "second writer\n" }, waiting).pipe(
+            Effect.forkScoped,
+          )
+          yield* Deferred.await(asked)
+
+          yield* other.run(filepath)
+          // The session's record now describes what is on disk: the check that used it would pass.
+          yield* (yield* FileState.Service).requireSame(ctx.sessionID, filepath)
+          yield* Deferred.succeed(answer, undefined)
+          const error = yield* Fiber.join(second)
+
+          expect(error.message).toBe(FileState.changedWhileAskingMessage(filepath))
+          expect(yield* text(filepath)).toBe(other.result)
+          const recorded = yield* sessionRecord(filepath)
+          expect(recorded?.hash).toBe(sha256(other.result))
+          expect(recorded?.source).toBe(name)
+          expect(yield* EngineProcess.fileLocks.size).toBe(0)
+        }),
+    )
+  }
+
+  it.instance("still overwrites when nothing replaced the file while the question was open", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, original))
+      yield* markRead(filepath)
+      const asked = yield* Deferred.make<void>()
+      const answer = yield* Deferred.make<void>()
+      const waiting = {
+        ...ctx,
+        ask: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer))),
+      }
+      const second = yield* run({ filePath: filepath, content: "second writer\n" }, waiting).pipe(Effect.forkScoped)
+      yield* Deferred.await(asked)
+
+      yield* Deferred.succeed(answer, undefined)
+      yield* Fiber.join(second)
+
+      expect(yield* text(filepath)).toBe("second writer\n")
+    }),
+  )
+
+  it.instance("takes its baseline from the bytes it planned against, not from a later look at the disk", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, original))
+      yield* markRead(filepath)
+      const asked = yield* Deferred.make<void>()
+      const answer = yield* Deferred.make<void>()
+      const waiting = {
+        ...ctx,
+        ask: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Deferred.await(answer))),
+      }
+      const second = yield* fail({ filePath: filepath, content: "second writer\n" }, waiting).pipe(Effect.forkScoped)
+      yield* Deferred.await(asked)
+
+      // Another process changes the file, and the session reads the new version before the question is answered:
+      // the session's record is current again, but this call still holds the old plan.
+      yield* Effect.promise(() => fs.writeFile(filepath, "changed elsewhere\n"))
+      yield* (yield* FileState.Service).record(ctx.sessionID, filepath, "read")
+      yield* Deferred.succeed(answer, undefined)
+      const error = yield* Fiber.join(second)
+
+      expect(error.message).toBe(FileState.changedWhileAskingMessage(filepath))
+      expect(yield* text(filepath)).toBe("changed elsewhere\n")
     }),
   )
 })
