@@ -136,7 +136,7 @@ export const ReadTool = Tool.define<
         )
       }
 
-      return yield* Effect.fail(new Error(`File not found: ${filepath}`))
+      return yield* Effect.fail(new Error(`File not found: ${filepath}. Check the path with glob.`))
     })
 
     const list = Effect.fn("ReadTool.list")(function* (filepath: string) {

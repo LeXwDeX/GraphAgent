@@ -118,7 +118,11 @@ export const call = <F extends Schema.Struct.Fields>(
       return yield* parseResponse(body, redact)
     }).pipe(
       Effect.scoped,
-      Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(new Error(`${tool} request timed out`)) }),
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail(new Error(`${tool} request timed out. Retry once, or fetch a known URL with webfetch.`)),
+      }),
       // Do not retain HTTP/decoder errors with attached request headers or response bodies.
       Effect.mapError((error) => new Error(redact(error.message))),
       Effect.map((result) => (result === undefined ? undefined : redact(result))),

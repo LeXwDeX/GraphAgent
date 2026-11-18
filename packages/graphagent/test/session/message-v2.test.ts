@@ -117,6 +117,10 @@ function assistantInfo(
   } as unknown as SessionV1.Assistant
 }
 
+const EFFECT_UNKNOWN = "Whether it changed anything is unknown: check the current state before repeating it."
+const INTERRUPTED_TEXT = `[Tool execution was interrupted before it returned. ${EFFECT_UNKNOWN}]`
+const ABORTED_TEXT = `Tool execution aborted before it returned. ${EFFECT_UNKNOWN}`
+
 function basePart(messageID: string, id: string) {
   return {
     id: PartID.make(id.startsWith("prt") ? id : `prt_${id}`),
@@ -1424,6 +1428,63 @@ describe("session.message-v2.toModelMessage", () => {
     expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([])
   })
 
+  test("replays an aborted tool call without output as an aborted result, leaving the stored text alone", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const stored = "Tool execution aborted"
+
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [{ ...basePart(userID, "u1"), type: "text", text: "run tool" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-aborted",
+            tool: "write",
+            state: {
+              status: "error",
+              input: { filePath: "/tmp/a.txt" },
+              error: stored,
+              metadata: { interrupted: true },
+              time: { start: 0, end: 1 },
+            },
+          },
+          {
+            ...basePart(assistantID, "a2"),
+            type: "tool",
+            callID: "call-failed",
+            tool: "read",
+            state: {
+              status: "error",
+              input: { filePath: "/tmp/b.txt" },
+              error: "File not found: /tmp/b.txt. Check the path with glob.",
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const results = result.flatMap((message) => (message.role === "tool" ? message.content : []))
+    expect(results).toMatchObject([
+      { toolCallId: "call-aborted", output: { type: "error-text", value: ABORTED_TEXT } },
+      {
+        toolCallId: "call-failed",
+        output: { type: "error-text", value: "File not found: /tmp/b.txt. Check the path with glob." },
+      },
+    ])
+    // Only the projection changes: the stored part keeps the text the UI and the CLI match.
+    const part = input[1].parts[0]
+    if (part.type !== "tool" || part.state.status !== "error") throw new Error("expected an error tool part")
+    expect(part.state.error).toBe(stored)
+  })
+
   test("converts pending/running tool calls to error results to prevent dangling tool_use", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
@@ -1501,13 +1562,13 @@ describe("session.message-v2.toModelMessage", () => {
             type: "tool-result",
             toolCallId: "call-pending",
             toolName: "bash",
-            output: { type: "error-text", value: "[Tool execution was interrupted]" },
+            output: { type: "error-text", value: INTERRUPTED_TEXT },
           },
           {
             type: "tool-result",
             toolCallId: "call-running",
             toolName: "read",
-            output: { type: "error-text", value: "[Tool execution was interrupted]" },
+            output: { type: "error-text", value: INTERRUPTED_TEXT },
           },
         ],
       },

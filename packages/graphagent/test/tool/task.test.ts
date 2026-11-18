@@ -576,6 +576,85 @@ describe("tool.task", () => {
     },
   )
 
+  it.instance(
+    "an unknown subagent_type fails before any permission ask and lists the names the description lists",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* Agent.Service
+        const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
+        const registry = yield* ToolRegistry.Service
+        const description =
+          (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === TaskTool.id)?.description ?? ""
+        const catalog = description.slice(description.indexOf("Available agent types:"))
+        const listed = [...catalog.matchAll(/^- ([^:\n]+):/gm)].map((match) => match[1])
+        // Hidden agents are offered, denied and primary ones are not.
+        expect(listed).toContain("hidden-agent")
+        expect(listed).not.toContain("denied-agent")
+        expect(listed).not.toContain("primary-agent")
+        expect(listed.indexOf("alpha")).toBeGreaterThan(-1)
+        expect(listed.indexOf("zebra")).toBeGreaterThan(listed.indexOf("alpha"))
+
+        const { chat, assistant } = yield* seed()
+        const state = { asks: 0 }
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const exit = yield* def
+          .execute(
+            { description: "inspect bug", prompt: "look", subagent_type: "no_such_agent" },
+            taskCtx(chat, assistant, stubOps(), {
+              ask: () =>
+                Effect.sync(() => {
+                  state.asks += 1
+                }),
+            }),
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (!Exit.isFailure(exit)) return
+        expect(state.asks).toBe(0)
+        expect(Cause.squash(exit.cause)).toEqual(
+          new Error(
+            `Unknown agent type "no_such_agent". Available agent types: ${listed.join(", ")}. Use one of them as subagent_type.`,
+          ),
+        )
+      }),
+    {
+      config: {
+        permission: { task: { "*": "allow", "denied-agent": "deny" } },
+        agent: {
+          zebra: { description: "Zebra agent", mode: "subagent" },
+          alpha: { description: "Alpha agent", mode: "subagent" },
+          "denied-agent": { description: "Denied agent", mode: "subagent" },
+          "hidden-agent": { description: "Hidden agent", mode: "subagent", hidden: true },
+          "primary-agent": { description: "Primary agent", mode: "primary" },
+        },
+      },
+    },
+  )
+
+  it.instance("a valid subagent_type asks for permission once and then runs", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const asked: Array<readonly string[]> = []
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+      const result = yield* def.execute(
+        { ...general },
+        taskCtx(chat, assistant, stubOps({ text: "done" }), {
+          ask: (input) =>
+            Effect.sync(() => {
+              asked.push(input.patterns)
+            }),
+        }),
+      )
+
+      expect(asked).toEqual([["general"]])
+      expect(result.output).toContain("done")
+    }),
+  )
+
   it.instance("execute resumes an existing task session from task_id", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service

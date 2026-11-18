@@ -2375,6 +2375,12 @@ describe("workflow tool execution", () => {
       expect(result.title).toContain("Workflow recovered: 1 new attempts")
       expect(result.output).toContain('"graph_rev": 2')
       expect(result.output).toContain('"previous": "retry"')
+      // Prior attempts are read with a real workflow call, not a prose verb.
+      expect(JSON.parse(result.output)).toMatchObject({
+        note: expect.stringContaining(
+          'readable with workflow({"params":{"action":"inspect","operation":"result","workflow_id":"dag_paused","node_id":"<node_id>"}}).',
+        ),
+      })
       expect(published.map((event) => event.type)).toEqual([
         DagEvent.WorkflowReplanned.type,
         DagEvent.NodeRegistered.type,

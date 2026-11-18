@@ -38,10 +38,26 @@ describe("ToolError.render", () => {
     )
   })
 
+  test("interrupted and aborted say the effect of the call is unknown and what to check", () => {
+    expect(ToolError.render({ kind: "interrupted" })).toBe(
+      "[Tool execution was interrupted before it returned. Whether it changed anything is unknown: check the current state before repeating it.]",
+    )
+    expect(ToolError.render({ kind: "aborted" })).toBe(
+      "Tool execution aborted before it returned. Whether it changed anything is unknown: check the current state before repeating it.",
+    )
+  })
+
   test("truncated_arguments reports where the output limit cut the call", () => {
     expect(ToolError.render({ kind: "truncated_arguments", tool: "write", length: 32000 })).toBe(
       "The arguments for write were cut off at character 32000 by the output limit, so the call did not run. Send smaller arguments or split the work into several write calls.",
     )
+  })
+})
+
+describe("ToolError.clipName", () => {
+  test("keeps a short name and cuts a long one to 64 code points", () => {
+    expect(ToolError.clipName("read")).toBe("read")
+    expect(ToolError.clipName("😀".repeat(70))).toBe("😀".repeat(64))
   })
 })
 
