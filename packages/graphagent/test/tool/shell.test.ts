@@ -202,6 +202,26 @@ describe("tool.shell", () => {
     ),
   )
 
+  each("tells the model that an argument the schema does not declare was ignored (#1451)", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        // `cwd` is not a bash parameter (the directory is `workdir`): the call runs in the project and says so.
+        const args = { command: "echo test", cwd: os.tmpdir() }
+        const result = yield* run(args)
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).toEndWith(
+          "\n\nNote: bash does not take these arguments, so they were ignored: cwd. Send only the documented parameters.",
+        )
+        expect(result.metadata.corrections).toEqual(["excess_keys"])
+
+        const plain = yield* run({ command: "echo test" })
+        expect(plain.output).not.toContain("Note:")
+        expect(plain.metadata.corrections).toBeUndefined()
+      }),
+    ),
+  )
+
   it.live("auto-registers a successful gh pr create from its own result", () => {
     if (process.platform === "win32") return Effect.void
     const url = "https://github.com/acme/widgets/pull/42"

@@ -584,6 +584,7 @@ export const ReadTool = Tool.define<
       description: DESCRIPTION,
       effects: "read",
       parameters: Parameters,
+      clamps: { maxLineLength: { max: Truncate.MAX_LINE_FETCH } },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         run(params, ctx).pipe(Effect.orDie),
     }

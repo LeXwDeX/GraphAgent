@@ -60,6 +60,24 @@ describe("tool.webfetch", () => {
     }),
   )
 
+  it.instance("says a timeout above the maximum was capped and records clamped (#1451)", () =>
+    withFetch(
+      () => new Response("hello", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const target = new URL("/file.txt", url).toString()
+
+          const capped = yield* exec({ url: target, format: "text", timeout: 300_000 })
+          expect(capped.output).toBe("hello\n\nNote: timeout 300000 is above the maximum 120000; 120000 was used.")
+          expect(capped.metadata).toMatchObject({ corrections: ["clamped"] })
+
+          const exact = yield* exec({ url: target, format: "text", timeout: 120_000 })
+          expect(exact.output).toBe("hello")
+          expect(exact.metadata).not.toHaveProperty("corrections")
+        }),
+    ),
+  )
+
   it.instance("keeps svg as text output", () =>
     withFetch(
       () =>

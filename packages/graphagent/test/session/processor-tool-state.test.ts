@@ -9,6 +9,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
+import { logLines } from "effect/testing/TestConsole"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
 import { Session } from "@/session/session"
@@ -630,6 +631,105 @@ hookWrapped.it.effect(
         const { db } = yield* Database.Service
         const rows = yield* db.select().from(ToolOutcomeTable).all()
         expect(rows.map((row) => row.outcome)).toEqual(["validation_error", "validation_error"])
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1451: a tool name the harness corrected in case is said in the result
+// ---------------------------------------------------------------------------
+
+const NAME_NOTE = (from: string) => `Note: the tool name "${from}" was corrected to "lookup". Use the exact tool name.`
+
+/** A call the model opened as `opened` and the harness ran as `lookup`; `end` is how it finished. */
+const openedAs = (id: string, opened: string, end: LLMEvent): LLMEvent[] => [
+  LLMEvent.toolInputStart({ id, name: opened }),
+  LLMEvent.toolInputDelta({ id, name: opened, text: `{"query":"${id}"}` }),
+  LLMEvent.toolInputEnd({ id, name: opened }),
+  LLMEvent.toolCall({ id, name: "lookup", input: { query: id } }),
+  end,
+]
+
+const lookupResult = (id: string, output: string) =>
+  LLMEvent.toolResult({
+    id,
+    name: "lookup",
+    result: { type: "json", value: { title: "Lookup", output, metadata: { truncated: false } } },
+  })
+
+const renamed = scripted([
+  [
+    LLMEvent.stepStart({ index: 0 }),
+    ...openedAs("call-ok", "Lookup", lookupResult("call-ok", "found")),
+    ...openedAs("call-json", "LOOKUP", lookupResult("call-json", '{"valid":true}')),
+    ...openedAs(
+      "call-failed",
+      "Lookup",
+      LLMEvent.toolError({ id: "call-failed", name: "lookup", message: "boom", error: new Error("boom") }),
+    ),
+    ...openedAs("call-other", "Search", lookupResult("call-other", "found")),
+    ...openedAs("call-same", "lookup", lookupResult("call-same", "found")),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ],
+])
+
+renamed.it.effect(
+  "session.processor says a tool name corrected in case at the end of the result and records name_case",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "call lookup in capitals")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        yield* handle.process(input(chat.id, parent, mdl))
+
+        const parts = toolParts(yield* MessageV2.parts(msg.id))
+        const byCall = (callID: string) => parts.find((part) => part.callID === callID)?.state
+        const done = (callID: string) => {
+          const state = byCall(callID)
+          if (state?.status !== "completed") throw new Error(`${callID} did not complete`)
+          return state
+        }
+
+        // The part now carries the registered name; the note says what the model sent.
+        expect(parts.map((part) => part.tool)).toEqual(["lookup", "lookup", "lookup", "lookup", "lookup"])
+        expect(done("call-ok").output).toBe(`found\n\n${NAME_NOTE("Lookup")}`)
+        expect(done("call-ok").metadata).toEqual({ truncated: false, corrections: ["name_case"] })
+
+        // A result that is JSON stays JSON; only the metadata records the correction.
+        expect(done("call-json").output).toBe('{"valid":true}')
+        expect(done("call-json").metadata).toEqual({ truncated: false, corrections: ["name_case"] })
+
+        const failed = byCall("call-failed")
+        expect(failed?.status).toBe("error")
+        if (failed?.status === "error") {
+          expect(failed.error).toBe(`boom\n\n${NAME_NOTE("Lookup")}`)
+          expect(failed.metadata).toEqual({ outcome: "execution_error", corrections: ["name_case"] })
+        }
+
+        // A different name, or the same one, is no correction.
+        expect(done("call-other").output).toBe("found")
+        expect(done("call-other").metadata).toEqual({ truncated: false })
+        expect(done("call-same").output).toBe("found")
+        expect(done("call-same").metadata).toEqual({ truncated: false })
+
+        // The projection books the correction under the tool the part names now.
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(ToolOutcomeTable).all()
+        const corrected = rows.filter((row) => row.corrections.includes("name_case"))
+        expect(corrected).toHaveLength(3)
+        const booked = corrected.map((row) => `${row.tool}:${row.outcome}`).sort((a, b) => a.localeCompare(b))
+        expect(booked).toEqual(["lookup:execution_error", "lookup:ok", "lookup:ok"])
+
+        const logged = JSON.stringify(yield* logLines)
+        expect(logged.split('"correction.kind":"name_case"')).toHaveLength(4)
+        expect(logged).toContain("tool call corrected")
       }),
     { config: cfg },
   ),

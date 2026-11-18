@@ -17,6 +17,7 @@ import type { StepStats } from "./step-metrics"
 import { addCorrections, correctionsOf } from "@graphagent/core/session/outcome"
 import { rejectedUnparsable } from "./llm/ai-sdk"
 import { classifyToolError } from "./tool-outcome"
+import { Receipt } from "@/tool/receipt"
 
 export type ToolCall = {
   partID: SessionV1.ToolPart["id"]
@@ -25,6 +26,8 @@ export type ToolCall = {
   done: Deferred.Deferred<void>
   inputEnded: boolean
   raw: string
+  /** The tool name the part was opened under, before the `tool-call` event renamed it to the registered one. */
+  rawName?: string
   /** Last persisted part observed or written by this processor (HS8). */
   part: SessionV1.ToolPart
   /** Process write version `part` was derived at; a newer version forces a reload. */
@@ -54,6 +57,20 @@ export interface ToolCallDeps {
 /** Metadata of a failed call: its failure class and the corrections the harness made before it failed. */
 function failureMetadata(running: Record<string, unknown> | undefined, error: unknown) {
   return addCorrections({ outcome: classifyToolError(error) }, ...correctionsOf(running))
+}
+
+/**
+ * The result of a finished call with the name correction said once: the part opened under the name the model sent
+ * and `tool-call` then rewrote it to the registered name, so a name that differs only in case was corrected (#1451).
+ */
+function withNameCase(call: ToolCall, tool: string, text: string, metadata: Record<string, unknown>) {
+  const named = Receipt.nameCase(text, metadata, call.rawName, tool)
+  return named.corrected ? Receipt.logCorrection(tool, "name_case").pipe(Effect.as(named)) : Effect.succeed(named)
+}
+
+/** The error text and metadata of a failed call: the failure class, the corrections made before it failed, the name. */
+function failedResult(call: ToolCall, tool: string, running: Record<string, unknown> | undefined, error: unknown) {
+  return withNameCase(call, tool, errorMessage(error), failureMetadata(running, error))
 }
 
 /** An error part with its failure class replaced by `arguments_truncated`. */
@@ -209,13 +226,14 @@ export function makeToolCalls(deps: ToolCallDeps) {
         if (ctx.toolcalls[toolCallID] !== call) return
         const match = yield* currentToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
+        const named = yield* withNameCase(call, match.part.tool, output.output, output.metadata)
         const part = yield* session.updatePart({
           ...match.part,
           state: {
             status: "completed",
             input: match.part.state.input,
-            output: output.output,
-            metadata: output.metadata,
+            output: named.text,
+            metadata: named.metadata,
             title: output.title,
             time: { start: match.part.state.time.start, end: Date.now() },
             attachments: output.attachments,
@@ -237,13 +255,14 @@ export function makeToolCalls(deps: ToolCallDeps) {
           if (ctx.toolcalls[toolCallID] !== call) return false
           const match = yield* currentToolCall(toolCallID)
           if (!match || match.part.state.status !== "running") return false
+          const named = yield* failedResult(call, match.part.tool, match.part.state.metadata, error)
           const part = yield* session.updatePart({
             ...match.part,
             state: {
               status: "error",
               input: match.part.state.input,
-              error: errorMessage(error),
-              metadata: failureMetadata(match.part.state.metadata, error),
+              error: named.text,
+              metadata: named.metadata,
               time: { start: match.part.state.time.start, end: Date.now() },
             },
           })
@@ -303,6 +322,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
       sessionID: part.sessionID,
       inputEnded: false,
       raw: "",
+      rawName: input.name,
       part,
       version: HistoryView.version(part.sessionID),
       lock: Semaphore.makeUnsafe(1),
