@@ -1541,7 +1541,12 @@ export function options(input: {
 
   if (input.providerOptions?.setCacheKey !== false) {
     const cacheKey = input.cacheKey ?? input.sessionID
-    if (input.model.api.npm === "@ai-sdk/deepinfra" || input.model.api.npm === "@ai-sdk/cerebras") {
+    if (
+      input.model.api.npm === "@ai-sdk/deepinfra" ||
+      input.model.api.npm === "@ai-sdk/cerebras" ||
+      // The OpenAI-compatible SDK copies unknown options into the request body under the name given here.
+      (input.model.api.npm === "@ai-sdk/openai-compatible" && input.providerOptions?.setCacheKey === true)
+    ) {
       result["prompt_cache_key"] = cacheKey
     } else if (
       input.model.api.npm === "@ai-sdk/openai" ||

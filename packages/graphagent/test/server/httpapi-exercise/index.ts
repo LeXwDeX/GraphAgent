@@ -958,6 +958,41 @@ const scenarios: Scenario[] = [
       // fresh session has none.
       check(body.quality === null, "a session without a strict review workflow has no quality summary")
     }),
+  // #1475: asked with a child's id, the usage is the whole tree's, read from the root.
+  http.protected
+    .get("/session/{sessionID}/usage", "session.usage")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const parent = yield* ctx.session({ title: "Usage root" })
+        const child = yield* ctx.session({ title: "Usage child", parentID: parent.id })
+        return { parent, child }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/usage", { sessionID: ctx.state.child.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      check(body.rootID === ctx.state.parent.id, "a child id should be answered with its root's usage")
+      check(body.sessions === 2, "the tree should count the root and the child")
+      check(typeof body.cost === "number" && body.cost === 0, "fresh sessions should have no cost")
+      check(body.costUnknown === false, "fresh sessions have no unpriced usage")
+      object(body.tokens)
+      check(
+        body.tokens.input === 0 && body.tokens.output === 0 && body.tokens.reasoning === 0,
+        "fresh sessions should have no tokens",
+      )
+      object(body.tokens.cache)
+      check(body.tokens.cache.read === 0 && body.tokens.cache.write === 0, "fresh sessions should have no cache usage")
+    }),
+  http.protected
+    .get("/session/{sessionID}/usage", "session.usage.missing")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/usage", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
   http.protected
     .patch("/session/{sessionID}", "session.update")
     .mutating()
@@ -2227,6 +2262,13 @@ const scenarios: Scenario[] = [
           typeof summary.tokensCacheRead === "number" && summary.tokensCacheRead >= 0,
           "summary should have tokensCacheRead as a non-negative number",
         )
+        // #1475: the same attempt sessions itemised and priced; a fresh fixture has none, so every
+        // figure is zero and nothing is unpriced.
+        for (const key of ["tokensInput", "tokensOutput", "tokensReasoning", "tokensCacheWrite", "cost"]) {
+          const value = summary[key]
+          check(typeof value === "number" && value >= 0, `summary should have ${key} as a non-negative number`)
+        }
+        check(summary.costUnknown === false, "a fresh fixture has no unpriced attempt")
         check(summary.checkpointPending === false, "a fresh fixture is not checkpoint-pending")
         // #1027 D6b: coverage counts the engine's entries for the snapshot (the
         // failed node b); quality is null outside the strict review gate.

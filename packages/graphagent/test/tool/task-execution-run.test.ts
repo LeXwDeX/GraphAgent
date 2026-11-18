@@ -531,6 +531,7 @@ describe("task execution mode", () => {
               ...call,
               subagent_type: "fg-worker",
               prompt: "also check cancellation",
+              action: "resume",
               task_id: started.metadata.sessionID,
             },
             ctx,

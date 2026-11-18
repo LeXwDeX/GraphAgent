@@ -3,6 +3,7 @@ export * as ConfigProviderV1 from "./provider"
 import { Schema } from "effect"
 import { PositiveInt } from "../../schema"
 import { ConfigReasoningDistillation } from "../../config/reasoning-distillation"
+import { ModelProfileOverride } from "../../model-profile"
 
 export const ModelStatus = Schema.Literals(["alpha", "beta", "deprecated", "active"])
 
@@ -61,9 +62,9 @@ export const Model = Schema.Struct({
   ),
   limit: Schema.optional(
     Schema.Struct({
-      context: Schema.Finite,
+      context: Schema.optional(Schema.Finite),
       input: Schema.optional(Schema.Finite),
-      output: Schema.Finite,
+      output: Schema.optional(Schema.Finite),
     }),
   ),
   modalities: Schema.optional(
@@ -74,6 +75,7 @@ export const Model = Schema.Struct({
       ),
     }),
   ),
+  profile: Schema.optional(ModelProfileOverride),
   experimental: Schema.optional(Schema.Boolean),
   status: Schema.optional(ModelStatus),
   reasoningDistillation: Schema.optional(ConfigReasoningDistillation.Model),

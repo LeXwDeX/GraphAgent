@@ -114,6 +114,16 @@ describe("toolOutcomeRow", () => {
     expect(toolOutcomeRow(toolPart("bash", completed({ hookStopped: true })), model)?.outcome).toBe("ok")
   })
 
+  test("a completed part that records a cancellation is aborted", () => {
+    // A user-run shell command that was cancelled keeps its partial output and finishes completed.
+    expect(toolOutcomeRow(toolPart("bash", completed({ outcome: "aborted" })), model)?.outcome).toBe("aborted")
+    // Only the cancellation is honoured on a completed part; other kinds stay derived.
+    expect(toolOutcomeRow(toolPart("bash", completed({ outcome: "execution_error" })), model)?.outcome).toBe("ok")
+    expect(toolOutcomeRow(toolPart("bash", completed({ outcome: "aborted", hookDenied: true })), model)?.outcome).toBe(
+      "denied",
+    )
+  })
+
   test("an error part reports the recorded outcome and falls back to execution_error", () => {
     for (const kind of TOOL_OUTCOME_KINDS) {
       expect(toolOutcomeRow(toolPart("bash", failed({ outcome: kind })), model)?.outcome).toBe(kind)

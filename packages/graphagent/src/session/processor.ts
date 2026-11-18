@@ -70,6 +70,17 @@ function accumulateUsage(message: SessionV1.Assistant, usage: ReturnType<typeof 
   }
 }
 
+/** The prefix fingerprint of one provider request: what the step log compares with the previous step. */
+function requestFingerprint(input: LLM.StreamInput): PrefixFingerprint {
+  return fingerprintOf({
+    tools: serializedTools(input.tools),
+    system: input.system,
+    systemLabels: input.systemLabels,
+    messages: input.messages,
+    toolChoice: input.toolChoice,
+  })
+}
+
 export interface Handle {
   readonly message: SessionV1.Assistant
   readonly updateToolCall: (
@@ -471,6 +482,7 @@ export const layer = Layer.effect(
         ensureToolCall,
         forceAbortToolCall,
         severUnexecutedToolCalls,
+        takeTruncatedInputs,
       } = makeToolCalls({ session, events, ctx })
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
@@ -675,11 +687,8 @@ export const layer = Layer.effect(
             // instead of counting it as an execution signal. Real tool
             // results, errors, provider-executed outputs, and anything without
             // the adapter's sentinel always count conservatively.
-            if (value.error instanceof ToolInputRejectedError) {
-              ctx.attempt.pendingToolExecutions.delete(value.id)
-            } else {
-              ctx.attempt.anyToolCalled = true
-            }
+            if (value.error instanceof ToolInputRejectedError) ctx.attempt.pendingToolExecutions.delete(value.id)
+            else ctx.attempt.anyToolCalled = true
             // Rejected or not, a tool-error signal is tool activity in this
             // attempt; the #773 admission rules decide its retry separately.
             ctx.attempt.toolActivity = true
@@ -744,6 +753,7 @@ export const layer = Layer.effect(
                 usage,
                 metrics,
               }),
+              ...takeTruncatedInputs(value.reason),
             ]
             if (ctx.snapshot && ctx.stepToolActivity) {
               const patch = yield* snapshot.patch(ctx.snapshot)
@@ -959,7 +969,7 @@ export const layer = Layer.effect(
           yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
           return
         }
-        ctx.assistantMessage.error = error
+        ctx.assistantMessage.error = SessionRetry.withHint(error, input.model.providerID)
         yield* events.publish(Session.Event.Error, {
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
@@ -977,12 +987,7 @@ export const layer = Layer.effect(
         metricsFirstTokenAt = undefined
         metricsCounterBase = counters()
         ctx.stepStats = makeStepStats()
-        metricsFingerprint = fingerprintOf({
-          tools: serializedTools(streamInput.tools),
-          system: streamInput.system,
-          messages: streamInput.messages,
-          toolChoice: streamInput.toolChoice,
-        })
+        metricsFingerprint = requestFingerprint(streamInput)
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
         let timedOut = false

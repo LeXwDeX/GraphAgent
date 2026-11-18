@@ -4,7 +4,7 @@ Delegate a self-contained task to a subagent. Use this for broad, open-ended exp
 - Give each agent all needed context: a new agent starts fresh and does not see this conversation. State whether it should write code or research, and include verification steps.
 - Launch independent agents concurrently in one message. Do not repeat a delegated task; wait or continue other work.
 - The agent returns one message that the user cannot see; summarize it. Check key claims, such as changed files or test results, before relying on or reporting them.
-- Pass task_id to resume a previous session with its history.
+- Pass action="resume" with task_id to continue a previous task with its history.
 
 Choosing foreground or background:
 - When the user says they will keep working on something else while this is done ("meanwhile",

@@ -56,6 +56,7 @@ const truncatedOutput = {
     lineBytes: 0,
     maxBytes: 50 * 1024,
     partialLine: false,
+    shownChars: 0,
   },
 } as const
 

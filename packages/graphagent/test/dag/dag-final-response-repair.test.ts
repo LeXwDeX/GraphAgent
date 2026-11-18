@@ -217,7 +217,10 @@ function reviewOutput(verdict: string, summary = "complete") {
   return { verdict, summary, findings: [], required_actions: [] }
 }
 
-describe("final-response near-miss repair", () => {
+const CORRECTION_TAIL =
+  "Do not redo the work. Resubmit the same result as exactly one JSON value, with no Markdown fence and no surrounding prose."
+
+describe("final-response correction turn", () => {
   it("repairs a review PASS to ACCEPT in exactly one bounded turn without echoing the draft", async () => {
     const summary = "R".repeat(20_000)
     const result = await run(
@@ -256,10 +259,80 @@ describe("final-response near-miss repair", () => {
     expect(result.prompts[1]?.text).toContain('must have type "string"')
   })
 
-  it("fails structurally invalid output without a repair turn", async () => {
+  it("gives a missing required field one correction turn", async () => {
+    const result = await run(
+      [assistant(JSON.stringify({ verdict: "ACCEPT" })), assistant(JSON.stringify(reviewOutput("ACCEPT")))],
+      REVIEW_SCHEMA,
+    )
+
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.sessionID).toBe("ses_final_child")
+    expect(result.prompts[1]?.text).toBe(`Your final response was rejected: missing required field: "summary". ${CORRECTION_TAIL}`)
+    expect(result.prompts[1]?.options).toMatchObject({ continueToolBudget: true, internalDelegation: true })
+  })
+
+  it("gives a Markdown fence around the JSON one correction turn", async () => {
+    const fenced = "```json\n" + JSON.stringify(reviewOutput("ACCEPT")) + "\n```"
+    const result = await run([assistant(fenced), assistant(JSON.stringify(reviewOutput("ACCEPT")))], REVIEW_SCHEMA)
+
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.text).toBe(
+      `Your final response was rejected: the final response is not exactly one JSON value. ${CORRECTION_TAIL}`,
+    )
+  })
+
+  it("gives prose around the JSON one correction turn", async () => {
+    const result = await run(
+      [assistant(`Here is the review: ${JSON.stringify(reviewOutput("ACCEPT"))}`), assistant(JSON.stringify(reviewOutput("ACCEPT")))],
+      REVIEW_SCHEMA,
+    )
+
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.prompts).toHaveLength(2)
+  })
+
+  it("gives an unexpected additional property one correction turn", async () => {
+    const strict = { ...REVIEW_SCHEMA, additionalProperties: false }
+    const result = await run(
+      [assistant(JSON.stringify({ ...reviewOutput("ACCEPT"), extra: 1 })), assistant(JSON.stringify(reviewOutput("ACCEPT")))],
+      strict,
+    )
+
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.text).toContain('unexpected additional property: "extra"')
+  })
+
+  it("gives an array item of the wrong type one correction turn", async () => {
+    const result = await run(
+      [
+        assistant(JSON.stringify({ ...reviewOutput("ACCEPT"), required_actions: ["fine", 7] })),
+        assistant(JSON.stringify(reviewOutput("ACCEPT"))),
+      ],
+      REVIEW_SCHEMA,
+    )
+
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.text).toContain("item[1]")
+  })
+
+  it("gives a root type mismatch one correction turn", async () => {
+    const result = await run([assistant(JSON.stringify({ verdict: "PASS" })), assistant(JSON.stringify("done"))], {
+      type: "string",
+    })
+
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed", output: "done" })])
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.text).toContain('expected type "string"')
+  })
+
+  it("fails a structural miss as schema_invalid when the one correction still misses", async () => {
     const result = await run(assistant(JSON.stringify({ verdict: "ACCEPT" })), REVIEW_SCHEMA)
 
-    expect(result.prompts).toHaveLength(1)
+    expect(result.prompts).toHaveLength(2)
     expect(result.events).toEqual([
       expect.objectContaining({
         type: "failed",
@@ -270,10 +343,10 @@ describe("final-response near-miss repair", () => {
     ])
   })
 
-  it("fails unparseable output without a repair turn", async () => {
+  it("fails unparseable output as schema_invalid when the one correction still misses", async () => {
     const result = await run(assistant("not one JSON value"), { type: "object" })
 
-    expect(result.prompts).toHaveLength(1)
+    expect(result.prompts).toHaveLength(2)
     expect(result.events).toEqual([
       expect.objectContaining({
         type: "failed",
@@ -284,10 +357,10 @@ describe("final-response near-miss repair", () => {
     ])
   })
 
-  it("fails a root type mismatch without a repair turn", async () => {
+  it("fails a root type mismatch as schema_invalid when the one correction still misses", async () => {
     const result = await run(assistant(JSON.stringify({ verdict: "PASS" })), { type: "string" })
 
-    expect(result.prompts).toHaveLength(1)
+    expect(result.prompts).toHaveLength(2)
     expect(result.events).toEqual([
       expect.objectContaining({
         type: "failed",
@@ -311,6 +384,65 @@ describe("final-response near-miss repair", () => {
         reason: expect.stringContaining('expected one of ["ACCEPT","REJECT"], got "PASS"'),
       }),
     ])
+  })
+
+  it("does not correct empty output and leaves it unclassified", async () => {
+    const result = await run(assistant(""), REVIEW_SCHEMA)
+
+    expect(result.prompts).toHaveLength(1)
+    expect(result.events).toEqual([
+      expect.objectContaining({ type: "failed", trigger: "verdict_fail", reason: "provider returned empty output" }),
+    ])
+    expect(result.events[0]?.errorClass).toBeUndefined()
+  })
+
+  it("does not correct a turn that did not end normally and leaves it unclassified", async () => {
+    const result = await run(assistant("working on it", "tool-calls"), REVIEW_SCHEMA)
+
+    expect(result.prompts).toHaveLength(1)
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: "failed",
+        reason: "child model turn did not end normally (tool-calls)",
+      }),
+    ])
+    expect(result.events[0]?.errorClass).toBeUndefined()
+  })
+
+  it("leaves a correction turn that comes back empty unclassified", async () => {
+    const result = await run([assistant(JSON.stringify({ verdict: "ACCEPT" })), assistant("")], REVIEW_SCHEMA)
+
+    expect(result.prompts).toHaveLength(2)
+    expect(result.events).toEqual([expect.objectContaining({ type: "failed", reason: "provider returned empty output" })])
+    expect(result.events[0]?.errorClass).toBeUndefined()
+  })
+
+  it("reports a correction turn that ends at the output cap as the cap, not as schema_invalid", async () => {
+    const pass = JSON.stringify(reviewOutput("PASS"))
+    const result = await run([assistant(pass), assistant(pass, "length")], REVIEW_SCHEMA)
+
+    expect(result.prompts).toHaveLength(2)
+    expect(result.events).toEqual([expect.objectContaining({ type: "failed", trigger: "verdict_fail" })])
+    expect(result.events[0]?.reason).toContain("output token cap")
+    expect(result.events[0]?.errorClass).toBeUndefined()
+  })
+
+  it("neither corrects nor classifies a failure of the validation facility", async () => {
+    // Catastrophic backtracking exceeds the worker's host budget: the validator, not the model, failed.
+    const result = await run(assistant(JSON.stringify("a".repeat(99_999) + "!")), {
+      type: "string",
+      pattern: "^(a|a?)+$",
+    })
+
+    expect(result.prompts).toHaveLength(1)
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: "failed",
+        trigger: "verdict_fail",
+        reason: expect.stringContaining("host resource budget"),
+      }),
+    ])
+    expect(result.events[0]?.errorClass).toBeUndefined()
   })
 
   it("keeps a genuine review-contract failure in verdict_fail", async () => {

@@ -449,7 +449,7 @@ export const layer = Layer.effect(
       const results = yield* runAll((client) =>
         client.connection
           .sendRequest<Symbol[]>("workspace/symbol", { query })
-          .then((result) => result.filter((x) => kinds.includes(x.kind)).slice(0, 10))
+          .then((result) => result.filter((x) => kinds.includes(x.kind)))
           .catch(() => [] as Symbol[]),
       )
       return results.flat()

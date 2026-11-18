@@ -17,6 +17,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { testEffect } from "../lib/effect"
+import { truncateFailingWith } from "../lib/truncate"
 import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
 import { Tool } from "@/tool/tool"
 import { SafetyGuard } from "@/permission/safety-guard"
@@ -194,6 +195,7 @@ describe("tool.shell", () => {
           command: "echo test",
         })
         expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.outcome).toBeUndefined()
         expect(result.metadata.output).toContain("test")
       }),
     ),
@@ -1144,6 +1146,7 @@ describe("tool.shell abort", () => {
           )
           expect(res.output).toContain("before")
           expect(res.output).toContain("aborted before completion")
+          expect(res.metadata.outcome).toBe("aborted")
           expect(collected.length).toBeGreaterThan(0)
         }),
       ),
@@ -1411,6 +1414,7 @@ describe("tool.shell silence guard", () => {
           )
           expect(res.output).toContain("before")
           expect(res.output).toContain("aborted before completion")
+          expect(res.metadata.outcome).toBe("aborted")
         }),
       ).pipe(Effect.provide(RuntimeFlags.layer({ bashSilenceWarnMs: 300 }))),
     15_000,
@@ -1713,6 +1717,184 @@ describe("tool.shell truncation", () => {
       }),
     ),
   )
+})
+
+// A progress bar redraws one line with carriage returns and colors arrive as escape sequences: the preview shows the
+// text they leave on a screen, the saved output keeps what the command wrote, and the result says so (#1447).
+describe("tool.shell output normalization", () => {
+  const CR = String.fromCharCode(13)
+  const ESC = String.fromCharCode(27)
+  // A command that writes exactly `text`. Codes keep quote characters out of the command line.
+  const emit = (text: string) =>
+    exec(`process.stdout.write(String.fromCharCode(${Array.from(text, (_, i) => text.charCodeAt(i)).join(",")}))`)
+  const savedPath = (output: string) => /^path: (.+)$/m.exec(output)?.[1]
+
+  it.live("folds carriage-return frames and says so", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: emit(`10%${CR}20%${CR}30%\ndone\n`) })
+        expect(result.output).toStartWith("30%\ndone")
+        expect(result.output).not.toContain("10%")
+        expect(result.output).not.toContain(CR)
+        expect(result.output).toContain(
+          "<shell_metadata>\noutput normalized: 2 carriage-return frames folded. The original text was not saved.\n</shell_metadata>",
+        )
+        expect(result.metadata.corrections).toEqual(["shell_output_normalized"])
+        expect(result.metadata.exit).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("removes ANSI escape sequences and says so", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: emit(`${ESC}[31mred${ESC}[0m plain\n`) })
+        expect(result.output).toStartWith("red plain\n")
+        expect(result.output).not.toContain(ESC)
+        expect(result.output).toContain(
+          "output normalized: ANSI escape sequences removed. The original text was not saved.",
+        )
+        expect(result.metadata.corrections).toEqual(["shell_output_normalized"])
+      }),
+    ),
+  )
+
+  it.live("keeps the original, with its frames, in the saved output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const command = exec(
+          "for(let i=1;i<=30;i++)process.stdout.write(i+String.fromCharCode(13)+i+String.fromCharCode(10))",
+        )
+        const result = yield* run({ command })
+        mustTruncate(result)
+        expect(result.output).toContain(`[truncated: showing the last ${SHELL_TAIL_LINES} of 30 lines`)
+        expect(result.output).toMatch(/^30$/m)
+        expect(result.output).not.toContain(CR)
+        expect(result.output).toContain(
+          "output normalized: 30 carriage-return frames folded. The saved full output keeps the original text.",
+        )
+        expect(result.metadata.corrections).toEqual(["shell_output_normalized"])
+
+        const file = savedPath(result.output)
+        expect(file).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(file!)
+        expect(saved.startsWith(`1${CR}1\n2${CR}2\n`)).toBe(true)
+      }),
+    ),
+  )
+
+  it.live("leaves CRLF output as it is and records nothing", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: emit(`a${CR}\nb${CR}\n`) })
+        expect(result.output).toBe(`a${CR}\nb${CR}\n`)
+        expect(result.metadata).not.toHaveProperty("corrections")
+      }),
+    ),
+  )
+
+  if (process.platform !== "win32") {
+    it.live("puts the note after the exit code and the signal note in the metadata block", () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const exited = yield* run({ command: "printf 'a\\rb\\n'; exit 3" })
+          const exitedMeta = exited.output.slice(exited.output.indexOf("<shell_metadata>"))
+          expect(exitedMeta).toBe(
+            "<shell_metadata>\nCommand exited with code 3\n" +
+              "output normalized: 1 carriage-return frame folded. The original text was not saved.\n</shell_metadata>",
+          )
+
+          const killed = yield* run({ command: "printf 'a\\rb\\n'; kill -KILL $$", timeout: 10_000 })
+          const lines = killed.output
+            .slice(killed.output.indexOf("<shell_metadata>"))
+            .split("\n")
+            .filter((line) => line !== "")
+          expect(lines[1]).toStartWith("Command terminated by signal SIGKILL")
+          expect(lines[2]).toStartWith("output normalized: 1 carriage-return frame folded.")
+          expect(lines[3]).toBe("</shell_metadata>")
+        }),
+      ),
+    )
+  }
+})
+
+// The full output could not be written to disk: the command's own result (exit code, the tail) still comes back,
+// and says that the cut part cannot be read back.
+describe("tool.shell output that cannot be saved", () => {
+  let writes = 0
+  const unwritableIt = testEffect(
+    Layer.mergeAll(
+      CrossSpawnSpawner.defaultLayer,
+      FSUtil.defaultLayer,
+      truncateFailingWith("disk full", () => writes++),
+      Config.defaultLayer,
+      Agent.defaultLayer,
+      RuntimeFlags.defaultLayer,
+      BackgroundJob.defaultLayer,
+      testInstanceStoreLayer,
+    ),
+  )
+
+  unwritableIt.live("keeps the tail and the exit code when the final write fails", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        writes = 0
+        const result = yield* run({ command: fill("lines", 30) })
+
+        expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.truncated).toBe(true)
+        expect(result.metadata.outputPath).toBeUndefined()
+        expect(result.output).toContain("Full output could not be saved: disk full")
+        expect(result.output).toContain(`[truncated: ${Truncate.unsavedNote("disk full")}]`)
+        expect(result.output).toMatch(/^30$/m)
+        expect(result.output).toMatch(/^11$/m)
+        expect(result.output).not.toMatch(/^10$/m)
+        expect(result.output).not.toContain("--------- full output ---------")
+        expect(writes).toBe(1)
+      }),
+    ),
+  )
+
+  unwritableIt.live(
+    "does not write again at the end once a write failed while streaming",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          writes = 0
+          const result = yield* run({ command: fill("lines", 20_000) })
+
+          expect(result.metadata.exit).toBe(0)
+          expect(result.output).toContain("Full output could not be saved: disk full")
+          expect(result.output).toMatch(/^20000$/m)
+          expect(result.output).not.toContain("--------- full output ---------")
+          expect(writes).toBe(1)
+        }),
+      ),
+    30_000,
+  )
+
+  if (process.platform !== "win32") {
+    unwritableIt.live("puts the unsaved note before the command's own notes", () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const result = yield* run({ command: `${fill("lines", 30)}; exit 3` })
+
+          expect(result.metadata.exit).toBe(3)
+          const note = result.output.indexOf("Full output could not be saved")
+          expect(note).toBeGreaterThan(-1)
+          expect(result.output.indexOf("Command exited with code 3")).toBeGreaterThan(note)
+        }),
+      ),
+    )
+  }
 })
 
 describe("tool.shell preview", () => {

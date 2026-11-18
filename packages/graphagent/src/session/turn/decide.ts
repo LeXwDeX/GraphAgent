@@ -212,11 +212,16 @@ export function outcomeOfExit(state: TurnState): TurnOutcome {
   })
 }
 
+/** An API error the provider error table reads as a content refusal ends the turn like a content filter would. */
+function refusedByProvider(error: NonNullable<TurnState["error"]>): boolean {
+  return SessionV1.APIError.isInstance(error) && SessionRetry.classify(error, "").class === "content_refused"
+}
+
 function outcomeOf(state: TurnState, signals: Signals): TurnOutcome {
   const error = state.error
   if (error) {
     if (SessionV1.AbortedError.isInstance(error)) return { type: "cancelled", reason: messageOf(error) }
-    if (SessionV1.ContentFilterError.isInstance(error)) return { type: "content_filter" }
+    if (SessionV1.ContentFilterError.isInstance(error) || refusedByProvider(error)) return { type: "content_filter" }
     if (SessionV1.StructuredOutputError.isInstance(error)) return { type: "structured_missing" }
     if (SessionV1.OutputLengthError.isInstance(error)) return { type: "length" }
     // Retryability stays owned by the shared retry policy; the provider argument

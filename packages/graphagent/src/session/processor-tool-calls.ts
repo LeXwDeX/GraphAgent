@@ -14,6 +14,8 @@ import { MessageV2 } from "./message-v2"
 import { PartID } from "./schema"
 import type { Session } from "./session"
 import type { StepStats } from "./step-metrics"
+import { addCorrections, correctionsOf } from "@graphagent/core/session/outcome"
+import { rejectedUnparsable } from "./llm/ai-sdk"
 import { classifyToolError } from "./tool-outcome"
 
 export type ToolCall = {
@@ -37,6 +39,8 @@ export interface ToolCallScope {
   toolcalls: Record<string, ToolCall>
   blocked: boolean
   shouldBreak: boolean
+  /** What the model has written in this attempt; the processor replaces the object with every attempt, so read it fresh. */
+  readonly attempt: { readonly textLength: number; readonly reasoningLength: number }
   /** The step in progress; the processor replaces it as a whole when the step finishes. */
   stepStats: StepStats
 }
@@ -45,6 +49,30 @@ export interface ToolCallDeps {
   readonly session: Session.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly ctx: ToolCallScope
+}
+
+/** Metadata of a failed call: its failure class and the corrections the harness made before it failed. */
+function failureMetadata(running: Record<string, unknown> | undefined, error: unknown) {
+  return addCorrections({ outcome: classifyToolError(error) }, ...correctionsOf(running))
+}
+
+/** An error part with its failure class replaced by `arguments_truncated`. */
+function withTruncatedArguments(part: SessionV1.ToolPart): SessionV1.ToolPart {
+  if (part.state.status !== "error") return part
+  return { ...part, state: { ...part.state, metadata: { ...part.state.metadata, outcome: "arguments_truncated" } } }
+}
+
+/** A call the SDK rejected as unparsable, with how much the model had produced when the rejection arrived. */
+type RejectedInput = { readonly part: SessionV1.ToolPart; readonly produced: number }
+
+/**
+ * The error part to rewrite as a step finishes, if any. A step that stopped on `length` was cut off in the middle
+ * of one call, so only the rejected call that is the last thing the model wrote lost its arguments to the output
+ * limit. One the model wrote on after, in text, reasoning or another call, was complete when it was rejected.
+ */
+function truncatedInput(rejected: readonly RejectedInput[], produced: number, reason: string) {
+  const last = rejected.at(-1)
+  return reason === "length" && last?.produced === produced ? [withTruncatedArguments(last.part)] : []
 }
 
 /**
@@ -59,6 +87,14 @@ export function makeToolCalls(deps: ToolCallDeps) {
   // Per-call preview sequence; the TUI applies previews latest-wins within
   // a frame, and the sequence lets it discard an older frame.
   const previewSeqs = new Map<string, number>()
+
+  // The model's output so far: the text and reasoning written, and the tool parts opened.
+  let opened = 0
+  const produced = () => ctx.attempt.textLength + ctx.attempt.reasoningLength + opened
+
+  // Calls the SDK rejected as unparsable since the last step finished, the newest last. Their errors arrive
+  // before the finish reason of their step, so `takeTruncatedInputs` settles them once it is known.
+  const rejectedInputs: RejectedInput[] = []
 
   const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
     const done = ctx.toolcalls[toolCallID]?.done
@@ -207,13 +243,14 @@ export function makeToolCalls(deps: ToolCallDeps) {
               status: "error",
               input: match.part.state.input,
               error: errorMessage(error),
-              metadata: { outcome: classifyToolError(error) },
+              metadata: failureMetadata(match.part.state.metadata, error),
               time: { start: match.part.state.time.start, end: Date.now() },
             },
           })
           cacheWrittenPart(call, part, match.call.version + 1)
           ctx.stepStats.toolCalls += 1
           ctx.stepStats.toolErrors += 1
+          if (rejectedUnparsable(error)) rejectedInputs.push({ part, produced: produced() })
           if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
           }
@@ -271,6 +308,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
       lock: Semaphore.makeUnsafe(1),
     }
     ctx.toolcalls[input.id] = call
+    opened += 1
     return { call, part }
   })
 
@@ -316,7 +354,12 @@ export function makeToolCalls(deps: ToolCallDeps) {
       yield* forceAbortToolCall(toolCallID)
     }
     ctx.toolcalls = {}
+    rejectedInputs.length = 0
   })
+
+  /** The parts to rewrite as a step finishes: a rejected call cut off by the output limit is not a model mistake. */
+  const takeTruncatedInputs = (reason: string): SessionV1.ToolPart[] =>
+    truncatedInput(rejectedInputs.splice(0), produced(), reason)
 
   return {
     settleToolCall,
@@ -329,5 +372,6 @@ export function makeToolCalls(deps: ToolCallDeps) {
     ensureToolCall,
     forceAbortToolCall,
     severUnexecutedToolCalls,
+    takeTruncatedInputs,
   }
 }

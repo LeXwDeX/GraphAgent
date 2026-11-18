@@ -569,15 +569,20 @@ describe("the step rows of stats --models", () => {
     totalSessions: 1,
     totalMessages: 4,
     totalCost: 1.5,
+    costUnknown: false,
     totalTokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
     toolUsage: {},
     modelUsage: {
       "anthropic/claude": {
         messages: 4,
-        tokens: { input: 10, output: 20, cache: { read: 1, write: 2 } },
+        tokens: { input: 10, output: 20, reasoning: 0, cache: { read: 1, write: 2 } },
         cost: 0.1234,
       },
-      "openai/gpt": { messages: 2, tokens: { input: 5, output: 6, cache: { read: 0, write: 0 } }, cost: 0.5 },
+      "openai/gpt": {
+        messages: 2,
+        tokens: { input: 5, output: 6, reasoning: 0, cache: { read: 0, write: 0 } },
+        cost: 0.5,
+      },
     },
     dateRange: { earliest: 0, latest: 1 },
     days: 1,
@@ -610,7 +615,7 @@ describe("the step rows of stats --models", () => {
     Effect.sync(() => {
       setLanguage("en")
       const lines = printed({ "anthropic/claude": steps })
-      const cost = lines.indexOf(boxRow("  Cost", "$0.1234"))
+      const cost = lines.indexOf(boxRow("  Cost", "$0.12"))
       expect(cost).toBeGreaterThan(0)
       expect(lines.slice(cost + 1, cost + 7)).toEqual([
         boxRow("  Steps", "7"),

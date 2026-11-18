@@ -45,7 +45,6 @@ import {
   reviewImplementationFingerprint,
   reviewContractForNode,
   validateReviewExecutionInput,
-  reviewEvidenceKeys,
   targetSensitiveNode,
   workspaceWritesOf,
 } from "../review-lifecycle"
@@ -59,11 +58,12 @@ import { SessionInbox } from "@/session/inbox"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { renderTemplate } from "../templates/resolve"
-import { sanitizeInput } from "../templates/sanitize"
+import { upstreamBlock } from "../templates/envelope"
 import { DagConfig } from "../config"
 import { DagSection } from "@/config/dag-section"
 import { spawnNode, makeDeadlineWatcher } from "./spawn"
 import { DagComposeExpansion } from "./compose-expansion"
+import { collectChangeFacts, renderChangeFacts } from "./change-facts"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
@@ -642,12 +642,6 @@ const serviceLayer = Layer.effect(
               })
             }
 
-            // Sanitize the dynamic node-output surface (LLM-generated upstream
-            // outputs) before interpolation and Context serialization. Review
-            // implementation evidence (diff/patch artifacts) is exempted —
-            // wrapped, not rewritten — so the reviewer sees the real diff (P1-2).
-            resolvedMapping = sanitizeInput(resolvedMapping, nodeConfig ? reviewEvidenceKeys(nodeConfig) : undefined)
-
             if (nodeConfig) {
               const reviewInput = validateReviewExecutionInput(nodeConfig, resolvedMapping)
               if (!reviewInput.valid) {
@@ -715,10 +709,9 @@ const serviceLayer = Layer.effect(
             promptParts.push({ type: "text", text: resolved.text })
             const recoveryContext = nodeConfig.recovery && nodeConfig.prompt_template?.input?.__workflow_recovery
             if (recoveryContext) {
-              const recovery = sanitizeInput({ recovery: recoveryContext }).recovery
               promptParts.push({
                 type: "text",
-                text: `\n\nRecovery context:\n${JSON.stringify(recovery, null, 2)}${staleUpstreamNote(staleUpstreamNodes(recovery))}`,
+                text: `\n\nRecovery context:\n${upstreamBlock("recovery", recoveryContext)}${staleUpstreamNote(staleUpstreamNodes(recoveryContext))}`,
               })
             }
 
@@ -739,8 +732,13 @@ const serviceLayer = Layer.effect(
               Object.entries(resolvedMapping).filter(([key]) => !interpolatedKeys.has(key)),
             )
             if (Object.keys(remainingContext).length > 0) {
-              promptParts.push({ type: "text", text: `\n\nContext:\n${JSON.stringify(remainingContext, null, 2)}` })
+              promptParts.push({ type: "text", text: `\n\nContext:\n${upstreamBlock("context", remainingContext)}` })
             }
+
+            // #1455: a judging node is told which paths the engine recorded for the writers upstream, beside
+            // what those writers reported, so completion rests on facts the engine measured.
+            const changeFacts = collectChangeFacts({ node, nodeConfig, nodes: nodesSnapshot, directory: nodeDirectory })
+            if (changeFacts) promptParts.push({ type: "text", text: `\n\n${renderChangeFacts(changeFacts)}` })
 
             if (nodeConfig?.output_schema) {
               promptParts.push({

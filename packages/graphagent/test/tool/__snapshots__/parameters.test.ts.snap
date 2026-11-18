@@ -224,14 +224,14 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
       "type": "boolean",
     },
     "timeout": {
-      "description": "Optional timeout in milliseconds",
+      "description": "Optional timeout in milliseconds (for example 120000 for two minutes)",
       "exclusiveMinimum": 0,
       "maximum": 9007199254740991,
       "minimum": -9007199254740991,
       "type": "integer",
     },
     "workdir": {
-      "description": "The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.",
+      "description": "The working directory to run the command in; relative paths resolve from the project directory. Defaults to the project directory. Use this instead of 'cd' commands.",
       "type": "string",
     },
   },
@@ -284,7 +284,7 @@ exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
       "type": "integer",
     },
     "path": {
-      "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
+      "description": "The directory to search in; relative paths resolve from the project directory. If not specified, the project directory is used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
       "type": "string",
     },
     "pattern": {
@@ -321,7 +321,7 @@ exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
       "type": "integer",
     },
     "path": {
-      "description": "The file or directory to search in. Defaults to the current working directory.",
+      "description": "The file or directory to search in; relative paths resolve from the project directory. Defaults to the project directory.",
       "type": "string",
     },
     "pattern": {
@@ -360,17 +360,17 @@ exports[`tool parameters JSON Schema (wire shape) lsp 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "character": {
-      "description": "The character offset (1-based, as shown in editors)",
+      "description": "The character offset (1-based, as shown by read); required except for documentSymbol and workspaceSymbol",
       "maximum": 9007199254740991,
       "minimum": 1,
       "type": "integer",
     },
     "filePath": {
-      "description": "The absolute or relative path to the file",
+      "description": "Path to the file; relative paths resolve from the project directory",
       "type": "string",
     },
     "line": {
-      "description": "The line number (1-based, as shown in editors)",
+      "description": "The line number (1-based, as shown by read); required except for documentSymbol and workspaceSymbol",
       "maximum": 9007199254740991,
       "minimum": 1,
       "type": "integer",
@@ -398,8 +398,6 @@ exports[`tool parameters JSON Schema (wire shape) lsp 1`] = `
   "required": [
     "operation",
     "filePath",
-    "line",
-    "character",
   ],
   "type": "object",
 }
@@ -543,8 +541,9 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "action": {
-      "description": "Set to "cancel" together with task_id to cancel one of this session's background tasks. Omit for a normal task run. Only background tasks can be cancelled here; a foreground task is cancelled from the parent session.",
+      "description": "resume: continue the task named by task_id with a new prompt. cancel: cancel the background task named by task_id. Omit to start a new task.",
       "enum": [
+        "resume",
         "cancel",
       ],
       "type": "string",
@@ -552,10 +551,6 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
     "background": {
       "description": "Run without waiting. Use only for independent, long-running work whose result you do not need for your next step (see "Choosing foreground or background"). You will be notified when it finishes.",
       "type": "boolean",
-    },
-    "command": {
-      "description": "The command that triggered this task",
-      "type": "string",
     },
     "description": {
       "description": "A short (3-5 words) description of the task; required unless action is cancel",
@@ -570,7 +565,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "task_id": {
-      "description": "With action "cancel": the background task to cancel. Otherwise set only to resume a previous task (pass a prior task_id and the task continues the same subagent session instead of creating a fresh one)",
+      "description": "The existing task this call acts on. Required with action; not allowed without it.",
       "type": "string",
     },
   },
@@ -583,7 +578,7 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "todos": {
-      "description": "The updated todo list",
+      "description": "The complete todo list after this call. It replaces the stored list: every omitted item is deleted.",
       "items": {
         "properties": {
           "content": {
@@ -592,10 +587,21 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
           },
           "priority": {
             "description": "Priority level of the task: high, medium, low",
+            "enum": [
+              "high",
+              "medium",
+              "low",
+            ],
             "type": "string",
           },
           "status": {
             "description": "Current status of the task: pending, in_progress, completed, cancelled",
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed",
+              "cancelled",
+            ],
             "type": "string",
           },
         },
@@ -631,9 +637,11 @@ exports[`tool parameters JSON Schema (wire shape) webfetch 1`] = `
       "type": "string",
     },
     "timeout": {
-      "description": "Positive timeout in seconds, including body download (default 30, max 120)",
+      "description": "Positive timeout in milliseconds, including body download (default 30000, max 120000)",
       "exclusiveMinimum": 0,
-      "type": "number",
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
     },
     "url": {
       "description": "The URL to fetch content from",
@@ -1572,7 +1580,7 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
       "type": "string",
     },
     "filePath": {
-      "description": "The absolute path to the file to write (must be absolute, not relative)",
+      "description": "Path to the file to write; relative paths resolve from the project directory",
       "type": "string",
     },
   },

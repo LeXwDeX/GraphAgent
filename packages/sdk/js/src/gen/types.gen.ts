@@ -195,6 +195,12 @@ export type DagWorkflowSummary = {
   escalatedNodes: number | "Infinity" | "-Infinity" | "NaN"
   tokens?: number
   tokensCacheRead?: number
+  tokensInput?: number
+  tokensOutput?: number
+  tokensReasoning?: number
+  tokensCacheWrite?: number
+  cost?: number
+  costUnknown?: boolean
   concurrencyRunning?: number
   coverageCount?: number
   checkpointPending?: boolean
@@ -859,6 +865,31 @@ export type Session = {
   dagBudgetUnlimited?: boolean
 }
 
+export type SessionUsage = {
+  rootID: string
+  /**
+   * Sessions in the tree, the root included
+   */
+  sessions: number
+  /**
+   * Σ cost over the tree, in dollars; never negative
+   */
+  cost: number
+  /**
+   * A session in the tree recorded tokens at zero cost, so its price is unknown and not counted in cost
+   */
+  costUnknown: boolean
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+}
+
 export type SessionDagMode = {
   mode: "on" | "off"
   defaultMode: "on" | "off"
@@ -971,12 +1002,79 @@ export type Model = {
     [key: string]: string
   }
   release_date: string
+  profile?: ModelProfile
   variants?: {
     [key: string]: {
       [key: string]: unknown
     }
   }
 }
+
+export type ModelProfile = {
+  context?: number
+  output?: number
+  modalities: {
+    input: Array<"text" | "audio" | "image" | "video" | "pdf">
+    output: Array<"text" | "audio" | "image" | "video" | "pdf">
+  }
+  reasoning: boolean
+  vendor?: string
+  effectiveContext?: number
+  toolCallId: {
+    charset: "any" | "alnum_dash" | "alnum"
+    length?: number
+  }
+  userAfterToolResult: "allow" | "bridge"
+  toolResultMedia: "all" | "image" | "none"
+  cacheMarker: "explicit" | "none"
+  reasoningMode: {
+    controls: Array<ReasoningControl>
+    toggle?: {
+      on: {
+        [key: string]: unknown
+      }
+      off: {
+        [key: string]: unknown
+      }
+    }
+    placeholder: boolean
+    replay: "none" | "field" | "signed" | "encrypted"
+    inlineTag?: string
+  }
+  sampling: {
+    temperature?: number
+    topP?: number
+    topK?: number
+  }
+  finishReasons: {
+    [key: string]: "content-filter" | "stream_error" | "context_overflow"
+  }
+  editTools: "edit" | "apply_patch"
+  toolLimits: {
+    maxTools?: number
+    nameMaxLength?: number
+    namePattern?: string
+  }
+  schemaFixes: Array<"openai" | "moonshot" | "gemini">
+  sources: {
+    [key: string]: string
+  }
+  missing: Array<"context" | "output" | "modalities" | "reasoning">
+}
+
+export type ReasoningControl =
+  | {
+      type: "toggle"
+    }
+  | {
+      type: "effort"
+      values: Array<string>
+    }
+  | {
+      type: "budget_tokens"
+      min?: number
+      max?: number
+    }
 
 export type PermissionRequest = {
   id: string
@@ -1371,14 +1469,15 @@ export type ProviderConfig = {
         }
       }
       limit?: {
-        context: number
+        context?: number
         input?: number
-        output: number
+        output?: number
       }
       modalities?: {
         input?: Array<"text" | "audio" | "image" | "video" | "pdf">
         output?: Array<"text" | "audio" | "image" | "video" | "pdf">
       }
+      profile?: ModelProfileOverride
       experimental?: boolean
       status?: "alpha" | "beta" | "deprecated" | "active"
       reasoningDistillation?: ConfigV2ModelReasoningDistillation
@@ -1403,6 +1502,50 @@ export type ProviderConfig = {
       }
     }
   }
+}
+
+export type ModelProfileOverride = {
+  vendor?: string
+  effective_context?: number
+  tool_call_id?: {
+    /**
+     * Characters a tool call id may contain: any, alnum_dash ([A-Za-z0-9_-]) or alnum ([A-Za-z0-9]).
+     */
+    charset: "any" | "alnum_dash" | "alnum"
+    length?: number
+  }
+  user_after_tool_result?: "allow" | "bridge"
+  tool_result_media?: "all" | "image" | "none"
+  cache_marker?: "explicit" | "none"
+  reasoning_mode?: {
+    controls?: Array<ReasoningControl>
+    toggle?: {
+      on: {
+        [key: string]: unknown
+      }
+      off: {
+        [key: string]: unknown
+      }
+    }
+    placeholder?: boolean
+    replay?: "none" | "field" | "signed" | "encrypted"
+    inline_tag?: string
+  }
+  sampling?: {
+    temperature?: number
+    top_p?: number
+    top_k?: number
+  }
+  finish_reasons?: {
+    [key: string]: "content-filter" | "stream_error" | "context_overflow"
+  }
+  edit_tools?: "edit" | "apply_patch"
+  tool_limits?: {
+    max_tools?: number
+    name_max_length?: number
+    name_pattern?: string
+  }
+  schema_fixes?: Array<"openai" | "moonshot" | "gemini">
 }
 
 /**
@@ -4970,6 +5113,37 @@ export type SessionDagModeResponses = {
 }
 
 export type SessionDagModeResponse = SessionDagModeResponses[keyof SessionDagModeResponses]
+
+export type SessionUsageData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/usage"
+}
+
+export type SessionUsageErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: BadRequestError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionUsageError = SessionUsageErrors[keyof SessionUsageErrors]
+
+export type SessionUsageResponses = {
+  /**
+   * Usage of the session's whole task tree
+   */
+  200: SessionUsage
+}
+
+export type SessionUsageResponse = SessionUsageResponses[keyof SessionUsageResponses]
 
 export type SessionChildrenData = {
   body?: never

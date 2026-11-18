@@ -8,6 +8,7 @@ import path from "node:path"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { WorkflowAuthoring } from "../../src/dag/authoring"
 import { resolveInputMappingChecked } from "../../src/dag/runtime/eval"
+import { upstreamBlock } from "../../src/dag/templates/envelope"
 import { renderTemplate } from "../../src/dag/templates/resolve"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -593,7 +594,7 @@ it.effect("repairs named-template bindings when a redundant edge is removed", ()
     }))
     if (!mapped.ok) throw new Error(mapped.error)
     const rendered = yield* renderTemplate({ id: "shared" }, directory, mapped.value)
-    expect(rendered.text).toBe("Compare A with B")
+    expect(rendered.text).toBe(`Compare ${upstreamBlock("a", "A")} with ${upstreamBlock("b", "B")}`)
   }),
 )
 
@@ -641,6 +642,6 @@ it.effect("repairs named-template bindings in the checkpoint fix without overrid
     const mapped = resolveInputMappingChecked({ a: "a" }, () => ({ found: true, output: "A" }))
     if (!mapped.ok) throw new Error(mapped.error)
     const rendered = yield* renderTemplate({ id: "shared", input: { b: "fixed" } }, directory, mapped.value)
-    expect(rendered.text).toBe("Compare A with fixed")
+    expect(rendered.text).toBe(`Compare ${upstreamBlock("a", "A")} with fixed`)
   }),
 )

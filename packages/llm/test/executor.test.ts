@@ -194,6 +194,45 @@ describe("RequestExecutor", () => {
     }).pipe(Effect.provide(responsesLayer([new Response("invalid parameter", { status: 400 })]))),
   )
 
+  const reasonOf = (status: number, body: string) =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor
+        .execute(request)
+        .pipe(Effect.provideService(RequestExecutor.MaxRetries, 0), Effect.flip)
+
+      expectLLMError(error)
+      return error.reason._tag
+    }).pipe(Effect.provide(responsesLayer([new Response(body, { status, headers: { "retry-after-ms": "0" } })])))
+
+  it.effect("does not read a safety_settings parameter error as a content-policy refusal", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* reasonOf(400, '{"error":{"message":"Unknown name \\"safety_settings\\": Cannot find field."}}'),
+      ).toBe("InvalidRequest")
+      expect(yield* reasonOf(400, "invalid value for safety_settings")).toBe("InvalidRequest")
+    }),
+  )
+
+  it.effect("still reads a content filter or the word safety on a client error as a content-policy refusal", () =>
+    Effect.gen(function* () {
+      expect(yield* reasonOf(400, '{"error":{"code":"content_filter","message":"blocked"}}')).toBe("ContentPolicy")
+      expect(yield* reasonOf(400, "Your request was blocked by our content policy")).toBe("ContentPolicy")
+      expect(yield* reasonOf(400, "Blocked for safety reasons")).toBe("ContentPolicy")
+      expect(yield* reasonOf(422, "SAFETY filter triggered")).toBe("ContentPolicy")
+      expect(yield* reasonOf(403, "content policy violation")).toBe("ContentPolicy")
+    }),
+  )
+
+  it.effect("keeps a 401, a 429 and a 5xx that mention a content filter out of the content-policy class", () =>
+    Effect.gen(function* () {
+      expect(yield* reasonOf(401, '{"error":{"code":"content_filter"}}')).toBe("Authentication")
+      expect(yield* reasonOf(429, "Too many requests, safety classifier busy")).toBe("RateLimit")
+      expect(yield* reasonOf(500, "safety filter crashed")).toBe("ProviderInternal")
+      expect(yield* reasonOf(503, "content_filter backend unavailable")).toBe("ProviderInternal")
+    }),
+  )
+
   it.effect("returns redacted diagnostics for retryable rate limits", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service

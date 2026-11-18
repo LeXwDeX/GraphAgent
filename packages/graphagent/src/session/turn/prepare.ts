@@ -61,6 +61,7 @@ import { TodoReminders } from "../todo-reminders"
 import { RuntimeContext } from "../runtime-context"
 import { MAX_STEPS_PROMPT } from "../max-steps"
 import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
+import { SystemSections } from "./system-sections"
 import { TaskTool, type TaskOrigin, type TaskPromptOps } from "@/tool/task"
 import { decodeDataUrl } from "@/util/data-url"
 import { estimateOverhead } from "../overflow"
@@ -68,6 +69,7 @@ import type { Handle as ProcessorHandle } from "../processor"
 import type { ToolBatch as HookToolBatchState } from "@/hook/tool-batch"
 import type { Interface, PromptError, PromptInput, SetModelInput } from "../prompt"
 import type { AdmissionCommit, ModelBaseline } from "../turns"
+import { classifyToolError, endedMetadata } from "../tool-outcome"
 import { Cause, DateTime, Effect, Exit, Option, Schema, Stream, Types } from "effect"
 import type { Context } from "effect"
 import { type Tool as AITool, tool, jsonSchema } from "ai"
@@ -1135,7 +1137,7 @@ export function makePrepare(deps: PrepareDeps) {
                 status: "error",
                 error: "Cancelled",
                 input: part.state.input,
-                metadata: part.state.metadata,
+                metadata: endedMetadata(part.state, "aborted"),
                 time: { start: part.state.time.start, end: Date.now() },
               },
             })
@@ -1173,7 +1175,7 @@ export function makePrepare(deps: PrepareDeps) {
             start: part.state.status === "running" ? part.state.time.start : Date.now(),
             end: Date.now(),
           },
-          metadata: part.state.status === "pending" ? undefined : part.state.metadata,
+          metadata: endedMetadata(part.state, classifyToolError(error)),
           input: part.state.input,
         },
       } satisfies SessionV1.ToolPart)
@@ -1899,17 +1901,10 @@ export function makePrepare(deps: PrepareDeps) {
         ],
         { concurrency: "unbounded" },
       )
-    const system = [
-      ...env,
-      ...languageDocs,
-      ...instructions,
-      ...(mcpInstructions ? [mcpInstructions] : []),
-      ...(skills ? [skills] : []),
-      ...goalDocs.system,
-      ...hooksDocs,
-      ...(dagTurn.advertised ? [DagMode.SYSTEM] : []),
-      RuntimeContext.SYSTEM_NOTE,
-    ]
+    const sections = SystemSections.assemble({
+      env, languageDocs, instructions, mcpInstructions, skills,
+      goal: goalDocs.system, hooksDocs, dag: dagTurn.advertised,
+    })
     // Goal, memory, the environment and the date are state, not system text:
     // the cached prefix must not change when the directory or the day changes.
     // Owner-contributed slots (for example DAG mode, published by `dagTurnState`)
@@ -1923,7 +1918,8 @@ export function makePrepare(deps: PrepareDeps) {
       custom: yield* ChildSlot.custom(deps.children, input.sessionID),
     })
     const runtimeEvents: string[] = []
-    if (structuredFormat?.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+    if (structuredFormat?.type === "json_schema")
+      SystemSections.append(sections, "structured_output", STRUCTURED_OUTPUT_SYSTEM_PROMPT)
     const processInput: LLM.StreamInput = {
       user: lastUser,
       agent,
@@ -1931,7 +1927,8 @@ export function makePrepare(deps: PrepareDeps) {
       nativePermission,
       sessionID,
       parentSessionID: session.parentID,
-      system,
+      system: sections.system,
+      systemLabels: sections.labels,
       messages: [...modelMsgs, ...finalStepMessages(input)],
       tools,
       toolBudget: budget,
@@ -1966,7 +1963,7 @@ export function makePrepare(deps: PrepareDeps) {
     else runtimeContextBySession.delete(sessionID)
     const reminder = reminderText(todoReminder, dagTurn.reminder)
     processInput.messages.splice(0, modelMsgs.length, ...TodoReminders.append(runtime.messages, reminder))
-    processInput.system.push(...runtime.unplaced)
+    SystemSections.append(sections, "one_shot_event", ...runtime.unplaced)
     // The cached fragment is only valid for the resolved tool set; the
     // structured-output tool is added afterwards, so that request
     // re-serializes instead of reusing a stale fragment (Issue #1022, PR5).

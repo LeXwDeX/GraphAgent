@@ -4,6 +4,7 @@ import { NonNegativeInt, PositiveInt } from "@graphagent/core/schema"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Ripgrep } from "@graphagent/core/ripgrep"
+import { addCorrections } from "@graphagent/core/session/outcome"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
 import { describeSearchPathFailure } from "./search-path"
@@ -21,7 +22,8 @@ const MAX_CONTEXT = 20
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The regex pattern to search for in file contents" }),
   path: Schema.optional(Schema.String).annotate({
-    description: "The file or directory to search in. Defaults to the current working directory.",
+    description:
+      "The file or directory to search in; relative paths resolve from the project directory. Defaults to the project directory.",
   }),
   include: Schema.optional(Schema.String).annotate({
     description: 'File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")',
@@ -36,6 +38,52 @@ export const Parameters = Schema.Struct({
 
 const searchPathFailure = (searchPath: string, error: unknown, requested?: string) =>
   Effect.fail(new Error(describeSearchPathFailure(searchPath, error, requested)))
+
+/** What an empty search says it did, so "no match" is not read as "does not exist" when nothing was searched. */
+function noMatchesLine(pattern: string, searchPath: string, include: string | undefined, searched: number | undefined) {
+  const tail =
+    searched === 0
+      ? "No file passed the include filter or ignore rules (.gitignore, .ignore)."
+      : "Rust regex, case-sensitive."
+  return (
+    `No matches: pattern=${JSON.stringify(pattern)} path=${JSON.stringify(searchPath)} ` +
+    `include=${include ? JSON.stringify(include) : "none"}; files searched: ${searched ?? "unknown"}. ${tail}`
+  )
+}
+
+/** Matching lines over the record cap are skipped by the search; say so and give the command that previews them. */
+function skippedLine(skipped: number, more: boolean) {
+  return (
+    `[skipped: ${skipped}${more ? "+" : ""} matching ${skipped === 1 ? "line" : "lines"} over 64 KB not shown. ` +
+    "Preview them with the shell tool: rg -n -M 200 --max-columns-preview -e <pattern> <path>]"
+  )
+}
+
+/** The result text, followed after a blank line by the skipped-lines line when the search skipped any. */
+function withSkipped(text: string, report: Ripgrep.GrepReport, more: boolean) {
+  return report.skipped > 0 ? `${text}\n\n${skippedLine(report.skipped, more)}` : text
+}
+
+/** The result metadata, with the `long_lines_skipped` correction when the search skipped lines. */
+function withCorrection<M extends Record<string, unknown>>(
+  metadata: M,
+  report: Ripgrep.GrepReport,
+): M & { corrections?: string[] } {
+  return report.skipped > 0 ? addCorrections(metadata, "long_lines_skipped") : metadata
+}
+
+/**
+ * ripgrep's complaint about look-around or a backreference ends with advice to enable PCRE2, a flag this tool does
+ * not have. Keep the complaint and say what to do here instead; any other complaint stands as it is.
+ */
+function explainPattern(message: string) {
+  if (!message.includes("look-around") && !message.includes("backreferences")) return message
+  const [reason = message] = message.split(/\r?\n\r?\n/, 1)
+  return (
+    `${reason}\n\ngrep uses Rust regex (no look-around or backreferences). ` +
+    "Rewrite the pattern, or run rg --pcre2 -n -e <pattern> <path> with the shell tool."
+  )
+}
 
 export const GrepTool = Tool.define(
   "grep",
@@ -52,11 +100,6 @@ export const GrepTool = Tool.define(
         ctx: Tool.Context,
       ) =>
         Effect.gen(function* () {
-          const empty = {
-            title: params.pattern,
-            metadata: { matches: 0, truncated: false },
-            output: "No files found",
-          }
           if (!params.pattern) {
             throw new Error("pattern is required")
           }
@@ -103,24 +146,32 @@ export const GrepTool = Tool.define(
           // Context rows consume the process row budget; matches still cap at
           // `scan`.
           const rowBudget = context > 0 ? scan * (2 * context + 1) : scan
-          const found =
-            context > 0
-              ? yield* ripgrep.grepContext({
-                  cwd,
-                  pattern: params.pattern,
-                  file: info.type === "File" ? path.basename(search) : undefined,
-                  include: params.include,
-                  limit: rowBudget + 1,
-                  context,
-                })
-              : (yield* ripgrep.grep({
-                  cwd,
-                  pattern: params.pattern,
-                  file: info.type === "File" ? path.basename(search) : undefined,
-                  include: params.include,
-                  limit: rowBudget + 1,
-                })).map((match) => ({ kind: "match" as const, match }))
-          if (found.length === 0) return empty
+          const report = yield* ripgrep
+            .grepReport({
+              cwd,
+              pattern: params.pattern,
+              file: info.type === "File" ? path.basename(search) : undefined,
+              include: params.include,
+              limit: rowBudget + 1,
+              context,
+              sorted: true,
+            })
+            .pipe(
+              Effect.catchTag("Ripgrep.InvalidPatternError", (error) =>
+                Effect.fail(new Error(explainPattern(error.message))),
+              ),
+            )
+          const found = report.rows
+          if (found.length === 0) {
+            return {
+              title: params.pattern,
+              metadata: withCorrection({ matches: 0, truncated: false }, report),
+              output:
+                report.skipped > 0
+                  ? skippedLine(report.skipped, false)
+                  : noMatchesLine(params.pattern, search, params.include, report.searched),
+            }
+          }
 
           const matches = found.filter((row) => row.kind === "match")
           const more = found.length > rowBudget || matches.length > scan
@@ -209,13 +260,13 @@ export const GrepTool = Tool.define(
           if (!truncated) {
             return {
               title: params.pattern,
-              metadata: { matches: shown, truncated: false },
-              output: output.join("\n"),
+              metadata: withCorrection({ matches: shown, truncated: false }, report),
+              output: withSkipped(output.join("\n"), report, more),
             }
           }
 
           const saved = [header, ...entries.flatMap((entry) => entry.lines)].join("\n")
-          const full = yield* trunc.write(saved)
+          const full = yield* trunc.save(saved)
           // Match text may carry its trailing newline, so an entry can render as
           // more than one line. Count rendered lines, not array entries, or the
           // continuation points back into the preview. When the preview did not
@@ -234,26 +285,25 @@ export const GrepTool = Tool.define(
                     ? `${omitted} ${omitted === 1 ? "match" : "matches"} omitted by the output byte budget. `
                     : "Context lines were omitted by the output byte budget. "
                   : `${omitted} ${omitted === 1 ? "match" : "matches"} omitted. `) +
-              `Full output: ${full}]`,
+              ("path" in full ? `Full output: ${full.path}]` : `${Truncate.unsavedNote(full.failed)}]`),
           )
-          output.push(
-            hasMoreSaved
-              ? `Continue: read filePath="${full}" offset=${next}` +
-                  (more
-                    ? "; narrow path/include or use a more specific pattern for matches beyond the saved listing."
-                    : byBytes
-                      ? "; the byte budget stopped the preview, so read the saved listing for the omitted context."
-                      : `; raise grep limit to ${Math.min(Math.max(previewLimit * 2, previewLimit + 1), MAX_LIMIT)} to show more.`)
-              : `Continue: narrow path/include or use a more specific pattern for matches beyond the saved listing.`,
-          )
+          // Without a saved listing there is nothing to read on from: the note above says what to do instead.
+          if ("path" in full)
+            output.push(
+              hasMoreSaved
+                ? `Continue: read filePath="${full.path}" offset=${next}` +
+                    (more
+                      ? "; narrow path/include or use a more specific pattern for matches beyond the saved listing."
+                      : byBytes
+                        ? "; the byte budget stopped the preview, so read the saved listing for the omitted context."
+                        : `; raise grep limit to ${Math.min(Math.max(previewLimit * 2, previewLimit + 1), MAX_LIMIT)} to show more.`)
+                : `Continue: narrow path/include or use a more specific pattern for matches beyond the saved listing.`,
+            )
 
           return {
             title: params.pattern,
-            metadata: {
-              matches: shown,
-              truncated,
-            },
-            output: output.join("\n"),
+            metadata: withCorrection({ matches: shown, truncated }, report),
+            output: withSkipped(output.join("\n"), report, more),
           }
         }).pipe(Effect.orDie),
     }

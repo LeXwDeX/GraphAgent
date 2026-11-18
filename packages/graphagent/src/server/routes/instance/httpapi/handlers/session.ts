@@ -29,6 +29,7 @@ import { Goal } from "@/goal/goal"
 import { PrWatchProgress } from "@/pr-watch/progress"
 import { ReminderClock } from "@/reminder/clock"
 import { Database } from "@graphagent/core/database/database"
+import { findRoot, rootUsage } from "@graphagent/core/session/usage"
 import { SessionHooks, type SessionHookCommand } from "@/hook/session-hooks"
 import { SettingsHook, type HookEvent } from "@/hook"
 import { MessageID, PartID, SessionID } from "@/session/schema"
@@ -169,6 +170,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         info,
       )
       return snapshot.status
+    })
+
+    // #1475: the whole task tree's usage, read from the root down; display only.
+    const usage = Effect.fn("SessionHttpApi.usage")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* rootUsage(db, yield* findRoot(db, ctx.params.sessionID))
     })
 
     const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -671,6 +678,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("status", status)
       .handle("get", get)
       .handle("dagMode", dagMode)
+      .handle("usage", usage)
       .handle("children", children)
       .handle("todo", todo)
       .handle("goal", goal)

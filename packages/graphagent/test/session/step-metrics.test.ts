@@ -7,7 +7,9 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { MessageID, SessionID } from "../../src/session/schema"
 import {
   counters,
+  digestValue,
   explainFingerprintChange,
+  explainSectionChange,
   finishMetricsOf,
   fingerprintOf,
   makeStepStats,
@@ -16,8 +18,11 @@ import {
   StepMetricsRing,
   stepFinishPart,
   stepMetricsOf,
+  SYSTEM_SECTIONS,
+  VOLATILE_SYSTEM_SECTIONS,
   type StepMetrics,
   type StepMetricsInput,
+  type SystemSection,
 } from "../../src/session/step-metrics"
 
 const session = (name: string) => SessionID.make(`ses_${name}`)
@@ -26,6 +31,7 @@ function step(input: {
   sessionID: SessionID
   step?: number
   system?: string[]
+  systemLabels?: SystemSection[]
   toolChoice?: string
   messages?: string[]
 }): StepMetrics {
@@ -44,6 +50,7 @@ function step(input: {
     fingerprint: fingerprintOf({
       tools: [{ name: "read", description: "read a file" }],
       system: input.system ?? ["system"],
+      systemLabels: input.systemLabels,
       messages: input.messages ?? ["m1"],
       toolChoice: input.toolChoice,
     }),
@@ -113,13 +120,17 @@ test("counters are monotonic", () => {
   expect(after.commits).toBeGreaterThanOrEqual(before.commits)
 })
 
-async function collect(effect: Effect.Effect<void>): Promise<unknown[]> {
-  const logs: unknown[] = []
+async function collectEntries(effect: Effect.Effect<void>): Promise<Array<{ level: string; message: unknown }>> {
+  const entries: Array<{ level: string; message: unknown }> = []
   const logger = Logger.make((options) => {
-    logs.push(options.message)
+    entries.push({ level: options.logLevel, message: options.message })
   })
   await Effect.runPromise(effect.pipe(Effect.withLogger(logger)))
-  return logs
+  return entries
+}
+
+async function collect(effect: Effect.Effect<void>): Promise<unknown[]> {
+  return (await collectEntries(effect)).map((entry) => entry.message)
 }
 
 function fingerprintLog(logs: unknown[]): unknown[] | undefined {
@@ -165,6 +176,138 @@ test("does not log when the prefix is stable", async () => {
   )
 
   expect(fingerprintLog(logs)).toBeUndefined()
+})
+
+// Issue #1458: the change log names the system sections that moved, and a change of a
+// section that is not registered as volatile is a warning.
+const SECTION_LABELS: SystemSection[] = ["environment", "hooks", "goal"]
+
+let sectionLogs = 0
+
+async function sectionLog(first: string[], second: string[], labels?: SystemSection[]) {
+  const id = session(`log-section-${(sectionLogs += 1)}`)
+  StepMetricsRing.clear(id)
+  const entries = await collectEntries(
+    Effect.gen(function* () {
+      yield* recordStep(step({ sessionID: id, step: 1, system: first, systemLabels: labels }))
+      yield* recordStep(step({ sessionID: id, step: 2, system: second, systemLabels: labels }))
+    }),
+  )
+  StepMetricsRing.clear(id)
+  const entry = entries.find(
+    (candidate) => Array.isArray(candidate.message) && candidate.message[0] === "session step fingerprint changed",
+  )
+  return { id, level: entry?.level, fields: Array.isArray(entry?.message) ? entry.message[1] : undefined }
+}
+
+test("the section names are fixed and the volatile set is the registered subset", () => {
+  expect(SYSTEM_SECTIONS).toEqual([
+    "environment",
+    "language",
+    "instructions",
+    "mcp_instructions",
+    "skills",
+    "goal",
+    "hooks",
+    "dag",
+    "runtime_note",
+    "structured_output",
+    "one_shot_event",
+  ])
+  expect([...VOLATILE_SYSTEM_SECTIONS].sort()).toEqual(
+    SYSTEM_SECTIONS.filter((name) => !["language", "goal", "dag", "runtime_note"].includes(name)).sort(),
+  )
+})
+
+test("a changed registered section is logged by name at info level", async () => {
+  const { id, level, fields } = await sectionLog(
+    ["env", "hooks v1", "no goal"],
+    ["env", "hooks v2", "no goal"],
+    SECTION_LABELS,
+  )
+
+  expect(level).toBe("Info")
+  expect(fields).toMatchObject({
+    "session.id": id,
+    step: 2,
+    previousStep: 1,
+    segments: ["system"],
+    sections: ["hooks"],
+  })
+  expect(fields).not.toHaveProperty("unregistered")
+})
+
+test("a changed section outside the volatile set is a warning that names it", async () => {
+  const { id, level, fields } = await sectionLog(
+    ["env", "hooks", "no goal"],
+    ["env", "hooks", "a goal"],
+    SECTION_LABELS,
+  )
+
+  expect(level).toBe("Warn")
+  expect(fields).toMatchObject({
+    "session.id": id,
+    step: 2,
+    segments: ["system"],
+    sections: ["goal"],
+    unregistered: ["goal"],
+  })
+})
+
+test("an unregistered change keeps the registered sections that moved beside it", async () => {
+  const { level, fields } = await sectionLog(
+    ["env", "hooks v1", "no goal"],
+    ["env", "hooks v2", "a goal"],
+    SECTION_LABELS,
+  )
+
+  expect(level).toBe("Warn")
+  expect(fields).toMatchObject({ sections: ["goal", "hooks"], unregistered: ["goal"] })
+})
+
+test("a system change without recorded labels is logged as before", async () => {
+  const { id, level, fields } = await sectionLog(["system"], ["other"])
+
+  expect(level).toBe("Info")
+  expect(fields).toEqual({ "session.id": id, step: 2, previousStep: 1, segments: ["system"] })
+})
+
+test("sections group the texts of one label and need one label per text", () => {
+  const labelled = fingerprintOf({
+    tools: [],
+    system: ["a", "b", "c"],
+    systemLabels: ["instructions", "instructions", "skills"],
+    messages: [],
+  })
+  expect(labelled.sections).toEqual({ instructions: digestValue(["a", "b"]), skills: digestValue(["c"]) })
+
+  const short = fingerprintOf({ tools: [], system: ["a", "b"], systemLabels: ["instructions"], messages: [] })
+  expect(short.sections).toBeUndefined()
+  expect(fingerprintOf({ tools: [], system: ["a"], messages: [] }).sections).toBeUndefined()
+})
+
+test("explains which sections appeared, vanished or changed, in ascending order", () => {
+  const two = fingerprintOf({ tools: [], system: ["e", "h"], systemLabels: ["environment", "hooks"], messages: [] })
+  const three = fingerprintOf({
+    tools: [],
+    system: ["e", "h", "g"],
+    systemLabels: ["environment", "hooks", "goal"],
+    messages: [],
+  })
+  const edited = fingerprintOf({
+    tools: [],
+    system: ["e2", "h2"],
+    systemLabels: ["environment", "hooks"],
+    messages: [],
+  })
+  const unlabelled = fingerprintOf({ tools: [], system: ["e", "h"], messages: [] })
+
+  expect(explainSectionChange(two, three)).toEqual(["goal"])
+  expect(explainSectionChange(three, two)).toEqual(["goal"])
+  expect(explainSectionChange(two, edited)).toEqual(["environment", "hooks"])
+  expect(explainSectionChange(two, two)).toEqual([])
+  expect(explainSectionChange(two, unlabelled)).toEqual([])
+  expect(explainSectionChange(unlabelled, two)).toEqual([])
 })
 
 // ---------------------------------------------------------------------------

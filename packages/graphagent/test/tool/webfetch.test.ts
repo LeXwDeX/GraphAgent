@@ -217,11 +217,11 @@ for (const mode of ["slow", "oversize"] as const) {
         (url) =>
           Effect.gen(function* () {
             const started = Date.now()
-            const exit = yield* exec({ url: url.href, format: "text", timeout: mode === "slow" ? 0.05 : 5 }).pipe(
+            const exit = yield* exec({ url: url.href, format: "text", timeout: mode === "slow" ? 50 : 5000 }).pipe(
               Effect.exit,
             )
             expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause))).toContain(
-              mode === "slow" ? "Request timed out" : "Response too large",
+              mode === "slow" ? "Request timed out after 50 ms" : "Response too large",
             )
             expect(Date.now() - started).toBeLessThan(3000)
             yield* Effect.promise(() => Bun.sleep(100))

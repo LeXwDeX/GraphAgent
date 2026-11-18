@@ -3,14 +3,16 @@
 
 /**
  * What DAG mode adds to the display (#1032 7), read-only like everything else in `dag/`: the budget band, the
- * usage the status band and the `/dag` title line show, the review quality row, the nodes a workflow left
- * uncovered, and the conditions for the band's mode mark and for "waiting for the main agent". Pure: no
- * rendering, no state, no SDK access. The figures come from the workflow summaries (`tokens`,
- * `concurrencyRunning`, `coverageCount`, `checkpointPending`, `quality`) and from the session's mode snapshot
- * (`GET /session/:id/dag-mode`: the budget, its warning ratio and the limits); nothing is recomputed that the
- * server already worked out, and a figure no source gave is left out rather than guessed.
+ * usage the status band and the `/dag` title line show, the itemised usage row and the review quality row of the
+ * panel, the nodes a workflow left uncovered, and the conditions for the band's mode mark and for "waiting for the
+ * main agent". Pure: no rendering, no state, no SDK access. The figures come from the workflow summaries
+ * (`tokens`, the itemised usage fields, `concurrencyRunning`, `coverageCount`, `checkpointPending`, `quality`) and
+ * from the session's mode snapshot (`GET /session/:id/dag-mode`: the budget, its warning ratio and the limits);
+ * nothing is recomputed that the server already worked out, and a figure no source gave is left out rather than
+ * guessed.
  */
 
+import { costLabel } from "@graphagent/core/util/cost"
 import type { DagWorkflowQuality, DagWorkflowSummary, SessionDagMode } from "@graphagent/sdk"
 import { t } from "../i18n"
 import { remoteLine } from "../util/remote-text"
@@ -175,6 +177,40 @@ export function dagQualityText(quality: DagWorkflowQuality | null | undefined): 
     )
   }
   return parts.join(" · ")
+}
+
+/** The part of a workflow summary the usage row reads (#1475). */
+export type DagUsageSummary = Pick<
+  DagWorkflowSummary,
+  "tokensInput" | "tokensOutput" | "tokensReasoning" | "tokensCacheRead" | "tokensCacheWrite" | "cost" | "costUnknown"
+>
+
+/**
+ * The itemised usage of one workflow on a line (#1475): input, output and reasoning tokens, cache reads and
+ * writes, and the cost, as the server summed them over the workflow's attempts. Nothing is added up here; token
+ * counts are written like the band writes them (`formatDagTokens`) and the cost like the drawer does (`costLabel`:
+ * `$x + unknown` when a part has no price, `unknown` when nothing else has one, never `$0.00`). Undefined while any
+ * of the six figures is missing, as with a server that does not itemise: a row of guesses is worse than none.
+ */
+export function dagUsageText(summary: DagUsageSummary): string | undefined {
+  const { tokensInput, tokensOutput, tokensReasoning, tokensCacheRead, tokensCacheWrite, cost } = summary
+  if (
+    tokensInput === undefined ||
+    tokensOutput === undefined ||
+    tokensReasoning === undefined ||
+    tokensCacheRead === undefined ||
+    tokensCacheWrite === undefined ||
+    cost === undefined
+  )
+    return undefined
+  return t("dagmode.panel.usage", {
+    input: formatDagTokens(tokensInput),
+    output: formatDagTokens(tokensOutput),
+    reasoning: formatDagTokens(tokensReasoning),
+    read: formatDagTokens(tokensCacheRead),
+    write: formatDagTokens(tokensCacheWrite),
+    cost: costLabel(cost, summary.costUnknown === true, t("usage.unknown")),
+  })
 }
 
 /** How a node the work did not cover ended: it failed, was cancelled or aborted, or never ran. */

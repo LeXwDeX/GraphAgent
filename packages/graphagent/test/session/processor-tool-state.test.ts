@@ -25,10 +25,13 @@ import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
-import { SessionStepTable } from "@graphagent/core/session/outcome.sql"
 import { LLMEvent } from "@graphagent/llm"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { SessionStepTable, ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
+import { InvalidToolInputError, JSONParseError, NoSuchToolError, TypeValidationError } from "ai"
+import { LLMAISDK } from "../../src/session/llm/ai-sdk"
 import { Tool } from "../../src/tool/tool"
+import { withHookFailure } from "../../src/hook/trigger-result"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -571,6 +574,531 @@ failures.it.effect(
           "call-thrown": { outcome: "execution_error" },
           "call-text": { outcome: "execution_error" },
         })
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: a failure a PostToolUseFailure hook wrapped keeps the class of the original error
+// ---------------------------------------------------------------------------
+
+const invalidInput = () => new Tool.InvalidArgumentsError({ tool: "lookup", detail: "bad" })
+
+const hookWrapped = scripted([
+  [
+    LLMEvent.stepStart({ index: 0 }),
+    ...failedCall(
+      "call-feedback",
+      "lookup",
+      withHookFailure(invalidInput(), { additionalContexts: ["Check the schema"], systemMessages: [] }),
+    ),
+    ...failedCall(
+      "call-stopped",
+      "fetch",
+      withHookFailure(invalidInput(), {
+        additionalContexts: [],
+        systemMessages: [],
+        preventContinuation: true,
+        stopReason: "stop here",
+      }),
+    ),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ],
+])
+
+hookWrapped.it.effect(
+  "session.processor classifies a failure a hook wrapped by the error it wraps",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hook wrapped failures")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        yield* handle.process(input(chat.id, parent, mdl))
+
+        const parts = toolParts(yield* MessageV2.parts(msg.id))
+        const outcomes = Object.fromEntries(
+          parts.map((part) => [part.callID, part.state.status === "error" ? part.state.metadata?.outcome : undefined]),
+        )
+        expect(outcomes).toEqual({ "call-feedback": "validation_error", "call-stopped": "validation_error" })
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(ToolOutcomeTable).all()
+        expect(rows.map((row) => row.outcome)).toEqual(["validation_error", "validation_error"])
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: corrections made before a call failed or was aborted stay on its error part
+// ---------------------------------------------------------------------------
+
+/** The running part of `call-1`, narrowed for a test that rewrites its state. */
+const runningState = Effect.fn("ToolStateTest.runningState")(function* (messageID: MessageID) {
+  const part = yield* runningPart(messageID)
+  if (part.state.status !== "running") return yield* Effect.die(new Error("expected a running call"))
+  return { part, state: part.state }
+})
+
+const repairedThenFailed = scripted([
+  [
+    ...lifecycle.slice(0, 5),
+    LLMEvent.toolError({ id: "call-1", name: "lookup", message: "boom", error: new Error("boom") }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ],
+])
+
+repairedThenFailed.it.effect(
+  "session.processor keeps the corrections of the running part when the call fails",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "fail after repair")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        // Hold the stream after the tool call, as the real tool wrapper writes its mark while the call runs.
+        const gate = yield* Deferred.make<void>()
+        repairedThenFailed.control.gate = { after: 5, wait: gate }
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        const { part, state } = yield* runningState(msg.id)
+        yield* session.updatePart({ ...part, state: { ...state, metadata: { corrections: ["args_repaired"] } } })
+        yield* Deferred.succeed(gate, undefined)
+        yield* Fiber.join(run)
+
+        const failed = toolParts(yield* MessageV2.parts(msg.id))[0]
+        expect(failed?.state.status).toBe("error")
+        if (failed?.state.status === "error") {
+          expect(failed.state.metadata).toEqual({ corrections: ["args_repaired"], outcome: "execution_error" })
+        }
+        // The projection books the same corrections under the failure class.
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(ToolOutcomeTable).all()
+        expect(rows).toMatchObject([{ tool: "lookup", outcome: "execution_error", corrections: ["args_repaired"] }])
+      }),
+    { config: cfg },
+  ),
+)
+
+const repairedThenAborted = scripted([hanging])
+
+repairedThenAborted.it.effect(
+  "session.processor keeps the corrections of the running part when the call is force-aborted",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "abort after repair")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const gate = yield* gateAtLast(repairedThenAborted.control, hanging)
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        const { part, state } = yield* runningState(msg.id)
+        yield* session.updatePart({ ...part, state: { ...state, metadata: { corrections: ["args_repaired"] } } })
+        yield* Deferred.succeed(gate, undefined)
+
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if ((yield* persistedStatus(msg.id)) === "error") break
+          yield* TestClock.adjust("300 millis")
+          yield* realYield
+        }
+        yield* Fiber.join(run)
+
+        const aborted = toolParts(yield* MessageV2.parts(msg.id))[0]
+        expect(aborted?.state.status).toBe("error")
+        if (aborted?.state.status === "error") {
+          expect(aborted.state.metadata).toEqual({
+            corrections: ["args_repaired"],
+            interrupted: true,
+            outcome: "aborted",
+          })
+        }
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: a call whose rejected input was cut off by the output limit is arguments_truncated
+// ---------------------------------------------------------------------------
+
+type SDKChunk = Parameters<typeof LLMAISDK.toLLMEvents>[1]
+
+/** Runs chunks written in the AI SDK's shape through the real adapter, as a provider stream reaches the processor. */
+const adapted = (chunks: ReadonlyArray<unknown>): LLMEvent[] => {
+  const state = LLMAISDK.adapterState()
+  return Effect.runSync(
+    Effect.forEach(chunks, (chunk) =>
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the chunks are written in the SDK's shape, outside its typed surface
+      LLMAISDK.toLLMEvents(state, chunk as SDKChunk),
+    ).pipe(Effect.map((events) => events.flat())),
+  )
+}
+
+/**
+ * A call the SDK refused to run, in the order it emits it: an invalid tool-call that carries the typed error,
+ * then a tool-error that carries only the text. The finish reason of the step comes later.
+ */
+const sdkRefusal = (id: string, error: Error, input: string): unknown[] => [
+  { type: "tool-input-start", id, toolName: "lookup" },
+  { type: "tool-input-delta", id, delta: input },
+  { type: "tool-input-end", id },
+  { type: "tool-call", toolCallId: id, toolName: "lookup", input, dynamic: true, invalid: true, error },
+  { type: "tool-error", toolCallId: id, toolName: "lookup", error: error.message, dynamic: true },
+]
+
+/** Input that is not complete JSON: the SDK's InvalidToolInputError over a JSONParseError, which is what a cut-off call turns into. */
+const unparsableCall = (id: string) =>
+  sdkRefusal(
+    id,
+    new InvalidToolInputError({
+      toolName: "lookup",
+      toolInput: '{"que',
+      cause: new JSONParseError({ text: '{"que', cause: new Error("Unexpected end of JSON input") }),
+    }),
+    '{"que',
+  )
+
+/** Input that is complete JSON but fails the tool's schema: the same error over a TypeValidationError. */
+const schemaFailureCall = (id: string) =>
+  sdkRefusal(
+    id,
+    new InvalidToolInputError({
+      toolName: "lookup",
+      toolInput: '{"query":1}',
+      cause: new TypeValidationError({ value: { query: 1 }, cause: new Error("query must be a string") }),
+    }),
+    '{"query":1}',
+  )
+
+/** A call to a tool that does not exist: the SDK's NoSuchToolError. */
+const unknownToolCall = (id: string) =>
+  sdkRefusal(id, new NoSuchToolError({ toolName: "nope", availableTools: ["lookup"] }), "{}")
+
+/** A call the SDK accepted, with the result of its execution arriving right after. */
+const validCall = (id: string): unknown[] => [
+  { type: "tool-input-start", id, toolName: "lookup" },
+  { type: "tool-input-delta", id, delta: '{"query":"x"}' },
+  { type: "tool-input-end", id },
+  { type: "tool-call", toolCallId: id, toolName: "lookup", input: { query: "x" } },
+]
+
+const resultOf = (id: string): unknown => ({
+  type: "tool-result",
+  toolCallId: id,
+  toolName: "lookup",
+  input: { query: "x" },
+  output: { title: "Lookup", output: "ok", metadata: {} },
+})
+
+const writtenText = (id: string, text: string): unknown[] => [
+  { type: "text-start", id },
+  { type: "text-delta", id, text },
+  { type: "text-end", id },
+]
+
+const writtenReasoning = (id: string, text: string): unknown[] => [
+  { type: "reasoning-start", id },
+  { type: "reasoning-delta", id, text },
+  { type: "reasoning-end", id },
+]
+
+const sdkStep = (reason: "length" | "tool-calls", ...calls: unknown[][]): unknown[] => [
+  { type: "start-step", request: {}, warnings: [] },
+  ...calls.flat(),
+  { type: "finish-step", finishReason: reason, rawFinishReason: reason },
+]
+
+const sdkFinish = (reason: "length" | "tool-calls"): unknown => ({ type: "finish", finishReason: reason })
+
+/** Runs the scripted stream and returns the failure class of each call, as its part and its projected row hold it. */
+const rejectedRun = Effect.fn("ToolStateTest.rejectedRun")(function* (dir: string) {
+  const { processors, session, provider } = yield* boot()
+  const chat = yield* session.create({})
+  const parent = yield* user(chat.id, "rejected input")
+  const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+  const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+  const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+  yield* handle.process(input(chat.id, parent, mdl))
+  const parts = toolParts(yield* MessageV2.parts(msg.id))
+  const { db } = yield* Database.Service
+  const rows = yield* db.select().from(ToolOutcomeTable).all()
+  const calls = new Map(parts.map((part) => [part.id, part.callID]))
+  return {
+    parts: Object.fromEntries(
+      parts.map((part) => [part.callID, part.state.status === "error" ? part.state.metadata?.outcome : undefined]),
+    ),
+    rows: Object.fromEntries(rows.map((row) => [calls.get(row.part_id), row.outcome])),
+  }
+})
+
+const lengthCut = scripted([adapted([...sdkStep("length", unparsableCall("call-cut")), sdkFinish("length")])])
+
+lengthCut.it.effect(
+  "session.processor books a rejected input in a step that stopped on length as arguments_truncated",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-cut": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-cut": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const notCut = scripted([adapted([...sdkStep("tool-calls", unparsableCall("call-bad")), sdkFinish("tool-calls")])])
+
+notCut.it.effect(
+  "session.processor keeps a rejected input in a step that did not stop on length as validation_error",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-bad": "validation_error" })
+        expect(result.rows).toEqual({ "call-bad": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const twoRejected = scripted([
+  adapted([...sdkStep("length", unparsableCall("call-first"), unparsableCall("call-last")), sdkFinish("length")]),
+])
+
+twoRejected.it.effect(
+  "session.processor books only the last rejected input of a length step as truncated",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-first": "validation_error", "call-last": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-first": "validation_error", "call-last": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+// The SDK reports a refused unknown tool as a plain string at the tool-error; the adapter keeps what it saw on the
+// tool-call, so the call stays a validation error even when its step stopped on length.
+const unknownToolCut = scripted([adapted([...sdkStep("length", unknownToolCall("call-unknown")), sdkFinish("length")])])
+
+unknownToolCut.it.effect(
+  "session.processor does not book an unknown tool name as truncated arguments",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-unknown": "validation_error" })
+        expect(result.rows).toEqual({ "call-unknown": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unknownThenUnparsable = scripted([
+  adapted([...sdkStep("length", unknownToolCall("call-unknown"), unparsableCall("call-cut")), sdkFinish("length")]),
+])
+
+unknownThenUnparsable.it.effect(
+  "session.processor books the unparsable call of a length step as truncated and leaves an unknown tool alone",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-unknown": "validation_error", "call-cut": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unparsableThenUnknown = scripted([
+  adapted([...sdkStep("length", unparsableCall("call-bad"), unknownToolCall("call-unknown")), sdkFinish("length")]),
+])
+
+unparsableThenUnknown.it.effect(
+  "session.processor does not book an unparsable call as truncated when another call follows it",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-bad": "validation_error", "call-unknown": "validation_error" })
+        expect(result.rows).toEqual({ "call-bad": "validation_error", "call-unknown": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+// Input that is complete JSON failed the schema; nothing was cut off, whatever the step stopped on.
+const schemaFailureLast = scripted([
+  adapted([...sdkStep("length", schemaFailureCall("call-schema")), sdkFinish("length")]),
+])
+
+schemaFailureLast.it.effect(
+  "session.processor keeps a call whose complete JSON failed the schema as validation_error on a length step",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-schema": "validation_error" })
+        expect(result.rows).toEqual({ "call-schema": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const schemaFailureThenText = scripted([
+  adapted([
+    ...sdkStep("length", schemaFailureCall("call-schema"), writtenText("text-1", "I will try again")),
+    sdkFinish("length"),
+  ]),
+])
+
+schemaFailureThenText.it.effect(
+  "session.processor keeps a schema failure followed by text, then a length stop, as validation_error",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-schema": "validation_error" })
+        expect(result.rows).toEqual({ "call-schema": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+// An unparsable call the model wrote on after was complete when it was rejected: the step was cut off later.
+const unparsableThenText = scripted([
+  adapted([
+    ...sdkStep("length", unparsableCall("call-bad"), writtenText("text-1", "Let me explain")),
+    sdkFinish("length"),
+  ]),
+])
+
+unparsableThenText.it.effect(
+  "session.processor does not book an unparsable call as truncated when text follows it",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-bad": "validation_error" })
+        expect(result.rows).toEqual({ "call-bad": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unparsableThenReasoning = scripted([
+  adapted([
+    ...sdkStep("length", unparsableCall("call-bad"), writtenReasoning("reasoning-1", "Thinking about it")),
+    sdkFinish("length"),
+  ]),
+])
+
+unparsableThenReasoning.it.effect(
+  "session.processor does not book an unparsable call as truncated when reasoning follows it",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-bad": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unparsableThenCompleteCall = scripted([
+  adapted([
+    ...sdkStep("length", unparsableCall("call-bad"), validCall("call-ok")),
+    resultOf("call-ok"),
+    sdkFinish("length"),
+  ]),
+])
+
+unparsableThenCompleteCall.it.effect(
+  "session.processor does not book an unparsable call as truncated when a complete call follows it",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-bad": "validation_error" })
+        expect(result.rows).toEqual({ "call-bad": "validation_error", "call-ok": "ok" })
+      }),
+    { config: cfg },
+  ),
+)
+
+// What arrives after the rejected call without being the model's output, such as the result of an earlier call, does
+// not take the call out of last place.
+const truncatedAfterEarlierResult = scripted([
+  adapted([
+    { type: "start-step", request: {}, warnings: [] },
+    ...validCall("call-ok"),
+    ...unparsableCall("call-cut"),
+    resultOf("call-ok"),
+    { type: "finish-step", finishReason: "length", rawFinishReason: "length" },
+    sdkFinish("length"),
+  ]),
+])
+
+truncatedAfterEarlierResult.it.effect(
+  "session.processor books the cut-off call as truncated although an earlier call's result arrives after it",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-cut": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-ok": "ok", "call-cut": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const acrossSteps = scripted([
+  adapted([
+    ...sdkStep("tool-calls", unparsableCall("call-early")),
+    ...sdkStep("length", unparsableCall("call-late")),
+    sdkFinish("length"),
+  ]),
+])
+
+acrossSteps.it.effect(
+  "session.processor settles the rejected inputs of each step by that step's finish reason",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-early": "validation_error", "call-late": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-early": "validation_error", "call-late": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const lengthWithoutRejection = scripted([
+  adapted([...sdkStep("tool-calls", unparsableCall("call-early")), ...sdkStep("length"), sdkFinish("length")]),
+])
+
+lengthWithoutRejection.it.effect(
+  "session.processor does not carry a rejected input over to a later step that stopped on length",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-early": "validation_error" })
       }),
     { config: cfg },
   ),

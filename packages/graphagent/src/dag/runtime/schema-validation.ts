@@ -11,7 +11,12 @@ declare const GRAPHAGENT_SCHEMA_VALIDATION_WORKER_RELATIVE: boolean
 // This is independent of the workflow's model deadline.
 export const SCHEMA_VALIDATION_BUDGET_MS = 250
 
-export type Validation = { ok: true; payload: unknown } | { ok: false; error: string; fix?: SchemaValidationFix }
+/** `notAvailable` marks a failure of the validation facility itself (cancelled, over its host budget, worker
+ * failure), as opposed to a payload the schema rejected: it is not the model's fault, so nothing asks the
+ * model for a correction and the node is not classified `schema_invalid`. */
+export type Validation =
+  | { ok: true; payload: unknown }
+  | { ok: false; error: string; notAvailable?: true; fix?: SchemaValidationFix }
 
 export function validateInWorker(
   schema: Record<string, unknown>,
@@ -32,11 +37,16 @@ export function validateInWorker(
       void worker?.terminate()
       resolve(result)
     }
-    const cancel = () => finish({ ok: false, error: "schema validation cancelled" })
+    const cancel = () => finish({ ok: false, error: "schema validation cancelled", notAvailable: true })
     if (signal.aborted) return cancel()
     signal.addEventListener("abort", cancel, { once: true })
     timer = setTimeout(
-      () => finish({ ok: false, error: `schema validation exceeded its ${budgetMS} ms host resource budget` }),
+      () =>
+        finish({
+          ok: false,
+          error: `schema validation exceeded its ${budgetMS} ms host resource budget`,
+          notAvailable: true,
+        }),
       budgetMS,
     )
     try {
@@ -51,17 +61,21 @@ export function validateInWorker(
       worker = new Worker(workerTarget ?? target, { execArgv: [] })
       worker.on("message", (result: Validation) => finish(result))
       worker.on("error", (error: Error) =>
-        finish({ ok: false, error: `schema validation worker failed: ${error.message}` }),
+        finish({ ok: false, error: `schema validation worker failed: ${error.message}`, notAvailable: true }),
       )
       worker.on("messageerror", () =>
-        finish({ ok: false, error: "schema validation worker response could not be read" }),
+        finish({ ok: false, error: "schema validation worker response could not be read", notAvailable: true }),
       )
       worker.on("exit", (code) =>
-        finish({ ok: false, error: `schema validation worker exited before returning a result (${code})` }),
+        finish({
+          ok: false,
+          error: `schema validation worker exited before returning a result (${code})`,
+          notAvailable: true,
+        }),
       )
       worker.postMessage({ schema, payload })
     } catch (error) {
-      finish({ ok: false, error: `schema validation worker failed: ${String(error)}` })
+      finish({ ok: false, error: `schema validation worker failed: ${String(error)}`, notAvailable: true })
     }
   })
 }

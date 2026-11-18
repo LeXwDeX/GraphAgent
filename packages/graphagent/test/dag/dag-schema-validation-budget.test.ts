@@ -101,6 +101,12 @@ describe("bounded schema validation", () => {
       const slot = createCaptureSlot({ type: "string", pattern })
       expect((await validatePayloadAsync(slot, payload, new AbortController().signal)).ok).toBe(ok)
     })
+  test("marks a facility failure as not available, and never a payload the schema rejects", async () => {
+    const slot = createCaptureSlot({ type: "string" })
+    const rejected = await validatePayloadAsync(slot, 7, new AbortController().signal)
+    expect(rejected).toMatchObject({ ok: false, error: 'expected type "string", got number' })
+    expect(rejected.ok ? undefined : rejected.notAvailable).toBeUndefined()
+  })
   test("preserves null and provider JSON-string repair", async () => {
     const nullSlot = createCaptureSlot({ type: "null" })
     expect(await validatePayloadAsync(nullSlot, null, new AbortController().signal)).toMatchObject({
@@ -147,7 +153,12 @@ describe("bounded schema validation", () => {
     expect(result).toMatchObject({ ok: false })
     if (result.ok) throw new Error("expected deep-equality resource deadline")
     expect(result.error).toContain("host resource budget")
-    expect(await validateInWorker({}, () => {}, new AbortController().signal)).toMatchObject({ ok: false })
+    // The validator ran out of budget: not a verdict on the payload.
+    expect(result.notAvailable).toBe(true)
+    expect(await validateInWorker({}, () => {}, new AbortController().signal)).toMatchObject({
+      ok: false,
+      notAvailable: true,
+    })
     const a: Record<string, unknown> = {},
       b: Record<string, unknown> = {}
     a.next = a
@@ -156,6 +167,7 @@ describe("bounded schema validation", () => {
     expect(failed.ok).toBe(false)
     if (failed.ok) throw new Error("expected worker stack failure")
     expect(failed.error).toContain("worker failed")
+    expect(failed.notAvailable).toBe(true)
     expect(await validateInWorker({ type: "null" }, null, new AbortController().signal)).toEqual({
       ok: true,
       payload: null,
@@ -169,6 +181,7 @@ describe("bounded schema validation", () => {
     expect(result).toMatchObject({ ok: false })
     if (result.ok) throw new Error("expected worker exit failure")
     expect(result.error).toContain("worker exited before returning a result")
+    expect(result.notAvailable).toBe(true)
     expect(await validateInWorker({ type: "null" }, null, new AbortController().signal)).toEqual({
       ok: true,
       payload: null,
@@ -181,9 +194,10 @@ describe("bounded schema validation", () => {
     expect(await validatePayloadAsync(slot, "a", abort.signal)).toMatchObject({
       ok: false,
       error: "schema validation is already running in this session",
+      notAvailable: true,
     })
     abort.abort()
-    expect(await pending).toMatchObject({ ok: false, error: "schema validation cancelled" })
+    expect(await pending).toMatchObject({ ok: false, error: "schema validation cancelled", notAvailable: true })
     expect((await validatePayloadAsync(slot, "a", new AbortController().signal)).ok).toBe(true)
   })
   test("a closed slot rejects an old async result while a fresh slot validates independently", async () => {

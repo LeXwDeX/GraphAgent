@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { APICallError, TypeValidationError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
+import { interruptionNote } from "../../src/session/message-replay"
 import { SessionAbortReason } from "../../src/session/abort-reason"
 import { ProviderTransform } from "@/provider/transform"
 import { ProviderError } from "@/provider/error"
@@ -128,6 +129,26 @@ function basePart(messageID: string, id: string) {
     messageID: MessageID.make(messageID.startsWith("msg") ? messageID : `msg_${messageID}`),
   }
 }
+
+// A `bash` tool part in the given state; `metadata` is the part-level metadata.
+function bashPart(
+  messageID: string,
+  id: string,
+  callID: string,
+  state: SessionV1.ToolState,
+  metadata?: Record<string, unknown>,
+): SessionV1.ToolPart {
+  return { ...basePart(messageID, id), type: "tool", callID, tool: "bash", state, ...(metadata ? { metadata } : {}) }
+}
+
+const doneState = (output: string): SessionV1.ToolState => ({
+  status: "completed",
+  input: { command: "run" },
+  output,
+  title: "bash",
+  metadata: {},
+  time: { start: 0, end: 1 },
+})
 
 describe("session.message-v2.toModelMessage", () => {
   test("filters out messages with no parts", async () => {
@@ -1036,6 +1057,56 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  // The compaction input is a bounded copy of the tool output; the text the summary model reads must stay valid.
+  const truncatedValue = async (output: string, metadata: Record<string, unknown>, maxChars: number) => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [{ ...basePart(userID, "u1"), type: "text", text: "run tool" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-1",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { cmd: "ls" },
+              output,
+              title: "Shell",
+              metadata,
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const messages = await MessageV2.toModelMessages(input, model, { toolOutputMaxChars: maxChars })
+    const result = messages.find((message) => message.role === "tool")
+    const part = Array.isArray(result?.content) ? result.content[0] : undefined
+    if (part?.type !== "tool-result" || part.output.type !== "text") throw new Error("expected a text tool result")
+    return part.output.value
+  }
+
+  test("does not split a surrogate pair when it truncates tool output", async () => {
+    const value = await truncatedValue(`${"a".repeat(1999)}😀b`, {}, 2000)
+
+    expect(value.isWellFormed()).toBe(true)
+    expect(value).toContain("omitted 3 chars")
+    expect(value.startsWith("a".repeat(1999) + "\n")).toBe(true)
+  })
+
+  test("keeps the saved-output pointer of a tool output it truncates", async () => {
+    const value = await truncatedValue("abcdefghij", { outputPath: "/tmp/tool_saved" }, 4)
+
+    expect(value).toBe("abcd\n[Tool output truncated for compaction: omitted 6 chars. Full output: /tmp/tool_saved]")
+  })
+
   test("converts assistant tool error into error-text tool result", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
@@ -1254,6 +1325,148 @@ describe("session.message-v2.toModelMessage", () => {
         ],
       },
     ])
+  })
+
+  test("replays settled tool calls of an assistant message that ended with a provider error", async () => {
+    const failure = new SessionV1.APIError({
+      message: "bad gateway",
+      statusCode: 502,
+      isRetryable: true,
+    }).toObject() as SessionV1.Assistant["error"]
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo("m-user"),
+        parts: [{ ...basePart("m-user", "u1"), type: "text", text: "run it" }],
+      },
+      {
+        info: assistantInfo("m-error", "m-user", failure),
+        parts: [
+          { ...basePart("m-error", "e1"), type: "step-start" },
+          { ...basePart("m-error", "e2"), type: "text", text: "plan" },
+          bashPart("m-error", "e3", "call_a", doneState("ok-a")),
+          bashPart("m-error", "e4", "call_b", {
+            status: "error",
+            input: { command: "run" },
+            error: "boom",
+            time: { start: 0, end: 1 },
+          }),
+          bashPart("m-error", "e5", "call_c", { status: "running", input: { command: "run" }, time: { start: 0 } }),
+          { ...basePart("m-error", "e6"), type: "step-start" },
+          { ...basePart("m-error", "e7"), type: "text", text: "cut-off" },
+        ],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model, { cache: "verify" })
+
+    expect(result.map((message) => message.role)).toEqual(["user", "assistant", "tool", "user"])
+    expect(result[1].content).toMatchObject([
+      { type: "text", text: "plan" },
+      { type: "tool-call", toolCallId: "call_a", toolName: "bash" },
+      { type: "tool-call", toolCallId: "call_b", toolName: "bash" },
+    ])
+    expect(result[2].content).toMatchObject([
+      { type: "tool-result", toolCallId: "call_a", output: { type: "text", value: "ok-a" } },
+      { type: "tool-result", toolCallId: "call_b", output: { type: "error-text", value: "boom" } },
+    ])
+    expect(result[3]).toMatchObject({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: expect.stringMatching(
+            /^\[runtime\] The previous assistant step ended with an error \(APIError, HTTP 502\)\./,
+          ),
+        },
+      ],
+    })
+    const wire = JSON.stringify(result)
+    expect(wire).not.toContain("call_c")
+    expect(wire).not.toContain("cut-off")
+  })
+
+  test("drops an errored assistant message that has no settled tool call", async () => {
+    const failure = new SessionV1.APIError({
+      message: "bad gateway",
+      statusCode: 502,
+      isRetryable: true,
+    }).toObject() as SessionV1.Assistant["error"]
+    const user: SessionV1.WithParts = {
+      info: userInfo("m-user"),
+      parts: [{ ...basePart("m-user", "u1"), type: "text", text: "run it" }],
+    }
+    const unsettled: SessionV1.WithParts = {
+      info: assistantInfo("m-unsettled", "m-user", failure),
+      parts: [
+        { ...basePart("m-unsettled", "n1"), type: "step-start" },
+        bashPart("m-unsettled", "n2", "call_running", {
+          status: "running",
+          input: { command: "run" },
+          time: { start: 0 },
+        }),
+        { ...basePart("m-unsettled", "n3"), type: "text", text: "unsettled-text" },
+      ],
+    }
+    const hosted: SessionV1.WithParts = {
+      info: assistantInfo("m-hosted", "m-user", failure),
+      parts: [
+        bashPart(
+          "m-hosted",
+          "h1",
+          "call_hosted",
+          { status: "error", input: { command: "run" }, error: "hosted failure", time: { start: 0, end: 1 } },
+          { providerExecuted: true },
+        ),
+      ],
+    }
+
+    expect(MessageV2.isReplayableAssistantMessage(unsettled)).toBe(false)
+    expect(MessageV2.isReplayableAssistantMessage(hosted)).toBe(false)
+    expect(await MessageV2.toModelMessages([user, unsettled, hosted], model, { cache: "verify" })).toStrictEqual([
+      { role: "user", content: [{ type: "text", text: "run it" }] },
+    ])
+  })
+
+  test("does not add a runtime note after an aborted assistant message", async () => {
+    const aborted = new SessionV1.AbortedError({
+      message: "aborted",
+    }).toObject() as SessionV1.Assistant["error"]
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo("m-user"),
+        parts: [{ ...basePart("m-user", "u1"), type: "text", text: "run it" }],
+      },
+      {
+        info: assistantInfo("m-abort", "m-user", aborted),
+        parts: [bashPart("m-abort", "a1", "call_a", doneState("ok-a"))],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model, { cache: "verify" })
+
+    expect(result.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+    expect(JSON.stringify(result)).toContain("call_a")
+    expect(JSON.stringify(result)).not.toContain("ended with an error")
+  })
+
+  test("words the runtime note from the stored error name and status", () => {
+    const note = (name: string, status = "") =>
+      `[runtime] The previous assistant step ended with an error (${name}${status}). Tool calls from that step keep the results recorded for them; a result that says the call was aborted means it did not finish. The rest of that step was lost. Check the current state before repeating any work.`
+    const cases: Array<[NonNullable<SessionV1.Assistant["error"]>, string]> = [
+      [
+        { name: "APIError", data: { message: "bad gateway", statusCode: 502, isRetryable: true } },
+        note("APIError", ", HTTP 502"),
+      ],
+      [{ name: "APIError", data: { message: "stream ended", isRetryable: true } }, note("APIError")],
+      [{ name: "ProviderAuthError", data: { providerID: "test", message: "bad key" } }, note("ProviderAuthError")],
+      [{ name: "UnknownError", data: { message: "boom" } }, note("UnknownError")],
+      [{ name: "MessageOutputLengthError", data: {} }, note("MessageOutputLengthError")],
+      [{ name: "StructuredOutputError", data: { message: "no schema", retries: 2 } }, note("StructuredOutputError")],
+      [{ name: "ContextOverflowError", data: { message: "too long" } }, note("ContextOverflowError")],
+      [{ name: "ContentFilterError", data: { message: "filtered" } }, note("ContentFilterError")],
+    ]
+
+    expect(cases.map(([error]) => interruptionNote(error))).toEqual(cases.map(([, text]) => text))
   })
 
   test("exposes one replay predicate with wire parity", async () => {

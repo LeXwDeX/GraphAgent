@@ -3,7 +3,6 @@ import { Context, Effect, Layer, Option } from "effect"
 
 import { InstanceState } from "@/effect/instance-state"
 
-import PROMPT_GOAL from "./prompt/goal.txt"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
@@ -33,6 +32,13 @@ export function provider(tools: readonly string[] = ["edit", "write"]) {
   return [GraphAgentPrompt.render(tools)]
 }
 
+/**
+ * The goal section of the system prompt. It is the same text whether or not a goal exists, so creating or
+ * clearing a goal never changes the cached prefix; the goal's live state travels in the runtime context.
+ */
+export const GOAL_NOTE =
+  'Autonomous goals are managed with the goal tool. When a goal exists, its live state is the latest "Current Goal" block in a <runtime_context> message.'
+
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   /** Default reply language; `configured` is the `language` config value. */
@@ -47,7 +53,7 @@ export interface Interface {
     permission?: PermissionV1.Ruleset,
     nativePermission?: PermissionV1.Ruleset,
   ) => Effect.Effect<string | undefined>
-  /** `system` is constant while a goal stays active or paused; `context` is the live state for this request. */
+  /** `system` is always `[GOAL_NOTE]`, with or without a goal; `context` is the live state for this request. */
   readonly goal: (sessionID: SessionID) => Effect.Effect<{ system: string[]; context: string[] }>
   readonly hooks: () => Effect.Effect<string[]>
   readonly memory: (input: {
@@ -90,8 +96,9 @@ export const layer = Layer.effect(
     // Goal.Service is resolved lazily (serviceOption) rather than declared as a
     // hard construction dependency: SystemPrompt.layer itself stays buildable in
     // compositions that omit Goal (bare test harnesses) and degrades to the
-    // terse "no active goal" note. Production compositions always provide Goal
-    // (defaultLayer and the LayerNode deps below), so the goal block renders.
+    // constant GOAL_NOTE with no live state. Production compositions always
+    // provide Goal (defaultLayer and the LayerNode deps below), so the live
+    // goal block renders in the runtime context.
     const goalSvc = Option.getOrUndefined(yield* Effect.serviceOption(Goal.Service))
 
     // Request-invariant prompt fragments (language, skills, MCP). Keys are
@@ -163,12 +170,12 @@ export const layer = Layer.effect(
             Permission.evaluate("skill", item.name, nativePermission ?? []).action !== "deny" &&
             Permission.evaluate("skill", item.name, ruleset).action !== "deny",
         )
-        // The rendered block only depends on these three fields; hashing the
+        // The rendered block only depends on these two fields; hashing the
         // full skill content would read every skill body on every request.
         const key = RequestCache.digest({
-          version: "system-skills-v1",
+          version: "system-skills-v2",
           agent: agent.name,
-          skills: list.map((item) => ({ name: item.name, description: item.description, location: item.location })),
+          skills: list.map((item) => ({ name: item.name, description: item.description })),
         })
         const cached = RequestCache.get(fragments, key)
         if (cached) return cached.text
@@ -221,8 +228,8 @@ export const layer = Layer.effect(
       }),
 
       goal: Effect.fn("SystemPrompt.goal")(function* (sessionID: SessionID) {
-        // No Goal service wired into this entry point → degrade to a terse note.
-        const none = { system: ["No autonomous goal is active for this session."], context: [] }
+        // No Goal service wired into this entry point, no goal, or a finished one: only the constant note.
+        const none = { system: [GOAL_NOTE], context: [] }
         if (!goalSvc) return none
         const state = yield* goalSvc.load(sessionID)
         // Only active/waiting/paused goals carry a live-state block. `done` is
@@ -230,11 +237,8 @@ export const layer = Layer.effect(
         // waiting goal must stay visible: a notice turn may need to re-declare
         // its intent.
         if (!state || state.status === "done") return none
-        // Active/paused: the trimmed static mechanism + the live-state block.
-        // The mechanism is intentionally NOT injected when no goal is active, to
-        // avoid prompt bloat (spec: no-active-goal-injected-as-terse-note).
         // The live state changes every goal turn, so it goes to the runtime context, not the system prefix.
-        return { system: [PROMPT_GOAL], context: [GoalPrompts.renderGoalSystemBlock(state)] }
+        return { system: [GOAL_NOTE], context: [GoalPrompts.renderGoalSystemBlock(state)] }
       }),
 
       // Active Hooks block — dynamic, mirrors goal's economy: no hooks → empty

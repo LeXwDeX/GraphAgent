@@ -545,7 +545,7 @@ describe("which results enter the parent's turn, and which are only written", ()
       const text = textOf(delivery.admitted[0])
       expect(text).toContain(`<task id="${child}" state="error">`)
       expect(text).toContain("interrupted")
-      expect(text).toContain(`task_id="${child}"`)
+      expect(text).toContain(`action="resume", task_id="${child}", plus subagent_type, description and prompt`)
       expect((yield* rowOf(db, run.id))?.reported_at).not.toBeNull()
       // Recovery ends a run it holds no entry for, so it has no moment to write (#1426): the row carries none and a
       // reader times the lost run from `startedAt`.
@@ -710,22 +710,6 @@ describe("the ledger scan", () => {
       expect(yield* scan({ directory: DIRECTORY })).toEqual([parent])
       expect(delivery.source().mode).toBe("join_or_start")
       expect(delivery.source().id).toBe("child.result")
-    }),
-  )
-
-  it.effect("bounds a stored result and says that it did", () =>
-    Effect.gen(function* () {
-      const { db, scoped, newChild } = yield* setup("bounded")
-      const child = yield* newChild()
-      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
-      const text = "x".repeat(ChildStore.MAX_REPORT_CHARS + 1_000)
-
-      yield* run.settle({ type: "completed" }, { title: "big", text })
-
-      const stored = ChildStore.parseReport((yield* rowOf(db, run.id))?.outcome)
-      expect(stored?.text.length).toBeLessThan(text.length)
-      expect(stored?.text.startsWith("x".repeat(ChildStore.MAX_REPORT_CHARS))).toBe(true)
-      expect(stored?.text.endsWith("[truncated 1000 characters]")).toBe(true)
     }),
   )
 

@@ -78,14 +78,75 @@ function exitOf(handle: ChildProcessHandle) {
   )
 }
 
-/** The notes appended to the output of a command that did not end on its own. */
-function shellNotes(input: { aborted: boolean; signaled: string | undefined }): string {
+/** The notes appended to the output of a command that did not end on its own or did not succeed. */
+function shellNotes(input: { aborted: boolean; signaled: string | undefined; exit: unknown }): string {
   let notes = ""
   if (input.aborted) notes += `\n\n<metadata>\n${SHELL_ABORT_NOTE}\n</metadata>`
   if (input.signaled !== undefined) {
     notes += `\n\n<metadata>\nCommand terminated by signal ${input.signaled}. It did not exit normally, so there is no exit code.\n</metadata>`
   }
+  if (typeof input.exit === "number" && input.exit !== 0)
+    notes += `\n\n<metadata>\nCommand exited with code ${input.exit}\n</metadata>`
   return notes
+}
+
+/** What the part of a finished command records about the cut of its output: that there was one, and where the whole text is. */
+function truncationMetadata(bounded: Truncate.Result) {
+  return {
+    truncated: bounded.truncated,
+    ...(bounded.truncated && bounded.outputPath !== undefined ? { outputPath: bounded.outputPath } : {}),
+  }
+}
+
+const RUNNING_TAIL_CHARS = 30_000
+const RUNNING_UPDATE_MS = 200
+
+/** What the part of a running command shows: the tail of the output so far, not all of it. */
+export function runningTail(text: string): string {
+  return text.length > RUNNING_TAIL_CHARS ? "...\n\n" + text.slice(-RUNNING_TAIL_CHARS) : text
+}
+
+/**
+ * Publishes at most once per interval. `touch` publishes when the interval has passed since the last publish and
+ * otherwise remembers that something waits; `tick`, run on the same interval, publishes what waits once the
+ * interval has passed, so the last output of a burst shows without waiting for the next chunk, and two publishes
+ * are never closer than the interval, whatever the load.
+ */
+export function coalesce(publish: Effect.Effect<void>, now: () => number = Date.now) {
+  let last = Number.NEGATIVE_INFINITY
+  let pending = false
+  const due = () => now() - last >= RUNNING_UPDATE_MS
+  const emit = Effect.suspend(() => {
+    pending = false
+    last = now()
+    return publish
+  })
+  return {
+    touch: Effect.suspend(() => {
+      if (due()) return emit
+      pending = true
+      return Effect.void
+    }),
+    tick: Effect.suspend(() => (pending && due() ? emit : Effect.void)),
+  }
+}
+
+/** Publishes the running output of a part as its bounded tail, at most once per interval, until its scope closes. */
+const publishRunning = (input: {
+  sessions: Session.Interface
+  part: () => SessionV1.ToolPart
+  output: () => string
+}) => {
+  const live = coalesce(
+    Effect.suspend(() => {
+      const current = input.part()
+      if (current.state.status !== "running") return Effect.void
+      current.state.metadata = { output: runningTail(input.output()) }
+      return input.sessions.updatePart(current).pipe(Effect.asVoid)
+    }),
+  )
+  const ticks = Effect.forever(Effect.sleep(`${RUNNING_UPDATE_MS} millis`).pipe(Effect.andThen(live.tick)))
+  return Effect.forkScoped(ticks).pipe(Effect.as(live.touch))
 }
 
 export function makeShell(deps: ShellDeps) {
@@ -199,19 +260,27 @@ export function makeShell(deps: ShellDeps) {
 
         const finish = Effect.uninterruptible(
           Effect.gen(function* () {
-            output += shellNotes({ aborted, signaled })
             const completed = Date.now()
             if (!msg.time.completed) {
               msg.time.completed = completed
               yield* sessions.updateMessage(msg)
             }
             if (mutablePart.state.status === "running") {
+              // The model reads the output cut once; the notes follow the cut, so it cannot remove them.
+              const bounded = yield* truncate.output(output)
+              output = bounded.content + shellNotes({ aborted, signaled, exit: finalMetadata.exit })
               mutablePart.state = {
                 status: "completed",
                 time: { ...mutablePart.state.time, end: completed },
                 input: mutablePart.state.input,
                 title: "",
-                metadata: { ...finalMetadata, output },
+                // A cancelled command still completes with its partial output; `outcome` books it as aborted (#1473).
+                metadata: {
+                  ...finalMetadata,
+                  output,
+                  ...truncationMetadata(bounded),
+                  ...(aborted ? { outcome: "aborted" } : {}),
+                },
                 attachments: finalAttachments,
                 output,
               }
@@ -254,13 +323,11 @@ export function makeShell(deps: ShellDeps) {
                     forceKillAfter: "3 seconds",
                   })
                   const handle = yield* spawner.spawn(command)
+                  const touch = yield* publishRunning({ sessions, part: () => mutablePart, output: () => output })
                   yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-                    Effect.gen(function* () {
+                    Effect.suspend(() => {
                       output += chunk
-                      if (mutablePart.state.status === "running") {
-                        mutablePart.state.metadata = { output }
-                        yield* sessions.updatePart(mutablePart)
-                      }
+                      return touch
                     }),
                   )
                   const end = yield* exitOf(handle)

@@ -36,6 +36,15 @@ describe("isContextOverflow", () => {
     expect(isContextOverflow("Request entity too large")).toBe(true)
   })
 
+  test("detects the Kimi, DashScope and Zhipu overflow wording", () => {
+    expect(isContextOverflow("Invalid request: Input token length too long")).toBe(true)
+    expect(
+      isContextOverflow("<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 129024]"),
+    ).toBe(true)
+    expect(isContextOverflow("Prompt 超长")).toBe(true)
+    expect(isContextOverflow("prompt超长，请缩短输入")).toBe(true)
+  })
+
   test("detects empty-body 400 and 413 status forms", () => {
     expect(isContextOverflow("400 (no body)")).toBe(true)
     expect(isContextOverflow("413 status code (no body)")).toBe(true)
@@ -48,6 +57,9 @@ describe("isContextOverflow", () => {
     expect(isContextOverflow("invalid api key provided")).toBe(false)
     expect(isContextOverflow("connection reset by peer")).toBe(false)
     expect(isContextOverflow("input length is fine")).toBe(false)
+    expect(isContextOverflow("Input token length is fine")).toBe(false)
+    expect(isContextOverflow("Range of values should be positive")).toBe(false)
+    expect(isContextOverflow("Prompt 已保存")).toBe(false)
     expect(isContextOverflow("the model is currently overloaded")).toBe(false)
   })
 

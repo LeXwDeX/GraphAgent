@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Goal, LspStatus, Message, Session, Todo } from "@graphagent/sdk"
+import { costLabel, unpriced } from "@graphagent/core/util/cost"
+import type { Goal, LspStatus, Message, Session, SessionUsage, Todo } from "@graphagent/sdk"
+import { formatDagTokens } from "../../dag/mode"
 import { formatDagDuration } from "../../dag/model"
 import { t, type MessageKey } from "../../i18n"
 import { backgroundElapsed, type BackgroundItem, type BackgroundItems } from "../../session/background"
@@ -9,6 +11,7 @@ import { activeRuns, backgroundLabel } from "../../shell/background-mark"
 import { DRAWER_WIDTH } from "../../shell/drawer"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { remoteLine } from "../../util/remote-text"
+import { sessionTokenTotal } from "../../util/session-usage"
 
 /**
  * What the drawer's sections show (#1032 5.2), worked out from store data without touching the renderer. The
@@ -66,11 +69,42 @@ export function contextBarCells(percent: number, cells = CONTEXT_BAR_CELLS) {
   return Math.min(cells - 1, Math.max(1, Math.round((percent / 100) * cells)))
 }
 
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+// ── The cost section (#1475) ─────────────────────────────────────────────────
 
-/** The session's cost in dollars, `$0.00` when it has none. */
-export function costText(cost: number | undefined) {
-  return money.format(typeof cost === "number" && Number.isFinite(cost) ? cost : 0)
+/** What the cost section reads of the session on screen: what it has used by itself. */
+type OwnUsage = Pick<Session, "cost" | "tokens">
+
+/**
+ * The lines of the cost section, display only: the cost of the whole task tree the session on screen belongs to (the
+ * root, its sub-agents and its DAG nodes), its tokens by kind, and, on a sub-agent's screen, what that session has used
+ * by itself as a last line. A cost the tree has no price for reads `$x + unknown`, or `unknown` when nothing else
+ * has a cost, and never `$0.00`. Before the usage is read the section is a dash and nothing else. Every line is cut
+ * to the drawer's text width, measured with the user's `ambiguous_width`.
+ */
+export function usageLines(
+  usage: SessionUsage | undefined,
+  own: OwnUsage | undefined,
+  onChild: boolean,
+  ambiguousWidth: AmbiguousWidth = 1,
+): string[] {
+  const unknown = t("usage.unknown")
+  const lines: string[] = []
+  if (usage === undefined) lines.push("—")
+  else {
+    const { input, output, reasoning, cache } = usage.tokens
+    lines.push(
+      costLabel(usage.cost, usage.costUnknown, unknown),
+      t("drawer.usage.io", { input: formatDagTokens(input), output: formatDagTokens(output) }),
+      t("drawer.usage.reasoning", { n: formatDagTokens(reasoning) }),
+      t("drawer.usage.cache", { read: formatDagTokens(cache.read), write: formatDagTokens(cache.write) }),
+    )
+    if (onChild) {
+      const cost = own?.cost ?? 0
+      const label = costLabel(cost, unpriced(cost, sessionTokenTotal(own?.tokens)), unknown)
+      lines.push(t("drawer.cost.session", { cost: label }))
+    }
+  }
+  return lines.map((line) => truncateCells(line, DRAWER_TEXT_CELLS, ambiguousWidth))
 }
 
 const GOAL_STATUS: Readonly<Record<string, MessageKey>> = {

@@ -98,6 +98,20 @@ export async function runDagCoreCoverageGate() {
         // #1344: a module moved out of dag.ts is held to at least dag.ts's floor (98 / 95).
         { file: "src/dag/workflow-config.ts", lines: 100, functions: 100 },
         { file: "src/dag/completion-gate.ts", lines: 100, functions: 100 },
+        { file: "src/dag/command-core.ts", lines: 100, functions: 100 },
+        { file: "src/dag/node-timeout.ts", lines: 100, functions: 100 },
+        { file: "src/dag/workflow-pause.ts", lines: 100, functions: 100 },
+        { file: "src/dag/workflow-terminal.ts", lines: 100, functions: 100 },
+        { file: "src/dag/graph-mutation.ts", lines: 100, functions: 100 },
+        { file: "src/dag/node-events.ts", lines: 100, functions: 100 },
+        { file: "src/dag/workflow-recover.ts", lines: 100, functions: 100 },
+        // workflow-create.ts: the only line the suite does not reach is the `: Effect.void` arm of
+        // removeWorkflowWorktree, so its line floor is 99 rather than 100.
+        { file: "src/dag/workflow-create.ts", lines: 99, functions: 100 },
+        // #1455: the envelope of dynamic prompt values is small and fully exercised.
+        { file: "src/dag/templates/envelope.ts", lines: 100, functions: 100 },
+        // #1455: the change facts a judging node is given.
+        { file: "src/dag/runtime/change-facts.ts", lines: 100, functions: 100 },
         { file: "src/dag/control.ts", lines: 90, functions: 85 },
         { file: "src/dag/runtime/loop.ts", lines: 90, functions: 88 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },

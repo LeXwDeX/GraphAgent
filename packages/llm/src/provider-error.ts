@@ -21,6 +21,10 @@ const patterns = [
   /prompt too long; exceeded (?:max )?context length/i,
   /too large for model with \d+ maximum context length/i,
   /model_context_window_exceeded/i,
+  // Moonshot (Kimi), Alibaba Bailian (DashScope) and Zhipu word it without "context".
+  /input token length too long/i,
+  /range of input length should be/i,
+  /prompt\s*超长/i,
 ]
 
 export const isContextOverflow = (message: string) => {

@@ -20,8 +20,10 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@graphagent/core/shell"
 import { ShellID } from "./shell/id"
+import { ShellNormalize } from "./shell/normalize"
 
 import * as Truncate from "./truncate"
+import { addCorrections } from "@graphagent/core/session/outcome"
 import { ChildProcess } from "effect/process"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { ShellPrompt, SHELL_TAIL_LINES, type Parameters } from "./shell/prompt"
@@ -600,6 +602,8 @@ export const ShellTool = Tool.define(
       let sink: ReturnType<typeof createWriteStream> | undefined =
         file === "" ? undefined : createWriteStream(file, { flags: "a" })
       let cut = false
+      // Why the full output could not be saved, once a write failed: the preview then stands alone.
+      let unsaved: string | undefined
       let headPartial = false
       // Bytes in the most recently completed line and in the trailing line
       // that has no terminator yet. The last one is the true size of the final
@@ -725,16 +729,20 @@ export const ShellTool = Tool.define(
 
               if (file) {
                 sink?.write(chunk)
-              } else {
+              } else if (unsaved === undefined) {
                 full += chunk
                 if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return trunc.write(full).pipe(
-                    Effect.andThen((next) =>
+                  return trunc.save(full).pipe(
+                    Effect.andThen((saved) =>
                       Effect.sync(() => {
-                        file = next
                         cut = true
-                        sink = createWriteStream(next, { flags: "a" })
                         full = ""
+                        if ("failed" in saved) {
+                          unsaved = saved.failed
+                          return
+                        }
+                        file = saved.path
+                        sink = createWriteStream(saved.path, { flags: "a" })
                       }),
                     ),
                     Effect.andThen(streamPreview),
@@ -869,10 +877,17 @@ export const ShellTool = Tool.define(
       }
       const totalLines = streamNewlines + (streamBytes > 0 && !endsWithNewline ? 1 : 0)
       const lastLineBytes = endsWithNewline ? completedLineBytes : currentLineBytes
+      // The preview shows the output without progress frames and escape sequences; a saved copy keeps the original
+      // text, which the line counts above describe (#1447).
+      const original = raw
+      const normalized = ShellNormalize.normalize(raw)
+      raw = normalized.text
       const end = Truncate.tailPreview(raw, SHELL_TAIL_LINES, limits.maxBytes)
       if (end.cut) cut = true
-      if (!file && end.cut) {
-        file = yield* trunc.write(raw)
+      if (!file && end.cut && unsaved === undefined) {
+        const saved = yield* trunc.save(original)
+        if ("failed" in saved) unsaved = saved.failed
+        else file = saved.path
       }
 
       let output = end.text
@@ -892,8 +907,12 @@ export const ShellTool = Tool.define(
             : undefined
         output =
           `${output}\n\n` + outputFooter(file, totalLines, streamBytes, shownLines, partialBytes, partialLineBytes)
+      } else if (cut && unsaved !== undefined) {
+        output += `\n\n[truncated: ${Truncate.unsavedNote(unsaved)}]`
       }
 
+      const rewritten = normalized.folded > 0 || normalized.ansi
+      if (rewritten) meta.push(ShellNormalize.note(normalized, file !== ""))
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
@@ -923,12 +942,17 @@ export const ShellTool = Tool.define(
             : undefined
       return {
         title: input.command,
-        metadata: {
-          output: last || preview(output),
-          exit: code,
-          truncated: cut,
-          ...(cut && file ? { outputPath: file } : {}),
-        },
+        metadata: addCorrections(
+          {
+            output: last || preview(output),
+            exit: code,
+            truncated: cut,
+            ...(cut && file ? { outputPath: file } : {}),
+            // A cancelled command still returns its partial output; `outcome` books it as aborted (#1473).
+            ...(aborted ? { outcome: "aborted" as const } : {}),
+          },
+          ...(rewritten ? ["shell_output_normalized"] : []),
+        ),
         output,
         ...(hookFailure ? { hookFailure } : {}),
       }

@@ -493,3 +493,103 @@ exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese
                                                                                                                         
 "
 `;
+
+exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 依赖升级验证                                                 │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）        │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                 │
+│ 2/5 完成 · 第 3/4 波 · 1 运行中 · 1 失败 · 1 排队 · 已用 10m 0s              │
+│ 用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027     │
+│ 审核 2 次 · 遗留 0 项 · 完整性 5/6                                           │
+│                                                                              │
+│   第 1 波  ✓ resolve    2s                                                   │
+│   第 2 波  ✓ install    48s                                                  │
+│ › 第 3 波  ✗ e2e        4m 0s                                                │
+│ ripgrep 下载超时（504）                                                      │
+│ up 上移 · down 下移 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 依赖升级验证                                                                                    /dag │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）                                                │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                                                         │
+│ 2/5 完成 · 第 3/4 波 · 1 运行中 · 1 失败 · 1 排队 · 已用 10m 0s                                                      │
+│ 用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027                                             │
+│ 审核 2 次 · 遗留 0 项 · 完整性 5/6                                                                                   │
+│                                                                                                                      │
+│   第 1 波  ✓ resolve    2s                                                                                           │
+│   第 2 波  ✓ install    48s                                                                                          │
+│ › 第 3 波  ✗ e2e        4m 0s                                                                                        │
+│ ripgrep 下载超时（504）                                                                                              │
+│   │        ● typecheck  9m 0s                                                                                        │
+│   第 4 波  ○ unit                                                                                                    │
+│ up 上移 · down 下移 · enter 进入子 agent · i 请主 agent 处理 · o 详情 · escape 关闭                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;
+
+exports[`the usage row how it looks 80 by 24, in English 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Workflow [Running] 依赖升级验证                                              │
+│ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no bud… │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                 │
+│ 2/5 done · wave 3/4 · 1 running · 1 failed · 1 queued · elapsed 10m 0s       │
+│ Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost $0.0027   │
+│ reviews 2 · open 0 · complete 5/6                                            │
+│                                                                              │
+│   Wave 1  ✓ resolve    2s                                                    │
+│   Wave 2  ✓ install    48s                                                   │
+│ › Wave 3  ✗ e2e        4m 0s                                                 │
+│ ripgrep 下载超时（504）                                                      │
+│ up Previous · down Next · enter Sub-agent · i Ask main agent · escape Close  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;

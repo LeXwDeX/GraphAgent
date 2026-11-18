@@ -27,6 +27,11 @@ export interface PrefixFingerprint {
    * comparing this array instead.
    */
   readonly messageHashes: readonly string[]
+  /**
+   * Digest of each named system section (Issue #1458), so a changed `system` can be traced to the section that
+   * moved. Absent when the request carried no labels or not one per text.
+   */
+  readonly sections?: Readonly<Record<string, string>>
 }
 
 export interface StepMetrics {
@@ -45,6 +50,36 @@ export interface StepMetrics {
 }
 
 export type FingerprintSegment = "tools" | "system" | "prefix" | "tool_choice"
+
+/**
+ * The sections of the system prompt `buildTurnRequest` assembles, in prompt order. A request labels each system
+ * text with one of them so the change log can name the section that moved.
+ */
+export const SYSTEM_SECTIONS = [
+  "environment",
+  "language",
+  "instructions",
+  "mcp_instructions",
+  "skills",
+  "goal",
+  "hooks",
+  "dag",
+  "runtime_note",
+  "structured_output",
+  "one_shot_event",
+] as const
+
+export type SystemSection = (typeof SYSTEM_SECTIONS)[number]
+
+/**
+ * Sections that may differ between two requests of one session: the model, project references, instruction
+ * files, MCP servers, skills and hooks are reloaded or switched while a session runs, the structured-output
+ * note only applies to some turns, and the one-shot event is the registered exception for a history that ends
+ * with an assistant message. A change in any other section is not a registered exception to prefix stability.
+ */
+export const VOLATILE_SYSTEM_SECTIONS: ReadonlySet<SystemSection> = new Set(
+  SYSTEM_SECTIONS.filter((name) => !["language", "goal", "dag", "runtime_note"].includes(name)),
+)
 
 /** Process-wide git child-process counter; the step reports the difference. */
 let gitSpawns = 0
@@ -184,18 +219,36 @@ export interface FingerprintInput {
   /** Model-facing tool definitions, already reduced to their serialized shape. */
   readonly tools: unknown
   readonly system: readonly string[]
+  /** Section of each `system` text, same length and order. Ignored when the lengths differ. */
+  readonly systemLabels?: readonly SystemSection[] | undefined
   readonly messages: readonly unknown[]
   readonly toolChoice?: string | undefined
 }
 
+/** One digest per section, over that section's texts in prompt order; undefined without one label per text. */
+function sectionDigests(
+  system: readonly string[],
+  labels: readonly SystemSection[] | undefined,
+): Record<string, string> | undefined {
+  if (labels === undefined || labels.length !== system.length) return undefined
+  const grouped = new Map<string, string[]>()
+  system.forEach((text, index) => {
+    const name = labels[index]
+    grouped.set(name, [...(grouped.get(name) ?? []), text])
+  })
+  return Object.fromEntries([...grouped].map(([name, texts]) => [name, digestValue(texts)]))
+}
+
 export function fingerprintOf(input: FingerprintInput): PrefixFingerprint {
   const messageHashes = input.messages.map(digestValue)
+  const sections = sectionDigests(input.system, input.systemLabels)
   return {
     tools: digestValue(input.tools),
     system: digestValue(input.system),
     prefix: digestValue(messageHashes),
     toolChoice: input.toolChoice ?? "auto",
     messageHashes,
+    ...(sections === undefined ? {} : { sections }),
   }
 }
 
@@ -223,6 +276,19 @@ export function explainFingerprintChange(
   if (!extendsPrefix(previous.messageHashes, next.messageHashes)) changed.push("prefix")
   if (previous.toolChoice !== next.toolChoice) changed.push("tool_choice")
   return changed
+}
+
+/**
+ * Which system sections moved between two steps: those whose digest differs and those that only one of the
+ * steps carries, in ascending order. Empty when either step has no section digests.
+ */
+export function explainSectionChange(previous: PrefixFingerprint, next: PrefixFingerprint): string[] {
+  const before = previous.sections
+  const after = next.sections
+  if (before === undefined || after === undefined) return []
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((name) => before[name] !== after[name])
+    .sort()
 }
 
 const RING_CAPACITY = 50
@@ -262,10 +328,18 @@ export const StepMetricsRing = {
   },
 }
 
+/** The moved sections that are not registered as volatile; each one is a break of prefix stability. */
+function unregisteredSections(sections: readonly string[]): string[] {
+  const registered: ReadonlySet<string> = VOLATILE_SYSTEM_SECTIONS
+  return sections.filter((name) => !registered.has(name))
+}
+
 /**
  * Store one step and log a segment-level explanation when its request prefix
  * differs from the previous step of the same session. Every detected change
- * produces a log entry naming the segments that moved (HS14 invariant 6).
+ * produces a log entry naming the segments that moved (HS14 invariant 6). A
+ * changed `system` also names the sections that moved; a change in a section
+ * outside `VOLATILE_SYSTEM_SECTIONS` is logged as a warning.
  */
 export function recordStep(metrics: StepMetrics): Effect.Effect<void> {
   return Effect.suspend(() => {
@@ -274,11 +348,18 @@ export function recordStep(metrics: StepMetrics): Effect.Effect<void> {
     if (!previous) return Effect.void
     const changed = explainFingerprintChange(previous.fingerprint, metrics.fingerprint)
     if (changed.length === 0) return Effect.void
-    return Effect.logInfo("session step fingerprint changed", {
+    const sections = changed.includes("system") ? explainSectionChange(previous.fingerprint, metrics.fingerprint) : []
+    const unregistered = unregisteredSections(sections)
+    const fields = {
       "session.id": metrics.sessionID,
       step: metrics.step,
       previousStep: previous.step,
       segments: changed,
-    })
+      ...(sections.length > 0 ? { sections } : {}),
+      ...(unregistered.length > 0 ? { unregistered } : {}),
+    }
+    return unregistered.length > 0
+      ? Effect.logWarning("session step fingerprint changed", fields)
+      : Effect.logInfo("session step fingerprint changed", fields)
   })
 }

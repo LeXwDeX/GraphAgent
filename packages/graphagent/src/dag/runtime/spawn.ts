@@ -76,7 +76,7 @@ import {
   settlePlainTextOutput,
   type CaptureSlot,
 } from "./capture"
-import { captureFinalResponse, finalAssistantText, outputLimitReason, repairPrompt } from "./final-response"
+import { captureFinalResponse, correctionPrompt, finalAssistantText, outputLimitReason } from "./final-response"
 import { commitOutputFileRef, reportAreaDirective, verifyOutputFileRef, type ManagedOutputFileRef } from "./output-ref"
 import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { completeIsolatedNode } from "./worktree-completion"
@@ -1515,13 +1515,14 @@ export function spawnNode(
                       attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
                     },
                   })
-                  const lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
-                  // A near-miss on a present field gets one bounded correction
-                  // turn in the same attempt. Structural failures (unparseable,
-                  // missing fields, wrong root type) keep failing immediately.
-                  if (!captured.ok && captured.fix && !lengthLimited) {
+                  let lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
+                  // A final response the model can correct (not exactly one JSON
+                  // value, or rejected by the schema) gets one bounded correction
+                  // turn in the same attempt. Empty output, a turn that ended
+                  // abnormally and a validation facility failure get none.
+                  const correction = captured.ok || lengthLimited ? undefined : correctionPrompt(captured)
+                  if (correction !== undefined) {
                     if (!(yield* claimResubmission)) return
-                    const repair = captured.fix
                     result = yield* nodeExecution(
                       children.prompt(
                         {
@@ -1530,7 +1531,7 @@ export function spawnNode(
                           model,
                           agent: agent.name,
                           ...(input.variant ? { variant: input.variant } : {}),
-                          parts: [{ type: "text", text: repairPrompt(repair) }],
+                          parts: [{ type: "text", text: correction }],
                         },
                         { continueToolBudget: true },
                       ),
@@ -1558,6 +1559,8 @@ export function spawnNode(
                         attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
                       },
                     })
+                    // The correction turn can end at the output cap as well.
+                    lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
                   }
                   if (!captured.ok && (captured.code === "stale_input" || captured.code === "unassociated"))
                     yield* new Dag.StaleMessageInputError({

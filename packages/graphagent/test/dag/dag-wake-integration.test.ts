@@ -32,6 +32,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
 import { DagLoop, isPausedReminderDue } from "@/dag/runtime/loop"
 import { DagPaths } from "@/dag/paths"
+import { upstreamBlock } from "@/dag/templates/envelope"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -925,7 +926,9 @@ describe("DagLoop atomic wake integration", () => {
 
           const summary = yield* takeWithin(childPrompts, "summary node did not start")
           expect(summary.title).toBe("summary")
-          expect(promptText(summary.input)).toContain("汇总结果：A 和 B")
+          expect(promptText(summary.input)).toContain(
+            `汇总结果：${upstreamBlock("node-a", "A")} 和 ${upstreamBlock("node-b", "B")}`,
+          )
           expect(promptText(summary.input)).not.toContain("{{node-a}}")
           expect(promptText(summary.input)).not.toContain("{{node-b}}")
           yield* Deferred.succeed(summary.release, "A and B")
@@ -1433,7 +1436,7 @@ describe("DagLoop atomic wake integration", () => {
     }
   })
 
-  it("reports schema_invalid in workflow status and the parent wake for an unparseable final response", async () => {
+  it("reports schema_invalid in workflow status and the parent wake for a final response still unparseable after its correction turn", async () => {
     await Effect.runPromise(
       runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
         Effect.gen(function* () {
@@ -1454,6 +1457,10 @@ describe("DagLoop atomic wake integration", () => {
 
           const child = yield* takeWithin(childPrompts, "review node did not start")
           yield* Deferred.succeed(child.release, "not one JSON value")
+          // The one correction turn goes to the same child; the model repeats itself.
+          const correction = yield* takeWithin(childPrompts, "review node did not get its correction turn")
+          expect(promptText(correction.input)).toContain("the final response is not exactly one JSON value")
+          yield* Deferred.succeed(correction.release, "still not one JSON value")
 
           yield* pollWithTimeout(
             store.getNode(dagID, "review").pipe(Effect.map((item) => (item?.status === "failed" ? item : undefined))),

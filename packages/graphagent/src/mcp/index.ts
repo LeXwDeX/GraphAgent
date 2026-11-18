@@ -68,6 +68,17 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("MCP.NotF
   name: Schema.String,
 }) {}
 
+/** What the unreadable-`mcp.json` warning says: for a config error the file and the reason, not only its tag. */
+function describeReadFailure(error: unknown): string {
+  if (error instanceof NamedError) {
+    const data: unknown = error.toObject().data
+    if (typeof data === "object" && data !== null && "message" in data && typeof data.message === "string") {
+      return "path" in data && typeof data.path === "string" ? `${data.path}: ${data.message}` : data.message
+    }
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
 type MCPClient = Client
 
 function createClient(directory: string) {
@@ -169,6 +180,8 @@ interface State {
    * grants access must not override that choice and reconnect them.
    */
   manualDisabled: Set<string>
+  /** The `mcp.json` layers behind a signature cache: `tools()` runs on every step and must not decode them again. */
+  files: ReturnType<typeof McpConfig.cached>
 }
 
 export interface ServerInstructions {
@@ -574,6 +587,7 @@ export const layer = Layer.effect(
           defs: {},
           instructions: {},
           manualDisabled: new Set(),
+          files: McpConfig.cached(),
         }
         // Project-layer servers must be trusted before their process starts.
         // A refused server keeps a `disabled` status (the same surface a user
@@ -760,7 +774,12 @@ export const layer = Layer.effect(
       const result: Record<string, Tool> = {}
       const s = yield* InstanceState.get(state)
       const ctx = yield* InstanceState.context
-      const config = McpConfig.load(ctx.root)
+      const { servers: config, error } = s.files(ctx.root)
+      if (error !== undefined) {
+        yield* Effect.logWarning("mcp.json cannot be read; keeping the last valid servers", {
+          error: describeReadFailure(error),
+        })
+      }
 
       for (const [clientName, client] of Object.entries(s.clients)) {
         if (s.status[clientName]?.status !== "connected") continue
@@ -773,7 +792,7 @@ export const layer = Layer.effect(
         const timeout = requestTimeout(s, clientName, mcpConfig)
         for (const mcpTool of listed) {
           const key = McpCatalog.toolName(clientName, mcpTool.name)
-          result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout), {
+          result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout, clientName), {
             server: clientName,
             tool: mcpTool.name,
             // Configuration provenance is not tracked per MCP server yet; never infer it from a name.

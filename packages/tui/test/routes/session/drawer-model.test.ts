@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Goal, Message } from "@graphagent/sdk"
+import type { Goal, Message, Session, SessionUsage } from "@graphagent/sdk"
 import { afterEach, describe, expect, test } from "bun:test"
 import type { TaskIndexEntry } from "../../../src/context/session-summary"
 import { setLanguage } from "../../../src/i18n"
@@ -13,12 +13,12 @@ import {
   contextBarCells,
   contextTone,
   contextUsage,
-  costText,
   goalLine,
   sameBackgroundSection,
   services,
   todoCount,
   todoMark,
+  usageLines,
   type BackgroundRunRow,
 } from "../../../src/routes/session/drawer-model"
 import { backgroundItems, type BackgroundItem } from "../../../src/session/background"
@@ -78,10 +78,124 @@ test("the bar has 8 cells, never all of them below 100% and never none above 0%"
   expect(contextBarCells(140)).toBe(8)
 })
 
-test("the cost is dollars with cents, $0.00 without one", () => {
-  expect(costText(undefined)).toBe("$0.00")
-  expect(costText(Number.NaN)).toBe("$0.00")
-  expect(costText(1.234)).toBe("$1.23")
+// ── The cost section (#1475) ─────────────────────────────────────────────────────
+
+type Tokens = Required<Session>["tokens"]
+
+function tokens(input = 0, output = 0, reasoning = 0, read = 0, write = 0): Tokens {
+  return { input, output, reasoning, cache: { read, write } }
+}
+
+function usage(extra: Partial<SessionUsage> = {}): SessionUsage {
+  return { rootID: "ses_root", sessions: 3, cost: 0, costUnknown: false, tokens: tokens(), ...extra }
+}
+
+describe("the cost section's lines", () => {
+  test("are a dash and nothing else before the usage is read, on a sub-agent's screen too", () => {
+    expect(usageLines(undefined, undefined, false)).toEqual(["—"])
+    expect(usageLines(undefined, { cost: 0.25, tokens: tokens(10) }, true)).toEqual(["—"])
+  })
+
+  test("are the tree's cost, then its tokens by kind", () => {
+    const lines = usageLines(
+      usage({ cost: 1.5, tokens: tokens(12_345, 3_400, 800, 1_200_000, 30_000) }),
+      undefined,
+      false,
+    )
+    expect(lines).toEqual(["$1.50", "输入 12K · 输出 3.4K", "推理 800", "缓存 读 1.2M · 写 30K"])
+  })
+
+  test("say the same in English", () => {
+    setLanguage("en")
+    const lines = usageLines(
+      usage({ cost: 1.5, tokens: tokens(12_345, 3_400, 800, 1_200_000, 30_000) }),
+      undefined,
+      false,
+    )
+    expect(lines).toEqual(["$1.50", "In 12K · Out 3.4K", "Reasoning 800", "Cache r 1.2M · w 30K"])
+    expect(usageLines(usage(), { cost: 0.25, tokens: tokens(1) }, true).at(-1)).toBe("This session $0.25")
+  })
+
+  // The tree's cost line, by what the server summed (`costLabel`): a fraction of a cent keeps its digits (B1), a cost
+  // never reads as zero when it is not, and a part that has no price is named, never counted as free.
+  for (const [language, unknown] of [
+    ["zh-CN", "未知"],
+    ["en", "unknown"],
+  ] as const) {
+    test(`write the tree's cost by what is known of it, ${language}`, () => {
+      setLanguage(language)
+      const cost = (extra: Partial<SessionUsage>) => usageLines(usage(extra), undefined, false)[0]
+      expect(cost({ cost: 0 })).toBe("$0.00")
+      expect(cost({ cost: 1.234 })).toBe("$1.23")
+      expect(cost({ cost: 0.0027 })).toBe("$0.0027")
+      expect(cost({ cost: 0.00001 })).toBe("<$0.0001")
+      expect(cost({ cost: 0.01 })).toBe("$0.01")
+      expect(cost({ cost: 1234.5 })).toBe("$1,234.50")
+      expect(cost({ cost: 0, costUnknown: true })).toBe(unknown)
+      expect(cost({ cost: 1.5, costUnknown: true })).toBe(`$1.50 + ${unknown}`)
+      expect(cost({ cost: 0.0027, costUnknown: true })).toBe(`$0.0027 + ${unknown}`)
+    })
+  }
+
+  test("add the session's own cost last on a sub-agent's screen, and only there", () => {
+    const tree = usage({ cost: 1.75, tokens: tokens(100, 50) })
+    const own = { cost: 0.25, tokens: tokens(10, 5) }
+    expect(usageLines(tree, own, true)).toEqual([
+      "$1.75",
+      "输入 100 · 输出 50",
+      "推理 0",
+      "缓存 读 0 · 写 0",
+      "本会话 $0.25",
+    ])
+    expect(usageLines(tree, own, false)).toHaveLength(4)
+    expect(usageLines(tree, own, false).some((line) => line.includes("本会话"))).toBe(false)
+  })
+
+  test("judge the session's own cost by its own tokens: tokens at no cost are unknown, nothing used is zero", () => {
+    const tree = usage({ cost: 1.75 })
+    const own = (value: Pick<Session, "cost" | "tokens"> | undefined) => usageLines(tree, value, true).at(-1)
+    expect(own({ cost: 0, tokens: tokens(10) })).toBe("本会话 未知")
+    expect(own({ cost: 0, tokens: tokens(0, 0, 0, 0, 1) })).toBe("本会话 未知")
+    expect(own({ cost: 0, tokens: tokens() })).toBe("本会话 $0.00")
+    expect(own({ cost: 0 })).toBe("本会话 $0.00")
+    expect(own({ tokens: tokens(10) })).toBe("本会话 未知")
+    expect(own({ cost: 0.0027, tokens: tokens(10) })).toBe("本会话 $0.0027")
+    expect(own(undefined)).toBe("本会话 $0.00")
+  })
+
+  test("keep every line to the drawer's text width, whatever the numbers and the language", () => {
+    const worst = usage({
+      cost: 1_234_567.89,
+      costUnknown: true,
+      tokens: tokens(999_999_999_999, 999_999_999_999, 999_999_999_999, 999_999_999_999, 999_999_999_999),
+    })
+    const own = { cost: 1e15, tokens: tokens(1) }
+    for (const language of ["zh-CN", "en"] as const) {
+      for (const aw of [1, 2] as const) {
+        setLanguage(language)
+        for (const line of usageLines(worst, own, true, aw)) {
+          expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_TEXT_CELLS)
+        }
+        for (const line of usageLines(
+          usage({ cost: 12.5, tokens: tokens(123, 456, 789, 1_234, 5_678) }),
+          own,
+          true,
+          aw,
+        )) {
+          expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_TEXT_CELLS)
+        }
+      }
+    }
+  })
+
+  test("cut a line that does not fit with an ellipsis", () => {
+    setLanguage("en")
+    // A figure no session reaches, but the section does not trust the server's numbers to be small.
+    const last = usageLines(usage(), { cost: 1e15, tokens: tokens(1) }, true).at(-1) ?? ""
+    expect(last.startsWith("This session $1,000,000")).toBe(true)
+    expect(last.endsWith("…")).toBe(true)
+    expect(cellWidth(last, 1)).toBeLessThanOrEqual(DRAWER_TEXT_CELLS)
+  })
 })
 
 test("the goal line is the turns and the status, or the reason a waiting or paused goal gives", () => {

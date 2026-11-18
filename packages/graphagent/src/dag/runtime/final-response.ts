@@ -64,10 +64,14 @@ export type FinalCaptureResult =
       ok: false
       reason: string
       code?: string
-      /** The turn ended normally but its final output failed the schema contract. */
+      /** The turn ended normally but its final output failed the schema contract. Empty output, a turn that
+       * did not end normally and a failure of the validation facility itself never carry it. */
       schemaInvalid?: boolean
-      /** Present only for a near-miss worth one bounded correction turn. */
+      /** Present only for a near-miss worth a field-level correction prompt. */
       fix?: SchemaValidationFix
+      /** What a correction turn tells the model was wrong: the parse failure, or the validator's message cut to
+       * `REPAIR_DETAIL_MAX` code units. Present exactly when the failure is the model's to correct. */
+      repairDetail?: string
     }
 
 /** Quote only the failing field and its allowed values, never the draft or the
@@ -76,6 +80,25 @@ export function repairPrompt(fix: SchemaValidationFix): string {
   const subject = `Field "${fix.path}"`
   const expected = fix.kind === "enum" ? `must be one of ${fix.allowed}` : `must have ${fix.expected}`
   return `${subject} ${expected}; got ${fix.got}. Do not redo the work. Resubmit the same result as one JSON value with only that field corrected.`
+}
+
+/** The prompt of the one correction turn a failed capture earns, or `undefined` when the failure is not the
+ * model's to correct (empty output, a turn that ended abnormally, a validation facility failure). A near-miss
+ * on a present field keeps its field-level prompt; every other schema failure quotes the bounded detail. */
+export function correctionPrompt(failed: { fix?: SchemaValidationFix; repairDetail?: string }): string | undefined {
+  if (failed.fix) return repairPrompt(failed.fix)
+  if (failed.repairDetail === undefined) return undefined
+  return `Your final response was rejected: ${failed.repairDetail}. Do not redo the work. Resubmit the same result as exactly one JSON value, with no Markdown fence and no surrounding prose.`
+}
+
+/** Longest validator message a correction prompt quotes, in UTF-16 code units. */
+const REPAIR_DETAIL_MAX = 400
+
+/** Cut at `REPAIR_DETAIL_MAX` code units without splitting a surrogate pair. */
+function clipRepairDetail(text: string): string {
+  if (text.length <= REPAIR_DETAIL_MAX) return text
+  const last = text.charCodeAt(REPAIR_DETAIL_MAX - 1)
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? REPAIR_DETAIL_MAX - 1 : REPAIR_DETAIL_MAX)
 }
 
 /** Shared guarded persistence for final-response capture. */
@@ -128,12 +151,19 @@ export function captureFinalResponse(input: {
 }): Effect.Effect<FinalCaptureResult> {
   return Effect.gen(function* () {
     const final = finalAssistantText(input.message, true)
-    if (!final.ok) return { ...final, code: undefined, schemaInvalid: true } as const
+    // Empty output and a turn that did not end normally are not a schema failure: no correction, no class.
+    if (!final.ok) return { ...final, code: undefined } as const
     // The worker protocol is one JSON value. Decode that outer value once;
     // a string schema then receives the decoded string as data. An assistant
     // object JSON under a string schema must not be rescued as raw text.
     const parsed = parseFinalResponse(final.text)
-    if (!parsed.ok) return { ...parsed, code: undefined, schemaInvalid: true } as const
+    if (!parsed.ok)
+      return {
+        ...parsed,
+        code: undefined,
+        schemaInvalid: true,
+        repairDetail: "the final response is not exactly one JSON value",
+      } as const
     let validationSignal: AbortSignal | undefined
     const validated = yield* Effect.promise((signal) => {
       validationSignal = signal
@@ -147,7 +177,10 @@ export function captureFinalResponse(input: {
       return {
         ok: false,
         reason: `final response schema validation failed: ${validated.error}`,
-        schemaInvalid: true,
+        // A failure of the validation facility is not the model's to correct.
+        ...(validated.notAvailable === true
+          ? {}
+          : { schemaInvalid: true, repairDetail: clipRepairDetail(validated.error) }),
         ...(validated.fix ? { fix: validated.fix } : {}),
       } as const
     const receipt = yield* persistValidatedCapture({ ...input, validated, abort: input.abort ?? validationSignal! })

@@ -46,8 +46,9 @@ import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { EngineProcess } from "./engine-process"
 import { ModelHistory } from "./history/model"
-import { isReplayableAssistantMessage } from "./message-replay"
+import { interruptionNote, isReplayableAssistantMessage, replayParts } from "./message-replay"
 import { isRecord } from "@/util/record"
+import { headChars } from "@/util/text"
 import { ToolError } from "@/tool/tool-error"
 
 export const node = LayerNode.group([Database.node])
@@ -72,10 +73,15 @@ function replayErrorText(state: SessionV1.ToolStateError) {
   return state.metadata?.interrupted === true ? ToolError.render({ kind: "aborted" }) : state.error
 }
 
-function truncateToolOutput(text: string, maxChars?: number) {
+/**
+ * The compaction input keeps a tool output to `maxChars`. A result that was saved to a file keeps the path in the
+ * marker, so the summary names where the whole text is and the model can read it after the compaction.
+ */
+function truncateToolOutput(text: string, maxChars?: number, outputPath?: unknown) {
   if (!maxChars || text.length <= maxChars) return text
-  const omitted = text.length - maxChars
-  return `${text.slice(0, maxChars)}\n[Tool output truncated for compaction: omitted ${omitted} chars]`
+  const kept = headChars(text, maxChars)
+  const pointer = typeof outputPath === "string" && outputPath !== "" ? `. Full output: ${outputPath}` : ""
+  return `${kept}\n[Tool output truncated for compaction: omitted ${text.length - kept.length} chars${pointer}]`
 }
 
 export const Event = {
@@ -290,6 +296,17 @@ const conversionContext = (model: Provider.Model, options?: ToModelMessagesOptio
 })
 
 /**
+ * The user message that tells the model its previous assistant step ended in an error. An abort the user asked for
+ * needs none.
+ */
+function interruptionMessages(msg: WithParts): UIMessage[] {
+  if (msg.info.role !== "assistant") return []
+  const error = msg.info.error
+  if (!error || AbortedError.isInstance(error)) return []
+  return [{ id: MessageID.ascending(), role: "user", parts: [{ type: "text", text: interruptionNote(error) }] }]
+}
+
+/**
  * Builds the UI messages for one persisted message. A message is independent
  * from the rest of the input except for the compaction boundary; the tool names
  * it reports are used to build the per-message tool map.
@@ -348,6 +365,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
 
   if (msg.info.role === "assistant") {
     if (!isReplayableAssistantMessage(msg)) return { messages, toolNames }
+    const parts = replayParts(msg)
     const differentModel = `${model.providerID}/${model.id}` !== `${msg.info.providerID}/${msg.info.modelID}`
     const media: Array<{ mime: string; url: string; filename?: string }> = []
     // Any successful compaction inserts a summary before the retained old tail,
@@ -377,11 +395,11 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
     // the neighboring signed reasoning blocks.
     const hasSignedReasoning =
       !invalidatedThinking &&
-      msg.parts.some((part) => {
+      parts.some((part) => {
         if (part.type !== "reasoning") return false
         return part.metadata?.anthropic?.signature != null
       })
-    for (const part of msg.parts) {
+    for (const part of parts) {
       if (part.type === "text") {
         const text = part.text === "" && hasSignedReasoning ? " " : part.text
         assistantMessage.parts.push({
@@ -399,7 +417,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
         if (part.state.status === "completed") {
           const outputText = part.state.time.compacted
             ? "[Old tool result content cleared]"
-            : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
+            : truncateToolOutput(part.state.output, options?.toolOutputMaxChars, part.state.metadata?.outputPath)
           const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
 
           // For providers that don't support media in tool results, extract media files
@@ -526,6 +544,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
           ],
         })
       }
+      messages.push(...interruptionMessages(msg))
     }
   }
 

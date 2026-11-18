@@ -403,6 +403,136 @@ describe("Tool.define", () => {
       }),
     )
 
+    // The mark must survive a call that does not complete: the running part is what a failure or an abort settles from.
+    describe("on the running part", () => {
+      type Update = { title?: string; metadata?: Record<string, unknown> }
+      const recording = (updates: Update[]): Tool.Context => ({
+        ...makeCtx(),
+        metadata(update: Update) {
+          return Effect.sync(() => {
+            updates.push(update)
+          })
+        },
+      })
+      const flaky = (name: string, run: (ctx: Tool.Context) => Effect.Effect<Tool.ExecuteResult>) =>
+        Tool.define(
+          name,
+          Effect.succeed({
+            description: "test tool",
+            parameters: Schema.Struct({ background: Schema.optional(Schema.Boolean) }),
+            repairArguments(value: unknown) {
+              if (typeof value !== "object" || value === null || Reflect.get(value, "background") !== "true")
+                return value
+              return { ...value, background: true }
+            },
+            execute: (_args: unknown, ctx: Tool.Context) => run(ctx),
+          }),
+        )
+
+      it.effect("a repaired call records the mark before it executes, so a failing call still reports it", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const info = yield* flaky("test-mark-before-failure", () => Effect.die(new Error("boom")))
+          const tool = yield* info.init()
+
+          const exit = yield* executeRaw(tool.execute)({ background: "true" }, recording(updates)).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+          expect(updates).toEqual([{ metadata: { corrections: ["args_repaired"] } }])
+        }),
+      )
+
+      it.effect("a repaired call keeps the mark in every metadata update the tool makes", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const info = yield* flaky("test-mark-kept", (ctx) =>
+            Effect.gen(function* () {
+              yield* ctx.metadata({ title: "working", metadata: { diff: "d" } })
+              return yield* Effect.die(new Error("boom"))
+            }),
+          )
+          const tool = yield* info.init()
+
+          yield* executeRaw(tool.execute)({ background: "true" }, recording(updates)).pipe(Effect.exit)
+
+          expect(updates).toEqual([
+            { metadata: { corrections: ["args_repaired"] } },
+            { title: "working", metadata: { diff: "d", corrections: ["args_repaired"] } },
+          ])
+        }),
+      )
+
+      it.effect("a call that decodes strictly records nothing and updates are passed through unchanged", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const info = yield* flaky("test-no-mark", (ctx) =>
+            Effect.gen(function* () {
+              yield* ctx.metadata({ metadata: { diff: "d" } })
+              return yield* Effect.die(new Error("boom"))
+            }),
+          )
+          const tool = yield* info.init()
+
+          yield* executeRaw(tool.execute)({ background: true }, recording(updates)).pipe(Effect.exit)
+
+          expect(updates).toEqual([{ metadata: { diff: "d" } }])
+        }),
+      )
+    })
+
+    describe("markCorrection", () => {
+      type Update = { title?: string; metadata?: Record<string, unknown> }
+      const recording = (updates: Update[]): Tool.Context => ({
+        ...makeCtx(),
+        metadata(update: Update) {
+          return Effect.sync(() => {
+            updates.push(update)
+          })
+        },
+      })
+
+      it.effect("records a kind at once and keeps it in every later update", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const marked = yield* Tool.markCorrection(recording(updates), "fuzzy_match")
+
+          yield* marked.metadata({ title: "edit", metadata: { diff: "d" } })
+
+          expect(updates).toEqual([
+            { metadata: { corrections: ["fuzzy_match"] } },
+            { title: "edit", metadata: { diff: "d", corrections: ["fuzzy_match"] } },
+          ])
+        }),
+      )
+
+      it.effect("marks add up, the later kind first, whatever the tool reports through", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const repaired = yield* Tool.markCorrection(recording(updates), "args_repaired")
+          const both = yield* Tool.markCorrection(repaired, "fuzzy_match")
+
+          yield* both.metadata({ metadata: { diff: "d" } })
+
+          expect(updates).toEqual([
+            { metadata: { corrections: ["args_repaired"] } },
+            { metadata: { corrections: ["fuzzy_match", "args_repaired"] } },
+            { metadata: { diff: "d", corrections: ["fuzzy_match", "args_repaired"] } },
+          ])
+        }),
+      )
+
+      it.effect("a kind the tool already reported is not repeated", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const marked = yield* Tool.markCorrection(recording(updates), "fuzzy_match")
+
+          yield* marked.metadata({ metadata: { corrections: ["fuzzy_match", "clamped"] } })
+
+          expect(updates.at(-1)).toEqual({ metadata: { corrections: ["fuzzy_match", "clamped"] } })
+        }),
+      )
+    })
+
     it.effect("does not mark a call whose arguments stay invalid", () =>
       Effect.gen(function* () {
         const info = yield* backgroundTool("test-still-invalid", {})

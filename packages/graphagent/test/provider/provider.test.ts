@@ -3,17 +3,27 @@ import { unlink } from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
 import { ModelsDev } from "@graphagent/core/models-dev"
+import { contextWindow } from "@graphagent/core/model-profile"
+import { logLines } from "effect/testing/TestConsole"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Global } from "@graphagent/core/global"
-import { provideInstanceEffect, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import {
+  provideInstanceEffect,
+  reloadInstance,
+  TestInstance,
+  testInstanceStoreLayer,
+  tmpdirScoped,
+} from "../fixture/fixture"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { ConfigParse } from "@/config/parse"
 import { Env } from "../../src/env"
 import { Provider } from "@/provider/provider"
 import { ProviderAdapters } from "@/provider/adapter/registry"
+import type { ProviderAdapter } from "@/provider/adapter/types"
+import { ProviderProfile } from "@/provider/profile"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Filesystem } from "@/util/filesystem"
@@ -2036,4 +2046,412 @@ it.instance(
       provider: { "cloudflare-ai-gateway": { options: { metadata: { invoked_by: "test", project: "graphagent" } } } },
     },
   },
+)
+
+// #1462: the model profile is the one place a model's capabilities are read from. A catalog entry brings its own;
+// a configured model takes what it declares, then what the existing entry or a same-named catalog entry of
+// another provider says; a capability nobody declares is reported once instead of being recorded as 0 or false.
+
+const profileCatalog = {
+  acme: {
+    id: "acme",
+    name: "Acme",
+    env: ["ACME_API_KEY"],
+    api: "https://api.acme.test/v1",
+    npm: "@ai-sdk/openai-compatible",
+    models: {
+      "acme-sonnet-4": {
+        id: "acme-sonnet-4",
+        name: "Acme Sonnet 4",
+        family: "acme-sonnet",
+        canonical_model_id: "acme/sonnet-4",
+        release_date: "2026-01-01",
+        attachment: true,
+        reasoning: true,
+        reasoning_options: [{ type: "toggle" }],
+        temperature: true,
+        tool_call: true,
+        cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 },
+        limit: { context: 200_000, output: 64_000 },
+        modalities: { input: ["text", "image"], output: ["text"] },
+      },
+      // Its key is what a configured model without an `id` would look up.
+      "my-sonnet": {
+        id: "my-sonnet",
+        name: "Decoy",
+        release_date: "2026-01-01",
+        attachment: false,
+        reasoning: false,
+        temperature: true,
+        tool_call: true,
+        limit: { context: 1_000, output: 100 },
+        modalities: { input: ["text"], output: ["text"] },
+      },
+      "no-modalities": {
+        id: "no-modalities",
+        name: "No Modalities",
+        release_date: "2026-01-01",
+        attachment: false,
+        reasoning: false,
+        temperature: true,
+        tool_call: true,
+        limit: { context: 0, output: 0 },
+      },
+    },
+  },
+  zai: {
+    id: "zai",
+    name: "Z.ai",
+    env: ["ZAI_API_KEY"],
+    api: "https://api.zai.test/v1",
+    npm: "@ai-sdk/openai-compatible",
+    models: {
+      "glm-5.3": {
+        id: "glm-5.3",
+        name: "GLM 5.3",
+        canonical_model_id: "zhipuai/glm-5.3",
+        release_date: "2026-01-01",
+        attachment: false,
+        reasoning: true,
+        reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "high"] }],
+        temperature: true,
+        tool_call: true,
+        cost: { input: 1, output: 2 },
+        limit: { context: 200_000, output: 131_072 },
+        modalities: { input: ["text", "image"], output: ["text"] },
+      },
+    },
+  },
+} satisfies Record<string, ModelsDev.Provider>
+
+const profileCatalogLayer = Layer.succeed(
+  ModelsDev.Service,
+  ModelsDev.Service.of({
+    get: () => Effect.succeed(profileCatalog),
+    refresh: () => Effect.void,
+  }),
+)
+
+const profiled = testEffect(
+  Layer.mergeAll(
+    Provider.layer.pipe(
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(Env.defaultLayer),
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Auth.defaultLayer),
+      Layer.provide(ProviderAdapters.defaultLayer),
+      Layer.provide(profileCatalogLayer),
+      Layer.provide(RuntimeFlags.layer({})),
+      Layer.provide(EventV2Bridge.defaultLayer),
+    ),
+    Env.defaultLayer,
+    ProviderAdapters.defaultLayer,
+    profileCatalogLayer,
+  ),
+)
+
+const acmeConfig = (models: Record<string, object>) => ({
+  provider: { acme: { options: { apiKey: "test-key" }, models } },
+})
+
+const relayConfig = (models: Record<string, object>) => ({
+  provider: {
+    relay: {
+      npm: "@ai-sdk/openai-compatible",
+      api: "https://relay.test/v1",
+      options: { apiKey: "test-key" },
+      models,
+    },
+  },
+})
+
+const relay = ProviderV2.ID.make("relay")
+const acme = ProviderV2.ID.make("acme")
+const modelOf = (providerID: ProviderV2.ID, modelID: string) =>
+  Effect.gen(function* () {
+    const providers = yield* list
+    return providers[providerID].models[modelID]
+  })
+
+profiled.instance(
+  "catalog models carry the profile of their own entry",
+  Effect.gen(function* () {
+    const model = yield* modelOf(acme, "acme-sonnet-4")
+    expect(model.profile?.context).toBe(200_000)
+    expect(model.profile?.output).toBe(64_000)
+    expect(model.profile?.vendor).toBe("acme")
+    expect(model.profile?.reasoningMode.controls).toEqual([{ type: "toggle" }])
+    expect(model.profile?.sources).toEqual({
+      context: "catalog",
+      output: "catalog",
+      "modalities.input": "catalog",
+      "modalities.output": "catalog",
+      reasoning: "catalog",
+      vendor: "catalog",
+      "reasoningMode.controls": "catalog",
+    })
+    expect(model.profile?.missing).toEqual([])
+    expect(model.limit).toEqual({ context: 200_000, output: 64_000 })
+    expect(model.capabilities.reasoning).toBe(true)
+    expect(model.capabilities.input).toEqual({ text: true, audio: false, image: true, video: false, pdf: false })
+    expect(model.capabilities.output).toEqual({ text: true, audio: false, image: false, video: false, pdf: false })
+  }),
+  { config: acmeConfig({}) },
+)
+
+// A catalog entry without `modalities` used to read as accepting no text; it now reads as text only, and the
+// missing modalities are reported instead of being guessed away.
+profiled.instance(
+  "a catalog entry without modalities reads as text only and reports the gap",
+  Effect.gen(function* () {
+    const model = yield* modelOf(acme, "no-modalities")
+    expect(model.capabilities.input).toEqual({ text: true, audio: false, image: false, video: false, pdf: false })
+    expect(model.capabilities.output).toEqual({ text: true, audio: false, image: false, video: false, pdf: false })
+    expect(model.limit).toEqual({ context: 0, output: 0 })
+    expect(model.profile?.missing).toEqual(["context", "output", "modalities"])
+    expect(model.profile?.sources["modalities.input"]).toBeUndefined()
+    expect(model.profile?.sources.reasoning).toBe("catalog")
+  }),
+  { config: acmeConfig({}) },
+)
+
+profiled.instance(
+  "a configured model with an id of the same provider inherits limit, capabilities, cost and profile",
+  Effect.gen(function* () {
+    const entry = yield* modelOf(acme, "acme-sonnet-4")
+    const alias = yield* modelOf(acme, "my-sonnet")
+    expect(alias.api.id).toBe("acme-sonnet-4")
+    expect(alias.limit).toEqual(entry.limit)
+    expect(alias.capabilities).toEqual(entry.capabilities)
+    expect(alias.cost).toEqual(entry.cost)
+    expect(alias.profile?.sources).toEqual(entry.profile?.sources)
+    expect(alias.profile?.reasoningMode.controls).toEqual([{ type: "toggle" }])
+    expect(alias.profile?.vendor).toBe("acme")
+    expect(alias.profile?.missing).toEqual([])
+  }),
+  { config: acmeConfig({ "my-sonnet": { id: "acme-sonnet-4" } }) },
+)
+
+// The existing entry is the one at `model.id ?? key`: the API id first, the config key only without an id.
+profiled.instance(
+  "looks the existing entry up by the API id before the config key",
+  Effect.gen(function* () {
+    const model = yield* modelOf(acme, "my-sonnet")
+    expect(model.limit.context).toBe(200_000)
+    expect(model.capabilities.reasoning).toBe(true)
+    expect(model.capabilities.input.image).toBe(true)
+  }),
+  { config: acmeConfig({ "my-sonnet": { id: "acme-sonnet-4", name: "Mine" } }) },
+)
+
+profiled.instance(
+  "looks the existing entry up by the config key when there is no id",
+  Effect.gen(function* () {
+    const model = yield* modelOf(acme, "my-sonnet")
+    expect(model.name).toBe("Mine")
+    expect(model.limit).toEqual({ context: 1_000, output: 100 })
+    expect(model.capabilities.reasoning).toBe(false)
+    expect(model.capabilities.input.image).toBe(false)
+  }),
+  { config: acmeConfig({ "my-sonnet": { name: "Mine" } }) },
+)
+
+profiled.instance(
+  "a configured model takes limit, modalities and reasoning from a same-named catalog entry of another provider",
+  Effect.gen(function* () {
+    const model = yield* modelOf(relay, "glm")
+    expect(model.api.id).toBe("GLM-5.3")
+    expect(model.limit).toEqual({ context: 200_000, output: 131_072 })
+    expect(model.capabilities.input.image).toBe(true)
+    expect(model.capabilities.reasoning).toBe(true)
+    expect(model.cost).toEqual({ input: 0, output: 0, cache: { read: 0, write: 0 } })
+    expect(model.profile?.sources.context).toBe("catalog-alias")
+    expect(model.profile?.sources.output).toBe("catalog-alias")
+    expect(model.profile?.sources["modalities.input"]).toBe("catalog-alias")
+    expect(model.profile?.sources.reasoning).toBe("catalog-alias")
+    expect(model.profile?.vendor).toBe("zhipuai")
+    // The reasoning controls of another provider's entry are not lent.
+    expect(model.profile?.reasoningMode.controls).toEqual([])
+    expect(model.profile?.sources["reasoningMode.controls"]).toBeUndefined()
+    expect(model.profile?.missing).toEqual([])
+  }),
+  { config: relayConfig({ glm: { id: "GLM-5.3" } }) },
+)
+
+profiled.instance(
+  "a declared limit wins over the alias, and a limit of 0 counts as not declared",
+  Effect.gen(function* () {
+    const declared = yield* modelOf(relay, "declared")
+    expect(declared.limit).toEqual({ context: 64_000, output: 131_072 })
+    expect(declared.profile?.sources.context).toBe("config")
+    expect(declared.profile?.sources.output).toBe("catalog-alias")
+
+    const zero = yield* modelOf(relay, "zero")
+    expect(zero.limit).toEqual({ context: 200_000, output: 131_072 })
+    expect(zero.profile?.sources.context).toBe("catalog-alias")
+  }),
+  {
+    config: relayConfig({
+      declared: { id: "glm-5.3", limit: { context: 64_000 } },
+      zero: { id: "glm-5.3", limit: { context: 0, output: 0 } },
+    }),
+  },
+)
+
+profiled.instance(
+  "a model with neither alias nor declaration reports every capability as missing and reads the default window",
+  Effect.gen(function* () {
+    const model = yield* modelOf(relay, "no-such-model")
+    expect(model.profile?.missing).toEqual(["context", "output", "modalities", "reasoning"])
+    expect(model.profile?.sources).toEqual({})
+    expect(model.limit).toEqual({ context: 0, output: 0 })
+    expect(model.capabilities.reasoning).toBe(false)
+    expect(model.capabilities.input.text).toBe(true)
+    expect(contextWindow(ProviderProfile.profileOf(model))).toEqual({ tokens: 128_000, source: "default" })
+  }),
+  { config: relayConfig({ "no-such-model": {} }) },
+)
+
+profiled.instance(
+  "getModel reports an incomplete profile once per model, with the keys to declare",
+  Effect.gen(function* () {
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("bare"))
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("bare"))
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("partial"))
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("partial"))
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("declared"))
+    const logs = JSON.stringify(yield* logLines)
+    expect(logs.split("model profile incomplete").length - 1).toBe(2)
+    expect(logs).toContain("relay/bare")
+    expect(logs).toContain(
+      "Declare limit.context, limit.output, modalities, reasoning under provider.relay.models.bare in graphagent.json, for example",
+    )
+    expect(logs).toContain("relay/partial")
+    expect(logs).toContain(
+      "Declare limit.output, modalities, reasoning under provider.relay.models.partial in graphagent.json, for example",
+    )
+    expect(logs).not.toContain("relay/declared")
+  }),
+  {
+    config: relayConfig({
+      bare: {},
+      partial: { limit: { context: 8_000 } },
+      declared: {
+        limit: { context: 8_000, output: 1_000 },
+        modalities: { input: ["text"], output: ["text"] },
+        reasoning: false,
+      },
+    }),
+  },
+)
+
+profiled.instance(
+  "getModel reports again after the instance is reloaded",
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const count = Effect.map(logLines, (lines) => JSON.stringify(lines).split("model profile incomplete").length - 1)
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("bare"))
+    expect(yield* count).toBe(1)
+    yield* reloadInstance({ directory: test.directory })
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("bare"))
+    yield* Provider.use.getModel(relay, ModelV2.ID.make("bare"))
+    expect(yield* count).toBe(2)
+  }),
+  { config: relayConfig({ bare: {} }) },
+)
+
+profiled.instance(
+  "the public list leaves profiles off the unconnected catalog models and keeps them on connected ones",
+  Effect.gen(function* () {
+    const result = yield* Provider.use.publicProviders()
+    const zai = result.all.find((item) => item.id === "zai")
+    const connected = result.all.find((item) => item.id === "acme")
+    expect(result.connected).toContain("acme")
+    expect(result.connected).not.toContain("zai")
+    expect(zai?.models["glm-5.3"]).toBeDefined()
+    expect(zai?.models["glm-5.3"]).not.toHaveProperty("profile")
+    expect(zai?.models["glm-5.3"].limit).toEqual({ context: 200_000, output: 131_072 })
+    expect(connected?.models["acme-sonnet-4"].profile?.sources.context).toBe("catalog")
+  }),
+  { config: acmeConfig({}) },
+)
+
+test("a catalog provider converted without a profile keeps its variants and everything else", () => {
+  const provider = profileCatalog.zai
+  const withProfile = Provider.fromModelsDevProvider(provider)
+  const without = Provider.fromModelsDevProvider(provider, { profile: false })
+  const model = without.models["glm-5.3"]
+  expect(model).not.toHaveProperty("profile")
+  expect(withProfile.models["glm-5.3"].profile?.vendor).toBe("zhipuai")
+  expect(model.variants).toEqual(withProfile.models["glm-5.3"].variants)
+  expect({ ...withProfile.models["glm-5.3"], profile: undefined }).toEqual({ ...model, profile: undefined })
+})
+
+// A model an adapter returns as a copy of a catalog model can carry the catalog's profile while the adapter narrows
+// its window (the Codex adapter does). The profile must follow the model, or every reader of the window would see
+// the catalog's value, and a configured override of that model would lose the adapter's limit.
+const narrowingAdapters: readonly ProviderAdapter[] = [
+  {
+    id: "test.narrowing",
+    provider: {
+      id: "acme",
+      models: async (provider) =>
+        Object.fromEntries(
+          Object.entries(provider.models ?? {}).map(([id, model]) => [
+            id,
+            id === "acme-sonnet-4" ? { ...model, limit: { context: 100_000, output: 16_000 } } : { ...model },
+          ]),
+        ),
+    },
+  },
+]
+
+const narrowing = testEffect(
+  Layer.mergeAll(
+    Provider.layer.pipe(
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(Env.defaultLayer),
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Auth.defaultLayer),
+      Layer.provide(
+        Layer.succeed(ProviderAdapters.Service, ProviderAdapters.createRegistry(Effect.succeed(narrowingAdapters))),
+      ),
+      Layer.provide(profileCatalogLayer),
+      Layer.provide(RuntimeFlags.layer({})),
+      Layer.provide(EventV2Bridge.defaultLayer),
+    ),
+    Env.defaultLayer,
+    profileCatalogLayer,
+  ),
+)
+
+narrowing.instance(
+  "the profile of an adapter model follows the limit the adapter changed",
+  Effect.gen(function* () {
+    const narrowed = yield* modelOf(acme, "acme-sonnet-4")
+    expect(narrowed.limit).toEqual({ context: 100_000, output: 16_000 })
+    expect(narrowed.profile?.context).toBe(100_000)
+    expect(narrowed.profile?.output).toBe(16_000)
+    expect(narrowed.profile?.sources.context).toBe("adapter")
+    // What the adapter left alone keeps the catalog as its source.
+    expect(narrowed.profile?.sources.reasoning).toBe("catalog")
+    expect(narrowed.profile?.reasoningMode.controls).toEqual([{ type: "toggle" }])
+    expect(contextWindow(ProviderProfile.profileOf(narrowed))).toEqual({ tokens: 100_000, source: "adapter" })
+    // A model the adapter did not touch stays as the catalog has it.
+    const untouched = yield* modelOf(acme, "my-sonnet")
+    expect(untouched.profile?.sources.context).toBe("catalog")
+  }),
+  { config: acmeConfig({}) },
+)
+
+narrowing.instance(
+  "a configured override of an adapter model keeps the limit the adapter set",
+  Effect.gen(function* () {
+    const model = yield* modelOf(acme, "acme-sonnet-4")
+    expect(model.name).toBe("Renamed")
+    expect(model.limit).toEqual({ context: 100_000, output: 16_000 })
+    expect(model.profile?.context).toBe(100_000)
+    expect(model.profile?.sources.context).toBe("adapter")
+  }),
+  { config: acmeConfig({ "acme-sonnet-4": { name: "Renamed" } }) },
 )
