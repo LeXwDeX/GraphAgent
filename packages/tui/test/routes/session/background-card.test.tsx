@@ -598,7 +598,7 @@ test("the jump to the last user message goes to what the user wrote and not to a
   }
 })
 
-test("undo does not copy the text of a result into the prompt", async () => {
+test("undo goes back to what the user wrote and does not copy the text of a result into the prompt", async () => {
   const harness = await mount({
     ...tall(),
     handler: (url) =>
@@ -611,7 +611,11 @@ test("undo does not copy the text of a result into the prompt", async () => {
     harness.app.mockInput.pressKey("u")
     await waitFor(() => harness.sent.some((request) => request.path.endsWith("/revert")))
     await harness.settle()
-    expect(harness.promptDraft()).toBe("")
+    // The result message is not what is undone (#1408): the prompt gets what the user wrote, and nothing of the result.
+    expect(harness.sent.find((request) => request.path.endsWith("/revert"))?.body).toMatchObject({
+      messageID: "msg_card_user",
+    })
+    expect(harness.promptDraft()).toBe("scan everything")
     expect(harness.promptParts()).toEqual([])
   } finally {
     await harness.dispose()

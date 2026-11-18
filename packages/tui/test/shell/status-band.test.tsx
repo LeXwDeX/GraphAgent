@@ -4,12 +4,14 @@
 /** @jsxImportSource @opentui/solid */
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { CapturedFrame, RGBA } from "@opentui/core"
-import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal, Session } from "@graphagent/sdk"
+import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal, PrWatchEntry, Session } from "@graphagent/sdk"
 import open from "open"
 import { createSignal, Show } from "solid-js"
+import { createStore, reconcile } from "solid-js/store"
 import { DEFAULT_THEME } from "../../src/context/theme"
 import type { Ticker } from "../../src/context/ticker"
 import { setLanguage } from "../../src/i18n"
+import { createPrTracker } from "../../src/shell/pr-tracker"
 import {
   PrTrackerProvider,
   type PrBandItem,
@@ -17,10 +19,11 @@ import {
   type ReminderBandItem,
 } from "../../src/shell/pr-tracker-context"
 import { BAND_NARROW_WIDTH, DAG_PANEL_ID, SessionStatusBand } from "../../src/shell/status-band"
+import type { ToastOptions } from "../../src/ui/toast"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { RUN_START, endRun, seedRun } from "../fixture/background-runs"
-import { bandItem, ciItem, stoppedItem, unresponsiveItem, workingItem } from "../fixture/pr-band"
+import { MINUTE, T0, bandItem, ciItem, prEntry, stoppedItem, unresponsiveItem, workingItem } from "../fixture/pr-band"
 import { createEventSource, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { dagModeStatus, mountRoute, sessionFixture, waitFor, type MountOptions } from "../routes/dag-mode-harness"
 
@@ -1879,6 +1882,88 @@ describe("the band with PR rows is still read only and clock-free", () => {
       expect(watched.calls).toEqual(bare.calls)
       expect(watched.calls.frame).toBe(0)
       expect(watched.calls.second).toBe(0)
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+// ── A held PR warning follows the language (#1409) ──────────────────────────────────────────────────────────────────
+//
+// The real tracker, not the stand-in: the warning it keeps after the server dropped the entry was a copy of the words
+// it had when it was raised, so it stayed in that language while the rest of the band was worded again.
+
+/** The tracker as `app.tsx` wires it, over a store of its own and a clock that stands still (its `at` never fires). */
+function liveTracker(now: number) {
+  const toasts: ToastOptions[] = []
+  const [data, setData] = createStore({
+    pr_watch: {} as Record<string, Record<string, PrWatchEntry>>,
+    reminder: {},
+    session_status: {},
+    message: {},
+    part: {},
+    hydrated: [rootID],
+  })
+  const tracker = createPrTracker({
+    data,
+    ticker: { now: () => now, at: () => () => {} },
+    toast: { show: (options) => void toasts.push(options) },
+    onPrWatchEvent: () => () => {},
+    currentRoot: () => rootID,
+  })
+  return {
+    tracker,
+    toasts,
+    /** What a read of the root's watches does: the map is replaced, and no event runs. */
+    replace(entries: readonly PrWatchEntry[]) {
+      const map = Object.fromEntries(entries.map((entry) => [entry.watchID, entry]))
+      setData("pr_watch", rootID, reconcile(map))
+    },
+  }
+}
+
+describe("a held PR warning follows the language", () => {
+  test("the band words it again after each switch, at 80 columns, with no toast and no request", async () => {
+    setLanguage("zh-CN")
+    let live!: ReturnType<typeof liveTracker>
+    const { harness } = await mountBand(noFlow, {
+      width: 80,
+      height: 24,
+      language: "zh-CN",
+      view: () => {
+        live = liveTracker(T0 + 4 * MINUTE)
+        return (
+          <PrTrackerProvider value={live.tracker}>
+            <SessionStatusBand />
+          </PrTrackerProvider>
+        )
+      },
+    })
+    try {
+      // Notified at `T0`, nobody answered, and it is four minutes later: the warning is raised when it first appears.
+      live.replace([prEntry({ sessionID: rootID, delivery: { state: "delivered", deliveredAt: T0 } })])
+      await band(harness, (all) => all.length === 1, "the warning")
+      // The server drops the entry; what is drawn from here on is the tracker's held copy of the warning.
+      live.replace([])
+      const zh = await settled(harness)
+      expect(trimmed(zh)).toEqual(["PR #1035  ✓ 通过 · agent 未响应"])
+      expect(zh.join("\n")).toMatchSnapshot()
+
+      setLanguage("en")
+      const en = await band(
+        harness,
+        (all) => all[0]?.includes("agent not responding") ?? false,
+        "the warning in English",
+      )
+      expect(trimmed(en)).toEqual(["PR #1035  ✓ passed · agent not responding"])
+      expect(en.join("\n")).toMatchSnapshot()
+
+      setLanguage("zh-CN")
+      expect(await band(harness, (all) => all[0]?.includes("agent 未响应") ?? false, "the warning again")).toEqual(zh)
+
+      for (const line of [...zh, ...en]) expect(cellWidth(line, 1), line).toBeLessThanOrEqual(80)
+      expect(live.toasts).toEqual([])
+      expect(harness.writes()).toEqual([])
     } finally {
       await harness.dispose()
     }

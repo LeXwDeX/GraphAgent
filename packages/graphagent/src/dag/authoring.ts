@@ -30,6 +30,9 @@ interface EnvironmentContext {
   parent?: { id: string; providerID: string }
 }
 
+/** `blockCompiled` is set when the document authored blocks: the compiler then
+ * owns `skip_ok` on the review decisions, so Dag.create and the replan check
+ * leave it out of the standard review-coverage advisory. */
 export type PreparedGraph =
   | {
       action: "start"
@@ -37,9 +40,10 @@ export type PreparedGraph =
       title: string
       config: Omit<WorkflowConfig, "admission">
       admission?: AdmissionInput
+      blockCompiled?: boolean
     }
-  | { action: "extend"; nodes: NodeConfig[] }
-  | { action: "replan"; nodes: NodeConfig[] }
+  | { action: "extend"; nodes: NodeConfig[]; blockCompiled?: boolean }
+  | { action: "replan"; nodes: NodeConfig[]; blockCompiled?: boolean }
 
 /** A prepared extend fragment, paired with the `extend` control op. */
 export type PreparedExtend = Extract<PreparedGraph, { action: "extend" }>
@@ -317,7 +321,9 @@ export function make(options: Options = {}) {
         ...liveGateErrors,
       ])
       const valid = errors.length === 0
-      const prepared = valid ? prepareGraph(decoded.value, graphNodes, nodeDefaults, review) : undefined
+      const prepared = valid
+        ? prepareGraph(decoded.value, graphNodes, nodeDefaults, review, compiled.blocks !== undefined)
+        : undefined
       const result = {
         ...validation,
         valid,
@@ -344,8 +350,9 @@ function prepareGraph(
   nodes: NodeConfig[],
   nodeDefaults: NodeDefaults | undefined,
   review: EffectiveReviewConfig,
+  blockCompiled: boolean,
 ): PreparedGraph {
-  if (decoded.action !== "start") return { action: decoded.action, nodes }
+  if (decoded.action !== "start") return { action: decoded.action, nodes, ...(blockCompiled ? { blockCompiled } : {}) }
   const spec = decoded.spec
   const blocks = "blocks" in spec.config ? spec.config.blocks : []
   const syntheses = blocks.filter(
@@ -373,6 +380,7 @@ function prepareGraph(
       nodes,
     },
     ...(spec.admission ? { admission: spec.admission } : {}),
+    ...(blockCompiled ? { blockCompiled } : {}),
   }
 }
 

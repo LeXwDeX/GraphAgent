@@ -269,6 +269,20 @@ function registerInputLayer(keymap: OpenTuiKeymap, renderer: CliRenderer, config
   }
 }
 
+/**
+ * Ends a leader chord that has nothing to run without typing its key. The key after the leader is matched against the
+ * reachable bindings only. When its command is disabled, the layer holding it is, or nothing is bound to it, the
+ * keymap reports a `sequence-miss`: it clears the sequence but lets the key event go on to the focused input, which
+ * would type it (`<leader>r` with nothing to redo put an "r" in the prompt). A chord is never text, so the key is
+ * consumed here and the sequence ends as a no-op. Keys that do not follow the leader are left alone.
+ */
+function registerLeaderMissConsumption(keymap: OpenTuiKeymap) {
+  return keymap.intercept("key:after", ({ reason, sequence, consume }) => {
+    if (reason !== "sequence-miss" || sequence[0]?.tokenName !== LEADER_TOKEN) return
+    consume()
+  })
+}
+
 function leaderDisplay(config: FormatConfig) {
   const key = config.keybinds.get(LEADER_TOKEN)?.[0]?.key
   if (!key) return TuiKeybind.LeaderDefault
@@ -316,6 +330,7 @@ export function registerGraphagentKeymap(keymap: OpenTuiKeymap, renderer: CliRen
         timeoutMs: config.leader_timeout,
       })
     : () => {}
+  const offLeaderMiss = leader ? registerLeaderMissConsumption(keymap) : () => {}
   const offEscape = registerEscapeClearsPendingSequence(keymap)
   const offBackspace = registerBackspacePopsPendingSequence(keymap)
   const offInputBindings = registerInputLayer(keymap, renderer, config)
@@ -324,6 +339,7 @@ export function registerGraphagentKeymap(keymap: OpenTuiKeymap, renderer: CliRen
     offInputBindings()
     offBackspace()
     offEscape()
+    offLeaderMiss()
     offLeader()
     offAliasExpander()
     offBaseLayout()

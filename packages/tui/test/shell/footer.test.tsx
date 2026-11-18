@@ -454,6 +454,40 @@ test("drops the oldest entry when no info toast can make room", async () => {
   }
 })
 
+test("an overflow drops a queued success before it drops a warning or an error", async () => {
+  const { app, toast } = await renderToastStore()
+  try {
+    toast().show({ text: "now", level: "info" })
+    toast().show({ text: "warn", level: "warning" })
+    toast().show({ text: "ok1", level: "success" })
+    toast().show({ text: "ok2", level: "success" })
+    toast().show({ text: "ok3", level: "success" })
+    expect(toast().currentToast?.text).toBe("now")
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["warn", "ok2", "ok3"])
+
+    toast().show({ text: "err", level: "error" })
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["warn", "ok3", "err"])
+    toast().show({ text: "ok4", level: "success" })
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["warn", "err", "ok4"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("an overflow drops an info before a success, and a queue with only warnings and errors still drops the oldest", async () => {
+  const { app, toast } = await renderToastStore()
+  try {
+    toast().show({ text: "now", level: "info" })
+    toast().show({ text: "ok1", level: "success" })
+    toast().show({ text: "note", level: "info" })
+    toast().show({ text: "warn", level: "warning" })
+    toast().show({ text: "ok2", level: "success" })
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["ok1", "warn", "ok2"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("merges a repeated dedupeKey inside ten seconds and keeps the entry id", async () => {
   const { app, toast } = await renderToastStore()
   const clock = spyOn(Date, "now").mockReturnValue(1_000)

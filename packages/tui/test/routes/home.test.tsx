@@ -65,6 +65,24 @@ test("repeating <leader>d on home merges into one toast", async () => {
   }
 })
 
+test("<leader>r on home, where no redo is mounted, does nothing and types nothing", async () => {
+  const harness = await mountHome()
+  try {
+    harness.app.mockInput.pressKey("x", { ctrl: true })
+    await harness.app.renderOnce()
+    harness.app.mockInput.pressKey("r")
+    await harness.settle()
+    expect(harness.promptDraft()).toBe("")
+    expect(harness.writes()).toEqual([])
+    // Outside a chord the same key is text.
+    harness.app.mockInput.pressKey("r")
+    await harness.settle()
+    expect(harness.promptDraft()).toBe("r")
+  } finally {
+    await harness.dispose()
+  }
+})
+
 test("home does not list the shortcut in the help panel", async () => {
   const harness = await mountHome()
   try {
