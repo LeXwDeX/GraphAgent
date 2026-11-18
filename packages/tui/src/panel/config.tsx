@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { UiLanguage } from "@graphagent/core/config/language"
-import { createMemo, createSignal } from "solid-js"
+import { createMemo, createSignal, onMount } from "solid-js"
+import { resolveRootSessionID } from "../ask/ask-queue"
 import { useKV } from "../context/kv"
 import { useRoute } from "../context/route"
 import { useSDK } from "../context/sdk"
@@ -81,8 +82,42 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
 
   const session = createMemo(() => (route.data.type === "session" ? sync.session.get(route.data.sessionID) : undefined))
 
+  // The limits in force are the server's to say (#1290): they come from the DAG mode snapshot of this tree, which a
+  // tree with DAG mode off and no workflow does not read by itself, so it is asked for once as the panel opens. Outside
+  // a session there is no snapshot and the rows show what is configured.
+  onMount(() => {
+    if (route.data.type === "session") sync.dag.readMode(route.data.sessionID)
+  })
+  const dagLimits = createMemo(() => {
+    if (route.data.type !== "session") return undefined
+    return sync.data.dagMode[resolveRootSessionID(sync.data.session, route.data.sessionID)]?.limits
+  })
+
   const dagMode = (): DagMode => overrides().dagMode ?? (sync.data.config.dag?.mode === "on" ? "on" : "off")
-  const concurrency = () => overrides().concurrency ?? sync.data.config.dag?.concurrency ?? 12
+  /** `dag.concurrency` as set: the write made here, else the file's value; undefined while unset. */
+  const configuredConcurrency = (): number | undefined => overrides().concurrency ?? sync.data.config.dag?.concurrency
+  /**
+   * The concurrency the scheduler enforces. The snapshot counts only while it was read for the configuration the panel
+   * shows: after a write, until the read-back lands, it says nothing instead of describing the old value.
+   */
+  const concurrencyInForce = (): number | undefined => {
+    const limits = dagLimits()
+    if (limits === undefined) return undefined
+    const configured = typeof limits.configuredConcurrency === "number" ? limits.configuredConcurrency : undefined
+    return configured === configuredConcurrency() ? limits.concurrency : undefined
+  }
+  /** The value shown and edited: the configured one, else the one in force while the panel does not know it is unset. */
+  const concurrencyText = () => {
+    const value = configuredConcurrency() ?? concurrencyInForce()
+    return value === undefined ? "" : String(value)
+  }
+  const concurrencyNote = () => {
+    const inForce = concurrencyInForce()
+    if (inForce === undefined) return undefined
+    const configured = configuredConcurrency()
+    if (configured === undefined) return t("panel.config.dag.concurrency.default")
+    return configured > inForce ? t("panel.config.dag.concurrency.capped", { effective: inForce }) : undefined
+  }
   const budget = (): number | null =>
     overrides().budget !== undefined ? overrides().budget! : (sync.data.config.dag?.budget?.tokens ?? null)
   const budgetText = () => {
@@ -316,7 +351,8 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
       id: "dag-concurrency",
       label: t("panel.config.dag.concurrency"),
       kind: "text",
-      value: String(concurrency()),
+      value: concurrencyText(),
+      suffix: concurrencyNote,
       description: t("panel.config.dag.concurrency.description"),
       disabled: !writable(),
       validate(value) {

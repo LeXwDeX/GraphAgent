@@ -8,7 +8,12 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import type { SummaryNodeRow, WorkflowRow } from "@graphagent/core/dag/store"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { DEFAULT_USER_MAX_TOTAL_NODES } from "@/dag/dag"
 import { DagModeReader } from "@/dag/mode-read"
+import { AgentScheduler } from "@/session/agent-scheduler"
+import { DEFAULT_LIMITS, makeState } from "@/session/agent-scheduler-state"
+import { TestConfig } from "../fixture/config"
 import { testEffect } from "../lib/effect"
 import { makeWorkflowRow } from "./fixtures"
 import { accepted, roundOne, rowsFor, strictConfig, type Outputs } from "./review-fixtures"
@@ -95,6 +100,89 @@ describe("session DAG mode quality (#1027 D6b)", () => {
         quietRounds: 0,
         completeness: { covered: 3, total: 4, unlisted: 1 },
       })
+    }),
+  )
+})
+
+// #1290: the limits the endpoint reports come from the scheduler's own DAG layer
+// and the user's node cap, never from a default of the read's own, and every
+// limit carries the configured value next to the one in force.
+describe("session DAG mode limits (#1290)", () => {
+  /**
+   * The read over the live scheduler wiring: the scheduler resolves its limits
+   * from the same configuration the read is handed, as the process pool does.
+   */
+  const limitsFor = (input: { readonly dag?: ConfigV1.Info["dag"]; readonly engine?: ConfigV1.Info["engine"] } = {}) =>
+    Effect.gen(function* () {
+      const config = TestConfig.make({
+        dagGlobal: () => Effect.succeed(input.dag ?? {}),
+        getGlobal: () => Effect.succeed(input.engine ? { engine: input.engine } : {}),
+      })
+      const scheduler = AgentScheduler.make(makeState(), () => AgentScheduler.limitsFrom(config))
+      const snapshot = yield* DagModeReader.read({ ...deps([], []), config, scheduler }, {
+        id: "ses_parent",
+        dagMode: "on",
+      } as never)
+      return { snapshot, capacity: yield* scheduler.capacity() }
+    })
+
+  it.effect("an unset dag.concurrency reports the scheduler's DAG layer, with no configured value", () =>
+    Effect.gen(function* () {
+      const { snapshot, capacity } = yield* limitsFor()
+      const limits = snapshot.status.limits
+      expect(limits.concurrency).toBe(capacity.children.dagCap)
+      expect(limits.concurrency).toBe(DEFAULT_LIMITS.dagConcurrency)
+      expect(limits.configuredConcurrency).toBeNull()
+      // The receipt's cap is the same read.
+      expect(snapshot.cap).toBe(limits.concurrency)
+    }),
+  )
+
+  it.effect(
+    "a configured dag.concurrency inside the child pool is both the value in force and the configured one",
+    () =>
+      Effect.gen(function* () {
+        const { snapshot, capacity } = yield* limitsFor({ dag: { concurrency: 3 } })
+        expect(snapshot.status.limits.concurrency).toBe(3)
+        expect(snapshot.status.limits.concurrency).toBe(capacity.children.dagCap)
+        expect(snapshot.status.limits.configuredConcurrency).toBe(3)
+      }),
+  )
+
+  it.effect("a dag.concurrency above the child pool reports both the configured value and the cut one", () =>
+    Effect.gen(function* () {
+      const { snapshot, capacity } = yield* limitsFor({ dag: { concurrency: 30 } })
+      const pool = DEFAULT_LIMITS.childGlobal - DEFAULT_LIMITS.taskReserve
+      expect(snapshot.status.limits.configuredConcurrency).toBe(30)
+      expect(snapshot.status.limits.concurrency).toBe(pool)
+      expect(snapshot.status.limits.concurrency).toBe(capacity.children.dagCap)
+      expect(snapshot.cap).toBe(pool)
+    }),
+  )
+
+  it.effect("a small child pool cuts even the unset default, and the read follows the scheduler", () =>
+    Effect.gen(function* () {
+      const { snapshot, capacity } = yield* limitsFor({ engine: { concurrency: { childGlobal: 5, taskReserve: 2 } } })
+      expect(capacity.children.dagCap).toBe(3)
+      expect(snapshot.status.limits.concurrency).toBe(capacity.children.dagCap)
+      expect(snapshot.status.limits.configuredConcurrency).toBeNull()
+    }),
+  )
+
+  it.effect("an unset dag.max_total_nodes reports the user's default node cap, with no configured value", () =>
+    Effect.gen(function* () {
+      const { snapshot } = yield* limitsFor()
+      expect(snapshot.status.limits.maxTotalNodes).toBe(100)
+      expect(snapshot.status.limits.maxTotalNodes).toBe(DEFAULT_USER_MAX_TOTAL_NODES)
+      expect(snapshot.status.limits.configuredMaxTotalNodes).toBeNull()
+    }),
+  )
+
+  it.effect("a configured dag.max_total_nodes is both the cap in force and the configured one", () =>
+    Effect.gen(function* () {
+      const { snapshot } = yield* limitsFor({ dag: { max_total_nodes: 40 } })
+      expect(snapshot.status.limits.maxTotalNodes).toBe(40)
+      expect(snapshot.status.limits.configuredMaxTotalNodes).toBe(40)
     }),
   )
 })

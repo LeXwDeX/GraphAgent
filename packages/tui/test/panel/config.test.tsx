@@ -3,12 +3,14 @@
 
 /** @jsxImportSource @opentui/solid */
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { createSignal } from "solid-js"
+import { createSignal, Show } from "solid-js"
+import type { SessionDagMode } from "@graphagent/sdk"
 import { useSDK } from "../../src/context/sdk"
 import { getLanguage, setLanguage } from "../../src/i18n"
 import { ConfigPanel } from "../../src/panel/config"
 import { PanelSurface, renderAppPanel, type AppPanelTestContext } from "./contexts"
 import { json } from "../fixture/tui-sdk"
+import { dagModeStatus } from "../routes/dag-mode-harness"
 import { shellState } from "../shell/contexts"
 
 beforeEach(() => {
@@ -19,17 +21,28 @@ afterEach(() => {
   setLanguage("zh-CN")
 })
 
-function ConfigHarness(props: { tab: string; stub?: (sdk: AppPanelTestContext["sdk"]) => void }) {
+function ConfigHarness(props: {
+  tab: string
+  stub?: (sdk: AppPanelTestContext["sdk"]) => void
+  /** Holds the panel back until the route it opens in is in place. */
+  open?: () => boolean
+}) {
   const sdk = useSDK()
   // Runs before ConfigPanel builds its rows, so the panel sees the stubbed
   // write endpoint on its first render (writability is not reactive).
   props.stub?.(sdk)
   const [tab, setTab] = createSignal(props.tab)
-  return <ConfigPanel activeTab={tab()} onTab={setTab} />
+  return (
+    <Show when={props.open?.() ?? true}>
+      <ConfigPanel activeTab={tab()} onTab={setTab} />
+    </Show>
+  )
 }
 
 type RenderOptions = {
   tab?: string
+  /** Open the panel inside this session instead of on the home view. */
+  inSession?: string
   /** Leave the real SDK update in place and answer the HTTP request via `handler`. */
   realWrite?: boolean
   /** Simulate a server without the global config write endpoint. */
@@ -44,6 +57,7 @@ async function renderConfig(options: RenderOptions = {}) {
   const tmp = await shellState()
   const updates: Record<string, unknown>[] = []
   const seen: string[] = []
+  const [open, setOpen] = createSignal(options.inSession === undefined)
   const stub = (sdk: AppPanelTestContext["sdk"]) => {
     if (options.disableWrite) {
       sdk.client.global.config.update = undefined as never
@@ -60,7 +74,7 @@ async function renderConfig(options: RenderOptions = {}) {
       <PanelSurface
         spec={{
           id: "config",
-          render: () => <ConfigHarness tab={options.tab ?? "interface"} stub={stub} />,
+          render: () => <ConfigHarness tab={options.tab ?? "interface"} stub={stub} open={open} />,
         }}
       />
     ),
@@ -72,7 +86,12 @@ async function renderConfig(options: RenderOptions = {}) {
         seen.push(url.pathname)
         return options.handler?.(url)
       },
-      setup: options.setup,
+      setup: async (context) => {
+        await options.setup?.(context)
+        if (options.inSession === undefined) return
+        context.route.navigate({ type: "session", sessionID: options.inSession })
+        setOpen(true)
+      },
     },
   )
   return { app, tmp, updates, seen }
@@ -232,9 +251,9 @@ test("DAG rows write the global layer and validate concurrency and budget", asyn
     expect(updates).toEqual([{ dag: { mode: "on" } }])
     expect(app.captureCharFrame()).toContain("开")
 
+    // Nothing is configured and no snapshot is held, so the row starts empty: no default is made up for it.
     await down(app)
     await enter(app)
-    await backspace(app, 2)
     await type(app, "3")
     await enter(app)
     expect(updates.at(-1)).toEqual({ dag: { concurrency: 3 } })
@@ -368,3 +387,195 @@ test("DAG writes use the hot-reload path without disposing instances", async () 
     await tmp[Symbol.asyncDispose]()
   }
 })
+
+// #1290: the concurrency row shows the limit the server enforces, read from the DAG mode snapshot of the session's tree;
+// it keeps no default of its own. A configured value the server cuts down shows next to the value in force.
+const dagSession = {
+  id: "ses_limits",
+  slug: "limits",
+  projectID: "proj_test",
+  directory: "/tmp/graphagent",
+  title: "Limits",
+  version: "0.0.0",
+  time: { created: 1, updated: 1 },
+  dagMode: "off" as const,
+}
+
+const limits = (concurrency: number, configuredConcurrency: number | null): SessionDagMode =>
+  dagModeStatus({
+    mode: "off",
+    limits: { concurrency, configuredConcurrency, maxTotalNodes: 100, configuredMaxTotalNodes: null, running: 0 },
+  })
+
+async function renderLimits(input: {
+  /** `dag.concurrency` in the configuration the TUI loaded. */
+  configured?: number
+  /** What the session's DAG mode read answers; absent answers nothing. */
+  status?: SessionDagMode
+  width?: number
+  setup?: RenderOptions["setup"]
+}) {
+  const rendered = await renderConfig({
+    tab: "dag",
+    inSession: dagSession.id,
+    width: input.width,
+    setup: input.setup,
+    handler: (url) => {
+      if (url.pathname === "/session") return json([dagSession])
+      if (url.pathname === "/config" && input.configured !== undefined) {
+        return json({ dag: { concurrency: input.configured } })
+      }
+      if (url.pathname === `/session/${dagSession.id}/dag-mode` && input.status) return json(input.status)
+      return undefined
+    },
+  })
+  return rendered
+}
+
+/** The line of the frame a row is drawn on. */
+const rowText = (app: Awaited<ReturnType<typeof renderAppPanel>>, label: string) =>
+  app
+    .captureCharFrame()
+    .split("\n")
+    .find((line) => line.includes(label)) ?? ""
+
+/** Render until the row's line satisfies the check, or fail with the line it last showed. */
+async function untilRow(
+  app: Awaited<ReturnType<typeof renderAppPanel>>,
+  label: string,
+  check: (line: string) => boolean,
+) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await app.renderOnce()
+    if (check(rowText(app, label))) return rowText(app, label)
+    await Bun.sleep(20)
+  }
+  throw new Error(`the row never matched: ${rowText(app, label)}`)
+}
+
+test("an unset concurrency shows the value the server enforces, marked as the default", async () => {
+  const { app, tmp, seen } = await renderLimits({ status: limits(12, null) })
+  try {
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("默认值"))
+    expect(line).toContain("默认值 12")
+    // The panel asked for the snapshot itself: a session with DAG mode off reads none otherwise, and it asked once.
+    expect(seen.filter((path) => path === `/session/${dagSession.id}/dag-mode`)).toHaveLength(1)
+
+    setLanguage("en")
+    await settle(app)
+    expect(rowText(app, "DAG concurrency cap")).toContain("Default 12")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("a configured concurrency the server cuts down shows the configured value and the one in force", async () => {
+  const { app, tmp } = await renderLimits({ configured: 20, status: limits(14, 20) })
+  try {
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("实际生效"))
+    expect(line).toContain("实际生效 14，配置值 20")
+    expect(line).not.toContain("默认值")
+
+    setLanguage("en")
+    await settle(app)
+    expect(rowText(app, "DAG concurrency cap")).toContain("In force 14, configured 20")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("a configured concurrency inside the limit shows no note", async () => {
+  const { app, tmp, seen } = await renderLimits({ configured: 8, status: limits(8, 8) })
+  try {
+    await untilRow(app, "DAG 并发上限", () => seen.includes(`/session/${dagSession.id}/dag-mode`))
+    await settle(app)
+    const line = rowText(app, "DAG 并发上限")
+    expect(line).toContain("8")
+    expect(line).not.toContain("实际生效")
+    expect(line).not.toContain("默认值")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("a snapshot read before a write does not describe the value just written", async () => {
+  const { app, tmp, updates } = await renderLimits({ status: limits(12, null) })
+  try {
+    await untilRow(app, "DAG 并发上限", (text) => text.includes("默认值 12"))
+    await down(app)
+    await enter(app)
+    await backspace(app, 2)
+    await type(app, "20")
+    await enter(app)
+    expect(updates.at(-1)).toEqual({ dag: { concurrency: 20 } })
+    // The read-back has not landed: the row shows what was written and makes no claim about what is in force.
+    const line = rowText(app, "DAG 并发上限")
+    expect(line).toContain("20")
+    expect(line).not.toContain("默认值")
+    expect(line).not.toContain("实际生效")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("outside a session the row shows what is configured and reads no snapshot", async () => {
+  const { app, tmp, seen } = await renderConfig({
+    tab: "dag",
+    handler: (url) => (url.pathname === "/config" ? json({ dag: { concurrency: 20 } }) : undefined),
+  })
+  try {
+    await settle(app)
+    expect(rowText(app, "DAG 并发上限")).toContain("20")
+    expect(rowText(app, "DAG 并发上限")).not.toContain("默认值")
+    expect(seen.filter((path) => path.endsWith("/dag-mode"))).toEqual([])
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("the unset row without a snapshot says it is not set instead of making a value up", async () => {
+  const { app, tmp } = await renderConfig({ tab: "dag" })
+  try {
+    await settle(app)
+    const line = rowText(app, "DAG 并发上限")
+    expect(line).toContain("未设置")
+    expect(line).not.toMatch(/\d/)
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+for (const [language, label, note] of [
+  ["zh-CN", "DAG 并发上限", "实际生效 14，配置值 20"],
+  ["en", "DAG concurrency cap", "In force 14, configured 20"],
+] as const) {
+  for (const width of [1, 2] as const) {
+    test(`the cut-down note fits 80 columns in ${language} with ambiguous width ${width}`, async () => {
+      const { app, tmp } = await renderLimits({
+        configured: 20,
+        status: limits(14, 20),
+        width: 80,
+        setup: (context) => {
+          context.kv.set("ambiguous_width", width)
+          setLanguage(language)
+        },
+      })
+      try {
+        setLanguage(language)
+        const line = await untilRow(app, label, (text) => text.includes("20"))
+        expect(line).toContain(note)
+        // The panel border closes the line: nothing was pushed past it.
+        expect(line.trimEnd().endsWith("│")).toBe(true)
+      } finally {
+        app.renderer.destroy()
+        await tmp[Symbol.asyncDispose]()
+      }
+    })
+  }
+}

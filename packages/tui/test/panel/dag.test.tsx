@@ -2085,7 +2085,13 @@ const snapshot = (extra: Partial<SessionDagMode["budget"]> = {}, running = 3) =>
   dagModeStatus({
     mode: "on",
     budget: { tokens: 5_000_000, used: 1_200_000, usedCacheRead: 0, warnRatio: 0.8, ...extra },
-    limits: { concurrency: 12, maxTotalNodes: 100, running },
+    limits: {
+      concurrency: 12,
+      configuredConcurrency: null,
+      maxTotalNodes: 100,
+      configuredMaxTotalNodes: null,
+      running,
+    },
   })
 
 function quality(extra: Partial<DagWorkflowQuality> = {}): DagWorkflowQuality {

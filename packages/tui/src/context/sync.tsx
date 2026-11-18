@@ -2274,6 +2274,15 @@ export const {
       /** #1032: the node tables of the workflows the display surfaces show. */
       dag: {
         watch: watchDag,
+        /**
+         * Read the mode snapshot of the root of the tree `sessionID` is in, unless one is held or on its way. A tree
+         * with DAG mode off and no workflow never reads one by itself (see `dagMode`); the `/config` panel asks for it
+         * when it opens, because the limits in force are only known to the server (#1290). Held from then on, it is
+         * read again with the others after a `dag` configuration change or a reconnect.
+         */
+        readMode(sessionID: string) {
+          void fetchDagMode([parentChain(sessionID).at(-1) ?? sessionID], true)
+        },
         /** The loaded node rows of a workflow, or undefined while its table is not loaded. */
         nodes(workflowID: string) {
           const feed = store.dagNodes[workflowID]

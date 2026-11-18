@@ -9,7 +9,7 @@
  * many DAG slots are live. Keeping the read here stops the HTTP wire shape and
  * the command receipt from drifting apart.
  */
-import { DEFAULT_WORKFLOW_CONFIG } from "@/dag/dag"
+import { DEFAULT_USER_MAX_TOTAL_NODES } from "@/dag/dag"
 import { Permission } from "@/permission"
 import { SessionID } from "@/session/schema"
 import { WorkflowStatus } from "@graphagent/core/dag/core/types"
@@ -42,7 +42,7 @@ export interface Snapshot {
   readonly runningWorkflows: number
   /** DAG-wide running child slots, shared by every workflow in the process. */
   readonly running: number
-  /** Effective cap of those slots (`dag.concurrency` bounded by the child pool). */
+  /** Effective cap of those slots: the scheduler's DAG layer, the one value `limits.concurrency` also carries. */
   readonly cap: number
 }
 
@@ -139,9 +139,15 @@ export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info:
         usedCacheRead,
         warnRatio: dag.budget?.warn_ratio ?? DagModeStatus.DEFAULT_BUDGET_WARN_RATIO,
       },
+      // #1290: what is enforced next to what is configured. The concurrency in
+      // force is the scheduler's own DAG layer (its default for an unset
+      // `dag.concurrency`, cut to the child pool): this read keeps no default
+      // of its own. The node ceiling is the user's cap, never a workflow's.
       limits: {
-        concurrency: dag.concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
-        maxTotalNodes: dag.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+        concurrency: capacity.children.dagCap,
+        configuredConcurrency: dag.concurrency ?? null,
+        maxTotalNodes: dag.max_total_nodes ?? DEFAULT_USER_MAX_TOTAL_NODES,
+        configuredMaxTotalNodes: dag.max_total_nodes ?? null,
         running: capacity.children.dagRunning,
       },
       quality,

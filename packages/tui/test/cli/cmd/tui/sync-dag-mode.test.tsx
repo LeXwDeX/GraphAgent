@@ -37,6 +37,18 @@ function row(id: string, updated: number, extra: Record<string, unknown> = {}, p
   }
 }
 
+/** Nothing configured, so the values in force are the defaults. */
+function limits(extra: Partial<SessionDagMode["limits"]> = {}): SessionDagMode["limits"] {
+  return {
+    concurrency: 12,
+    configuredConcurrency: null,
+    maxTotalNodes: 100,
+    configuredMaxTotalNodes: null,
+    running: 3,
+    ...extra,
+  }
+}
+
 function status(extra: Partial<SessionDagMode> = {}): SessionDagMode {
   return {
     mode: "on",
@@ -44,7 +56,7 @@ function status(extra: Partial<SessionDagMode> = {}): SessionDagMode {
     availability: "available",
     unavailableReason: null,
     budget: { tokens: 1000, used: 100, usedCacheRead: 0, warnRatio: 0.8 },
-    limits: { concurrency: 12, maxTotalNodes: 100, running: 3 },
+    limits: limits(),
     quality: null,
     ...extra,
   }
@@ -365,7 +377,7 @@ describe("tui sync dag mode snapshot: what keeps it current", () => {
         await wait(() => sync.data.dagMode.ses_old !== undefined)
         server.reads.length = 0
 
-        server.answers.ses_new = () => status({ limits: { concurrency: 8, maxTotalNodes: 100, running: 1 } })
+        server.answers.ses_new = () => status({ limits: limits({ concurrency: 8, running: 1 }) })
         server.answers.ses_old = () => status({ mode: "off" })
         reconnect()
         await wait(
@@ -506,7 +518,7 @@ describe("tui sync dag mode snapshot: the global dag configuration", () => {
         await wait(() => sync.data.dagMode.ses_old !== undefined)
         server.reads.length = 0
 
-        server.answers.ses_new = () => status({ limits: { concurrency: 8, maxTotalNodes: 50, running: 1 } })
+        server.answers.ses_new = () => status({ limits: limits({ concurrency: 8, maxTotalNodes: 50, running: 1 }) })
         server.answers.ses_old = () => status({ budget: { tokens: 4000, used: 100, usedCacheRead: 0, warnRatio: 0.8 } })
         emit(configUpdated(["dag"]))
         sdk.frameClock.flushNow()
@@ -528,7 +540,7 @@ describe("tui sync dag mode snapshot: the global dag configuration", () => {
       await wait(() => sync.data.dagMode.ses_new !== undefined)
       server.reads.length = 0
 
-      server.answers.ses_new = () => status({ limits: { concurrency: 6, maxTotalNodes: 50, running: 0 } })
+      server.answers.ses_new = () => status({ limits: limits({ concurrency: 6, maxTotalNodes: 50, running: 0 }) })
       emit(global("server.instance.disposed", { directory }))
       sdk.frameClock.flushNow()
       await wait(() => sync.data.dagMode.ses_new?.limits.concurrency === 6)
@@ -731,7 +743,7 @@ describe("tui sync dag mode snapshot: the slots of the whole process", () => {
       await wait(() => sync.data.dagRunning === 5)
 
       // A change to the dag configuration reads the snapshot again, and its count is the newest.
-      server.answers.ses_new = () => status({ limits: { concurrency: 12, maxTotalNodes: 100, running: 1 } })
+      server.answers.ses_new = () => status({ limits: limits({ running: 1 }) })
       emit(configUpdated(["dag"]))
       sdk.frameClock.flushNow()
       await wait(() => sync.data.dagRunning === 1)
@@ -776,6 +788,66 @@ describe("tui sync dag mode snapshot: the slots of the whole process", () => {
       await wait(() => sync.data.dagRunning === 6)
       // The route's own tree has none, so nothing else was read.
       expect(server.reads).toEqual([])
+    })
+  })
+})
+
+// #1290: a tree with DAG mode off and no workflow reads no snapshot by itself, but the `/config` panel shows the limits in
+// force, which only the server knows, so a surface can ask for the snapshot of the tree it is in.
+describe("tui sync dag mode snapshot: asked for by a surface", () => {
+  test("a plain tree is read on request, once, at its root, whichever session of the tree is named", async () => {
+    await withMount(TREE, async ({ server, sync }) => {
+      await sync.session.activate("ses_old_child")
+      await Bun.sleep(40)
+      expect(server.reads).toEqual([])
+
+      sync.dag.readMode("ses_old_child")
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      expect(server.reads).toEqual(["ses_old"])
+      expect(sync.data.dagMode.ses_old).toEqual(status())
+
+      // Held, so asking again for any session of the tree costs no request.
+      sync.dag.readMode("ses_old")
+      sync.dag.readMode("ses_old_child")
+      await Bun.sleep(40)
+      expect(server.reads).toEqual(["ses_old"])
+    })
+  })
+
+  test("a request while the read is out joins it instead of starting another", async () => {
+    const slow = gate()
+    await withMount(
+      TREE,
+      async ({ server, sync }) => {
+        sync.dag.readMode("ses_old")
+        await wait(() => server.reads.length === 1)
+        sync.dag.readMode("ses_old_child")
+        slow.open()
+        await wait(() => sync.data.dagMode.ses_old !== undefined)
+        expect(server.reads).toEqual(["ses_old"])
+      },
+      (server) => {
+        server.answers.ses_old = async () => {
+          await slow.opened
+          return status()
+        }
+      },
+    )
+  })
+
+  test("once held, a dag configuration change reads it again with the others", async () => {
+    await withMount(TREE, async ({ emit, sdk, server, sync }) => {
+      sync.dag.readMode("ses_old")
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      server.reads.length = 0
+
+      server.answers.ses_old = () =>
+        status({ limits: limits({ concurrency: 14, configuredConcurrency: 30, running: 0 }) })
+      emit(configUpdated(["dag"]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagMode.ses_old?.limits.concurrency === 14)
+      expect(server.reads).toEqual(["ses_old"])
+      expect(sync.data.dagMode.ses_old?.limits.configuredConcurrency).toBe(30)
     })
   })
 })

@@ -467,6 +467,7 @@ export const layer = Layer.effect(
       hookQuestions,
       commands,
       children,
+      scheduler,
       ops: () => ops(),
     })
 
