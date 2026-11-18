@@ -226,6 +226,37 @@ function withContext<A, E>(
             run(modules.ReminderClock.Service.use((svc) => svc.create({ sessionID, text, fireAt }))).pipe(
               Effect.map((info) => ({ id: info.id })),
             ),
+          backgroundJob: (input) =>
+            run(
+              Effect.gen(function* () {
+                const jobs = yield* modules.BackgroundJob.Service
+                const entry = modules.ChildRegistry.create({
+                  id: `crun_exercise_${input.id}`,
+                  childSessionID: input.id,
+                  parentSessionID: input.parentSessionID,
+                  ownerKind: "task",
+                  ownerKey: { kind: "task" },
+                  permission: { ask: "user" },
+                  detached: true,
+                  directory: undefined,
+                  owner: {},
+                })
+                modules.ChildRegistry.register(entry)
+                if (input.began) modules.ChildRegistry.begin(entry, Date.now())
+                // Ending the job (the instance is disposed at the end of the scenario) lets the run leave the registry.
+                const release = Effect.sync(() => {
+                  modules.ChildRegistry.end(entry, { type: "completed" })
+                  modules.ChildRegistry.driverStopped(entry)
+                  modules.ChildRegistry.persisted(entry)
+                })
+                yield* jobs.start({
+                  id: input.id,
+                  type: "task",
+                  metadata: { childRunID: entry.id, sessionID: input.id, parentSessionID: input.parentSessionID },
+                  run: Effect.never.pipe(Effect.ensuring(release)),
+                })
+              }),
+            ),
           worktree: (input) => run(modules.Worktree.Service.use((svc) => svc.create(input).pipe(Effect.orDie))),
           worktreeRemove: (directory) =>
             run(modules.Worktree.Service.use((svc) => svc.remove({ directory })).pipe(Effect.ignore)),

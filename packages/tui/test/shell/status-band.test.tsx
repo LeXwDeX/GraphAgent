@@ -2243,6 +2243,34 @@ describe("the background mark", () => {
     }
   })
 
+  // #1407: with a limit of one, a run the server says is running is not counted as waiting because its child has shown
+  // nothing yet; the runs it says are queued are.
+  test("counts the queue the server reports: a run that began is running, the ones behind it wait", async () => {
+    const { harness } = await mountBand(noFlow)
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      const sync = harness.sync()
+      seedRun(sync, { parent: rootID, key: "first", state: "started", startedAt: RUN_START + 1 })
+      seedRun(sync, { parent: rootID, key: "second", state: "waiting", startedAt: RUN_START + 2 })
+      seedRun(sync, { parent: rootID, key: "third", state: "waiting", startedAt: RUN_START + 3 })
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith("◇ 后台 3·排2")), "one running, two queued")
+
+      // The second begins when the first ends: still no child activity, and now it runs.
+      endRun(sync, "first")
+      seedRun(sync, {
+        parent: rootID,
+        key: "second",
+        state: "started",
+        startedAt: RUN_START + 2,
+        runningAt: RUN_START + 9,
+      })
+      await band(harness, (all) => all.some((row) => row.trimEnd().endsWith("◇ 后台 2·排1")), "one running, one queued")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test("follows the runs: the count moves with them and the mark goes when the last one ends", async () => {
     const { harness } = await mountBand(noFlow)
     try {

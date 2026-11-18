@@ -121,6 +121,19 @@ describe("backgroundCard: what the card says", () => {
     const text = notice("completed", "s", "ok")
     expect(backgroundCard(part(text, { metadata: metadata({ startedAt: 5_000, endedAt: 5_000 }) }))?.elapsedMs).toBe(0)
     expect(backgroundCard(part(text, { metadata: metadata({ startedAt: 9_000, endedAt: 4_000 }) }))?.elapsedMs).toBe(0)
+    expect(backgroundCard(part(text, { metadata: metadata({ runningAt: 70_000, endedAt: 66_000 }) }))?.elapsedMs).toBe(
+      0,
+    )
+  })
+
+  test("the time does not include the wait for the run's slot: it runs from the moment the run began (#1407)", () => {
+    const text = notice("completed", "s", "ok")
+    // Started (and queued) at 1 s, began running at 41 s, ended at 66 s: the run took 25 s, not 65 s.
+    expect(backgroundCard(part(text, { metadata: metadata({ runningAt: 41_000 }) }))?.elapsedMs).toBe(25_000)
+    // A result without it (an older server, a run lost with its process) is timed from its start.
+    expect(backgroundCard(part(text))?.elapsedMs).toBe(65_000)
+    // A malformed moment is left out by the reader, so the card falls back to the start.
+    expect(backgroundCard(part(text, { metadata: metadata({ runningAt: "soon" }) }))?.elapsedMs).toBe(65_000)
   })
 
   test("the title is one clean line, and a title that is nothing once cleaned is a dash", () => {

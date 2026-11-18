@@ -29,6 +29,12 @@ export const LifecycleStateInfo = Schema.Struct({
   settled: Schema.Boolean,
   source: Schema.Literals(["live", "persisted", "derived"]),
   observedAt: Schema.Number,
+  /**
+   * When the owner entered `value`. Present only where the owner knows it; a
+   * `job` state carries it on a server that tells `queued` from `running`
+   * (#1407), so a client can trust a `running` it reads and time the run from it.
+   */
+  since: Schema.optional(Schema.Number),
 }).annotate({ identifier: "LifecycleState" })
 
 export const LifecycleStatesPayload = Schema.Struct({

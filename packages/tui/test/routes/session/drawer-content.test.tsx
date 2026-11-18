@@ -550,6 +550,43 @@ describe("the background section", () => {
     }
   })
 
+  // #1407: three runs with a limit of one. The one that began shows its time from the moment it got its slot, the
+  // two behind it wait and have none; a child that has shown nothing does not turn the first into a waiting one.
+  test("lists the queue the server reports: the run that began runs and is timed without its wait", async () => {
+    const clock = clockTicker(NOW)
+    const harness = await mountDrawer({ ticker: clock.ticker })
+    try {
+      const sync = harness.sync()
+      // Started 50 s ago, waited 40 s for its slot: it has run for 10 s.
+      seedRun(sync, {
+        parent: ROOT,
+        key: "first",
+        state: "started",
+        description: "跑着",
+        startedAt: NOW - 50_000,
+        runningAt: NOW - 10_000,
+      })
+      seedRun(sync, { parent: ROOT, key: "second", state: "waiting", description: "等着甲", startedAt: NOW - 3_000 })
+      seedRun(sync, { parent: ROOT, key: "third", state: "waiting", description: "等着乙", startedAt: NOW - 2_000 })
+      const lines = await column(harness, 120, has("等着甲"), "the three runs")
+      const rows = lines.map((line) => line.trim())
+      expect(rows.find((row) => row.includes("后台任务"))).toBe("后台任务 3")
+      expect(rows.find((row) => row.includes("跑着"))).toMatch(/^● explore · 跑着 +10s$/)
+      expect(rows.find((row) => row.includes("等着甲"))).toBe("○ explore · 等着甲")
+      expect(rows.find((row) => row.includes("等着乙"))).toBe("○ explore · 等着乙")
+      const spans = await harness.spans()
+      expect(colorOf(spans, "●")?.equals(palette().statusRunning)).toBe(true)
+      expect(colorOf(spans, "○")?.equals(palette().statusQueued)).toBe(true)
+
+      // The clock moves the run that began, from the moment it began.
+      clock.advance(5_000)
+      await column(harness, 120, has("15s"), "five seconds on")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test("shows the time of a running run only, and follows the clock", async () => {
     const clock = clockTicker(NOW)
     const harness = await mountDrawer({ ticker: clock.ticker })

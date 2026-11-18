@@ -40,6 +40,7 @@ export function create(input: {
   return {
     ...input,
     phase: "queued",
+    runningAt: undefined,
     outcome: undefined,
     // A DAG node's owner delivers the attempt's one Stop notification, so the
     // child must never fire its own for the whole attempt, including the
@@ -192,11 +193,21 @@ export function detach(entry: ActiveChildRun): void {
   entry.detached = true
 }
 
-/** queued -> running. False when the run already ended. */
-export function begin(entry: ActiveChildRun): boolean {
+/** queued -> running, at `now`. False when the run already ended. */
+export function begin(entry: ActiveChildRun, now: number): boolean {
   if (entry.phase === "ended") return false
+  if (entry.phase === "queued") entry.runningAt = now
   entry.phase = "running"
   return true
+}
+
+/**
+ * Whether the run has not begun: it waits for its slot, or it ended (cancelled)
+ * without ever holding one. The job a run carries is `queued` for exactly this
+ * long (#1407).
+ */
+export function waiting(entry: ActiveChildRun): boolean {
+  return entry.phase === "queued" || (entry.phase === "ended" && entry.runningAt === undefined)
 }
 
 /**

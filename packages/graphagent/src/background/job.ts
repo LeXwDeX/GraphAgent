@@ -7,6 +7,7 @@ import { Lifecycle } from "@/lifecycle/service"
 import { SessionCancellation } from "@/session/cancellation"
 import { Cause, Effect, Layer, Option, Scope } from "effect"
 import { persistTransition } from "./persist"
+import { BackgroundQueue } from "./queue"
 
 export {
   Service,
@@ -31,6 +32,9 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make(() =>
       Effect.gen(function* () {
         const jobs = yield* CoreBackgroundJob.makeWith({
+          // A task job is queued while the child run it carries waits for a slot (#1407). Asked in the step that
+          // moves the job, so a transition says whether the job moved out of that wait.
+          waiting: (info) => BackgroundQueue.waiting(info),
           // Resolve durable observation services from the caller's context at
           // transition time. The registry is built inside layers that do not
           // see sibling AppLayer outputs, while tools and job fibers run with
@@ -52,10 +56,13 @@ export const layer = Layer.effect(
                 )
               const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
               if (!lifecycle) return
+              // The registry keeps a task job `running` while its child run waits for a slot; the lifecycle says
+              // `queued` for that wait (#1407). Persistence above keeps the registry's own status.
+              const lifecycleEdge = BackgroundQueue.edge(transition)
               yield* lifecycle.transition({
                 ref: { domain: "job", id: transition.id },
-                expect: transition.from,
-                to: transition.to,
+                expect: lifecycleEdge.from,
+                to: lifecycleEdge.to,
                 sessionID: transition.sessionID,
               })
             }),

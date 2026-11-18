@@ -45,8 +45,14 @@ const TABLE = {
     authority: "live",
   },
   job: {
-    values: ["running", "settling", "completed", "error", "cancelled"],
+    // `queued` is not a registry status: the registry keeps a task job `running`
+    // while the child run that carries it waits for its slot. The lifecycle
+    // contract tells the two apart from the run's own `queued`/`running` state
+    // (`child_run`), so a client never has to infer the queue (#1407). A job is
+    // never persisted as `queued`: `runtime_job` keeps the registry status.
+    values: ["queued", "running", "settling", "completed", "error", "cancelled"],
     phases: {
+      queued: "pending",
       running: "running",
       settling: "settling",
       completed: "succeeded",

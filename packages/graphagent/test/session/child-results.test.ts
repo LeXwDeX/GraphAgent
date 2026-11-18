@@ -197,6 +197,61 @@ describe("the ledger of a detached run", () => {
     }),
   )
 
+  // #1407: the result's `startedAt` is when the run was registered, queued; `runningAt` is when it began, after the wait.
+  it.effect("carries the moment the run began, so a reader can leave the wait for its slot out of the run's time", () =>
+    Effect.gen(function* () {
+      const { parent, delivery, scoped, newChild } = yield* setup("began")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* TestClock.adjust("40 millis")
+      yield* run.markRunning
+      yield* TestClock.adjust("25 millis")
+      yield* run.settle({ type: "completed" }, { title: "inspect bug", text: "done" })
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+      const result = textPartOf(delivery.admitted[0])?.metadata?.backgroundResult
+      expect(result).toMatchObject({ childSessionID: child, status: "completed" })
+      // The clock is the test's: the run was registered at 0, left the queue at 40 and ended at 65.
+      expect(result?.startedAt).toBe(0)
+      expect(result?.runningAt).toBe(40)
+      expect(result?.endedAt).toBe(65)
+    }),
+  )
+
+  it.effect("has no such moment for a result delivered from the row alone, as after a restart", () =>
+    Effect.gen(function* () {
+      const { parent, delivery, scoped, newChild } = yield* setup("restart")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* TestClock.adjust("40 millis")
+      yield* run.markRunning
+      yield* run.settle({ type: "completed" }, { title: "inspect bug", text: "done" })
+      // The process that saw the run end is gone: the ledger row is all that is left of it.
+      ChildRegistry.dropReport(run.id)
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+      const result = textPartOf(delivery.admitted[0])?.metadata?.backgroundResult
+      expect(result).toMatchObject({ childSessionID: child, status: "completed", startedAt: 0 })
+      expect(Object.hasOwn(result ?? {}, "runningAt")).toBe(false)
+    }),
+  )
+
+  it.effect("has no such moment for a run that never began: nothing waits for a result it never ran", () =>
+    Effect.gen(function* () {
+      const { db, scoped, newChild } = yield* setup("never")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* run.settle({ type: "error", message: "cancelled before it began" }, { title: "inspect bug", text: "x" })
+      // The row is what it always was; the time the run began is not written to it.
+      expect((yield* rowOf(db, run.id))?.outcome).toEqual({
+        type: "error",
+        message: "cancelled before it began",
+        report: { title: "inspect bug", text: "x" },
+      })
+      expect(ChildRegistry.reportOf(run.id)?.runningAt).toBeUndefined()
+    }),
+  )
+
   it.effect("tells the parent that a background task failed, with the error text, not as a completion", () =>
     Effect.gen(function* () {
       const { parent, delivery, scoped, newChild } = yield* setup("failed")

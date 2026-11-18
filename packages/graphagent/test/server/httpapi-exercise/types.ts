@@ -83,6 +83,11 @@ export type ScenarioContext = {
   prWatch: (input: PrWatchSeed) => Effect.Effect<void>
   /** Create a reminder through the reminder clock. */
   reminder: (sessionID: SessionID, text: string, fireAt: number) => Effect.Effect<{ id: string }>
+  /**
+   * Start a background task job carried by a child run of this process (#1407): `queued` for the lifecycle contract
+   * until `began`, which holds the run's slot. The job never ends on its own; disposing the instance ends it.
+   */
+  backgroundJob: (input: { id: SessionID; parentSessionID: SessionID; began?: boolean }) => Effect.Effect<void>
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>

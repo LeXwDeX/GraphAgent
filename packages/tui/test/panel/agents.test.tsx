@@ -1043,13 +1043,14 @@ function bgLink(
   }
 }
 
-const job = (id: string, value: string, reason?: string) => ({
+const job = (id: string, value: string, reason?: string, since?: number) => ({
   domain: "job" as const,
   id,
   value,
-  phase: "running" as const,
+  phase: value === "queued" ? ("pending" as const) : ("running" as const),
   reason,
   at: 1,
+  ...(since === undefined ? {} : { since }),
 })
 
 const REPORT: BackgroundResult = {
@@ -1078,18 +1079,37 @@ const REPORT_TEXT = [
  * lost. The list is the first two, then SCAN (still running in the foreground), then REVIEW, BUILD, the lost run and
  * the reported one, newest start first.
  */
-function withBackground(options: { reportLoaded?: boolean; lostError?: string } = {}) {
+function withBackground(
+  options: {
+    reportLoaded?: boolean
+    lostError?: string
+    /**
+     * The jobs as a server that reports the queue (#1407) says them: the run that runs got its slot at the given
+     * moment, the other one waits (`queued`), or began too (`began`) without its child having shown anything yet.
+     */
+    reported?: { runningAt: number; queue: "queued" | { began: number } }
+  } = {},
+) {
   return (ctx: AppPanelTestContext) => {
     threeStates(ctx)
     const sessions = backgroundTree()
     const byID = (id: string) => sessions.find((session) => session.id === id)!
+    const reported = options.reported
     ctx.sync.set("taskIndex", BG_RUN, bgLink("未提交改动", "review", at(40), { initiator: "user", command: "review" }))
     ctx.sync.set("summary", BG_RUN, { ...createSummary(byID(BG_RUN), { type: "busy" }), toolCalls: 12 })
-    ctx.sync.set("lifecycle", `job:${BG_RUN}`, job(BG_RUN, "running"))
+    ctx.sync.set("lifecycle", `job:${BG_RUN}`, job(BG_RUN, "running", undefined, reported?.runningAt))
 
     ctx.sync.set("taskIndex", BG_QUEUE, bgLink("清理过期依赖", "explore", at(60)))
     ctx.sync.set("summary", BG_QUEUE, createSummary(byID(BG_QUEUE), { type: "idle" }))
-    ctx.sync.set("lifecycle", `job:${BG_QUEUE}`, job(BG_QUEUE, "running"))
+    ctx.sync.set(
+      "lifecycle",
+      `job:${BG_QUEUE}`,
+      reported === undefined
+        ? job(BG_QUEUE, "running")
+        : reported.queue === "queued"
+          ? job(BG_QUEUE, "queued", undefined, at(60))
+          : job(BG_QUEUE, "running", undefined, reported.queue.began),
+    )
 
     ctx.sync.set("taskIndex", BG_DONE, bgLink("列出过期依赖", "explore", at(5), { result: REPORT }))
     ctx.sync.set("summary", BG_DONE, { ...createSummary(byID(BG_DONE), { type: "idle" }), toolCalls: 8 })
@@ -1223,6 +1243,40 @@ describe("background runs in the list", () => {
       expect(colorOf(spans, "✗")?.equals(palette().error)).toBe(true)
     } finally {
       await harness.dispose()
+    }
+  })
+
+  // #1407: the run that began is timed from the moment it got its slot, the one behind it waits, and a run the server
+  // says began is running even though its child has shown nothing yet.
+  test("shows the queue the server reports: the time of a run that began does not include its wait", async () => {
+    const waiting = await mount(
+      options({ height: 60, seed: withBackground({ reported: { runningAt: at(70), queue: "queued" } }) }),
+    )
+    try {
+      const frame = await waiting.frame()
+      // Started at 40 s, got its slot at 70 s, now 95 s: 25 s, not the 55 s the Task call would say.
+      expect(rowWith(frame, TITLE_BG_RUN)).toMatch(/● .*你发起 +运行中 · 工具 12 · 25s/)
+      expect(rowWith(frame, TITLE_BG_QUEUE)).toMatch(/○ .*主 agent {2}排队中 · 工具 — · —/)
+      expect(rowWith(frame, "子 agent")).toContain("1 个后台运行 · 1 个排队")
+    } finally {
+      await waiting.dispose()
+    }
+
+    const began = await mount(
+      options({
+        height: 60,
+        seed: withBackground({ reported: { runningAt: at(70), queue: { began: at(90) } } }),
+      }),
+    )
+    try {
+      const frame = await began.frame()
+      // Its child is idle and has called no tool: the inference says queued, the server says it runs, from 90 s.
+      expect(rowWith(frame, TITLE_BG_QUEUE)).toMatch(/● .*主 agent {2}运行中 · 工具 — · 5s/)
+      expect(rowWith(frame, TITLE_BG_RUN)).toMatch(/运行中 · 工具 12 · 25s/)
+      expect(rowWith(frame, "子 agent")).toContain("2 个后台运行")
+      expect(rowWith(frame, "子 agent")).not.toContain("排队")
+    } finally {
+      await began.dispose()
     }
   })
 

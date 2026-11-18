@@ -28,6 +28,13 @@ export interface LifecycleState<D extends Domain = Domain> {
   readonly settled: boolean
   readonly source: StateSource
   readonly observedAt: number
+  /**
+   * When the owner entered `value` (epoch milliseconds), for the owners that
+   * know it. A reader that sees it also learns that the owner reports the
+   * value precisely: the job domain sets it only on a server that tells
+   * `queued` from `running` (#1407).
+   */
+  readonly since?: number
 }
 
 export function ref<D extends Domain>(domain: D, id: string): StateRef<D> {
@@ -43,6 +50,7 @@ export function stateOf<D extends Domain>(input: {
   /** Only for turn values whose outcome decides settlement. */
   readonly settled?: boolean
   readonly observedAt?: number
+  readonly since?: number
 }): LifecycleState<D> {
   const phase = input.phase ?? phaseOf(input.ref.domain, input.value)
   if (phase === undefined) {
@@ -57,5 +65,6 @@ export function stateOf<D extends Domain>(input: {
     settled: input.settled ?? isSettledValue(input.ref.domain, input.value),
     source: input.source,
     observedAt: input.observedAt ?? Date.now(),
+    ...(input.since === undefined ? {} : { since: input.since }),
   }
 }
