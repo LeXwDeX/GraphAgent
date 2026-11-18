@@ -21,7 +21,7 @@ describe("Worktree.remove", () => {
         const project = yield* Project.Service
         const svc = yield* Worktree.Service
         const name = `remove-regression-${Date.now().toString(36)}`
-        const branch = `opencode/${name}`
+        const branch = `graphagent/${name}`
         const dir = path.join(root, "..", name)
 
         yield* Effect.promise(() => $`git worktree add --no-checkout -b ${branch} ${dir}`.cwd(root).quiet())
@@ -95,7 +95,7 @@ describe("Worktree.remove", () => {
         const root = (yield* TestInstance).directory
         const svc = yield* Worktree.Service
         const name = `remove-fsmonitor-${Date.now().toString(36)}`
-        const branch = `opencode/${name}`
+        const branch = `graphagent/${name}`
         const dir = path.join(root, "..", name)
 
         yield* Effect.promise(() => $`git worktree add --no-checkout -b ${branch} ${dir}`.cwd(root).quiet())
@@ -147,7 +147,7 @@ describe("Worktree.remove", () => {
 
         const stamp = Date.now().toString(36)
         const dirA = path.join(root, "..", `prunable-${stamp}`)
-        yield* Effect.promise(() => $`git worktree add -b opencode/prunable-${stamp} ${dirA}`.cwd(root).quiet())
+        yield* Effect.promise(() => $`git worktree add -b graphagent/prunable-${stamp} ${dirA}`.cwd(root).quiet())
         yield* project.addSandbox(current.project.id, dirA)
 
         // Break the gitdir link: git now reports the entry as prunable even
@@ -179,7 +179,7 @@ describe("Worktree.remove", () => {
 
         const stamp = Date.now().toString(36)
         const dirA = path.join(root, "..", `zombie-${stamp}`)
-        yield* Effect.promise(() => $`git worktree add -b opencode/zombie-${stamp} ${dirA}`.cwd(root).quiet())
+        yield* Effect.promise(() => $`git worktree add -b graphagent/zombie-${stamp} ${dirA}`.cwd(root).quiet())
         yield* project.addSandbox(current.project.id, dirA)
 
         // Lose the git admin data while the directory survives.

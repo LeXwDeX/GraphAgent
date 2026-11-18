@@ -40,7 +40,7 @@ import { testEffect } from "../lib/effect"
 // warning and search fails closed with "unavailable" (dev CI, deterministic).
 // Pin a private config dir per file so the global file can never be
 // contaminated by earlier files.
-const pinnedConfigDir = path.join(os.tmpdir(), `opencode-memory-global-identity-${process.pid}`)
+const pinnedConfigDir = path.join(os.tmpdir(), `graphagent-memory-global-identity-${process.pid}`)
 const previousConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 beforeAll(() => {
   fs.mkdirSync(pinnedConfigDir, { recursive: true })
@@ -156,7 +156,7 @@ function gitInitWithoutCommit(dir: string) {
     yield* git("init")
     yield* git("config", "core.fsmonitor", "false")
     yield* git("config", "commit.gpgsign", "false")
-    yield* git("config", "user.email", "test@opencode.test")
+    yield* git("config", "user.email", "test@graphagent.test")
     yield* git("config", "user.name", "Test")
   })
 }

@@ -18,16 +18,16 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { cliIt } from "../../lib/cli-process"
 
-describe("opencode read-only commands (smoke)", () => {
+describe("graphagent read-only commands (smoke)", () => {
   // `mcp list` reads MCP server config and pings each one. With the empty
   // GRAPHAGENT_CONFIG_CONTENT={} we provide, no servers should be configured
   // and the command should report that cleanly.
   cliIt.live(
     "mcp list: exits 0",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["mcp", "list"])
-        opencode.expectExit(r, 0, "mcp list")
+        const r = yield* graphagent.spawn(["mcp", "list"])
+        graphagent.expectExit(r, 0, "mcp list")
       }),
     60_000,
   )
@@ -40,10 +40,10 @@ describe("opencode read-only commands (smoke)", () => {
   // test passes on a clean CI runner without env-var leakage.
   cliIt.live(
     "providers list: exits 0 and prints the credentials section",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["providers", "list"])
-        opencode.expectExit(r, 0, "providers list")
+        const r = yield* graphagent.spawn(["providers", "list"])
+        graphagent.expectExit(r, 0, "providers list")
         expect(r.stdout).toContain("Credentials")
       }),
     60_000,
@@ -53,10 +53,10 @@ describe("opencode read-only commands (smoke)", () => {
   // should appear because it's wired into the test provider config.
   cliIt.live(
     "models: exits 0 and lists the test model",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["models"])
-        opencode.expectExit(r, 0, "models")
+        const r = yield* graphagent.spawn(["models"])
+        graphagent.expectExit(r, 0, "models")
         expect(r.stdout).toContain("test/test-model")
       }),
     60_000,
@@ -67,10 +67,10 @@ describe("opencode read-only commands (smoke)", () => {
   // similar. We don't pin the message — just exit cleanly.
   cliIt.live(
     "agent list: exits 0",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["agent", "list"])
-        opencode.expectExit(r, 0, "agent list")
+        const r = yield* graphagent.spawn(["agent", "list"])
+        graphagent.expectExit(r, 0, "agent list")
       }),
     60_000,
   )
@@ -79,10 +79,10 @@ describe("opencode read-only commands (smoke)", () => {
   // empty DB. Exit 0 with no sessions.
   cliIt.live(
     "session list: exits 0",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["session", "list"])
-        opencode.expectExit(r, 0, "session list")
+        const r = yield* graphagent.spawn(["session", "list"])
+        graphagent.expectExit(r, 0, "session list")
       }),
     60_000,
   )
@@ -90,10 +90,10 @@ describe("opencode read-only commands (smoke)", () => {
   // `stats` aggregates token usage from the session DB. Empty DB → all zeros.
   cliIt.live(
     "stats: exits 0",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["stats"])
-        opencode.expectExit(r, 0, "stats")
+        const r = yield* graphagent.spawn(["stats"])
+        graphagent.expectExit(r, 0, "stats")
       }),
     60_000,
   )
@@ -104,10 +104,10 @@ describe("opencode read-only commands (smoke)", () => {
   // Accept either form — both prove the resolver ran without crashing.
   cliIt.live(
     "db path: exits 0 and prints a path or :memory:",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
-        const r = yield* opencode.spawn(["db", "path"])
-        opencode.expectExit(r, 0, "db path")
+        const r = yield* graphagent.spawn(["db", "path"])
+        graphagent.expectExit(r, 0, "db path")
         expect(r.stdout.trim()).toMatch(/^(:memory:|[/\\].+\.(db|sqlite|sqlite3))$/i)
       }),
     60_000,

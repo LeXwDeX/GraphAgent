@@ -570,7 +570,7 @@ test.skipIf(process.platform === "win32")(
     await using workspace = await tmpdir()
     await rm(workspace.path, { recursive: true, force: true })
     await $`git worktree add --detach ${workspace.path} HEAD`.cwd(owner.path).quiet()
-    const link = path.join(path.dirname(workspace.path), `opencode-target-${Math.random().toString(36).slice(2)}`)
+    const link = path.join(path.dirname(workspace.path), `graphagent-target-${Math.random().toString(36).slice(2)}`)
     await symlink(workspace.path, link)
     try {
       await Effect.runPromise(

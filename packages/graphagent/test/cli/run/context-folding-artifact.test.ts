@@ -207,7 +207,7 @@ function writeEvidence(
 
 const runArm =
   (dynamic: boolean, withManualCompaction: boolean) =>
-  ({ home, llm, opencode, target: resolvedTarget }: CliFixture) =>
+  ({ home, llm, graphagent, target: resolvedTarget }: CliFixture) =>
     Effect.gen(function* () {
       yield* Effect.promise(() =>
         Promise.all(files.map((name, index) => Bun.write(path.join(home, name), `${contents[index]}\n`))),
@@ -219,7 +219,7 @@ const runArm =
         ),
       )
 
-      const server = yield* opencode.host({
+      const server = yield* graphagent.host({
         readyTimeoutMs: 30_000,
         env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(providerConfig(llm.url, dynamic)) },
       })

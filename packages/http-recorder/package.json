@@ -7,11 +7,11 @@
   "license": "Apache-2.0 AND MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/opencode.git",
+    "url": "git+https://github.com/LeXwDeX/GraphAgent.git",
     "directory": "packages/http-recorder"
   },
-  "homepage": "https://github.com/anomalyco/opencode/tree/dev/packages/http-recorder",
-  "bugs": "https://github.com/anomalyco/opencode/issues",
+  "homepage": "https://github.com/LeXwDeX/GraphAgent/tree/main/packages/http-recorder",
+  "bugs": "https://github.com/LeXwDeX/GraphAgent/issues",
   "keywords": [
     "effect",
     "http",

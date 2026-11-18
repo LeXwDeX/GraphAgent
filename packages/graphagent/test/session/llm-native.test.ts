@@ -313,7 +313,7 @@ describe("session.llm-native.request", () => {
         { preconnect: globalThis.fetch.preconnect },
       )
       const llmClient = yield* LLMClient.Service
-      const model: Provider.Model = { ...baseModel, headers: { ...baseModel.headers, "X-OPENCODE-TITLE": "true" } }
+      const model: Provider.Model = { ...baseModel, headers: { ...baseModel.headers, "X-GRAPHAGENT-TITLE": "true" } }
       const native = yield* LLMNativeRuntime.stream({
         model,
         provider: {
@@ -340,7 +340,7 @@ describe("session.llm-native.request", () => {
       expect(captures[0]?.get("x-provider")).toBe("provider-header")
       expect(captures[0]?.get("x-model")).toBe("model-header")
       expect(captures[0]?.get("x-session-affinity")).toBe("title-session")
-      expect(model.headers["X-OPENCODE-TITLE"]).toBe("true")
+      expect(model.headers["X-GRAPHAGENT-TITLE"]).toBe("true")
     }),
   )
 
@@ -350,7 +350,7 @@ describe("session.llm-native.request", () => {
       const model: Provider.Model = {
         ...baseModel,
         providerID: ProviderV2.ID.make("relay"),
-        headers: { ...baseModel.headers, "X-OPENCODE-TITLE": "true" },
+        headers: { ...baseModel.headers, "X-GRAPHAGENT-TITLE": "true" },
       }
       const native = yield* LLMNativeRuntime.stream({
         model,
@@ -393,7 +393,7 @@ describe("session.llm-native.request", () => {
       expect(captures[0]?.get("x-model")).toBe("model-header")
       expect(captures[0]?.get("x-session-affinity")).toBe("title-session")
       expect(captures[0]?.get("authorization")).toBe("Bearer test-openai-key")
-      expect(model.headers["X-OPENCODE-TITLE"]).toBe("true")
+      expect(model.headers["X-GRAPHAGENT-TITLE"]).toBe("true")
     }),
   )
 
@@ -677,7 +677,7 @@ describe("session.llm-native.request", () => {
     const compatible = LLMNative.model({
       model: {
         ...baseModel,
-        providerID: ProviderV2.ID.make("opencode"),
+        providerID: ProviderV2.ID.make("graphagent"),
         api: { ...baseModel.api, url: "https://ai.example.test/v1", npm: "@ai-sdk/openai-compatible" },
       },
       apiKey: "test-key",
@@ -711,8 +711,8 @@ describe("session.llm-native.request", () => {
     })
     expect(
       LLMNativeRuntime.status({
-        model: { ...baseModel, providerID: ProviderV2.ID.make("opencode") },
-        provider: { ...providerInfo, id: ProviderV2.ID.make("opencode") },
+        model: { ...baseModel, providerID: ProviderV2.ID.make("graphagent") },
+        provider: { ...providerInfo, id: ProviderV2.ID.make("graphagent") },
         auth: undefined,
       }),
     ).toMatchObject({
@@ -723,10 +723,10 @@ describe("session.llm-native.request", () => {
       LLMNativeRuntime.status({
         model: {
           ...baseModel,
-          providerID: ProviderV2.ID.make("opencode"),
+          providerID: ProviderV2.ID.make("graphagent"),
           api: { ...baseModel.api, npm: "@ai-sdk/openai-compatible" },
         },
-        provider: { ...providerInfo, id: ProviderV2.ID.make("opencode") },
+        provider: { ...providerInfo, id: ProviderV2.ID.make("graphagent") },
         auth: undefined,
       }),
     ).toMatchObject({
@@ -813,13 +813,13 @@ describe("session.llm-native.request", () => {
     ).toMatchObject({ type: "supported", apiKey: "test-anthropic-key" })
   })
 
-  test("prefers console provider api key over stored opencode auth", () => {
+  test("prefers console provider api key over stored graphagent auth", () => {
     expect(
       LLMNativeRuntime.status({
-        model: { ...baseModel, providerID: ProviderV2.ID.make("opencode") },
+        model: { ...baseModel, providerID: ProviderV2.ID.make("graphagent") },
         provider: {
           ...providerInfo,
-          id: ProviderV2.ID.make("opencode"),
+          id: ProviderV2.ID.make("graphagent"),
           options: { apiKey: "console-token" },
           key: "zen-token",
         },

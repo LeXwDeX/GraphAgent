@@ -66,20 +66,20 @@ describe("tui thread", () => {
     expect(args.fork).toBe(false)
   })
 
-  cliIt.live("rejects mini-only options without --mini", ({ opencode }) =>
+  cliIt.live("rejects mini-only options without --mini", ({ graphagent }) =>
     Effect.gen(function* () {
-      const result = yield* opencode.spawn(["--replay-limit", "10"])
+      const result = yield* graphagent.spawn(["--replay-limit", "10"])
 
-      opencode.expectExit(result, 1)
+      graphagent.expectExit(result, 1)
       expect(result.stderr).toContain("--replay-limit requires --mini")
     }),
   )
 
-  cliIt.live("rejects mini mode without a TTY stdout", ({ opencode }) =>
+  cliIt.live("rejects mini mode without a TTY stdout", ({ graphagent }) =>
     Effect.gen(function* () {
-      const result = yield* opencode.spawn(["--mini"])
+      const result = yield* graphagent.spawn(["--mini"])
 
-      opencode.expectExit(result, 1)
+      graphagent.expectExit(result, 1)
       expect(result.stderr).toContain("--mini requires a TTY stdout")
     }),
   )

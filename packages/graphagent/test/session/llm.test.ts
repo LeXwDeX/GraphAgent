@@ -1192,10 +1192,10 @@ const organizeOnce = (prompt: string, signal = new AbortController().signal, onR
 
 describe("session.llm.stream", () => {
   const vivgridFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
-  const graphagentFixture = { providerID: "opencode-test", modelID: vivgridFixture.modelID }
+  const graphagentFixture = { providerID: "graphagent-test", modelID: vivgridFixture.modelID }
 
   it.instance(
-    "sends the parent session header for opencode providers",
+    "sends the parent session header for graphagent providers",
     () =>
       Effect.gen(function* () {
         // Validates the fixture exists for this provider/model before the stream runs.
@@ -1251,7 +1251,7 @@ describe("session.llm.stream", () => {
           enabled_providers: [graphagentFixture.providerID],
           provider: {
             [graphagentFixture.providerID]: {
-              name: "OpenCode Test",
+              name: "GraphAgent Test",
               npm: "@ai-sdk/openai-compatible",
               models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
               options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
@@ -3268,7 +3268,7 @@ describe("session.llm.stream", () => {
 
 describe("session.llm model-stream permits", () => {
   const permitFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
-  const permitProvider = "opencode-test"
+  const permitProvider = "graphagent-test"
 
   // #1021 acceptance: with the global pool at one, a tool that is still
   // running must not keep the model-stream permit. The AI SDK executes local
@@ -3382,7 +3382,7 @@ describe("session.llm model-stream permits", () => {
           enabled_providers: [permitProvider],
           provider: {
             [permitProvider]: {
-              name: "OpenCode Test",
+              name: "GraphAgent Test",
               npm: "@ai-sdk/openai-compatible",
               models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
               options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
@@ -3396,7 +3396,7 @@ describe("session.llm model-stream permits", () => {
 
 describe("session.llm scheduling lane (issue #1021)", () => {
   const laneFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
-  const laneProvider = "opencode-test"
+  const laneProvider = "graphagent-test"
 
   const recordingScheduler = () => {
     const requests: AgentScheduler.RequestInput[] = []
@@ -3516,7 +3516,7 @@ describe("session.llm scheduling lane (issue #1021)", () => {
           enabled_providers: [laneProvider],
           provider: {
             [laneProvider]: {
-              name: "OpenCode Test",
+              name: "GraphAgent Test",
               npm: "@ai-sdk/openai-compatible",
               // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixture model config mirrors the other live provider blocks in this file
               models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },

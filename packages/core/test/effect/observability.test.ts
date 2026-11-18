@@ -53,7 +53,7 @@ describe("resource", () => {
 })
 
 test("file logger appends concurrent runs with a run on every line", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-log-test-"))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-log-test-"))
   await using _ = {
     async [Symbol.asyncDispose]() {
       await fs.rm(dir, { recursive: true, force: true })
@@ -81,7 +81,7 @@ test("file logger appends concurrent runs with a run on every line", async () =>
 })
 
 test("file logger flattens nested objects", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-log-test-"))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-log-test-"))
   await using _ = {
     async [Symbol.asyncDispose]() {
       await fs.rm(dir, { recursive: true, force: true })

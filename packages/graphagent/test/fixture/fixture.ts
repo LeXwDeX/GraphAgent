@@ -17,6 +17,8 @@ import { InstanceRuntime } from "../../src/project/instance-runtime"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestLLMServer } from "../lib/llm-server"
 
+const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"
+
 const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
 export const testInstanceStoreLayer = InstanceStore.defaultLayer.pipe(Layer.provide(noopBootstrap))
 
@@ -81,13 +83,13 @@ type TmpDirOptions<T> = {
   dispose?: (dir: string) => Promise<T>
 }
 export async function tmpdir<T>(options?: TmpDirOptions<T>) {
-  const dirpath = sanitizePath(path.join(os.tmpdir(), "opencode-test-" + Math.random().toString(36).slice(2)))
+  const dirpath = sanitizePath(path.join(os.tmpdir(), "graphagent-test-" + Math.random().toString(36).slice(2)))
   await fs.mkdir(dirpath, { recursive: true })
   if (options?.git) {
     await $`git init`.cwd(dirpath).quiet()
     await $`git config core.fsmonitor false`.cwd(dirpath).quiet()
     await $`git config commit.gpgsign false`.cwd(dirpath).quiet()
-    await $`git config user.email "test@opencode.test"`.cwd(dirpath).quiet()
+    await $`git config user.email "test@graphagent.test"`.cwd(dirpath).quiet()
     await $`git config user.name "Test"`.cwd(dirpath).quiet()
     await $`git commit --allow-empty -m "root commit ${dirpath}"`.cwd(dirpath).quiet()
   }
@@ -95,7 +97,7 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
     await Bun.write(
       path.join(dirpath, ".agents", "settings.json"),
       JSON.stringify({
-        $schema: "https://opencode.ai/config.json",
+        $schema: CONFIG_SCHEMA_URL,
         ...options.config,
       }),
     )
@@ -129,7 +131,7 @@ export function tmpdirScoped<E = never, R = never>(options?: {
 }) {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const dirpath = sanitizePath(path.join(os.tmpdir(), "opencode-test-" + Math.random().toString(36).slice(2)))
+    const dirpath = sanitizePath(path.join(os.tmpdir(), "graphagent-test-" + Math.random().toString(36).slice(2)))
     yield* Effect.promise(() => fs.mkdir(dirpath, { recursive: true }))
     const dir = sanitizePath(yield* Effect.promise(() => fs.realpath(dirpath)))
 
@@ -147,7 +149,7 @@ export function tmpdirScoped<E = never, R = never>(options?: {
       yield* git("init")
       yield* git("config", "core.fsmonitor", "false")
       yield* git("config", "commit.gpgsign", "false")
-      yield* git("config", "user.email", "test@opencode.test")
+      yield* git("config", "user.email", "test@graphagent.test")
       yield* git("config", "user.name", "Test")
       yield* git("commit", "--allow-empty", "-m", `root commit ${dir}`)
     }
@@ -157,7 +159,7 @@ export function tmpdirScoped<E = never, R = never>(options?: {
       yield* Effect.promise(async () => {
         const target = path.join(dir, ".agents", "settings.json")
         await fs.mkdir(path.dirname(target), { recursive: true })
-        await fs.writeFile(target, JSON.stringify({ $schema: "https://opencode.ai/config.json", ...resolved }))
+        await fs.writeFile(target, JSON.stringify({ $schema: CONFIG_SCHEMA_URL, ...resolved }))
       })
     }
 

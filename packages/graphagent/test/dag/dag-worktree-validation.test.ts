@@ -42,7 +42,7 @@ async function gitRepoWithLinkedWorktree() {
   const tmp = await tmpdir({
     git: true,
     init: async (directory) => {
-      linked = path.join(os.tmpdir(), `opencode-worktree-${Math.random().toString(36).slice(2)}`)
+      linked = path.join(os.tmpdir(), `graphagent-worktree-${Math.random().toString(36).slice(2)}`)
       await $`git worktree add --detach ${linked} HEAD`.cwd(directory).quiet()
       // macOS temp paths resolve through /private; match git's canonical form.
       linked = await fs.realpath(linked)

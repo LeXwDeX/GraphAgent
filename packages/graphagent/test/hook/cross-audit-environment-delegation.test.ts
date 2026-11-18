@@ -11,7 +11,7 @@ import { decodeRecord, decodeRecords, decodeSession } from "../lib/hook-json"
 // Task and DAG runtimes feed their own child session; that is delegation, not a user submission. A client that submits
 // to the same child session over HTTP is refused (#1026): a child session takes input only from its parent agent.
 const fixture = (name: string, subagentStopOnce: boolean) =>
-  cliIt.live(name, ({ home, llm, opencode }) =>
+  cliIt.live(name, ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "ups-audit.jsonl")
       const marker = path.join(home, "stop-once")
@@ -40,7 +40,7 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
       yield* llm.text("CHILD_FIRST")
       if (subagentStopOnce) yield* llm.text("CHILD_AFTER_CONTINUE")
       yield* llm.text("PARENT_DONE")
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -120,7 +120,7 @@ it("a persisted hook followup keeps the optional delegation flag and old records
 })
 
 // UserPromptSubmit carries session_title only for a title a user or hook chose, never for a generated one.
-cliIt.live("UserPromptSubmit session_title appears only for a real custom title", ({ home, llm, opencode }) =>
+cliIt.live("UserPromptSubmit session_title appears only for a real custom title", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const audit = path.join(home, "title-audit.jsonl")
     const script = path.join(home, "title-hook.ts")
@@ -138,7 +138,7 @@ cliIt.live("UserPromptSubmit session_title appears only for a real custom title"
     })
     yield* llm.text("TITLED_DONE")
     yield* llm.text("UNTITLED_DONE")
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

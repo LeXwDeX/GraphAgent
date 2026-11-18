@@ -8,7 +8,7 @@ import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 import { pollWithTimeout } from "../lib/effect"
 
-cliIt.live("direct shell validates replacement, asks permission, and uses replaced output", ({ home, opencode }) =>
+cliIt.live("direct shell validates replacement, asks permission, and uses replaced output", ({ home, graphagent }) =>
   Effect.gen(function* () {
     const original = path.join(home, "original")
     const replacement = path.join(home, "replacement")
@@ -25,7 +25,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
         JSON.stringify({ PreToolUse: hooks, PermissionRequest: hooks, PostToolUse: hooks }),
       )
     })
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -66,7 +66,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
   }),
 )
 
-cliIt.live("direct shell respects configured deny and emits no failure events", ({ home, opencode }) =>
+cliIt.live("direct shell respects configured deny and emits no failure events", ({ home, graphagent }) =>
   Effect.gen(function* () {
     const target = path.join(home, "forbidden")
     const audit = path.join(home, "unexpected-events")
@@ -88,7 +88,7 @@ cliIt.live("direct shell respects configured deny and emits no failure events", 
         }),
       ),
     )
-    const server = yield* opencode.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "deny" }) } })
+    const server = yield* graphagent.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "deny" }) } })
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -112,7 +112,7 @@ cliIt.live("direct shell respects configured deny and emits no failure events", 
   }),
 )
 
-cliIt.live("direct shell reports a real spawn failure through PostToolUseFailure", ({ home, opencode }) =>
+cliIt.live("direct shell reports a real spawn failure through PostToolUseFailure", ({ home, graphagent }) =>
   Effect.gen(function* () {
     const shell = path.join(home, "fixture-shell")
     const audit = path.join(home, "failure-events")
@@ -130,7 +130,7 @@ cliIt.live("direct shell reports a real spawn failure through PostToolUseFailure
         JSON.stringify({ PreToolUse: hooks, PostToolUse: hooks, PostToolUseFailure: hooks }),
       )
     })
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

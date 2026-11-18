@@ -141,110 +141,112 @@ it.instance(
 import { $ } from "bun"
 import { cliIt } from "../lib/cli-process"
 import { pollWithTimeout } from "../lib/effect"
-cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old directory disposal", ({ home, opencode }) =>
-  Effect.gen(function* () {
-    const destination = path.join(home, "moved")
-    const watched = path.join(destination, "external.txt")
-    const audit = path.join(home, "move-http-audit.jsonl")
-    const script = path.join(home, "move-http-hook.ts")
-    yield* Effect.promise(async () => {
-      await $`git init`.cwd(home).quiet()
-      await $`git config commit.gpgsign false`.cwd(home).quiet()
-      await $`git -c user.name=Test -c user.email=test@example.test commit --allow-empty -m fixture`.cwd(home).quiet()
-      await fs.mkdir(destination)
-      await fs.writeFile(
-        script,
-        `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,session:i.session_id,cwd:i.cwd,path:i.file_path,old:i.old_cwd,new:i.new_cwd,old_env:process.env.HOOK_OLD_DIRECTORY_VALUE,readable:await Bun.file(i.transcript_path).exists()})+'\\n');if(i.hook_event_name==='SessionStart')await fs.appendFile(process.env.CLAUDE_ENV_FILE,'export HOOK_OLD_DIRECTORY_VALUE=old-directory\\n');if(i.hook_event_name==='CwdChanged')await fs.appendFile(process.env.CLAUDE_ENV_FILE,'export HOOK_NEW_DIRECTORY_VALUE=new-directory\\n');if(i.hook_event_name==='CwdChanged')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'CwdChanged',watchPaths:[${JSON.stringify(watched)}]}}));if(i.hook_event_name==='ConfigChange')process.stdout.write(JSON.stringify({decision:'block',reason:'moved config guard'}));`,
-      )
-      const hook = { type: "command", command: process.execPath, args: [script] }
-      await fs.writeFile(
-        path.join(home, ".config/graphagent/hooks.json"),
-        JSON.stringify({
-          SessionStart: [{ matcher: "startup", hooks: [hook] }],
-          CwdChanged: [{ hooks: [hook] }],
-          FileChanged: [{ hooks: [hook] }],
-          ConfigChange: [{ hooks: [hook] }],
+cliIt.live(
+  "real HTTP move migrates dynamic FileChanged ownership past old directory disposal",
+  ({ home, graphagent }) =>
+    Effect.gen(function* () {
+      const destination = path.join(home, "moved")
+      const watched = path.join(destination, "external.txt")
+      const audit = path.join(home, "move-http-audit.jsonl")
+      const script = path.join(home, "move-http-hook.ts")
+      yield* Effect.promise(async () => {
+        await $`git init`.cwd(home).quiet()
+        await $`git config commit.gpgsign false`.cwd(home).quiet()
+        await $`git -c user.name=Test -c user.email=test@example.test commit --allow-empty -m fixture`.cwd(home).quiet()
+        await fs.mkdir(destination)
+        await fs.writeFile(
+          script,
+          `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,session:i.session_id,cwd:i.cwd,path:i.file_path,old:i.old_cwd,new:i.new_cwd,old_env:process.env.HOOK_OLD_DIRECTORY_VALUE,readable:await Bun.file(i.transcript_path).exists()})+'\\n');if(i.hook_event_name==='SessionStart')await fs.appendFile(process.env.CLAUDE_ENV_FILE,'export HOOK_OLD_DIRECTORY_VALUE=old-directory\\n');if(i.hook_event_name==='CwdChanged')await fs.appendFile(process.env.CLAUDE_ENV_FILE,'export HOOK_NEW_DIRECTORY_VALUE=new-directory\\n');if(i.hook_event_name==='CwdChanged')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'CwdChanged',watchPaths:[${JSON.stringify(watched)}]}}));if(i.hook_event_name==='ConfigChange')process.stdout.write(JSON.stringify({decision:'block',reason:'moved config guard'}));`,
+        )
+        const hook = { type: "command", command: process.execPath, args: [script] }
+        await fs.writeFile(
+          path.join(home, ".config/graphagent/hooks.json"),
+          JSON.stringify({
+            SessionStart: [{ matcher: "startup", hooks: [hook] }],
+            CwdChanged: [{ hooks: [hook] }],
+            FileChanged: [{ hooks: [hook] }],
+            ConfigChange: [{ hooks: [hook] }],
+          }),
+        )
+      })
+      const server = yield* graphagent.host()
+      const headers = { "content-type": "application/json", "x-graphagent-directory": home }
+      const session = yield* Effect.promise(async () => {
+        const response = await fetch(server.url + "/session", { method: "POST", headers, body: "{}" })
+        expect(response.status).toBe(200)
+        return response.json()
+      })
+      yield* Effect.promise(async () => {
+        const response = await fetch(server.url + "/experimental/control-plane/move-session", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ sessionID: session.id, destination: { directory: destination } }),
+        })
+        expect(response.status).toBe(204)
+        const movedAudit = (await fs.readFile(audit, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+        expect(movedAudit.map((row) => row.event)).toEqual(["SessionStart", "CwdChanged"])
+        expect(movedAudit.at(-1).old_env).toBe("old-directory")
+        const disposed = await fetch(server.url + "/instance/dispose", { method: "POST", headers })
+        expect(disposed.status).toBe(200)
+        await fs.writeFile(watched, "external write after old scope disposal")
+      })
+      const rows = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const text = await fs.readFile(audit, "utf8").catch(() => "")
+          const rows = text.trim()
+            ? text
+                .trim()
+                .split("\n")
+                .map((line) => JSON.parse(line))
+            : []
+          return rows.some((row) => row.event === "FileChanged") ? rows : undefined
         }),
+        "moved session watcher did not survive old scope disposal",
+        "10 seconds",
       )
-    })
-    const server = yield* opencode.host()
-    const headers = { "content-type": "application/json", "x-graphagent-directory": home }
-    const session = yield* Effect.promise(async () => {
-      const response = await fetch(server.url + "/session", { method: "POST", headers, body: "{}" })
-      expect(response.status).toBe(200)
-      return response.json()
-    })
-    yield* Effect.promise(async () => {
-      const response = await fetch(server.url + "/experimental/control-plane/move-session", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ sessionID: session.id, destination: { directory: destination } }),
+      yield* Effect.promise(async () => {
+        const response = await fetch(server.url + `/session/${session.id}/shell`, {
+          method: "POST",
+          headers: { ...headers, "x-graphagent-directory": destination },
+          body: JSON.stringify({
+            agent: "build",
+            command: 'printf "%s|%s" "${HOOK_OLD_DIRECTORY_VALUE-unset}" "${HOOK_NEW_DIRECTORY_VALUE-unset}"',
+          }),
+        })
+        expect(response.status).toBe(200)
+        expect(await response.text()).toContain("old-directory|new-directory")
       })
-      expect(response.status).toBe(204)
-      const movedAudit = (await fs.readFile(audit, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line))
-      expect(movedAudit.map((row) => row.event)).toEqual(["SessionStart", "CwdChanged"])
-      expect(movedAudit.at(-1).old_env).toBe("old-directory")
-      const disposed = await fetch(server.url + "/instance/dispose", { method: "POST", headers })
-      expect(disposed.status).toBe(200)
-      await fs.writeFile(watched, "external write after old scope disposal")
-    })
-    const rows = yield* pollWithTimeout(
-      Effect.promise(async () => {
-        const text = await fs.readFile(audit, "utf8").catch(() => "")
-        const rows = text.trim()
-          ? text
-              .trim()
-              .split("\n")
-              .map((line) => JSON.parse(line))
-          : []
-        return rows.some((row) => row.event === "FileChanged") ? rows : undefined
-      }),
-      "moved session watcher did not survive old scope disposal",
-      "10 seconds",
-    )
-    yield* Effect.promise(async () => {
-      const response = await fetch(server.url + `/session/${session.id}/shell`, {
-        method: "POST",
-        headers: { ...headers, "x-graphagent-directory": destination },
-        body: JSON.stringify({
-          agent: "build",
-          command: 'printf "%s|%s" "${HOOK_OLD_DIRECTORY_VALUE-unset}" "${HOOK_NEW_DIRECTORY_VALUE-unset}"',
+      yield* Effect.promise(async () => {
+        const response = await fetch(server.url + "/config", {
+          method: "PATCH",
+          headers: { ...headers, "x-graphagent-directory": destination },
+          body: JSON.stringify({ username: "must remain blocked after move" }),
+        })
+        expect(response.status).toBe(400)
+        const records = (await fs.readFile(audit, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+        expect(records.filter((row) => row.event === "ConfigChange")).toEqual([
+          expect.objectContaining({ session: session.id, readable: true }),
+        ])
+      })
+      const canonicalHome = yield* Effect.promise(() => fs.realpath(home))
+      const canonicalDestination = yield* Effect.promise(() => fs.realpath(destination))
+      expect(rows.filter((row) => row.event === "CwdChanged")).toEqual([
+        expect.objectContaining({
+          session: session.id,
+          cwd: canonicalDestination,
+          old: canonicalHome,
+          new: destination,
+          readable: true,
         }),
-      })
-      expect(response.status).toBe(200)
-      expect(await response.text()).toContain("old-directory|new-directory")
-    })
-    yield* Effect.promise(async () => {
-      const response = await fetch(server.url + "/config", {
-        method: "PATCH",
-        headers: { ...headers, "x-graphagent-directory": destination },
-        body: JSON.stringify({ username: "must remain blocked after move" }),
-      })
-      expect(response.status).toBe(400)
-      const records = (await fs.readFile(audit, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line))
-      expect(records.filter((row) => row.event === "ConfigChange")).toEqual([
-        expect.objectContaining({ session: session.id, readable: true }),
       ])
-    })
-    const canonicalHome = yield* Effect.promise(() => fs.realpath(home))
-    const canonicalDestination = yield* Effect.promise(() => fs.realpath(destination))
-    expect(rows.filter((row) => row.event === "CwdChanged")).toEqual([
-      expect.objectContaining({
-        session: session.id,
-        cwd: canonicalDestination,
-        old: canonicalHome,
-        new: destination,
-        readable: true,
-      }),
-    ])
-    expect(rows.filter((row) => row.event === "FileChanged")).toEqual([
-      expect.objectContaining({ session: session.id, cwd: canonicalDestination, path: watched, readable: true }),
-    ])
-  }),
+      expect(rows.filter((row) => row.event === "FileChanged")).toEqual([
+        expect.objectContaining({ session: session.id, cwd: canonicalDestination, path: watched, readable: true }),
+      ])
+    }),
 )

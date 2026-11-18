@@ -620,7 +620,7 @@ export const layer: Layer.Layer<
     // AppLayer — Goal.defaultLayer and Session.defaultLayer are
     // Layer.mergeAll siblings (effect/app-runtime.ts) and mergeAll does not
     // cross-provide, so Session's layer context never contained Goal and
-    // `opencode session delete` silently skipped the cleanup. The cleanup is
+    // `graphagent session delete` silently skipped the cleanup. The cleanup is
     // NOT optional (delete integrity), so these are now hard layer
     // requirements: typecheck enforces that every composition of Session's
     // layer provides them (defaultLayer self-provides all three below; the

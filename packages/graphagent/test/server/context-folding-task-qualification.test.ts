@@ -185,7 +185,7 @@ async function drain(stream: ReadableStream<Uint8Array>, chunks: string[], onTex
 function startHost(home: string, config: Partial<ConfigV1.Info>, arm: Arm) {
   return Effect.acquireRelease(
     Effect.promise(async () => {
-      // `opencode serve` was removed with the remote server surface; the
+      // `graphagent serve` was removed with the remote server surface; the
       // maintained source host entrypoint starts the same HttpApi app.
       const child = Bun.spawn(
         [process.execPath, "run", "--conditions=browser", path.join(import.meta.dir, "../lib/server-host.ts")],

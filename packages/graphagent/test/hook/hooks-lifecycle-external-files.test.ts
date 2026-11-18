@@ -9,7 +9,7 @@ import { cliIt } from "../lib/cli-process"
 import { pollWithTimeout } from "../lib/effect"
 cliIt.live(
   "SessionStart watchPaths route an external filesystem write to its real owning session",
-  ({ home, opencode }) =>
+  ({ home, graphagent }) =>
     Effect.gen(function* () {
       const script = path.join(home, "watch-hook.ts")
       const audit = path.join(home, "watch-audit.jsonl")
@@ -28,7 +28,7 @@ cliIt.live(
           JSON.stringify({ SessionStart: [{ hooks: [entry] }], FileChanged: [{ hooks: [entry] }] }),
         )
       })
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const create = Effect.promise(async () => {
         const response = await fetch(server.url + "/session", {
           method: "POST",

@@ -1,7 +1,7 @@
 import type { GlobalEvent } from "@graphagent/sdk"
 import type { EventSource } from "../../src/context/sdk"
 
-export const worktree = "/tmp/opencode"
+export const worktree = "/tmp/graphagent"
 export const directory = `${worktree}/packages/tui`
 
 export function json(data: unknown, init?: ResponseInit) {

@@ -19,16 +19,16 @@ const config = (language: string) => JSON.stringify({ language })
 describe("CLI help language", () => {
   cliIt.live(
     "language zh-CN prints Chinese help even under an English locale",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
         const env = { COLUMNS: "120", LC_ALL: "en_US.UTF-8", GRAPHAGENT_CONFIG_CONTENT: config("zh-CN") }
-        const root = yield* opencode.spawn(["--help"], { env })
+        const root = yield* graphagent.spawn(["--help"], { env })
         expect(root.exitCode).toBe(0)
         expect(root.stderr).toContain("选项：")
         expect(root.stderr).toContain("显示帮助")
         expect(root.stderr).not.toContain("show help")
 
-        const uninstall = yield* opencode.spawn(["uninstall", "--help"], { env })
+        const uninstall = yield* graphagent.spawn(["uninstall", "--help"], { env })
         expect(uninstall.exitCode).toBe(0)
         expect(uninstall.stderr).toContain("卸载 graphagent 并删除所有相关文件")
         expect(uninstall.stderr).not.toContain("uninstall graphagent and remove all related files")
@@ -38,16 +38,16 @@ describe("CLI help language", () => {
 
   cliIt.live(
     "language en prints English help even under a Chinese locale",
-    ({ opencode }) =>
+    ({ graphagent }) =>
       Effect.gen(function* () {
         const env = { COLUMNS: "120", LC_ALL: "zh_CN.UTF-8", GRAPHAGENT_CONFIG_CONTENT: config("en") }
-        const root = yield* opencode.spawn(["--help"], { env })
+        const root = yield* graphagent.spawn(["--help"], { env })
         expect(root.exitCode).toBe(0)
         expect(root.stderr).toContain("Options:")
         expect(root.stderr).toContain("show help")
         expect(root.stderr).not.toContain("显示帮助")
 
-        const uninstall = yield* opencode.spawn(["uninstall", "--help"], { env })
+        const uninstall = yield* graphagent.spawn(["uninstall", "--help"], { env })
         expect(uninstall.exitCode).toBe(0)
         expect(uninstall.stderr).toContain("uninstall graphagent and remove all related files")
       }),

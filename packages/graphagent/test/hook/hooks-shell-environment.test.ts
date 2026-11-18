@@ -8,7 +8,7 @@ import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 import { pollWithTimeout } from "../lib/effect"
 
-cliIt.live(`SessionStart exports reach V1 model Bash and command hooks`, ({ home, llm, opencode }) =>
+cliIt.live(`SessionStart exports reach V1 model Bash and command hooks`, ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const hook = path.join(home, "environment-hook.ts"),
       output = path.join(home, "bash-output"),
@@ -55,7 +55,7 @@ cliIt.live(`SessionStart exports reach V1 model Bash and command hooks`, ({ home
       command: `printf '%s:%s' "$HOOK_SESSION_VALUE" "\${HOME-unset}" > '${output}'`,
     })
     yield* llm.text("DONE")
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

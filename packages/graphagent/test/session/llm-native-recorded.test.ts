@@ -127,7 +127,7 @@ const RECORDED_SCENARIOS = [
     modelID: "gpt-4.1-mini",
     cassette: "session/native-openai-tool-loop",
     protocol: "openai-responses",
-    tags: ["opencode", "native", "tool-loop"],
+    tags: ["graphagent", "native", "tool-loop"],
     canRecord: () => Boolean(envValue("GRAPHAGENT_RECORD_OPENAI_API_KEY", "OPENAI_API_KEY")),
     config: (model) =>
       providerConfig({
@@ -150,7 +150,7 @@ const RECORDED_SCENARIOS = [
     modelID: "gpt-5.5",
     cassette: "session/native-openai-oauth-tool-loop",
     protocol: "openai-responses",
-    tags: ["opencode", "native", "oauth", "tool-loop"],
+    tags: ["graphagent", "native", "oauth", "tool-loop"],
     canRecord: () => recordOpenAIOAuth() !== undefined,
     recordAuth: recordOpenAIOAuth,
     replayAuth: replayOpenAIOAuth,
@@ -173,7 +173,7 @@ const RECORDED_SCENARIOS = [
     modelID: "claude-haiku-4-5-20251001",
     cassette: "session/native-anthropic-tool-loop",
     protocol: "anthropic-messages",
-    tags: ["opencode", "native", "tool-loop"],
+    tags: ["graphagent", "native", "tool-loop"],
     canRecord: () => Boolean(envValue("GRAPHAGENT_RECORD_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")),
     config: (model) =>
       providerConfig({
@@ -265,7 +265,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
   )
-  // Only the HTTP client is recorded; RequestExecutor and the opencode LLM stack remain real.
+  // Only the HTTP client is recorded; RequestExecutor and the graphagent LLM stack remain real.
   const metadata = {
     provider: scenario.providerID,
     protocol: scenario.protocol,
@@ -305,7 +305,10 @@ const writeConfig = (directory: string, scenario: RecordedScenario, model: Model
   Effect.promise(() =>
     Bun.write(
       path.join(directory, ".agents", "settings.json"),
-      JSON.stringify({ $schema: "https://opencode.ai/config.json", ...scenario.config(model) }),
+      JSON.stringify({
+        $schema: "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json",
+        ...scenario.config(model),
+      }),
     ),
   )
 

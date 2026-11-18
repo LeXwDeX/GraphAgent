@@ -85,14 +85,14 @@ const reminderParts = (messages: unknown): ReadonlyArray<{ text: string; metadat
 describe("/remind through the run CLI (#1072)", () => {
   cliIt.live(
     "creates a durable reminder, prints its receipt, and lists only its own session's reminders",
-    ({ llm, home, opencode }) =>
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.text("unused")
         const file = path.join(home, "remind.db")
         const env = { PWD: home, GRAPHAGENT_DB: file }
         const before = Date.now()
 
-        const created = yield* opencode.run("", {
+        const created = yield* graphagent.run("", {
           command: "remind",
           extraArgs: words("30m check the L5 smoke test"),
           env,
@@ -116,7 +116,7 @@ describe("/remind through the run CLI (#1072)", () => {
         expect(rows[0].fire_at).toBeLessThanOrEqual(Date.now() + 30 * 60_000)
 
         // A second run is a new session: it does not see the first session's reminder.
-        const listed = yield* opencode.run("", { command: "remind", extraArgs: ["list"], env, timeoutMs: 30_000 })
+        const listed = yield* graphagent.run("", { command: "remind", extraArgs: ["list"], env, timeoutMs: 30_000 })
         expect(listed.exitCode, listed.stderr).toBe(0)
         expect(listed.stdout).toContain("本会话没有待触发的提醒。")
         expect(rowsOf(file)).toHaveLength(1)
@@ -128,11 +128,11 @@ describe("/remind through the run CLI (#1072)", () => {
 
   cliIt.live(
     "explains an unreadable time and writes nothing",
-    ({ llm, home, opencode }) =>
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.text("unused")
         const file = path.join(home, "remind-error.db")
-        const result = yield* opencode.run("", {
+        const result = yield* graphagent.run("", {
           command: "remind",
           extraArgs: words("someday check"),
           env: { PWD: home, GRAPHAGENT_DB: file },
@@ -150,7 +150,7 @@ describe("/remind through the run CLI (#1072)", () => {
   // once. Every start after that finds it delivered.
   cliIt.live(
     "delivers a reminder that came due while the server was down once on the next start, marked late",
-    ({ llm, home, opencode }) =>
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         const file = path.join(home, "remind-restart.db")
         const env = { GRAPHAGENT_DB: file }
@@ -160,7 +160,7 @@ describe("/remind through the run CLI (#1072)", () => {
         // Process one: the user sets a reminder in a session, then the process ends.
         const sessionID = yield* Effect.scoped(
           Effect.gen(function* () {
-            const server = yield* opencode.host({ env })
+            const server = yield* graphagent.host({ env })
             const created = yield* client.post(`${server.url}/session`, { body: HttpBody.jsonUnsafe({}), headers })
             const session = Schema.decodeUnknownSync(SessionRef)(yield* created.json)
             const res = yield* client.post(`${server.url}/session/${session.id}/command`, {
@@ -189,7 +189,7 @@ describe("/remind through the run CLI (#1072)", () => {
           client.get(`${url}/session/${sessionID}/message`, { headers }).pipe(Effect.flatMap((res) => res.json))
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const second = yield* opencode.host({ env })
+            const second = yield* graphagent.host({ env })
             yield* client.get(`${second.url}/session/${sessionID}`, { headers })
             yield* pollWithTimeout(
               statusOf(file, sessionID).pipe(Effect.map((status) => (status === "delivered" ? status : undefined))),
@@ -207,7 +207,7 @@ describe("/remind through the run CLI (#1072)", () => {
         // Process three: nothing is owed any more, so nothing is delivered again.
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const third = yield* opencode.host({ env })
+            const third = yield* graphagent.host({ env })
             yield* client.get(`${third.url}/session/${sessionID}`, { headers })
             yield* Effect.sleep("3 seconds")
             expect(reminderParts(yield* messagesOf(third.url))).toHaveLength(1)

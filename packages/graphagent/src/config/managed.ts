@@ -6,7 +6,7 @@ import path from "path"
 import { Process } from "@/util/process"
 import { APP_NAME, MANAGED_PLIST_DOMAIN } from "@graphagent/core/brand"
 
-// Keys injected by macOS/MDM into the managed plist that are not OpenCode config
+// Keys injected by macOS/MDM into the managed plist that are not GraphAgent config
 const PLIST_META = new Set([
   "PayloadDisplayName",
   "PayloadIdentifier",

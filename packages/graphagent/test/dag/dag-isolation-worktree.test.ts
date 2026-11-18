@@ -265,7 +265,7 @@ function makeHarness(
         git(target, ["worktree", "add", "--detach", directory, "HEAD"])
         harness.worktrees.push(directory)
         const name = input?.name ?? "wt"
-        return { name, branch: `opencode/${name}`, directory }
+        return { name, branch: `graphagent/${name}`, directory }
       }),
     remove: (input: { directory: string }) =>
       Effect.gen(function* () {
@@ -584,7 +584,7 @@ describe("spawn worktree isolation", () => {
     expect(harness.failed[0]?.reason).toContain("session create failed")
     expect(harness.failed[0]?.worktree).toEqual({
       directory: harness.worktrees[0],
-      branch: "opencode/dag-dag_1-a",
+      branch: "graphagent/dag-dag_1-a",
       baseHead: git(target, ["rev-parse", "HEAD"]),
       touchedPaths: [],
       state: "kept",

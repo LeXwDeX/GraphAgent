@@ -9,7 +9,7 @@ import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
   "real Todo hook veto preserves list, returns tool feedback, and allows corrected and later completed tasks",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "todo-audit.jsonl")
       const allow = path.join(home, "allow-completion")
@@ -25,7 +25,7 @@ cliIt.live(
           JSON.stringify({ TaskCreated: [{ hooks: [hook] }], TaskCompleted: [{ hooks: [hook] }] }),
         )
       })
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const request = (route: string, method: string, body?: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

@@ -283,7 +283,10 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
       renderer.off("blur", onBlur)
     })
     return (
-      <TestTuiContexts cwd={directory} paths={{ home: stateDir.path, state: stateDir.path, worktree: "/tmp/opencode" }}>
+      <TestTuiContexts
+        cwd={directory}
+        paths={{ home: stateDir.path, state: stateDir.path, worktree: "/tmp/graphagent" }}
+      >
         <ExitProvider exit={() => {}}>
           <EpilogueProvider set={() => {}}>
             <ClipboardProvider>

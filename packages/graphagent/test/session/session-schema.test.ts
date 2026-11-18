@@ -9,7 +9,7 @@ const info = {
   slug: "test-session",
   projectID: ProjectV2.ID.global,
   workspaceID: undefined,
-  directory: "/tmp/opencode",
+  directory: "/tmp/graphagent",
   parentID: undefined,
   summary: undefined,
   cost: 0,

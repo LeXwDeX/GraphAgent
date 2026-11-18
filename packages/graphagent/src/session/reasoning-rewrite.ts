@@ -110,7 +110,7 @@ export function makeReasoningRewrite(deps: ReasoningRewriteDeps) {
               yield* Effect.logInfo(
                 "reasoning distillation",
                 rewriteLogFields(outcome, {
-                  runtime: "opencode",
+                  runtime: "graphagent",
                   mode: "async",
                   "session.id": input.sessionID,
                   model: organizer.model,
