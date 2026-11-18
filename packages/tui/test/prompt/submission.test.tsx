@@ -30,7 +30,7 @@ import { t } from "../../src/i18n"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../../src/shell/bottom-zone"
 import { useCommands } from "../../src/commands/context"
 import { FrecencyProvider } from "../../src/prompt/frecency"
-import { PromptHistoryProvider } from "../../src/prompt/history"
+import { PromptHistoryProvider, usePromptHistory } from "../../src/prompt/history"
 import { BtwProvider, useBtw, type BtwController } from "../../src/context/btw"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
@@ -130,6 +130,11 @@ function BtwProbe(props: { ready: (value: BtwController) => void }) {
   return <box />
 }
 
+function HistoryProbe(props: { ready: (value: ReturnType<typeof usePromptHistory>) => void }) {
+  props.ready(usePromptHistory())
+  return <box />
+}
+
 function PromptRoute(props: { sessionID?: string }) {
   const route = useRoute()
   return (
@@ -185,7 +190,7 @@ async function mountRoute(
   override?: (url: URL, request: Request) => Response | Promise<Response | undefined> | undefined,
   sessionID?: string,
   editorIntegration?: EditorIntegration,
-  options?: { bottomZone?: boolean; session?: Partial<typeof routeSession> },
+  options?: { bottomZone?: boolean; session?: Partial<typeof routeSession>; history?: readonly string[] },
 ) {
   prompt = undefined
   const tmp = await tmpdir()
@@ -193,6 +198,13 @@ async function mountRoute(
     `${tmp.path}/kv.json`,
     JSON.stringify({ tool_details_visibility: !hideDetails, generic_tool_output_visibility: false }),
   )
+  // Entries the prompt history loads from its file when it mounts; see `route.history`.
+  if (options?.history) {
+    await Bun.write(
+      `${tmp.path}/prompt-history.jsonl`,
+      options.history.map((input) => JSON.stringify({ input, parts: [] })).join("\n") + "\n",
+    )
+  }
   const events = createEventSource()
   const sessionFixture = { ...routeSession, ...(options?.session ?? {}) }
   const base = createFetch((url) =>
@@ -224,6 +236,7 @@ async function mountRoute(
   let sdk!: ReturnType<typeof useSDK>
   let commands!: ReturnType<typeof useCommands>
   let btw!: BtwController
+  let history!: ReturnType<typeof usePromptHistory>
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
   let counter!: () => number
   let resolveReady!: () => void
@@ -290,6 +303,7 @@ async function mountRoute(
                                                       <SDKProbe ready={(value) => (sdk = value)} />
                                                       <CommandProbe ready={(value) => (commands = value)} />
                                                       <BtwProbe ready={(value) => (btw = value)} />
+                                                      <HistoryProbe ready={(value) => (history = value)} />
                                                       <Show when={mounted()}>
                                                         <Show when={zone} fallback={routeView()}>
                                                           {(state) => (
@@ -341,6 +355,10 @@ async function mountRoute(
     sdk,
     commands,
     btw,
+    /** The prompt history as the prompt uses it. */
+    get history() {
+      return history
+    },
     events,
     keymap,
     editor,
@@ -1195,9 +1213,16 @@ test("/btw asks a side question without submitting a prompt and recalls it from 
       })
     },
     routeSessionID,
+    undefined,
+    { history: ["an earlier prompt"] },
   )
   try {
     configureModel(route)
+    // The history file is read after the provider mounts, and what it holds replaces what the history has by then: an
+    // entry appended before the read lands is dropped, and the recall below finds nothing (#1406). Wait until the seeded
+    // entry can be recalled, which is the history store showing it, then step back to the empty draft.
+    await wait(() => route.history.move(-1, "")?.input === "an earlier prompt")
+    expect(route.history.move(1, "an earlier prompt")).toEqual({ input: "", parts: [] })
     route.navigation.navigate({ type: "session", sessionID: routeSessionID })
     route.mount()
     await wait(() => Boolean(prompt))
@@ -1217,8 +1242,7 @@ test("/btw asks a side question without submitting a prompt and recalls it from 
     expect(sent.length).toBe(before)
 
     route.app.mockInput.pressKey("ARROW_UP")
-    // Keymap dispatch is asynchronous; under a loaded suite one render can run
-    // before the history recall lands.
+    // The newest entry is the side question, ahead of the seeded one.
     await wait(() => prompt!.current.input === "/btw -m test/m why?")
     expect(prompt!.current.input).toBe("/btw -m test/m why?")
   } finally {
