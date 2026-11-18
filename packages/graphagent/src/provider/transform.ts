@@ -3,6 +3,7 @@ import type { ModelMessage, ToolResultPart } from "ai"
 import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
+import { ProviderProfile } from "./profile"
 import type * as ModelsDev from "@graphagent/core/models-dev"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { iife } from "@/util/iife"
@@ -87,29 +88,65 @@ function sdkKey(npm: string): string | undefined {
   return undefined
 }
 
-/** Mistral models reject a user message directly after a tool result; `message` inserts an assistant turn there. */
-export function mistralFamily(model: Provider.Model) {
-  const modelID = model.api.id.toLowerCase()
-  return (
-    model.providerID === "mistral" ||
-    ["mistral", "devstral", "codestral", "pixtral", "mixtral"].some((family) => modelID.includes(family))
-  )
-}
-
 // TODO: fix this stupid inefficient dogshit function
 export function toolCallID(id: string, model: Provider.Model) {
-  if (model.api.id.includes("claude")) return id.replace(/[^a-zA-Z0-9_-]/g, "_")
-  const modelID = model.api.id.toLowerCase()
-  if (
-    model.providerID === "mistral" ||
-    ["mistral", "devstral", "codestral", "pixtral", "mixtral"].some((family) => modelID.includes(family))
-  ) {
-    return id
-      .replace(/[^a-zA-Z0-9]/g, "")
-      .substring(0, 9)
-      .padEnd(9, "0")
+  const shape = ProviderProfile.profileOf(model).toolCallId
+  if (shape.charset === "alnum_dash") return id.replace(/[^a-zA-Z0-9_-]/g, "_")
+  if (shape.charset === "alnum") {
+    const bare = id.replace(/[^a-zA-Z0-9]/g, "")
+    return shape.length === undefined ? bare : bare.substring(0, shape.length).padEnd(shape.length, "0")
   }
   return id
+}
+
+/** Rewrites the id of every tool call and tool result to the charset the model's profile asks for. */
+export function mapToolCallIDs(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
+  return msgs.map((msg) => {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      return {
+        ...msg,
+        content: msg.content.map((part) => {
+          if (part.type === "tool-call" || part.type === "tool-result") {
+            return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
+          }
+          return part
+        }),
+      }
+    }
+    if (msg.role === "tool" && Array.isArray(msg.content)) {
+      return {
+        ...msg,
+        content: msg.content.map((part) => {
+          if (part.type === "tool-result") {
+            return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
+          }
+          return part
+        }),
+      }
+    }
+    return msg
+  })
+}
+
+/** Fix message sequence: a tool message cannot be followed by a user message, so an assistant turn goes between. */
+function bridgeToolResults(msgs: ModelMessage[]): ModelMessage[] {
+  const result: ModelMessage[] = []
+  for (let i = 0; i < msgs.length; i++) {
+    const msg = msgs[i]
+    result.push(msg)
+    if (msg.role === "tool" && msgs[i + 1]?.role === "user") {
+      result.push({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Done.",
+          },
+        ],
+      })
+    }
+  }
+  return result
 }
 
 function normalizeMessages(
@@ -235,77 +272,9 @@ function normalizeMessages(
       .filter((msg): msg is ModelMessage => msg !== undefined && msg.content !== "")
   }
 
-  if (model.api.id.includes("claude")) {
-    msgs = msgs.map((msg) => {
-      if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        return {
-          ...msg,
-          content: msg.content.map((part) => {
-            if (part.type === "tool-call" || part.type === "tool-result") {
-              return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
-            }
-            return part
-          }),
-        }
-      }
-      if (msg.role === "tool" && Array.isArray(msg.content)) {
-        return {
-          ...msg,
-          content: msg.content.map((part) => {
-            if (part.type === "tool-result") {
-              return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
-            }
-            return part
-          }),
-        }
-      }
-      return msg
-    })
-  }
-
-  const modelID = model.api.id.toLowerCase()
-  if (
-    model.providerID === "mistral" ||
-    ["mistral", "devstral", "codestral", "pixtral", "mixtral"].some((family) => modelID.includes(family))
-  ) {
-    const result: ModelMessage[] = []
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i]
-      const nextMsg = msgs[i + 1]
-
-      if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        msg.content = msg.content.map((part) => {
-          if (part.type === "tool-call" || part.type === "tool-result") {
-            return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
-          }
-          return part
-        })
-      }
-      if (msg.role === "tool" && Array.isArray(msg.content)) {
-        msg.content = msg.content.map((part) => {
-          if (part.type === "tool-result") {
-            return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
-          }
-          return part
-        })
-      }
-      result.push(msg)
-
-      // Fix message sequence: tool messages cannot be followed by user messages
-      if (msg.role === "tool" && nextMsg?.role === "user") {
-        result.push({
-          role: "assistant",
-          content: [
-            {
-              type: "text",
-              text: "Done.",
-            },
-          ],
-        })
-      }
-    }
-    return result
-  }
+  const profile = ProviderProfile.profileOf(model)
+  if (profile.toolCallId.charset !== "any") msgs = mapToolCallIDs(msgs, model)
+  if (profile.userAfterToolResult === "bridge") return bridgeToolResults(msgs)
 
   // Deepseek requires all assistant messages to have reasoning on them
   if (model.api.id.toLowerCase().includes("deepseek")) {
@@ -744,14 +713,9 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
     options.cacheControl !== undefined &&
     (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/google-vertex/anthropic")
   if (
-    (model.providerID === "anthropic" ||
-      model.providerID === "google-vertex-anthropic" ||
-      model.api.id.includes("anthropic") ||
-      model.api.id.includes("claude") ||
-      model.id.includes("anthropic") ||
-      model.id.includes("claude") ||
-      model.api.npm === "@ai-sdk/anthropic" ||
-      model.api.npm === "@ai-sdk/alibaba") &&
+    (ProviderProfile.profileOf(model).cacheMarker === "explicit" ||
+      model.id.toLowerCase().includes("anthropic") ||
+      model.id.toLowerCase().includes("claude")) &&
     model.api.npm !== "@ai-sdk/gateway" &&
     !usesAnthropicAutomaticCaching
   ) {
@@ -790,57 +754,16 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   return msgs
 }
 
-const GEMINI_MODELS_WITH_SAMPLING_DEFAULTS = [
-  /gemini-2[.-]5(?:[.-]|$)/,
-  /gemini-3-(?:flash|pro)(?:[.-]|$)/,
-  /gemini-3[.-]1(?:[.-]|$)/,
-  /gemini-3[.-]5-flash(?!-lite)(?:[.-]|$)/,
-]
-
 export function temperature(model: Provider.Model) {
-  const id = model.api.id.toLowerCase()
-  if (id.includes("north-mini-code")) return 1.0
-  if (id.includes("claude")) return undefined
-  if (id.includes("gemini"))
-    return GEMINI_MODELS_WITH_SAMPLING_DEFAULTS.some((model) => model.test(id)) ? 1.0 : undefined
-  if (id.includes("glm-4.6")) return 1.0
-  if (id.includes("glm-4.7")) return 1.0
-  if (id.includes("minimax-m2")) return 1.0
-  if (id.includes("kimi-k2")) {
-    // kimi-k2-thinking & kimi-k2.5 && kimi-k2p5 && kimi-k2-5
-    if (["thinking", "k2.", "k2p", "k2-5"].some((s) => id.includes(s))) {
-      return 1.0
-    }
-    return 0.6
-  }
-  return undefined
+  return ProviderProfile.profileOf(model).sampling.temperature
 }
 
 export function topP(model: Provider.Model) {
-  const id = model.api.id.toLowerCase()
-  if (id.includes("gemini"))
-    return GEMINI_MODELS_WITH_SAMPLING_DEFAULTS.some((model) => model.test(id)) ? 0.95 : undefined
-  if (["minimax-m2", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"].some((s) => id.includes(s))) {
-    return 0.95
-  }
-  if (
-    ["deepseek-v4-flash-0731", "deepseek-v4-flash:0731"].some((name) => id.includes(name)) ||
-    (id.includes("deepseek-v4-flash") && model.providerID === "deepseek")
-  ) {
-    return 0.95
-  }
-  return undefined
+  return ProviderProfile.profileOf(model).sampling.topP
 }
 
 export function topK(model: Provider.Model) {
-  const id = model.api.id.toLowerCase()
-  if (id.includes("minimax-m2")) {
-    if (["m2.", "m25", "m21"].some((s) => id.includes(s))) return 40
-    return 20
-  }
-  if (id.includes("gemini"))
-    return GEMINI_MODELS_WITH_SAMPLING_DEFAULTS.some((model) => model.test(id)) ? 64 : undefined
-  return undefined
+  return ProviderProfile.profileOf(model).sampling.topK
 }
 
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]

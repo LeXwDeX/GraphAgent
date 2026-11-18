@@ -43,6 +43,7 @@ import { errorMessage } from "@/util/error"
 import { isMedia } from "@/util/media"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
+import { ProviderProfile } from "@/provider/profile"
 import { Effect, Schema } from "effect"
 import { EngineProcess } from "./engine-process"
 import { ModelHistory } from "./history/model"
@@ -220,17 +221,9 @@ interface ConversionContext {
 // Only apply this workaround if the model actually supports that media input -
 // otherwise unsupportedParts() will turn it into a user-visible error.
 function supportsMediaInToolResult(model: Provider.Model, attachment: { mime: string }) {
-  if (model.api.npm === "@ai-sdk/anthropic") return true
-  if (model.api.npm === "@ai-sdk/openai") return true
-  if (model.api.npm === "@ai-sdk/amazon-bedrock/mantle") return true
-  if (model.api.npm === "@ai-sdk/amazon-bedrock") return attachment.mime.startsWith("image/")
-  if (model.api.npm === "@ai-sdk/xai") return attachment.mime.startsWith("image/")
-  if (model.api.npm === "@ai-sdk/google-vertex/anthropic") return true
-  if (model.api.npm === "@ai-sdk/google") {
-    const id = model.api.id.toLowerCase()
-    return id.includes("gemini-3") && !id.includes("gemini-2")
-  }
-  return false
+  const media = ProviderProfile.profileOf(model).toolResultMedia
+  if (media === "all") return true
+  return media === "image" && attachment.mime.startsWith("image/")
 }
 
 function toModelOutput(options: { toolCallId: string; input: unknown; output: unknown }) {
