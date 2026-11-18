@@ -200,6 +200,8 @@ describe("processor wiring", () => {
     "needsCompaction",
     "stepToolActivity",
     "recentToolSignatures",
+    // The retries of a step are counted across its attempts, so the counts belong to the step, not to one attempt.
+    "stepStats",
   ]
 
   test("ProcessorContext declares only handle-level fields next to the attempt state", async () => {

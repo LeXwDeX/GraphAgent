@@ -2683,7 +2683,8 @@ withMcpInstructions.instance(
 
       const hits = yield* llm.hits
       const body = JSON.stringify(hits[0]?.body)
-      expect(body).toContain('<server name=\\"guide-server\\">')
+      // One block per server, marked as third-party usage notes (#1456).
+      expect(body).toContain('<system-reminder source=\\"mcp-instructions\\" server=\\"guide-server\\">')
       expect(body).toContain("Use lookup before mutate.")
       yield* Fiber.interrupt(fiber)
     }),

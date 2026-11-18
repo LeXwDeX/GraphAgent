@@ -17,7 +17,7 @@ import { hookQuestionAnswers } from "@/hook/question-answers"
 import { SettingsHook, type TriggerResult } from "@/hook"
 import { builtinToolOutput, mcpToolOutput, toolOutputReplacement } from "@/hook/tool-output"
 import { toolInputValidator } from "@/hook/tool-input"
-import { withHookFeedback, withHookFailure, withPreContext } from "@/hook/trigger-result"
+import { hookBlock, withHookFeedback, withHookFailure, withPreContext } from "@/hook/trigger-result"
 import { Permission } from "@/permission"
 import { confirmPermissionInput, executeWithPermissionInput, HookPermissionInterrupt } from "@/permission/hook-control"
 import type { Provider } from "@/provider/provider"
@@ -526,7 +526,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   }
               }
               if (preLines.length) {
-                output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
+                output.output = `${hookBlock(preLines)}\n\n${output.output ?? ""}`
               }
               if (options.abortSignal?.aborted) {
                 yield* input.processor.completeToolCall(options.toolCallId, output)
@@ -1110,7 +1110,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
             output.output = withHookFeedback(output.output, post)
             if (post.preventContinuation) output.metadata = { ...output.metadata, ...hookStopMetadata(post) }
           }
-          if (preLines.length) output.output = `${preLines.join("\n\n")}\n\n${output.output}`
+          if (preLines.length) output.output = `${hookBlock(preLines)}\n\n${output.output}`
           return output
         }).pipe(
           Effect.catchCause((cause) =>
@@ -1367,7 +1367,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
           // gate/reminder before the tool result (mirrors PostToolUse surfacing below).
           const preLines = preContexts.filter((line): line is string => Boolean(line))
           if (preLines.length) {
-            output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
+            output.output = `${hookBlock(preLines)}\n\n${output.output ?? ""}`
           }
           if (postResult) {
             output.output = withHookFeedback(output.output ?? "", postResult)

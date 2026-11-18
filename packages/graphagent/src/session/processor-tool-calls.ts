@@ -13,6 +13,7 @@ import { HistoryView } from "./history/view"
 import { MessageV2 } from "./message-v2"
 import { PartID } from "./schema"
 import type { Session } from "./session"
+import type { StepStats } from "./step-metrics"
 import { addCorrections, correctionsOf } from "@graphagent/core/session/outcome"
 import { rejectedUnparsable } from "./llm/ai-sdk"
 import { classifyToolError } from "./tool-outcome"
@@ -40,6 +41,8 @@ export interface ToolCallScope {
   shouldBreak: boolean
   /** What the model has written in this attempt; the processor replaces the object with every attempt, so read it fresh. */
   readonly attempt: { readonly textLength: number; readonly reasoningLength: number }
+  /** The step in progress; the processor replaces it as a whole when the step finishes. */
+  stepStats: StepStats
 }
 
 export interface ToolCallDeps {
@@ -219,6 +222,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
           },
         })
         cacheWrittenPart(call, part, match.call.version + 1)
+        ctx.stepStats.toolCalls += 1
         yield* settleToolCall(toolCallID)
       }),
     )
@@ -244,6 +248,8 @@ export function makeToolCalls(deps: ToolCallDeps) {
             },
           })
           cacheWrittenPart(call, part, match.call.version + 1)
+          ctx.stepStats.toolCalls += 1
+          ctx.stepStats.toolErrors += 1
           if (rejectedUnparsable(error)) rejectedInputs.push({ part, produced: produced() })
           if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
@@ -334,6 +340,8 @@ export function makeToolCalls(deps: ToolCallDeps) {
             time: { start: "time" in part.state ? part.state.time.start : end, end },
           },
         })
+        ctx.stepStats.toolCalls += 1
+        ctx.stepStats.toolErrors += 1
       }),
     )
   })

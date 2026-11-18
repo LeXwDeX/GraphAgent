@@ -36,6 +36,12 @@ cliIt.live(
       expect(rows[0]).toMatchObject({ command: "init", source: "command", expansion: "slash_command" })
       const inputs = yield* llm.inputs
       expect(inputs.some((input) => JSON.stringify(input).includes("EXPANSION_CONTEXT"))).toBe(true)
+      // The hook's context reaches the model in a block with source="hook" (#1456).
+      const block = JSON.stringify('<system-reminder source="hook">\nEXPANSION_CONTEXT\n</system-reminder>').slice(
+        1,
+        -1,
+      )
+      expect(inputs.some((input) => JSON.stringify(input).includes(block))).toBe(true)
     }),
   30_000,
 )

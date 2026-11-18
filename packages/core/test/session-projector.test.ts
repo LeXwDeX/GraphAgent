@@ -13,7 +13,7 @@ import { SessionID } from "@graphagent/schema/session-id"
 import { SessionEvent } from "@graphagent/core/session/event"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
-import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
+import { SessionStepTable, ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
 import { testEffect } from "./lib/effect"
 
@@ -605,6 +605,164 @@ describe("SessionProjector", () => {
           },
         })
         expect(yield* outcomes(db)).toEqual([])
+      }),
+    )
+  })
+
+  describe("session_step", () => {
+    const metrics = { prepareMs: 12, requestMs: 340, ttftMs: 90, toolCalls: 3, toolErrors: 1, retries: 2 }
+
+    const stepFinish = (id: string, messageID: string, withMetrics?: typeof metrics): SessionV1.StepFinishPart => ({
+      id: SessionV1.PartID.make(id),
+      messageID: SessionV1.MessageID.make(messageID),
+      sessionID,
+      type: "step-finish",
+      reason: "stop",
+      cost: 3,
+      tokens: { input: 5, output: 7, reasoning: 11, cache: { read: 13, write: 17 } },
+      ...(withMetrics ? { metrics: withMetrics } : {}),
+    })
+
+    const seed = Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seedProject()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID, info: assistantMessage("msg_step") })
+      return { db, events }
+    })
+
+    const publishPart = (events: EventV2.Interface, part: SessionV1.StepFinishPart) =>
+      events.publish(SessionV1.Event.PartUpdated, { sessionID, time: 2, part })
+
+    const steps = (db: Database.Interface["db"]) => db.select().from(SessionStepTable).all().pipe(Effect.orDie)
+
+    it.effect("books a step-finish part's metrics under the model of its assistant message", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, stepFinish("prt_step", "msg_step", metrics))
+
+        expect(yield* steps(db)).toEqual([
+          {
+            part_id: SessionV1.PartID.make("prt_step"),
+            session_id: sessionID,
+            provider_id: "provider",
+            model_id: "model",
+            prepare_ms: 12,
+            request_ms: 340,
+            ttft_ms: 90,
+            tool_calls: 3,
+            tool_errors: 1,
+            retries: 2,
+          },
+        ])
+      }),
+    )
+
+    it.effect("leaves a step-finish part without metrics out, and its usage still counts", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, stepFinish("prt_old", "msg_step"))
+        expect(yield* steps(db)).toEqual([])
+        expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+          cost: 3,
+          tokens_input: 5,
+        })
+      }),
+    )
+
+    it.effect("a repeated projection rewrites the row and counts the usage once", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, stepFinish("prt_again", "msg_step", metrics))
+        yield* publishPart(events, stepFinish("prt_again", "msg_step", metrics))
+        expect(yield* steps(db)).toHaveLength(1)
+
+        yield* publishPart(events, stepFinish("prt_again", "msg_step", { ...metrics, retries: 5, toolErrors: 0 }))
+        const rows = yield* steps(db)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({ retries: 5, tool_errors: 0, request_ms: 340 })
+        // Usage is owned by `applyUsage`: three projections of one part leave one part's worth.
+        expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+          cost: 3,
+          tokens_input: 5,
+          tokens_output: 7,
+        })
+      }),
+    )
+
+    it.effect("a step under a message without a model leaves no row", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID, info: userMessage("msg_user_step") })
+        yield* publishPart(events, stepFinish("prt_user", "msg_user_step", metrics))
+        expect(yield* steps(db)).toEqual([])
+      }),
+    )
+
+    it.effect("a tool part and a step-finish part of one message keep to their own tables", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, stepFinish("prt_both_step", "msg_step", metrics))
+        yield* events.publish(SessionV1.Event.PartUpdated, {
+          sessionID,
+          time: 2,
+          part: toolPart("prt_both_tool", "msg_step", "edit", finished()),
+        })
+        expect((yield* steps(db)).map((row) => row.part_id)).toEqual([SessionV1.PartID.make("prt_both_step")])
+        const outcomes = yield* db.select().from(ToolOutcomeTable).all().pipe(Effect.orDie)
+        expect(outcomes.map((row) => row.part_id)).toEqual([SessionV1.PartID.make("prt_both_tool")])
+      }),
+    )
+
+    it.effect("removing the part, its message, or the session removes the row", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, stepFinish("prt_gone", "msg_step", metrics))
+        yield* publishPart(events, stepFinish("prt_stays", "msg_step", metrics))
+        expect(yield* steps(db)).toHaveLength(2)
+
+        yield* events.publish(SessionV1.Event.PartRemoved, {
+          sessionID,
+          messageID: SessionV1.MessageID.make("msg_step"),
+          partID: SessionV1.PartID.make("prt_gone"),
+        })
+        expect((yield* steps(db)).map((row) => row.part_id)).toEqual([SessionV1.PartID.make("prt_stays")])
+
+        yield* events.publish(SessionV1.Event.MessageRemoved, {
+          sessionID,
+          messageID: SessionV1.MessageID.make("msg_step"),
+        })
+        expect(yield* steps(db)).toEqual([])
+
+        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID, info: assistantMessage("msg_step_two") })
+        yield* publishPart(events, stepFinish("prt_cascade", "msg_step_two", metrics))
+        expect(yield* steps(db)).toHaveLength(1)
+        yield* events.publish(SessionV1.Event.Deleted, {
+          sessionID,
+          info: {
+            id: sessionID,
+            projectID: Project.ID.global,
+            slug: "test",
+            role: "root" as const,
+            directory: "/project",
+            title: "test",
+            version: "test",
+            time: { created: 1, updated: 1 },
+          },
+        })
+        expect(yield* steps(db)).toEqual([])
       }),
     )
   })
