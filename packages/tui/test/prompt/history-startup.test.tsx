@@ -7,6 +7,7 @@ import { testRender } from "@opentui/solid"
 import path from "path"
 import { MAX_HISTORY_ENTRIES, PromptHistoryProvider, usePromptHistory, type PromptInfo } from "../../src/prompt/history"
 import { readText } from "../../src/util/persistence"
+import { FRAME_WAIT_MS, pause } from "../fixture/frames"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { tmpdir } from "../fixture/fixture"
 
@@ -15,11 +16,11 @@ type History = ReturnType<typeof usePromptHistory>
 const entry = (input: string): PromptInfo => ({ input, parts: [] })
 const jsonl = (entries: readonly PromptInfo[]) => entries.map((item) => JSON.stringify(item)).join("\n") + "\n"
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeout = 5000) {
-  const start = Date.now()
-  while (!(await predicate())) {
-    if (Date.now() - start > timeout) throw new Error("timed out waiting for condition")
-    await Bun.sleep(10)
+async function waitFor(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = FRAME_WAIT_MS) {
+  const deadline = performance.now() + timeoutMs
+  for (let round = 0; !(await predicate()); round++) {
+    if (performance.now() >= deadline) throw new Error(`${what} was not reached within ${timeoutMs}ms`)
+    await pause(round)
   }
 }
 
@@ -76,9 +77,7 @@ async function mountWithHeldRead(seed: readonly PromptInfo[]) {
       ),
       { width: 20, height: 5 },
     )
-    await waitFor(() => requested).catch(() => {
-      throw new Error("the provider did not read prompt-history.jsonl through Bun.file(...).text()")
-    })
+    await waitFor(() => requested, "the provider's startup read through Bun.file(...).text()")
   } catch (error) {
     app?.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
@@ -91,8 +90,11 @@ async function mountWithHeldRead(seed: readonly PromptInfo[]) {
     history,
     file,
     release: () => release(jsonl(seed)),
+    /** Waits until the released read has merged into the history and it holds `count` entries. */
+    merged: (count: number) => waitFor(() => recalled(history).length === count, `${count} entries in the history`),
     /** Waits for the startup rewrite to leave the file holding exactly `entries`. */
-    settled: (entries: readonly PromptInfo[]) => waitFor(async () => (await readText(file)) === jsonl(entries)),
+    settled: (entries: readonly PromptInfo[]) =>
+      waitFor(async () => (await readText(file)) === jsonl(entries), "the startup rewrite of the history file"),
     async dispose() {
       app.renderer.destroy()
       await tmp[Symbol.asyncDispose]()
@@ -110,7 +112,7 @@ test("entries added while the startup read is pending stay recallable behind the
     expect(recalled(fixture.history)).toEqual(["/btw early", "early"])
 
     fixture.release()
-    await waitFor(() => recalled(fixture.history).length === 4)
+    await fixture.merged(4)
     expect(recalled(fixture.history)).toEqual(["/btw early", "early", "q1", "q0"])
     await fixture.settled([...seed, entry("early")])
   } finally {
@@ -124,7 +126,7 @@ test("the startup rewrite keeps entries added while the read was pending and nev
   try {
     fixture.history.append(entry("early"))
     fixture.history.appendEphemeral(entry("/btw early"))
-    // Let an append that goes straight to the file land before the stale read resolves.
+    // A write straight to the file would have landed by now; the stale read that resolves after it must not undo it.
     await Bun.sleep(30)
     fixture.release()
 
@@ -149,7 +151,7 @@ test("merging past the limit keeps only the newest MAX_HISTORY_ENTRIES entries",
     fixture.release()
 
     // 50 from the file and 2 added: the two oldest fall off, and the ephemeral entry counts toward the limit.
-    await waitFor(() => recalled(fixture.history).length === MAX_HISTORY_ENTRIES)
+    await fixture.merged(MAX_HISTORY_ENTRIES)
     const inputs = recalled(fixture.history)
     expect(inputs.slice(0, 2)).toEqual(["/btw early", "early"])
     expect(inputs.at(-1)).toBe("q2")
@@ -167,7 +169,7 @@ test("an entry added while the read was pending is not repeated when it equals t
     fixture.history.append(entry("next"))
     fixture.release()
 
-    await waitFor(() => recalled(fixture.history).length === 3)
+    await fixture.merged(3)
     expect(recalled(fixture.history)).toEqual(["next", "same", "q0"])
     await fixture.settled([...seed, entry("next")])
   } finally {
