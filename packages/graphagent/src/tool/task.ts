@@ -5,6 +5,7 @@ import { BackgroundJob } from "@/background/job"
 import { BackgroundQueue } from "@/background/queue"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Session } from "@/session/session"
+import { SessionRole } from "@/session/role"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
@@ -409,7 +410,7 @@ export const TaskTool = Tool.define(
       claim: RunClaim,
     ) {
       const parent = yield* sessions.get(ctx.sessionID)
-      if (parent.parentID) {
+      if (SessionRole.isChild(parent)) {
         return yield* Effect.fail(
           new Error("Task delegation is available only to the main conversation, not child agents"),
         )
@@ -767,7 +768,9 @@ export const TaskTool = Tool.define(
         const limits = yield* scheduler.limits()
         return yield* Effect.scoped(
           Effect.gen(function* () {
-            yield* scheduler.childSlot({ kind: "task", parentSessionID: ctx.sessionID }, limits.childGlobal)
+            yield* scheduler.childSlot({ kind: "task", parentSessionID: ctx.sessionID }, limits.childGlobal, {
+              rootSessionID: SessionRole.liveRootOf(ctx.sessionID),
+            })
             return yield* execute()
           }),
         )

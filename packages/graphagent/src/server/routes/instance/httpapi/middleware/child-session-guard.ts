@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { SessionRole } from "@/session/role"
 import { SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { NotFoundError } from "@/storage/storage"
@@ -10,7 +11,7 @@ import { HttpApiMiddleware } from "effect/http-api"
 import { ChildSessionReadOnlyError } from "../errors"
 import { WorkspaceRouteContext } from "./workspace-routing"
 
-// #1026: a child session (`parentID != null`, a task or DAG node run) only takes
+// #1026: a child session (`SessionRole.isChild`: a task or DAG node run) only takes
 // input from its parent agent. This is the operation-layer guard: over HTTP,
 // every write that addresses a child session is refused with 409
 // ChildSessionReadOnlyError unless it is on the allow-list below. It is declared
@@ -30,7 +31,7 @@ const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"])
  * Writes that stay open on a child session, keyed `${METHOD} ${endpoint.path}`
  * with the path exactly as the endpoint declares it. Everything else that is not
  * a safe method is refused. `POST /session` needs no entry: it has no target
- * session, and `parentID` is rejected by its payload schema.
+ * session, and a parent is rejected by its payload schema.
  *
  * Adding an entry is a product decision. test/server/httpapi-child-readonly.test.ts
  * pins this set against its own copy of the classification.
@@ -62,13 +63,13 @@ export function childSessionReadOnly(sessionID: string) {
   })
 }
 
-/** The parent of an existing session; undefined for a top-level or unknown one. */
-export const parentSessionID = (sessions: Session.Interface, sessionID: SessionID) =>
+/** Whether an existing session is a child (delegated work); a top-level or unknown session is not. */
+export const isChildSession = (sessions: Session.Interface, sessionID: SessionID) =>
   sessions.get(sessionID).pipe(
-    Effect.map((info) => info.parentID),
+    Effect.map((info) => SessionRole.isChild(info)),
     Effect.catchIf(
       (error): error is NotFoundError => NotFoundError.isInstance(error),
-      () => Effect.succeed(undefined),
+      () => Effect.succeed(false),
     ),
   )
 
@@ -82,8 +83,7 @@ export const assertSessionWritable = Effect.fn("ChildSessionGuard.assertSessionW
   sessions: Session.Interface,
   sessionID: SessionID,
 ) {
-  const parentID = yield* parentSessionID(sessions, sessionID)
-  if (parentID !== undefined) yield* childSessionReadOnly(sessionID)
+  if (yield* isChildSession(sessions, sessionID)) yield* childSessionReadOnly(sessionID)
 })
 
 export const childSessionReadOnlyLayer = Layer.effect(
@@ -99,9 +99,9 @@ export const childSessionReadOnlyLayer = Layer.effect(
         const target = (yield* HttpRouter.RouteContext).params.sessionID
         if (target === undefined || !Schema.is(SessionID)(target)) return yield* effect
         const route = yield* WorkspaceRouteContext
-        const parentID =
-          route.session?.id === target ? route.session.parentID : yield* parentSessionID(sessions, target)
-        if (parentID !== undefined) return yield* childSessionReadOnly(target)
+        const child =
+          route.session?.id === target ? SessionRole.isChild(route.session) : yield* isChildSession(sessions, target)
+        if (child) return yield* childSessionReadOnly(target)
         return yield* effect
       }),
     )

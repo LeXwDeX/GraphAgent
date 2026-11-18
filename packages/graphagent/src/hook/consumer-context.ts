@@ -5,6 +5,7 @@ import type { TriggerContext } from "./types"
 import { Effect, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { SessionID } from "@/session/schema"
+import { SessionRole } from "@/session/role"
 import { HookTranscript, type Message } from "./transcript"
 import { promptIdentity, variantToEffort, withPromptIdentity } from "./prompt-identity"
 
@@ -58,7 +59,7 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   return {
     sessionID,
     // A child session is the subagent owning these events; CC names it in agent_id.
-    ...(nativeSession?.parentID ? { agentID: sessionID } : {}),
+    ...(nativeSession && SessionRole.isChild(nativeSession) ? { agentID: sessionID } : {}),
     agentType: agent,
     ...identity,
     ...(effort ? { effort } : {}),

@@ -4,6 +4,7 @@
 export * as PrWatchAuto from "./auto"
 
 import { Cause, Effect, Option } from "effect"
+import { SessionRole } from "@/session/role"
 import { PrWatchPoller } from "./poller"
 import { parseRequest } from "./forge"
 
@@ -129,7 +130,7 @@ export function createdRequest(command: string | undefined, exit: number | undef
  * `watch_pr` is ROOT_ONLY, so a child session must not own a durable watch.
  */
 export const afterShell = Effect.fn("PrWatchAuto.afterShell")(function* (input: ShellOutcome) {
-  if (input.parentID !== undefined) return
+  if (SessionRole.isChild(input)) return
   const request = createdRequest(input.command, input.exit, input.output)
   if (!request) return
   const poller = Option.getOrUndefined(yield* Effect.serviceOption(PrWatchPoller.Service))

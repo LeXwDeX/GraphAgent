@@ -37,6 +37,7 @@ import { MessageV2 } from "./message-v2"
 import { MessageID, PartID, type SessionID } from "./schema"
 import type { AgentScheduler } from "./agent-scheduler"
 import { Session } from "./session"
+import { SessionRole } from "./role"
 import type { Info as SessionInfo } from "./session"
 import type { SessionRunState } from "./run-state"
 import type { Admit } from "./turn/admit"
@@ -329,7 +330,7 @@ function dagModeCommand(deps: CommandDeps, input: CommandInput) {
     yield* deps.sessions.updatePart(commandPart)
     const now = Date.now()
     let receiptPart: SessionV1.TextPart
-    if (info.parentID) {
+    if (SessionRole.isChild(info)) {
       receiptPart = {
         id: PartID.ascending(),
         messageID: userMsg.id,

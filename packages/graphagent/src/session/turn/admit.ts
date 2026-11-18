@@ -28,6 +28,7 @@ import type { ChildRunCredential } from "../child/types"
 import { MessageID, PartID, type SessionID } from "../schema"
 import type { ExclusiveRegistry } from "../engine-process"
 import type { Session } from "../session"
+import { SessionRole } from "../role"
 import type { SessionRevert } from "../revert"
 import type { SessionRunState } from "../run-state"
 import type { SessionStatus } from "../status"
@@ -382,7 +383,7 @@ export function makeAdmit(deps: AdmitDeps) {
     id: SessionID
     parentID?: SessionID
   }) {
-    if (!startContext || !settingsHook || target.parentID) return [] as string[]
+    if (!startContext || !settingsHook || SessionRole.isChild(target)) return [] as string[]
     if (!(yield* startContext.claimResume(target.id))) return [] as string[]
     const prior = yield* sessions.messages({ sessionID: target.id, limit: 1 }).pipe(Effect.orDie)
     if (prior.length === 0) return [] as string[]
@@ -493,7 +494,7 @@ export function makeAdmit(deps: AdmitDeps) {
             prompt: promptText,
             ...(titled !== undefined ? { sessionTitle: titled } : {}),
             // Child sessions do not report DAG mode; a top-level session reports it read-only.
-            ...(session.parentID === undefined && session.dagMode !== undefined ? { dagMode: session.dagMode } : {}),
+            ...(SessionRole.isRoot(session) && session.dagMode !== undefined ? { dagMode: session.dagMode } : {}),
           },
           { sessionID: input.sessionID, promptID: promptMessageID },
         )

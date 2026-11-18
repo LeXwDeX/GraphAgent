@@ -5,7 +5,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { InvalidRequestError, PermissionNotFoundError } from "../errors"
-import { parentSessionID } from "../middleware/child-session-guard"
+import { isChildSession } from "../middleware/child-session-guard"
 
 export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "permission", (handlers) =>
   Effect.gen(function* () {
@@ -25,7 +25,7 @@ export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "permiss
       // read from the pending record; an unknown request falls through to 404.
       if (ctx.payload.message) {
         const request = (yield* svc.list()).find((item) => item.id === ctx.params.requestID)
-        if (request && (yield* parentSessionID(sessions, request.sessionID)) !== undefined)
+        if (request && (yield* isChildSession(sessions, request.sessionID)))
           return yield* new InvalidRequestError({
             name: "InvalidRequestError",
             data: {

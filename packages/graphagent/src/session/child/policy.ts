@@ -4,7 +4,7 @@
 import type { Database } from "@graphagent/core/database/database"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { Effect, Option } from "effect"
-import { SessionID } from "../schema"
+import type { SessionID } from "../schema"
 import { ChildRegistry as Registry } from "./registry"
 import { ChildStore as Store } from "./store"
 import type { ChildOwner, ChildPermissionPolicy } from "./types"
@@ -15,22 +15,27 @@ import type { ChildOwner, ChildPermissionPolicy } from "./types"
  * The run's policy is decided by its owner and mirrored in the process
  * registry; the permission hot path reads it here, synchronously, without a
  * database read. Only the task policy is dynamic: `root-dag-mode` reads the
- * parent session's `dag_mode` at the moment of the ask, so a mode switch
+ * root session's `dag_mode` at the moment of the ask, so a mode switch
  * applies to the next request.
  */
 
 export interface Subject {
   readonly owner: ChildOwner
   readonly permission: ChildPermissionPolicy
+  /** The session that started the run: its direct parent. */
+  readonly parentSessionID: SessionID
+  /**
+   * The root of the conversation the run belongs to (`SessionRole.rootOf`):
+   * where its DAG mode and budget live, and what an ask is attributed to. It is
+   * the same session as the parent while a root starts the run, which is the
+   * only layout today (Issue #1288).
+   */
   readonly rootSessionID: SessionID
 }
 
 /** The active run of a child session, if this process has one. Synchronous and read-free. */
 export function subjectOf(childSessionID: SessionID): Option.Option<Subject> {
-  const found = Registry.subjectOf(childSessionID)
-  return found === undefined
-    ? Option.none()
-    : Option.some({ ...found, rootSessionID: SessionID.make(found.rootSessionID) })
+  return Option.fromNullishOr(Registry.subjectOf(childSessionID))
 }
 
 export type EffectiveAsk = "user" | "auto"

@@ -254,6 +254,46 @@ export const bindingOf = (db: Db, childSessionID: SessionID): Effect.Effect<Bind
     .get()
     .pipe(Effect.orDie)
 
+/**
+ * What the database says of a session's place in its conversation, in one
+ * read (Issue #1288): the parent its own row records, and the binding that
+ * owns it. A root session has neither. A child session has both; one with a
+ * parent and no binding is the anomaly #1026 invariant 3 rules out, and the
+ * caller decides what to make of it (`SessionRole`).
+ */
+export interface Lineage {
+  /** The parent the session's own row records; undefined for a root. */
+  readonly recordedParent: SessionID | undefined
+  readonly binding: { readonly parentSessionID: SessionID; readonly ownerKind: ChildOwnerKind } | undefined
+}
+
+/** The lineage of one session; no value for a session with no row. */
+export const lineageOf = (db: Db, sessionID: SessionID): Effect.Effect<Lineage | undefined> =>
+  db
+    .select({
+      recordedParent: SessionTable.parent_id,
+      bindingParent: ChildBindingTable.parent_session_id,
+      ownerKind: ChildBindingTable.owner_kind,
+    })
+    .from(SessionTable)
+    .leftJoin(ChildBindingTable, eq(ChildBindingTable.child_session_id, SessionTable.id))
+    .where(eq(SessionTable.id, sessionID))
+    .get()
+    .pipe(
+      Effect.orDie,
+      Effect.map((row): Lineage | undefined =>
+        row === undefined
+          ? undefined
+          : {
+              recordedParent: row.recordedParent ?? undefined,
+              binding:
+                row.bindingParent === null || row.ownerKind === null
+                  ? undefined
+                  : { parentSessionID: SessionID.make(row.bindingParent), ownerKind: row.ownerKind },
+            },
+      ),
+    )
+
 export const latestOf = (db: Db, childSessionID: SessionID): Effect.Effect<RunRow | undefined> =>
   db
     .select()

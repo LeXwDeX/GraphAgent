@@ -53,6 +53,7 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
+import { SessionRole } from "@/session/role"
 import { SessionStatus } from "@/session/status"
 import { SessionInbox } from "@/session/inbox"
 import { ExclusiveRegistry } from "@/session/engine-process"
@@ -1028,7 +1029,7 @@ const serviceLayer = Layer.effect(
             const continuation = Effect.scoped(
               Effect.gen(function* () {
                 yield* scheduler.childSlot({ kind: "workflow", workflowID: dagID }, entry.concurrency, {
-                  rootSessionID: entry.parentSessionID,
+                  rootSessionID: SessionRole.liveRootOf(SessionID.make(entry.parentSessionID)),
                 })
                 return yield* Deferred.await(registered).pipe(
                   Effect.andThen(

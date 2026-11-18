@@ -19,6 +19,7 @@
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
 import { EngineProcess } from "@/session/engine-process"
+import { SessionRole } from "@/session/role"
 import type { RuntimeSlots } from "@/session/runtime-slots"
 import type { SessionID } from "@/session/schema"
 import type { UnavailableReason } from "./mode-status"
@@ -62,7 +63,7 @@ export function resolveInitial(input: {
   readonly parentID?: SessionID
   readonly global?: { readonly mode?: DagModeType }
 }): DagModeType {
-  if (input.parentID) return "off"
+  if (SessionRole.isChild(input)) return "off"
   return input.explicit ?? input.global?.mode ?? "off"
 }
 

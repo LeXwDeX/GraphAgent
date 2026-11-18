@@ -3,7 +3,7 @@ import { WorkspaceV2 } from "@graphagent/core/workspace"
 import { Workspace } from "@/control-plane/workspace"
 import { WorkspaceAdapterRuntime } from "@/control-plane/workspace-adapter-runtime"
 import { Session } from "@/session/session"
-import type { SessionID } from "@/session/schema"
+import type { SessionRole } from "@/session/role"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
 import { Context, Data, Effect, Layer } from "effect"
@@ -26,11 +26,11 @@ export class WorkspaceRouteContext extends Context.Service<
     readonly workspaceID?: WorkspaceV2.ID
     /**
      * Session row read for routing, when the URL addresses one that exists.
-     * Carried so later middleware can decide on `parentID` without re-reading.
+     * Carried so later middleware can tell whether it is a child (`SessionRole.isChild`) without re-reading.
      * It comes from URL parsing, so it is a hint: a decision that must hold for
      * every spelling of the URL re-derives the target from the router's params.
      */
-    readonly session?: { readonly id: SessionID; readonly parentID?: SessionID }
+    readonly session?: SessionRole.Ref
   }
 >()("@graphagent/ExperimentalHttpApiWorkspaceRouteContext") {}
 

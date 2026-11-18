@@ -5,7 +5,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { InvalidRequestError, QuestionNotFoundError } from "../errors"
-import { parentSessionID } from "../middleware/child-session-guard"
+import { isChildSession } from "../middleware/child-session-guard"
 
 // A custom answer is any label that is not one of the offered options of the
 // question it answers.
@@ -36,7 +36,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       if (
         request &&
         hasCustomAnswer(request, ctx.payload.answers) &&
-        (yield* parentSessionID(sessions, request.sessionID)) !== undefined
+        (yield* isChildSession(sessions, request.sessionID))
       )
         return yield* new InvalidRequestError({
           name: "InvalidRequestError",

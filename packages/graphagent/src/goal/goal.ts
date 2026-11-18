@@ -19,6 +19,7 @@ import { GoalOutcomeTable, GoalStateTable } from "@graphagent/core/goal/sql"
 import { GoalEvent } from "./events"
 import { GoalPrompts } from "./prompts"
 import { SessionID } from "@/session/schema"
+import { SessionRole } from "@/session/role"
 import { SessionStatus } from "@/session/status"
 import { ExclusiveRegistry, runnerAlive } from "@/session/engine-process"
 import { SessionCancellation } from "@/session/cancellation"
@@ -1003,7 +1004,7 @@ const serviceLayer = Layer.effect(
           .where(eq(SessionTable.id, sessionID))
           .get()
           .pipe(Effect.orDie)
-        if (session?.parentID) {
+        if (session && SessionRole.isChild(session)) {
           return {
             changed: false as const,
             reason: "Only the main conversation can create or resume autonomous goals. Return progress to the parent task.",

@@ -11,6 +11,7 @@ import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { SessionRole } from "@/session/role"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagEnvironmentCatalogs } from "@/dag/environment-catalogs"
 import { argumentAction, bound, formatSchemaFailures } from "../schema-error"
@@ -107,7 +108,7 @@ export const WorkflowTool = Tool.define<
         Effect.gen(function* () {
           const params = call.params
           const callingSession = yield* sessions.get(SessionID.make(ctx.sessionID)).pipe(Effect.orDie)
-          if (callingSession.parentID) {
+          if (SessionRole.isChild(callingSession)) {
             return yield* Effect.die(
               new Error("Workflow orchestration is available only to the main conversation, not child agents"),
             )

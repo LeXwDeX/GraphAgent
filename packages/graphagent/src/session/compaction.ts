@@ -23,6 +23,7 @@ import { Effect, Exit, Layer, Context } from "effect"
 import * as Option from "effect/Option"
 import type { ModelMessage } from "ai"
 import { EngineProcess } from "./engine-process"
+import { SessionRole } from "./role"
 import { SessionCompactionModel } from "./compaction-model"
 import type { LLM } from "./llm"
 import type { RequestPrefix } from "./runtime"
@@ -525,7 +526,7 @@ export const layer = Layer.effect(
       // (subagents never fire SessionStart). A hook failure must not fail compaction.
       // A session that cannot be read (e.g. deleted meanwhile) skips the hook instead of failing.
       const current = yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
-      if (current && !current.parentID) {
+      if (current && SessionRole.isRoot(current)) {
         const ssResult = yield* settingsHook
           .trigger(
             {
@@ -605,7 +606,7 @@ export const layer = Layer.effect(
       const memory = Option.getOrUndefined(yield* Effect.serviceOption(Memory.Service))
       const sessionInfo = memory ? yield* session.get(input.sessionID).pipe(Effect.orDie) : undefined
       const memoryContext =
-        memory && !sessionInfo?.parentID
+        memory && SessionRole.isRoot({ parentID: sessionInfo?.parentID })
           ? yield* memory.checkpoint({
               sessionID: input.sessionID,
               messages: input.messages,

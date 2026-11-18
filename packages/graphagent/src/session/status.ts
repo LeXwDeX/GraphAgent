@@ -2,6 +2,7 @@ import { SessionAttention } from "@/notification/attention"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
+import { SessionRole } from "./role"
 import { Effect, Layer, Context, Fiber, Scope, Option, Schema } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
@@ -59,7 +60,7 @@ export const layer = Layer.effect(
         Effect.catch(() => Effect.succeed(undefined)),
         Effect.catchDefect(() => Effect.succeed(undefined)),
       )
-      return info?.parentID !== undefined
+      return info !== undefined && SessionRole.isChild(info)
     })
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
       const data = yield* InstanceState.get(state)

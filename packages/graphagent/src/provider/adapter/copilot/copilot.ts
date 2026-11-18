@@ -3,6 +3,7 @@ import { InstallationVersion } from "@graphagent/core/installation/version"
 import { setTimeout as sleep } from "node:timers/promises"
 import { CopilotModels } from "./models"
 import { MessageV2 } from "@/session/message-v2"
+import { SessionRole } from "@/session/role"
 import type { Provider } from "@/provider/provider"
 import type { AdapterContext, ProviderAdapter } from "../types"
 
@@ -415,7 +416,7 @@ export function CopilotAdapter(input: AdapterContext): ProviderAdapter {
       }
 
       const session = await input.sessions.get(incoming.sessionID)
-      if (!session || !session.parentID) return
+      if (!session || SessionRole.isRoot(session)) return
       // mark subagent sessions as agent initiated matching standard that other copilot tools have
       output.headers["x-initiator"] = "agent"
     },

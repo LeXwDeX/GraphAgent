@@ -214,7 +214,14 @@ export type IssuedCredential = ChildRunCredential & { revoked: boolean }
 export interface ActiveChildRun {
   readonly id: string
   readonly childSessionID: SessionID
+  /** The session that started the run: the child's direct parent. */
   readonly parentSessionID: SessionID
+  /**
+   * The root of the conversation the run belongs to, fixed at registration
+   * (`ChildRegistry.rootOf`). It equals the direct parent while that parent is
+   * a root session, which is the only layout that exists today (Issue #1288).
+   */
+  readonly rootSessionID: SessionID
   /** Who owns the run. A foreground task's tool call delivers the child's `SubagentStop` (`ChildRegistry.delegateStop`). */
   readonly ownerKind: ChildOwnerKind
   /** The durable owner key: the task call, or the DAG node and its attempt (Issue #1026, PR4). */
