@@ -51,6 +51,14 @@ export class InvalidDurableEventError extends Schema.TaggedError<InvalidDurableE
 export const define = Event.define
 export const versionedType = Event.versionedType
 
+/**
+ * A payload read back from the durable log, decoded as the definition's current
+ * shape. A definition that has outgrown an older stored shape names the step
+ * (`upgrade`), which runs first.
+ */
+const decodeStored = (definition: Definition, data: unknown) =>
+  Schema.decodeUnknownSync(definition.data)(definition.upgrade === undefined ? data : definition.upgrade(data))
+
 export interface PublishOptions {
   readonly id?: ID
   readonly metadata?: Record<string, unknown>
@@ -637,7 +645,7 @@ export const layerWith = (options?: LayerOptions) =>
             const payload = {
               id: event.id,
               type: definition.type,
-              data: Schema.decodeUnknownSync(definition.data)(event.data),
+              data: decodeStored(definition, event.data),
             } as Payload
             const committed = yield* commitDurableEvent(definition, payload, {
               seq: event.seq,
@@ -731,7 +739,7 @@ export const layerWith = (options?: LayerOptions) =>
           id: event.id,
           type: definition.type,
           durable: { aggregateID: event.aggregateID, seq: event.seq, version: definition.durable.version },
-          data: Schema.decodeUnknownSync(definition.data)(event.data),
+          data: decodeStored(definition, event.data),
         }
       }
 

@@ -833,6 +833,7 @@ describe("DagBudget instance context", () => {
           info: {
             id: parent,
             slug: "budget",
+            role: "root",
             projectID: Project.ID.global,
             directory: process.cwd(),
             title: "budget",
@@ -980,6 +981,7 @@ describe("DagBudget instance lifecycle", () => {
           info: {
             id: parent,
             slug: "budget",
+            role: "root",
             projectID: Project.ID.global,
             directory: process.cwd(),
             title: "budget",

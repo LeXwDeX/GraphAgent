@@ -20,6 +20,14 @@ export type Definition<
     readonly version: number
     readonly aggregate: string
   }
+  /**
+   * Brings a payload stored before the current shape of `data` up to it. It runs
+   * on the way in from the durable log, in a replay and in the stored stream,
+   * before the payload is decoded; live events are built from the current shape
+   * and never pass through it. It is for a change that adds to the payload
+   * (a field with a derivable value) and has no need of a new `durable.version`.
+   */
+  readonly upgrade?: (data: unknown) => unknown
   readonly data: DataSchema
 }
 
@@ -47,6 +55,7 @@ export function define<
     readonly version: number
     readonly aggregate: string
   }
+  readonly upgrade?: (data: unknown) => unknown
   readonly schema: Fields
 }): Schema.Schema<Payload<Definition<Type, Schema.Struct<Fields>>>> & Definition<Type, Schema.Struct<Fields>> {
   const data = Schema.Struct(input.schema)
@@ -64,6 +73,7 @@ export function define<
     {
       type: input.type,
       ...(input.durable === undefined ? {} : { durable: input.durable }),
+      ...(input.upgrade === undefined ? {} : { upgrade: input.upgrade }),
       data,
     },
   ) as Schema.Schema<Payload<Definition<Type, Schema.Struct<Fields>>>> & Definition<Type, Schema.Struct<Fields>>
