@@ -118,6 +118,26 @@ export function touchedPaths(directory: string): string[] {
   return status.ok ? parsePorcelain(status.text) : []
 }
 
+// One `git diff --numstat -z` entry: added, deleted (`-` for a binary file), then the raw path.
+const NUMSTAT_ENTRY = /^(-|\d+)\t(-|\d+)\t([\s\S]+)$/
+
+/** #1455: the line counts git measures for the tracked changes of `directory`'s working tree against HEAD, as
+ * `+<added> -<deleted>` keyed by the normalized path (staged and unstaged alike; a binary file counts 0 and 0).
+ * Untracked files are not in git's diff and so not in the map. `undefined` when git cannot answer: outside a
+ * repository, or before the first commit. Paths are relative to the repository root, like `touchedPaths`. */
+export function numstat(directory: string): Map<string, string> | undefined {
+  const diff = git(directory, ["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", "HEAD"])
+  if (!diff.ok) return undefined
+  const counts = new Map<string, string>()
+  for (const item of diff.text.split("\0")) {
+    const entry = NUMSTAT_ENTRY.exec(item)
+    if (!entry) continue
+    const [, added, deleted, file] = entry
+    counts.set(normalizeTouchedPath(file), `+${added === "-" ? 0 : added} -${deleted === "-" ? 0 : deleted}`)
+  }
+  return counts
+}
+
 function parseNameList(text: string): string[] {
   return [...new Set(text.split("\0").filter(Boolean).map(normalizeTouchedPath))].sort()
 }
@@ -131,7 +151,7 @@ function mergePaths(a: readonly string[], b: readonly string[]): string[] {
  * A clean working tree can still be a committed attempt from a crash before
  * the completion event was persisted; `baseHead..HEAD` then carries the work. */
 export function commitWorktree(directory: string, baseHead: string, message: string): WorktreeCommitResult {
-  const status = git(directory, ["status", "--porcelain", "--untracked-files=all"])
+  const status = git(directory, ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"])
   if (!status.ok) return { ok: false, reason: `git status failed: ${status.reason}` }
   const touched = parsePorcelain(status.text)
   if (touched.length === 0) {

@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DagIsolation } from "@/dag/isolation"
@@ -65,7 +65,96 @@ describe("DagIsolation porcelain parsing", () => {
   })
 })
 
+describe("DagIsolation.numstat", () => {
+  it("counts the added and deleted lines of tracked changes against HEAD, staged or not", () => {
+    const root = repo()
+    writeFileSync(path.join(root, "base.txt"), "base\nmore\nlines\n")
+    writeFileSync(path.join(root, "staged.txt"), "x\ny\n")
+    git(root, ["add", "staged.txt"])
+    expect(DagIsolation.numstat(root)).toEqual(
+      new Map([
+        ["base.txt", "+2 -0"],
+        ["staged.txt", "+2 -0"],
+      ]),
+    )
+  })
+
+  it("counts a changed and a deleted line, and a deleted file", () => {
+    const root = repo()
+    writeFileSync(path.join(root, "two.txt"), "one\ntwo\n")
+    git(root, ["add", "-A"])
+    git(root, ["commit", "-m", "two"])
+    writeFileSync(path.join(root, "two.txt"), "one\nTWO\nthree\n")
+    rmSync(path.join(root, "base.txt"))
+    expect(DagIsolation.numstat(root)).toEqual(
+      new Map([
+        ["base.txt", "+0 -1"],
+        ["two.txt", "+2 -1"],
+      ]),
+    )
+  })
+
+  it("does not list an untracked file and returns an empty map for a clean tree", () => {
+    const root = repo()
+    expect(DagIsolation.numstat(root)).toEqual(new Map())
+    writeFileSync(path.join(root, "untracked.txt"), "x\n")
+    expect(DagIsolation.numstat(root)).toEqual(new Map())
+  })
+
+  it("counts a binary file as 0 and 0", () => {
+    const root = repo()
+    writeFileSync(path.join(root, "bin.dat"), Buffer.from([0, 1, 2]))
+    git(root, ["add", "-A"])
+    git(root, ["commit", "-m", "bin"])
+    writeFileSync(path.join(root, "bin.dat"), Buffer.from([0, 9, 9, 9]))
+    expect(DagIsolation.numstat(root)).toEqual(new Map([["bin.dat", "+0 -0"]]))
+  })
+
+  it("keys paths by their raw, normalized names, including non-ASCII, spaces and tabs", () => {
+    const root = repo()
+    git(root, ["config", "core.quotePath", "true"])
+    // A tab cannot be part of a Windows file name.
+    const names = ["中文.txt", "with space.txt", ...(process.platform === "win32" ? [] : ["tab\tname.txt"])]
+    for (const name of names) writeFileSync(path.join(root, name), "a\n")
+    git(root, ["add", "-A"])
+    git(root, ["commit", "-m", "names"])
+    for (const name of names) writeFileSync(path.join(root, name), "a\nb\n")
+    expect(DagIsolation.numstat(root)).toEqual(new Map(names.map((name) => [name, "+1 -0"])))
+  })
+
+  it("prints paths relative to the repository root from a subdirectory", () => {
+    const root = repo()
+    mkdirSync(path.join(root, "pkg"))
+    writeFileSync(path.join(root, "pkg", "a.txt"), "a\n")
+    git(root, ["add", "-A"])
+    git(root, ["commit", "-m", "pkg"])
+    writeFileSync(path.join(root, "pkg", "a.txt"), "a\nb\n")
+    expect(DagIsolation.numstat(path.join(root, "pkg"))).toEqual(new Map([["pkg/a.txt", "+1 -0"]]))
+  })
+
+  it("returns undefined where git cannot answer: outside a repository, or before the first commit", () => {
+    const plain = mkdtempSync(path.join(tmpdir(), "dag-isolation-plain-"))
+    roots.push(plain)
+    expect(DagIsolation.numstat(plain)).toBeUndefined()
+    const empty = mkdtempSync(path.join(tmpdir(), "dag-isolation-empty-"))
+    roots.push(empty)
+    git(empty, ["init"])
+    expect(DagIsolation.numstat(empty)).toBeUndefined()
+  })
+})
+
 describe("DagIsolation worktree commits", () => {
+  it("records a non-ASCII file name once, unquoted, when an isolated worktree is committed", () => {
+    const root = repo()
+    git(root, ["config", "core.quotePath", "true"])
+    const base = git(root, ["rev-parse", "HEAD"])
+    const a = worktree(root, "a")
+    writeFileSync(path.join(a, "中文.txt"), "content\n")
+    const result = DagIsolation.commitWorktree(a, base, "dag: a")
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.change?.touchedPaths).toEqual(["中文.txt"])
+  })
+
   it("fails completion when an active worktree is missing", () => {
     const root = repo()
     const directory = path.join(root, "missing")

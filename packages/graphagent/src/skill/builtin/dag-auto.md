@@ -129,7 +129,7 @@ phrase that starts it.
 - Layers come from `depends_on`; same-layer nodes run concurrently up to
   `max_concurrency`. Declare dependencies, do not script order.
 - A node with `output_schema` must end with exactly one matching JSON value; a
-  near-miss gets one correction turn.
+  response that misses it gets one correction turn.
 - A completed workflow delivers its result once; set `delivery_node`, or the
   parent gets a deterministic index.
 

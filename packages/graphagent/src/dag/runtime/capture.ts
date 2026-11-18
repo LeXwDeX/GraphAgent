@@ -60,7 +60,8 @@ export async function validatePayloadAsync(
   signal: AbortSignal,
 ): Promise<CaptureValidation> {
   if (slot.closed) return { ok: false, error: "capture slot is closed", notAvailable: true }
-  if (slot.pending) return { ok: false, error: "schema validation is already running in this session" }
+  if (slot.pending)
+    return { ok: false, error: "schema validation is already running in this session", notAvailable: true }
   const pending = new AbortController()
   slot.pending = pending
   const cancel = () => {

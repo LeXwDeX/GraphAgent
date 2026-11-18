@@ -12,7 +12,15 @@ import type { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
-import { finalAssistantText, outputLimitReason, parseFinalResponse } from "@/dag/runtime/final-response"
+import {
+  captureFinalResponse,
+  correctionPrompt,
+  finalAssistantText,
+  outputLimitReason,
+  parseFinalResponse,
+  repairPrompt,
+} from "@/dag/runtime/final-response"
+import { closeCaptureSlot, createCaptureSlot } from "@/dag/runtime/capture"
 import { Provider } from "@/provider/provider"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -84,6 +92,102 @@ describe("final assistant response", () => {
     const found = await Effect.runPromise(reader("ses_final_child"))
     expect(found?.info.id).toBe(latest.info.id)
     expect(finalAssistantText(found).ok).toBe(false)
+  })
+})
+
+describe("correctionPrompt", () => {
+  it("keeps the field-level prompt for a near-miss and quotes the detail for every other schema failure", () => {
+    const fix = { kind: "enum", path: "verdict", allowed: '["ACCEPT","REJECT"]', got: '"PASS"' } as const
+    expect(correctionPrompt({ fix, repairDetail: "ignored when there is a fix" })).toBe(repairPrompt(fix))
+    expect(correctionPrompt({ repairDetail: 'missing required field: "summary"' })).toBe(
+      'Your final response was rejected: missing required field: "summary". Do not redo the work. Resubmit the same result as exactly one JSON value, with no Markdown fence and no surrounding prose.',
+    )
+  })
+
+  it("has no prompt for a failure that is not the model's to correct", () => {
+    expect(correctionPrompt({})).toBeUndefined()
+  })
+})
+
+describe("captureFinalResponse failure classification", () => {
+  const store = { setCapturedOutput: () => Effect.void } as unknown as DagStore.Interface
+  const capture = (message: SessionV1.WithParts, schema: Record<string, unknown>, closed = false) => {
+    const slot = createCaptureSlot(schema)
+    if (closed) closeCaptureSlot(slot)
+    return Effect.runPromise(captureFinalResponse({ store, sessionID: "ses_final_child", slot, message }))
+  }
+
+  it("marks a fenced or prefixed response as schema_invalid with a parse detail", async () => {
+    const failed = await capture(assistant([{ text: '```json\n{"ok":true}\n```' }]), { type: "object" })
+    expect(failed).toMatchObject({
+      ok: false,
+      schemaInvalid: true,
+      repairDetail: "the final response is not exactly one JSON value",
+    })
+    expect(failed.ok || failed.fix).toBeFalsy()
+  })
+
+  it("marks a schema rejection as schema_invalid and carries the validator message as the detail", async () => {
+    const failed = await capture(assistant([{ text: "{}" }]), { type: "object", required: ["summary"] })
+    expect(failed).toMatchObject({ ok: false, schemaInvalid: true, repairDetail: 'missing required field: "summary"' })
+    expect(failed.ok ? undefined : failed.reason).toBe(
+      'final response schema validation failed: missing required field: "summary"',
+    )
+  })
+
+  it("keeps the near-miss fix beside the detail", async () => {
+    const failed = await capture(assistant([{ text: '{"verdict":"PASS"}' }]), {
+      type: "object",
+      properties: { verdict: { enum: ["ACCEPT", "REJECT"] } },
+    })
+    expect(failed).toMatchObject({ ok: false, schemaInvalid: true, fix: { kind: "enum", path: "verdict" } })
+    expect(failed.ok ? undefined : failed.repairDetail).toContain("expected one of")
+  })
+
+  it("cuts a long detail to 400 code units", async () => {
+    const key = "k".repeat(1_000)
+    const failed = await capture(assistant([{ text: JSON.stringify({ [key]: 1 }) }]), {
+      type: "object",
+      additionalProperties: false,
+    })
+    const detail = failed.ok ? "" : (failed.repairDetail ?? "")
+    expect(detail).toHaveLength(400)
+    expect(detail.startsWith('unexpected additional property: "kkk')).toBe(true)
+  })
+
+  it("never splits a surrogate pair when it cuts the detail", async () => {
+    // The prefix is 33 code units, so the 400th unit falls inside the 184th emoji.
+    const key = "\u{1F600}".repeat(300)
+    const failed = await capture(assistant([{ text: JSON.stringify({ [key]: 1 }) }]), {
+      type: "object",
+      additionalProperties: false,
+    })
+    const detail = failed.ok ? "" : (failed.repairDetail ?? "")
+    expect(detail).toHaveLength(399)
+    expect(detail.endsWith("\u{1F600}")).toBe(true)
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(detail)).toBe(false)
+  })
+
+  it("does not classify empty output or an abnormal turn as schema_invalid", async () => {
+    const empty = await capture(assistant([{ text: " " }]), { type: "object" })
+    expect(empty).toEqual({ ok: false, reason: "provider returned empty output", code: undefined })
+    const abnormal = await capture(assistant([{ text: "{}" }], "tool-calls"), { type: "object" })
+    expect(abnormal).toEqual({
+      ok: false,
+      reason: "child model turn did not end normally (tool-calls)",
+      code: undefined,
+    })
+    const errored = await capture(
+      { info: { ...assistant([]).info, error: { name: "UnknownError", data: { message: "boom" } } }, parts: [] } as never,
+      { type: "object" },
+    )
+    expect(errored).toEqual({ ok: false, reason: "child model turn stopped before a successful result", code: undefined })
+  })
+
+  it("does not classify a closed capture slot as schema_invalid", async () => {
+    const failed = await capture(assistant([{ text: "{}" }]), { type: "object" }, true)
+    expect(failed).toEqual({ ok: false, reason: "final response schema validation failed: capture slot is closed" })
+    expect(correctionPrompt(failed.ok ? {} : failed)).toBeUndefined()
   })
 })
 
@@ -254,11 +358,22 @@ describe("spawn final-response protocol", () => {
     expect(result.receipt).toBeUndefined()
   })
 
-  it("rejects prose around JSON and never asks for a legacy tool nudge", async () => {
+  it("rejects prose around JSON after one correction turn and never asks for a legacy tool nudge", async () => {
     const result = await run(assistant([{ text: 'Here: {"ok":true}' }]), { type: "object" })
     expect(result.events[0]?.type).toBe("failed")
     expect(result.events[0]?.reason).toContain("one JSON value")
-    expect(result.prompts).toBe(1)
+    // The original turn and exactly one correction turn, both in the child session.
+    expect(result.prompts).toBe(2)
+    expect(result.promptSessions).toEqual(["ses_final_child", "ses_final_child"])
+  })
+
+  it("accepts the corrected final response of the one correction turn", async () => {
+    const result = await run([assistant([{ text: 'Here: {"ok":true}' }]), assistant([{ text: '{"ok":true}' }])], {
+      type: "object",
+    })
+    expect(result.events).toEqual([{ type: "completed", output: { ok: true } }])
+    expect(result.receipt).toEqual({ present: true, value: { ok: true } })
+    expect(result.prompts).toBe(2)
   })
 
   it("preserves every plaintext part for a node without a schema", async () => {
@@ -358,6 +473,71 @@ describe("recovered final-response settlement", () => {
     expect(writes).toEqual([{ value: false, snapshotID: "snap-current" }])
     expect(completions).toEqual([{ output: false, snapshotID: "snap-current" }])
   })
+
+  // Recovery settles the one final turn it adopts and never adds a correction turn: an unparseable response is
+  // still `schema_invalid`, empty output is not.
+  for (const [label, text, errorClass] of [
+    ["empty output", "", undefined],
+    ["an unparseable response", "not one JSON value", "schema_invalid"],
+  ] as const)
+    it(`classifies ${label} of a recovered structured final turn without a correction turn`, async () => {
+      const message = assistant([{ text }])
+      const node = makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" })
+      const failures: Array<{ reason: string; trigger?: string; errorClass?: string }> = []
+      const dag = Layer.mock(Dag.Service, {
+        store: {
+          getNode: () => Effect.succeed(node),
+          getNodes: () => Effect.succeed([node]),
+          getWorkflow: () =>
+            Effect.succeed({
+              sessionId: "ses_parent",
+              status: "running",
+              projectId: "project",
+              directory: process.cwd(),
+            } as never),
+          setCapturedOutput: () => Effect.void,
+        } as unknown as DagStore.Interface,
+        nodeFailed: (_dagID, _nodeID, reason, trigger, _attempt, errorClass) =>
+          Effect.sync(() => {
+            failures.push({ reason, trigger, errorClass })
+          }),
+      })
+      let turns = 0
+      const { layer: prompt, stub } = mockSessionPromptWithStub({
+        loop: () =>
+          Effect.sync(() => {
+            turns++
+            return message
+          }),
+      })
+      stub.latest = {
+        id: "crun_previous",
+        childSessionID: SessionID.make("ses_final_child"),
+        parentSessionID: SessionID.make("ses_parent"),
+        ownerKind: "dag_node",
+        state: "ended",
+        attempt: 1,
+        detached: false,
+        timeCreated: 0,
+      }
+      const messages = Layer.mock(DagMessages.Service, {
+        latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+        snapshotForTurn: () => Effect.succeed({ ok: true, value: { id: "snap-current" } } as never),
+        guard: (_caller, _input, commit) =>
+          Effect.gen(function* () {
+            return { ok: true, value: yield* commit } as const
+          }),
+      })
+      await Effect.runPromise(
+        continueRecoveredMessageNode("wf", "n", {
+          nodes: [{ id: "n", output_schema: { type: "object" } }],
+        }).pipe(Effect.provide(Layer.mergeAll(dag, prompt, messages))),
+      )
+      expect(turns).toBe(1)
+      expect(failures).toHaveLength(1)
+      expect(failures[0]).toMatchObject({ trigger: "verdict_fail" })
+      expect(failures[0]?.errorClass).toBe(errorClass)
+    })
 
   it("fails the node when the existing child session belongs to another run", async () => {
     const failed: string[] = []

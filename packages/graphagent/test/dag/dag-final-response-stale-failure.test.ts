@@ -143,20 +143,27 @@ function reply(id: string, text: string): SessionV1.WithParts {
 }
 
 describe("final-response failure freshness", () => {
-  for (const mode of ["spawn", "continue", "reconcile"] as const)
+  // `spawn`: the input arrives during the first validation, and the one correction turn takes it with it.
+  // `spawn-corrected`: the correction turn is already spent when the input arrives, so the failed result is
+  // stale and the attempt continues.
+  for (const mode of ["spawn", "spawn-corrected", "continue", "reconcile"] as const)
     it.live(`${mode} continues when parent input arrives during failed schema validation`, () =>
       Effect.gen(function* () {
-        yield* seed(mode === "spawn" ? "pending" : "running")
+        const spawned = mode === "spawn" || mode === "spawn-corrected"
+        yield* seed(spawned ? "pending" : "running")
         const dag = yield* Dag.Service
         const messages = yield* DagMessages.Service
         const database = yield* Database.Service
         const oldTurn = MessageID.ascending()
         const entered = Promise.withResolvers<void>()
         // Worker.postMessage reads this getter when admitting schema validation.
-        // The parent accepts input while that asynchronous worker is pending.
+        // The parent accepts input while that asynchronous worker is pending: the
+        // first one, or the one that checks the correction turn's answer.
+        let validations = 0
+        const arrivesDuring = mode === "spawn-corrected" ? 2 : 1
         const schema: Record<string, unknown> = {
           get type() {
-            entered.resolve()
+            if (++validations === arrivesDuring) entered.resolve()
             return "boolean"
           },
         }
@@ -173,9 +180,10 @@ describe("final-response failure freshness", () => {
             Effect.provideService(DagMessages.Service, messages),
           )
         const { layer: prompt, stub } = mockSessionPromptWithStub({
+          // The correction turn of `spawn` answers correctly; every other turn is still the old answer.
           prompt: () => {
             prompts++
-            return modelTurn('"invalid old answer"')
+            return modelTurn(mode === "spawn" && prompts === 2 ? "true" : '"invalid old answer"')
           },
           loop: () => {
             loops++
@@ -184,7 +192,7 @@ describe("final-response failure freshness", () => {
           cancel: () => Effect.void,
         })
         const injector = yield* Effect.forkChild(Effect.promise(() => entered.promise).pipe(Effect.andThen(accept())))
-        if (mode === "spawn") {
+        if (spawned) {
           const agent = Layer.mock(Agent.Service, {
             get: () =>
               Effect.succeed({
@@ -215,7 +223,7 @@ describe("final-response failure freshness", () => {
             Effect.provide(Layer.mergeAll(agent, sessions, prompt, AgentScheduler.defaultLayer)),
           )
           expect(Exit.isSuccess(yield* Fiber.await(spawned.fiber))).toBe(true)
-          expect({ prompts, loops }).toEqual({ prompts: 1, loops: 1 })
+          expect({ prompts, loops }).toEqual(mode === "spawn" ? { prompts: 2, loops: 0 } : { prompts: 2, loops: 1 })
           // The stale rejection of `nodeFailed` must leave the run active for
           // the continuation: no error settlement, and the completion wins.
           expect(stub.settled[0]?.outcome).toEqual({ type: "completed" })

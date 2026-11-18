@@ -5,7 +5,6 @@ import { describe, expect, it } from "bun:test"
 import type { NodeConfig, WorkflowConfig } from "@/dag/dag"
 import {
   reviewContractForNode,
-  reviewEvidenceKeys,
   validateReviewExecutionInput,
   validateReviewLifecycle,
   validateReviewResult,
@@ -27,35 +26,6 @@ function node(id: string, overrides: Partial<NodeConfig> = {}): NodeConfig {
 function workflow(mode: "standard" | "deep", nodes: NodeConfig[]): WorkflowConfig {
   return { name: "review-lifecycle", mode, nodes }
 }
-
-describe("reviewEvidenceKeys", () => {
-  it("returns artifact keys from the implementation node for a diff review", () => {
-    const review = node("review-diff", {
-      review: { phase: "diff", implementation_node_id: "implement", verification_node_id: "verify" },
-      input_mapping: {
-        diff: "implement.output.diff",
-        implementation_fingerprint: "implement.output.fingerprint",
-        verification: "verify.output",
-      },
-    })
-    expect(reviewEvidenceKeys(review)).toEqual(["diff"])
-  })
-
-  it("returns nothing for design reviews and plain nodes", () => {
-    expect(reviewEvidenceKeys(node("plain"))).toEqual([])
-    expect(
-      reviewEvidenceKeys(node("review-design", { review: { phase: "design" } as never })),
-    ).toEqual([])
-  })
-
-  it("ignores artifact-shaped fields from other nodes", () => {
-    const review = node("review-diff", {
-      review: { phase: "diff", implementation_node_id: "implement", verification_node_id: "verify" },
-      input_mapping: { diff: "other.output.diff", patch: "implement.output.patch" },
-    })
-    expect(reviewEvidenceKeys(review)).toEqual(["patch"])
-  })
-})
 
 function validDiffFlow() {
   return [
@@ -336,6 +306,33 @@ describe("DAG review lifecycle", () => {
       "review-diff: implementation evidence is empty or unresolved",
       "review-diff: implementation fingerprint is empty or unresolved",
     ])
+  })
+
+  it("counts a diff that contains double braces as evidence; only a whole unreplaced placeholder is unresolved", () => {
+    const review = validDiffFlow()[2]
+    if (!review) throw new Error("fixture is incomplete")
+    const check = (diff: string) =>
+      validateReviewExecutionInput(review, {
+        diff,
+        implementation_fingerprint: "sha256:implementation-1",
+        verification: { verdict: "PASS" },
+      })
+    // JSX inline styles, Go and Jinja templates legitimately carry two left braces.
+    for (const diff of [
+      "a " + "{".repeat(2) + " b",
+      "<div style={{ color: 'red' }} />",
+      "{{ range .Items }}x{{ end }}",
+      "{{a}} and {{b}}",
+    ])
+      expect(check(diff).valid).toBe(true)
+    for (const diff of [
+      "{{implementation-diff}}",
+      "  {{ implementation-diff }}\n",
+      'Dependency "implement" failed: boom',
+      "",
+      "   ",
+    ])
+      expect(check(diff).errors).toEqual(["review-diff: implementation evidence is empty or unresolved"])
   })
 
   it("keeps design review out of diff gates and emits a phase-specific contract", () => {

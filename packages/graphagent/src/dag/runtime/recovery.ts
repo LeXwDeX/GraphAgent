@@ -1085,13 +1085,9 @@ export function continueRecoveredMessageNode(
  * (capture.ts settleCapturedOutput). Resolves the implementation fingerprint
  * from durable sibling rows — the same source input_mapping reads from — then
  * delegates. An unresolvable fingerprint fails conservatively: re-running the
- * review is always safe; completing an unvalidated one is not.
- *
- * Known asymmetry vs the spawn path: loop.ts passes the fingerprint through
- * sanitizeInput before spawning, this path reads the raw durable value. A
- * fingerprint the sanitizer would rewrite can therefore only produce a
- * spurious mismatch → forced re-run, never a false accept; typical hashes are
- * untouched by the sanitizer.
+ * review is always safe; completing an unvalidated one is not. The spawn path
+ * reads the same raw durable value: nothing rewrites a mapped fingerprint on
+ * its way into the prompt.
  */
 export function recoveredSettlement(
   nodeConfig: Pick<
