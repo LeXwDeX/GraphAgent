@@ -47,6 +47,8 @@ export function unsubmitted(attempt: number): string {
 
 /** The tool result for a submit_analysis call that arrives after an analysis was already accepted. */
 export const ALREADY_ACCEPTED = "An analysis was already accepted. Stop now and do not call any more tools."
+/** The tool result for a submit_analysis call that arrives after the last attempt was used, in the same response. */
+export const EXHAUSTED = `Attempts exhausted: all ${MAX_ATTEMPTS} attempts were used, so this submission was not checked and nothing was recorded. The analysis has failed; stop now and do not call any more tools.`
 export const ACCEPTED = "Analysis accepted. Stop now and do not call any more tools."
 
 export * as LoopFeedback from "./feedback"

@@ -25,9 +25,15 @@ export const NAMES = ["read_file", "list_dir", "grep", "bash", SUBMIT] as const
 
 /** What `submit_analysis` has done so far in one analysis. The tool writes it, the driver reads it. */
 export interface Submission {
-  /** The first submission that decoded and passed V1-V8. Once set, later calls change nothing. */
+  /**
+   * The first submission that decoded and passed V1-V8. Once set, later calls change nothing, and it was
+   * accepted within the attempt cap: nothing is decoded or accepted after the last attempt.
+   */
   accepted: LoopAnalysisResult | undefined
-  /** Submissions that were not accepted, plus stops without a submission (the driver counts those). */
+  /**
+   * Submissions that were not accepted, plus stops without a submission (the driver counts those). Never
+   * above `MAX_ATTEMPTS`: attempts are counted in `reject`, which stops counting at the cap.
+   */
   rejected: number
   /** The last rejection, as the model was told and as the rules it broke. */
   last: { readonly text: string; readonly violations: ReadonlyArray<LoopValidate.Violation> } | undefined
@@ -37,12 +43,22 @@ export function submission(): Submission {
   return { accepted: undefined, rejected: 0, last: undefined }
 }
 
-/** Records one rejected attempt and returns the text the model reads. */
+/** Whether every attempt has been used. From then on nothing is accepted and nothing counts as another attempt. */
+export function exhausted(state: Submission): boolean {
+  return state.rejected >= LoopFeedback.MAX_ATTEMPTS
+}
+
+/**
+ * Records one rejected attempt and returns the text the model reads. The only place attempts are counted, so
+ * the cap holds for every path that gets here: a submission, an unparsable one the driver finds afterwards, a
+ * stop without a submission. Past the cap it counts nothing and keeps the last real rejection as it was.
+ */
 export function reject(
   state: Submission,
   text: (attempt: number) => string,
   violations: ReadonlyArray<LoopValidate.Violation> = [],
 ): string {
+  if (exhausted(state)) return LoopFeedback.EXHAUSTED
   state.rejected += 1
   const message = text(state.rejected)
   state.last = { text: message, violations }
@@ -66,7 +82,11 @@ export function build(deps: BuildDeps): Record<string, Tool> {
     execute: async (args: unknown) => {
       deps.signal.throwIfAborted()
       const { submission: state } = deps
+      // A response can carry several submissions, and every one of them runs. The first accepted one stands and
+      // is never replaced; once the last attempt was used, later ones are refused without being decoded, so
+      // no response can get an analysis accepted as a fourth attempt.
       if (state.accepted) return { output: LoopFeedback.ALREADY_ACCEPTED }
+      if (exhausted(state)) return { output: LoopFeedback.EXHAUSTED }
 
       const decoded = decode(args)
       if (!decoded.ok) return { output: reject(state, (attempt) => LoopFeedback.malformed(attempt, decoded.detail)) }

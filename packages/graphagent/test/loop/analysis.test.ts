@@ -145,6 +145,49 @@ const brokenSubmit =
       LLMEvent.stepFinish({ index: 0, reason: "tool-calls", usage: USAGE }),
       LLMEvent.finish({ reason: "tool-calls", usage: USAGE }),
     ])
+/** One response: a submission that runs (and is rejected), then one whose arguments the SDK could not parse. */
+const rejectedThenBroken =
+  (value: unknown): Script =>
+  (input) =>
+    Stream.unwrap(
+      Effect.promise(async () => {
+        input.onAttemptActivity?.("tool-executed")
+        await input.tools.submit_analysis.execute!(value, {
+          toolCallId: "call_ran",
+          messages: [],
+          abortSignal: new AbortController().signal,
+        })
+        return Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call_ran", name: "submit_analysis", input: value }),
+          LLMEvent.toolCall({ id: "call_broken", name: "submit_analysis", input: "{broken" }),
+          LLMEvent.toolError({
+            id: "call_broken",
+            name: "submit_analysis",
+            message: "Invalid input for tool submit_analysis: JSON parsing failed",
+          }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls", usage: USAGE }),
+          LLMEvent.finish({ reason: "tool-calls", usage: USAGE }),
+        ])
+      }),
+    )
+/** One response with several submissions whose arguments the SDK could not parse: none of them reaches the tool. */
+const brokenSubmits =
+  (count: number): Script =>
+  () =>
+    Stream.fromIterable([
+      LLMEvent.stepStart({ index: 0 }),
+      ...Array.from({ length: count }, (_, index) => [
+        LLMEvent.toolCall({ id: `call_broken_${index}`, name: "submit_analysis", input: "{broken" }),
+        LLMEvent.toolError({
+          id: `call_broken_${index}`,
+          name: "submit_analysis",
+          message: "Invalid input for tool submit_analysis: JSON parsing failed",
+        }),
+      ]).flat(),
+      LLMEvent.stepFinish({ index: 0, reason: "tool-calls", usage: USAGE }),
+      LLMEvent.finish({ reason: "tool-calls", usage: USAGE }),
+    ])
 const list: Script = round([{ id: "call_list", name: "list_dir", args: { path: "." } }])
 const chat: Script = round([], { text: "I am done thinking out loud." })
 /** A response that never ends; `started` completes when the request begins, so a test can act mid-request. */
@@ -670,6 +713,107 @@ describe("LoopAnalysis conversation (#1328)", () => {
         const rejected = yield* analyse(session.id, { prior, humans: [{ id: "msg_other", text: "make it bigger" }] })
         expect(failure(rejected).kind).toBe("invalid_output")
         expect(last(0)).not.toContain("accepted")
+      }),
+    ),
+  )
+})
+
+// ── the attempt cap and the first accepted result ──────────────
+
+// A response can hold several submissions, and every one of them runs. The cap of three attempts, and "the
+// first accepted result stands", must hold inside one response, not only between responses.
+describe("LoopAnalysis attempt cap (#1328)", () => {
+  const bad = result({ intent: intent({ acceptance: [] }) })
+  const two = (first: unknown, second: unknown): Script =>
+    round([
+      { id: "call_a", name: "submit_analysis", args: first },
+      { id: "call_b", name: "submit_analysis", args: second },
+    ])
+
+  it.effect("an invalid submission followed by a valid one in the same response cannot reach a fourth attempt", () =>
+    withSession((session) =>
+      Effect.gen(function* () {
+        // Two attempts are used; the third response holds the last (invalid) attempt and a valid one behind it.
+        state.scripts = [submit(bad, "call_1"), submit(bad, "call_2"), two(bad, result())]
+        const outcome = yield* analyse(session.id)
+
+        const reported = failure(outcome)
+        expect(reported.kind).toBe("invalid_output")
+        if (reported.kind !== "invalid_output") return
+        expect(reported.detail).toContain("Attempt 3 of 3; no attempts are left")
+        expect(outcome.type).toBe("failed")
+        expect(outcome.attempts).toBe(3)
+        expect(outcome.steps).toBe(3)
+        expect(state.inputs).toHaveLength(3)
+      }),
+    ),
+  )
+
+  it.effect("the third attempt may still be the one that is accepted", () =>
+    withSession((session) =>
+      Effect.gen(function* () {
+        state.scripts = [submit(bad, "call_1"), submit(bad, "call_2"), submit(result(), "call_3")]
+        const outcome = ok(yield* analyse(session.id))
+
+        expect(outcome.result).toEqual(result())
+        expect(outcome.attempts).toBe(3)
+        expect(outcome.steps).toBe(3)
+      }),
+    ),
+  )
+
+  it.effect("two valid submissions in one response: the first is the result and the second changes nothing", () =>
+    withSession((session) =>
+      Effect.gen(function* () {
+        const first = result({ reason: "The first analysis." })
+        const second = result({ reason: "A second, different analysis." })
+        state.scripts = [two(first, second)]
+        const outcome = ok(yield* analyse(session.id))
+
+        expect(outcome.result).toEqual(first)
+        expect(outcome.attempts).toBe(1)
+        expect(outcome.steps).toBe(1)
+        expect(state.inputs).toHaveLength(1)
+      }),
+    ),
+  )
+
+  it.effect("a valid submission followed by an invalid one in the same response is accepted as one attempt", () =>
+    withSession((session) =>
+      Effect.gen(function* () {
+        state.scripts = [submit(bad, "call_1"), submit(bad, "call_2"), two(result(), bad)]
+        const outcome = ok(yield* analyse(session.id))
+
+        expect(outcome.result).toEqual(result())
+        expect(outcome.attempts).toBe(3)
+      }),
+    ),
+  )
+
+  it.effect("unparsable submissions that cross the cap together count up to it and no further", () =>
+    withSession((session) =>
+      Effect.gen(function* () {
+        // Two attempts are used; one response then holds two submissions the SDK could not parse.
+        state.scripts = [submit(bad, "call_1"), submit(bad, "call_2"), brokenSubmits(2)]
+        const outcome = yield* analyse(session.id)
+
+        expect(failure(outcome).kind).toBe("invalid_output")
+        expect(outcome.attempts).toBe(3)
+        expect(outcome.steps).toBe(3)
+        expect(state.inputs).toHaveLength(3)
+      }),
+    ),
+  )
+
+  it.effect("an unparsable submission in the response that used the last attempt is not a fourth", () =>
+    withSession((session) =>
+      Effect.gen(function* () {
+        state.scripts = [submit(bad, "call_1"), submit(bad, "call_2"), rejectedThenBroken(bad)]
+        const outcome = yield* analyse(session.id)
+
+        expect(failure(outcome).kind).toBe("invalid_output")
+        expect(outcome.attempts).toBe(3)
+        expect(state.inputs).toHaveLength(3)
       }),
     ),
   )

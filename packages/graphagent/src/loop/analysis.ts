@@ -363,6 +363,10 @@ export const layer = Layer.effect(
           meter.usage.reasoning += step.collected.usage.reasoning
         }
 
+        // Attempts are capped where they are counted and where a submission is accepted (the tool), so a result
+        // is only ever accepted inside the cap. Exhaustion is decided first so that stays true here too: attempts
+        // that ran out never end as a success, whatever else the response held.
+        if (LoopTools.exhausted(submission)) return invalid(meter) satisfies Converse
         if (submission.accepted) return { type: "ok", result: submission.accepted } satisfies Converse
         if (step.error) {
           const error = MessageV2.fromError(step.error.cause, {
@@ -381,7 +385,7 @@ export const layer = Layer.effect(
             LoopTools.reject(submission, (attempt) => LoopFeedback.malformed(attempt, detail)),
           )
         }
-        if (submission.rejected >= LoopFeedback.MAX_ATTEMPTS) return invalid(meter) satisfies Converse
+        if (LoopTools.exhausted(submission)) return invalid(meter) satisfies Converse
 
         const turn = LoopStep.assistant(step.collected)
         const results = LoopStep.results(step.collected, ready.outputs)
@@ -392,7 +396,7 @@ export const layer = Layer.effect(
         }
         // The model stopped without calling submit_analysis: that is an attempt too.
         const nudge = LoopTools.reject(submission, LoopFeedback.unsubmitted)
-        if (submission.rejected >= LoopFeedback.MAX_ATTEMPTS) return invalid(meter) satisfies Converse
+        if (LoopTools.exhausted(submission)) return invalid(meter) satisfies Converse
         messages.push({ role: "user", content: nudge })
       }
     })

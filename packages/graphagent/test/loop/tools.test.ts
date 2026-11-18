@@ -258,3 +258,140 @@ describe("submit_analysis (#1328)", () => {
     expect(LoopTools.decode(submitted(result()))).toEqual({ ok: true, value: result() })
   })
 })
+
+/** The calls of one response: they all start together, as the SDK runs them, and each answers on its own. */
+const callAll = (tools: Record<string, Tool>, calls: ReadonlyArray<{ id: string; args: unknown }>) =>
+  Effect.promise(() =>
+    Promise.all(
+      calls.map(async (item) => {
+        const value: unknown = await tools.submit_analysis?.execute?.(item.args, {
+          toolCallId: item.id,
+          messages: [],
+          abortSignal: new AbortController().signal,
+        })
+        return { output: LoopTools.render(value) }
+      }),
+    ),
+  )
+
+// Several submissions can arrive in one response and every one of them runs. The cap on attempts and the
+// "first accepted stands" rule are therefore enforced by the tool itself, not left to the driver.
+describe("submit_analysis attempt cap (#1328)", () => {
+  const bad = () => submitted(result({ intent: intent({ acceptance: [] }) }))
+
+  it.instance("refuses a valid submission that follows the last attempt in the same response", () =>
+    Effect.gen(function* () {
+      const { directory } = yield* TestInstance
+      const { tools, submission } = assemble(directory, yield* ChildProcessSpawner, yield* FSUtil.Service)
+      yield* call(tools, "submit_analysis", bad(), "call_1")
+      yield* call(tools, "submit_analysis", bad(), "call_2")
+      expect(submission.rejected).toBe(2)
+
+      // The third attempt is rejected; the valid one right behind it would be a fourth.
+      const [third, fourth] = yield* callAll(tools, [
+        { id: "call_3", args: bad() },
+        { id: "call_4", args: submitted(result()) },
+      ])
+
+      expect(third?.output).toContain("Attempt 3 of 3; no attempts are left")
+      expect(fourth?.output).toBe(LoopFeedback.EXHAUSTED)
+      expect(fourth?.output).toContain("Attempts exhausted")
+      expect(submission.accepted).toBeUndefined()
+      expect(LoopTools.exhausted(submission)).toBe(true)
+      // Nothing past the cap counts as another attempt, and what the model last read is still the third.
+      expect(submission.rejected).toBe(3)
+      expect(submission.last?.text).toContain("Attempt 3 of 3")
+    }),
+  )
+
+  it.instance("refuses everything once the attempts are used, valid or not, without decoding it", () =>
+    Effect.gen(function* () {
+      const { directory } = yield* TestInstance
+      const { tools, submission } = assemble(directory, yield* ChildProcessSpawner, yield* FSUtil.Service)
+      for (const id of ["call_1", "call_2", "call_3"]) yield* call(tools, "submit_analysis", bad(), id)
+      const last = submission.last
+
+      const outputs = yield* callAll(tools, [
+        { id: "call_4", args: submitted(result()) },
+        { id: "call_5", args: bad() },
+        { id: "call_6", args: "not even an object" },
+      ])
+
+      expect(outputs.map((item) => item.output)).toEqual([
+        LoopFeedback.EXHAUSTED,
+        LoopFeedback.EXHAUSTED,
+        LoopFeedback.EXHAUSTED,
+      ])
+      expect(submission.accepted).toBeUndefined()
+      expect(submission.rejected).toBe(3)
+      expect(submission.last).toBe(last)
+    }),
+  )
+
+  it.instance("the third attempt may still be the one that is accepted", () =>
+    Effect.gen(function* () {
+      const { directory } = yield* TestInstance
+      const { tools, submission } = assemble(directory, yield* ChildProcessSpawner, yield* FSUtil.Service)
+      yield* call(tools, "submit_analysis", bad(), "call_1")
+      yield* call(tools, "submit_analysis", bad(), "call_2")
+
+      expect((yield* call(tools, "submit_analysis", submitted(result()), "call_3")).output).toBe(LoopFeedback.ACCEPTED)
+
+      expect(submission.accepted).toEqual(result())
+      expect(submission.rejected).toBe(2)
+      expect(LoopTools.exhausted(submission)).toBe(false)
+    }),
+  )
+
+  it.instance("two valid submissions in one response: the first stands, the second never replaces it", () =>
+    Effect.gen(function* () {
+      const { directory } = yield* TestInstance
+      const { tools, submission } = assemble(directory, yield* ChildProcessSpawner, yield* FSUtil.Service)
+      const first = result({ reason: "The first analysis." })
+      const second = result({ reason: "A second, different analysis." })
+
+      const [one, two] = yield* callAll(tools, [
+        { id: "call_1", args: submitted(first) },
+        { id: "call_2", args: submitted(second) },
+      ])
+
+      expect(one?.output).toBe(LoopFeedback.ACCEPTED)
+      expect(two?.output).toBe(LoopFeedback.ALREADY_ACCEPTED)
+      expect(submission.accepted).toEqual(first)
+      expect(submission.rejected).toBe(0)
+    }),
+  )
+
+  it.instance("a submission after an accepted one is not an attempt, even with the cap in sight", () =>
+    Effect.gen(function* () {
+      const { directory } = yield* TestInstance
+      const { tools, submission } = assemble(directory, yield* ChildProcessSpawner, yield* FSUtil.Service)
+      yield* call(tools, "submit_analysis", bad(), "call_1")
+      yield* call(tools, "submit_analysis", bad(), "call_2")
+
+      const [accepted, ...later] = yield* callAll(tools, [
+        { id: "call_3", args: submitted(result()) },
+        { id: "call_4", args: bad() },
+        { id: "call_5", args: bad() },
+      ])
+
+      expect(accepted?.output).toBe(LoopFeedback.ACCEPTED)
+      expect(later.map((item) => item.output)).toEqual([LoopFeedback.ALREADY_ACCEPTED, LoopFeedback.ALREADY_ACCEPTED])
+      expect(submission.accepted).toEqual(result())
+      expect(submission.rejected).toBe(2)
+    }),
+  )
+
+  test("reject stops counting at the cap and keeps the last real rejection", () => {
+    const state = LoopTools.submission()
+    const texts = [1, 2, 3].map(() => LoopTools.reject(state, (attempt) => `rejected ${attempt}`))
+    expect(texts).toEqual(["rejected 1", "rejected 2", "rejected 3"])
+    expect(state.rejected).toBe(3)
+
+    // A stop without a submission, or an unparsable one the driver finds afterwards, comes through here too.
+    expect(LoopTools.reject(state, (attempt) => `rejected ${attempt}`)).toBe(LoopFeedback.EXHAUSTED)
+    expect(LoopTools.reject(state, LoopFeedback.unsubmitted)).toBe(LoopFeedback.EXHAUSTED)
+    expect(state.rejected).toBe(3)
+    expect(state.last?.text).toBe("rejected 3")
+  })
+})
