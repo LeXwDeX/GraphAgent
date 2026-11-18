@@ -931,7 +931,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
         name: "DagDelivery.deliverWake (idle-Status wake delivery path)",
         source: deliveryFile!.source,
         from: 'const deliverWake = Effect.fn("DagDelivery.deliverWake")',
-        to: "// The in-flight reservation must have a finite lifetime",
+        to: "// The claim must have a finite lifetime",
       },
     ]
     const unguarded: string[] = []
@@ -2194,8 +2194,8 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             // Race: delete SES_A while the delivery is parked — FK cascade wipes
             // the wake rows out from under the in-flight delivery.
             yield* session.remove(SES_A as never)
-            // Release: the parked result fails; tryDeliverWake's catchCause must
-            // absorb it (no defect) and the finally must free wakeInFlight.
+            // Release: the parked result fails; the claim's catchCause must
+            // absorb it (no defect) and the inbox drain must give the session back.
             release()
             yield* Effect.sleep("200 millis")
             // Subscription survival: an idle for a DIFFERENT session still reaches

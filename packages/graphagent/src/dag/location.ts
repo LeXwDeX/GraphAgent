@@ -29,8 +29,10 @@ import { eq } from "drizzle-orm"
 import { execFileSync } from "node:child_process"
 import { realpathSync, statSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
+import { ChildProcess } from "effect/process"
 import { Database } from "@graphagent/core/database/database"
+import { AppProcess } from "@graphagent/core/process"
 import { Hash } from "@graphagent/core/util/hash"
 import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
@@ -159,13 +161,47 @@ const gitOutput = (directory: string, args: string[], input?: string): string | 
 }
 
 /**
+ * #1344: `gitOutput` for the target fingerprint, as a child process of the app's
+ * process runner (`AppProcess`, the one every effectful git caller uses) instead
+ * of `execFileSync`: waiting for git no longer blocks the event loop, and an
+ * interrupted caller kills the child. The command line, the limits, and the
+ * degradation are exactly `gitOutput`'s: a git that cannot be spawned (or be
+ * given the path), exits non-zero, times out, or overruns the output cap yields
+ * `undefined`; only an interruption gets through. No config flags are added
+ * (unlike `Git.Service`), so the value is the one `execFileSync` produced for
+ * the same tree.
+ */
+const gitOutputAsync = Effect.fnUntraced(
+  function* (directory: string, args: string[], input?: string) {
+    const appProcess = yield* AppProcess.Service
+    const result = yield* appProcess.run(
+      ChildProcess.make("git", ["-C", directory, ...args], {
+        extendEnv: true,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+      }),
+      {
+        timeout: FINGERPRINT_GIT_TIMEOUT_MS,
+        maxOutputBytes: FINGERPRINT_GIT_MAX_BUFFER,
+        ...(input !== undefined ? { stdin: input } : {}),
+      },
+    )
+    return result.exitCode === 0 && !result.stdoutTruncated ? result.stdout.toString("utf8") : undefined
+  },
+  Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))),
+)
+
+/**
  * #944: identity of the untracked file set, respecting ignore rules.
  * Paths, sizes, and mtimes are always included; content hashes (git
  * hash-object) are added for a bounded number of files so an editor touch
  * with unchanged content does not change the value on ordinary trees.
  */
-function untrackedFingerprint(directory: string): string {
-  const listing = gitOutput(directory, ["ls-files", "-o", "--exclude-standard", "-z"])
+const untrackedFingerprint = Effect.fnUntraced(function* (
+  directory: string,
+): Effect.fn.Return<string, never, AppProcess.Service> {
+  const listing = yield* gitOutputAsync(directory, ["ls-files", "-o", "--exclude-standard", "-z"])
   if (listing === undefined) return "unavailable"
   const paths = listing
     .split("\0")
@@ -188,13 +224,13 @@ function untrackedFingerprint(directory: string): string {
       metadata.push(`${path}\0missing`)
     }
   }
-  const content =
+  const hashed =
     hashable.length === 0
-      ? "metadata-only"
-      : (gitOutput(directory, ["hash-object", "--no-filters", "--stdin-paths"], `${hashable.join("\n")}\n`)?.trim() ??
-        "metadata-only")
+      ? undefined
+      : yield* gitOutputAsync(directory, ["hash-object", "--no-filters", "--stdin-paths"], `${hashable.join("\n")}\n`)
+  const content = hashed?.trim() ?? "metadata-only"
   return Hash.sha256(JSON.stringify([metadata, content]))
-}
+})
 
 /**
  * #944: the target fingerprint recorded at workflow start and before a
@@ -202,15 +238,25 @@ function untrackedFingerprint(directory: string): string {
  * Non-git directories and unborn HEADs get the stable `none` marker. The
  * computation runs a fixed set of git commands; `git diff --binary` is the
  * main cost and is bounded by FINGERPRINT_GIT_MAX_BUFFER.
+ *
+ * #1344: asynchronous. Every git command is a child process of the app's
+ * process runner, so the event loop keeps turning while they run; the hashing
+ * and the per-file stats of the untracked listing stay inline. The value, the
+ * comparison, and the fallbacks are those of the synchronous version it
+ * replaced. The runner comes from its default layer, so no caller's layer
+ * requirements change. Never fails.
  */
-export const fingerprintTarget = (directory: string): DagEvent.TargetFingerprint => {
+export const fingerprintTarget = Effect.fn("DagLocation.fingerprintTarget")(function* (
+  directory: string,
+): Effect.fn.Return<DagEvent.TargetFingerprint, never, AppProcess.Service> {
   if (!directory) return { kind: "none" }
-  if (gitOutput(directory, ["rev-parse", "--is-inside-work-tree"])?.trim() !== "true") return { kind: "none" }
-  const head = gitOutput(directory, ["rev-parse", "--verify", "HEAD"])?.trim()
+  const inside = yield* gitOutputAsync(directory, ["rev-parse", "--is-inside-work-tree"])
+  if (inside?.trim() !== "true") return { kind: "none" }
+  const head = (yield* gitOutputAsync(directory, ["rev-parse", "--verify", "HEAD"]))?.trim()
   if (!head) return { kind: "none" }
-  const binary = gitOutput(directory, ["diff", "--binary", "HEAD"])
+  const binary = yield* gitOutputAsync(directory, ["diff", "--binary", "HEAD"])
   const diff = binary === undefined ? "unavailable" : binary.length === 0 ? "clean" : Hash.sha256(binary)
-  const untracked = untrackedFingerprint(directory)
+  const untracked = yield* untrackedFingerprint(directory)
   return {
     kind: "git",
     head,
@@ -218,7 +264,7 @@ export const fingerprintTarget = (directory: string): DagEvent.TargetFingerprint
     untracked,
     value: Hash.sha256(JSON.stringify([head, diff, untracked])),
   }
-}
+}, Effect.provide(AppProcess.defaultLayer))
 
 /**
  * #944: a missing fingerprint cannot prove a mismatch, and two `none` markers
@@ -325,6 +371,60 @@ export const resolveWorkspace = (workspace: string, ownerDirectory: string): Wor
   }
   return { _tag: "ok", directory }
 }
+
+/**
+ * #1344: what `retarget` reads from git and the disk. It is taken before the
+ * write transaction opens (ADR-0008 decision 3: a transaction body takes
+ * database work only), against the workflow row as the workflow lock sees it,
+ * and the transaction applies it only while the row still names the same
+ * directories (`observationHolds`). A row that moved in between, which only
+ * another process or a session re-stamp can cause, rejects the call and leaves
+ * the retry to the caller.
+ */
+export type TargetObservation =
+  | {
+      readonly _tag: "ok"
+      /** The owner directory the workspace was resolved against. */
+      readonly ownerDirectory: string
+      /** The resolved workspace the call asked for; undefined when it asked for none. */
+      readonly toDirectory: string | undefined
+      /** The tree that was fingerprinted: the new workspace, else the bound one, else the owner. */
+      readonly executionDirectory: string
+      readonly fingerprint: DagEvent.TargetFingerprint
+    }
+  | { readonly _tag: "invalid"; readonly ownerDirectory: string; readonly reason: string }
+
+/**
+ * Resolve the requested workspace (when there is one) and fingerprint the tree
+ * the retarget will bind. An invalid workspace is reported as such and nothing
+ * is fingerprinted, as the check order of `retarget` has always been.
+ */
+export const observeTarget = Effect.fn("DagLocation.observeTarget")(function* (
+  row: { readonly directory: string; readonly executionDirectory?: string | null },
+  workspace: string | undefined,
+): Effect.fn.Return<TargetObservation> {
+  const ownerDirectory = row.directory
+  const resolved = workspace === undefined ? undefined : resolveWorkspace(workspace, ownerDirectory)
+  if (resolved?._tag === "invalid") return { _tag: "invalid", ownerDirectory, reason: resolved.reason }
+  const toDirectory = resolved?.directory
+  const executionDirectory = toDirectory ?? row.executionDirectory ?? row.directory
+  return {
+    _tag: "ok",
+    ownerDirectory,
+    toDirectory,
+    executionDirectory,
+    fingerprint: yield* fingerprintTarget(executionDirectory),
+  }
+})
+
+/** Whether the row still names the directories `observed` was taken against. */
+export const observationHolds = (
+  observed: TargetObservation,
+  row: { readonly directory: string; readonly executionDirectory?: string | null },
+): boolean =>
+  observed.ownerDirectory === row.directory &&
+  (observed._tag === "invalid" ||
+    observed.executionDirectory === (observed.toDirectory ?? row.executionDirectory ?? row.directory))
 
 /**
  * The durable execution-location verdict shared by adoption, recovery, spawn,

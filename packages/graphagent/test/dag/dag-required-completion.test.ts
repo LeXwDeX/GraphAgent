@@ -169,6 +169,22 @@ describe("requiredCompletionGaps", () => {
     ])
   })
 
+  it("keeps string output as data when an anyOf or oneOf variant accepts a string", () => {
+    const text = '{"verdict":"FAIL"}'
+    const gate = (schema: Record<string, unknown>) => config([{ ...gateNode, output_schema: schema }])
+    for (const key of ["anyOf", "oneOf"] as const) {
+      // A string variant makes JSON-looking text the node's answer, not a gate contract.
+      const withString = gate({ [key]: [{ type: "number" }, { type: "string" }] })
+      expect(requiredCompletionGaps(withString, [row("gate", "completed", text)])).toEqual([])
+      // A string variant nested in another composition counts; entries that are not schemas are skipped.
+      const nested = gate({ [key]: ["not a schema", { [key]: [{ type: ["null", "string"] }] }] })
+      expect(requiredCompletionGaps(nested, [row("gate", "completed", text)])).toEqual([])
+      // Variants that cannot hold a string leave the output parseable as a verdict.
+      const structured = gate({ [key]: [{ type: "object" }, { type: "number" }] })
+      expect(requiredCompletionGaps(structured, [row("gate", "completed", text)])).toEqual(["gate (verdict FAIL)"])
+    }
+  })
+
   it("ignores optional nodes and passing verdicts", () => {
     expect(
       requiredCompletionGaps(config([gateNode]), [
