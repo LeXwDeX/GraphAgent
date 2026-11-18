@@ -1874,40 +1874,31 @@ export function makePrepare(deps: PrepareDeps) {
 
     // Permission.ask evaluates native rules before configured rules. Use
     // that same split for everything advertised to the model.
-    const [
-      skills,
-      env,
-      languageDocs,
-      instructions,
-      mcpInstructions,
-      goalDocs,
-      hooksDocs,
-      memoryDocs,
-      modelMsgs,
-    ] = yield* Effect.all(
-      [
-        sys.skills(agent, session.permission, nativePermission),
-        sys.environment(model),
-        sys.language(configured.language),
-        instruction.system({ sessionID }).pipe(Effect.orDie),
-        sys.mcp(agent, session.permission, nativePermission),
-        sys.goal(sessionID),
-        sys.hooks(),
-        prepareStage(
-          "memory",
-          sys.memory({
-            sessionID,
-            messages: msgs,
-            main: SessionRole.isRoot(session),
-            lane: SessionRole.isChild(session) ? "child" : "interactive",
+    const [skills, env, languageDocs, instructions, mcpInstructions, goalDocs, hooksDocs, memoryDocs, modelMsgs] =
+      yield* Effect.all(
+        [
+          sys.skills(agent, session.permission, nativePermission),
+          sys.environment(model),
+          sys.language(configured.language),
+          instruction.system({ sessionID }).pipe(Effect.orDie),
+          sys.mcp(agent, session.permission, nativePermission),
+          sys.goal(sessionID),
+          sys.hooks(),
+          prepareStage(
+            "memory",
+            sys.memory({
+              sessionID,
+              messages: msgs,
+              main: SessionRole.isRoot(session),
+              lane: SessionRole.isChild(session) ? "child" : "interactive",
+            }),
+          ),
+          MessageV2.toModelMessagesEffect(msgs, model, {
+            reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
           }),
-        ),
-        MessageV2.toModelMessagesEffect(msgs, model, {
-          reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
-        }),
-      ],
-      { concurrency: "unbounded" },
-    )
+        ],
+        { concurrency: "unbounded" },
+      )
     const system = [
       ...env,
       ...languageDocs,

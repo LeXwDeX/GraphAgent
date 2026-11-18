@@ -1052,18 +1052,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   deps: Deps,
   tools: Record<string, AITool>,
 ) {
-  const {
-    input,
-    run,
-    hooks,
-    permission,
-    context,
-    truncate,
-    reportInterrupt,
-    hookContext,
-    hookDenied,
-    entries,
-  } = deps
+  const { input, run, hooks, permission, context, truncate, reportInterrupt, hookContext, hookDenied, entries } = deps
 
   for (const entry of entries) {
     if (!isMcpEntry(entry)) continue
