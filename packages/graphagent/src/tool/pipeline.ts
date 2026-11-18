@@ -24,9 +24,11 @@ import type { SessionProcessor } from "@/session/processor"
 import { PartID } from "@/session/schema"
 import type { Session } from "@/session/session"
 import { MCP } from "@/mcp"
+import { McpContent } from "@/mcp/content"
 import type { Truncate } from "@/tool/truncate"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MemorySearch } from "@/tool/memory-search"
+import { addCorrections } from "./corrections"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import type { Tool } from "@/tool/tool"
 import type { ToolEntry } from "./registry"
@@ -39,6 +41,7 @@ export { MCP_RESOURCE_TOOLS, MCP_RESOURCE_ORDER, type McpResourceOp } from "./mc
 import type { McpResourceOp } from "./mcp-resource"
 
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
+const { base64Size, formatBytes } = McpContent
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
@@ -656,16 +659,82 @@ function formatMcpResourceContent(server: string, uri: string, content: { conten
   }
 }
 
-function base64Size(value: string) {
-  const trimmed = value.replace(/\s/g, "")
-  const padding = trimmed.endsWith("==") ? 2 : trimmed.endsWith("=") ? 1 : 0
-  return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
+type McpAttachment = Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">
+
+/**
+ * One embedded resource of an MCP result: its text goes to `text`, its blob becomes a file when the type and the size
+ * allow it. Returns whether the blob was left out, in which case a line in `text` says so.
+ */
+function mcpEmbeddedResource(resource: Record<string, unknown>, text: string[], attachments: McpAttachment[]) {
+  if (typeof resource.text === "string" && resource.text) text.push(resource.text)
+  if (typeof resource.blob !== "string" || !resource.blob) return false
+  const uri = typeof resource.uri === "string" ? resource.uri : ""
+  const mime = typeof resource.mimeType === "string" ? resource.mimeType : "application/octet-stream"
+  const size = base64Size(resource.blob)
+  if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
+    text.push(
+      `[Binary MCP resource omitted: ${uri} (${mime}, ${formatBytes(size)}) is not a supported attachment type]`,
+    )
+    return true
+  }
+  if (size > MAX_MCP_RESOURCE_BLOB_BYTES) {
+    text.push(
+      `[Binary MCP resource omitted: ${uri} (${mime}, ${formatBytes(size)}) exceeds ${formatBytes(MAX_MCP_RESOURCE_BLOB_BYTES)}]`,
+    )
+    return true
+  }
+  attachments.push({ type: "file", mime, url: `data:${mime};base64,${resource.blob}`, filename: uri })
+  return false
 }
 
-function formatBytes(value: number) {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`
-  return `${Math.ceil(value / (1024 * 1024))} MB`
+/**
+ * Splits the content of an MCP result into the text the model reads and the files it receives. What cannot be passed
+ * on is replaced by a line that says so (#1447); `droppedContent` and `droppedAttachment` report that it happened,
+ * for the result's `metadata.corrections`.
+ */
+function mcpContentParts(content: unknown, server: string) {
+  const text: string[] = []
+  const attachments: McpAttachment[] = []
+  let droppedContent = false
+  let droppedAttachment = false
+  for (const item of Array.isArray(content) ? content : []) {
+    if (isRecord(item) && item.type === "text" && typeof item.text === "string") {
+      text.push(item.text)
+    } else if (
+      isRecord(item) &&
+      item.type === "image" &&
+      typeof item.mimeType === "string" &&
+      typeof item.data === "string"
+    ) {
+      attachments.push({ type: "file", mime: item.mimeType, url: `data:${item.mimeType};base64,${item.data}` })
+    } else if (isRecord(item) && item.type === "resource" && isRecord(item.resource)) {
+      if (mcpEmbeddedResource(item.resource, text, attachments)) droppedAttachment = true
+    } else {
+      text.push(McpContent.omitted(item, server))
+      droppedContent = true
+    }
+  }
+  return { text, attachments, droppedContent, droppedAttachment }
+}
+
+/**
+ * The metadata of an MCP result: the server's own, whether the text was cut and where the whole of it is saved, and
+ * what was left out of the result (#1447).
+ */
+function mcpResultMetadata(
+  base: Record<string, unknown> | undefined,
+  truncated: Truncate.Result,
+  parts: { droppedContent: boolean; droppedAttachment: boolean },
+): Record<string, unknown> {
+  return addCorrections(
+    {
+      ...base,
+      truncated: truncated.truncated,
+      ...(truncated.truncated && truncated.outputPath !== undefined && { outputPath: truncated.outputPath }),
+    },
+    ...(parts.droppedContent ? ["mcp_content_dropped"] : []),
+    ...(parts.droppedAttachment ? ["attachment_dropped"] : []),
+  )
 }
 
 export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(function* (
@@ -1272,56 +1341,15 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
             if (replacement.present) result = mcpToolOutput(replacement.value)
           }
 
-          const textParts: string[] = []
-          const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []
-          for (const contentItem of result.content) {
-            if (contentItem.type === "text") textParts.push(contentItem.text)
-            else if (contentItem.type === "image") {
-              attachments.push({
-                type: "file",
-                mime: contentItem.mimeType,
-                url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-              })
-            } else if (contentItem.type === "resource") {
-              const { resource } = contentItem
-              if (resource.text) textParts.push(resource.text)
-              if (resource.blob) {
-                const mime = resource.mimeType ?? "application/octet-stream"
-                const size = base64Size(resource.blob)
-                if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
-                  textParts.push(
-                    `[Binary MCP resource omitted: ${resource.uri} (${mime}, ${formatBytes(size)}) is not a supported attachment type]`,
-                  )
-                  continue
-                }
-                if (size > MAX_MCP_RESOURCE_BLOB_BYTES) {
-                  textParts.push(
-                    `[Binary MCP resource omitted: ${resource.uri} (${mime}, ${formatBytes(size)}) exceeds ${formatBytes(MAX_MCP_RESOURCE_BLOB_BYTES)}]`,
-                  )
-                  continue
-                }
-                attachments.push({
-                  type: "file",
-                  mime,
-                  url: `data:${mime};base64,${resource.blob}`,
-                  filename: resource.uri,
-                })
-              }
-            }
-          }
-
-          const truncated = yield* truncate.output(textParts.join("\n\n"), {}, input.agent)
-          const metadata = {
-            ...result.metadata,
-            truncated: truncated.truncated,
-            ...(truncated.truncated && { outputPath: truncated.outputPath }),
-          }
+          const parts = mcpContentParts(result.content, entry.source.server)
+          const truncated = yield* truncate.output(parts.text.join("\n\n"), {}, input.agent)
+          const metadata = mcpResultMetadata(result.metadata, truncated, parts)
 
           const output = {
             title: "",
             metadata,
             output: truncated.content,
-            attachments: attachments.map((attachment) => ({
+            attachments: parts.attachments.map((attachment) => ({
               ...attachment,
               id: PartID.ascending(),
               sessionID: ctx.sessionID,
