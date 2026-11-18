@@ -99,16 +99,28 @@ export function collectChangeFacts(input: {
   }
 }
 
+// Characters that end or break a line, plus the other control characters; a tab stays as it is.
+const LINE_BREAKING = /[\u0000-\u0008\u000a-\u001f\u007f\u0085\u2028\u2029]/g
+
+/**
+ * A path as one line of the block: envelope tags escaped, and every line break or control character written as
+ * an escape (`\n`, `\r`, `\u000b`, ...). A reported path is model text; without this a newline in it would start an
+ * unprefixed line inside the engine's block and slip past the line budget.
+ */
+function factPath(path: string): string {
+  return escapeEnvelopeTags(path).replace(LINE_BREAKING, (char) =>
+    char === "\n" ? "\\n" : char === "\r" ? "\\r" : `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  )
+}
+
 /** The `<engine-facts>` block: differences first, then the recorded paths with their counts, at most
- * `MAX_FACT_LINES` of those lines, the remainder counted. Paths pass through `escapeEnvelopeTags`. */
+ * `MAX_FACT_LINES` of those lines, the remainder counted. Paths pass through `factPath`. */
 export function renderChangeFacts(facts: ChangeFacts): string {
   const differences = [
-    ...facts.reportedNotRecorded.map((path) => `reported, not recorded: ${escapeEnvelopeTags(path)}`),
-    ...facts.recordedNotReported.map((path) => `recorded, not reported: ${escapeEnvelopeTags(path)}`),
+    ...facts.reportedNotRecorded.map((path) => `reported, not recorded: ${factPath(path)}`),
+    ...facts.recordedNotReported.map((path) => `recorded, not reported: ${factPath(path)}`),
   ]
-  const paths = facts.recorded.map(
-    (path) => `- ${escapeEnvelopeTags(path)} ${facts.counts?.get(path) ?? "(no line counts)"}`,
-  )
+  const paths = facts.recorded.map((path) => `- ${factPath(path)} ${facts.counts?.get(path) ?? "(no line counts)"}`)
   const shownDifferences = differences.slice(0, MAX_FACT_LINES)
   const shownPaths = paths.slice(0, MAX_FACT_LINES - shownDifferences.length)
   const hidden = differences.length + paths.length - shownDifferences.length - shownPaths.length

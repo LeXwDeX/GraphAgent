@@ -284,6 +284,28 @@ describe("renderChangeFacts", () => {
     expect(block.match(/<\/?engine-facts/g)).toEqual(["<engine-facts", "</engine-facts"])
   })
 
+  it("writes line breaks and control characters in a path as escapes, so a path stays one line", () => {
+    const block = renderChangeFacts(
+      facts({
+        recorded: ["a\rb.ts", "tab\there.ts", "中文.txt"],
+        reportedNotRecorded: ["fake.ts\nUnprefixed model-controlled instruction", "x\u2028y\u0085z\u000bw\u007f.ts"],
+      }),
+    )
+    const lines = block.split("\n")
+    expect(lines).toEqual([
+      '<engine-facts source="git">',
+      "Measured by the engine from git, not reported by any model.",
+      "reported, not recorded: fake.ts\\nUnprefixed model-controlled instruction",
+      "reported, not recorded: x\\u2028y\\u0085z\\u000bw\\u007f.ts",
+      "recorded paths (3):",
+      "- a\\rb.ts (no line counts)",
+      "- tab\there.ts (no line counts)",
+      "- 中文.txt (no line counts)",
+      "</engine-facts>",
+    ])
+    expect(block).not.toMatch(/[\r\u2028\u2029\u0085]/)
+  })
+
   it("shows at most MAX_FACT_LINES difference and path lines and counts the rest", () => {
     expect(MAX_FACT_LINES).toBe(60)
     const recorded = Array.from({ length: 70 }, (_, index) => `f${String(index).padStart(2, "0")}.ts`)
