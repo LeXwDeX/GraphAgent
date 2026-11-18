@@ -18,6 +18,7 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@graphagent/core/fs-util"
 import * as Bom from "@/util/bom"
+import { FileState } from "@/session/file-state"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -151,6 +152,7 @@ export const EditTool = Tool.define(
     const afs = yield* FSUtil.Service
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
+    const fileState = yield* FileState.Service
 
     return {
       description: DESCRIPTION,
@@ -212,6 +214,7 @@ export const EditTool = Tool.define(
                 if (yield* format.file(filePath)) {
                   contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
                 }
+                yield* fileState.record(ctx.sessionID, filePath, "edit")
                 yield* events.publish(FileSystem.Event.Edited, { file: filePath })
                 yield* events.publish(Watcher.Event.Updated, {
                   file: filePath,
@@ -261,6 +264,7 @@ export const EditTool = Tool.define(
               if (yield* format.file(filePath)) {
                 contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
               }
+              yield* fileState.record(ctx.sessionID, filePath, "edit")
               yield* events.publish(FileSystem.Event.Edited, { file: filePath })
               yield* events.publish(Watcher.Event.Updated, {
                 file: filePath,

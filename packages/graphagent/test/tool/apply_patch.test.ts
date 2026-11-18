@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import path from "path"
+import { createHash } from "node:crypto"
 import * as fs from "fs/promises"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
@@ -7,6 +8,7 @@ import { LSP } from "@/lsp/lsp"
 import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Format } from "../../src/format"
+import { FileState } from "@/session/file-state"
 import { Agent } from "../../src/agent/agent"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Truncate } from "@/tool/truncate"
@@ -22,6 +24,7 @@ const it = testEffect(
     EventV2Bridge.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    FileState.defaultLayer,
   ),
 )
 
@@ -37,6 +40,7 @@ const itWithDiagnostics = testEffect(
     EventV2Bridge.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    FileState.defaultLayer,
   ),
 )
 
@@ -681,6 +685,7 @@ describe("tool.apply_patch diagnostics", () => {
       EventV2Bridge.defaultLayer,
       Truncate.defaultLayer,
       Agent.defaultLayer,
+      FileState.defaultLayer,
     ),
   )
 
@@ -705,5 +710,120 @@ describe("tool.apply_patch diagnostics", () => {
         expect(peak).toBeGreaterThan(1)
       }),
     { git: true },
+  )
+})
+
+describe("tool.apply_patch file state (#1452)", () => {
+  const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
+  const recorded = Effect.fn("ApplyPatchToolTest.recorded")(function* (filepath: string) {
+    return yield* (yield* FileState.Service).get(baseCtx.sessionID, filepath)
+  })
+
+  it.instance("records an added file under the apply_patch source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Add File: added.txt\n+fresh\n*** End Patch" }, ctx)
+
+      const entry = yield* recorded(path.join(test.directory, "added.txt"))
+      expect(entry?.source).toBe("apply_patch")
+      expect(entry?.hash).toBe(sha256("fresh\n"))
+      expect(entry?.size).toBe(6)
+    }),
+  )
+
+  it.instance("records an updated file with the bytes it ended up with", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "update.txt")
+      const bom = String.fromCharCode(0xfeff)
+      yield* writeText(target, `${bom}one\ntwo\n`)
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Update File: update.txt\n@@\n-one\n+uno\n*** End Patch" }, ctx)
+
+      const onDisk = yield* Effect.promise(() => fs.readFile(target))
+      expect(onDisk.toString("utf8")).toBe(`${bom}uno\ntwo\n`)
+      const entry = yield* recorded(target)
+      expect(entry?.source).toBe("apply_patch")
+      expect(entry?.hash).toBe(sha256(onDisk))
+    }),
+  )
+
+  it.instance("records the destination of a move and not the removed source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const source = path.join(test.directory, "from.txt")
+      const destination = path.join(test.directory, "moved", "to.txt")
+      yield* writeText(source, "keep\nold\n")
+
+      yield* execute(
+        {
+          patchText:
+            "*** Begin Patch\n*** Update File: from.txt\n*** Move to: moved/to.txt\n@@\n keep\n-old\n+new\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect((yield* recorded(destination))?.hash).toBe(sha256("keep\nnew\n"))
+      expect(yield* recorded(source)).toBeUndefined()
+    }),
+  )
+
+  it.instance("does not record a deleted file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "gone.txt")
+      yield* writeText(target, "bye\n")
+
+      yield* execute({ patchText: "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch" }, ctx)
+
+      expect(yield* recorded(target)).toBeUndefined()
+    }),
+  )
+
+  it.instance(
+    "records the state the formatter left for every edited file",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const existing = path.join(test.directory, "existing.ts")
+        yield* writeText(existing, "const a = 1\n")
+
+        yield* execute(
+          {
+            patchText:
+              "*** Begin Patch\n*** Add File: added.ts\n+const b = 1\n*** Update File: existing.ts\n@@\n-const a = 1\n+const a = 2\n*** End Patch",
+          },
+          ctx,
+        )
+
+        for (const filepath of [existing, path.join(test.directory, "added.ts")]) {
+          const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+          expect(onDisk.toString("utf8")).toContain("// formatted line")
+          const entry = yield* recorded(filepath)
+          expect(entry?.hash).toBe(sha256(onDisk))
+          expect(entry?.size).toBe(onDisk.byteLength)
+        }
+      }),
+    {
+      config: {
+        formatter: {
+          expand: {
+            extensions: [".ts"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(3), 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
   )
 })

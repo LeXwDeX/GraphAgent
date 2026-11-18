@@ -14,6 +14,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
+import { FileState } from "@/session/file-state"
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -29,6 +30,7 @@ export const WriteTool = Tool.define(
     const fs = yield* FSUtil.Service
     const events = yield* EventV2Bridge.Service
     const format = yield* Format.Service
+    const fileState = yield* FileState.Service
 
     return {
       description: DESCRIPTION,
@@ -66,6 +68,7 @@ export const WriteTool = Tool.define(
             // coordinates, so the pre-format snapshot would hide moved errors.
             contentNew = yield* Bom.syncFile(fs, filepath, desiredBom)
           }
+          yield* fileState.record(ctx.sessionID, filepath, "write")
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })
           yield* events.publish(Watcher.Event.Updated, {
             file: filepath,

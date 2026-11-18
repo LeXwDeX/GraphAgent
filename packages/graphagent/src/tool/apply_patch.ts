@@ -14,6 +14,7 @@ import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@graphagent/core/filesystem"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
+import { FileState } from "@/session/file-state"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -26,6 +27,7 @@ export const ApplyPatchTool = Tool.define(
     const afs = yield* FSUtil.Service
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
+    const fileState = yield* FileState.Service
 
     const run = Effect.fn("ApplyPatchTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -266,6 +268,7 @@ export const ApplyPatchTool = Tool.define(
             // so retain the formatter's output rather than the patch snapshot.
             change.newContent = yield* Bom.syncFile(afs, edited, change.bom)
           }
+          yield* fileState.record(ctx.sessionID, edited, "apply_patch")
           yield* events.publish(FileSystem.Event.Edited, { file: edited })
         }
       }

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
+import { createHash } from "node:crypto"
 import { Effect, Layer } from "effect"
 import path from "path"
 import fs from "fs/promises"
@@ -8,6 +9,7 @@ import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Format } from "../../src/format"
+import { FileState } from "@/session/file-state"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
 import { Agent } from "../../src/agent/agent"
@@ -40,6 +42,7 @@ const it = testEffect(
     CrossSpawnSpawner.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    FileState.defaultLayer,
   ),
 )
 
@@ -56,8 +59,11 @@ const itWithDiagnostics = testEffect(
     CrossSpawnSpawner.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    FileState.defaultLayer,
   ),
 )
+
+const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
 
 const init = Effect.fn("WriteToolTest.init")(function* () {
   const info = yield* WriteTool
@@ -330,4 +336,101 @@ describe("tool.write", () => {
       }),
     )
   })
+})
+
+describe("tool.write file state (#1452)", () => {
+  const recorded = Effect.fn("WriteToolTest.recorded")(function* (filepath: string) {
+    return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+  })
+
+  it.instance("records the written file under the write source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "recorded.txt")
+
+      yield* run({ filePath: filepath, content: "Hello, World!\n" })
+
+      const entry = yield* recorded(filepath)
+      expect(entry?.source).toBe("write")
+      expect(entry?.hash).toBe(sha256("Hello, World!\n"))
+      expect(entry?.size).toBe(14)
+    }),
+  )
+
+  it.instance("records nothing for the other sessions", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "recorded.txt")
+
+      yield* run({ filePath: filepath, content: "mine" })
+
+      const state = yield* FileState.Service
+      expect(yield* state.get(SessionID.make("ses_test-other-session"), filepath)).toBeUndefined()
+    }),
+  )
+
+  it.instance(
+    "records the disk bytes after the formatter stripped the BOM and it was restored",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "formatted.cs")
+        const bom = String.fromCharCode(0xfeff)
+
+        yield* run({ filePath: filepath, content: `${bom}using Up;\n` })
+
+        const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+        expect(onDisk.toString("utf8")).toBe(`${bom}using Up;\n`)
+        const entry = yield* recorded(filepath)
+        expect(entry?.hash).toBe(sha256(onDisk))
+        expect(entry?.size).toBe(onDisk.byteLength)
+      }),
+    {
+      config: {
+        formatter: {
+          stripbom: {
+            extensions: [".cs"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; let text = fs.readFileSync(file, 'utf8'); if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); fs.writeFileSync(file, text, 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "records the state the formatter left, not the requested content",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "expanded.ts")
+
+        yield* run({ filePath: filepath, content: "const x = 1\n" })
+
+        const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+        expect(onDisk.toString("utf8")).not.toBe("const x = 1\n")
+        const entry = yield* recorded(filepath)
+        expect(entry?.hash).toBe(sha256(onDisk))
+        expect(entry?.size).toBe(onDisk.byteLength)
+      }),
+    {
+      config: {
+        formatter: {
+          expand: {
+            extensions: [".ts"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(30), 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
+  )
 })

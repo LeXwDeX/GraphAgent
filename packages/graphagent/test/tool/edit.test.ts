@@ -1,5 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import path from "path"
+import { createHash } from "node:crypto"
 import fs from "fs/promises"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import * as PlatformError from "effect/PlatformError"
@@ -8,6 +9,7 @@ import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Format } from "../../src/format"
+import { FileState } from "@/session/file-state"
 import { Agent } from "../../src/agent/agent"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Truncate } from "@/tool/truncate"
@@ -38,9 +40,12 @@ const layer = Layer.mergeAll(
   EventV2Bridge.defaultLayer,
   Truncate.defaultLayer,
   Agent.defaultLayer,
+  FileState.defaultLayer,
 )
 
 const it = testEffect(layer)
+
+const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
 
 const init = Effect.fn("EditToolTest.init")(function* () {
   const info = yield* EditTool
@@ -914,4 +919,102 @@ describe("tool.edit", () => {
       }),
     )
   })
+})
+
+describe("tool.edit file state (#1452)", () => {
+  const recorded = Effect.fn("EditToolTest.recorded")(function* (filepath: string) {
+    return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+  })
+
+  it.instance("records the edited file under the edit source", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "alpha beta\n")
+
+      yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
+
+      const entry = yield* recorded(filepath)
+      expect(entry?.source).toBe("edit")
+      expect(entry?.hash).toBe(sha256("ALPHA beta\n"))
+      expect(entry?.size).toBe(11)
+    }),
+  )
+
+  it.instance("records a file created through an empty oldString", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fresh.txt")
+
+      yield* run({ filePath: filepath, oldString: "", newString: "created\n" })
+
+      const entry = yield* recorded(filepath)
+      expect(entry?.source).toBe("edit")
+      expect(entry?.hash).toBe(sha256("created\n"))
+    }),
+  )
+
+  it.instance("records the BOM and CRLF bytes the file ended up with", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "windows.cs")
+      const bom = String.fromCharCode(0xfeff)
+      yield* put(filepath, `${bom}one\r\ntwo\r\n`)
+
+      yield* run({ filePath: filepath, oldString: "one", newString: "uno" })
+
+      const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+      expect(onDisk.toString("utf8")).toBe(`${bom}uno\r\ntwo\r\n`)
+      expect((yield* recorded(filepath))?.hash).toBe(sha256(onDisk))
+    }),
+  )
+
+  it.instance(
+    "records the state the formatter left, in both branches",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const existing = path.join(test.directory, "existing.ts")
+        const fresh = path.join(test.directory, "fresh.ts")
+        yield* put(existing, "const a = 1\n")
+
+        yield* run({ filePath: existing, oldString: "a = 1", newString: "a = 2" })
+        yield* run({ filePath: fresh, oldString: "", newString: "const b = 1\n" })
+
+        for (const filepath of [existing, fresh]) {
+          const onDisk = yield* Effect.promise(() => fs.readFile(filepath))
+          expect(onDisk.toString("utf8")).toContain("// formatted line")
+          const entry = yield* recorded(filepath)
+          expect(entry?.hash).toBe(sha256(onDisk))
+          expect(entry?.size).toBe(onDisk.byteLength)
+        }
+      }),
+    {
+      config: {
+        formatter: {
+          expand: {
+            extensions: [".ts"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(3), 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
+  )
+
+  it.instance("does not record a failed edit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "alpha")
+
+      yield* fail({ filePath: filepath, oldString: "missing", newString: "x" })
+
+      expect(yield* recorded(filepath)).toBeUndefined()
+    }),
+  )
 })

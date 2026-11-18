@@ -8,6 +8,7 @@ import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import { FileState } from "@/session/file-state"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { DIR as TRUNCATION_DIR, formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
 
@@ -105,13 +106,14 @@ type Metadata = {
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | LSP.Service | FileState.Service | Scope.Scope
 >(
   "read",
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
+    const fileState = yield* FileState.Service
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
@@ -511,6 +513,7 @@ export const ReadTool = Tool.define<
       output += "\n</content>"
 
       yield* warm(filepath)
+      yield* fileState.record(ctx.sessionID, filepath, "read")
 
       if (loaded.length > 0) {
         output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`

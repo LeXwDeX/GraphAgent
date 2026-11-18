@@ -2,6 +2,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer, Schema, Stream } from "effect"
 import path from "path"
+import { createHash } from "node:crypto"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -12,6 +13,7 @@ import { LSP } from "@/lsp/lsp"
 import { Permission } from "../../src/permission"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Instruction } from "../../src/session/instruction"
+import { FileState } from "@/session/file-state"
 import { Parameters, ReadTool } from "../../src/tool/read"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
@@ -48,6 +50,7 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
     FSUtil.defaultLayer,
     CrossSpawnSpawner.defaultLayer,
     Instruction.defaultLayer,
+    FileState.defaultLayer,
     LSP.defaultLayer,
     Ripgrep.defaultLayer,
     Truncate.defaultLayer,
@@ -927,6 +930,100 @@ describe("tool.read binary detection", () => {
 
       const err = yield* fail(dir, { filePath: path.join(dir, "module.wasm") })
       expect(err.message).toContain("Cannot read binary file")
+    }),
+  )
+})
+
+describe("tool.read file state (#1452)", () => {
+  const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
+  const recorded = (dir: string, filepath: string) =>
+    provideInstance(dir)(
+      Effect.gen(function* () {
+        return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+      }),
+    )
+
+  it.live("records a text read under the read source", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "notes.txt")
+      yield* put(file, "line one\nline two\n")
+
+      yield* exec(dir, { filePath: file })
+
+      const entry = yield* recorded(dir, file)
+      expect(entry?.source).toBe("read")
+      expect(entry?.hash).toBe(sha256("line one\nline two\n"))
+      expect(entry?.size).toBe(18)
+    }),
+  )
+
+  it.live("records the whole file for a partial read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "long.txt")
+      const content = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join("\n") + "\n"
+      yield* put(file, content)
+
+      yield* exec(dir, { filePath: file, offset: 10, limit: 5 })
+
+      expect((yield* recorded(dir, file))?.hash).toBe(sha256(content))
+    }),
+  )
+
+  it.live("records a relative path under its absolute path", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "rel.txt")
+      yield* put(file, "relative")
+
+      yield* exec(dir, { filePath: "rel.txt" })
+
+      expect((yield* recorded(dir, file))?.hash).toBe(sha256("relative"))
+    }),
+  )
+
+  it.live("does not record a directory listing", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "sub", "a.txt"), "a")
+
+      yield* exec(dir, { filePath: path.join(dir, "sub") })
+
+      expect(yield* recorded(dir, path.join(dir, "sub"))).toBeUndefined()
+      expect(yield* recorded(dir, path.join(dir, "sub", "a.txt"))).toBeUndefined()
+    }),
+  )
+
+  it.live("does not record an image read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const image = path.join(dir, "image.png")
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+        "base64",
+      )
+      yield* put(image, png)
+
+      const result = yield* exec(dir, { filePath: image })
+
+      expect(result.attachments).toHaveLength(1)
+      expect(yield* recorded(dir, image)).toBeUndefined()
+    }),
+  )
+
+  it.live("does not record a read that failed", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const binary = path.join(dir, "module.wasm")
+      yield* put(binary, "not really wasm")
+      const missing = path.join(dir, "missing.txt")
+
+      yield* fail(dir, { filePath: binary })
+      yield* fail(dir, { filePath: missing })
+
+      expect(yield* recorded(dir, binary)).toBeUndefined()
+      expect(yield* recorded(dir, missing)).toBeUndefined()
     }),
   )
 })

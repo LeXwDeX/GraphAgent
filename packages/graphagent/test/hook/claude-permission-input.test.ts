@@ -10,6 +10,7 @@ import { SessionHooks } from "@/hook/session-hooks"
 import { Permission } from "@/permission"
 import { SessionTools } from "@/session/tools"
 import { ReadTool } from "@/tool/read"
+import { FileState } from "@/session/file-state"
 import { WriteTool } from "@/tool/write"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "@/mcp"
@@ -39,6 +40,7 @@ const hookLayer = SettingsHook.layer.pipe(
 const toolDependencies = Layer.mergeAll(
   FSUtil.defaultLayer,
   EventV2Bridge.defaultLayer,
+  FileState.defaultLayer,
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
   Layer.mock(LSP.Service, { touchFile: () => Effect.void, diagnostics: () => Effect.succeed({}) }),
   Layer.mock(Format.Service, { file: () => Effect.succeed(false) }),
