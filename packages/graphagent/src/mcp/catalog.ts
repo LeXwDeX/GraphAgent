@@ -1,4 +1,5 @@
 import { isRecord } from "@/util/record"
+import { Hash } from "@graphagent/core/util/hash"
 import { ListToolsResultSchema, ToolSchema } from "@modelcontextprotocol/core"
 import { Client } from "@modelcontextprotocol/client"
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/client"
@@ -69,7 +70,8 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
     properties: (mcpTool.inputSchema.properties ?? {}) as JSONSchema7["properties"],
-    additionalProperties: false,
+    // A server that declared `additionalProperties` keeps its own answer; only silence means "no extra arguments".
+    ...(Object.hasOwn(mcpTool.inputSchema, "additionalProperties") ? {} : { additionalProperties: false }),
   }
 
   return dynamicTool({
@@ -123,16 +125,23 @@ export function fetch<T extends { name: string }>(
         error: error instanceof Error ? error.message : String(error),
       }),
     ),
-    Effect.map((items) => {
+    Effect.flatMap((items) => {
       const sanitizedClient = sanitize(clientName)
       // Escape both the separator and escape marker so `server:uri` keys remain unambiguous.
       const resourceClient = clientName.replaceAll("%", "%25").replaceAll(":", "%3A")
-      return Object.fromEntries(
-        items.map((item) => [
-          key ? resourceClient + ":" + key(item) : sanitizedClient + ":" + sanitize(item.name),
-          { ...item, client: clientName },
-        ]),
-      )
+      const found = new Map<string, T & { client: string }>()
+      const skipped: { name: string; key: string }[] = []
+      for (const item of items) {
+        const itemKey = key ? resourceClient + ":" + key(item) : sanitizedClient + ":" + sanitize(item.name)
+        // Two names can sanitize to one key (`a.b`, `a_b`): the first listed keeps it and the rest are reported.
+        if (!key && found.has(itemKey)) skipped.push({ name: item.name, key: itemKey })
+        else found.set(itemKey, { ...item, client: clientName })
+      }
+      return Effect.forEach(
+        skipped,
+        (item) => Effect.logWarning(`duplicate ${label} key; keeping the first one listed`, { clientName, ...item }),
+        { discard: true },
+      ).pipe(Effect.as(Object.fromEntries(found)))
     }),
     Effect.orElseSucceed(() => undefined),
   )
@@ -140,7 +149,52 @@ export function fetch<T extends { name: string }>(
 
 export const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_")
 
+/** The plain key of a server tool. A tool's model-facing key comes from `assignToolKeys`, which starts from this one. */
 export const toolName = (clientName: string, name: string) => sanitize(clientName) + "_" + sanitize(name)
+
+/** The longest model-facing tool key; providers commonly cap function names at 64 characters (#1459). */
+export const TOOL_KEY_MAX = 64
+
+/**
+ * Names the deferred-tool helpers will own, so no server tool may take them. `src/mcp/` does not import `src/tool/`,
+ * which is why they are spelled out here.
+ */
+export const RESERVED_TOOL_KEYS: readonly string[] = ["mcp_describe", "mcp_call"]
+
+const KEY_HASH_LENGTH = 8
+
+const compareText = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
+
+/**
+ * The model-facing key of every `(server, tool)`, in the order given and the same length.
+ *
+ * A key is `toolName`. When two tools would share it, when it is longer than `TOOL_KEY_MAX` or when it is a reserved
+ * name, each such tool gets instead its first `TOOL_KEY_MAX - 9` characters, `_` and 8 hex digits of the hash of its
+ * real server and tool names: the key then depends on the tool alone, never on which server connected first. A key
+ * that two tools still share after that stays with the first `(server, tool)` in lexicographic order and the others
+ * get "", which the caller skips.
+ */
+export function assignToolKeys(pairs: ReadonlyArray<{ server: string; tool: string }>): string[] {
+  const bases = pairs.map((pair) => toolName(pair.server, pair.tool))
+  const shared = new Map<string, number>()
+  for (const base of bases) shared.set(base, (shared.get(base) ?? 0) + 1)
+  const keys = bases.map((base, index) =>
+    base.length > TOOL_KEY_MAX || RESERVED_TOOL_KEYS.includes(base) || (shared.get(base) ?? 0) > 1
+      ? base.slice(0, TOOL_KEY_MAX - KEY_HASH_LENGTH - 1) +
+        "_" +
+        Hash.sha256(pairs[index].server + "\0" + pairs[index].tool).slice(0, KEY_HASH_LENGTH)
+      : base,
+  )
+  const first = new Map<string, number>()
+  const order = pairs
+    .map((_, index) => index)
+    .toSorted(
+      (left, right) =>
+        compareText(pairs[left].server, pairs[right].server) || compareText(pairs[left].tool, pairs[right].tool),
+    )
+  for (const index of order) if (!first.has(keys[index])) first.set(keys[index], index)
+  return keys.map((key, index) => (first.get(key) === index ? key : ""))
+}
 
 /**
  * Real identity of a server-provided tool. The model-facing key (`server_tool`) is
