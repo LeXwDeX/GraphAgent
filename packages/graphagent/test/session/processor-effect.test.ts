@@ -1479,7 +1479,11 @@ it.live("session.processor effect tests keep the lowercase repair path for unkno
         expect(calls[0]?.state.status).toBe("completed")
         if (calls[0]?.state.status === "completed") {
           expect(calls[0].state.input).toEqual({ query: "x" })
-          expect(calls[0].state.output).toBe("ok")
+          // The renamed call says so at the end of its result (#1451).
+          expect(calls[0].state.output).toBe(
+            'ok\n\nNote: the tool name "LOOKUP" was corrected to "lookup". Use the exact tool name.',
+          )
+          expect(calls[0].state.metadata).toMatchObject({ corrections: ["name_case"] })
         }
         expect(msg.error).toBeUndefined()
       }),

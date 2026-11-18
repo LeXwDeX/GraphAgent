@@ -563,6 +563,32 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("says a limit or context above the maximum was capped and records clamped (#1451)", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "clamp.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 60 }, (_, index) => `line${index + 1}`).join("\n")),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+
+      const capped = yield* grep.execute({ pattern: "line30", path: file, limit: 5000, context: 50 }, ctx)
+      expect(capped.output).toEndWith(
+        "\n\nNote: limit 5000 is above the maximum 1000; 1000 was used.\nNote: context 50 is above the maximum 20; 20 was used.",
+      )
+      expect(capped.metadata).toMatchObject({ corrections: ["clamped"] })
+
+      const onlyContext = yield* grep.execute({ pattern: "line30", path: file, limit: 1000, context: 21 }, ctx)
+      expect(onlyContext.output).toEndWith("\n\nNote: context 21 is above the maximum 20; 20 was used.")
+      expect(onlyContext.output).not.toContain("Note: limit")
+
+      const exact = yield* grep.execute({ pattern: "line30", path: file, limit: 1000, context: 20 }, ctx)
+      expect(exact.output).not.toContain("Note:")
+      expect(exact.metadata).not.toHaveProperty("corrections")
+    }),
+  )
+
   it.instance("supports exact file paths", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

@@ -665,6 +665,22 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("says a maxLineLength above the maximum was capped and records clamped (#1451)", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "clamp-line.txt")
+      yield* put(filepath, "x".repeat(60_000))
+
+      const capped = yield* exec(dir, { filePath: filepath, maxLineLength: 100_000 })
+      expect(capped.output).toEndWith("\n\nNote: maxLineLength 100000 is above the maximum 50000; 50000 was used.")
+      expect(capped.metadata).toMatchObject({ corrections: ["clamped"] })
+
+      const exact = yield* exec(dir, { filePath: filepath, maxLineLength: 50_000 })
+      expect(exact.output).not.toContain("Note:")
+      expect(exact.metadata).not.toHaveProperty("corrections")
+    }),
+  )
+
   it.live("keeps a wide multibyte line inside the byte cap when maxLineLength is large", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

@@ -35,6 +35,7 @@ export const WebFetchTool = Tool.define(
       description: DESCRIPTION,
       effects: "read",
       parameters: Parameters,
+      clamps: { timeout: { max: MAX_TIMEOUT } },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           if (!params.url.startsWith("http://") && !params.url.startsWith("https://")) {

@@ -37,6 +37,7 @@ export const GlobTool = Tool.define(
       description: DESCRIPTION,
       effects: "read",
       parameters: Parameters,
+      clamps: { limit: { max: MAX_LIMIT } },
       execute: (params: { pattern: string; path?: string; limit?: number }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const ins = yield* InstanceState.context

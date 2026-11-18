@@ -9,7 +9,9 @@ import { ModelContext } from "./model-context"
 import { ToolJsonSchema } from "./json-schema"
 import { describeSchemaFailures } from "./schema-error"
 import { ToolError } from "./tool-error"
+import * as Receipt from "./receipt"
 import { Agent } from "@/agent/agent"
+import { isRecord } from "@/util/record"
 import type { ChildRuns as ChildRunsModule } from "@/session/child/run"
 
 interface Metadata {
@@ -122,6 +124,14 @@ export interface Def<
    * input unchanged when the shape is not recognized).
    */
   repairArguments?: (value: unknown) => unknown
+  /**
+   * Numeric parameters the tool caps. `max` is the constant the tool caps the value with. A call that asks for more
+   * is told so at the end of its result and records `clamped` (#1451). The declaration is not part of the tool's
+   * description or schema.
+   */
+  clamps?: Readonly<Record<string, { max: number }>>
+  /** The output is JSON that clients parse: the wrapper adds no text to it and only records corrections in metadata. */
+  structuredOutput?: boolean
   execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   /** `input` is the repaired input that failed the final strict decode. */
   formatValidationError?(error: unknown, input?: unknown): string
@@ -247,7 +257,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
             const attempt = yield* decode(direct).pipe(Effect.option)
             if (Option.isSome(attempt)) {
               yield* logRepair(args, direct)
-              return attempt.value
+              return { value: attempt.value, given: direct }
             }
           }
         }
@@ -256,7 +266,8 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           : repairStringifiedContainers(args, stringKeys)
         const repaired = repairHook ? repairHook(base) : base
         if (repairHook) yield* logRepair(args, repaired)
-        return yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
+        const value = yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
+        return { value, given: repaired }
       })
       const execute = toolInfo.execute
       toolInfo.execute = (args, ctx) => {
@@ -272,31 +283,48 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           // like JSON are never re-parsed.
           const strict = yield* decode(args).pipe(Effect.option)
           let decoded: unknown
+          let given: unknown = args
           let repaired = false
           if (Option.isSome(strict)) {
             decoded = strict.value
           } else {
-            decoded = yield* repairAndDecode(args)
+            const fixed = yield* repairAndDecode(args)
+            decoded = fixed.value
+            given = fixed.given
             repaired = true
             // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
           }
+          const notes = argumentNotes({
+            tool: id,
+            original: args,
+            given,
+            decoded,
+            repaired,
+            allowed: diagnosticKeys,
+            clamps: toolInfo.clamps,
+          })
+          for (const kind of notes.kinds) yield* Receipt.logCorrection(id, kind)
           const toolCtx = repaired ? yield* markCorrection(ctx, "args_repaired") : ctx
           const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, toolCtx)
           const metadata = repaired ? addCorrections(result.metadata, "args_repaired") : result.metadata
           if (result.metadata.truncated !== undefined) {
-            return repaired ? { ...result, metadata } : result
+            return appendNotes(repaired ? { ...result, metadata } : result, notes, toolInfo.structuredOutput)
           }
           const agent = yield* agents.get(ctx.agent)
           const truncated = yield* truncate.output(result.output, { context: ModelContext.contextOf(ctx.extra) }, agent)
-          return {
-            ...result,
-            output: truncated.content,
-            metadata: {
-              ...metadata,
-              truncated: truncated.truncated,
-              ...(truncated.truncated && { outputPath: truncated.outputPath }),
+          return appendNotes(
+            {
+              ...result,
+              output: truncated.content,
+              metadata: {
+                ...metadata,
+                truncated: truncated.truncated,
+                ...(truncated.truncated && { outputPath: truncated.outputPath }),
+              },
             },
-          }
+            notes,
+            toolInfo.structuredOutput,
+          )
         }).pipe(Effect.orDie, Effect.withSpan("Tool.execute", { attributes: attrs }))
       }
       return toolInfo
@@ -321,6 +349,69 @@ function repairTypeChanges(before: unknown, after: unknown, allowed: ReadonlySet
     if (left !== right) changes.push(`${allowed.has(key) ? key : "<unknown>"}:${left}->${right}`)
   }
   return changes
+}
+
+/** What the wrapper tells the model about the arguments of a call: the sentences, and the kinds they are recorded under. */
+type ArgumentNotes = { readonly lines: readonly string[]; readonly kinds: readonly string[] }
+
+/** A top-level value of the arguments; `undefined` when they are no object or lack the key. */
+function argumentValue(value: unknown, key: string): unknown {
+  return isRecord(value) ? Reflect.get(value, key) : undefined
+}
+
+/**
+ * Corrections the harness made to the arguments of a call before the tool ran (#1451), one sentence each.
+ * `original` is what the model sent, `given` the value the successful decode was handed, `decoded` its result and
+ * `allowed` the parameters the schema declares. A call that decoded as sent gets a sentence for the keys the
+ * decoder ignored (`excess_keys`). A repaired call gets one for what the repair set and the keys it did not use,
+ * so those keys are named there and not under a kind. A number above its declared maximum gets one (`clamped`).
+ */
+function argumentNotes(input: {
+  tool: string
+  original: unknown
+  given: unknown
+  decoded: unknown
+  repaired: boolean
+  allowed: ReadonlySet<string>
+  clamps: Def["clamps"]
+}): ArgumentNotes {
+  const lines: string[] = []
+  const kinds: string[] = []
+  // A key the tool never read: it is not declared, and the decode did not carry it over either.
+  const unused = isRecord(input.original)
+    ? Object.keys(input.original).filter(
+        (key) => !input.allowed.has(key) && !(isRecord(input.decoded) && Object.hasOwn(input.decoded, key)),
+      )
+    : []
+  if (!input.repaired) {
+    if (unused.length > 0) {
+      lines.push(Receipt.excessKeyNote(input.tool, unused))
+      kinds.push("excess_keys")
+    }
+  } else {
+    const set = [...input.allowed].filter(
+      (key) => valueTypeName(argumentValue(input.given, key)) !== valueTypeName(argumentValue(input.original, key)),
+    )
+    lines.push(Receipt.repairedNote(set, unused))
+  }
+  for (const [param, { max }] of Object.entries(input.clamps ?? {})) {
+    const requested = argumentValue(input.decoded, param)
+    if (typeof requested !== "number" || !Number.isFinite(requested) || requested <= max) continue
+    lines.push(Receipt.clampNote(param, requested, max))
+    if (!kinds.includes("clamped")) kinds.push("clamped")
+  }
+  return { lines, kinds }
+}
+
+/**
+ * `result` with the notes added after its output, which is already truncated, so the wrapper truncates once and
+ * every note stays whole. A tool whose output is JSON gets none. The kinds go into `metadata.corrections` either way.
+ */
+function appendNotes<R extends ExecuteResult>(result: R, notes: ArgumentNotes, structured: boolean | undefined): R {
+  const output =
+    structured || notes.lines.length === 0 ? result.output : `${result.output}\n\n${notes.lines.join("\n")}`
+  const metadata = notes.kinds.length > 0 ? addCorrections(result.metadata, ...notes.kinds) : result.metadata
+  return output === result.output && metadata === result.metadata ? result : { ...result, output, metadata }
 }
 
 // Some models string-encode a tool-argument container whose schema is a

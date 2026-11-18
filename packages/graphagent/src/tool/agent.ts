@@ -78,6 +78,7 @@ export const AgentTool = Tool.define<typeof Parameters, Metadata, DagAgentMessag
       ].join("\n"),
       effects: "unknown",
       parameters: Parameters,
+      structuredOutput: true,
       parseOptions: { onExcessProperty: "error" },
       repairContainerFields: ["params"],
       repairArguments: repairFlatAgentCall,

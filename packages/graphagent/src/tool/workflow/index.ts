@@ -88,6 +88,7 @@ export const WorkflowTool = Tool.define<
       description: CommandPlugin.WorkflowContent,
       effects: "unknown",
       parameters: Parameters,
+      structuredOutput: true,
       parseOptions: { onExcessProperty: "error" },
       repairContainerFields: ["params"],
       repairArguments: repairFlatWorkflowCall,
