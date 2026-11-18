@@ -100,6 +100,8 @@ export interface GrepInput {
   readonly limit: number
   /** Lines of context to interleave around each match. */
   readonly context?: number
+  /** List files in path order, so the same search gives the same order on every run. */
+  readonly sorted?: boolean
   readonly signal?: AbortSignal
 }
 
@@ -113,6 +115,28 @@ export interface GrepRow {
   readonly match: Match
 }
 
+/** A search's rows with what ripgrep skipped and searched, so "no match" can be told from "nothing was searched". */
+export interface GrepReport {
+  /** The matches, with their context lines when `context` is set, in ripgrep's output order. */
+  readonly rows: readonly GrepRow[]
+  /** Matching lines over the 64 KB record cap that were skipped; a scan that stopped at `limit` counts only those seen. */
+  readonly skipped: number
+  /**
+   * Files searched, whether or not they matched; `undefined` when the scan stopped at `limit` before ripgrep
+   * reported it, or when the files could not be counted.
+   */
+  readonly searched: number | undefined
+}
+
+/** Counters `grepRows` fills while it parses ripgrep's records. */
+interface GrepStats {
+  skipped: number
+  /** Files with at least one match: each one closes with an `end` record. */
+  matched: number
+  /** The count in ripgrep's closing summary, which older releases limit to the files that matched. */
+  searched: number | undefined
+}
+
 export interface Interface {
   readonly find: (input: FindInput) => Effect.Effect<readonly Entry[], Error>
   readonly glob: (input: GlobInput) => Effect.Effect<readonly Entry[], Error>
@@ -123,6 +147,8 @@ export interface Interface {
    * window must raise it to avoid cutting a match's trailing context.
    */
   readonly grepContext: (input: GrepContextInput) => Effect.Effect<readonly GrepRow[], Error | InvalidPatternError>
+  /** Runs one search like `grep` (or `grepContext` when `context` is set) and reports what it skipped and searched. */
+  readonly grepReport: (input: GrepInput) => Effect.Effect<GrepReport, Error | InvalidPatternError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/Ripgrep") {}
@@ -151,6 +177,32 @@ const describeExecutionFailure = (cause: unknown): string => {
   }
   if (cause instanceof globalThis.Error && cause.message) return `ripgrep execution failed (${cause.message})`
   return "ripgrep execution failed"
+}
+
+/** A match record that went over the size cap is skipped; count it so the caller can say lines were not shown. */
+function noteSkipped(line: string, stats: GrepStats | undefined) {
+  if (stats && line.startsWith('{"type":"match"')) stats.skipped += 1
+}
+
+/** Flags that decide which files a search visits; counting those files must use the same ones. */
+const fileFilters = (input: GrepInput) => [
+  "--no-config",
+  "--hidden",
+  ...(input.include ? [`--glob=${input.include}`] : []),
+  "--glob=!**/.git/**",
+  "--glob=!**/.agents/worktree/**",
+]
+
+/** Reads the counters ripgrep's records carry; the summary's `type` is its last key, so records are read after parsing. */
+function noteRecord(json: unknown, stats: GrepStats | undefined) {
+  if (!stats || typeof json !== "object" || json === null || !("type" in json)) return
+  if (json.type === "end") stats.matched += 1
+  if (json.type !== "summary") return
+  const data = "data" in json ? json.data : undefined
+  const summary = typeof data === "object" && data !== null && "stats" in data ? data.stats : undefined
+  const searches =
+    typeof summary === "object" && summary !== null && "searches" in summary ? summary.searches : undefined
+  if (typeof searches === "number") stats.searched = searches
 }
 
 export const layer = Layer.effect(
@@ -215,32 +267,30 @@ export const layer = Layer.effect(
       )
     }
 
-    const grepRows = (input: GrepInput) =>
+    const grepRows = (input: GrepInput, stats?: GrepStats) =>
       run<RawRow>({
         ...input,
         args: [
-          "--no-config",
+          ...fileFilters(input),
           "--json",
-          "--hidden",
-          ...(input.include ? [`--glob=${input.include}`] : []),
           ...(input.context && input.context > 0 ? [`--context=${input.context}`] : []),
-          "--glob=!**/.git/**",
-          "--glob=!**/.agents/worktree/**",
+          ...(input.sorted ? ["--sort=path"] : []),
           "--",
           input.pattern,
           input.file ?? ".",
         ],
         parse: (line) =>
           // One oversized record (a match inside a minified bundle) is skipped
-          // rather than failing every other match in the search.
+          // rather than failing every other match in the search; `stats` counts it.
           (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES
-            ? Effect.succeed(undefined)
+            ? Effect.sync(() => noteSkipped(line, stats))
             : Effect.try({
                 try: () => JSON.parse(line) as unknown,
                 catch: (cause) => failure("Invalid ripgrep JSON output", cause),
               })
           ).pipe(
             Effect.flatMap((json) => {
+              noteRecord(json, stats)
               if (
                 !json ||
                 typeof json !== "object" ||
@@ -306,6 +356,29 @@ export const layer = Layer.effect(
           )
         }),
       )
+
+    /**
+     * Files the search went through. Before 15.0.0 ripgrep's `--json` summary counted only the files that matched
+     * (upstream BUG #3178), and a `rg` on PATH that old is used as it is. A count that does not exceed the files
+     * that matched cannot be told from that, so count what `--files` lists under the same filters: the files
+     * the search visits. A count above it can only come from a ripgrep that counts every file, and is kept.
+     */
+    const searchedFiles = (
+      input: GrepInput,
+      stats: GrepStats,
+    ): Effect.Effect<number | undefined, Error | InvalidPatternError> =>
+      stats.searched === undefined || stats.searched > stats.matched
+        ? Effect.succeed(stats.searched)
+        : run<number>({
+            cwd: input.cwd,
+            limit: Number.MAX_SAFE_INTEGER,
+            signal: input.signal,
+            args: [...fileFilters(input), "--files", "--", input.file ?? "."],
+            parse: () => Effect.succeed(1),
+          }).pipe(
+            // A listing that hit traversal errors is not a count to report.
+            Effect.map((result) => (result.partial ? undefined : result.items.length)),
+          )
 
     return Service.of({
       glob: (input) =>
@@ -386,6 +459,16 @@ export const layer = Layer.effect(
       grep: (input) =>
         grepRows({ ...input, context: undefined }).pipe(Effect.map((rows) => rows.map((row) => row.match))),
       grepContext: (input) => grepRows(input),
+      grepReport: (input) =>
+        // Fresh counters per run: the effect may be run more than once.
+        Effect.suspend(() => {
+          const stats: GrepStats = { skipped: 0, matched: 0, searched: undefined }
+          return grepRows(input, stats).pipe(
+            Effect.flatMap((rows) =>
+              searchedFiles(input, stats).pipe(Effect.map((searched) => ({ rows, skipped: stats.skipped, searched }))),
+            ),
+          )
+        }),
     })
   }),
 )
