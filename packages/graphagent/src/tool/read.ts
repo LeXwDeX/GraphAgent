@@ -12,12 +12,10 @@ import { FileState } from "@/session/file-state"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import type { Provider } from "@/provider/provider"
 import { ModelContext } from "./model-context"
-import { DIR as TRUNCATION_DIR, formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
+import * as Truncate from "./truncate"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
-const MAX_BYTES = 50 * 1024
-const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 const MAX_PDF_BYTES = 10 * 1024 * 1024
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
@@ -39,10 +37,10 @@ export const Parameters = Schema.Struct({
     description: "The maximum number of lines or directory entries to read (positive integer, defaults to 2000)",
   }),
   page: Schema.optional(Schema.Int).annotate({
-    description: `Read one page of the file (${PAGE_LINES} lines, or limit when set): page 1 is the start, -1 is the last page, -2 the page before. Cannot be combined with offset`,
+    description: `Read one page of the file (${Truncate.PAGE_LINES} lines, or limit when set): page 1 is the start, -1 is the last page, -2 the page before. Cannot be combined with offset`,
   }),
   maxLineLength: Schema.optional(PositiveInt).annotate({
-    description: `Maximum characters to show from each line (defaults to ${MAX_LINE_LENGTH}, capped at ${MAX_LINE_FETCH}); use it to continue a truncated long line`,
+    description: `Maximum characters to show from each line (defaults to ${MAX_LINE_LENGTH}, capped at ${Truncate.MAX_LINE_FETCH}); use it to continue a truncated long line`,
   }),
   charOffset: Schema.optional(PositiveInt).annotate({
     description:
@@ -62,15 +60,15 @@ function attachmentRefusal(filepath: string, isImage: boolean, size: number, mod
       : `Cannot attach ${filepath}: ${who} does not accept PDF input. Extract text with the shell tool: pdftotext -layout "${filepath}" -`
   }
   if (!isImage && size > MAX_PDF_BYTES)
-    return `PDF ${filepath} is ${formatSize(size)}, over the ${formatSize(MAX_PDF_BYTES)} limit. Extract pages: pdftotext -f 1 -l 20 -layout "${filepath}" -`
+    return `PDF ${filepath} is ${Truncate.formatSize(size)}, over the ${Truncate.formatSize(MAX_PDF_BYTES)} limit. Extract pages: pdftotext -f 1 -l 20 -layout "${filepath}" -`
   return undefined
 }
 
 const LINE_NOTICE_BUDGET = 512
 
-/** Largest code-point prefix that fits the byte budget, always at least one character. */
-function fitLine(chars: readonly string[], start: number, end: number) {
-  const budget = MAX_BYTES - LINE_NOTICE_BUDGET
+/** Largest code-point prefix that fits the byte budget `maxBytes`, always at least one character. */
+function fitLine(chars: readonly string[], start: number, end: number, maxBytes: number) {
+  const budget = Math.max(1, maxBytes - LINE_NOTICE_BUDGET)
   const bytes = (to: number) => Buffer.byteLength(chars.slice(start, to).join(""), "utf8")
   if (bytes(end) <= budget) return end
   let low = start + 1
@@ -125,7 +123,7 @@ type Metadata = {
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | FileState.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | LSP.Service | FileState.Service | Truncate.Service | Scope.Scope
 >(
   "read",
   Effect.gen(function* () {
@@ -133,13 +131,14 @@ export const ReadTool = Tool.define<
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
     const fileState = yield* FileState.Service
+    const trunc = yield* Truncate.Service
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
       // A truncated result points at a saved file that the 7-day cleanup removes: say that, not "not found".
-      if (dir === TRUNCATION_DIR && base.startsWith("tool_"))
+      if (dir === Truncate.DIR && base.startsWith("tool_"))
         return yield* Effect.fail(
           new Error(
             `Saved output has expired: ${filepath} was removed by the 7-day cleanup. Run the original command again to regenerate it.`,
@@ -205,11 +204,12 @@ export const ReadTool = Tool.define<
 
     const lines = Effect.fn("ReadTool.lines")(function* (
       filepath: string,
-      opts: { limit: number; offset: number; maxLineLength: number; charOffset?: number },
+      opts: { limit: number; offset: number; maxLineLength: number; maxBytes: number; charOffset?: number },
     ) {
       const start = opts.offset - 1
       const raw: string[] = []
-      const flags = { bytes: 0, before: 0, count: 0, cut: false, more: false, done: false }
+      // `bytes` counts the file's text; `shown` counts what the page shows, which has a `<line>: ` prefix on each line.
+      const flags = { bytes: 0, shown: 0, before: 0, count: 0, cut: false, more: false, done: false }
 
       // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
       // ends without flushing, decodeText drops the final unterminated line. We also
@@ -238,11 +238,11 @@ export const ReadTool = Tool.define<
             if (
               opts.charOffset !== undefined ||
               text.length > opts.maxLineLength ||
-              Buffer.byteLength(text, "utf-8") > MAX_BYTES
+              Buffer.byteLength(text, "utf-8") > opts.maxBytes
             ) {
               const chars = Array.from(text)
               const from = Math.min(Math.max((opts.charOffset ?? 1) - 1, 0), chars.length)
-              const to = fitLine(chars, from, Math.min(chars.length, from + opts.maxLineLength))
+              const to = fitLine(chars, from, Math.min(chars.length, from + opts.maxLineLength), opts.maxBytes)
               const shown = chars.slice(from, to).join("")
               line =
                 to < chars.length
@@ -258,9 +258,12 @@ export const ReadTool = Tool.define<
                   : shown
             }
             const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
-            if (flags.bytes + size <= MAX_BYTES) {
+            const prefix = String(flags.count).length + 2
+            // The first line is always shown, so a budget smaller than one line cannot leave a page empty.
+            if (raw.length === 0 || flags.shown + size + prefix <= opts.maxBytes) {
               raw.push(line)
               flags.bytes += size
+              flags.shown += size + prefix
               return
             }
 
@@ -314,7 +317,7 @@ export const ReadTool = Tool.define<
       if (params.page === 0) {
         return yield* Effect.fail(new Error("page must not be 0; use 1 for the first page or -1 for the last."))
       }
-      const pageSize = params.limit ?? PAGE_LINES
+      const pageSize = params.limit ?? Truncate.PAGE_LINES
       if (params.page > 0) {
         return { offset: (params.page - 1) * pageSize + 1, limit: pageSize }
       }
@@ -426,11 +429,16 @@ export const ReadTool = Tool.define<
 
       if (!stat) return yield* miss(filepath)
 
+      // The caps of this read are the output budget of the model that asked.
+      const limits = yield* trunc.limits({ context: ModelContext.contextOf(ctx.extra) })
+
       if (stat.type === "Directory") {
         const items = yield* list(filepath)
-        const { offset, limit } = yield* resolvePage(params, items.length)
+        const page = yield* resolvePage(params, items.length)
+        const offset = page.offset
         const start = offset - 1
-        const sliced = items.slice(start, start + limit)
+        const range = items.slice(start, start + Math.min(page.limit, limits.maxLines))
+        const sliced = range.slice(0, Truncate.fitItems(range, limits.maxBytes))
         const truncated = start + sliced.length < items.length
 
         return {
@@ -506,11 +514,12 @@ export const ReadTool = Tool.define<
       // authority to overwrite a version it never saw.
       const seen = yield* fileState.baseline(filepath)
       const total = params.page !== undefined && params.page < 0 ? yield* countFileLines(filepath) : undefined
-      const { offset, limit } = yield* resolvePage(params, total)
+      const page = yield* resolvePage(params, total)
       const file = yield* lines(filepath, {
-        limit,
-        offset,
-        maxLineLength: Math.min(params.maxLineLength ?? MAX_LINE_LENGTH, MAX_LINE_FETCH),
+        limit: Math.min(page.limit, limits.maxLines),
+        offset: page.offset,
+        maxLineLength: Math.min(params.maxLineLength ?? MAX_LINE_LENGTH, Truncate.MAX_LINE_FETCH),
+        maxBytes: limits.maxBytes,
         charOffset: params.charOffset,
       })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
@@ -531,8 +540,8 @@ export const ReadTool = Tool.define<
         // range; subtracting it keeps the notice honest for late reads.
         const omitted = Math.max(0, total - file.before - file.bytes)
         output +=
-          `\n\n[truncated: showing lines ${file.offset}-${last} of a ${formatSize(total)} file ` +
-          `(${MAX_BYTES_LABEL} limit); about ${formatSize(omitted)} omitted after this range. ` +
+          `\n\n[truncated: showing lines ${file.offset}-${last} of a ${Truncate.formatSize(total)} file ` +
+          `(${Number((limits.maxBytes / 1024).toFixed(2))} KB limit); about ${Truncate.formatSize(omitted)} omitted after this range. ` +
           `Continue: read filePath="${filepath}" offset=${next}.]`
       } else if (file.more) {
         output +=

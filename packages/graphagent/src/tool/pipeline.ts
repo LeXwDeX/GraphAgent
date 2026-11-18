@@ -29,6 +29,7 @@ import { McpContent } from "@/mcp/content"
 import type { Truncate } from "@/tool/truncate"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MemorySearch } from "@/tool/memory-search"
+import { ModelContext } from "@/tool/model-context"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import type { Tool } from "@/tool/tool"
 import type { ToolEntry } from "./registry"
@@ -242,6 +243,7 @@ export function boundErrorCause(
   truncate: Truncate.Interface,
   agent: Agent.Info,
   cause: Cause.Cause<unknown>,
+  context?: number,
 ): Effect.Effect<never, unknown> {
   if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
   const error = Cause.squash(cause)
@@ -251,7 +253,7 @@ export function boundErrorCause(
     error instanceof PermissionV1.CorrectedError
   )
     return Effect.failCause(cause)
-  return truncate.output(errorMessage(error), {}, agent).pipe(
+  return truncate.output(errorMessage(error), { context }, agent).pipe(
     Effect.flatMap((bounded) => {
       if (!bounded.truncated) return Effect.failCause(cause)
       const failure = new Error(bounded.content, { cause: error })
@@ -279,6 +281,8 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
     entries,
     truncate,
   } = deps
+  // The window of the model the tools run under sets how much of a failure's text the model is given (#1448).
+  const contextTokens = ModelContext.contextOfModel(input.model)
 
   for (const entry of entries) {
     if (!isBuiltinEntry(entry) && !isDirectShellEntry(entry)) continue
@@ -580,7 +584,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   return yield* Effect.failCause(cause)
                 }),
               ),
-              Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause)),
+              Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause, contextTokens)),
             ),
           ),
         )
@@ -763,6 +767,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
     entries,
   } = deps
   const mcp = yield* MCP.Service
+  const contextTokens = ModelContext.contextOfModel(input.model)
 
   const resourceEntries = entries.filter(
     (entry): entry is Extract<ToolEntry, { source: { kind: "mcp-resource" } }> => entry.source.kind === "mcp-resource",
@@ -811,7 +816,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
                 ),
               )
             const content = JSON.stringify({ resources: filtered.map(formatMcpResource) }, null, 2)
-            const truncated = yield* truncate.output(content, {}, input.agent)
+            const truncated = yield* truncate.output(content, { context: contextTokens }, input.agent)
             const output = {
               title: parsed.server ? `MCP resources: ${parsed.server}` : "MCP resources",
               metadata: {
@@ -874,7 +879,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
                 ),
               )
             const content = JSON.stringify({ resourceTemplates: filtered.map(formatMcpResourceTemplate) }, null, 2)
-            const truncated = yield* truncate.output(content, {}, input.agent)
+            const truncated = yield* truncate.output(content, { context: contextTokens }, input.agent)
             const output = {
               title: parsed.server ? `MCP resource templates: ${parsed.server}` : "MCP resource templates",
               metadata: {
@@ -925,7 +930,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
             if (!content) throw new Error(`Failed to read MCP resource: ${parsed.server}/${parsed.uri}`)
 
             const formatted = formatMcpResourceContent(parsed.server, parsed.uri, content)
-            const truncated = yield* truncate.output(formatted.text, {}, input.agent)
+            const truncated = yield* truncate.output(formatted.text, { context: contextTokens }, input.agent)
             const output = {
               title: `MCP resource: ${parsed.uri}`,
               metadata: {
@@ -1153,7 +1158,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               return yield* Effect.failCause(cause)
             }),
           ),
-          Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause)),
+          Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause, contextTokens)),
         ),
       )
     }
@@ -1178,6 +1183,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   tools: Record<string, AITool>,
 ) {
   const { input, run, hooks, permission, context, truncate, reportInterrupt, hookContext, hookDenied, entries } = deps
+  const contextTokens = ModelContext.contextOfModel(input.model)
 
   for (const entry of entries) {
     if (!isMcpEntry(entry)) continue
@@ -1348,7 +1354,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
           }
 
           const parts = mcpContentParts(result.content, entry.source.server)
-          const truncated = yield* truncate.output(parts.text.join("\n\n"), {}, input.agent)
+          const truncated = yield* truncate.output(parts.text.join("\n\n"), { context: contextTokens }, input.agent)
           const metadata = mcpResultMetadata(result.metadata, truncated, parts)
 
           const output = {
@@ -1423,7 +1429,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
               return yield* Effect.failCause(cause)
             }),
           ),
-          Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause)),
+          Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause, contextTokens)),
         ),
       )
     }

@@ -30,6 +30,7 @@ import { HookStartContext } from "@/hook/start-context"
 import { HookTurnContext } from "@/hook/turn-context"
 import { isRecord } from "@/util/record"
 import { Truncate } from "./truncate"
+import { ModelContext } from "./model-context"
 
 /**
  * What the shell tool's background mode prompts its own session with. The
@@ -298,6 +299,8 @@ interface RunClaim {
    * first and awaited by the other (#1446): the text is cut and saved once, not once per reader.
    */
   report?: Deferred.Deferred<ChildRunReport | undefined>
+  /** Context window in tokens of the model that made the call: the report goes to it, so its window sets the cut. */
+  context?: number
 }
 
 // The run ends with the job that carries it, so the persisted outcome and the
@@ -392,7 +395,7 @@ export const TaskTool = Tool.define(
         return Effect.gen(function* () {
           const report = reportOf(info, title, claim.facts)
           if (!report || report.text === "") return report
-          const cut = yield* truncate.output(report.text)
+          const cut = yield* truncate.output(report.text, { context: claim.context })
           return { ...report, text: cut.content }
         }).pipe(Effect.onExit((exit) => Deferred.done(bounded, exit)))
       })
@@ -1254,7 +1257,7 @@ export const TaskTool = Tool.define(
       repairArguments: repairBackgroundArgument,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.suspend(() => {
-          const claim: RunClaim = {}
+          const claim: RunClaim = { context: ModelContext.contextOf(ctx.extra) }
           return run(params, ctx, claim).pipe(
             // A run no watcher owns ends with this call: a foreground run with its
             // final result, a run registered but never started with why it stopped.

@@ -4,6 +4,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Effect, FileSystem, Layer } from "effect"
 import { Truncate } from "@/tool/truncate"
+import { ModelContext } from "@/tool/model-context"
 import type { Agent } from "@/agent/agent"
 import { Identifier } from "../../src/id/id"
 import { Process } from "@/util/process"
@@ -12,6 +13,7 @@ import { testEffect } from "../lib/effect"
 import { writeFileStringScoped } from "../lib/filesystem"
 import { truncateFailingWith, unwritableTruncate } from "../lib/truncate"
 import { TestConfig } from "../fixture/config"
+import { ProviderTest } from "../fake/provider"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 const ROOT = path.resolve(import.meta.dir, "..", "..")
@@ -335,6 +337,116 @@ describe("Truncate", () => {
 
       expect(out.code).toBe(0)
     }, 20000)
+  })
+
+  describe("output budget (#1448)", () => {
+    test("budgetFor scales with the window and stops at the constants", () => {
+      const table: Array<[number, number, number]> = [
+        [8_000, 4_096, 200],
+        [32_000, 6_400, 250],
+        [128_000, 25_600, 1_000],
+        [200_000, 40_000, 1_562],
+        [1_000_000, 51_200, 2_000],
+      ]
+      for (const [context, maxBytes, maxLines] of table) {
+        expect(Truncate.budgetFor(context)).toEqual({ maxLines, maxBytes })
+      }
+      // From 256_000 tokens on the budget is the full constants.
+      expect(Truncate.budgetFor(255_999)).toEqual({ maxLines: 1_999, maxBytes: 51_199 })
+      expect(Truncate.budgetFor(256_000)).toEqual({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES })
+      // A tiny window still gets a usable page.
+      expect(Truncate.budgetFor(1_000)).toEqual({ maxLines: Truncate.MIN_LINES, maxBytes: Truncate.MIN_BYTES })
+      expect(Truncate.MIN_BYTES).toBe(4_096)
+      expect(Truncate.MIN_LINES).toBe(200)
+    })
+
+    test("fitItems counts each item with its separator and keeps at least one", () => {
+      expect(Truncate.fitItems(["aaaa", "bbbb", "cccc"], 10)).toBe(2)
+      expect(Truncate.fitItems(["aaaa", "bbbb"], 4)).toBe(1)
+      expect(Truncate.fitItems([], 10)).toBe(0)
+      expect(Truncate.fitItems(["aaaa", "bbbb"], 100)).toBe(2)
+      // Bytes, not characters: each of these items is 6 bytes plus its separator.
+      expect(Truncate.fitItems(["漢漢", "漢漢"], 7)).toBe(1)
+      expect(Truncate.fitItems(["漢漢", "漢漢"], 14)).toBe(2)
+    })
+
+    it.live("limits() derives the budget from the window and has no window by default", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        expect(yield* svc.limits({ context: 32_000 })).toEqual({ maxLines: 250, maxBytes: 6_400 })
+        expect(yield* svc.limits({ context: 1_000_000 })).toEqual({
+          maxLines: Truncate.MAX_LINES,
+          maxBytes: Truncate.MAX_BYTES,
+        })
+        expect(yield* svc.limits({})).toEqual({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES })
+        expect(yield* svc.limits()).toEqual({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES })
+      }),
+    )
+
+    // Configuration is an override, per value: a limit it does not name keeps following the window.
+    const bytesOnly = configuredIt({ tool_output: { max_bytes: 123 } })
+    bytesOnly.live("a configured max_bytes replaces only the byte budget", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        expect(yield* svc.limits({ context: 32_000 })).toEqual({ maxLines: 250, maxBytes: 123 })
+        expect(yield* svc.limits()).toEqual({ maxLines: Truncate.MAX_LINES, maxBytes: 123 })
+      }),
+    )
+
+    const linesOnly = configuredIt({ tool_output: { max_lines: 77 } })
+    linesOnly.live("a configured max_lines replaces only the line limit", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        expect(yield* svc.limits({ context: 32_000 })).toEqual({ maxLines: 77, maxBytes: 6_400 })
+      }),
+    )
+
+    const both = configuredIt({ tool_output: { max_lines: 123, max_bytes: 456 } })
+    both.live("configured limits win over the window", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        expect(yield* svc.limits({ context: 32_000 })).toEqual({ maxLines: 123, maxBytes: 456 })
+        expect(yield* svc.limits({ context: 1_000_000 })).toEqual({ maxLines: 123, maxBytes: 456 })
+      }),
+    )
+
+    it.live("output() cuts at the budget of the window the call names", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const text = "a".repeat(10_000)
+
+        const scaled = yield* svc.output(text, { context: 32_000 })
+        if (!scaled.truncated) throw new Error("expected the 32K window to cut a 10 KB line")
+        expect(scaled.details.maxBytes).toBe(6_400)
+
+        expect((yield* svc.output(text, { context: 1_000_000 })).truncated).toBe(false)
+        expect((yield* svc.output(text)).truncated).toBe(false)
+
+        // A byte budget in the call itself still wins over the window.
+        const explicit = yield* svc.output(text, { context: 32_000, maxBytes: 9_000 })
+        if (!explicit.truncated) throw new Error("expected a cut at the explicit budget")
+        expect(explicit.details.maxBytes).toBe(9_000)
+      }),
+    )
+  })
+
+  describe("ModelContext (#1448)", () => {
+    const model = (context: number) => ProviderTest.model({ limit: { context, output: 4_096 } })
+
+    test("contextOfModel reads the window through the model profile", () => {
+      expect(ModelContext.contextOfModel(model(32_000))).toBe(32_000)
+      // A window no source declares is the default window, not 0.
+      expect(ModelContext.contextOfModel(model(0))).toBe(128_000)
+      expect(ModelContext.contextOfModel(undefined)).toBeUndefined()
+    })
+
+    test("contextOf reads the model from the extra of a call", () => {
+      expect(ModelContext.contextOf({ model: model(32_000) })).toBe(32_000)
+      expect(ModelContext.contextOf({ model: model(0) })).toBe(128_000)
+      expect(ModelContext.contextOf(undefined)).toBeUndefined()
+      expect(ModelContext.contextOf({})).toBeUndefined()
+      expect(ModelContext.contextOf({ model: "gpt-5.2" })).toBeUndefined()
+    })
   })
 
   describe("cleanup", () => {

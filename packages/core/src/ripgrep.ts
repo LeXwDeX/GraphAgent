@@ -89,6 +89,8 @@ export interface GlobInput {
   readonly limit: number
   readonly hidden?: boolean
   readonly follow?: boolean
+  /** List files in path order, so every run gives the same order; ripgrep then walks with one thread. */
+  readonly sorted?: boolean
   readonly signal?: AbortSignal
 }
 
@@ -391,6 +393,7 @@ export const layer = Layer.effect(
             "--files",
             ...(input.hidden ? ["--hidden"] : []),
             ...(input.follow ? ["--follow"] : []),
+            ...(input.sorted ? ["--sort=path"] : []),
             `--glob=${input.pattern}`,
             "--glob=!**/.git/**",
             "--glob=!**/.agents/worktree/**",

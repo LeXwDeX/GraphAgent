@@ -158,6 +158,7 @@ Shape notes worth being explicit about:
 - `command` is an object keyed by command name, not an array.
 - MCP servers do not belong in this file: put them in `mcp.json` under a top-level `mcpServers` map (see MCP servers).
 - `permission` is either a string action or an object keyed by tool name.
+- `tool_output` sets `max_lines` and `max_bytes` for every tool result, `read`, `grep`, `glob` and `shell` included; a value that is not set follows the model's context window (a fifth of its tokens as bytes, 4096 to 51200), and `shell` keeps its own 20-line tail.
 
 ## Skills
 

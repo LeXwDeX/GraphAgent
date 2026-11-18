@@ -649,6 +649,9 @@ function lifecycleProviderCfg(url: string) {
   return {
     ...base,
     compaction: { auto: true },
+    // The 12K window below would give a tool result 4 KB (#1448); the seed needs read, grep and glob results of 15 KB
+    // and more to build up duplicate context, so the byte budget is set to the old 50 KB.
+    tool_output: { max_bytes: 50 * 1024 },
     provider: {
       ...base.provider,
       test: {

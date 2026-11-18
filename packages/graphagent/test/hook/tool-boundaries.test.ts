@@ -89,11 +89,11 @@ const layers = Layer.mergeAll(
   }),
 )
 const it = testEffect(layers)
-const resolve = (id: any, dir: string, directTool?: DirectTool) =>
+const resolve = (id: any, dir: string, directTool?: DirectTool, model = ProviderTest.model()) =>
   SessionTools.resolve({
     ...(directTool ? { directTool } : {}),
     agent: { name: "build", permission: [], options: {} } as any,
-    model: ProviderTest.model(),
+    model,
     session: { id, directory: dir, permission: [] } as any,
     processor: {
       message: { id: MessageID.ascending(), sessionID: id },
@@ -479,7 +479,10 @@ const discoveryToolLayer = Layer.mergeAll(
   Layer.mock(Agent.Service, {}),
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
   Layer.mock(LSP.Service, { touchFile: () => Effect.void }),
-  Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
+  Layer.mock(Truncate.Service, {
+    output: (text: string) => Effect.succeed({ content: text, truncated: false }),
+    limits: () => Effect.succeed({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES }),
+  }),
 )
 const discovery = testEffect(
   Layer.mergeAll(
@@ -1151,6 +1154,92 @@ describe("resource tools consume real command hooks", () => {
         }),
       )
     }
+  }
+})
+
+// Every place that cuts the text of a tool result tells the Truncate service the window of the model that made the
+// call, so a 32K window gets a smaller cut than a 1M window (#1448).
+describe("MCP results are cut at the budget of the model's window (#1448)", () => {
+  const small = ProviderTest.model({ limit: { context: 32_000, output: 4_096 } })
+  /** A Truncate service that passes text through and records the options of every cut. */
+  const recording = () => {
+    const seen: Array<Truncate.Options | undefined> = []
+    const layer = Layer.mock(Truncate.Service, {
+      output: (text: string, options?: Truncate.Options) =>
+        Effect.sync(() => {
+          seen.push(options)
+          return { content: text, truncated: false as const }
+        }),
+    })
+    return { seen, layer }
+  }
+  const resourceClient = Object.assign(new Client({ name: "budget-fixture", version: "0" }), {
+    getServerCapabilities: () => ({ resources: {} }),
+  })
+
+  it.instance("an MCP tool's result is cut at the budget of the model's window", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const mcp = yield* MCP.Service
+      const { seen, layer } = recording()
+      const tools = yield* resolve(SessionID.descending(), instance.directory, undefined, small).pipe(
+        Effect.provideService(MCP.Service, {
+          ...mcp,
+          tools: () =>
+            Effect.succeed({
+              budget_probe: tool({
+                inputSchema: jsonSchema({ type: "object", properties: {} }),
+                execute: async () => ({ content: [{ type: "text", text: "PROBE" }] }),
+              }),
+            }),
+        }),
+        Effect.provide(layer),
+      )
+
+      yield* Effect.promise(() =>
+        Promise.resolve(
+          tools.budget_probe.execute!(
+            {},
+            { toolCallId: "budget", messages: [], abortSignal: new AbortController().signal },
+          ),
+        ),
+      )
+
+      expect(seen.map((options) => options?.context)).toEqual([32_000])
+    }),
+  )
+
+  for (const name of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+    it.instance(`${name} is cut at the budget of the model's window`, () =>
+      Effect.gen(function* () {
+        const instance = yield* TestInstance
+        const mcp = yield* MCP.Service
+        const { seen, layer } = recording()
+        const tools = yield* resolve(SessionID.descending(), instance.directory, undefined, small).pipe(
+          Effect.provideService(MCP.Service, {
+            ...mcp,
+            clients: () => Effect.succeed({ fixture: resourceClient }),
+            resources: () =>
+              Effect.succeed({ fixture: { client: "fixture", name: "original", uri: "fixture://original" } }),
+            resourceTemplates: () =>
+              Effect.succeed({ fixture: { client: "fixture", name: "original", uriTemplate: "fixture://{name}" } }),
+            readResource: () => Effect.succeed({ contents: [{ uri: "fixture://original", text: "RESOURCE" }] }),
+          }),
+          Effect.provide(layer),
+        )
+
+        yield* Effect.promise(() =>
+          Promise.resolve(
+            tools[name].execute!(
+              { server: "fixture", uri: "fixture://original" },
+              { toolCallId: `budget-${name}`, messages: [], abortSignal: new AbortController().signal },
+            ),
+          ),
+        )
+
+        expect(seen.map((options) => options?.context)).toEqual([32_000])
+      }),
+    )
   }
 })
 

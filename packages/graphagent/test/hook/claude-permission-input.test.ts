@@ -48,7 +48,10 @@ const toolDependencies = Layer.mergeAll(
     permissionPolicy: () => Effect.succeed({ native: [], rules: [] }),
     get: () => Effect.succeed({ name: "build", mode: "primary", permission: [], options: {} } as Agent.Info),
   }),
-  Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
+  Layer.mock(Truncate.Service, {
+    output: (text: string) => Effect.succeed({ content: text, truncated: false }),
+    limits: () => Effect.succeed({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES }),
+  }),
 )
 const layers = Layer.mergeAll(
   Permission.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provideMerge(hookLayer)),

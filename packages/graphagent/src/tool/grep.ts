@@ -8,6 +8,7 @@ import { addCorrections } from "@graphagent/core/session/outcome"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
 import { describeSearchPathFailure } from "./search-path"
+import { ModelContext } from "./model-context"
 import * as Tool from "./tool"
 import * as Truncate from "./truncate"
 
@@ -237,6 +238,7 @@ export const GrepTool = Tool.define(
 
           const total = more ? `at least ${matches.length}` : `${matches.length}`
           const header = `Found ${total} matches`
+          const limits = yield* trunc.limits({ context: ModelContext.contextOf(ctx.extra) })
           const body: string[] = []
           let bytes = 0
           let shown = 0
@@ -245,7 +247,7 @@ export const GrepTool = Tool.define(
             if (entry.matchIndex >= previewLimit) break
             if (entry.match && shown >= previewLimit) break
             const size = Buffer.byteLength(entry.lines.join("\n"), "utf8") + 1
-            if (body.length > 0 && bytes + size > Truncate.MAX_BYTES) {
+            if (body.length > 0 && bytes + size > limits.maxBytes) {
               byBytes = true
               break
             }

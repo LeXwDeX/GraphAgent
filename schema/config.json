@@ -1533,17 +1533,17 @@
               "type": "integer",
               "maximum": 9007199254740991,
               "exclusiveMinimum": 0,
-              "description": "Maximum lines of generic tool output before it is truncated and saved to disk (default: 2000); read, grep, glob and shell use their own line budgets"
+              "description": "Maximum lines of tool output before it is truncated and saved to disk, and of one read page (default: scales with the model's context window, from 200 lines up to 2000 at a 256000-token window)"
             },
             "max_bytes": {
               "type": "integer",
               "maximum": 9007199254740991,
               "exclusiveMinimum": 0,
-              "description": "Maximum bytes of generic tool output before it is truncated and saved to disk (default: 51200); shell's inline tail and saved-file threshold also use this byte budget"
+              "description": "Maximum bytes of one tool result: generic tool output, read, grep, glob and shell's inline tail and saved-file threshold all use it (default: a fifth of the model's context window in tokens, from 4096 bytes up to 51200 at a 256000-token window; a model with an unknown window counts as 128000 tokens)"
             }
           },
           "additionalProperties": true,
-          "description": "Thresholds for truncating generic tool output. When output exceeds either limit, the full text is written to the truncation directory and a preview is returned. read, grep and glob use fixed per-tool budgets instead, while shell shares max_bytes and keeps its own 20-line tail."
+          "description": "Thresholds for truncating the output of tools. When a result exceeds either limit, the full text is written to the truncation directory and a preview is returned; read, grep and glob cut their listings at the byte limit and say how to continue. A limit that is not set follows the context window of the model that made the call, so a small-window model gets a smaller result. shell also keeps its own 20-line tail."
         },
         "compaction": {
           "type": "object",

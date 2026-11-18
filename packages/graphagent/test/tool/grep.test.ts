@@ -18,6 +18,7 @@ import { unwritableTruncate } from "../lib/truncate"
 import { Permission } from "../../src/permission"
 import type * as Tool from "../../src/tool/tool"
 import { Git } from "@/git"
+import { ProviderTest } from "../fake/provider"
 
 const toolLayer = () =>
   Layer.mergeAll(
@@ -345,6 +346,37 @@ describe("tool.grep", () => {
       expect(result.output).toContain("the byte budget stopped the preview")
       expect(result.output).toContain("Full output: ")
       expect(result.output).toContain("Continue: read filePath=")
+    }),
+  )
+
+  // The byte budget of the preview is a share of the model's window (#1448); a call without a model keeps 50 KB.
+  it.instance("cuts the preview at the byte budget of a 32K window and says why", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 100 }, (_, index) =>
+            Bun.write(path.join(test.directory, `hit-${index}.txt`), `needle ${"x".repeat(92)}`),
+          ),
+        ),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const params = { pattern: "needle", path: test.directory, include: "*.txt" }
+      const model = ProviderTest.model({ limit: { context: 32_000, output: 4_096 } })
+
+      const small = yield* grep.execute(params, { ...ctx, extra: { model } })
+      expect(Buffer.byteLength(small.output, "utf8")).toBeLessThanOrEqual(6_400 + 1_024)
+      expect(small.metadata.truncated).toBe(true)
+      expect(small.metadata.matches).toBeGreaterThan(0)
+      expect(small.metadata.matches).toBeLessThan(100)
+      expect(small.output).toContain("omitted by the output byte budget")
+      expect(small.output).toContain("Full output: ")
+
+      const whole = yield* grep.execute(params, ctx)
+      expect(whole.metadata.matches).toBe(100)
+      expect(whole.metadata.truncated).toBe(false)
+      expect(whole.output).not.toContain("[truncated:")
     }),
   )
 
