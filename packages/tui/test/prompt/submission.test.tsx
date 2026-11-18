@@ -1218,9 +1218,9 @@ test("/btw asks a side question without submitting a prompt and recalls it from 
   )
   try {
     configureModel(route)
-    // The history file is read after the provider mounts, and what it holds replaces what the history has by then: an
-    // entry appended before the read lands is dropped, and the recall below finds nothing (#1406). Wait until the seeded
-    // entry can be recalled, which is the history store showing it, then step back to the empty draft.
+    // The history file is read after the provider mounts; an entry appended before the read lands is merged behind the
+    // file's entries when it does (#1424). Waiting until the seeded entry can be recalled keeps this case about `/btw`
+    // rather than about the load order, then step back to the empty draft.
     await wait(() => route.history.move(-1, "")?.input === "an earlier prompt")
     expect(route.history.move(1, "an earlier prompt")).toEqual({ input: "", parts: [] })
     route.navigation.navigate({ type: "session", sessionID: routeSessionID })
