@@ -3,6 +3,7 @@
 
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionRetry } from "../retry"
+import { HINT_LIMIT, type HintKind } from "./hints"
 import type { TurnState } from "./state"
 
 /**
@@ -56,6 +57,8 @@ export interface Signals extends CompletionSignals {
   readonly stopPolicy: StopPolicy
   readonly budgetExhausted: boolean
   readonly assistantFinish: string | undefined
+  /** The latest assistant text carries a tool call written as text and the step made no real one. */
+  readonly pseudoToolCall: boolean
 }
 
 export type TurnOutcome =
@@ -83,6 +86,8 @@ export type Transition =
   | { readonly kind: "check_step_input" }
   /** Start another automatic compaction (`decideOverflow` only). */
   | { readonly kind: "compact" }
+  /** Write a runtime hint as a synthetic user message and run another step. */
+  | { readonly kind: "hint"; readonly hint: HintKind }
   /**
    * The terminal step called a tool: run the single closing step with
    * `tool_choice: "none"`. Stop hooks do not run before it.
@@ -136,6 +141,10 @@ export function decide(state: TurnState, signals: Signals): Transition {
   // owner keeps the grant unconsumed and falls through to the exit path.
   if (state.continuing === "stop_block" && state.agentInput !== "blocked") return { kind: "step" }
 
+  // A hint answers the finished step before any Stop hook sees the turn.
+  const hint = hintFor(state, signals)
+  if (hint) return { kind: "hint", hint }
+
   let hook = NEUTRAL_HOOK
   if (signals.stopHook === "not_run") {
     if (signals.stopPolicy.enabled && !signals.ownerDefersStop) {
@@ -155,6 +164,23 @@ export function decide(state: TurnState, signals: Signals): Transition {
     if (signals.stepInputPending) return { kind: "continue", source: "queued_input" }
   }
   return { kind: "finish", outcome: outcomeOf(state, signals) }
+}
+
+/**
+ * The runtime hint the finished step earns, if any. The common gate comes first:
+ * a stopped, errored, final-step or input-blocked turn is never extended. Each
+ * branch then carries its own finish-reason and per-turn limit conditions, so
+ * the branches are tried in written order and none can swallow another's case.
+ */
+export function hintFor(state: TurnState, signals: Signals): HintKind | undefined {
+  if (state.stopped || !continuationAllowed(state)) return undefined
+  if (
+    signals.pseudoToolCall &&
+    (signals.assistantFinish === "stop" || signals.assistantFinish === "unknown") &&
+    state.hints.pseudo_tool_call < HINT_LIMIT.pseudo_tool_call
+  )
+    return "pseudo_tool_call"
+  return undefined
 }
 
 /** Post-step auto-compaction gate. Called after the step counter advanced and tasks were handled. */
@@ -182,6 +208,7 @@ export function outcomeOfExit(state: TurnState): TurnOutcome {
     stopPolicy: { event: "Stop", enabled: false },
     budgetExhausted: false,
     assistantFinish: undefined,
+    pseudoToolCall: false,
   })
 }
 

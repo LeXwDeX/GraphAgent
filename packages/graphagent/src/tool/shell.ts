@@ -13,6 +13,7 @@ import { BackgroundJob } from "@/background/job"
 import { Identifier } from "@graphagent/core/id/id"
 import type { TaskPromptOps } from "./task"
 
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
@@ -599,6 +600,8 @@ export const ShellTool = Tool.define(
       let sink: ReturnType<typeof createWriteStream> | undefined =
         file === "" ? undefined : createWriteStream(file, { flags: "a" })
       let cut = false
+      // Why the full output could not be saved, once a write failed: the preview then stands alone.
+      let unsaved: string | undefined
       let headPartial = false
       // Bytes in the most recently completed line and in the trailing line
       // that has no terminator yet. The last one is the true size of the final
@@ -607,6 +610,9 @@ export const ShellTool = Tool.define(
       let currentLineBytes = 0
       let expired = false
       let aborted = false
+      // Set when a signal ended the process: it has no exit code, but its
+      // output is a finished result, not a failure.
+      let signaled: string | undefined
       let lastActivity = Date.now()
       let silenceWarned = false
       let silenceWarnings = 0
@@ -721,16 +727,20 @@ export const ShellTool = Tool.define(
 
               if (file) {
                 sink?.write(chunk)
-              } else {
+              } else if (unsaved === undefined) {
                 full += chunk
                 if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return trunc.write(full).pipe(
-                    Effect.andThen((next) =>
+                  return trunc.save(full).pipe(
+                    Effect.andThen((saved) =>
                       Effect.sync(() => {
-                        file = next
                         cut = true
-                        sink = createWriteStream(next, { flags: "a" })
                         full = ""
+                        if ("failed" in saved) {
+                          unsaved = saved.failed
+                          return
+                        }
+                        file = saved.path
+                        sink = createWriteStream(saved.path, { flags: "a" })
                       }),
                     ),
                     Effect.andThen(streamPreview),
@@ -782,22 +792,41 @@ export const ShellTool = Tool.define(
           const timeout =
             input.timeout === undefined ? Effect.never : Effect.sleep(`${input.timeout + 100} millis`)
 
+          // Stop the process for an abort or a timeout. One that already ended
+          // has nothing left to kill, and a failed kill must not turn the
+          // output collected so far into a defect; the scope's release stops
+          // anything still alive.
+          const stop = handle.isRunning.pipe(
+            Effect.flatMap((running) => (running ? handle.kill({ forceKillAfter: "3 seconds" }) : Effect.void)),
+            Effect.ignore,
+          )
+
           const exit = yield* Effect.raceAll([
-            handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
+            handle.exitCode.pipe(
+              Effect.map((code) => ({ kind: "exit" as const, code })),
+              // `raceAll` keeps waiting when a branch fails, and a signal makes
+              // `exitCode` fail. Turn that failure into a result of its own.
+              Effect.catch((error) => {
+                const signal = CrossSpawnSpawner.signalOf(error)
+                if (signal === undefined) return Effect.fail(error)
+                return Effect.succeed({ kind: "signal" as const, code: null, signal })
+              }),
+            ),
             abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
             timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
           ])
 
+          if (exit.kind === "signal") signaled = exit.signal
           if (exit.kind === "abort") {
             aborted = true
-            yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
+            yield* stop
           }
           if (exit.kind === "timeout") {
             expired = true
-            yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
+            yield* stop
           }
 
-          if (exit.kind === "exit") {
+          if (exit.kind === "exit" || exit.kind === "signal") {
             // The process can exit before the reader drains stdout. Join it so
             // the final lines reach the truncation buffer; a child that keeps
             // the pipe open is bounded by the timeout.
@@ -826,6 +855,9 @@ export const ShellTool = Tool.define(
         )
       }
       if (aborted) meta.push(SHELL_ABORT_NOTE)
+      if (signaled !== undefined) {
+        meta.push(`Command terminated by signal ${signaled}. It did not exit normally, so there is no exit code.`)
+      }
       for (let i = 0; i < silenceWarnings; i++) meta.push(shellSilenceNote(silenceWarnMs))
       if (code !== null && code !== 0) meta.push(`Command exited with code ${code}`)
       let raw = list.map((item) => item.text).join("")
@@ -845,8 +877,10 @@ export const ShellTool = Tool.define(
       const lastLineBytes = endsWithNewline ? completedLineBytes : currentLineBytes
       const end = Truncate.tailPreview(raw, SHELL_TAIL_LINES, limits.maxBytes)
       if (end.cut) cut = true
-      if (!file && end.cut) {
-        file = yield* trunc.write(raw)
+      if (!file && end.cut && unsaved === undefined) {
+        const saved = yield* trunc.save(raw)
+        if ("failed" in saved) unsaved = saved.failed
+        else file = saved.path
       }
 
       let output = end.text
@@ -866,6 +900,8 @@ export const ShellTool = Tool.define(
             : undefined
         output =
           `${output}\n\n` + outputFooter(file, totalLines, streamBytes, shownLines, partialBytes, partialLineBytes)
+      } else if (cut && unsaved !== undefined) {
+        output += `\n\n[truncated: ${Truncate.unsavedNote(unsaved)}]`
       }
 
       if (meta.length > 0) {
@@ -874,18 +910,27 @@ export const ShellTool = Tool.define(
       if (background) {
         const payload = expired
           ? `Background shell timed out after ${input.timeout} ms: ${input.command}`
-          : code === null
-            ? `Background shell ended without an exit code: ${input.command}`
-            : code === 0
-              ? `Background shell completed: ${input.command}`
-              : `Background shell failed (exit ${code}): ${input.command}`
+          : signaled !== undefined
+            ? `Background shell terminated by signal ${signaled}: ${input.command}`
+            : code === null
+              ? `Background shell ended without an exit code: ${input.command}`
+              : code === 0
+                ? `Background shell completed: ${input.command}`
+                : `Background shell failed (exit ${code}): ${input.command}`
         yield* notifyBackground({ jobID: background.jobID, payload, output, logPath: file }, ctx)
       }
-      // A nonzero exit is a completed command whose output the model still
-      // needs, so it stays a normal result. The hook-facing failure is carried
-      // separately; the dispatcher turns it into PostToolUseFailure. A
-      // background job has no synchronous tool result to attach hooks to.
-      const hookFailure = !background && code !== null && code !== 0 ? `Exit code ${code}\n\n${output}` : undefined
+      // A nonzero exit or a signal termination is a completed command whose
+      // output the model still needs, so it stays a normal result. The
+      // hook-facing failure is carried separately; the dispatcher turns it into
+      // PostToolUseFailure. A background job has no synchronous tool result to
+      // attach hooks to.
+      const hookFailure = background
+        ? undefined
+        : signaled !== undefined
+          ? `Terminated by signal ${signaled}\n\n${output}`
+          : code !== null && code !== 0
+            ? `Exit code ${code}\n\n${output}`
+            : undefined
       return {
         title: input.command,
         metadata: {

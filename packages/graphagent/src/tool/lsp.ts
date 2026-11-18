@@ -73,10 +73,10 @@ export const LspTool = Tool.define(
           const title = detail ? `${args.operation} ${detail}` : args.operation
 
           const exists = yield* fs.existsSafe(file)
-          if (!exists) throw new Error(`File not found: ${file}`)
+          if (!exists) throw new Error(`File not found: ${file}. Check the path with glob.`)
 
           const available = yield* lsp.hasClients(file)
-          if (!available) throw new Error("No LSP server available for this file type.")
+          if (!available) throw new Error("No LSP server available for this file type. Use grep or read instead.")
 
           yield* lsp.touchFile(file, "document")
 

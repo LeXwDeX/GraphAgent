@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Dag } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { transactLayer } from "./fixture/transact"
+import { testEffect } from "../lib/effect"
 
 // The store and the bus are doubles; `Dag` still runs each command in the real transaction, over an in-memory
 // database that only the transaction uses. A mock read that sleeps inside the critical section stands for a
@@ -94,14 +95,81 @@ describe("Dag.Service workflow lock", () => {
           prompt_template: { inline: id },
         })
 
-        yield* Effect.all(
-          [dag.extend("wf1", [node("first")]), dag.extend("wf1", [node("second")])],
-          { concurrency: "unbounded" },
-        )
+        yield* Effect.all([dag.extend("wf1", [node("first")]), dag.extend("wf1", [node("second")])], {
+          concurrency: "unbounded",
+        })
 
         expect(maxActiveReads).toBe(1)
       }).pipe(Effect.provide(layer)) as Effect.Effect<never>,
     )
+  })
+})
+
+const lockIt = testEffect(Layer.empty)
+
+// #1344: DagCommandCore.make builds the layer's lock table and Dag.layer calls it once. Once dag.ts is split the
+// commands live in separate modules, so a module that built its own Core would take a lock nobody else waits on.
+// `exclusive` holds the workflow's lock from outside the commands; a command of any kind must queue behind it.
+describe("Dag.Service workflow lock is shared by every command", () => {
+  lockIt.effect("queues commands of every kind behind a held workflow lock", () => {
+    let held = false
+    let reads = 0
+    let readsWhileHeld = 0
+    const config = JSON.stringify({ name: "lock-shared", nodes: [] })
+    const env = lockTimeoutLayer(() =>
+      Effect.sync(() => {
+        reads += 1
+        if (held) readsWhileHeld += 1
+        return { id: "wf1", status: "running", config }
+      }),
+    )
+
+    return Effect.gen(function* () {
+      const dag = yield* Dag.Service
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const holder = yield* dag
+            .exclusive(
+              "wf1",
+              Effect.gen(function* () {
+                held = true
+                yield* Deferred.succeed(entered, undefined)
+                yield* Deferred.await(release)
+                held = false
+              }),
+            )
+            .pipe(Effect.forkScoped)
+          yield* Deferred.await(entered)
+
+          const node = {
+            id: "next",
+            name: "next",
+            worker_type: "build",
+            depends_on: [],
+            required: true,
+            prompt_template: { inline: "next" },
+          }
+          // pause, cancel and extend end up in three different modules; each one's first step reads the workflow.
+          const commands = yield* Effect.all([dag.pause("wf1"), dag.cancel("wf1"), dag.extend("wf1", [node])], {
+            concurrency: "unbounded",
+            discard: true,
+          }).pipe(Effect.forkScoped)
+          // A command that did not queue behind the lock reaches its first read as soon as the fibers run.
+          yield* TestClock.adjust("50 millis")
+          expect(readsWhileHeld).toBe(0)
+          expect(reads).toBe(0)
+
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(holder)
+          yield* Fiber.join(commands)
+          // Released, all three ran: the check above was not vacuous.
+          expect(reads).toBeGreaterThanOrEqual(3)
+          expect(readsWhileHeld).toBe(0)
+        }),
+      )
+    }).pipe(Effect.provide(env))
   })
 })
 

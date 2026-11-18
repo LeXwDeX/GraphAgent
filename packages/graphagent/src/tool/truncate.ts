@@ -5,6 +5,8 @@ import path from "path"
 import type { Agent } from "../agent/agent"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Config } from "@/config/config"
+import { errorMessage } from "@/util/error"
+import { headChars } from "@/util/text"
 import { ToolID } from "./schema"
 import { TRUNCATION_DIR } from "./truncation-dir"
 
@@ -38,6 +40,8 @@ export interface Details {
   maxBytes: number
   /** The preview is a byte slice of one line instead of whole lines. */
   partialLine: boolean
+  /** Code points in the preview when `partialLine` (the unit `read` counts `charOffset` in); 0 otherwise. */
+  shownChars: number
 }
 
 export interface Preview {
@@ -46,8 +50,14 @@ export interface Preview {
   details?: Details
 }
 
+/** Where `save` put a text, or why it could not (the first line of the write error, at most 200 characters). */
+export type Saved = { path: string } | { failed: string }
+
 export type Result =
-  { content: string; truncated: false } | { content: string; truncated: true; outputPath: string; details: Details }
+  | { content: string; truncated: false }
+  | { content: string; truncated: true; outputPath: string; details: Details }
+  /** The full text could not be saved: the preview stands alone, and `unsaved` is the reason. */
+  | { content: string; truncated: true; outputPath: undefined; unsaved: string; details: Details }
 
 export interface Options {
   maxLines?: number
@@ -58,6 +68,11 @@ export interface Options {
 export interface Interface {
   readonly cleanup: () => Effect.Effect<void>
   readonly write: (text: string) => Effect.Effect<string>
+  /**
+   * Like `write`, but a failed write is the value `{ failed }` instead of a defect, so a caller can still
+   * return what it has and say that the rest could not be saved.
+   */
+  readonly save: (text: string) => Effect.Effect<Saved>
   /**
    * Returns output unchanged when it fits within the limits, otherwise writes the full text
    * to the truncation directory and returns a preview plus the continuation notice.
@@ -75,6 +90,26 @@ export function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** What a result says when its full text could not be written to disk. */
+export function unsavedNote(reason: string): string {
+  return `Full output could not be saved: ${reason}. The omitted part cannot be read back; repeat the call with a narrower scope.`
+}
+
+/** The first non-blank line of a write error, at most 200 characters: one short reason a note can carry. */
+function reasonOf(error: unknown): string {
+  const line = errorMessage(error)
+    .split("\n")
+    .map((part) => part.trim())
+    .find((part) => part !== "")
+  return headChars(line ?? "unknown error", 200)
+}
+
+function codePoints(text: string): number {
+  let count = 0
+  for (const _ of text) count++
+  return count
 }
 
 /** Cut UTF-8 text at a byte budget without splitting a code point. */
@@ -121,6 +156,7 @@ export function headPreview(text: string, maxLines: number, maxBytes: number): P
   let hitBytes = false
   let partialLine = false
   let lineBytes = 0
+  let shownChars = 0
   for (let i = 0; i < lines.length && i < maxLines; i++) {
     const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
     if (bytes + size > maxBytes) {
@@ -130,6 +166,7 @@ export function headPreview(text: string, maxLines: number, maxBytes: number): P
         const cut = headBytes(lines[i], maxBytes)
         out.push(cut)
         bytes = Buffer.byteLength(cut, "utf-8")
+        shownChars = codePoints(cut)
         partialLine = true
       }
       break
@@ -152,6 +189,7 @@ export function headPreview(text: string, maxLines: number, maxBytes: number): P
       lineBytes,
       maxBytes,
       partialLine,
+      shownChars,
     },
   }
 }
@@ -167,6 +205,7 @@ export function tailPreview(text: string, maxLines: number, maxBytes: number): P
   let hitBytes = false
   let partialLine = false
   let lineBytes = 0
+  let shownChars = 0
   for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
     const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
     if (bytes + size > maxBytes) {
@@ -176,6 +215,7 @@ export function tailPreview(text: string, maxLines: number, maxBytes: number): P
         const cut = tailBytes(lines[i], maxBytes)
         out.unshift(cut)
         bytes = Buffer.byteLength(cut, "utf-8")
+        shownChars = codePoints(cut)
         partialLine = true
       }
       break
@@ -198,8 +238,34 @@ export function tailPreview(text: string, maxLines: number, maxBytes: number): P
       lineBytes,
       maxBytes,
       partialLine,
+      shownChars,
     },
   }
+}
+
+/**
+ * A preview that is a slice of one line. A cut first line continues from the
+ * character after the last one shown, and says how many lines come after it.
+ */
+function partialLineNotice(file: string, details: Details): string {
+  const edge = details.direction === "head" ? "first" : "last"
+  const first =
+    `[truncated: showing the ${edge} ${formatSize(details.outputBytes)} of line ${details.startLine} ` +
+    `(line is ${formatSize(details.lineBytes)}; ${formatSize(details.totalBytes)} total output). Full output: ${file}]`
+  if (details.direction === "tail")
+    return [
+      first,
+      `Continue: read filePath="${file}" offset=${details.startLine} limit=1 maxLineLength=${MAX_LINE_FETCH}; ` +
+        `use the shell tool for characters beyond that.`,
+    ].join("\n")
+
+  const after = details.totalLines - 1
+  return [
+    first,
+    `Continue this line: read filePath="${file}" offset=1 limit=1 charOffset=${details.shownChars + 1} ` +
+      `maxLineLength=${MAX_LINE_FETCH}`,
+    ...(after > 0 ? [`${after} more lines follow it; read them with: read filePath="${file}" offset=2`] : []),
+  ].join("\n")
 }
 
 /**
@@ -207,15 +273,7 @@ export function tailPreview(text: string, maxLines: number, maxBytes: number): P
  * output is, and the exact parameters that continue reading it.
  */
 export function notice(file: string, details: Details): string {
-  if (details.partialLine) {
-    const edge = details.direction === "head" ? "first" : "last"
-    return [
-      `[truncated: showing the ${edge} ${formatSize(details.outputBytes)} of line ${details.startLine} ` +
-        `(line is ${formatSize(details.lineBytes)}; ${formatSize(details.totalBytes)} total output). Full output: ${file}]`,
-      `Continue: read filePath="${file}" offset=${details.startLine} limit=1 maxLineLength=${MAX_LINE_FETCH}; ` +
-        `use the shell tool for characters beyond that.`,
-    ].join("\n")
-  }
+  if (details.partialLine) return partialLineNotice(file, details)
 
   const limit = details.truncatedBy === "bytes" ? ` (${formatSize(details.maxBytes)} limit)` : ""
   const omitted =
@@ -228,6 +286,18 @@ export function notice(file: string, details: Details): string {
       `${omitted} Full output: ${file}]`,
     `Continue: read filePath="${file}" offset=${next}`,
   ].join("\n")
+}
+
+/** The preview of a text whose full copy could not be saved: it says so where the saved path would have been. */
+function unsavedOutput(preview: string, details: Details, reason: string) {
+  const note = `[truncated: ${unsavedNote(reason)}]`
+  return {
+    content: details.direction === "head" ? `${preview}\n\n${note}` : `${note}\n\n${preview}`,
+    truncated: true,
+    outputPath: undefined,
+    unsaved: reason,
+    details,
+  } as const
 }
 
 export const layer = Layer.effect(
@@ -258,6 +328,15 @@ export const layer = Layer.effect(
       return file
     })
 
+    const save = Effect.fn("Truncate.save")(function* (text: string) {
+      const file = path.join(TRUNCATION_DIR, ToolID.ascending())
+      return yield* fs.ensureDir(TRUNCATION_DIR).pipe(
+        Effect.andThen(fs.writeFileString(file, text)),
+        Effect.as<Saved>({ path: file }),
+        Effect.catch((error) => Effect.succeed<Saved>({ failed: reasonOf(error) })),
+      )
+    })
+
     const limits = Effect.fn("Truncate.limits")(function* () {
       const configSvc = yield* Effect.serviceOption(Config.Service)
       if (Option.isNone(configSvc)) return { maxLines: MAX_LINES, maxBytes: MAX_BYTES }
@@ -277,12 +356,13 @@ export const layer = Layer.effect(
         direction === "head" ? headPreview(text, maxLines, maxBytes) : tailPreview(text, maxLines, maxBytes)
       if (!preview.cut || !preview.details) return { content: text, truncated: false } as const
 
-      const file = yield* write(text)
-      const hint = notice(file, preview.details)
+      const saved = yield* save(text)
+      if ("failed" in saved) return unsavedOutput(preview.text, preview.details, saved.failed)
+      const hint = notice(saved.path, preview.details)
       return {
         content: direction === "head" ? `${preview.text}\n\n${hint}` : `${hint}\n\n${preview.text}`,
         truncated: true,
-        outputPath: file,
+        outputPath: saved.path,
         details: preview.details,
       } as const
     })
@@ -294,7 +374,7 @@ export const layer = Layer.effect(
       Effect.forkScoped,
     )
 
-    return Service.of({ cleanup, write, output, limits })
+    return Service.of({ cleanup, write, save, output, limits })
   }),
 )
 

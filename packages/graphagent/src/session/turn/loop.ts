@@ -37,6 +37,7 @@ import { SessionTools } from "../tools"
 import type { TurnExecution } from "../turns"
 import { Decide } from "./decide"
 import type { FinalPolicy } from "./final-policy"
+import { Hints } from "./hints"
 import type { PrepareApi, TurnRequestInput } from "./prepare"
 import { Settle } from "./settle"
 import { State, type TurnState } from "./state"
@@ -837,11 +838,16 @@ function makeStopGate(deps: LoopDeps) {
       stopPolicy: resolved.policy,
       budgetExhausted: input.budget.exhausted,
       assistantFinish: input.lastAssistant?.finish,
+      pseudoToolCall: Hints.detectPseudoToolCall(input.lastAssistantMsg?.parts ?? []),
     }
     let transition = Decide.decide(input.state, signals)
     // The terminal step called a tool: run the single closing step before any
     // Stop hook observes the turn.
     if (transition.kind === "close") return { kind: "step", state: State.beginClosing(input.state) }
+    if (transition.kind === "hint") {
+      yield* stopFns.writeHint({ sessionID: input.sessionID, lastUser: input.lastUser, hint: transition.hint })
+      return { kind: "continue", state: State.recordHint(input.state, transition.hint) }
+    }
     if (transition.kind === "run_stop_hooks") {
       const result = yield* stopFns.runStopHooks({
         sessionID: input.sessionID,

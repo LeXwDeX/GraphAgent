@@ -953,7 +953,9 @@ describe("DagLoop atomic wake integration", () => {
           expect(wake).toContain(`workflow_id="${dagID}"`)
           expect(wake).toContain('node_id="long-report"')
           expect(wake).toContain("truncated=true")
-          expect(wake).toContain("workflow result")
+          expect(wake).toContain(
+            `Complete output: call workflow({"params":{"action":"inspect","operation":"result","workflow_id":"${dagID}","node_id":"long-report"}}).`,
+          )
           expect(wake).not.toContain("WAKE_SENTINEL")
           expect(wake.length).toBeLessThan(1_500)
           yield* Deferred.succeed(parent.release, "success")

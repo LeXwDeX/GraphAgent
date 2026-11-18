@@ -9,7 +9,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
+import { DIR as TRUNCATION_DIR, formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -117,6 +117,13 @@ export const ReadTool = Tool.define<
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
+      // A truncated result points at a saved file that the 7-day cleanup removes: say that, not "not found".
+      if (dir === TRUNCATION_DIR && base.startsWith("tool_"))
+        return yield* Effect.fail(
+          new Error(
+            `Saved output has expired: ${filepath} was removed by the 7-day cleanup. Run the original command again to regenerate it.`,
+          ),
+        )
       const items = yield* fs.readDirectory(dir).pipe(
         Effect.map((items) =>
           items
@@ -136,7 +143,7 @@ export const ReadTool = Tool.define<
         )
       }
 
-      return yield* Effect.fail(new Error(`File not found: ${filepath}`))
+      return yield* Effect.fail(new Error(`File not found: ${filepath}. Check the path with glob.`))
     })
 
     const list = Effect.fn("ReadTool.list")(function* (filepath: string) {

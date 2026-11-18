@@ -303,3 +303,131 @@ control.it.effect(
     { config: cfg },
   ),
 )
+
+const textsOf = (parts: Part[]) =>
+  parts.filter((part): part is SessionV1.TextPart => part.type === "text").map((part) => part.text)
+
+/** One attempt that streams `text` and is then cut off by a retryable proxy failure. */
+const partialThenDisconnect = (text: string, options: { ended: boolean }) =>
+  Stream.concat(
+    Stream.fromIterable([
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.textStart({ id: "text-1" }),
+      LLMEvent.textDelta({ id: "text-1", text }),
+      ...(options.ended ? [LLMEvent.textEnd({ id: "text-1" })] : []),
+    ]),
+    Stream.fail(proxyError("upstream_disconnected")),
+  )
+
+const recoveredScript: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.textStart({ id: "text-2" }),
+  LLMEvent.textDelta({ id: "text-2", text: "recovered" }),
+  LLMEvent.textEnd({ id: "text-2" }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+
+for (const ended of [true, false]) {
+  const discard = scripted([partialThenDisconnect("partial", { ended }), recoveredScript])
+
+  discard.it.effect(
+    `session.processor drops the partial text of a failed attempt once the retry succeeds (text ${ended ? "ended" : "still open"})`,
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "answer")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+          const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          yield* TestClock.adjust("90 seconds")
+          const result = yield* Fiber.join(running)
+
+          expect(result).toBe("continue")
+          expect(discard.count()).toBe(2)
+          expect(msg.error).toBeUndefined()
+          expect(textsOf(yield* MessageV2.parts(msg.id))).toEqual(["recovered"])
+        }),
+      { config: cfg },
+    ),
+  )
+}
+
+const exhaustedPartial = scripted([partialThenDisconnect("partial", { ended: true })])
+
+exhaustedPartial.it.effect(
+  "session.processor keeps the last attempt's partial text when the retries are exhausted",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("10 minutes")
+        const result = yield* Fiber.join(running)
+
+        expect(result).toBe("stop")
+        expect(exhaustedPartial.count()).toBe(6)
+        expect(msg.error?.name).toBe("APIError")
+        // Earlier attempts were dropped as they were retried; only the final one stays.
+        expect(textsOf(yield* MessageV2.parts(msg.id))).toEqual(["partial"])
+      }),
+    { config: cfg },
+  ),
+)
+
+for (const mode of ["interactive", "noninteractive"] as const) {
+  const display = scripted([partialThenDisconnect("partial\nline", { ended: false }), recoveredScript])
+
+  display.it.effect(
+    `session.processor never writes a dropped partial text back through the display path (${mode})`,
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "answer")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const calls: Array<{ delta: string; index: number; final: boolean }> = []
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model: mdl,
+            displayMode: mode,
+            onTextDisplay: (batch) =>
+              Effect.sync(() => {
+                calls.push(batch)
+                return batch.delta.toUpperCase()
+              }),
+          })
+
+          const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          yield* TestClock.adjust("90 seconds")
+          expect(yield* Fiber.join(running)).toBe("continue")
+
+          const parts = (yield* MessageV2.parts(msg.id)).filter(
+            (part): part is SessionV1.TextPart => part.type === "text",
+          )
+          expect(parts.map((part) => part.text)).toEqual(["recovered"])
+          expect(parts.map((part) => part.displayText)).toEqual(["RECOVERED"])
+          // The interactive line flush already delivered the failed attempt's first line before it was cut off.
+          expect(calls.at(-1)).toMatchObject({ delta: "recovered", final: true })
+          expect(calls.filter((call) => call.final)).toHaveLength(1)
+        }),
+      { config: cfg },
+    ),
+  )
+}
