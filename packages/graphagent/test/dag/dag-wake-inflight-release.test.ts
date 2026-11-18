@@ -27,6 +27,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -154,11 +155,13 @@ const scenario = (mode: "none" | "expire" | "defect") =>
             hooks: {},
           }),
       })
+      const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
       const loopLayer = DagLoop.layer.pipe(
         Layer.provide(base),
         Layer.provide(session),
         Layer.provide(prompt),
         Layer.provide(agent),
+        Layer.provide(inbox),
       )
 
       yield* Effect.gen(function* () {

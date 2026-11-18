@@ -32,6 +32,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import type { DagValidation } from "@/dag/validation"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -151,11 +152,13 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, harness: Harness) {
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   // The user's token budget (#1031): no budget is set, so nothing runs out by itself; a test spends it with `exhaust`
   // and raises it with `onBudgetChanged`, which is what the usage and `/dag-mode budget` end in.
