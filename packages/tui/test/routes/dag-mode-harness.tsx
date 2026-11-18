@@ -33,6 +33,7 @@ import { PromptStashProvider } from "../../src/prompt/stash"
 import type { BottomZoneStateApi } from "../../src/shell/bottom-zone"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { tmpdir } from "../fixture/fixture"
+import { readFrame, readSpans } from "../fixture/frames"
 import { RouteFrame } from "../fixture/route-frame"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -40,35 +41,8 @@ import { createEventSource, createFetch, directory, json, type FetchHandler } fr
 
 export type Sent = { method: string; path: string; body: unknown }
 
-type TestApp = Awaited<ReturnType<typeof testRender>>
-
-/**
- * Reads from the renderer's buffers without racing a frame that is still being presented.
- * While one is, the native buffer lease is busy and the read throws `OutputBusy`; the lease
- * frees on its own a moment later, so render again and retry instead of failing the test.
- */
-async function whenFree<T>(app: Pick<TestApp, "renderOnce">, read: () => T): Promise<T> {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    try {
-      return read()
-    } catch (error) {
-      if (!(error instanceof Error && error.message.includes("OutputBusy"))) throw error
-      await Bun.sleep(5)
-      await app.renderOnce()
-    }
-  }
-  throw new Error("the renderer stayed busy while a frame was read")
-}
-
-/** The frame as text. */
-export function readFrame(app: Pick<TestApp, "renderOnce" | "captureCharFrame">) {
-  return whenFree(app, () => app.captureCharFrame())
-}
-
-/** The frame as painted spans. */
-export function readSpans(app: Pick<TestApp, "renderOnce" | "captureSpans">) {
-  return whenFree(app, () => app.captureSpans())
-}
+// The frame readers live with the other frame helpers; they stay importable from here.
+export { readFrame, readSpans }
 
 export function sessionFixture(id: string, extra: Partial<Session> = {}): Session {
   return {

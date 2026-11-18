@@ -30,7 +30,7 @@ import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
 import { FooterToastProvider } from "../../src/ui/toast"
 import { tmpdir } from "./fixture"
-import { nextTurn } from "./frames"
+import { FRAME_WAIT_MS, pause, readFrame } from "./frames"
 import { TestTuiContexts } from "./tui-environment"
 import { createTuiResolvedConfig } from "./tui-runtime"
 import { createEventSource, createFetch, directory, type FetchHandler } from "./tui-sdk"
@@ -143,22 +143,26 @@ export async function mountSessionMain(input: {
 const FRAME_MS = 16
 
 /**
- * Renders frame after frame until `text` shows up on screen and returns that
- * frame. Each round advances the manual clock by one frame, renders (which also
- * flushes the events queued for it), and yields one event-loop turn so requests
- * in flight can finish. The bound is a number of frames, not a duration.
+ * Renders frame after frame until `text` shows up on screen and returns that frame. Each round advances the manual
+ * clock by one frame, renders (which also flushes the events queued for it), reads the frame, and yields so requests
+ * in flight can finish. The bound is a deadline, not a number of frames: what the frame waits for (the kv file, theme
+ * discovery, the fake requests of the session load) completes in real time, and a count of rounds that is plenty on
+ * an idle host runs out before it does on a loaded one (#1406). On a timeout the error carries the last frame.
  */
 export async function waitForFrame(
   view: { app: Awaited<ReturnType<typeof testRender>>; clock: ManualClock },
   text: string,
-  rounds = 500,
+  timeoutMs = FRAME_WAIT_MS,
 ) {
-  for (let round = 0; round < rounds; round++) {
+  const deadline = performance.now() + timeoutMs
+  for (let round = 0; ; round++) {
     view.clock.advance(FRAME_MS)
     await view.app.renderOnce()
-    const frame = view.app.captureCharFrame()
+    const frame = await readFrame(view.app)
     if (frame.includes(text)) return frame
-    await nextTurn()
+    if (performance.now() >= deadline) {
+      throw new Error(`"${text}" did not show up within ${timeoutMs}ms; last frame:\n${frame}`)
+    }
+    await pause(round)
   }
-  throw new Error(`"${text}" did not show up after ${rounds} frames:\n${view.app.captureCharFrame()}`)
 }

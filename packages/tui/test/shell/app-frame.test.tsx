@@ -12,7 +12,8 @@ import { AppFrame, DIMMED_OPACITY, type AppFrameProps } from "../../src/shell/ap
 import type { FooterHint } from "../../src/shell/footer"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
-import { ShellContexts, renderFirstFrame, renderUntil, shellState } from "./contexts"
+import { renderUntilFrame } from "../fixture/frames"
+import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -343,15 +344,18 @@ async function renderDimScene(options: {
   // The first non-empty frame can hold only the bars; wait for the main area itself, so a slow
   // runner does not sample colors before the content under the dimming exists.
   const main = options.main ?? "主区内容 MAINTEXT"
-  await renderUntil(
-    app,
-    () => {
-      const frame = app.captureCharFrame()
-      return frame.includes(main.slice(0, 8)) && (!options.drawer || frame.includes("DRAWER"))
-    },
-    options.drawer ? "the main area and the drawer" : "the main area",
-  )
-  await app.renderOnce()
+  try {
+    await renderUntilFrame(
+      app,
+      (frame) => frame.includes(main.slice(0, 8)) && (!options.drawer || frame.includes("DRAWER")),
+      options.drawer ? "the main area and the drawer" : "the main area",
+    )
+    await app.renderOnce()
+  } catch (error) {
+    // A scene nobody got back must not keep its renderer, its timers and its frames running into the next test.
+    app.renderer.destroy()
+    throw error
+  }
   return {
     app,
     setDim,
@@ -398,23 +402,41 @@ function expectDimmed(after: RGBA, before: readonly number[]) {
   expect(after.toInts()[0]).toBeLessThan(before[0] ?? 0)
 }
 
+/**
+ * What a scene shows: its frame and the colors painted for the texts the first dim test compares. Call it right
+ * after the scene is built.
+ */
+function sampleScene(scene: DimScene) {
+  return {
+    frame: scene.app.captureCharFrame(),
+    main: paintOf(scene, "主区内容").fg,
+    band: paintOf(scene, "状态带").fg,
+    // The bars and the bottom zone are not part of the dimmed area.
+    bars: ["GraphAgent", "底区", "build"].map((text) => ({ text, fg: paintOf(scene, text).fg })),
+  }
+}
+
 test("dims the main area and the status band without erasing wide characters", async () => {
   await using tmp = await shellState()
+  // Each scene is sampled as soon as it is built, before the next one mounts. A mounting ThemeProvider takes the `ready`
+  // flag of the module-level theme store down for every scene that is alive, so the scene mounted earlier rebuilds
+  // its subtree, and the slots `frameProps` hands over as ready-made elements do not survive that: read after the second
+  // mount, the first scene could show its bars and nothing else (#1406).
   await using plain = await renderDimScene({ dim: false, drawer: false, state: tmp.path })
+  const before = sampleScene(plain)
   await using dimmed = await renderDimScene({ dim: true, drawer: false, state: tmp.path })
+  const after = sampleScene(dimmed)
 
-  for (const scene of [plain, dimmed]) {
-    const frame = scene.app.captureCharFrame()
-    expect(frame).toContain("主区内容 MAINTEXT")
-    expect(frame).toContain("状态带")
+  for (const sample of [before, after]) {
+    expect(sample.frame).toContain("主区内容 MAINTEXT")
+    expect(sample.frame).toContain("状态带")
   }
 
-  expectDimmed(paintOf(dimmed, "主区内容").fg, paintOf(plain, "主区内容").fg.toInts())
-  expectDimmed(paintOf(dimmed, "状态带").fg, paintOf(plain, "状态带").fg.toInts())
+  expectDimmed(after.main, before.main.toInts())
+  expectDimmed(after.band, before.band.toInts())
 
-  // The bars and the bottom zone are not part of the dimmed area.
-  for (const text of ["GraphAgent", "底区", "build"]) {
-    expect(paintOf(dimmed, text).fg.toInts()).toEqual(paintOf(plain, text).fg.toInts())
+  for (const [index, bar] of after.bars.entries()) {
+    expect({ text: bar.text, fg: bar.fg.toInts() }).toEqual({ text: bar.text, fg: before.bars[index].fg.toInts() })
   }
 })
 
@@ -465,10 +487,16 @@ for (const order of DRAWER_ORDERS) {
     if (order.later === "dim") scene.setDim(true)
     if (order.later === "drawer") scene.setDrawer(true)
     await scene.settle()
-    // A slow runner can need more passes than settle() renders before the drawer is painted.
-    await renderUntil(scene.app, () => scene.app.captureCharFrame().includes("DRAWER"), "the drawer")
+    // A slow runner can need more passes than settle() renders before the drawer is painted, and the main text beside it
+    // can be missing from that frame: wait for both, not for the drawer alone (#1406).
+    const frame = await renderUntilFrame(
+      scene.app,
+      (candidate) =>
+        candidate.split("\n").some((line) => line.includes("DRAWER") && line.startsWith(main.slice(0, 40))),
+      "the drawer over the main text",
+    )
 
-    const lines = scene.app.captureCharFrame().split("\n")
+    const lines = frame.split("\n")
     const row = lines.findIndex((line) => line.includes("DRAWER"))
     expect(row).toBe(referenceRow)
     const line = lines[row] ?? ""
