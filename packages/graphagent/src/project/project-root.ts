@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import path from "path"
+import { realpathSync } from "fs"
 
 export interface ProjectRootInput {
   home: string
@@ -23,13 +24,15 @@ export interface ProjectRootInput {
 export function resolveProjectRoot(directory: string, input: ProjectRootInput): string {
   const start = path.resolve(directory)
   const home = path.resolve(input.home)
+  const realHome = canonicalize(home)
   const toplevel = input.toplevel ? path.resolve(input.toplevel) : undefined
   const fsRoot = path.parse(start).root
-  const upper = toplevel ?? (isWithin(start, home) ? home : fsRoot)
+  const upper = toplevel ?? (isWithin(canonicalize(start), realHome) ? realHome : fsRoot)
 
   let current = start
   while (true) {
-    if (current !== home && current !== fsRoot && input.isDirectory(path.join(current, ".agents"))) return current
+    if (canonicalize(current) !== realHome && current !== fsRoot && input.isDirectory(path.join(current, ".agents")))
+      return current
     if (current === upper) break
     const parent = path.dirname(current)
     if (parent === current) break
@@ -44,12 +47,32 @@ function isWithin(candidate: string, parent: string) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
+/**
+ * Resolve `p` to its realpath, falling back to `path.resolve` when the path
+ * doesn't exist yet or otherwise can't be resolved.
+ *
+ * `$HOME` (an environment variable) and `process.cwd()`-derived paths can
+ * disagree on whether a symlink along the way has been followed — macOS in
+ * particular hands back a resolved cwd while `$HOME` can still carry a
+ * symlinked prefix. Comparing the raw strings lets a symlinked home
+ * directory slip past the `$HOME` checks below, so every such comparison
+ * goes through this first.
+ */
+function canonicalize(p: string): string {
+  const resolved = path.resolve(p)
+  try {
+    return realpathSync(resolved)
+  } catch {
+    return resolved
+  }
+}
+
 export const HOME_ROOT_ERROR =
   "Refusing to write project files because the project root resolves to $HOME. Start from a project directory that contains a .agents/ directory."
 
 /** True when the resolved project root carries a project layer (it is not `$HOME`). */
 export function hasProjectLayer(root: string, home: string) {
-  return path.resolve(root) !== path.resolve(home)
+  return canonicalize(root) !== canonicalize(home)
 }
 
 /** Project-layer writes are rejected when the project root is `$HOME`. */
