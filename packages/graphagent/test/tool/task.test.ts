@@ -38,6 +38,7 @@ import { EngineProcess } from "@/session/engine-process"
 import { eq } from "drizzle-orm"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
+import { ProviderTest } from "../fake/provider"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -2008,6 +2009,53 @@ describe("tool.task", () => {
       })
       expect(holders).toHaveLength(1)
       expect(yield* Effect.promise(() => Bun.file(holders[0]).text())).toBe(text)
+    }),
+  )
+
+  // The report goes to the parent, so the parent's window sets the cut: 6_400 bytes for a 32K window (#1448).
+  background.instance("a background result is cut at the output budget of the parent's window", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+      const marker = `SMALL_WINDOW_${Bun.randomUUIDv7()}`
+      // 151 lines of 60 bytes: over the 6_400-byte budget, under its 250-line limit.
+      const text = [marker, ...Array.from({ length: 150 }, () => "r".repeat(60))].join("\n")
+      const model = ProviderTest.model({ limit: { context: 32_000, output: 4_096 } })
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text }), model },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 5_000 })
+      expect(waited.info?.status).toBe("completed")
+      const ended = yield* endedRun(SessionID.make(result.metadata.sessionID))
+      const report = ChildStore.parseReport(ended.outcome)
+
+      expect(report?.text).toContain("[truncated: showing lines 1-")
+      expect(report?.text).toContain("of 151 (6.3 KB limit)")
+      const preview = report?.text.split("\n\n[truncated:")[0] ?? ""
+      expect(Buffer.byteLength(preview, "utf-8")).toBeLessThanOrEqual(6_400)
+      expect(Buffer.byteLength(preview, "utf-8")).toBeGreaterThan(6_400 - 61)
+      const saved = /Full output: (\S+?)\]/.exec(report?.text ?? "")?.[1]
+      if (!saved) throw new Error("the report names no saved file")
+      expect(yield* Effect.promise(() => Bun.file(saved).text())).toBe(text)
     }),
   )
 

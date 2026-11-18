@@ -15,11 +15,6 @@ const BACKGROUND_GUIDANCE =
 /** Inline lines kept from the end of a long command; the rest lives in the output file. */
 export const SHELL_TAIL_LINES = 20
 
-export type Limits = {
-  maxLines: number
-  maxBytes: number
-}
-
 export function parameterSchema() {
   return Schema.Struct({
     command: Schema.String.annotate({ description: "The command to execute" }),
@@ -93,7 +88,7 @@ function chainGuidance(name: string) {
   return "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, file edits before Bash for git operations, or git add before git commit), run these operations sequentially instead."
 }
 
-function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number, silenceWarnMs: number) {
+function bashCommandSection(chain: string, defaultTimeoutMs: number, silenceWarnMs: number) {
   return `Before executing the command, please follow these steps:
 
 1. Directory Verification:
@@ -115,7 +110,7 @@ Usage notes:
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - ${BACKGROUND_GUIDANCE}
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
-  - If the output exceeds ${SHELL_TAIL_LINES} lines or ${limits.maxBytes} bytes, the result keeps the last lines that fit ${limits.maxBytes} bytes (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
+  - If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
   - ${FILTER_GUIDANCE}
 
   - Avoid using Bash with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
@@ -143,7 +138,6 @@ function powershellCommandSection(
   name: string,
   chain: string,
   pathSep: string,
-  limits: Limits,
   defaultTimeoutMs: number,
   silenceWarnMs: number,
 ) {
@@ -170,7 +164,7 @@ Usage notes:
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - ${BACKGROUND_GUIDANCE}
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
-  - If the output exceeds ${SHELL_TAIL_LINES} lines or ${limits.maxBytes} bytes, the result keeps the last lines that fit ${limits.maxBytes} bytes (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
+  - If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
   - ${FILTER_GUIDANCE}
 
   - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
@@ -194,7 +188,7 @@ Usage notes:
     </bad-example>`
 }
 
-function cmdCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number, silenceWarnMs: number) {
+function cmdCommandSection(chain: string, defaultTimeoutMs: number, silenceWarnMs: number) {
   return `# cmd.exe shell notes
 - Use double quotes for paths with spaces.
 - Use %VAR% for environment variables.
@@ -222,7 +216,7 @@ Usage notes:
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - ${BACKGROUND_GUIDANCE}
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
-  - If the output exceeds ${SHELL_TAIL_LINES} lines or ${limits.maxBytes} bytes, the result keeps the last lines that fit ${limits.maxBytes} bytes (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`more\` or other pagination commands to limit output; the full output is already captured for precise paging and searching.
+  - If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`more\` or other pagination commands to limit output; the full output is already captured for precise paging and searching.
   - ${FILTER_GUIDANCE}
 
   - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
@@ -246,13 +240,7 @@ Usage notes:
     </bad-example>`
 }
 
-function profile(
-  name: string,
-  platform: NodeJS.Platform,
-  limits: Limits,
-  defaultTimeoutMs: number,
-  silenceWarnMs: number,
-) {
+function profile(name: string, platform: NodeJS.Platform, defaultTimeoutMs: number, silenceWarnMs: number) {
   const isPowerShell = PS.has(name)
   const chain = chainGuidance(name)
   if (CMD.has(name)) {
@@ -260,7 +248,7 @@ function profile(
       intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
       workdirSection:
         "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
-      commandSection: cmdCommandSection(chain, limits, defaultTimeoutMs, silenceWarnMs),
+      commandSection: cmdCommandSection(chain, defaultTimeoutMs, silenceWarnMs),
       gitCommands: "git commands",
       gitCommandRestriction: "git commands",
       createPrInstruction: "Create PR using a temporary body file so cmd.exe quoting stays simple.",
@@ -276,7 +264,6 @@ function profile(
         name,
         chain,
         platform === "win32" ? "\\" : "/",
-        limits,
         defaultTimeoutMs,
         silenceWarnMs,
       ),
@@ -294,7 +281,7 @@ function profile(
       "Executes a given bash command in a new shell process for each call with optional timeout, ensuring proper handling and security measures.",
     workdirSection:
       "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.",
-    commandSection: bashCommandSection(chain, limits, defaultTimeoutMs, silenceWarnMs),
+    commandSection: bashCommandSection(chain, defaultTimeoutMs, silenceWarnMs),
     gitCommands: "bash commands",
     gitCommandRestriction: "git bash commands",
     createPrInstruction:
@@ -305,14 +292,8 @@ function profile(
   }
 }
 
-export function render(
-  name: string,
-  platform: NodeJS.Platform,
-  limits: Limits,
-  defaultTimeoutMs: number,
-  silenceWarnMs: number,
-) {
-  const selected = profile(name, platform, limits, defaultTimeoutMs, silenceWarnMs)
+export function render(name: string, platform: NodeJS.Platform, defaultTimeoutMs: number, silenceWarnMs: number) {
+  const selected = profile(name, platform, defaultTimeoutMs, silenceWarnMs)
   return {
     description: renderPrompt(DESCRIPTION, {
       intro: selected.intro,

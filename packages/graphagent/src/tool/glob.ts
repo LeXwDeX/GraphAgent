@@ -6,8 +6,10 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./glob.txt"
+import { ModelContext } from "./model-context"
 import { describeSearchPathFailure } from "./search-path"
 import * as Tool from "./tool"
+import * as Truncate from "./truncate"
 
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 1000
@@ -30,6 +32,7 @@ export const GlobTool = Tool.define(
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const ripgrep = yield* Ripgrep.Service
+    const trunc = yield* Truncate.Service
     return {
       description: DESCRIPTION,
       effects: "read",
@@ -75,15 +78,20 @@ export const GlobTool = Tool.define(
 
           const limit = Math.min(params.limit ?? DEFAULT_LIMIT, MAX_LIMIT)
           const scan = Math.max(limit, SCAN_LIMIT)
-          const matches = yield* ripgrep.glob({ cwd: search, pattern: params.pattern, limit: scan + 1 })
+          const matches = yield* ripgrep.glob({ cwd: search, pattern: params.pattern, limit: scan + 1, sorted: true })
           const more = matches.length > scan
           const files = matches.slice(0, limit)
+          // The list is cut at the byte budget of the model, like any result that sets `metadata.truncated` itself.
+          const limits = yield* trunc.limits({ context: ModelContext.contextOf(ctx.extra) })
+          const lines = files.map((file) => path.resolve(search, file.path))
+          const kept = Truncate.fitItems(lines, limits.maxBytes)
+          const byBytes = kept < files.length
 
           const output = []
           if (files.length === 0) output.push("No files found")
           if (files.length > 0) {
-            output.push(...files.map((file) => path.resolve(search, file.path)))
-            if (more || files.length < matches.length) {
+            output.push(...lines.slice(0, kept))
+            if (more || files.length < matches.length || byBytes) {
               const total = more ? `at least ${scan}` : `${matches.length}`
               const next = more
                 ? limit < MAX_LIMIT
@@ -92,9 +100,15 @@ export const GlobTool = Tool.define(
                 : `, or glob limit=${Math.min(matches.length, MAX_LIMIT)} to show the rest`
               output.push("")
               output.push(
-                `[truncated: showing the first ${files.length} of ${total} paths. ` +
-                  (more ? "The scan stopped at the path cap. " : `${matches.length - files.length} paths omitted. `) +
-                  `Continue: narrow path/pattern${next}.]`,
+                byBytes
+                  ? `[truncated: showing the first ${kept} of ${total} paths. ` +
+                      `The output byte budget (${Truncate.formatSize(limits.maxBytes)}) stopped the list. ` +
+                      `Continue: narrow path/pattern.]`
+                  : `[truncated: showing the first ${files.length} of ${total} paths. ` +
+                      (more
+                        ? "The scan stopped at the path cap. "
+                        : `${matches.length - files.length} paths omitted. `) +
+                      `Continue: narrow path/pattern${next}.]`,
               )
             }
           }
@@ -102,8 +116,8 @@ export const GlobTool = Tool.define(
           return {
             title: path.relative(ins.worktree, search),
             metadata: {
-              count: files.length,
-              truncated: more || files.length < matches.length,
+              count: kept,
+              truncated: more || files.length < matches.length || byBytes,
             },
             output: output.join("\n"),
           }

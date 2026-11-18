@@ -30,6 +30,7 @@ import {
 } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
+import { TestConfig } from "../fixture/config"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 
@@ -844,6 +845,132 @@ root_type Monster;`
         expect(result.attachments).toBeUndefined()
         expect(result.output).toContain(item[1])
       }
+    }),
+  )
+})
+
+// The byte and line caps of a read are the output budget: the constants without a model on the call, a share of the
+// model's window with one (#1448). The line numbers a page shows count against the byte cap too.
+describe("tool.read output budget (#1448)", () => {
+  const small = { model: ProviderTest.model({ limit: { context: 32_000, output: 4_096 } }) }
+  const configured = testEffect(
+    Layer.mergeAll(
+      readLayer(),
+      testInstanceStoreLayer,
+      TestConfig.layer({ get: () => Effect.succeed({ tool_output: { max_bytes: 2048 } }) }),
+    ),
+  )
+
+  // 2000 lines of 30 characters: each shown line costs its text, a newline and its `<number>: ` prefix.
+  const rows = Array.from({ length: 2000 }, () => "x".repeat(30)).join("\n") + "\n"
+  const shown = (output: string) => Number(/showing lines 1-(\d+) of/.exec(output)?.[1])
+
+  it.instance("counts the line-number prefix against the byte cap", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "short-lines.txt")
+      yield* put(file, rows)
+
+      const result = yield* run({ filePath: file })
+
+      expect(Buffer.byteLength(result.output, "utf8")).toBeLessThanOrEqual(50 * 1024 + 1024)
+      expect(shown(result.output)).toBe(1413)
+      expect(result.output).toContain("(50 KB limit)")
+      expect(result.output).toContain('Continue: read filePath="' + file + '" offset=1414.')
+    }),
+  )
+
+  it.instance("cuts a file at the byte budget of a 32K window and says so", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "short-lines.txt")
+      yield* put(file, rows)
+
+      const result = yield* run({ filePath: file }, { ...ctx, extra: small })
+
+      expect(shown(result.output)).toBe(180)
+      expect(result.output).toContain("(6.25 KB limit)")
+      expect(result.output).toContain('Continue: read filePath="' + file + '" offset=181.')
+      expect(result.metadata.truncated).toBe(true)
+      expect(Buffer.byteLength(result.output, "utf8")).toBeLessThanOrEqual(6_400 + 1024)
+    }),
+  )
+
+  it.instance("caps the lines of a page at the line limit of a 32K window", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "many-lines.txt")
+      yield* put(file, Array.from({ length: 1000 }, () => "a").join("\n") + "\n")
+
+      const capped = yield* run({ filePath: file }, { ...ctx, extra: small })
+      expect(capped.output).toContain("[truncated: showing lines 1-250 of 1000. 750 lines omitted after this range.")
+      expect(capped.output).toContain('Continue: read filePath="' + file + '" offset=251.')
+
+      // The same call without a model keeps the 2000-line cap, so the whole file is shown.
+      const whole = yield* run({ filePath: file })
+      expect(whole.output).toContain("(End of file - total 1000 lines)")
+      expect(whole.metadata.truncated).toBe(false)
+    }),
+  )
+
+  it.instance("fits one long line into the budget of a 32K window and says how to continue it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "wide-cjk.txt")
+      yield* put(file, "漢".repeat(5_000))
+
+      const result = yield* run({ filePath: file, maxLineLength: 50_000 }, { ...ctx, extra: small })
+
+      expect(Buffer.byteLength(result.output, "utf8")).toBeLessThanOrEqual(6_400 + 1_024)
+      expect(result.output).toContain("of 5000 chars; continue with read filePath=")
+      expect(result.output).not.toContain("�")
+      // Without a model the same line is under the 50 KB cap and `maxLineLength` is the only cut.
+      const whole = yield* run({ filePath: file, maxLineLength: 50_000 })
+      expect(whole.output).not.toContain("line truncated")
+    }),
+  )
+
+  it.instance("cuts a directory listing at the byte budget and continues where it stopped", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const dir = path.join(test.directory, "wide")
+      // 100 names of 100 bytes: each entry costs its name and a newline.
+      for (let index = 0; index < 100; index++) {
+        yield* put(path.join(dir, `${String(index).padStart(3, "0")}${"n".repeat(93)}.txt`), "")
+      }
+
+      const capped = yield* run({ filePath: dir }, { ...ctx, extra: small })
+      expect(capped.output).toContain("Showing 63 of 100 entries. Continue:")
+      expect(capped.output).toContain(`offset=64.)`)
+      expect(capped.metadata.truncated).toBe(true)
+      expect(capped.output.split("\n").filter((line) => line.endsWith(".txt"))).toHaveLength(63)
+
+      // The 37 entries after them fit the budget, so the second page ends the listing.
+      const next = yield* run({ filePath: dir, offset: 64 }, { ...ctx, extra: small })
+      expect(next.output).toContain("(100 entries)")
+      expect(next.output.split("\n").filter((line) => line.endsWith(".txt"))).toHaveLength(37)
+      expect(next.metadata.truncated).toBe(false)
+
+      // Without a model the listing is whole.
+      const whole = yield* run({ filePath: dir })
+      expect(whole.output).toContain("(100 entries)")
+      expect(whole.metadata.truncated).toBe(false)
+    }),
+  )
+
+  configured.instance("lets tool_output.max_bytes override the budget and names it in the notice", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "short-lines.txt")
+      yield* put(file, rows)
+
+      const result = yield* run({ filePath: file })
+
+      expect(shown(result.output)).toBe(58)
+      expect(result.output).toContain("(2 KB limit)")
+      // The window of the model does not lift an explicit limit.
+      const modeled = yield* run({ filePath: file }, { ...ctx, extra: { model: ProviderTest.model() } })
+      expect(shown(modeled.output)).toBe(58)
     }),
   )
 })

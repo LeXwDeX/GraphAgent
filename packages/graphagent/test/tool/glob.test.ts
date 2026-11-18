@@ -23,6 +23,8 @@ import { Git } from "@/git"
 import { Filesystem } from "@/util/filesystem"
 import { Permission } from "../../src/permission"
 import type * as Tool from "../../src/tool/tool"
+import { ProviderTest } from "../fake/provider"
+import { TestConfig } from "../fixture/config"
 
 const toolLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Layer.mergeAll(
@@ -35,6 +37,11 @@ const toolLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   )
 
 const it = testEffect(toolLayer())
+// 1000 absolute paths are more than 50 KB wherever the temp directory is long (macOS), and the count cap is what
+// these tests are about: lift the byte budget.
+const unbounded = testEffect(
+  Layer.mergeAll(toolLayer(), TestConfig.layer({ get: () => Effect.succeed({ tool_output: { max_bytes: 1 << 30 } }) })),
+)
 const full = (p: string) => (process.platform === "win32" ? Filesystem.normalizePath(p) : p)
 
 const ctx = {
@@ -150,7 +157,7 @@ const itFaulted = testEffect(
   ),
 )
 
-const globExecute = (params: { pattern: string; path?: string; limit?: number }, next?: Partial<typeof ctx>) =>
+const globExecute = (params: { pattern: string; path?: string; limit?: number }, next?: Partial<Tool.Context>) =>
   Effect.gen(function* () {
     const info = yield* GlobTool
     const glob = yield* info.init()
@@ -365,6 +372,58 @@ describe("tool.glob", () => {
     }),
   )
 
+  // The same search lists the same paths in the same order on every machine, so a cut list is the first N of a
+  // known order and the model can tell what it has not seen (#1448).
+  it.instance("lists paths in path order, whatever order the files were made in", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      for (let index = 0; index < 100; index++) {
+        const name = `f${String((index * 37) % 100).padStart(3, "0")}.txt`
+        yield* Effect.promise(() => Bun.write(path.join(test.directory, name), "x"))
+      }
+      const result = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 100 })
+      const paths = result.output.split("\n").filter((line) => line.endsWith(".txt"))
+      expect(paths).toHaveLength(100)
+      expect(paths).toEqual([...paths].sort())
+      expect(paths[0]).toBe(path.join(test.directory, "f000.txt"))
+      expect(paths[99]).toBe(path.join(test.directory, "f099.txt"))
+    }),
+  )
+
+  // The list has a byte budget of its own, a share of the model's window; a call without a model keeps 50 KB.
+  it.instance("cuts the list at the byte budget of a 32K window and says why", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 100 }, (_, index) =>
+            Bun.write(path.join(test.directory, `${String(index).padStart(3, "0")}-${"n".repeat(52)}.txt`), "x"),
+          ),
+        ),
+      )
+      const model = ProviderTest.model({ limit: { context: 32_000, output: 4_096 } })
+      const params = { pattern: "*.txt", path: test.directory }
+      const lines = (output: string) => output.split("\n").filter((line) => line.endsWith(".txt"))
+
+      const small = yield* globExecute(params, { extra: { model } })
+      const listed = lines(small.output)
+      expect(listed.length).toBeGreaterThan(0)
+      expect(listed.length).toBeLessThan(100)
+      expect(listed.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0)).toBeLessThanOrEqual(6_400)
+      expect(small.metadata.count).toBe(listed.length)
+      expect(small.metadata.truncated).toBe(true)
+      expect(small.output).toContain(`[truncated: showing the first ${listed.length} of 100 paths.`)
+      expect(small.output).toContain("output byte budget (6.3 KB)")
+      expect(small.output).toContain("Continue: narrow path/pattern.")
+
+      const whole = yield* globExecute(params)
+      expect(lines(whole.output)).toHaveLength(100)
+      expect(whole.metadata.count).toBe(100)
+      expect(whole.metadata.truncated).toBe(false)
+      expect(whole.output).not.toContain("[truncated:")
+    }),
+  )
+
   it.instance("exactly 100 matches are complete", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -404,7 +463,7 @@ describe("tool.glob", () => {
     }),
   )
 
-  it.instance("offers a usable limit continuation when the scan cap stops the listing", () =>
+  unbounded.instance("offers a usable limit continuation when the scan cap stops the listing", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(async () => {

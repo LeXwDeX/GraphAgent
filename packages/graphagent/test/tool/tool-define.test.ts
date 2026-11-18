@@ -7,6 +7,7 @@ import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { Parameters as WebFetchParameters } from "@/tool/webfetch"
 import { testEffect } from "../lib/effect"
+import { ProviderTest } from "../fake/provider"
 
 const it = testEffect(Layer.mergeAll(Truncate.defaultLayer, Agent.defaultLayer))
 const executeRaw = (execute: Tool.Def["execute"]) =>
@@ -815,6 +816,39 @@ describe("Tool.define", () => {
       expect(error.message).toContain("value")
       expect(error.message).not.toContain("SECRET-")
       expect(error.message.length).toBeLessThan(600)
+    }),
+  )
+
+  // The shared cap follows the window of the model that made the call; a call without a model keeps 50 KB (#1448).
+  it.instance("cuts a result at the output budget of the model's window", () =>
+    Effect.gen(function* () {
+      const info = yield* Tool.define(
+        "test-window-budget",
+        Effect.succeed({
+          description: "test tool",
+          parameters: params,
+          execute() {
+            return Effect.succeed({ title: "big", output: "x".repeat(20_000), metadata: {} })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const execute = executeRaw(tool.execute)
+      const modelOf = (context: number) => ProviderTest.model({ limit: { context, output: 4_096 } })
+
+      const small = yield* execute({ input: "a" }, { ...makeCtx(), extra: { model: modelOf(32_000) } })
+      expect(small.metadata.truncated).toBe(true)
+      expect(small.metadata.outputPath).toBeDefined()
+      expect(Buffer.byteLength(small.output.split("\n\n[truncated:")[0], "utf-8")).toBe(6_400)
+
+      const large = yield* execute({ input: "a" }, { ...makeCtx(), extra: { model: modelOf(1_000_000) } })
+      expect(large.metadata.truncated).toBe(false)
+      expect(large.output.length).toBe(20_000)
+
+      // No model on the call (a hook, `graphagent debug agent`, a test): the constants.
+      const bare = yield* execute({ input: "a" }, makeCtx())
+      expect(bare.metadata.truncated).toBe(false)
+      expect(bare.output.length).toBe(20_000)
     }),
   )
 

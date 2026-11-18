@@ -20,6 +20,7 @@ import { testEffect } from "../lib/effect"
 import { truncateFailingWith } from "../lib/truncate"
 import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
 import { Tool } from "@/tool/tool"
+import { ProviderTest } from "../fake/provider"
 import { SafetyGuard } from "@/permission/safety-guard"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
@@ -1439,8 +1440,20 @@ describe("tool.shell silence guard", () => {
 describe("tool.shell truncation", () => {
   test("recommends filtering large output in each shell description", () => {
     for (const name of ["bash", "powershell", "pwsh", "cmd"]) {
-      const { description } = ShellPrompt.render(name, "win32", { maxLines: 200, maxBytes: 50_000 }, 120_000, 300_000)
+      const { description } = ShellPrompt.render(name, "win32", 120_000, 300_000)
       expect(description).toContain("When only part of a large output matters, filter at the command")
+    }
+  })
+
+  // The description is the same for every model, so it cannot state a byte count that follows the window (#1448).
+  test("states the output cap without a byte count in each shell description", () => {
+    const sentence =
+      `If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines ` +
+      `that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file.`
+    for (const name of ["bash", "powershell", "pwsh", "cmd"]) {
+      const { description } = ShellPrompt.render(name, "win32", 120_000, 300_000)
+      expect(description).toContain(sentence)
+      expect(description).not.toMatch(/\d+ bytes/)
     }
   })
 
@@ -1527,6 +1540,28 @@ describe("tool.shell truncation", () => {
         )
         expect(result.output).toContain("--------- full output ---------")
         expect(result.output).toContain("page=-1")
+      }),
+    ),
+  )
+
+  // The preview of a long output is a share of the model's window; a call without a model keeps 50 KB (#1448).
+  it.live("keeps the last bytes that fit the budget of a 32K window", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const model = ProviderTest.model({ limit: { context: 32_000, output: 4_096 } })
+        const small = yield* run({ command: fill("bytes", 20_000) }, { ...ctx, extra: { model } })
+        mustTruncate(small)
+        expect(small.output).toMatch(/\[truncated: showing the last .+ of line 1/)
+        const preview = small.output.split("[truncated:")[0].trimEnd()
+        expect(Buffer.byteLength(preview, "utf-8")).toBeLessThanOrEqual(6_400)
+        expect(Buffer.byteLength(preview, "utf-8")).toBeGreaterThan(0)
+        expect(small.output).toContain("page=-1")
+
+        // The same output without a model is under 50 KB, so it is returned whole.
+        const bare = yield* run({ command: fill("bytes", 20_000) })
+        expect(bare.metadata.truncated).toBe(false)
+        expect(bare.output).toContain("a".repeat(20_000))
       }),
     ),
   )
