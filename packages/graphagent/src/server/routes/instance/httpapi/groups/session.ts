@@ -12,6 +12,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { SessionGoal } from "@graphagent/schema/session-goal"
+import { SessionUsage } from "@graphagent/schema/session-usage"
 import { PrWatchEvent } from "@graphagent/schema/pr-watch-event"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
@@ -176,6 +177,7 @@ export const SessionPaths = {
   status: `${root}/status`,
   get: `${root}/:sessionID`,
   dagMode: `${root}/:sessionID/dag-mode`,
+  usage: `${root}/:sessionID/usage`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   goal: `${root}/:sessionID/goal`,
@@ -257,6 +259,18 @@ export const SessionApi = HttpApi.make("session")
             summary: "Get DAG mode status",
             description:
               "Read the session's effective DAG mode, its global default, availability, budget usage, process-wide limits, and quality summary.",
+          }),
+        ),
+        HttpApiEndpoint.get("usage", SessionPaths.usage, {
+          params: { sessionID: SessionID },
+          success: described(SessionUsage.Info, "Usage of the session's whole task tree"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.usage",
+            summary: "Get session tree usage",
+            description:
+              "Read the token usage and cost summed over the root session of the requested session's tree: the root, its task children, their descendants and the DAG node sessions. Display only; nothing is limited or blocked.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {

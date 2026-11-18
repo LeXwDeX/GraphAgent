@@ -215,7 +215,7 @@ export const GrepTool = Tool.define(
           }
 
           const saved = [header, ...entries.flatMap((entry) => entry.lines)].join("\n")
-          const full = yield* trunc.write(saved)
+          const full = yield* trunc.save(saved)
           // Match text may carry its trailing newline, so an entry can render as
           // more than one line. Count rendered lines, not array entries, or the
           // continuation points back into the preview. When the preview did not
@@ -234,18 +234,20 @@ export const GrepTool = Tool.define(
                     ? `${omitted} ${omitted === 1 ? "match" : "matches"} omitted by the output byte budget. `
                     : "Context lines were omitted by the output byte budget. "
                   : `${omitted} ${omitted === 1 ? "match" : "matches"} omitted. `) +
-              `Full output: ${full}]`,
+              ("path" in full ? `Full output: ${full.path}]` : `${Truncate.unsavedNote(full.failed)}]`),
           )
-          output.push(
-            hasMoreSaved
-              ? `Continue: read filePath="${full}" offset=${next}` +
-                  (more
-                    ? "; narrow path/include or use a more specific pattern for matches beyond the saved listing."
-                    : byBytes
-                      ? "; the byte budget stopped the preview, so read the saved listing for the omitted context."
-                      : `; raise grep limit to ${Math.min(Math.max(previewLimit * 2, previewLimit + 1), MAX_LIMIT)} to show more.`)
-              : `Continue: narrow path/include or use a more specific pattern for matches beyond the saved listing.`,
-          )
+          // Without a saved listing there is nothing to read on from: the note above says what to do instead.
+          if ("path" in full)
+            output.push(
+              hasMoreSaved
+                ? `Continue: read filePath="${full.path}" offset=${next}` +
+                    (more
+                      ? "; narrow path/include or use a more specific pattern for matches beyond the saved listing."
+                      : byBytes
+                        ? "; the byte budget stopped the preview, so read the saved listing for the omitted context."
+                        : `; raise grep limit to ${Math.min(Math.max(previewLimit * 2, previewLimit + 1), MAX_LIMIT)} to show more.`)
+                : `Continue: narrow path/include or use a more specific pattern for matches beyond the saved listing.`,
+            )
 
           return {
             title: params.pattern,

@@ -4096,6 +4096,70 @@
         ]
       }
     },
+    "/session/{sessionID}/usage": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.usage",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage of the session's whole task tree",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUsage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BadRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read the token usage and cost summed over the root session of the requested session's tree: the root, its task children, their descendants and the DAG node sessions. Display only; nothing is limited or blocked.",
+        "summary": "Get session tree usage",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.session.usage({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/session/{sessionID}/children": {
       "get": {
         "tags": ["session"],
@@ -11301,6 +11365,60 @@
           }
         },
         "required": ["id", "slug", "projectID", "directory", "role", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "SessionUsage": {
+        "type": "object",
+        "properties": {
+          "rootID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "sessions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Sessions in the tree, the root included"
+          },
+          "cost": {
+            "type": "number",
+            "description": "Σ cost over the tree, in dollars; never negative"
+          },
+          "costUnknown": {
+            "type": "boolean",
+            "description": "A session in the tree recorded tokens at zero cost, so its price is unknown and not counted in cost"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["rootID", "sessions", "cost", "costUnknown", "tokens"],
         "additionalProperties": false
       },
       "SessionDagMode": {

@@ -12,6 +12,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { and, asc, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm"
 import { Cause, Effect, Option } from "effect"
 import { isRecord } from "@/util/record"
+import { headChars } from "@/util/text"
 import { SessionID } from "../schema"
 import type {
   ChildCancelBy,
@@ -49,31 +50,18 @@ export const ACTIVE_STATES = [
 ] as const satisfies ReadonlyArray<ChildRunState>
 
 const MAX_ERROR_CHARS = 1_000
-/**
- * Bound of a stored result. A subagent's final answer is far below it; the
- * bound only keeps a runaway output from becoming a row of its own size, and a
- * result that hits it says so instead of ending mid-sentence.
- */
-export const MAX_REPORT_CHARS = 200_000
 
 /** The durable owner reference: the task call, or the DAG node. The DAG attempt is per run, not part of the owner. */
 export const ownerRef = (owner: ChildOwner): string | null =>
   owner.kind === "task" ? (owner.toolCallID ?? null) : `${owner.workflowID}/${owner.nodeID}`
 
-const truncate = (text: string) => (text.length > MAX_ERROR_CHARS ? `${text.slice(0, MAX_ERROR_CHARS)}...` : text)
-
-const boundedReport = (report: ChildRunReport): ChildRunReport =>
-  report.text.length > MAX_REPORT_CHARS
-    ? {
-        ...report,
-        text: `${report.text.slice(0, MAX_REPORT_CHARS)}\n[truncated ${report.text.length - MAX_REPORT_CHARS} characters]`,
-      }
-    : report
+const truncate = (text: string) => (text.length > MAX_ERROR_CHARS ? `${headChars(text, MAX_ERROR_CHARS)}...` : text)
 
 /**
  * The JSON stored in `child_run.outcome`; an error keeps a bounded message, not
  * the whole transcript tail. The report a detached run leaves for its parent
- * rides along under `report`, and the moment the run began running (epoch
+ * rides along under `report`, as the task tool bounded it (#1446), and the
+ * moment the run began running (epoch
  * milliseconds, after the wait for its slot) under `runningAt` (#1426). It is a
  * key of the JSON, not a column: a row written before the key existed reads as a
  * run with no recorded moment.
@@ -85,7 +73,7 @@ export const outcomeJson = (
 ): Record<string, unknown> => ({
   ...(outcome.type === "error" ? { type: "error", message: truncate(outcome.message) } : outcome),
   ...(runningAt === undefined ? {} : { runningAt }),
-  ...(report ? { report: boundedReport(report) } : {}),
+  ...(report ? { report } : {}),
 })
 
 /**

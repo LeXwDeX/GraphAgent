@@ -30,6 +30,7 @@ import { MemorySearch } from "@/tool/memory-search"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import type { Tool } from "@/tool/tool"
 import type { ToolEntry } from "./registry"
+import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 
 export type { ToolEntry }
@@ -219,6 +220,35 @@ export function isMcpEntry(entry: ToolEntry): entry is McpEntry {
   return entry.source.kind === "mcp"
 }
 
+/**
+ * The failure of a tool with its text bounded (#1446). The text of an error is model-visible like an output, and a
+ * tool can fail with a text of any size (an MCP server's error body, a command's stderr). Past the output cap it
+ * is cut, the whole text is saved, and the model is told where, so the error cannot take the window as an
+ * unbounded output could. What the user decided (a refusal) and an interruption are not text for the model and
+ * pass through, and so does a text that fits.
+ */
+export function boundErrorCause(
+  truncate: Truncate.Interface,
+  agent: Agent.Info,
+  cause: Cause.Cause<unknown>,
+): Effect.Effect<never, unknown> {
+  if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+  const error = Cause.squash(cause)
+  if (
+    error instanceof PermissionV1.DeniedError ||
+    error instanceof PermissionV1.RejectedError ||
+    error instanceof PermissionV1.CorrectedError
+  )
+    return Effect.failCause(cause)
+  return truncate.output(errorMessage(error), {}, agent).pipe(
+    Effect.flatMap((bounded) => {
+      if (!bounded.truncated) return Effect.failCause(cause)
+      const failure = new Error(bounded.content, { cause: error })
+      return Cause.hasDies(cause) ? Effect.die(failure) : Effect.fail(failure)
+    }),
+  )
+}
+
 export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
   deps: Deps,
   tools: Record<string, AITool>,
@@ -236,6 +266,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
     hookContext,
     hookDenied,
     entries,
+    truncate,
   } = deps
 
   for (const entry of entries) {
@@ -538,6 +569,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   return yield* Effect.failCause(cause)
                 }),
               ),
+              Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause)),
             ),
           ),
         )
@@ -1044,6 +1076,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               return yield* Effect.failCause(cause)
             }),
           ),
+          Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause)),
         ),
       )
     }
@@ -1354,6 +1387,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
               return yield* Effect.failCause(cause)
             }),
           ),
+          Effect.catchCause((cause) => boundErrorCause(truncate, input.agent, cause)),
         ),
       )
     }

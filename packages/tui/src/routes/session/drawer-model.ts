@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { formatCost } from "@graphagent/core/util/cost"
 import type { Goal, LspStatus, Message, Session, Todo } from "@graphagent/sdk"
 import { formatDagDuration } from "../../dag/model"
 import { t, type MessageKey } from "../../i18n"
@@ -66,11 +67,9 @@ export function contextBarCells(percent: number, cells = CONTEXT_BAR_CELLS) {
   return Math.min(cells - 1, Math.max(1, Math.round((percent / 100) * cells)))
 }
 
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
-
-/** The session's cost in dollars, `$0.00` when it has none. */
+/** The session's cost in dollars (`formatCost`: a fraction of a cent keeps its digits), `$0.00` when it has none. */
 export function costText(cost: number | undefined) {
-  return money.format(typeof cost === "number" && Number.isFinite(cost) ? cost : 0)
+  return formatCost(cost ?? 0)
 }
 
 const GOAL_STATUS: Readonly<Record<string, MessageKey>> = {

@@ -10,12 +10,14 @@ export const statsZhCN = {
   "cli.stats.option.outcomes":
     "按模型显示工具调用结果（默认：隐藏）。传入数字则只显示前 N 个模型，否则显示全部。各列为占该工具调用数的百分比：校验=入参校验失败，执行=工具执行出错，拒绝=被权限或 hook 拒绝，中断=被中断，截参=入参因输出上限被截断，改写=harness 改写过入参或匹配，截输=输出被截断",
   "cli.stats.option.project": "按项目筛选（默认：所有项目，空字符串：当前项目）",
+  "cli.stats.option.roots": "按根会话汇总用量（含子 agent 与 DAG 节点），传入数字则显示最近 N 个（默认 10）",
   "cli.stats.largeDataset": "检测到数据量较大（{count} 个会话），可能需要一些时间...",
   "cli.stats.title.overview": "概览",
   "cli.stats.title.costTokens": "费用与 token",
   "cli.stats.title.modelUsage": "模型用量",
   "cli.stats.title.toolUsage": "工具用量",
   "cli.stats.title.outcomes": "工具调用结果",
+  "cli.stats.title.roots": "根会话用量（会话数 · token · 费用）",
   "cli.stats.row.sessions": "会话数",
   "cli.stats.row.messages": "消息数",
   "cli.stats.row.days": "天数",
@@ -25,6 +27,7 @@ export const statsZhCN = {
   "cli.stats.row.medianTokensPerSession": "会话 token 数中位数",
   "cli.stats.row.input": "输入",
   "cli.stats.row.output": "输出",
+  "cli.stats.row.reasoning": "推理",
   "cli.stats.row.cacheRead": "缓存读取",
   "cli.stats.row.cacheWrite": "缓存写入",
   "cli.stats.row.inputTokens": "输入 token",
@@ -40,6 +43,7 @@ export const statsZhCN = {
   "cli.stats.col.argsCut": "截参",
   "cli.stats.col.corrected": "改写",
   "cli.stats.col.outputCut": "截输",
+  "cli.stats.unknown": "未知",
 } as const
 
 export const statsEn: Record<keyof typeof statsZhCN, string> = {
@@ -51,12 +55,15 @@ export const statsEn: Record<keyof typeof statsZhCN, string> = {
   "cli.stats.option.outcomes":
     "show tool call outcomes per model (default: hidden). Pass a number to show top N models, otherwise shows all. Columns are shares of the tool's calls: Val = arguments failed validation, Exec = the tool failed, Deny = denied by permission or a hook, Abrt = aborted, ArgT = arguments cut by the output limit, Corr = the harness repaired arguments or the match, OutT = output truncated",
   "cli.stats.option.project": "filter by project (default: all projects, empty string: current project)",
+  "cli.stats.option.roots":
+    "show usage per root session, sub-agents and DAG nodes included. Pass a number to show the latest N (default: 10)",
   "cli.stats.largeDataset": "Large dataset detected ({count} sessions). This may take a while...",
   "cli.stats.title.overview": "OVERVIEW",
   "cli.stats.title.costTokens": "COST & TOKENS",
   "cli.stats.title.modelUsage": "MODEL USAGE",
   "cli.stats.title.toolUsage": "TOOL USAGE",
   "cli.stats.title.outcomes": "TOOL OUTCOMES",
+  "cli.stats.title.roots": "ROOT SESSIONS (sessions · tokens · cost)",
   "cli.stats.row.sessions": "Sessions",
   "cli.stats.row.messages": "Messages",
   "cli.stats.row.days": "Days",
@@ -66,6 +73,7 @@ export const statsEn: Record<keyof typeof statsZhCN, string> = {
   "cli.stats.row.medianTokensPerSession": "Median Tokens/Session",
   "cli.stats.row.input": "Input",
   "cli.stats.row.output": "Output",
+  "cli.stats.row.reasoning": "Reasoning",
   "cli.stats.row.cacheRead": "Cache Read",
   "cli.stats.row.cacheWrite": "Cache Write",
   "cli.stats.row.inputTokens": "Input Tokens",
@@ -81,4 +89,5 @@ export const statsEn: Record<keyof typeof statsZhCN, string> = {
   "cli.stats.col.argsCut": "ArgT",
   "cli.stats.col.corrected": "Corr",
   "cli.stats.col.outputCut": "OutT",
+  "cli.stats.unknown": "unknown",
 }
