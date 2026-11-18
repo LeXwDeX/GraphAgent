@@ -225,7 +225,6 @@ packages/core/test/fixture/flock-worker.ts
 packages/core/test/fixture/git.ts
 packages/core/test/fixture/location.ts
 packages/core/test/fixture/tmpdir.ts
-packages/core/test/fixtures/recordings/session-runner/openai-chat-streams-text.json
 packages/core/test/git.test.ts
 packages/core/test/github-copilot/convert-to-copilot-messages.test.ts
 packages/core/test/github-copilot/copilot-chat-model.test.ts
@@ -1314,7 +1313,6 @@ script/changelog.ts
 script/format.ts
 script/generate.ts
 script/hooks
-script/raw-changelog.ts
 script/release
 script/sign-windows.ps1
 script/upgrade-opentui.ts

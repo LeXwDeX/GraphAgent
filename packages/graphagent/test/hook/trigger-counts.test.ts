@@ -391,10 +391,10 @@ const serverCall = (url: string, home: string, route: string, method: string, bo
   })
 
 describe("hook event trigger counts on a real server", () => {
-  cliIt.live("a session fires SessionStart once on creation and SessionEnd once on deletion", ({ home, opencode }) =>
+  cliIt.live("a session fires SessionStart once on creation and SessionEnd once on deletion", ({ home, graphagent }) =>
     Effect.gen(function* () {
       const capture = yield* serverHooks(home)
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const created = yield* serverCall(server.url, home, "/session", "POST", {})
       expect(created.status).toBe(200)
       const session: { id: string } = JSON.parse(created.text)
@@ -413,7 +413,7 @@ describe("hook event trigger counts on a real server", () => {
   // SubagentStop once for the attempt, and the node's own session fires nothing.
   cliIt.live(
     "a DAG node run fires SubagentStart and SubagentStop once and nothing of its own",
-    ({ home, env, llm, opencode }) =>
+    ({ home, env, llm, graphagent }) =>
       Effect.gen(function* () {
         const capture = yield* serverHooks(home)
         const spec = path.join(home, "hook-counts.yaml")
@@ -444,7 +444,7 @@ describe("hook event trigger counts on a real server", () => {
           params: { action: "run", operation: "start", spec_path: spec },
         })
         yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("Produce the report."), "FINAL_DAG_REPORT")
-        const server = yield* opencode.host({
+        const server = yield* graphagent.host({
           env: {
             GRAPHAGENT_CONFIG_CONTENT: JSON.stringify({
               ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT),

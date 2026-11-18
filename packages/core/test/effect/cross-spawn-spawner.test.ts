@@ -40,7 +40,7 @@ function alive(pid: number) {
 }
 
 async function tmpdir() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-test-"))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-core-test-"))
   return {
     path: dir,
     async [Symbol.asyncDispose]() {

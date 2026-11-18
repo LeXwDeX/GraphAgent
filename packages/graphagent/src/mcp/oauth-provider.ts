@@ -6,6 +6,7 @@ import type {
   OAuthClientInformationFull,
 } from "@modelcontextprotocol/client"
 import { Effect } from "effect"
+import { APP_TITLE, HOMEPAGE_URL } from "@graphagent/core/brand"
 import { McpAuth } from "./auth"
 
 const OAUTH_CALLBACK_PORT = 19876
@@ -43,8 +44,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     return {
       redirect_uris: [this.redirectUrl],
-      client_name: "OpenCode",
-      client_uri: "https://opencode.ai",
+      client_name: APP_TITLE,
+      client_uri: HOMEPAGE_URL,
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: this.config.client_secret ? "client_secret_post" : "none",

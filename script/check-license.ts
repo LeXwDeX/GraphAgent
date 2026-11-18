@@ -5,7 +5,7 @@
  * Enforces the two-rule license model:
  *
  *   - files listed in LICENSE-UPSTREAM.txt are inherited from upstream
- *     opencode and stay under MIT (no per-file header);
+ *     and stay under MIT (no per-file header);
  *   - every other source file written for this fork is Apache-2.0 and carries
  *     the two-line SPDX header.
  *

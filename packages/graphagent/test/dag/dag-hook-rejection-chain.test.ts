@@ -31,7 +31,7 @@ type Row = Record<string, any>
 for (const mode of ["complete", "dispose"] as const) {
   cliIt.live(
     `real hook denial followed by ${mode} preserves DAG dependency and recovery boundaries`,
-    ({ opencode, home, llm }) =>
+    ({ graphagent, home, llm }) =>
       Effect.gen(function* () {
         const directory = path.join(yield* Effect.promise(() => realpath(home)), "workspace")
         const protectedFile = path.join(directory, "protected.json")
@@ -143,7 +143,7 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             return true
           }, reply().hang())
         }
-        const server = yield* opencode.host({ readyTimeoutMs: 30_000 })
+        const server = yield* graphagent.host({ readyTimeoutMs: 30_000 })
         yield* Effect.promise(async () => {
           const request = async (route: string, body?: unknown): Promise<any> => {
             const response = await fetch(server.url + route, {
@@ -280,7 +280,7 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
 
 cliIt.live(
   "an untrusted project hook is skipped in a DAG worker without permission or question requests",
-  ({ opencode, home, llm }) =>
+  ({ graphagent, home, llm }) =>
     Effect.gen(function* () {
       const directory = path.join(yield* Effect.promise(() => realpath(home)), "workspace")
       const marker = path.join(home, "untrusted-hook-ran.txt")
@@ -339,7 +339,7 @@ cliIt.live(
         reply().tool("write", { filePath: reportFile, content: JSON.stringify({ ok: true }) }, "untrusted_write"),
       )
       yield* llm.textMatch(workerMatch, "Written with project hooks still pending.")
-      const server = yield* opencode.host({ readyTimeoutMs: 30_000 })
+      const server = yield* graphagent.host({ readyTimeoutMs: 30_000 })
       yield* Effect.promise(async () => {
         const request = async (route: string, body?: unknown): Promise<any> => {
           const response = await fetch(server.url + route, {

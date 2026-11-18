@@ -41,4 +41,4 @@ export const Script = {
     return !!env.GRAPHAGENT_RELEASE
   },
 }
-console.log(`opencode script`, JSON.stringify(Script, null, 2))
+console.log(`graphagent script`, JSON.stringify(Script, null, 2))

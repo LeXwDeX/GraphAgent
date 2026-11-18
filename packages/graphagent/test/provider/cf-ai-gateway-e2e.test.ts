@@ -1,4 +1,4 @@
-// End-to-end regression test for opencode#24432.
+// End-to-end regression test for upstream issue 24432.
 //
 // Routes through the actual ai-gateway-provider + @ai-sdk/openai-compatible
 // chain that provider.ts:811 builds at runtime, with only the network boundary

@@ -57,7 +57,7 @@ export function assertCoverage(report: ReadonlyMap<string, CoverageRecord>, thre
 
 export async function runDagCoreCoverageGate() {
   const root = path.resolve(import.meta.dir, "../../..")
-  const output = await mkdtemp(path.join(os.tmpdir(), "opencode-dag-core-coverage-"))
+  const output = await mkdtemp(path.join(os.tmpdir(), "graphagent-dag-core-coverage-"))
   try {
     yieldMessage("Core state machine, store, and transition seams")
     await runCoverageSuite({
@@ -86,10 +86,10 @@ export async function runDagCoreCoverageGate() {
       ],
     })
 
-    yieldMessage("OpenCode DAG public API and runtime seams")
+    yieldMessage("GraphAgent DAG public API and runtime seams")
     await runCoverageSuite({
       cwd: path.join(root, "packages/graphagent"),
-      output: path.join(output, "opencode"),
+      output: path.join(output, "graphagent"),
       tests: ["test/dag"],
       thresholds: [
         { file: "../core/src/dag/projector.ts", lines: 98, functions: 95 },

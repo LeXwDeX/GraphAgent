@@ -14,7 +14,7 @@ const sessionOld = {
   title: "old",
   time: { created: 1, updated: 1 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/graphagent",
+  directory: "/tmp/graphagent/packages/graphagent",
 }
 
 const sessionMid = {
@@ -24,7 +24,7 @@ const sessionMid = {
   title: "mid",
   time: { created: 2, updated: 2 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/graphagent",
+  directory: "/tmp/graphagent/packages/graphagent",
 }
 
 const sessionNew = {
@@ -34,7 +34,7 @@ const sessionNew = {
   title: "new",
   time: { created: 3, updated: 3 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/graphagent",
+  directory: "/tmp/graphagent/packages/graphagent",
 }
 
 function global(payload: GlobalEvent["payload"]): GlobalEvent {

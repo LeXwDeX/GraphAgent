@@ -363,8 +363,8 @@ describe("replan admitted-definition guard", () => {
   it.effect("pins a direct replan node workspace to its realpath", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.promise(() => tmpdir({ git: true }))
-      const linked = path.join(os.tmpdir(), `opencode-replan-ws-${Math.random().toString(36).slice(2)}`)
-      const alias = path.join(os.tmpdir(), `opencode-replan-ws-alias-${Math.random().toString(36).slice(2)}`)
+      const linked = path.join(os.tmpdir(), `graphagent-replan-ws-${Math.random().toString(36).slice(2)}`)
+      const alias = path.join(os.tmpdir(), `graphagent-replan-ws-alias-${Math.random().toString(36).slice(2)}`)
       const cleanup = Effect.promise(async () => {
         await fs.rm(alias, { force: true })
         await $`git -C ${tmp.path} worktree remove --force ${linked}`.quiet().catch(() => undefined)

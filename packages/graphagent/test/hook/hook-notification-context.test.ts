@@ -10,7 +10,7 @@ import { pollWithTimeout } from "../lib/effect"
 
 cliIt.live(
   "hook context has readable transcripts and attention routes validate sessions; pending idle shutdown is bounded",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "plan-context.jsonl")
       const hook = path.join(home, "plan-context-hook.ts")
@@ -41,7 +41,7 @@ cliIt.live(
           JSON.stringify({ UserPromptSubmit: [{ hooks: [command] }], Stop: [{ hooks: [command] }] }),
         )
       })
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

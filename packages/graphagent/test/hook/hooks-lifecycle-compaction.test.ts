@@ -10,7 +10,7 @@ import { cliIt } from "../lib/cli-process"
 for (const block of [false, true]) {
   cliIt.live(
     `real local compaction ${block ? "is vetoed before the model call" : "publishes committed summary before compact startup"}`,
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const script = path.join(home, "compact-hook.ts")
         const audit = path.join(home, "compact-audit.jsonl")
@@ -29,7 +29,7 @@ for (const block of [false, true]) {
             }),
           )
         })
-        const server = yield* opencode.host()
+        const server = yield* graphagent.host()
         const post = (route: string, body: object) =>
           Effect.promise(() =>
             fetch(server.url + route, {
@@ -96,7 +96,7 @@ const blockedCompaction = (
     events: () => string
   }) => Effect.Effect<void>,
 ) =>
-  cliIt.live(name, ({ home, llm, opencode }) =>
+  cliIt.live(name, ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const script = path.join(home, "compact-hook.ts")
       yield* Effect.promise(async () => {
@@ -109,7 +109,7 @@ const blockedCompaction = (
           JSON.stringify({ PreCompact: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
         )
       })
-      const server = yield* opencode.host({ env: { GRAPHAGENT_DISABLE_AUTOCOMPACT: "" } })
+      const server = yield* graphagent.host({ env: { GRAPHAGENT_DISABLE_AUTOCOMPACT: "" } })
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

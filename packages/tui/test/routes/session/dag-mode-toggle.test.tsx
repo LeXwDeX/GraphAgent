@@ -107,7 +107,7 @@ test("the mode comes from the server: a press does not flip it locally", async (
 
     const updated = (dagMode: "on" | "off") =>
       harness.events.emit({
-        directory: "/tmp/opencode/packages/tui",
+        directory: "/tmp/graphagent/packages/tui",
         payload: {
           id: `evt_dagmode_${dagMode}`,
           type: "session.updated",

@@ -21,7 +21,7 @@ const published = {
 // Regenerate them with
 // `bun script/schema.ts ../../schema/config.json ../../schema/tui.json ../../schema/theme.json`.
 test("published and embedded schemas match the generated schemas", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "opencode-config-schema-"))
+  const directory = await mkdtemp(path.join(os.tmpdir(), "graphagent-config-schema-"))
   try {
     const generated = {
       config: path.join(directory, "config.json"),

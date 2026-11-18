@@ -9,9 +9,9 @@ const readJson = (file: string) => Effect.promise(() => Bun.file(file).json())
 describe("graphagent mcp add (non-interactive subprocess)", () => {
   cliIt.concurrent(
     "adds a remote server with HTTP headers to the global mcp.json",
-    ({ home, opencode }) =>
+    ({ home, graphagent }) =>
       Effect.gen(function* () {
-        const result = yield* opencode.spawn([
+        const result = yield* graphagent.spawn([
           "mcp",
           "add",
           "github",
@@ -23,7 +23,7 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
           "--header",
           "X-Option=one=two",
         ])
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
 
         const config = yield* readJson(path.join(home, ".config", "graphagent", "mcp.json"))
         expect(config).toEqual({
@@ -44,9 +44,9 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
 
   cliIt.concurrent(
     "adds a local server while preserving argv and environment values",
-    ({ home, opencode }) =>
+    ({ home, graphagent }) =>
       Effect.gen(function* () {
-        const result = yield* opencode.spawn([
+        const result = yield* graphagent.spawn([
           "mcp",
           "add",
           "local",
@@ -62,7 +62,7 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
           "--label",
           "two words",
         ])
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
 
         const config = yield* readJson(path.join(home, ".config", "graphagent", "mcp.json"))
         expect(config.mcpServers.local).toEqual({
@@ -79,15 +79,18 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
 
   cliIt.concurrent(
     "writes to the project layer by default",
-    ({ home, opencode }) =>
+    ({ home, graphagent }) =>
       Effect.gen(function* () {
         const project = path.join(home, "project")
         yield* Effect.promise(() => mkdir(project, { recursive: true }))
 
-        const result = yield* opencode.spawn(["mcp", "add", "project-server", "--url", "https://example.com/project"], {
-          cwd: project,
-        })
-        opencode.expectExit(result, 0)
+        const result = yield* graphagent.spawn(
+          ["mcp", "add", "project-server", "--url", "https://example.com/project"],
+          {
+            cwd: project,
+          },
+        )
+        graphagent.expectExit(result, 0)
 
         const config = yield* readJson(path.join(project, ".agents", "mcp.json"))
         expect(config.mcpServers["project-server"]).toEqual({
@@ -104,9 +107,9 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
 
   cliIt.concurrent(
     "refuses a project-layer write when the project root resolves to $HOME",
-    ({ home, opencode }) =>
+    ({ home, graphagent }) =>
       Effect.gen(function* () {
-        const result = yield* opencode.spawn(["mcp", "add", "home-server", "--url", "https://example.com/home"], {
+        const result = yield* graphagent.spawn(["mcp", "add", "home-server", "--url", "https://example.com/home"], {
           cwd: home,
         })
 

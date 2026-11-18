@@ -19,7 +19,7 @@
  *
  * The end-to-end canonical proof lives in
  * packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148; this
- * core-level test mirrors it without depending on the opencode Dag command
+ * core-level test mirrors it without depending on the graphagent Dag command
  * layer.
  */
 import { describe, expect, test } from "bun:test"

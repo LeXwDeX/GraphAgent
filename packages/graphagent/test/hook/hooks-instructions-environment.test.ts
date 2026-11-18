@@ -12,7 +12,7 @@ import { decodeRecord, decodeRecords, decodeSession } from "../lib/hook-json"
 
 cliIt.live(
   "SessionStart environment reaches both V1 InstructionsLoaded paths once per session",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const hostValue = process.env.INSTRUCTION_SESSION_VALUE
       const audit = path.join(home, "instructions-environment.jsonl")
@@ -41,7 +41,7 @@ cliIt.live(
       // Instance directories are canonicalized; use the same real path for
       // traversal instead of macOS's /var alias for the temporary directory.
       nested = yield* Effect.promise(() => fs.realpath(nested))
-      const server = yield* opencode.host({ env: { INSTRUCTION_REMOVE: "HOST_BASELINE" } })
+      const server = yield* graphagent.host({ env: { INSTRUCTION_REMOVE: "HOST_BASELINE" } })
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -124,7 +124,7 @@ cliIt.live(
 
 import type { GraphagentCli } from "../lib/cli-process"
 
-const instructionSetup = (home: string, opencode: GraphagentCli, source: string, args: string[] = []) =>
+const instructionSetup = (home: string, graphagent: GraphagentCli, source: string, args: string[] = []) =>
   Effect.gen(function* () {
     const audit = path.join(home, "instructions-audit.jsonl")
     const script = path.join(home, "instructions-audit.ts")
@@ -147,7 +147,7 @@ const instructionSetup = (home: string, opencode: GraphagentCli, source: string,
         }),
       )
     })
-    const server = yield* opencode.host({ env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "" } })
+    const server = yield* graphagent.host({ env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "" } })
     const post = (route: string, payload: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -181,9 +181,9 @@ const instructionSetup = (home: string, opencode: GraphagentCli, source: string,
 const record =
   'const i=JSON.parse(await Bun.stdin.text());const fs=await import("node:fs/promises");await fs.appendFile(__AUDIT__,JSON.stringify({reason:i.load_reason,path:i.file_path,type:i.memory_type,trigger:i.trigger_file_path})+"\\n");'
 
-cliIt.live("V1 InstructionsLoaded reports real memory_type and the nested trigger file", ({ home, llm, opencode }) =>
+cliIt.live("V1 InstructionsLoaded reports real memory_type and the nested trigger file", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
-    const fixture = yield* instructionSetup(home, opencode, record)
+    const fixture = yield* instructionSetup(home, graphagent, record)
     yield* llm.tool("read", { filePath: fixture.nested })
     yield* llm.text("DONE")
     yield* fixture.turn("read nested")
@@ -203,12 +203,12 @@ cliIt.live("V1 InstructionsLoaded reports real memory_type and the nested trigge
   }),
 )
 
-cliIt.live("V1 InstructionsLoaded observes in the background without delaying the model", ({ home, llm, opencode }) =>
+cliIt.live("V1 InstructionsLoaded observes in the background without delaying the model", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const done = path.join(home, "instructions-slow-done")
     const fixture = yield* instructionSetup(
       home,
-      opencode,
+      graphagent,
       `${record}await new Promise((resolve)=>setTimeout(resolve,9000));await fs.writeFile(process.argv[2],"done");`,
       [done],
     )
@@ -225,9 +225,9 @@ cliIt.live("V1 InstructionsLoaded observes in the background without delaying th
 
 cliIt.live(
   "V1 InstructionsLoaded reloads with load_reason compact after a committed compaction",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
-      const fixture = yield* instructionSetup(home, opencode, record)
+      const fixture = yield* instructionSetup(home, graphagent, record)
       yield* llm.text("FIRST")
       yield* fixture.turn("first")
       yield* pollWithTimeout(

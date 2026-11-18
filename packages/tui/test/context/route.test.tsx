@@ -16,10 +16,10 @@ import {
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "../../src/context/runtime"
 
 const paths = {
-  cwd: "/tmp/opencode/packages/tui",
-  home: "/tmp/opencode/home",
-  state: "/tmp/opencode/state",
-  worktree: "/tmp/opencode",
+  cwd: "/tmp/graphagent/packages/tui",
+  home: "/tmp/graphagent/home",
+  state: "/tmp/graphagent/state",
+  worktree: "/tmp/graphagent",
 }
 
 async function renderStartup(initialRoute: unknown) {

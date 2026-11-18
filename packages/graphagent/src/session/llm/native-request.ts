@@ -212,7 +212,7 @@ export const model = (input: Provider.Model | RequestInput, headers?: Record<str
 export const request = (input: RequestInput) => {
   const converted = convertMessages(input.messages)
   // This is the only native adapter boundary that should construct canonical
-  // @graphagent/llm request objects from opencode's session/AI SDK-shaped data.
+  // @graphagent/llm request objects from GraphAgent's session/AI SDK-shaped data.
   return LLM.request({
     model: model(input, input.headers),
     system: [...(input.system ?? []).map(SystemPart.make), ...converted.system],

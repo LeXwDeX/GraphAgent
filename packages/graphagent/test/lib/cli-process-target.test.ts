@@ -42,8 +42,8 @@ describe("CLI subprocess target", () => {
     "resolves an executable symlink and binds every spawn to its SHA256",
     async () => {
       await using tmp = await tmpdir()
-      const executable = path.join(tmp.path, "opencode")
-      const link = path.join(tmp.path, "opencode-link")
+      const executable = path.join(tmp.path, "graphagent")
+      const link = path.join(tmp.path, "graphagent-link")
       const content = "#!/bin/sh\nexit 0\n"
       await Bun.write(executable, content)
       await chmod(executable, 0o755)

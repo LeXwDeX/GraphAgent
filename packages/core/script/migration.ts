@@ -46,7 +46,7 @@ async function generate() {
       "The v2.0.0 baseline is not frozen yet. Incremental migrations are disabled; change the Drizzle definitions and run `bun run migration --rebaseline` instead.",
     )
   }
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-migration-"))
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-core-migration-"))
   const incremental = path.join(temporary, "incremental")
   const full = path.join(temporary, "full")
   try {
@@ -87,7 +87,7 @@ async function rebaseline() {
       "The baseline is frozen (packages/core/baseline.lock exists). Incremental migrations are in effect; `--rebaseline` is no longer allowed.",
     )
   }
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-migration-rebaseline-"))
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-core-migration-rebaseline-"))
   try {
     const full = await generateFull(temporary)
     await fs.rm(tsDir, { recursive: true, force: true })
@@ -110,7 +110,7 @@ async function freezeBaseline() {
       `Cannot freeze the baseline while incremental migrations exist (${migrations.length} files in src/database/migration). Run \`bun run migration --rebaseline\` first.`,
     )
   }
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-migration-freeze-"))
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-core-migration-freeze-"))
   try {
     const full = await generateFull(temporary)
     const id = baselineId(full.sql)
@@ -132,7 +132,7 @@ async function freezeBaseline() {
 
 async function check() {
   const frozen = await Bun.file(baselineLock).exists()
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-migration-check-"))
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-core-migration-check-"))
   const incremental = path.join(temporary, "incremental")
   try {
     const full = await generateFull(temporary)

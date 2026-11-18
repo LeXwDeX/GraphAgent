@@ -51,7 +51,7 @@ An agent or a command may declare `execution: foreground | background | auto` (d
 4. The declaration of the agent the call runs.
 5. Foreground.
 
-One rule of the turn sits above all five: a non-interactive turn (`opencode run`, a hook follow-up) has no user waiting for a later message, so every `task` call in it runs in the foreground, whatever the argument, the command or the agent asks for. The call is not refused; its source is recorded as `noninteractive`.
+One rule of the turn sits above all five: a non-interactive turn (`graphagent run`, a hook follow-up) has no user waiting for a later message, so every `task` call in it runs in the foreground, whatever the argument, the command or the agent asks for. The call is not refused; its source is recorded as `noninteractive`.
 
 The built-in `review` agent declares `background`; a call can still pass `background: false` to wait for it. `auditor` does not: its shell is `bash: allow`, so it is read-only by its prompt and not by its rules, and B-2 cannot be shown in code. The resolved mode and the layer that settled it are written once to the call's metadata (`execution`, `executionSource`); a replay or a recovery reads that record and never resolves again.
 

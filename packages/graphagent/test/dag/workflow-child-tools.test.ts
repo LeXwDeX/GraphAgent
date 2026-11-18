@@ -152,7 +152,7 @@ describe("workflow child boundary", () => {
         const worker = {
           ...session(SessionID.make("ses_real_child"), owner.id),
           projectID: owner.projectID,
-          directory: "/tmp/opencode-linked",
+          directory: "/tmp/graphagent-linked",
         }
         yield* db.run(
           sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${owner.projectID},${owner.directory},'[]',1,1)`,
@@ -313,7 +313,7 @@ function session(id: SessionID, parentID?: SessionID): Session.Info {
     id,
     slug: "workflow-child-tools",
     projectID: ProjectV2.ID.global,
-    directory: "/tmp/opencode",
+    directory: "/tmp/graphagent",
     parentID,
     title: "Workflow child tools",
     version: "1.0.0",

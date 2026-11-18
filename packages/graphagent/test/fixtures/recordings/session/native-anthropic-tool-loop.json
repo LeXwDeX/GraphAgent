@@ -7,7 +7,7 @@
     "protocol": "anthropic-messages",
     "route": "anthropic-messages",
     "tags": [
-      "opencode",
+      "graphagent",
       "native",
       "tool-loop"
     ]

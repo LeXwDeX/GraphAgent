@@ -11,7 +11,7 @@ import { pollWithTimeout } from "../lib/effect"
 for (const kind of ["prompt", "command"] as const) {
   cliIt.live(
     `explicit V1 cancel fences a claimed ${kind} followup waiting in a real command hook`,
-    ({ home, opencode, llm }) =>
+    ({ home, graphagent, llm }) =>
       Effect.gen(function* () {
         const ready = path.join(home, "claimed-followup-ready")
         const release = path.join(home, "claimed-followup-release")
@@ -42,7 +42,7 @@ for (const kind of ["prompt", "command"] as const) {
         })
         yield* llm.text("INITIAL_BEFORE_CLAIM_DONE")
         yield* llm.text("NEXT_ALLOWED_TURN_RESPONSE")
-        const server = yield* opencode.host()
+        const server = yield* graphagent.host()
         const request = (route: string, body?: object) =>
           fetch(server.url + route, {
             method: body ? "POST" : "GET",

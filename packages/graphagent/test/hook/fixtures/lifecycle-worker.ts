@@ -6,7 +6,7 @@ const worker = new Worker(new URL("../../../src/cli/tui/worker.ts", import.meta.
 const client = Rpc.client<typeof import("../../../src/cli/tui/worker").rpc>(worker)
 try {
   const response = await client.call("fetch", {
-    url: "http://opencode.example.com/session",
+    url: "http://graphagent.example.com/session",
     method: "POST",
     headers: { "content-type": "application/json", "x-graphagent-directory": process.env.LIFECYCLE_DIRECTORY! },
     body: new TextEncoder().encode("{}"),
@@ -18,7 +18,7 @@ try {
     await (await import("node:fs/promises")).mkdir(destination)
     const session = JSON.parse(new TextDecoder().decode(response.body))
     const moved = await client.call("fetch", {
-      url: "http://opencode.example.com/experimental/control-plane/move-session",
+      url: "http://graphagent.example.com/experimental/control-plane/move-session",
       method: "POST",
       headers: { "content-type": "application/json", "x-graphagent-directory": directory },
       body: new TextEncoder().encode(

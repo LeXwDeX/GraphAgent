@@ -10,7 +10,7 @@
  *
  * Ported from dag-iron-laws session/required-nodes-validator.ts. Adapted to
  * the new schema field name (`depends_on` instead of `dependencies`) and to
- * opencode's functional style (no single-method class wrapper, no unused
+ * the codebase's functional style (no single-method class wrapper, no unused
  * Effect import).
  */
 

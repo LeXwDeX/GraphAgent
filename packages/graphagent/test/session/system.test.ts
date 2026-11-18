@@ -436,10 +436,10 @@ describe("session.system integration (real SettingsHook)", () => {
     {
       init: (dir) =>
         Effect.promise(async () => {
-          const opencode = path.join(dir, ".agents")
-          await fs.mkdir(opencode, { recursive: true })
+          const agentsDir = path.join(dir, ".agents")
+          await fs.mkdir(agentsDir, { recursive: true })
           await fs.writeFile(
-            path.join(opencode, "hooks.json"),
+            path.join(agentsDir, "hooks.json"),
             JSON.stringify({
               Stop: [{ hooks: [{ type: "command", command: "echo integration-test" }] }],
             }),

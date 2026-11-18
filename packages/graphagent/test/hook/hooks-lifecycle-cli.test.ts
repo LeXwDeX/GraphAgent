@@ -9,7 +9,7 @@ import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
   "real local run emits startup and bounded SessionEnd with a readable completed transcript",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "lifecycle-audit.jsonl")
       const script = path.join(home, "lifecycle-hook.ts")
@@ -28,7 +28,7 @@ cliIt.live(
         )
       })
       yield* llm.text("lifecycle-real-answer")
-      const result = yield* opencode.run("exercise local lifecycle", { format: "json" })
+      const result = yield* graphagent.run("exercise local lifecycle", { format: "json" })
       expect(result.exitCode).toBe(0)
       const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
         .trim()
@@ -58,7 +58,7 @@ cliIt.live(
 for (const supplied of [false, true]) {
   cliIt.live(
     `SessionStart initial input is a real first turn${supplied ? " before supplied input" : " without CLI input"}`,
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const script = path.join(home, "initial-hook.ts")
         yield* Effect.promise(async () => {
@@ -75,8 +75,8 @@ for (const supplied of [false, true]) {
         })
         yield* llm.text("INITIAL_TURN_COMPLETE")
         if (supplied) yield* llm.text("SUPPLIED_TURN_COMPLETE")
-        const result = yield* opencode.run(supplied ? "SUPPLIED_NEXT_TURN" : "", { format: "json" })
-        opencode.expectExit(result, 0)
+        const result = yield* graphagent.run(supplied ? "SUPPLIED_NEXT_TURN" : "", { format: "json" })
+        graphagent.expectExit(result, 0)
         const inputs = yield* llm.inputs
         const relevant = inputs.filter(
           (input) =>
@@ -98,7 +98,7 @@ for (const supplied of [false, true]) {
 // completed prompt into a failed run.
 cliIt.live(
   "real local run ends the session once when the SessionEnd hook fails",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "failing-session-end.jsonl")
       const script = path.join(home, "failing-session-end.ts")
@@ -115,8 +115,8 @@ cliIt.live(
         )
       })
       yield* llm.text("failing session end answer")
-      const result = yield* opencode.run("exercise failing session end", { format: "json" })
-      opencode.expectExit(result, 0)
+      const result = yield* graphagent.run("exercise failing session end", { format: "json" })
+      graphagent.expectExit(result, 0)
       expect(result.stdout).toContain("failing session end answer")
       const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
         .trim()

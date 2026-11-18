@@ -15,7 +15,7 @@ import { makeChildRuns, type ChildRuns } from "./child/run"
 import { ChildAdmission } from "./child/admission"
 import { ChildRegistry } from "./child/registry"
 
-// #404: headless clients (`opencode run "/init"`, SDK text prompts) deliver
+// #404: headless clients (`graphagent run "/init"`, SDK text prompts) deliver
 // slash commands as plain text parts to POST /session/:id/message. The TUI
 // routes them client-side before calling /command, but nothing server-side
 // did, so SessionPrompt.command never ran and Command.Event.Executed never

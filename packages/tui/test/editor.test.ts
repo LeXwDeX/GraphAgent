@@ -11,7 +11,7 @@ afterEach(() => {
 
 test("rejects when the external editor cannot start", async () => {
   delete process.env.VISUAL
-  process.env.EDITOR = "opencode-editor-that-does-not-exist"
+  process.env.EDITOR = "graphagent-editor-that-does-not-exist"
   const calls: string[] = []
   const renderer = {
     suspend() {

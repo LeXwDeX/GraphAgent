@@ -16,7 +16,7 @@ describe("GraphAgent release versions", () => {
     })
   })
 
-  test("ignores inherited OpenCode and historical GraphAgent dev tags", () => {
+  test("ignores inherited upstream and historical GraphAgent dev tags", () => {
     expect(
       resolveReleaseVersion({
         branch: "main",

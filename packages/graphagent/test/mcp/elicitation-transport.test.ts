@@ -135,7 +135,7 @@ describe("mcp elicitation — real transport round-trip (5.4)", () => {
 
       // Real client + stub server linked by an in-memory transport pair.
       const client = new Client(
-        { name: "opencode", version: "0.0.0" },
+        { name: "graphagent", version: "0.0.0" },
         { capabilities: { elicitation: {}, roots: {} } },
       )
       registerElicitationHandler(client, bridge)

@@ -7,7 +7,7 @@
     "protocol": "openai-responses",
     "route": "openai-responses",
     "tags": [
-      "opencode",
+      "graphagent",
       "native",
       "oauth",
       "tool-loop"

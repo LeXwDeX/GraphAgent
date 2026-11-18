@@ -11,7 +11,7 @@ import { pollWithTimeout } from "../lib/effect"
 // A legacy (V1) session served by the full server graph also has the V2 rewake
 // bridge registered. An asyncRewake callback started by a V1 tool must wake the
 // V1 SessionPrompt loop that the TUI renders, not a hidden V2 runner turn.
-cliIt.live("V1 PostToolUse asyncRewake exit-2 wakes the legacy session it came from", ({ home, llm, opencode }) =>
+cliIt.live("V1 PostToolUse asyncRewake exit-2 wakes the legacy session it came from", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const script = path.join(home, "v1-async-post-tool.ts")
     yield* Effect.promise(async () => {
@@ -34,7 +34,7 @@ cliIt.live("V1 PostToolUse asyncRewake exit-2 wakes the legacy session it came f
     yield* llm.tool("bash", { command: "echo V1_TOOL_RAN", description: "Print a marker" })
     yield* llm.text("FIRST_DONE")
     yield* llm.text("REWAKE_DONE")
-    const server = yield* opencode.host()
+    const server = yield* graphagent.host()
     const request = (route: string, body?: object) =>
       Effect.promise(async () => {
         const result = await fetch(server.url + route, {

@@ -10,7 +10,7 @@ import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
   "real session fork and eager instruction hooks have distinct sessions and readable transcripts",
-  ({ home, env, llm, opencode }) =>
+  ({ home, env, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "session-audit.jsonl")
       const script = path.join(home, "session-hook.ts")
@@ -37,7 +37,7 @@ cliIt.live(
         id: "test-model",
         cost: { input: 1, output: 5, cache_write: 2 },
       }
-      const server = yield* opencode.host({
+      const server = yield* graphagent.host({
         env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0", GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(cfg) },
       })
       const post = (route: string, body: object) =>
@@ -137,7 +137,7 @@ cliIt.live(
 
 cliIt.live(
   "SessionStart exposes only persisted custom title provenance across create rename hook and fork",
-  ({ home, opencode }) =>
+  ({ home, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "title-origin-audit.jsonl")
       const script = path.join(home, "title-origin-hook.ts")
@@ -153,7 +153,7 @@ cliIt.live(
           }),
         )
       })
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const request = (route: string, method: string, body: object) =>
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {

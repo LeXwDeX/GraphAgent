@@ -225,7 +225,7 @@ describe("spawnNode completion bridge", () => {
 
   it("creates the child in the bound workspace with its permissions and instance", async () => {
     await using tmp = await tmpdir({ git: true })
-    const linked = path.join(os.tmpdir(), `opencode-spawn-workspace-${Math.random().toString(36).slice(2)}`)
+    const linked = path.join(os.tmpdir(), `graphagent-spawn-workspace-${Math.random().toString(36).slice(2)}`)
     await $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet()
     const workspace = await fs.realpath(linked)
     const head = (await $`git -C ${workspace} rev-parse HEAD`.text()).trim()
@@ -297,7 +297,7 @@ describe("spawnNode completion bridge", () => {
 
   it("preserves an inherited workspace external-directory deny", async () => {
     await using tmp = await tmpdir({ git: true })
-    const linked = path.join(os.tmpdir(), `opencode-spawn-deny-${Math.random().toString(36).slice(2)}`)
+    const linked = path.join(os.tmpdir(), `graphagent-spawn-deny-${Math.random().toString(36).slice(2)}`)
     await $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet()
     const workspace = await fs.realpath(linked)
     const deny = {
@@ -356,7 +356,7 @@ describe("spawnNode completion bridge", () => {
 
   it("grants only the verified artifact directory and keeps an inherited deny", async () => {
     await using tmp = await tmpdir({ git: true })
-    const linked = path.join(os.tmpdir(), `opencode-spawn-artifact-${Math.random().toString(36).slice(2)}`)
+    const linked = path.join(os.tmpdir(), `graphagent-spawn-artifact-${Math.random().toString(36).slice(2)}`)
     await $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet()
     const workspace = await fs.realpath(linked)
     const source = path.join(workspace, "report.txt")

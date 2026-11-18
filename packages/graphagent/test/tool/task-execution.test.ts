@@ -176,7 +176,7 @@ describe("TaskExecution hard constraints", () => {
   })
 })
 
-// A non-interactive turn (`opencode run`, a hook followup) has no user waiting for a later message, so no call in it
+// A non-interactive turn (`graphagent run`, a hook followup) has no user waiting for a later message, so no call in it
 // runs in the background, whoever asked for it. That is the #1057 rule for commands, applied to every task call.
 describe("TaskExecution in a non-interactive turn", () => {
   const quietly = { noninteractive: true } as const
