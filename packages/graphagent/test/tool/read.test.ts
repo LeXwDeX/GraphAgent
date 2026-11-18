@@ -24,6 +24,7 @@ import {
   tmpdirScoped,
 } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { ProviderTest } from "../fake/provider"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 
@@ -143,6 +144,13 @@ const asks = () => {
     },
   }
 }
+
+const ONE_PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+  "base64",
+)
+// A file that reads as a PDF (magic bytes and extension) of exactly `size` bytes.
+const pdfBytes = (size: number) => Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(size - 9, 0x20)])
 
 describe("tool.read external_directory permission", () => {
   it.live("allows reading absolute path inside project directory", () =>
@@ -812,6 +820,102 @@ root_type Monster;`
   )
 })
 
+describe("tool.read attachment limits", () => {
+  // The model a call runs under: ProviderTest.model() accepts neither images nor PDFs.
+  const model = (input: { pdf?: boolean; image?: boolean } = {}) => {
+    const base = ProviderTest.model()
+    return ProviderTest.model({
+      capabilities: { ...base.capabilities, input: { ...base.capabilities.input, ...input } },
+    })
+  }
+  const under = (value: ReturnType<typeof model>): Tool.Context => ({ ...ctx, extra: { model: value } })
+
+  it.live("refuses a PDF the model does not accept and names a command that extracts its text", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "doc.pdf")
+      yield* put(file, pdfBytes(1024))
+
+      const error = yield* fail(dir, { filePath: file }, under(model()))
+      expect(error.message).toBe(
+        `Cannot attach ${file}: openai/gpt-5.2 does not accept PDF input. Extract text with the shell tool: pdftotext -layout "${file}" -`,
+      )
+    }),
+  )
+
+  it.live("refuses an image the model does not accept and names a command that inspects it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "image.png")
+      yield* put(file, ONE_PIXEL_PNG)
+
+      const error = yield* fail(dir, { filePath: file }, under(model({ pdf: true })))
+      expect(error.message).toBe(
+        `Cannot attach ${file}: openai/gpt-5.2 does not accept image input. Inspect it with the shell tool: file "${file}"`,
+      )
+    }),
+  )
+
+  it.live("refuses a PDF over 10 MB even for a model that accepts PDF", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "big.pdf")
+      yield* put(file, pdfBytes(12 * 1024 * 1024))
+
+      const error = yield* fail(dir, { filePath: file }, under(model({ pdf: true })))
+      expect(error.message).toBe(
+        `PDF ${file} is 12.0 MB, over the 10.0 MB limit. Extract pages: pdftotext -f 1 -l 20 -layout "${file}" -`,
+      )
+    }),
+  )
+
+  it.live("attaches a PDF of exactly 10 MB and an image to a model that accepts them", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "limit.pdf"), pdfBytes(10 * 1024 * 1024))
+      yield* put(path.join(dir, "image.png"), ONE_PIXEL_PNG)
+      const next = under(model({ pdf: true, image: true }))
+
+      const pdf = yield* exec(dir, { filePath: path.join(dir, "limit.pdf") }, next)
+      expect(pdf.output).toBe("PDF read successfully")
+      expect(pdf.attachments?.[0]?.mime).toBe("application/pdf")
+
+      const image = yield* exec(dir, { filePath: path.join(dir, "image.png") }, next)
+      expect(image.output).toBe("Image read successfully")
+      expect(image.attachments?.[0]?.mime).toBe("image/png")
+    }),
+  )
+
+  it.live("attaches as before when the call carries no model", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "doc.pdf"), pdfBytes(1024))
+      yield* put(path.join(dir, "image.png"), ONE_PIXEL_PNG)
+
+      for (const next of [ctx, { ...ctx, extra: {} }, { ...ctx, extra: { model: "not-a-model" } }]) {
+        const pdf = yield* exec(dir, { filePath: path.join(dir, "doc.pdf") }, next)
+        expect(pdf.attachments?.[0]?.mime).toBe("application/pdf")
+        const image = yield* exec(dir, { filePath: path.join(dir, "image.png") }, next)
+        expect(image.attachments?.[0]?.mime).toBe("image/png")
+      }
+    }),
+  )
+
+  it.live("a refused read leaves the nearby instructions for the next read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "subdir", "AGENTS.md"), "# Test Instructions\nDo something special.")
+      yield* put(path.join(dir, "subdir", "nested", "doc.pdf"), pdfBytes(1024))
+      yield* put(path.join(dir, "subdir", "nested", "test.txt"), "test content")
+      const next = under(model())
+
+      yield* fail(dir, { filePath: path.join(dir, "subdir", "nested", "doc.pdf") }, next)
+      const result = yield* exec(dir, { filePath: path.join(dir, "subdir", "nested", "test.txt") }, next)
+      expect(result.output).toContain("Test Instructions")
+    }),
+  )
+})
+
 describe("tool.read loaded instructions", () => {
   it.live("loads AGENTS.md from parent directory and includes in metadata", () =>
     Effect.gen(function* () {
@@ -825,6 +929,43 @@ describe("tool.read loaded instructions", () => {
       expect(result.output).toContain("Test Instructions")
       expect(result.metadata.loaded).toBeDefined()
       expect(result.metadata.loaded).toContain(path.join(dir, "subdir", "AGENTS.md"))
+    }),
+  )
+
+  it.live("includes nearby instructions when the file read is an image or a PDF", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "subdir", "AGENTS.md"), "# Test Instructions\nDo something special.")
+      yield* put(path.join(dir, "subdir", "nested", "image.png"), ONE_PIXEL_PNG)
+      yield* put(path.join(dir, "subdir", "nested", "doc.pdf"), pdfBytes(1024))
+
+      for (const [name, preview] of [
+        ["image.png", "Image read successfully"],
+        ["doc.pdf", "PDF read successfully"],
+      ] as const) {
+        // The first read delivers the instructions; a second read of a file under the same message finds them claimed.
+        const result = yield* exec(
+          dir,
+          { filePath: path.join(dir, "subdir", "nested", name) },
+          { ...ctx, messageID: MessageID.make(`msg_${name}`) },
+        )
+        expect(result.output).toStartWith(preview)
+        expect(result.output).toContain("<system-reminder>")
+        expect(result.output).toContain("Test Instructions")
+        expect(result.metadata.preview).toBe(preview)
+        expect(result.metadata.loaded).toEqual([path.join(dir, "subdir", "AGENTS.md")])
+        expect(result.attachments?.length).toBe(1)
+      }
+    }),
+  )
+
+  it.live("a media read without nearby instructions has no reminder", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "image.png"), ONE_PIXEL_PNG)
+      const result = yield* exec(dir, { filePath: path.join(dir, "image.png") })
+      expect(result.output).toBe("Image read successfully")
+      expect(result.metadata.loaded).toEqual([])
     }),
   )
 })
