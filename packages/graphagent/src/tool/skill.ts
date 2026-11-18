@@ -17,8 +17,8 @@ export const Parameters = Schema.Struct({
 /**
  * True when an earlier call of this skill tool put the same body into the
  * history and the model can still read it there: the message holding the call
- * is replayed to the model (one that ended with a provider error is dropped
- * from the wire), the call finished, its output was neither pruned nor
+ * is replayed to the model (one that ended with a provider error keeps only
+ * its settled tool calls), the call finished, its output was neither pruned nor
  * truncated, and it was a real load rather than a receipt.
  * The history is the turn's snapshot, already cut at the compaction boundary.
  */
