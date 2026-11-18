@@ -431,3 +431,81 @@ for (const mode of ["interactive", "noninteractive"] as const) {
     ),
   )
 }
+
+const rejected = (statusCode: number, message: string) =>
+  new APICallError({
+    message,
+    url: "http://localhost/v1",
+    requestBodyValues: {},
+    statusCode,
+    responseBody: JSON.stringify({ error: { message } }),
+    isRetryable: false,
+  })
+
+const spent = run(Stream.fail(rejected(402, "Insufficient Balance")))
+
+spent.it.effect(
+  "session.processor stops on a spent balance at once and appends the way out to the persisted message",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(running)
+
+        expect(result).toBe("stop")
+        // A spent balance is never resent: one request, no backoff.
+        expect(spent.count()).toBe(1)
+        expect(msg.error?.name).toBe("APIError")
+        if (msg.error?.name === "APIError") {
+          expect(msg.error.data.message.startsWith("Insufficient Balance\n")).toBe(true)
+          expect(msg.error.data.message).toContain("quota or balance used up")
+          expect(msg.error.data.message).toContain('Provider "test"')
+          // Only the message gains the line; the provider's own fields stay as they came.
+          expect(msg.error.data.statusCode).toBe(402)
+          expect(msg.error.data.isRetryable).toBe(false)
+          expect(msg.error.data.responseBody).toBe('{"error":{"message":"Insufficient Balance"}}')
+        }
+      }),
+    { config: cfg },
+  ),
+)
+
+const refused = run(Stream.fail(rejected(401, "Incorrect API key provided")))
+
+refused.it.effect(
+  "session.processor gives a rejected credential its one bounded retry and then points at the login command",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(running)
+
+        expect(result).toBe("stop")
+        expect(refused.count()).toBe(2)
+        expect(msg.error?.name).toBe("APIError")
+        if (msg.error?.name === "APIError") {
+          expect(msg.error.data.message.startsWith("Incorrect API key provided\n")).toBe(true)
+          expect(msg.error.data.message).toContain("`graphagent providers login --provider test`")
+        }
+      }),
+    { config: cfg },
+  ),
+)

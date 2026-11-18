@@ -108,3 +108,33 @@ test("StopFailure classifies the raw cause but only sends an already displayed m
   })
   expect(HookTurnContext.failure({ message: "model_not_found" }, "Shown model error").error).toBe("model_not_found")
 })
+
+test("StopFailure reports a spent quota on a 429 as billing_error, not rate_limit", () => {
+  const stored = (statusCode: number, responseBody: string, message = `status ${statusCode}`) => ({
+    name: "APIError",
+    data: { message, isRetryable: false, statusCode, responseBody },
+  })
+  // OpenAI-style balance exhaustion and a Zhipu code with its limit message both arrive as a 429.
+  expect(HookTurnContext.failure(stored(429, '{"error":{"code":"insufficient_quota"}}')).error).toBe("billing_error")
+  expect(HookTurnContext.failure(stored(429, '{"error":{"code":"1113","message":"您的账户已欠费"}}')).error).toBe(
+    "billing_error",
+  )
+  expect(
+    HookTurnContext.failure(
+      stored(429, '{"error":{"code":"1308","message":"已达到 5 小时的使用上限"}}', "已达到 5 小时的使用上限"),
+    ).error,
+  ).toBe("billing_error")
+  // A real rate limit, and the per-minute allocation DashScope reports as a quota, stay rate limits.
+  expect(HookTurnContext.failure(stored(429, '{"error":{"code":"rate_limit_exceeded"}}')).error).toBe("rate_limit")
+  expect(
+    HookTurnContext.failure(
+      stored(
+        429,
+        '{"error":{"code":"insufficient_quota","message":"Allocated quota exceeded, please increase your quota limit."}}',
+      ),
+    ).error,
+  ).toBe("rate_limit")
+  // The vocabulary outside the quota case is untouched.
+  expect(HookTurnContext.failure(stored(402, "{}")).error).toBe("billing_error")
+  expect(HookTurnContext.failure(stored(401, "{}")).error).toBe("authentication_failed")
+})

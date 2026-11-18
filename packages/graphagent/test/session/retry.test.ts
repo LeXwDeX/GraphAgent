@@ -14,6 +14,7 @@ import { SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@graphagent/core/provider"
+import { ContentPolicyReason, LLMError, QuotaExceededReason } from "@graphagent/llm"
 
 const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
@@ -37,6 +38,25 @@ function statusError(statusCode: number, headers?: Record<string, string>): Sess
       isRetryable: false,
       statusCode,
       responseHeaders: headers,
+    }).toObject(),
+  )
+}
+
+/** An API error as the provider reported it: status, flag, body and metadata chosen by the case. */
+function providerError(init: {
+  message?: string
+  statusCode?: number
+  isRetryable?: boolean
+  responseBody?: unknown
+  metadata?: Record<string, string>
+}): SessionV1.APIError {
+  return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+    new SessionV1.APIError({
+      message: init.message ?? `status ${init.statusCode ?? "none"}`,
+      isRetryable: init.isRetryable ?? false,
+      statusCode: init.statusCode,
+      responseBody: init.responseBody === undefined ? undefined : JSON.stringify(init.responseBody),
+      metadata: init.metadata,
     }).toObject(),
   )
 }
@@ -377,6 +397,49 @@ describe("session.retry.delay", () => {
       }
     }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
 
+  test("policy sends a spent balance or quota once and never backs off", () =>
+    Effect.gen(function* () {
+      for (const error of [
+        statusError(402),
+        providerError({
+          statusCode: 429,
+          message: "已达到 5 小时的使用上限",
+          responseBody: { error: { code: "1308", message: "已达到 5 小时的使用上限" } },
+        }),
+        new SessionV1.APIError({
+          message: "Quota exceeded.",
+          isRetryable: false,
+          responseBody: '{"type":"error","error":{"code":"insufficient_quota"}}',
+        }).toObject(),
+      ]) {
+        let calls = 0
+        const waits: number[] = []
+        const fiber = yield* Effect.suspend(() => {
+          calls++
+          return Effect.fail(error)
+        }).pipe(
+          Effect.retry(
+            SessionRetry.policy({
+              provider: "test",
+              parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+              set: (info) =>
+                Effect.sync(() => {
+                  waits.push(info.next)
+                }),
+            }),
+          ),
+          Effect.exit,
+          Effect.forkChild,
+        )
+        yield* TestClock.adjust("5 minutes")
+        yield* Fiber.join(fiber)
+
+        expect(calls).toBe(1)
+        expect(waits).toStrictEqual([])
+        expect(SessionRetry.classify(error, "test")).toMatchObject({ class: "quota_exhausted", maxRetries: 0 })
+      }
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
+
   test("policy reconnects unrecognised failures up to three times", () =>
     Effect.gen(function* () {
       const waits: number[] = []
@@ -642,14 +705,24 @@ describe("session.retry.retryable", () => {
       expect(decision.status).toBe(statusCode)
       expect(decision.message).toBe(`status ${statusCode}`)
       if (statusCode === 401 || statusCode === 403) {
-        expect(decision).toMatchObject({ branch: "auth", maxRetries: 1 })
+        expect(decision).toMatchObject({ branch: "auth", class: "auth", maxRetries: 1 })
         expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
       } else if (statusCode === 413) {
-        expect(decision).toMatchObject({ branch: "compaction", maxRetries: 0 })
+        expect(decision).toMatchObject({ branch: "compaction", class: "context_overflow", maxRetries: 0 })
+        expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+      } else if (statusCode === 402) {
+        // The payment status alone says the balance is gone: resending cannot succeed.
+        expect(decision).toMatchObject({ branch: "terminal", class: "quota_exhausted", maxRetries: 0 })
         expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
       } else {
         expect(decision).toMatchObject({
           branch: statusCode === 429 || statusCode === 503 ? "rate_limit" : "http",
+          class:
+            statusCode === 429 || statusCode === 503
+              ? "rate_limited"
+              : statusCode >= 500
+                ? "transient"
+                : "invalid_request",
           maxRetries: SessionRetry.RETRY_MAX_RETRIES,
         })
         // The wire policy resends every status, but goal recovery only
@@ -718,6 +791,297 @@ describe("session.retry.retryable", () => {
     const retryable = SessionRetry.retryable(error, retryProvider)
     expect(retryable).toBeDefined()
     expect(retryable).toEqual({ message: "Response decompression failed" })
+  })
+})
+
+describe("session.retry.classify by provider semantics", () => {
+  test("a 402 is a spent balance and is never resent", () => {
+    expect(SessionRetry.classify(statusError(402), retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "quota_exhausted",
+      status: 402,
+      maxRetries: 0,
+    })
+  })
+
+  test("a 429 whose body reports the plan limit is a spent quota, not a rate limit", () => {
+    const error = providerError({
+      statusCode: 429,
+      message: "已达到 5 小时的使用上限",
+      responseBody: { error: { code: "1308", message: "已达到 5 小时的使用上限" } },
+    })
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "quota_exhausted",
+      status: 429,
+      maxRetries: 0,
+    })
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("an HTTP-shaped 429 flagged retryable still stops on insufficient_quota", () => {
+    const error = providerError({
+      statusCode: 429,
+      isRetryable: true,
+      message: "Too Many Requests",
+      metadata: { code: "insufficient_quota" },
+    })
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "quota_exhausted",
+      maxRetries: 0,
+    })
+  })
+
+  test("a 429 and a 500 that name no quota keep the bounded backoff", () => {
+    expect(SessionRetry.classify(statusError(429), retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+    expect(SessionRetry.classify(statusError(500), retryProvider)).toMatchObject({
+      branch: "http",
+      class: "transient",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+  })
+
+  test("an in-stream insufficient_quota error with no status is not reconnected", () => {
+    const error = new SessionV1.APIError({
+      message: "Quota exceeded.",
+      isRetryable: false,
+      responseBody: '{"type":"error","error":{"code":"insufficient_quota"}}',
+    }).toObject()
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "quota_exhausted",
+      maxRetries: 0,
+    })
+    expect(SessionRetry.fallback(error)).toBeUndefined()
+  })
+
+  test("an in-stream invalid_prompt error with no status is not reconnected", () => {
+    const error = new SessionV1.APIError({
+      message: "Invalid prompt: your prompt was flagged as potentially violating our usage policy.",
+      isRetryable: false,
+      responseBody:
+        '{"type":"error","error":{"code":"invalid_prompt","message":"Invalid prompt: your prompt was flagged"}}',
+    }).toObject()
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "invalid_request",
+      maxRetries: 0,
+    })
+    expect(SessionRetry.fallback(error)).toBeUndefined()
+  })
+
+  test("a quota 403 is a spent quota, not a credential failure", () => {
+    const error = providerError({
+      statusCode: 403,
+      message: "Access denied",
+      responseBody: { error: { code: "AllocationQuota.FreeTierOnly", message: "The free tier has been used up" } },
+    })
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({ class: "quota_exhausted", maxRetries: 0 })
+    // A plain 403 still gets its one credential retry.
+    expect(SessionRetry.classify(statusError(403), retryProvider)).toMatchObject({ class: "auth", maxRetries: 1 })
+  })
+
+  test("a content-filter refusal is final", () => {
+    const error = providerError({
+      statusCode: 400,
+      message: "Output blocked",
+      metadata: { type: "content_filter" },
+    })
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "content_refused",
+      maxRetries: 0,
+    })
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("a deterministic 400 named by the table is final, and a transient signal keeps it retryable", () => {
+    const body = (message: string) => ({ error: { type: "invalid_request_error", message } })
+    const plain = providerError({ statusCode: 400, message: "Bad request", responseBody: body("messages: required") })
+    expect(SessionRetry.classify(plain, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "invalid_request",
+      status: 400,
+      maxRetries: 0,
+    })
+
+    const named = providerError({
+      statusCode: 400,
+      message: "Bad request",
+      responseBody: body("upstream connection refused"),
+    })
+    expect(SessionRetry.classify(named, retryProvider)).toMatchObject({
+      branch: "http",
+      class: "transient",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+    expect(SessionRetry.retryable(named, retryProvider)).toEqual({ message: "Bad request" })
+
+    const flagged = providerError({
+      statusCode: 400,
+      isRetryable: true,
+      message: "Bad request",
+      responseBody: body("messages: required"),
+    })
+    expect(SessionRetry.classify(flagged, retryProvider)).toMatchObject({ branch: "http", class: "transient" })
+  })
+
+  test("only a 400 or 422 reaches the invalid-request row", () => {
+    const body = { error: { type: "invalid_request_error", message: "no such model" } }
+    expect(SessionRetry.classify(providerError({ statusCode: 404, responseBody: body }), retryProvider)).toMatchObject({
+      branch: "http",
+      class: "invalid_request",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+    expect(
+      SessionRetry.classify(
+        providerError({ statusCode: 422, responseBody: { error: { code: "invalid_parameter_error" } } }),
+        retryProvider,
+      ),
+    ).toMatchObject({ branch: "terminal", class: "invalid_request", maxRetries: 0 })
+  })
+
+  test("the per-minute allocation reported as a quota is still a rate limit", () => {
+    const message = "Allocated quota exceeded, please increase your quota limit."
+    const withStatus = providerError({
+      statusCode: 429,
+      message,
+      responseBody: { error: { code: "insufficient_quota", type: "insufficient_quota", message } },
+    })
+    expect(SessionRetry.classify(withStatus, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      status: 429,
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+
+    const withoutStatus = providerError({ message, metadata: { code: "Throttling.AllocationQuota" } })
+    expect(SessionRetry.classify(withoutStatus, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+    expect(SessionRetry.retryable(withoutStatus, retryProvider)).toEqual({ message })
+  })
+
+  test("a native quota or content-policy failure keeps its meaning after fromError", () => {
+    const quota = MessageV2.fromError(
+      new LLMError({
+        module: "RequestExecutor",
+        method: "execute",
+        reason: new QuotaExceededReason({ message: "Provider request failed with HTTP 429" }),
+      }),
+      { providerID },
+    )
+    expect(SessionRetry.classify(quota, retryProvider)).toMatchObject({ class: "quota_exhausted", maxRetries: 0 })
+
+    const policy = MessageV2.fromError(
+      new LLMError({
+        module: "RequestExecutor",
+        method: "execute",
+        reason: new ContentPolicyReason({ message: "Provider request failed with HTTP 400" }),
+      }),
+      { providerID },
+    )
+    expect(SessionRetry.classify(policy, retryProvider)).toMatchObject({ class: "content_refused", maxRetries: 0 })
+  })
+
+  test("every other branch carries its class", () => {
+    const classOf = (error: ReturnType<NamedError["toObject"]>) => SessionRetry.classify(error, retryProvider).class
+    expect(classOf(new SessionV1.AbortedError({ message: "Aborted" }).toObject())).toBe("invalid_request")
+    expect(classOf(new SessionV1.OutputLengthError({}).toObject())).toBe("invalid_request")
+    expect(classOf(new SessionV1.StructuredOutputError({ message: "missing", retries: 0 }).toObject())).toBe(
+      "invalid_request",
+    )
+    expect(
+      classOf(
+        new SessionV1.APIError({ message: ProviderError.REASONING_STATE_MESSAGE, isRetryable: false }).toObject(),
+      ),
+    ).toBe("invalid_request")
+    expect(classOf(new SessionV1.ContentFilterError({ message: "filtered" }).toObject())).toBe("content_refused")
+    expect(classOf(new SessionV1.AuthError({ providerID: "test", message: "bad key" }).toObject())).toBe("auth")
+    expect(classOf(new SessionV1.ContextOverflowError({ message: "too long" }).toObject())).toBe("context_overflow")
+    expect(
+      classOf(new SessionRetry.EmptyResponseError({ message: SessionRetry.EMPTY_RESPONSE_MESSAGE }).toObject()),
+    ).toBe("transient")
+    expect(classOf(apiError(undefined, undefined))).toBe("transient")
+    expect(classOf(wrap("Too many requests, please slow down"))).toBe("transient")
+    expect(classOf(wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } })))).toBe("rate_limited")
+    expect(classOf(wrap("socket went sideways"))).toBe("transient")
+  })
+})
+
+describe("session.retry.withHint", () => {
+  const quota = () => statusError(402)
+  const hintLine = 'Provider "zhipuai": quota or balance used up, so resending cannot succeed. Top up or switch model.'
+
+  test("appends the quota hint on its own line and keeps every other field", () => {
+    const error = providerError({
+      statusCode: 429,
+      message: "已达到 5 小时的使用上限",
+      responseBody: { error: { code: "1308" } },
+      metadata: { code: "1308" },
+    })
+    const result = SessionRetry.withHint(error, "zhipuai")
+    expect(result).toEqual({
+      name: "APIError",
+      data: { ...error.data, message: `已达到 5 小时的使用上限\n${hintLine}` },
+    })
+    expect(result.data.statusCode).toBe(429)
+    expect(result.data.responseBody).toBe(error.data.responseBody)
+    expect(result.data.metadata).toEqual({ code: "1308" })
+    // The input is left as it was.
+    expect(error.data.message).toBe("已达到 5 小时的使用上限")
+  })
+
+  test("appends the login hint to a rejected credential of either shape", () => {
+    const apiError = SessionRetry.withHint(statusError(401), "anthropic")
+    expect(apiError.data.message).toBe(
+      'status 401\nProvider "anthropic" rejected the credentials. Run `graphagent providers login --provider anthropic`.',
+    )
+    const authError = new SessionV1.AuthError({ providerID: "anthropic", message: "bad key" }).toObject()
+    expect(SessionRetry.withHint(authError, "anthropic")).toEqual({
+      name: "ProviderAuthError",
+      data: {
+        providerID: "anthropic",
+        message:
+          'bad key\nProvider "anthropic" rejected the credentials. Run `graphagent providers login --provider anthropic`.',
+      },
+    })
+  })
+
+  test("appends the content hint to a content-filter API error", () => {
+    const error = providerError({ statusCode: 400, message: "Output blocked", metadata: { type: "content_filter" } })
+    expect(SessionRetry.withHint(error, "test").data.message).toBe(
+      "Output blocked\nThe provider's content filter rejected this conversation. Rephrase the last message or start a new session.",
+    )
+  })
+
+  test("does not stack the hint when it is already there", () => {
+    const once = SessionRetry.withHint(quota(), "zhipuai")
+    expect(SessionRetry.withHint(once, "zhipuai")).toBe(once)
+  })
+
+  test("returns the very same object for everything the table gives no hint for", () => {
+    for (const error of [
+      statusError(500),
+      statusError(429),
+      statusError(400),
+      statusError(413),
+      providerError({ statusCode: 400, responseBody: { error: { type: "invalid_request_error" } } }),
+      new SessionV1.ContextOverflowError({ message: "too long" }).toObject(),
+      new SessionV1.AbortedError({ message: "Aborted" }).toObject(),
+      new SessionV1.ContentFilterError({ message: "filtered" }).toObject(),
+      new SessionRetry.EmptyResponseError({ message: SessionRetry.EMPTY_RESPONSE_MESSAGE }).toObject(),
+      wrap("socket went sideways"),
+    ]) {
+      expect(SessionRetry.withHint(error, "test")).toBe(error)
+    }
   })
 })
 

@@ -949,7 +949,7 @@ export const layer = Layer.effect(
           yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
           return
         }
-        ctx.assistantMessage.error = error
+        ctx.assistantMessage.error = SessionRetry.withHint(error, input.model.providerID)
         yield* events.publish(Session.Event.Error, {
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
