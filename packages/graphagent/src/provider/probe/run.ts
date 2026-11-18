@@ -36,6 +36,9 @@ function replayMessages(
     {
       role: "assistant",
       content: [{ type: "tool-call", toolCallId: call.id, toolName: call.name, input: call.input }],
+      // The reasoning goes back as the joined text even for `reasoning_details`, because that is what the engine
+      // replays (`ProviderTransform.message` writes the joined reasoning parts under the field). The probe measures
+      // whether the endpoint accepts the engine's replay, not whether it would accept the original objects.
       ...(reasoning === undefined
         ? {}
         : { providerOptions: { openaiCompatible: { [reasoning.field]: reasoning.text } } }),
