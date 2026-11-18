@@ -14,9 +14,10 @@ import { Permission } from "@/permission"
 import { ToolError } from "./tool-error"
 import { ResultContract } from "../agent/result-contract"
 import { TaskExecution } from "./task-execution"
+import { TaskFacts } from "./task-facts"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
-import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
+import type { ChildRunFacts, ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
 import { renderTask as renderOutput } from "../session/child/notice"
 import { Config } from "@/config/config"
 import { Cause, Deferred, Effect, Exit, Schema, Scope } from "effect"
@@ -169,6 +170,18 @@ function continuationFailure(cause: Cause.Cause<unknown>, prior: string): Effect
   )
 }
 
+// What the child is told after the caller's own request, which stays as written: the artifact an agent declares for
+// task calls, or the three free-text sections explore and general owe (#1453). Every other agent is asked nothing.
+function withReturnContract(
+  parts: SessionPrompt.PromptInput["parts"],
+  contract: ResultContract.Contract | undefined,
+  agent: Pick<AgentContract.Subject, "name" | "native" | "contract">,
+): SessionPrompt.PromptInput["parts"] {
+  if (contract) return [...parts, { type: "text", text: ResultContract.prompt(contract) }]
+  if (ResultContract.owesFreeText(agent)) return [...parts, { type: "text", text: ResultContract.freeTextPrompt() }]
+  return parts
+}
+
 // The tool takes three shapes on one object root: a new run, a resume and a cancel. A root-level union is outside
 // the OpenAI tools contract (see Tool.assertObjectRootedParameters), so they share one optional-field struct and
 // `validateTaskCall` tells them apart when the call runs.
@@ -276,6 +289,11 @@ interface RunClaim {
   /** Failure text of a foreground result a SubagentStop continuation replaced with an error. */
   failure?: string
   /**
+   * What the engine measured of the run once its answer was in (#1453). `runTask` writes it just before it returns, so
+   * a reader of the finished job (the call itself, or the report of a detached run) finds it.
+   */
+  facts?: ChildRunFacts
+  /**
    * The bounded report of this run's job, made by whichever of the settlement watcher and the notifier reads it
    * first and awaited by the other (#1446): the text is cut and saved once, not once per reader.
    */
@@ -294,8 +312,13 @@ function outcomeOf(info: BackgroundJob.Info | undefined): ChildRunOutcome {
 // What a background run tells its parent: the job's output, or the error it
 // ended in, plus who asked for it so the delivery can present it accordingly
 // (#1057). The result ledger delivers it (`child.result`); the run's row keeps
-// it until then. A job that was cancelled or vanished tells nothing.
-function reportOf(info: BackgroundJob.Info | undefined, title: string): ChildRunReport | undefined {
+// it until then. A job that was cancelled or vanished tells nothing. A run that
+// completed also tells what the engine measured of it (#1453).
+function reportOf(
+  info: BackgroundJob.Info | undefined,
+  title: string,
+  facts?: ChildRunFacts,
+): ChildRunReport | undefined {
   const origin = readOrigin(info?.metadata)
   // Only a user-issued run needs the origin in the durable report: the
   // delivery presents it as findings. An agent-started run keeps the older
@@ -304,7 +327,7 @@ function reportOf(info: BackgroundJob.Info | undefined, title: string): ChildRun
     origin?.initiator === "user"
       ? { initiator: "user" as const, ...(origin.command === undefined ? {} : { command: origin.command }) }
       : {}
-  if (info?.status === "completed") return { title, text: info.output ?? "", ...who }
+  if (info?.status === "completed") return { title, text: info.output ?? "", ...who, ...(facts ? { facts } : {}) }
   if (info?.status === "error") return { title, text: info.error ?? "", ...who }
   return undefined
 }
@@ -367,7 +390,7 @@ export const TaskTool = Tool.define(
         const bounded = Deferred.makeUnsafe<ChildRunReport | undefined>()
         claim.report = bounded
         return Effect.gen(function* () {
-          const report = reportOf(info, title)
+          const report = reportOf(info, title, claim.facts)
           if (!report || report.text === "") return report
           const cut = yield* truncate.output(report.text)
           return { ...report, text: cut.content }
@@ -748,6 +771,18 @@ export const TaskTool = Tool.define(
         }
       })
 
+      // The run's first prompt is written under this id, which is how its own turns and messages are told from an
+      // earlier run's in the same child session (#1453): ids ascend with time, so it names where the run begins.
+      const startMessageID = MessageID.ascending()
+      // What the engine measured of the run so far: from `startMessageID` on, as of now.
+      const measure = () =>
+        TaskFacts.collect({ sessionID: nextSession.id, sinceMessageID: startMessageID, agentSteps: next.steps }).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+      const recordFacts = Effect.fn("TaskTool.recordFacts")(function* () {
+        claim.facts = yield* measure()
+      })
+
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         if (scopedAgent.hooks !== undefined && settingsHook?.registerScoped)
           yield* settingsHook.registerScoped(nextSession.id, {
@@ -770,10 +805,7 @@ export const TaskTool = Tool.define(
           startContexts = result.additionalContexts
         }
         const resolved = yield* children.resolvePromptParts(prompt)
-        // The contract follows the caller's own request, which stays as written.
-        const parts = resultContract
-          ? [...resolved, { type: "text" as const, text: ResultContract.prompt(resultContract) }]
-          : resolved
+        const parts = withReturnContract(resolved, resultContract, next)
         // Queue immediately before the first prompt (after parts resolved) so a failed resolve leaves no
         // stale queued context; admission of the child's first message drains it.
         if (startCtx) {
@@ -783,7 +815,7 @@ export const TaskTool = Tool.define(
         }
         // Every prompt to the child goes through its run: it is admitted as a delegation, under the run's credential.
         let result = yield* children.prompt({
-          messageID: MessageID.ascending(),
+          messageID: startMessageID,
           sessionID: nextSession.id,
           model: {
             modelID: model.modelID,
@@ -826,9 +858,13 @@ export const TaskTool = Tool.define(
         }
         const settled = settle(result, prior)
         if (settled.error) return yield* Effect.fail(settled.error)
-        if (resultContract === undefined) return settled.text
+        if (resultContract === undefined) {
+          yield* recordFacts()
+          return settled.text
+        }
         const owed = yield* satisfy(resultContract, settled.text)
         if (owed.error) return yield* Effect.fail(owed.error)
+        yield* recordFacts()
         return owed.text
       })
 
@@ -1036,7 +1072,12 @@ export const TaskTool = Tool.define(
               return {
                 title: description,
                 metadata,
-                output: renderOutput({ sessionID: nextSession.id, state: "completed", text: result?.output ?? "" }),
+                output: renderOutput({
+                  sessionID: nextSession.id,
+                  state: "completed",
+                  text: result?.output ?? "",
+                  facts: claim.facts,
+                }),
               }
             }),
           (_, exit) =>
@@ -1175,9 +1216,15 @@ export const TaskTool = Tool.define(
               }
               break
             }
+            // The continuation took turns of its own: what the engine measured is of the run as it now stands.
             output = {
               ...output,
-              output: renderOutput({ sessionID: nextSession.id, state: "completed", text: owed.text }),
+              output: renderOutput({
+                sessionID: nextSession.id,
+                state: "completed",
+                text: owed.text,
+                facts: yield* measure(),
+              }),
             }
           }
           if (lastStillBlocked) {

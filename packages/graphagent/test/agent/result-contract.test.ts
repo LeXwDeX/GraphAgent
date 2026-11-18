@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test"
 import { AgentArtifact } from "@/agent/artifact"
+import type { Subject } from "@/agent/contract"
 import { ResultContract } from "@/agent/result-contract"
 import { answer, valid } from "./artifact-fixtures"
 
@@ -109,5 +110,65 @@ describe("result contract of a worker", () => {
     expect(failure).toContain('"prototype" artifact contract')
     expect(failure).toContain("after one correction")
     expect(failure).toContain('missing required field: "evidence"')
+  })
+})
+
+// #1453: explore and general answer task calls in free text. They are asked for a bounded final message in three
+// sections instead of an artifact; the agents that declare their own return, or are not built in, are asked nothing.
+describe("free-text return contract", () => {
+  type Owed = Pick<Subject, "name" | "native" | "contract">
+  // The built-in agents as `Agent` declares them: explore keeps its artifact for composed runs only.
+  const explore: Owed = {
+    name: "explore",
+    native: true,
+    contract: { role: "worker", visibility: "public", output: { artifact: "code_findings", task: false } },
+  }
+  const general: Owed = { name: "general", native: true }
+
+  it("is owed by the built-in explore and general, whose task calls owe no artifact", () => {
+    expect(ResultContract.owesFreeText(explore)).toBe(true)
+    expect(ResultContract.owesFreeText(general)).toBe(true)
+  })
+
+  it("is not owed by review, auditor or an agent that declares an artifact for task calls", () => {
+    const others: Owed[] = [
+      { name: "review", native: true, contract: { role: "worker", visibility: "private" } },
+      { name: "auditor", native: true, contract: { role: "worker", visibility: "public", failure: "fail" } },
+      {
+        name: "researcher",
+        native: true,
+        contract: { role: "worker", visibility: "public", output: { artifact: "research_findings" } },
+      },
+      { name: "build", native: true },
+    ]
+    for (const agent of others) expect(ResultContract.owesFreeText(agent), agent.name).toBe(false)
+  })
+
+  it("is not owed once explore or general is configured to owe an artifact to task calls", () => {
+    expect(ResultContract.owesFreeText({ ...explore, contract: { output: { artifact: "code_findings" } } })).toBe(false)
+    expect(
+      ResultContract.owesFreeText({ ...general, contract: { output: { artifact: "research_findings", task: true } } }),
+    ).toBe(false)
+    // An artifact the catalog does not hold is diagnosed by the task tool; no free text is asked meanwhile.
+    expect(ResultContract.owesFreeText({ ...general, contract: { output: { artifact: "no_such_type" } } })).toBe(false)
+  })
+
+  it("is not owed by an agent that is not built in, whatever its name", () => {
+    expect(ResultContract.owesFreeText({ name: "explore" })).toBe(false)
+    expect(ResultContract.owesFreeText({ name: "general", native: false })).toBe(false)
+    expect(ResultContract.owesFreeText({ ...explore, native: false })).toBe(false)
+  })
+
+  it("is worded as three sections, in order, after the caller's own request", () => {
+    expect(ResultContract.freeTextPrompt()).toBe(
+      [
+        "",
+        "",
+        "[RETURN CONTRACT] Your final message is all the caller receives; do not ask the user questions. Write exactly these sections, in order:",
+        "Conclusion: the answer, at most 1200 characters.",
+        'Evidence: at most 20 lines, each a path:line or a URL, optionally followed by " - " and a one-line note.',
+        'Unresolved: what you did not examine or could not verify, or "none".',
+      ].join("\n"),
+    )
   })
 })

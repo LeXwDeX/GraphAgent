@@ -241,6 +241,23 @@ describe("resultBody", () => {
     expect(resultBody(text)).toBe("the body")
   })
 
+  // #1453: the server writes the facts of the run between the summary and the result element.
+  test("leaves out the facts block the server writes before the result element, whatever state the run is in", () => {
+    const facts = ["<task_facts>", "end: step_limit", "steps: 3", "changed_files: none", "</task_facts>"].join("\n")
+    const text = [
+      `<task id="${CHILD}" state="incomplete" reason="step_limit">`,
+      "<summary>Background task completed: Scan src</summary>",
+      facts,
+      "<task_result>",
+      "Found 3 issues\nin src/a.ts",
+      "</task_result>",
+      "</task>",
+    ].join("\n")
+
+    expect(resultBody(text, "Scan src")).toBe("Found 3 issues\nin src/a.ts")
+    expect(backgroundCard(part(text))?.body).toBe("Found 3 issues\nin src/a.ts")
+  })
+
   test("with the title, a title that holds both a closing summary and an opening result tag is not the body", () => {
     const title = "Check </summary> and <task_result> parsing"
     const text = notice("completed", `Background task completed: ${title}`, "Actual findings")

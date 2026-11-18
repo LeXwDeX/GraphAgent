@@ -19,6 +19,12 @@ import { AgentContract, type Subject } from "./contract"
  * fence, no prose) and validated by the same subset validator. A node settles
  * the answer through its capture slot; a task has no node, so the task tool asks
  * these functions instead and owns the correction turn.
+ *
+ * The built-in `explore` and `general` answer task calls in free text. They are
+ * asked for a bounded message rather than an artifact (#1453): a conclusion, its
+ * evidence and what is left unresolved (`owesFreeText`, `freeTextPrompt`). That
+ * ask is only words after the caller's request; nothing here parses or refuses
+ * the answer.
  */
 
 /** The `resultContract` H3 drafted (#1026): the final answer, checked against a schema; plus the artifact's name. */
@@ -61,6 +67,32 @@ export function prompt(contract: Contract): string {
     JSON.stringify(contract.schema, null, 2),
     "Use your final assistant answer only: no Markdown fence or surrounding prose. The runtime validates it, and an answer that does not match comes back to you once for correction. Do not ask the user questions from this session; list in not_examined what you did not look at or could not verify.",
   ].join("\n")
+}
+
+// The built-in agents whose task calls return free text and owe the caller a bounded one (#1453).
+const FREE_TEXT_AGENTS: ReadonlySet<string> = new Set(["explore", "general"])
+
+/**
+ * Whether `agent` owes a task caller the free-text return contract: it is the built-in `explore` or `general`
+ * (a configuration that overrides one keeps `native`) and owes no artifact to task calls. An agent that owes an
+ * artifact is held to that instead; one that is not built in is asked nothing, whatever its name.
+ */
+export function owesFreeText(agent: Pick<Subject, "name" | "native" | "contract">): boolean {
+  return agent.native === true && FREE_TEXT_AGENTS.has(agent.name) && resolve(agent).kind === "none"
+}
+
+/**
+ * The text the task prompt carries after the caller's own request when the agent owes free text: the final message
+ * in three sections, in order.
+ */
+export function freeTextPrompt(): string {
+  const lines = [
+    "[RETURN CONTRACT] Your final message is all the caller receives; do not ask the user questions. Write exactly these sections, in order:",
+    "Conclusion: the answer, at most 1200 characters.",
+    'Evidence: at most 20 lines, each a path:line or a URL, optionally followed by " - " and a one-line note.',
+    'Unresolved: what you did not examine or could not verify, or "none".',
+  ]
+  return ["", "", ...lines].join("\n")
 }
 
 export type Verdict = { readonly ok: true } | { readonly ok: false; readonly reason: string }

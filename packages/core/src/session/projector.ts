@@ -11,6 +11,8 @@ import { WorkspaceTable } from "../control-plane/workspace.sql"
 import { WorkspaceV2 } from "../workspace"
 import { WorkflowTable } from "../dag/sql"
 import { MessageTable, PartTable, SessionTable } from "./sql"
+import { ToolOutcomeTable } from "./outcome.sql"
+import { toolOutcomeRow } from "./outcome"
 import type { DeepMutable } from "../schema"
 import { SessionMessageID } from "./message-id"
 
@@ -121,6 +123,29 @@ function applyUsage(
       time_updated: sql`${SessionTable.time_updated}`,
     })
     .where(eq(SessionTable.id, sessionID))
+    .run()
+    .pipe(Effect.orDie)
+}
+
+/**
+ * #1473: book a finished tool part in `tool_outcome` under the model of its
+ * assistant message. One upsert per projection: the part id is the key, so a
+ * repeated projection rewrites the same row. A message without a model (a user
+ * message) cannot be attributed and leaves no row.
+ */
+function projectToolOutcome(
+  db: DatabaseService,
+  part: Parameters<typeof toolOutcomeRow>[0],
+  model: { providerID: string | null; modelID: string | null },
+) {
+  if (part.type !== "tool" || !model.providerID || !model.modelID) return Effect.void
+  const row = toolOutcomeRow(part, { providerID: model.providerID, modelID: model.modelID })
+  if (!row) return Effect.void
+  const { part_id: _, ...changes } = row
+  return db
+    .insert(ToolOutcomeTable)
+    .values(row)
+    .onConflictDoUpdate({ target: ToolOutcomeTable.part_id, set: changes })
     .run()
     .pipe(Effect.orDie)
 }
@@ -278,7 +303,11 @@ export const layer = Layer.effectDiscard(
         // message is gone, so the part is moot — skip instead of dying on the
         // foreign key constraint. Warn so genuine ordering bugs remain observable.
         const message = yield* db
-          .select({ id: MessageTable.id })
+          .select({
+            id: MessageTable.id,
+            providerID: sql<string | null>`json_extract(${MessageTable.data}, '$.providerID')`,
+            modelID: sql<string | null>`json_extract(${MessageTable.data}, '$.modelID')`,
+          })
           .from(MessageTable)
           .where(eq(MessageTable.id, messageID))
           .get()
@@ -302,6 +331,7 @@ export const layer = Layer.effectDiscard(
         const next = usage(event.data.part)
         if (previous) yield* applyUsage(db, row.session_id, previous, -1)
         if (next) yield* applyUsage(db, sessionID, next)
+        yield* projectToolOutcome(db, event.data.part, message)
       }),
     )
     yield* project(SessionV1.Event.AgentSwitched, (event) =>

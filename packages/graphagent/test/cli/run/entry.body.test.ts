@@ -282,6 +282,61 @@ describe("run entry body", () => {
     })
   })
 
+  // B2 (#1453): what a subagent wrote may hold a closing result tag; the body ends at the last one, not the first.
+  test("keeps the whole task result when the subagent text holds a closing result tag", () => {
+    const taskOutput = (...lines: string[]) =>
+      entryBody(
+        toolCommit({
+          tool: "task",
+          state: {
+            status: "completed",
+            input: {
+              description: "Inspect reducer",
+              subagent_type: "explore",
+            },
+            title: "",
+            output: lines.join("\n"),
+            metadata: {
+              sessionId: "child-1",
+            },
+            time: { start: 1, end: 2 },
+          },
+        }),
+      )
+
+    expect(
+      taskOutput(
+        '<task id="child-1" state="completed">',
+        "<task_result>",
+        "A </task_result> B",
+        "</task_result>",
+        "</task>",
+      ),
+    ).toEqual({ type: "markdown", content: "A </task_result> B" })
+
+    // The facts block comes before the result element and is not part of the body.
+    expect(
+      taskOutput(
+        '<task id="child-1" state="completed">',
+        "<task_facts>",
+        "end: completed",
+        "</task_facts>",
+        "<task_result>",
+        "A </task_result> B",
+        "</task_result>",
+        "</task>",
+      ),
+    ).toEqual({ type: "markdown", content: "A </task_result> B" })
+
+    // Without a closing tag after the opening one the result is read as before: the output, minus its `task_id:` lines.
+    expect(
+      taskOutput('<task id="child-1" state="completed">', "task_id: child-1", "<task_result>", "cut off", "</task>"),
+    ).toEqual({
+      type: "markdown",
+      content: ['<task id="child-1" state="completed">', "<task_result>", "cut off", "</task>"].join("\n"),
+    })
+  })
+
   test("streams tool progress text and treats completed progress as done", () => {
     const body = entryBody(
       commit({

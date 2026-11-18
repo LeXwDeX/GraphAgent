@@ -70,10 +70,12 @@ export const ModelProfile = Schema.Struct({
   reasoningMode: Schema.Struct({
     /** `sources` without this key means unknown; the key with an empty list means known to have no control. */
     controls: Schema.mutable(Schema.Array(ReasoningControl)),
+    // `any`, not `unknown`: Types.DeepMutable widens an unknown value to `{}`, which a profile held by
+    // the provider's Model type could then not be assigned to.
     toggle: optionalOmitUndefined(
       Schema.Struct({
-        on: Schema.Record(Schema.String, Schema.Unknown),
-        off: Schema.Record(Schema.String, Schema.Unknown),
+        on: Schema.Record(Schema.String, Schema.Any),
+        off: Schema.Record(Schema.String, Schema.Any),
       }),
     ),
     placeholder: Schema.Boolean,

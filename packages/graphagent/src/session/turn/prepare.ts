@@ -69,6 +69,7 @@ import type { Handle as ProcessorHandle } from "../processor"
 import type { ToolBatch as HookToolBatchState } from "@/hook/tool-batch"
 import type { Interface, PromptError, PromptInput, SetModelInput } from "../prompt"
 import type { AdmissionCommit, ModelBaseline } from "../turns"
+import { classifyToolError, endedMetadata } from "../tool-outcome"
 import { Cause, DateTime, Effect, Exit, Option, Schema, Stream, Types } from "effect"
 import type { Context } from "effect"
 import { type Tool as AITool, tool, jsonSchema } from "ai"
@@ -1136,7 +1137,7 @@ export function makePrepare(deps: PrepareDeps) {
                 status: "error",
                 error: "Cancelled",
                 input: part.state.input,
-                metadata: part.state.metadata,
+                metadata: endedMetadata(part.state, "aborted"),
                 time: { start: part.state.time.start, end: Date.now() },
               },
             })
@@ -1174,7 +1175,7 @@ export function makePrepare(deps: PrepareDeps) {
             start: part.state.status === "running" ? part.state.time.start : Date.now(),
             end: Date.now(),
           },
-          metadata: part.state.status === "pending" ? undefined : part.state.metadata,
+          metadata: endedMetadata(part.state, classifyToolError(error)),
           input: part.state.input,
         },
       } satisfies SessionV1.ToolPart)
