@@ -19,10 +19,22 @@ export interface DispatchResult extends ToolSettlement {
   readonly events: ReadonlyArray<LLMEvent>
 }
 
+export interface DispatchOptions {
+  /** Error value for a call that names a tool outside the set; defaults to `Unknown tool: <name>`. */
+  readonly unknownTool?: (name: string) => string
+}
+
 /** Execute one canonical tool call without owning provider IO or continuation. */
-export const dispatch = (tools: Tools, call: ToolCallPart): Effect.Effect<DispatchResult> => {
+export const dispatch = (
+  tools: Tools,
+  call: ToolCallPart,
+  options?: DispatchOptions,
+): Effect.Effect<DispatchResult> => {
   const tool = tools[call.name]
-  if (!tool) return Effect.succeed(result(call, { type: "error", value: `Unknown tool: ${call.name}` }))
+  if (!tool)
+    return Effect.succeed(
+      result(call, { type: "error", value: options?.unknownTool?.(call.name) ?? `Unknown tool: ${call.name}` }),
+    )
   if (!tool.execute)
     return Effect.succeed(result(call, { type: "error", value: `Tool has no execute handler: ${call.name}` }))
 

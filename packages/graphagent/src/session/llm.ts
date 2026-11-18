@@ -490,10 +490,10 @@ const live: Layer.Layer<
           includeRawChunks: input.model.providerID.includes("github-copilot"),
           async experimental_repairToolCall(failed) {
             // Invalid tool *input* (a known tool whose arguments failed to
-            // parse) is not repairable by renaming: returning null keeps the
-            // original tool and error so the SDK emits an unexecuted invalid
-            // tool-call. The lowercase-name repair below stays for unknown
-            // tool names only.
+            // parse) is not repairable by renaming. Only a wrong-case tool name
+            // is repaired; everything else returns null so the SDK keeps the
+            // original tool and error and emits an unexecuted invalid
+            // tool-call, which the adapter turns into the model-facing text.
             if (InvalidToolInputError.isInstance(failed.error)) {
               return null
             }
@@ -504,14 +504,7 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
-            return {
-              ...failed.toolCall,
-              input: JSON.stringify({
-                tool: failed.toolCall.toolName,
-                error: failed.error.message,
-              }),
-              toolName: "invalid",
-            }
+            return null
           },
           temperature: prepared.params.temperature,
           topP: prepared.params.topP,

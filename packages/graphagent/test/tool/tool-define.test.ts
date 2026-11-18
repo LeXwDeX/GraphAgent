@@ -5,6 +5,7 @@ import { Agent } from "../../src/agent/agent"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
+import { Parameters as WebFetchParameters } from "@/tool/webfetch"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.mergeAll(Truncate.defaultLayer, Agent.defaultLayer))
@@ -385,8 +386,122 @@ describe("Tool.define", () => {
       const args = error as Tool.InvalidArgumentsError
       expect(args.tool).toBe("qtest")
       expect(args.message).toContain("qtest tool was called with invalid arguments")
-      expect(args.message).toContain("Please rewrite the input")
-      expect(args.message).toContain(`["questions"][0]["question"]`)
+      expect(args.message).toContain("Fix them and call qtest again.")
+      expect(args.message).toContain(`["questions"][0]["question"] missing required field, expected string`)
+    }),
+  )
+
+  // Each case names what the schema accepts and what to do next, and never
+  // echoes the rejected value: `.message` is what the model reads back.
+  const invalidMessage = (parameters: Schema.Decoder<unknown>, args: unknown) =>
+    Effect.gen(function* () {
+      const info = yield* Tool.define(
+        "qtest",
+        Effect.succeed({
+          description: "test tool",
+          parameters,
+          execute() {
+            return Effect.succeed({ title: "ok", output: "ok", metadata: {} })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const exit = yield* executeRaw(tool.execute)(args, makeCtx()).pipe(Effect.exit)
+      if (!Exit.isFailure(exit)) throw new Error("expected the arguments to be rejected")
+      const error = exit.cause.reasons.find(Cause.isDieReason)?.defect
+      if (!(error instanceof Tool.InvalidArgumentsError)) throw new Error("expected InvalidArgumentsError")
+      return error.message
+    })
+
+  const expectBounded = (message: string, secret: string) => {
+    expect(message).not.toContain(secret)
+    expect(message.length).toBeLessThan(600)
+  }
+
+  const secret = "SECRET-VALUE-9f3a"
+  const invalidCases: ReadonlyArray<{
+    name: string
+    parameters: Schema.Decoder<unknown>
+    args: unknown
+    detail: string
+    secret: string
+  }> = [
+    {
+      name: "a wrong enum value lists the allowed values",
+      parameters: Schema.Struct({ format: Schema.Literals(["text", "markdown"]) }),
+      args: { format: "md" },
+      detail: `["format"] invalid value, expected one of "text", "markdown"`,
+      secret: `"md"`,
+    },
+    {
+      name: "a missing field names its type",
+      parameters: Schema.Struct({ filePath: Schema.String }),
+      args: {},
+      detail: `["filePath"] missing required field, expected string`,
+      secret,
+    },
+    {
+      name: "a wrong type names the expected type",
+      parameters: Schema.Struct({ limit: Schema.Number }),
+      args: { limit: secret },
+      detail: `["limit"] wrong type, expected number`,
+      secret,
+    },
+    {
+      name: "a failed check says what the check requires",
+      parameters: Schema.Struct({ limit: Schema.Number.check(Schema.isGreaterThan(0)) }),
+      args: { limit: -7 },
+      detail: `["limit"] invalid value, expected a value greater than 0`,
+      secret: "-7",
+    },
+    {
+      name: "an optional enum field still lists the allowed values",
+      parameters: Schema.Struct({ format: Schema.optional(Schema.Literals(["text", "markdown"])) }),
+      args: { format: "md" },
+      detail: `["format"] invalid value, expected one of "text", "markdown"`,
+      secret: `"md"`,
+    },
+    {
+      name: "an optional enum field given a number lists the allowed values",
+      parameters: Schema.Struct({ format: Schema.optional(Schema.Literals(["text", "markdown"])) }),
+      args: { format: 5 },
+      detail: `["format"] invalid value, expected one of "text", "markdown"`,
+      secret: "5",
+    },
+    {
+      name: "a missing enum field lists the allowed values",
+      parameters: Schema.Struct({ format: Schema.Literals(["text", "markdown"]) }),
+      args: {},
+      detail: `["format"] missing required field, expected one of "text", "markdown"`,
+      secret,
+    },
+    {
+      name: "webfetch reports its allowed formats",
+      parameters: WebFetchParameters,
+      args: { url: "https://example.test", format: "md" },
+      detail: `["format"] invalid value, expected one of "text", "markdown", "html"`,
+      secret: `"md"`,
+    },
+  ]
+  for (const item of invalidCases) {
+    it.effect(`invalid arguments: ${item.name}`, () =>
+      Effect.gen(function* () {
+        const message = yield* invalidMessage(item.parameters, item.args)
+        expect(message).toBe(
+          `The qtest tool was called with invalid arguments: ${item.detail}. Fix them and call qtest again.`,
+        )
+        expectBounded(message, item.secret)
+      }),
+    )
+  }
+
+  it.effect("invalid arguments: an enum with 25 values lists 20 and counts the rest", () =>
+    Effect.gen(function* () {
+      const values = Array.from({ length: 25 }, (_, index) => `v${index}`)
+      const message = yield* invalidMessage(Schema.Struct({ format: Schema.Literals(values) }), { format: secret })
+      expect(message).toContain(`"v19", ... (first 20 of 25)`)
+      expect(message).not.toContain(`"v20"`)
+      expectBounded(message, secret)
     }),
   )
 
@@ -427,10 +542,7 @@ describe("Tool.define", () => {
         "unionroot",
         Effect.succeed({
           ...makeTool("unionroot"),
-          parameters: Schema.Union([
-            Schema.Struct({ a: Schema.String }),
-            Schema.Struct({ b: Schema.String }),
-          ]) as never,
+          parameters: Schema.Union([Schema.Struct({ a: Schema.String }), Schema.Struct({ b: Schema.String })]) as never,
         }),
       )
       const exit = yield* Effect.exit(union.init())
