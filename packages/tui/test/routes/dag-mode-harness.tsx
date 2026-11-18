@@ -4,7 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { Session, SessionDagMode, SessionUsage } from "@graphagent/sdk"
+import type { GlobalEvent, Session, SessionDagMode, SessionUsage } from "@graphagent/sdk"
 import { onCleanup, type JSX } from "solid-js"
 import { unwrap } from "solid-js/store"
 import { TuiConfigProvider } from "../../src/config"
@@ -21,7 +21,7 @@ import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
 import { PromptRefProvider, usePromptRef } from "../../src/context/prompt"
 import { RouteProvider, useRoute, type Route } from "../../src/context/route"
-import { SDKProvider } from "../../src/context/sdk"
+import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
 import type { Ticker } from "../../src/context/ticker"
@@ -39,6 +39,7 @@ import { RouteFrame } from "../fixture/route-frame"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
+import { spyUsageReads, type UsageReads } from "../fixture/usage-reads"
 
 export type Sent = { method: string; path: string; body: unknown }
 
@@ -206,6 +207,8 @@ export async function mountRoute(options: MountOptions) {
   let toast!: ReturnType<typeof useToast>
   let route!: ReturnType<typeof useRoute>
   let sync!: ReturnType<typeof useSync>
+  let sdk!: ReturnType<typeof useSDK>
+  let usageReads: UsageReads | undefined
   let kv!: ReturnType<typeof useKV>
   let promptRef!: ReturnType<typeof usePromptRef>
   let registry!: ReturnType<typeof useCommands>
@@ -215,6 +218,10 @@ export async function mountRoute(options: MountOptions) {
     toast = useToast()
     route = useRoute()
     sync = useSync()
+    sdk = useSDK()
+    // Ahead of the view's own effects, so a read the first render asks for is counted too; once, though the subtree
+    // may be built again.
+    usageReads ??= spyUsageReads(sdk)
     kv = useKV()
     promptRef = usePromptRef()
     registry = useCommands()
@@ -303,6 +310,21 @@ export async function mountRoute(options: MountOptions) {
     toast: () => toast,
     route: () => route,
     sync: () => sync,
+    /** The SDK the view talks to, for a test that flushes the frame an event rides in. */
+    sdk: () => sdk,
+    /**
+     * The reads of the usage endpoint the sync layer asks for, counted at the SDK call: `asked()` the moment a trigger
+     * has run, `answered()` once the sync layer has dealt with every answer (`test/fixture/usage-reads.ts`).
+     */
+    usageReads: {
+      asked: () => usageReads!.asked(),
+      answered: () => usageReads!.answered(),
+    },
+    /** Emit an event and run the frame that carries it now: the handlers have run when this returns. */
+    deliver(event: GlobalEvent) {
+      events.emit(event)
+      sdk.frameClock.flushNow()
+    },
     /** The command registry the views register their handlers in; `run` is what a palette selection does. */
     registry: () => registry,
     /** The persisted preferences, for a test that changes one while the view is on screen. */

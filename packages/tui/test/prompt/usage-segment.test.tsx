@@ -87,7 +87,10 @@ describe("the prompt's usage segment", () => {
       const segment = segmentOf(await harness.frame())
       expect(segment).toContain("1.2K · 未知")
       expect(segment).not.toContain("$")
-      // The segment is the session's own: it reads what the session row holds and asks for nothing.
+      // The segment is the session's own: it reads what the session row holds and asks for nothing. A watch would have
+      // asked as the prompt mounted, and the segment is on screen.
+      expect(harness.usageReads.asked()).toEqual([])
+      await harness.usageReads.answered()
       expect(harness.requested.filter((request) => request.endsWith("/usage"))).toEqual([])
     } finally {
       await harness.dispose()

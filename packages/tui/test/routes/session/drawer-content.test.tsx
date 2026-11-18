@@ -16,8 +16,9 @@ import { Drawer, DRAWER_WIDTH } from "../../../src/shell/drawer"
 import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth } from "../../../src/ui/width"
 import { RUN_START, endRun, runSessionID, seedRun } from "../../fixture/background-runs"
+import { loggedLines } from "../../fixture/tui-log"
 import { directory, json } from "../../fixture/tui-sdk"
-import { mountRoute, sessionFixture, usageFixture, type MountOptions } from "../dag-mode-harness"
+import { mountRoute, sessionFixture, usageFixture, waitFor, type MountOptions } from "../dag-mode-harness"
 
 // What the drawer's sections show and in what order (#1032 5.2): session, context, cost, the mode line, goal, todo,
 // services, then the key that closes it. Empty sections are left out; the modified files are not shown (#1032 D8). The
@@ -173,6 +174,13 @@ async function column(harness: Mount, width: number, ready: (lines: string[]) =>
 }
 
 const has = (needle: string) => (lines: string[]) => lines.some((line) => line.includes(needle))
+
+/** The reads of the usage endpoint the fake server has heard of, in order. */
+const usageRequests = (harness: { requested: readonly string[] }) =>
+  harness.requested.filter((request) => request.endsWith("/usage"))
+
+/** What the failure path of a usage read writes to the TUI log for a root: one file for the process, so a test names the root. */
+const failedFor = (rootID: string) => loggedLines(`Loading the usage failed { sessionID: '${rootID}'`)
 
 let sequence = 0
 /** A turn that ended in `sessionID`: the moment its usage was last written, and what makes the drawer read it again. */
@@ -471,11 +479,16 @@ describe("the cost section", () => {
   })
 
   test("is a dash, and nothing else, until the usage is read; a failed read leaves it so", async () => {
+    const before = failedFor(ROOT).length
     const harness = await mountDrawer({ data: FULL, usage: () => new Response("nope", { status: 500 }) })
     try {
+      // The read the drawer made as it opened got an error for an answer; the failure was dealt with and logged.
+      await harness.usageReads.answered()
+      await waitFor(() => failedFor(ROOT).length > before, 5000)
+      expect(failedFor(ROOT).at(-1)).toContain(`Loading the usage failed { sessionID: '${ROOT}', status: 500 }`)
+      expect(harness.usageReads.asked()).toEqual([ROOT])
+      // The section is what it was before the read: a dash.
       const lines = await column(harness, 120, has("MCP 已连接"), "the drawer")
-      await harness.settle()
-      expect(harness.requested.filter((request) => request.endsWith("/usage"))).not.toEqual([])
       expect(costSection(lines, 2)).toEqual(["费用", "—"])
     } finally {
       await harness.dispose()
@@ -491,14 +504,15 @@ describe("the cost section", () => {
     })
     try {
       await column(harness, 120, has("$1.50"), "the first figures")
+      expect(harness.usageReads.asked()).toEqual([ROOT])
       cost = 2.75
-      harness.events.emit(settledTurn(CHILD))
+      harness.deliver(settledTurn(CHILD))
+      // Asked for in the handler of the event: the sub-agent's turn settled, and the read is the root's.
+      expect(harness.usageReads.asked()).toEqual([ROOT, ROOT])
       const lines = await column(harness, 120, has("$2.75"), "the new figures")
       expect(has("$1.50")(lines)).toBe(false)
-      expect(harness.requested.filter((request) => request.endsWith("/usage"))).toEqual([
-        `GET /session/${ROOT}/usage`,
-        `GET /session/${ROOT}/usage`,
-      ])
+      await harness.usageReads.answered()
+      expect(usageRequests(harness)).toEqual([`GET /session/${ROOT}/usage`, `GET /session/${ROOT}/usage`])
       expect(harness.writes()).toEqual([])
     } finally {
       await harness.dispose()
@@ -520,29 +534,27 @@ describe("the cost section", () => {
         </>
       ),
     })
-    const reads = () => harness.requested.filter((request) => request.endsWith("/usage")).length
     try {
       await column(harness, 120, has("缓存 读"), "the open drawer")
-      expect(reads()).toBe(1)
+      expect(harness.usageReads.asked()).toEqual([ROOT])
 
       setOpen(false)
       await harness.waitForFrame((frame) => !frame.includes("上下文"), "the closed drawer")
-      harness.events.emit(settledTurn(ROOT))
-      harness.events.emit(settledTurn(CHILD))
-      await harness.settle()
-      await Bun.sleep(60)
-      expect(reads()).toBe(1)
-
+      // Delivered now, so the handlers have run when `deliver` returns: a read they would have triggered is asked for.
+      harness.deliver(settledTurn(ROOT))
+      harness.deliver(settledTurn(CHILD))
+      expect(harness.sync().data.turn_settled[CHILD]).toBeDefined()
       // A reconnect while it is closed asks for nothing either.
       harness.events.reconnect()
-      await harness.settle()
-      await Bun.sleep(60)
-      expect(reads()).toBe(1)
+      expect(harness.usageReads.asked()).toEqual([ROOT])
+      await harness.usageReads.answered()
+      expect(usageRequests(harness)).toEqual([`GET /session/${ROOT}/usage`])
 
       setOpen(true)
       await column(harness, 120, has("缓存 读"), "the drawer opened again")
-      await harness.waitForFrame(() => reads() === 2, "the second read")
-      expect(reads()).toBe(2)
+      expect(harness.usageReads.asked()).toEqual([ROOT, ROOT])
+      await harness.usageReads.answered()
+      expect(usageRequests(harness)).toHaveLength(2)
     } finally {
       await harness.dispose()
     }
@@ -568,23 +580,26 @@ describe("the cost section", () => {
         </>
       ),
     })
-    const reads = () => harness.requested.filter((request) => request.endsWith("/usage"))
     try {
       await column(harness, 120, has("$1.50"), "the first tree")
-      expect(reads()).toEqual([`GET /session/${ROOT}/usage`])
+      expect(harness.usageReads.asked()).toEqual([ROOT])
 
       setShown(OTHER)
       await column(harness, 120, has("$7.50"), "the other tree")
-      expect(reads()).toEqual([`GET /session/${ROOT}/usage`, `GET /session/${OTHER}/usage`])
+      expect(harness.usageReads.asked()).toEqual([ROOT, OTHER])
 
       // The first tree is let go: a turn settling in it asks for nothing, one in the tree on screen does.
-      harness.events.emit(settledTurn(CHILD))
-      await harness.settle()
-      await Bun.sleep(60)
-      expect(reads()).toHaveLength(2)
-      harness.events.emit(settledTurn(OTHER))
-      await harness.waitForFrame(() => reads().length === 3, "the read for the tree on screen")
-      expect(reads().at(-1)).toBe(`GET /session/${OTHER}/usage`)
+      harness.deliver(settledTurn(CHILD))
+      expect(harness.sync().data.turn_settled[CHILD]).toBeDefined()
+      expect(harness.usageReads.asked()).toEqual([ROOT, OTHER])
+      harness.deliver(settledTurn(OTHER))
+      expect(harness.usageReads.asked()).toEqual([ROOT, OTHER, OTHER])
+      await harness.usageReads.answered()
+      expect(usageRequests(harness)).toEqual([
+        `GET /session/${ROOT}/usage`,
+        `GET /session/${OTHER}/usage`,
+        `GET /session/${OTHER}/usage`,
+      ])
     } finally {
       await harness.dispose()
     }
@@ -595,11 +610,13 @@ describe("the cost section", () => {
     const harness = await mountDrawer({ data: FULL, ticker: clock.ticker })
     try {
       await column(harness, 120, has("缓存 读"), "the cost section")
-      await harness.settle()
-      await Bun.sleep(60)
       expect(clock.calls).toEqual({ frame: 0, second: 0, released: 0 })
-      // Nothing polls: the one read the section made at the start is the only one.
-      expect(harness.requested.filter((request) => request.endsWith("/usage"))).toHaveLength(1)
+      // Ten minutes go by on the clock the drawer would listen to. Nothing polls: the one read the section made as it
+      // opened is the only one.
+      clock.advance(10 * 60_000)
+      expect(harness.usageReads.asked()).toEqual([ROOT])
+      await harness.usageReads.answered()
+      expect(usageRequests(harness)).toHaveLength(1)
     } finally {
       await harness.dispose()
     }
@@ -609,14 +626,16 @@ describe("the cost section", () => {
     const harness = await mountDrawer({ sessionID: CHILD, data: FULL })
     try {
       const before = await column(harness, 120, has("本会话"), "the cost section")
-      const reads = harness.requested.filter((request) => request.endsWith("/usage")).length
+      expect(harness.usageReads.asked()).toEqual([ROOT])
       // The section is at the top of the column: rows 1 to 14 cover it, whatever its height.
       for (let row = 1; row <= 14; row++) await harness.app.mockMouse.click(120 - DRAWER_WIDTH + 4, row)
-      await harness.settle()
+      // A click that asked for a read did so as it was handled.
+      expect(harness.usageReads.asked()).toEqual([ROOT])
       expect(columnOf(await harness.waitForFrame(() => true, "the frame"), 120)).toEqual(before)
       expect(harness.writes()).toEqual([])
       expect(harness.commands()).toEqual([])
-      expect(harness.requested.filter((request) => request.endsWith("/usage")).length).toBe(reads)
+      await harness.usageReads.answered()
+      expect(usageRequests(harness)).toHaveLength(1)
     } finally {
       await harness.dispose()
     }
