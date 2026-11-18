@@ -632,6 +632,55 @@ describe("LLMClient tools", () => {
     }),
   )
 
+  it.effect("dispatch renders an unknown tool with the caller's text when given unknownTool", () =>
+    Effect.gen(function* () {
+      const seen: string[] = []
+      const dispatched = yield* ToolRuntime.dispatch(
+        { get_weather },
+        LLMEvent.toolCall({ id: "call_1", name: "missing_tool", input: {} }),
+        {
+          unknownTool: (name) => {
+            seen.push(name)
+            return `custom: ${name}`
+          },
+        },
+      )
+
+      expect(seen).toEqual(["missing_tool"])
+      expect(dispatched.result).toEqual({ type: "error", value: "custom: missing_tool" })
+      expect(dispatched.events.map((event) => event.type)).toEqual(["tool-error", "tool-result"])
+      expect(dispatched.events.find(LLMEvent.is.toolError)?.message).toBe("custom: missing_tool")
+    }),
+  )
+
+  it.effect("dispatch keeps the default unknown tool text without options and for known tools", () =>
+    Effect.gen(function* () {
+      const missing = LLMEvent.toolCall({ id: "call_1", name: "missing_tool", input: {} })
+      expect((yield* ToolRuntime.dispatch({ get_weather }, missing)).result).toEqual({
+        type: "error",
+        value: "Unknown tool: missing_tool",
+      })
+      expect((yield* ToolRuntime.dispatch({ get_weather }, missing, {})).result).toEqual({
+        type: "error",
+        value: "Unknown tool: missing_tool",
+      })
+
+      let asked = 0
+      const known = yield* ToolRuntime.dispatch(
+        { get_weather },
+        LLMEvent.toolCall({ id: "call_2", name: "get_weather", input: { city: "Paris" } }),
+        {
+          unknownTool: () => {
+            asked += 1
+            return "unused"
+          },
+        },
+      )
+      expect(known.result.type).not.toBe("error")
+      expect(asked).toBe(0)
+    }),
+  )
+
   it.effect("emits tool-error when the LLM input fails the parameters schema", () =>
     Effect.gen(function* () {
       const layer = scriptedResponses([

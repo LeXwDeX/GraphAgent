@@ -22,6 +22,7 @@ import {
 } from "@graphagent/llm"
 import type { LLMClientShape } from "@graphagent/llm/route"
 import { RequestExecutor } from "@graphagent/llm/route"
+import { ToolError } from "@/tool/tool-error"
 import { LLMNative } from "./native-request"
 import { ThinkingReplay } from "../thinking-replay"
 import type { LLMPurpose } from "./purpose"
@@ -104,6 +105,9 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     // — if a field ever needs to differ between the two surfaces, the
     // translation belongs here, not split across both packages.
     const tools = nativeTools(input.tools, input)
+    // Same text the AI SDK path gives for a tool name outside the active set.
+    const unknownTool = (name: string) =>
+      ToolError.render({ kind: "unknown_tool", requested: name, available: Object.keys(tools) })
     const sourceOrigins = ThinkingReplay.replayOrigins(input.messages)
     const transformedMessages = ProviderTransform.message(input.messages, input.model, input.providerOptions ?? {})
     const headers = { ...providerHeaders(input.provider.options.headers), ...input.headers }
@@ -196,7 +200,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
                 : Stream.make(event).pipe(
                     Stream.concat(
                       Stream.fromEffectDrain(
-                        ToolRuntime.dispatch(tools, event).pipe(
+                        ToolRuntime.dispatch(tools, event, { unknownTool }).pipe(
                           Effect.flatMap((dispatched) => Queue.offerAll(results, dispatched.events)),
                           Effect.catchCause((cause) => Queue.failCause(results, cause)),
                           Effect.asVoid,
@@ -306,8 +310,10 @@ function nativeSchema(value: unknown): JsonSchema {
 }
 
 export function nativeTools(tools: Record<string, Tool>, input: Pick<StreamInput, "messages" | "abort">) {
+  // The reserved `invalid` tool is not offered to the model; the AI SDK path excludes it from activeTools too.
+  const offered = Object.entries(tools).filter(([name]) => name !== "invalid")
   return Object.fromEntries(
-    Object.entries(tools).map(([name, item]) => [
+    offered.map(([name, item]) => [
       name,
       // Tool execution remains GraphAgent-owned. The native runtime only adapts
       // the @graphagent/llm tool call back into the AI SDK Tool.execute shape.

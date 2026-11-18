@@ -9,6 +9,7 @@ import type { Tool } from "../tool"
 import { EXTEND_TIMEOUT_COPY, authoringWarnings } from "./render"
 import { prepareMutation } from "./prepare"
 import { rejectDiagnostics, requireOwnedWorkflow, runControl, runMutation } from "./mutation"
+import { workflowResultCall } from "./result-call"
 import type { ControlParams, Metadata } from "./schema"
 
 type Authoring = ReturnType<typeof WorkflowAuthoring.make>
@@ -60,7 +61,7 @@ export const controlWorkflow = (context: ControlContext, params: ControlParams):
             reused: result.reused,
             preserved: result.preserved,
             superseded: result.superseded,
-            note: "Prior attempts remain readable with workflow result. New attempts must inspect existing workspace changes and prior child sessions before repeating side effects.",
+            note: `Prior attempts remain readable with ${workflowResultCall(wfId, "<node_id>")}. New attempts must inspect existing workspace changes and prior child sessions before repeating side effects.`,
           },
           null,
           2,

@@ -49,6 +49,7 @@ import { ModelHistory } from "./history/model"
 import { isReplayableAssistantMessage } from "./message-replay"
 import { isRecord } from "@/util/record"
 import { headChars } from "@/util/text"
+import { ToolError } from "@/tool/tool-error"
 
 export const node = LayerNode.group([Database.node])
 export { isReplayableAssistantMessage }
@@ -62,6 +63,15 @@ interface FetchDecompressionError extends Error {
 
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached media from tool result:"
 export { isMedia }
+
+/**
+ * What the model reads for a tool call that ended in error. An aborted call
+ * keeps its stored text (the UI and the CLI match it); the replay says what the
+ * abort means for the model instead.
+ */
+function replayErrorText(state: SessionV1.ToolStateError) {
+  return state.metadata?.interrupted === true ? ToolError.render({ kind: "aborted" }) : state.error
+}
 
 /**
  * The compaction input keeps a tool output to `maxChars`. A result that was saved to a file keeps the path in the
@@ -443,7 +453,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
               state: "output-error",
               toolCallId: part.callID,
               input: part.state.input,
-              errorText: part.state.error,
+              errorText: replayErrorText(part.state),
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
             })
@@ -457,7 +467,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
             state: "output-error",
             toolCallId: part.callID,
             input: part.state.input,
-            errorText: "[Tool execution was interrupted]",
+            errorText: ToolError.render({ kind: "interrupted" }),
             ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
             ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
           })

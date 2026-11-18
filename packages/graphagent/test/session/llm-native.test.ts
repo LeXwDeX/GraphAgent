@@ -878,6 +878,57 @@ describe("session.llm-native.request", () => {
     }),
   )
 
+  it.effect("native tools do not offer the reserved invalid tool", () =>
+    Effect.sync(() => {
+      const source = { description: "tool", inputSchema: jsonSchema({ type: "object" }) } satisfies Tool
+      const wrapped = LLMNativeRuntime.nativeTools(
+        { lookup: source, invalid: source, read: source },
+        { messages: [] as ModelMessage[], abort: new AbortController().signal },
+      )
+
+      expect(Object.keys(wrapped)).toEqual(["lookup", "read"])
+    }),
+  )
+
+  it.effect("native stream answers an unknown tool with the same text as the AI SDK path", () =>
+    Effect.gen(function* () {
+      const lookup = {
+        description: "Lookup data",
+        inputSchema: jsonSchema({ type: "object" }),
+        execute: async () => ({ output: "ok" }),
+      } satisfies Tool
+      const llmClient = {
+        prepare: () => Effect.die("unused"),
+        stream: () =>
+          Stream.fromIterable([
+            LLMEvent.toolCall({ id: "call-1", name: "no_such_tool", input: {} }),
+            LLMEvent.stepFinish({ index: 0, reason: "tool-calls", usage: { inputTokens: 1, outputTokens: 1 } }),
+            LLMEvent.finish({ reason: "tool-calls" }),
+          ]),
+        generate: () => Effect.die("unused"),
+      } as LLMClientShape
+      const native = yield* LLMNativeRuntime.stream({
+        model: baseModel,
+        provider: providerInfo,
+        auth: undefined,
+        llmClient,
+        messages: [],
+        tools: { lookup, invalid: lookup },
+        headers: {},
+        abort: new AbortController().signal,
+      })
+      if (native.type === "unsupported") throw new Error(native.reason)
+
+      const events = Array.from(yield* Stream.runCollect(native.stream))
+      const text = 'Unknown tool "no_such_tool". Available tools: lookup. Use one of them.'
+      expect(events.find(LLMEvent.is.toolError)).toMatchObject({ id: "call-1", name: "no_such_tool", message: text })
+      expect(events.find(LLMEvent.is.toolResult)).toMatchObject({
+        id: "call-1",
+        result: { type: "error", value: text },
+      })
+    }),
+  )
+
   it.effect("settles parallel native tools before completing the provider step", () =>
     Effect.gen(function* () {
       const observed: string[] = []

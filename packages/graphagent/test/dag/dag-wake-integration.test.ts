@@ -953,7 +953,9 @@ describe("DagLoop atomic wake integration", () => {
           expect(wake).toContain(`workflow_id="${dagID}"`)
           expect(wake).toContain('node_id="long-report"')
           expect(wake).toContain("truncated=true")
-          expect(wake).toContain("workflow result")
+          expect(wake).toContain(
+            `Complete output: call workflow({"params":{"action":"inspect","operation":"result","workflow_id":"${dagID}","node_id":"long-report"}}).`,
+          )
           expect(wake).not.toContain("WAKE_SENTINEL")
           expect(wake.length).toBeLessThan(1_500)
           yield* Deferred.succeed(parent.release, "success")
@@ -1808,6 +1810,7 @@ describe("DagLoop atomic wake integration", () => {
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
+        const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
         const base = Layer.mergeAll(
           database,
           events,
@@ -1868,7 +1871,12 @@ describe("DagLoop atomic wake integration", () => {
               yield* takeWithin(q1.parentPrompts, "terminal workflow did not wake the parent")
             }).pipe(
               Effect.provide(
-                DagLoop.layer.pipe(Layer.provide(session), Layer.provide(promptLayer(q1)), Layer.provide(agent)),
+                DagLoop.layer.pipe(
+                  Layer.provide(session),
+                  Layer.provide(promptLayer(q1)),
+                  Layer.provide(agent),
+                  Layer.provide(inbox),
+                ),
               ),
             ),
           )
@@ -1893,7 +1901,12 @@ describe("DagLoop atomic wake integration", () => {
               expect(Option.isNone(yield* Queue.poll(q2.parentPrompts))).toBe(true)
             }).pipe(
               Effect.provide(
-                DagLoop.layer.pipe(Layer.provide(session), Layer.provide(promptLayer(q2)), Layer.provide(agent)),
+                DagLoop.layer.pipe(
+                  Layer.provide(session),
+                  Layer.provide(promptLayer(q2)),
+                  Layer.provide(agent),
+                  Layer.provide(inbox),
+                ),
               ),
             ),
           )

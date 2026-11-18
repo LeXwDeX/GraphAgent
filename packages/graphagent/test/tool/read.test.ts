@@ -494,6 +494,28 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("a missing file with no similar name in its folder ends with the glob next step", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "unrelated.txt"), "x")
+
+      const missing = path.join(dir, "zzz-missing.md")
+      const err = yield* fail(dir, { filePath: missing })
+      expect(err.message).toBe(`File not found: ${missing}. Check the path with glob.`)
+    }),
+  )
+
+  it.live("a missing file with a similar name keeps its suggestions and not the glob hint", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "notes.txt"), "x")
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "notes") })
+      expect(err.message).toContain("Did you mean one of these?")
+      expect(err.message).not.toContain("Check the path with glob")
+    }),
+  )
+
   it.live("allows reading empty file at default offset", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

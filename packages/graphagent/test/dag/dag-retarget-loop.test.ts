@@ -23,6 +23,7 @@ import { DagLocation } from "@/dag/location"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -159,11 +160,13 @@ function loopLayer(input: {
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   return Layer.merge(base, loop)
 }
@@ -267,7 +270,7 @@ describe("Dag retarget through the live loop", () => {
           const oldReviewChild = review.sessionID
           const buildChild = build.sessionID
 
-          const fingerprint = DagLocation.fingerprintTarget(tmp.path)
+          const fingerprint = yield* DagLocation.fingerprintTarget(tmp.path)
           yield* dag.retarget(dagID, {
             reason: "tree moved",
             fingerprint: fingerprint.kind === "git" ? fingerprint.value : "none",
