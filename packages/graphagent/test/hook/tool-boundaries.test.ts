@@ -34,6 +34,7 @@ import { MockLanguageModelV3 } from "ai/test"
 import { Provider } from "@/provider/provider"
 import { Auth } from "@/auth"
 import { ReadTool } from "@/tool/read"
+import { FileState } from "@/session/file-state"
 import { GrepTool } from "@/tool/grep"
 import { GlobTool } from "@/tool/glob"
 import { Agent } from "@/agent/agent"
@@ -474,6 +475,7 @@ const discoveryToolLayer = Layer.mergeAll(
   FSUtil.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
   Ripgrep.defaultLayer,
+  FileState.defaultLayer,
   Layer.mock(Agent.Service, {}),
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
   Layer.mock(LSP.Service, { touchFile: () => Effect.void }),

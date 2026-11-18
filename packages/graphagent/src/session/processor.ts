@@ -60,6 +60,17 @@ function accumulateUsage(message: SessionV1.Assistant, usage: ReturnType<typeof 
   }
 }
 
+/** The prefix fingerprint of one provider request: what the step log compares with the previous step. */
+function requestFingerprint(input: LLM.StreamInput): PrefixFingerprint {
+  return fingerprintOf({
+    tools: serializedTools(input.tools),
+    system: input.system,
+    systemLabels: input.systemLabels,
+    messages: input.messages,
+    toolChoice: input.toolChoice,
+  })
+}
+
 export interface Handle {
   readonly message: SessionV1.Assistant
   readonly updateToolCall: (
@@ -949,7 +960,7 @@ export const layer = Layer.effect(
           yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
           return
         }
-        ctx.assistantMessage.error = error
+        ctx.assistantMessage.error = SessionRetry.withHint(error, input.model.providerID)
         yield* events.publish(Session.Event.Error, {
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
@@ -966,12 +977,7 @@ export const layer = Layer.effect(
         metricsStepStartedAt = metricsProcessStartedAt
         metricsFirstTokenAt = undefined
         metricsCounterBase = counters()
-        metricsFingerprint = fingerprintOf({
-          tools: serializedTools(streamInput.tools),
-          system: streamInput.system,
-          messages: streamInput.messages,
-          toolChoice: streamInput.toolChoice,
-        })
+        metricsFingerprint = requestFingerprint(streamInput)
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
         let timedOut = false

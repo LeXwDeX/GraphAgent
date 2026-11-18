@@ -9279,6 +9279,32 @@
             "minimum": 0,
             "maximum": 9007199254740991
           },
+          "tokensInput": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tokensOutput": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tokensReasoning": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tokensCacheWrite": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cost": {
+            "type": "number"
+          },
+          "costUnknown": {
+            "type": "boolean"
+          },
           "concurrencyRunning": {
             "type": "integer",
             "minimum": 0,

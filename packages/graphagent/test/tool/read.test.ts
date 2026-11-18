@@ -2,6 +2,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer, Schema, Stream } from "effect"
 import path from "path"
+import { createHash } from "node:crypto"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -12,7 +13,11 @@ import { LSP } from "@/lsp/lsp"
 import { Permission } from "../../src/permission"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Instruction } from "../../src/session/instruction"
+import { FileState } from "@/session/file-state"
 import { Parameters, ReadTool } from "../../src/tool/read"
+import { WriteTool } from "../../src/tool/write"
+import { Format } from "../../src/format"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
 import { Filesystem } from "@/util/filesystem"
@@ -48,6 +53,7 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
     FSUtil.defaultLayer,
     CrossSpawnSpawner.defaultLayer,
     Instruction.defaultLayer,
+    FileState.defaultLayer,
     LSP.defaultLayer,
     Ripgrep.defaultLayer,
     Truncate.defaultLayer,
@@ -927,6 +933,214 @@ describe("tool.read binary detection", () => {
 
       const err = yield* fail(dir, { filePath: path.join(dir, "module.wasm") })
       expect(err.message).toContain("Cannot read binary file")
+    }),
+  )
+})
+
+describe("tool.read file state (#1452)", () => {
+  const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
+  const recorded = (dir: string, filepath: string) =>
+    provideInstance(dir)(
+      Effect.gen(function* () {
+        return yield* (yield* FileState.Service).get(ctx.sessionID, filepath)
+      }),
+    )
+
+  it.live("records a text read under the read source", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "notes.txt")
+      yield* put(file, "line one\nline two\n")
+
+      yield* exec(dir, { filePath: file })
+
+      const entry = yield* recorded(dir, file)
+      expect(entry?.source).toBe("read")
+      expect(entry?.hash).toBe(sha256("line one\nline two\n"))
+      expect(entry?.size).toBe(18)
+    }),
+  )
+
+  it.live("records the whole file for a partial read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "long.txt")
+      const content = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join("\n") + "\n"
+      yield* put(file, content)
+
+      yield* exec(dir, { filePath: file, offset: 10, limit: 5 })
+
+      expect((yield* recorded(dir, file))?.hash).toBe(sha256(content))
+    }),
+  )
+
+  it.live("records a relative path under its absolute path", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "rel.txt")
+      yield* put(file, "relative")
+
+      yield* exec(dir, { filePath: "rel.txt" })
+
+      expect((yield* recorded(dir, file))?.hash).toBe(sha256("relative"))
+    }),
+  )
+
+  it.live("does not record a directory listing", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "sub", "a.txt"), "a")
+
+      yield* exec(dir, { filePath: path.join(dir, "sub") })
+
+      expect(yield* recorded(dir, path.join(dir, "sub"))).toBeUndefined()
+      expect(yield* recorded(dir, path.join(dir, "sub", "a.txt"))).toBeUndefined()
+    }),
+  )
+
+  it.live("does not record an image read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const image = path.join(dir, "image.png")
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+        "base64",
+      )
+      yield* put(image, png)
+
+      const result = yield* exec(dir, { filePath: image })
+
+      expect(result.attachments).toHaveLength(1)
+      expect(yield* recorded(dir, image)).toBeUndefined()
+    }),
+  )
+
+  it.live("does not record a read that failed", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const binary = path.join(dir, "module.wasm")
+      yield* put(binary, "not really wasm")
+      const missing = path.join(dir, "missing.txt")
+
+      yield* fail(dir, { filePath: binary })
+      yield* fail(dir, { filePath: missing })
+
+      expect(yield* recorded(dir, binary)).toBeUndefined()
+      expect(yield* recorded(dir, missing)).toBeUndefined()
+    }),
+  )
+})
+
+// #1452 review finding: a read used to record whatever the file held when the record was made, which can be a
+// version that replaced the one the read consumed. A file change that lands after the read consumed the file and
+// before it records it is simulated by a FileState whose `record` first runs `raceAfterRead`.
+let raceAfterRead: (() => Promise<unknown>) | undefined
+
+const racingFileState = Layer.effect(
+  FileState.Service,
+  Effect.gen(function* () {
+    const real = yield* FileState.Service
+    return FileState.Service.of({
+      ...real,
+      record: (...args) =>
+        Effect.gen(function* () {
+          const change = raceAfterRead
+          raceAfterRead = undefined
+          if (change) yield* Effect.promise(change)
+          yield* real.record(...args)
+        }),
+    })
+  }),
+).pipe(Layer.provide(FileState.defaultLayer))
+
+const racing = testEffect(
+  Layer.mergeAll(
+    Agent.defaultLayer,
+    FSUtil.defaultLayer,
+    CrossSpawnSpawner.defaultLayer,
+    Instruction.defaultLayer,
+    LSP.defaultLayer,
+    Ripgrep.defaultLayer,
+    Truncate.defaultLayer,
+    Format.defaultLayer,
+    EventV2Bridge.defaultLayer,
+    racingFileState,
+    testInstanceStoreLayer,
+  ),
+)
+
+describe("tool.read records the version it consumed (#1452)", () => {
+  const overwrite = Effect.fn("ReadToolTest.overwrite")(function* (dir: string, filePath: string, content: string) {
+    const tool = yield* (yield* WriteTool).init()
+    const exit = yield* provideInstance(dir)(tool.execute({ filePath, content }, ctx)).pipe(Effect.exit)
+    if (Exit.isSuccess(exit)) throw new Error("expected the overwrite to be refused")
+    const error = Cause.squash(exit.cause)
+    return error instanceof Error ? error : new Error(String(error))
+  })
+
+  racing.live("a file changed between the read and its record cannot be overwritten afterwards", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "target.txt")
+      yield* put(file, "what the model read\n")
+      raceAfterRead = () => Bun.write(file, "changed by someone else\n")
+
+      const result = yield* exec(dir, { filePath: file })
+
+      expect(result.output).toContain("what the model read")
+      expect(result.output).not.toContain("changed by someone else")
+      const error = yield* overwrite(dir, file, "clobbered\n")
+      expect(error.message).toContain("was not read in this session")
+      expect(yield* load(file)).toBe("changed by someone else\n")
+    }),
+  )
+
+  racing.live("an older record is not replaced by a version the read did not consume", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "target.txt")
+      yield* put(file, "first version\n")
+      yield* exec(dir, { filePath: file })
+      raceAfterRead = () => Bun.write(file, "second version, written during the next read\n")
+
+      yield* exec(dir, { filePath: file })
+
+      const error = yield* overwrite(dir, file, "clobbered\n")
+      expect(error.message).toContain("changed after it was last read")
+      expect(yield* load(file)).toBe("second version, written during the next read\n")
+    }),
+  )
+
+  racing.live("a change that keeps the size and the mtime is still caught, because the hash decides", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "target.txt")
+      yield* put(file, "aaaa\n")
+      raceAfterRead = async () => {
+        const before = await Bun.file(file).stat()
+        await Bun.write(file, "bbbb\n")
+        await import("fs/promises").then((fs) => fs.utimes(file, before.atime, before.mtime))
+      }
+
+      yield* exec(dir, { filePath: file })
+
+      const error = yield* overwrite(dir, file, "clobbered\n")
+      expect(error.message).toContain("was not read in this session")
+    }),
+  )
+
+  racing.live("a file that does not change is recorded and can be overwritten", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "target.txt")
+      yield* put(file, "stable\n")
+      raceAfterRead = () => Promise.resolve()
+
+      yield* exec(dir, { filePath: file })
+      const tool = yield* (yield* WriteTool).init()
+      yield* provideInstance(dir)(tool.execute({ filePath: file, content: "replaced\n" }, ctx))
+
+      expect(yield* load(file)).toBe("replaced\n")
     }),
   )
 })

@@ -46,7 +46,7 @@ import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { EngineProcess } from "./engine-process"
 import { ModelHistory } from "./history/model"
-import { isReplayableAssistantMessage } from "./message-replay"
+import { interruptionNote, isReplayableAssistantMessage, replayParts } from "./message-replay"
 import { isRecord } from "@/util/record"
 import { headChars } from "@/util/text"
 import { ToolError } from "@/tool/tool-error"
@@ -296,6 +296,17 @@ const conversionContext = (model: Provider.Model, options?: ToModelMessagesOptio
 })
 
 /**
+ * The user message that tells the model its previous assistant step ended in an error. An abort the user asked for
+ * needs none.
+ */
+function interruptionMessages(msg: WithParts): UIMessage[] {
+  if (msg.info.role !== "assistant") return []
+  const error = msg.info.error
+  if (!error || AbortedError.isInstance(error)) return []
+  return [{ id: MessageID.ascending(), role: "user", parts: [{ type: "text", text: interruptionNote(error) }] }]
+}
+
+/**
  * Builds the UI messages for one persisted message. A message is independent
  * from the rest of the input except for the compaction boundary; the tool names
  * it reports are used to build the per-message tool map.
@@ -354,6 +365,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
 
   if (msg.info.role === "assistant") {
     if (!isReplayableAssistantMessage(msg)) return { messages, toolNames }
+    const parts = replayParts(msg)
     const differentModel = `${model.providerID}/${model.id}` !== `${msg.info.providerID}/${msg.info.modelID}`
     const media: Array<{ mime: string; url: string; filename?: string }> = []
     // Any successful compaction inserts a summary before the retained old tail,
@@ -383,11 +395,11 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
     // the neighboring signed reasoning blocks.
     const hasSignedReasoning =
       !invalidatedThinking &&
-      msg.parts.some((part) => {
+      parts.some((part) => {
         if (part.type !== "reasoning") return false
         return part.metadata?.anthropic?.signature != null
       })
-    for (const part of msg.parts) {
+    for (const part of parts) {
       if (part.type === "text") {
         const text = part.text === "" && hasSignedReasoning ? " " : part.text
         assistantMessage.parts.push({
@@ -532,6 +544,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
           ],
         })
       }
+      messages.push(...interruptionMessages(msg))
     }
   }
 
