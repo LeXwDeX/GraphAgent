@@ -801,6 +801,68 @@ describe("hook consumer complete input and output replacement", () => {
       expect(decodeRecord(result).attachments).toEqual([])
     }),
   )
+
+  it.instance("MCP content that cannot be passed on is replaced by a line and recorded", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const mcp = yield* MCP.Service
+      const id = SessionID.descending()
+      const tools = yield* resolve(id, instance.directory).pipe(
+        Effect.provideService(MCP.Service, {
+          ...mcp,
+          tools: () =>
+            Effect.succeed({
+              audit_drop: tool({
+                inputSchema: jsonSchema({ type: "object", properties: {} }),
+                execute: async () => ({
+                  content: [
+                    { type: "text", text: "KEPT" },
+                    { type: "audio", data: Buffer.alloc(2048).toString("base64"), mimeType: "audio/wav" },
+                    {
+                      type: "resource",
+                      resource: {
+                        uri: "file:///tmp/a.zip",
+                        mimeType: "application/zip",
+                        blob: Buffer.alloc(10).toString("base64"),
+                      },
+                    },
+                    { type: "resource_link", name: "report", uri: "file:///tmp/report.pdf" },
+                  ],
+                }),
+              }),
+              audit_clean: tool({
+                inputSchema: jsonSchema({ type: "object", properties: {} }),
+                execute: async () => ({ content: [{ type: "text", text: "CLEAN" }] }),
+              }),
+            }),
+        }),
+      )
+      const call = (name: "audit_drop" | "audit_clean") =>
+        Effect.promise(() =>
+          Promise.resolve(
+            tools[name].execute!({}, { toolCallId: name, messages: [], abortSignal: new AbortController().signal }),
+          ),
+        ).pipe(Effect.map((value) => decodeRecord(value)))
+
+      const dropped = yield* call("audit_drop")
+      const text = String(dropped.output)
+      expect(text).toContain("KEPT")
+      expect(text).toContain("[MCP audio omitted: audio/wav, 2 KB]")
+      expect(text).toContain(
+        "[Binary MCP resource omitted: file:///tmp/a.zip (application/zip, 10 B) is not a supported attachment type]",
+      )
+      expect(text).toContain(
+        '[MCP resource_link: report file:///tmp/report.pdf; read it with read_mcp_resource server="fixture" uri="file:///tmp/report.pdf"]',
+      )
+      expect(dropped.attachments).toEqual([])
+      expect(decodeRecord(dropped.metadata).corrections).toEqual(["mcp_content_dropped", "attachment_dropped"])
+
+      // A call that drops nothing records nothing.
+      const clean = yield* call("audit_clean")
+      expect(clean.output).toBe("CLEAN")
+      expect(decodeRecord(clean.metadata)).not.toHaveProperty("corrections")
+    }),
+  )
 })
 
 describe("elicitation command output consumer", () => {

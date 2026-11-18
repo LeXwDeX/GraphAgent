@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/client"
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/client"
 import { dynamicTool, jsonSchema, type JSONSchema7, type Tool } from "ai"
 import { SessionContext } from "@/effect/session-context"
+import { McpContent } from "./content"
 import { mcpHookSource, withClientElicitationCall } from "./elicitation-binding"
 import { Effect } from "effect"
 
@@ -13,6 +14,31 @@ const MAX_LIST_PAGES = 1_000
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
   tools: ToolSchema.omit({ outputSchema: true }).array(),
 })
+
+type CallResult = Awaited<ReturnType<Client["callTool"]>>
+
+/** The text of a failed call: its text items, and a line in place of every other kind of item (#1447). */
+function failureText(content: CallResult["content"], server: string | undefined) {
+  return (
+    content
+      .map((item) => (item.type === "text" ? item.text : McpContent.omitted(item, server)))
+      .filter((text) => text.trim())
+      .join("\n\n") || "MCP tool returned an error"
+  )
+}
+
+/**
+ * The result a call returns. A result's `structuredContent` is shown beside its `content` instead of replacing it
+ * (#1447). A `mcp_tool` hook reads the first text item as the hook's stdout, so a hook's call still gets one compact
+ * JSON line.
+ */
+function callResult(result: CallResult, forHook: boolean): CallResult {
+  if (result.structuredContent === undefined || result.structuredContent === null) return result
+  if (forHook)
+    return { ...result, content: [{ type: "text" as const, text: JSON.stringify(result.structuredContent) }] }
+  const extra = McpContent.structured(result)
+  return extra ? { ...result, content: [...result.content, extra] } : result
+}
 
 export async function paginate<T, R extends { nextCursor?: string }>(
   list: (cursor?: string) => Promise<R>,
@@ -38,7 +64,7 @@ export function defs(client: Client, timeout?: number) {
   return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(Effect.catch(() => Effect.void))
 }
 
-export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
+export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number, server?: string): Tool {
   const inputSchema: JSONSchema7 = {
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
@@ -74,18 +100,8 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
             },
           ),
       )
-      if (result.isError)
-        throw new Error(
-          result.content
-            .flatMap((item) => (item.type === "text" ? [item.text] : []))
-            .filter((text) => text.trim())
-            .join("\n\n") || "MCP tool returned an error",
-        )
-      if (result.structuredContent === undefined || result.structuredContent === null) return result
-      return {
-        ...result,
-        content: [{ type: "text" as const, text: JSON.stringify(result.structuredContent) }],
-      }
+      if (result.isError) throw new Error(failureText(result.content, server))
+      return callResult(result, hook !== undefined)
     },
   })
 }

@@ -773,7 +773,7 @@ export const layer = Layer.effect(
         const timeout = requestTimeout(s, clientName, mcpConfig)
         for (const mcpTool of listed) {
           const key = McpCatalog.toolName(clientName, mcpTool.name)
-          result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout), {
+          result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout, clientName), {
             server: clientName,
             tool: mcpTool.name,
             // Configuration provenance is not tracked per MCP server yet; never infer it from a name.
