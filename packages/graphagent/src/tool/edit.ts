@@ -220,8 +220,13 @@ export const EditTool = Tool.define(
                 return
               }
 
-              const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-              if (!info) throw new Error(`File ${filePath} not found`)
+              const info = yield* afs.stat(filePath).pipe(
+                Effect.catchIf(
+                  (error) => "reason" in error && error.reason._tag === "NotFound",
+                  () => Effect.succeed(undefined),
+                ),
+              )
+              if (!info) throw new Error(`File ${filePath} not found. Check the path with glob.`)
               if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
               const source = yield* Bom.readEditableFile(afs, filePath)
               contentOld = source.text

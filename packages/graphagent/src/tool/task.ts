@@ -10,6 +10,8 @@ import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { AgentContract } from "../agent/contract"
+import { Permission } from "@/permission"
+import { ToolError } from "./tool-error"
 import { ResultContract } from "../agent/result-contract"
 import { TaskExecution } from "./task-execution"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
@@ -404,6 +406,19 @@ export const TaskTool = Tool.define(
       }
     })
 
+    // The agent types the task description lists (`describeAgents` in the registry: non-primary, non-composer, not
+    // denied for the caller, hidden ones included), so an unknown type is answered with the names the model can use.
+    const agentTypeNames = Effect.fn("TaskTool.agentTypeNames")(function* (callerName: string) {
+      const caller = yield* agent.get(callerName)
+      return (yield* agent.list())
+        .filter((item) => item.mode !== "primary" && !AgentContract.isComposer(item))
+        .filter(
+          (item) => Permission.evaluate("task", item.name, ...(caller ? [caller.permission] : [])).action !== "deny",
+        )
+        .map((item) => item.name)
+        .toSorted((a, b) => a.localeCompare(b))
+    })
+
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
@@ -437,21 +452,14 @@ export const TaskTool = Tool.define(
       const initiator: TaskOrigin["initiator"] = origin?.initiator ?? "agent"
       const command = initiator === "user" ? origin?.command : undefined
 
-      if (!ctx.extra?.bypassAgentCheck) {
-        yield* ctx.ask({
-          permission: id,
-          patterns: [subagentType],
-          always: ["*"],
-          metadata: {
-            description,
-            subagent_type: subagentType,
-          },
-        })
-      }
-
       const next = yield* agent.get(subagentType)
       if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${subagentType} is not a valid agent type`))
+        const available = ToolError.nameList(yield* agentTypeNames(ctx.agent))
+        return yield* Effect.fail(
+          new Error(
+            `Unknown agent type "${ToolError.clipName(subagentType)}". Available agent types: ${available}. Use one of them as subagent_type.`,
+          ),
+        )
       }
       // A composer only plans how a DAG expands; the engine runs it inside a
       // workflow. Refuse before any session or run exists for it (#1158).
@@ -483,6 +491,19 @@ export const TaskTool = Tool.define(
       if (declared.kind === "unknown")
         return yield* Effect.fail(new Error(ResultContract.unknownMessage(subagentType, declared.artifact)))
       const resultContract = declared.kind === "contract" ? declared.contract : undefined
+
+      // Asked only once the call can run: a malformed call never prompts the user.
+      if (!ctx.extra?.bypassAgentCheck) {
+        yield* ctx.ask({
+          permission: id,
+          patterns: [subagentType],
+          always: ["*"],
+          metadata: {
+            description,
+            subagent_type: subagentType,
+          },
+        })
+      }
 
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined
       // A task_id resumes a task session this conversation started, nothing else:

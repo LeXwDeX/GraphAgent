@@ -99,6 +99,27 @@ it.instance("Exa keys are read per request, sent only in redacted headers, and s
   ),
 )
 
+describe("MCP search timeout", () => {
+  test("says to retry once or fetch a known URL with webfetch", async () => {
+    const hung = HttpClient.make(() => Effect.never)
+    const exit = await Effect.runPromiseExit(
+      McpWebSearch.call(
+        hung,
+        McpWebSearch.EXA_URL,
+        "web_search_exa",
+        McpWebSearch.SearchArgs,
+        { query: "test", type: "auto", numResults: 1, livecrawl: "fallback" },
+        "20 millis",
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit))
+      expect(Cause.pretty(exit.cause)).toContain(
+        "web_search_exa request timed out. Retry once, or fetch a known URL with webfetch.",
+      )
+  })
+})
+
 describe("MCP search failures", () => {
   for (const [reply, message] of [
     [{ error: { code: -32602, message: "Invalid search query" } }, "MCP search error (-32602): Invalid search query"],
