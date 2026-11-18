@@ -299,11 +299,62 @@ describe("tool parameters", () => {
         subagentType: "general",
       })
     })
-    test("rejects an action outside resume and cancel", () => {
-      expect(accepts(Task, { action: "read", task_id: "ses_child" })).toBe(false)
+    test("rejects an action outside resume, cancel and read", () => {
+      expect(accepts(Task, { action: "delete", task_id: "ses_child" })).toBe(false)
     })
-    test("exposes resume and cancel on the wire schema", () => {
-      expect(toJsonSchema(Task)).toMatchObject({ properties: { action: { enum: ["resume", "cancel"] } } })
+    test("exposes resume, cancel and read on the wire schema", () => {
+      expect(toJsonSchema(Task)).toMatchObject({ properties: { action: { enum: ["resume", "cancel", "read"] } } })
+    })
+    // #1453: `read` takes the task and, optionally, the page of its log; the page is an integer, `-1` the last.
+    test("accepts the read shape, with and without a page", () => {
+      const bare = parse(Task, { action: "read", task_id: "ses_child" })
+      expect(validateTaskCall(bare)).toEqual({ kind: "read", taskID: "ses_child", page: undefined })
+      for (const page of [1, 3, -1, -2, 0]) {
+        const call = { action: "read", task_id: "ses_child", page }
+        expect(parse(Task, call)).toMatchObject(call)
+        expect(validateTaskCall(parse(Task, call))).toEqual({ kind: "read", taskID: "ses_child", page })
+      }
+    })
+    test("the page is an integer on the wire", () => {
+      expect(toJsonSchema(Task)).toMatchObject({ properties: { page: { type: "integer" } } })
+      expect(accepts(Task, { action: "read", task_id: "ses_child", page: 1.5 })).toBe(false)
+      expect(accepts(Task, { action: "read", task_id: "ses_child", page: "2" })).toBe(false)
+    })
+    test("a read without a task_id is rejected by the shape check", () => {
+      expect(validateTaskCall(parse(Task, { action: "read" }))).toEqual({
+        kind: "invalid",
+        detail: 'task_id is required when action is "read".',
+      })
+    })
+    test("a page without a read is rejected, whatever the action", () => {
+      const detail = 'page is only used with action "read".'
+      const shapes = [
+        { action: "cancel", task_id: "ses_child", page: 1 },
+        { action: "resume", task_id: "ses_child", description: "d", prompt: "p", subagent_type: "general", page: 1 },
+        { description: "d", prompt: "p", subagent_type: "general", page: 1 },
+      ]
+      for (const shape of shapes) expect(validateTaskCall(parse(Task, shape))).toEqual({ kind: "invalid", detail })
+    })
+    test("a read that carries run arguments is rejected, naming them in the order of the schema", () => {
+      expect(
+        validateTaskCall(
+          parse(Task, {
+            action: "read",
+            task_id: "ses_child",
+            background: true,
+            subagent_type: "general",
+            prompt: "p",
+            description: "d",
+          }),
+        ),
+      ).toEqual({
+        kind: "invalid",
+        detail: 'action "read" takes only task_id and page; remove description, prompt, subagent_type, background.',
+      })
+      expect(validateTaskCall(parse(Task, { action: "read", task_id: "ses_child", page: 2, prompt: "p" }))).toEqual({
+        kind: "invalid",
+        detail: 'action "read" takes only task_id and page; remove prompt.',
+      })
     })
     test("does not show a model the command argument", () => {
       expect(toJsonSchema(Task)).not.toHaveProperty("properties.command")

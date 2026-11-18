@@ -766,6 +766,7 @@ export const en: Record<MessageKey, string> = {
   "background.row.errorBare": "failed",
   "background.row.interrupted": "interrupted · can be run again",
   "background.row.cancelCall": "cancel background task “{description}”",
+  "background.row.readCall": "read the log of task “{description}”",
   "background.row.cancelled": "cancelled",
   "background.band.mark": "◇ bg {n}",
   "background.band.markQueued": "◇ bg {n}·q{k}",

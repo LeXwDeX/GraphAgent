@@ -297,6 +297,17 @@ const offeredCall = (message: string) => {
   )
 }
 
+/**
+ * The call a failure text offers after `label` (`Read what it did: task ...`), read back the way a model copies it. The
+ * call ends where the sentence that follows it begins, or at the end of the line.
+ */
+const callAfter = (message: string, label: string) => {
+  const line = new RegExp(`${label}: task ([^\\n]*?)(?:\\. [A-Z]|$)`, "m").exec(message)?.[1] ?? ""
+  return Schema.decodeUnknownSync(TaskParameters)(
+    Object.fromEntries([...line.matchAll(/(\w+)="([^"]*)"/g)].map((pair) => [pair[1], pair[2]])),
+  )
+}
+
 /** The `<task_facts>` block of a run nothing was recorded for (#1453): every item reads unknown. */
 const UNKNOWN_FACTS = [
   "<task_facts>",
@@ -461,6 +472,22 @@ describe("tool.task", () => {
 
       expect(description).toContain("each run has its own `maxToolCalls` budget")
       expect(description).not.toContain("shared `maxToolCalls`")
+    }),
+  )
+
+  // PR3 (#1453): the read action is part of the tool's definition, so a model knows it can read a task's log.
+  it.instance("description names the read action and the size of its pages", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const build = yield* agent.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({ ...ref, agent: build })
+      const description = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
+
+      expect(description).toContain(
+        'Reading: with action="read" and the task_id of a task this session started, returns its log: the subagent\'s full final message and tool-call index, 8000 characters per page.',
+      )
     }),
   )
 
@@ -908,6 +935,50 @@ describe("tool.task", () => {
         expect(message).toContain("MessageOutputLengthError")
         expect(message).toContain("half an answer")
       }
+    }),
+  )
+
+  // PR3 (#1453): a failed task keeps its child session, and the failure says how to continue it. The offered call is
+  // one the tool accepts, whatever the child had said before it failed.
+  it.instance("a failure from the provider offers the call that continues the task", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const def = yield* initTaskTool(yield* TaskTool)
+      const failing = (text: string): TaskPromptOps => ({
+        ...stubOps(),
+        prompt: (input) =>
+          Effect.sync(() =>
+            assistantReply(input, {
+              text,
+              error: { name: "APIError", data: { message: "overloaded", isRetryable: false } },
+            }),
+          ),
+      })
+      const failedWith = Effect.fn("TaskToolTest.failedWith")(function* (text: string) {
+        const { chat, assistant } = yield* seed()
+        const exit = yield* def.execute(general, taskCtx(chat, assistant, failing(text))).pipe(Effect.exit)
+        const [child] = yield* sessions.children(chat.id)
+        if (!Exit.isFailure(exit) || !child) throw new Error("expected the task to fail with a child session")
+        const error = Cause.squash(exit.cause)
+        return { id: child.id, message: error instanceof Error ? error.message : String(error) }
+      })
+      const resume = (id: string) =>
+        `task action="resume" task_id="${id}" subagent_type="general" description="Continue task" prompt="Continue the task."`
+
+      const bare = yield* failedWith("")
+      expect(bare.message).toBe(`Subagent failed (APIError: overloaded). Continue: ${resume(bare.id)}`)
+      expect(validateTaskCall(offeredCall(bare.message))).toEqual({
+        kind: "run",
+        description: "Continue task",
+        prompt: "Continue the task.",
+        subagentType: "general",
+      })
+
+      const partial = yield* failedWith("half an answer")
+      expect(partial.message).toBe(
+        `Subagent failed (APIError: overloaded). Partial output:\nhalf an answer. Continue: ${resume(partial.id)}`,
+      )
+      expect(validateTaskCall(offeredCall(partial.message))).toMatchObject({ kind: "run", subagentType: "general" })
     }),
   )
 
@@ -3619,6 +3690,50 @@ describe("tool.task child runs", () => {
         type: "cancelled",
         by: { kind: "engine", reason: "test" },
         runningAt: expect.any(Number),
+      })
+    }),
+  )
+
+  // PR3 (#1453): a foreground task whose job was cancelled leaves its child session; the failure names the call that
+  // reads what it did and the one that continues it, each one the tool accepts.
+  background.instance("a foreground task whose job was cancelled names how to read and how to continue it", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant, def, release, promptOps } = yield* cancelFixture
+      const foreground = yield* def
+        .execute(general, taskCtx(chat, assistant, promptOps, { callID: "call_fg" }))
+        .pipe(Effect.exit, Effect.forkChild)
+      const child = yield* pollWithTimeout(
+        sessions.children(chat.id).pipe(Effect.map((kids) => kids[0]?.id)),
+        "foreground task was never created",
+      )
+      yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "foreground run never reached running",
+      )
+
+      yield* jobs.cancel(child)
+      const exit = yield* Fiber.join(foreground)
+      yield* Deferred.succeed(release, undefined)
+
+      if (!Exit.isFailure(exit)) throw new Error("expected the cancelled task to fail")
+      const error = Cause.squash(exit.cause)
+      const message = error instanceof Error ? error.message : String(error)
+      expect(message).toBe(
+        `Task cancelled. Read what it did: task action="read" task_id="${child}". ` +
+          `Continue it: task action="resume" task_id="${child}" subagent_type="general" description="Continue task" prompt="Continue the task."`,
+      )
+      expect(validateTaskCall(callAfter(message, "Read what it did"))).toEqual({
+        kind: "read",
+        taskID: child,
+        page: undefined,
+      })
+      expect(validateTaskCall(callAfter(message, "Continue it"))).toEqual({
+        kind: "run",
+        description: "Continue task",
+        prompt: "Continue the task.",
+        subagentType: "general",
       })
     }),
   )

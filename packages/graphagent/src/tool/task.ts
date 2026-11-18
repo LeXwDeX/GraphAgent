@@ -15,6 +15,7 @@ import { ToolError } from "./tool-error"
 import { ResultContract } from "../agent/result-contract"
 import { TaskExecution } from "./task-execution"
 import { TaskFacts } from "./task-facts"
+import { TaskRead } from "./task-read"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import type { ChildRunFacts, ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
@@ -91,6 +92,7 @@ const CANCEL_DESCRIPTION = [
   'Cancellation: call with action="cancel" and the background task_id to stop one of this session\'s background tasks.',
   "Only background tasks can be cancelled this way; a foreground task is cancelled from the parent session, and a task from another session is refused.",
 ].join(" ")
+const READ_DESCRIPTION = `Reading: with action="read" and the task_id of a task this session started, returns its log: the subagent's full final message and tool-call index, ${TaskRead.PAGE_CHARS} characters per page.`
 const BACKGROUND_STARTED = [
   "The task is working in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
@@ -151,13 +153,25 @@ function settle(result: SessionV1.WithParts, prior = ""): { text: string; error?
   return { text }
 }
 
+// The calls a failure offers (#1453), written the way the tool is called so a model can copy one as it stands: read
+// what a task did, or continue it. Both name the task, which stays reachable after it fails or is cancelled.
+const readCall = (taskID: string) => `task action="read" task_id="${taskID}"`
+const resumeCall = (taskID: string, agent: string, prompt: string) =>
+  `task action="resume" task_id="${taskID}" subagent_type="${agent}" description="Continue task" prompt="${prompt}"`
+
 function providerFailure(result: SessionV1.WithParts, prior = ""): Error | undefined {
-  const error = result.info.role === "assistant" ? result.info.error : undefined
-  if (!error || error.name === "MessageAbortedError") return undefined
+  const info = result.info.role === "assistant" ? result.info : undefined
+  const error = info?.error
+  if (!info || !error || error.name === "MessageAbortedError") return undefined
   const detail = "message" in error.data && typeof error.data.message === "string" ? error.data.message : ""
   const reason = detail ? `${error.name}: ${detail}` : error.name
   const partial = mergePartial(prior, finalText(result))
-  return new Error(partial ? `Subagent failed (${reason}). Partial output:\n${partial}` : `Subagent failed (${reason})`)
+  const resume = `. Continue: ${resumeCall(info.sessionID, info.agent, "Continue the task.")}`
+  return new Error(
+    partial
+      ? `Subagent failed (${reason}). Partial output:\n${partial}${resume}`
+      : `Subagent failed (${reason})${resume}`,
+  )
 }
 
 function continuationFailure(cause: Cause.Cause<unknown>, prior: string): Effect.Effect<never, unknown> {
@@ -183,25 +197,28 @@ function withReturnContract(
   return parts
 }
 
-// The tool takes three shapes on one object root: a new run, a resume and a cancel. A root-level union is outside
-// the OpenAI tools contract (see Tool.assertObjectRootedParameters), so they share one optional-field struct and
-// `validateTaskCall` tells them apart when the call runs.
+// The tool takes four shapes on one object root: a new run, a resume, a cancel and a read. A root-level union is
+// outside the OpenAI tools contract (see Tool.assertObjectRootedParameters), so they share one optional-field struct
+// and `validateTaskCall` tells them apart when the call runs.
 export const Parameters = Schema.Struct({
-  action: Schema.optional(Schema.Literals(["resume", "cancel"])).annotate({
+  action: Schema.optional(Schema.Literals(["resume", "cancel", "read"])).annotate({
     description:
-      "resume: continue the task named by task_id with a new prompt. cancel: cancel the background task named by task_id. Omit to start a new task.",
+      "resume: continue the task named by task_id with a new prompt. cancel: cancel the background task named by task_id. Omit to start a new task. read: read the log of the task named by task_id.",
   }),
   description: Schema.optional(Schema.String).annotate({
-    description: "A short (3-5 words) description of the task; required unless action is cancel",
+    description: "A short (3-5 words) description of the task; required unless action is cancel or read",
   }),
   prompt: Schema.optional(Schema.String).annotate({
-    description: "The task for the agent to perform; required unless action is cancel",
+    description: "The task for the agent to perform; required unless action is cancel or read",
   }),
   subagent_type: Schema.optional(Schema.String).annotate({
-    description: "The type of specialized agent to use for this task; required unless action is cancel",
+    description: "The type of specialized agent to use for this task; required unless action is cancel or read",
   }),
   task_id: Schema.optional(Schema.String).annotate({
     description: "The existing task this call acts on. Required with action; not allowed without it.",
+  }),
+  page: Schema.optional(Schema.Int).annotate({
+    description: 'With action "read": the log page, 1-based; -1 is the last. Default 1.',
   }),
   background: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -209,10 +226,14 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-/** What a task call asks for, or why it cannot run (#1450). Cancel takes only `task_id`; a new run and a resume carry the same three fields. */
+/**
+ * What a task call asks for, or why it cannot run (#1450). Cancel takes only `task_id`, a read `task_id` and the page
+ * of its log (#1453); a new run and a resume carry the same three fields.
+ */
 export type TaskCall =
   | { readonly kind: "invalid"; readonly detail: string }
   | { readonly kind: "cancel"; readonly taskID: string }
+  | { readonly kind: "read"; readonly taskID: string; readonly page: number | undefined }
   | { readonly kind: "run"; readonly description: string; readonly prompt: string; readonly subagentType: string }
 
 /** An omitted argument and an empty string both count as missing. */
@@ -220,18 +241,29 @@ const isMissing = (value: string | undefined): value is undefined | "" => value 
 
 const invalid = (detail: string): TaskCall => ({ kind: "invalid", detail })
 
-// A cancel names its task and nothing else: a run argument beside it means the caller mixed two calls.
+// The arguments only a run takes that this call gave, in the order of the schema. A call on a task that exists names
+// that task and nothing else: one of these beside it means the caller mixed two calls.
+function runArgumentsGiven(params: Schema.Schema.Type<typeof Parameters>): string[] {
+  const given: ReadonlyArray<readonly [string, unknown]> = [
+    ["description", params.description],
+    ["prompt", params.prompt],
+    ["subagent_type", params.subagent_type],
+    ["background", params.background],
+  ]
+  return given.flatMap(([name, value]) => (value === undefined ? [] : [name]))
+}
+
 function cancelCall(params: Schema.Schema.Type<typeof Parameters>, taskID: string): TaskCall {
-  const extra = (
-    [
-      ["description", params.description],
-      ["prompt", params.prompt],
-      ["subagent_type", params.subagent_type],
-      ["background", params.background],
-    ] as const
-  ).flatMap(([name, value]) => (value === undefined ? [] : [name]))
+  const extra = runArgumentsGiven(params)
   if (extra.length > 0) return invalid(`action "cancel" takes only task_id; remove ${extra.join(", ")}.`)
   return { kind: "cancel", taskID }
+}
+
+// A read names its task and, optionally, the page of its log. The page is checked when the log is cut into pages.
+function readShape(params: Schema.Schema.Type<typeof Parameters>, taskID: string): TaskCall {
+  const extra = runArgumentsGiven(params)
+  if (extra.length > 0) return invalid(`action "read" takes only task_id and page; remove ${extra.join(", ")}.`)
+  return { kind: "read", taskID, page: params.page }
 }
 
 // A new run and a resume carry the same fields; a resume adds the `task_id` that rules (a) and (b) already checked.
@@ -250,19 +282,24 @@ function runCall(params: Schema.Schema.Type<typeof Parameters>): TaskCall {
   return { kind: "run", description, prompt, subagentType }
 }
 
+const PAGE_ONLY_FOR_READ = 'page is only used with action "read".'
+
 /**
  * Reads the shape of a task call at the start of `run()`, before anything is looked up or asked. The rules are tried
  * in order and the first one that matches names the fault: (a) a `task_id` without an action, (b) an action without
- * a `task_id`, (c) a cancel that carries run arguments, (d) a run that lacks a required field.
+ * a `task_id`, a `page` on a call that is not a read, a read that carries run arguments (#1453), (c) a cancel that
+ * carries run arguments, (d) a run that lacks a required field.
  */
 export function validateTaskCall(params: Schema.Schema.Type<typeof Parameters>): TaskCall {
-  const { action, task_id: taskID } = params
+  const { action, task_id: taskID, page } = params
   if (action === undefined) {
     if (!isMissing(taskID))
       return invalid('task_id needs action "resume" or "cancel". To start a new task, omit task_id.')
-    return runCall(params)
+    return page === undefined ? runCall(params) : invalid(PAGE_ONLY_FOR_READ)
   }
   if (isMissing(taskID)) return invalid(`task_id is required when action is "${action}".`)
+  if (action === "read") return readShape(params, taskID)
+  if (page !== undefined) return invalid(PAGE_ONLY_FOR_READ)
   return action === "cancel" ? cancelCall(params, taskID) : runCall(params)
 }
 
@@ -276,6 +313,15 @@ function repairBackgroundArgument(value: unknown): unknown {
 
 const notOwned = (taskID: string) =>
   `task_id "${taskID}" is not a task started by this conversation. Use the task_id of a task this conversation started, with action "resume"; to start a new task, omit task_id.`
+
+const notReadable = (taskID: string) =>
+  `task_id "${ToolError.clipName(taskID)}" is not a task started by this conversation. Pass the task_id of a task this conversation started.`
+
+// How a run stands, in the words a task result uses: queued or running while it is, how it ended once it has.
+function runState(view: { readonly state: string; readonly outcome?: { readonly type: string } }): string {
+  if (view.state === "ended") return view.outcome?.type ?? "ended"
+  return view.state === "queued" ? "queued" : "running"
+}
 
 // The child run of one tool call, recorded as soon as it is registered so an
 // interruption before anyone else owns it can still settle it. A background
@@ -500,6 +546,38 @@ export const TaskTool = Tool.define(
       }
     })
 
+    // The log of a task this conversation started (#1453): what its child session recorded, a page at a time. Nothing is
+    // started, stopped or changed, so nothing is asked. The metadata names no session: a call whose metadata does is
+    // read as the call that started that session (the TUI row, `graphagent run`).
+    const readTask = Effect.fn("TaskTool.read")(function* (
+      children: Tool.ChildRuns,
+      call: Extract<TaskCall, { readonly kind: "read" }>,
+    ): Effect.fn.Return<Tool.ExecuteResult, Error> {
+      const sessionID = Option.getOrUndefined(Schema.decodeUnknownOption(SessionID)(call.taskID))
+      const view = sessionID ? Option.getOrUndefined(yield* children.latest(sessionID)) : undefined
+      if (!sessionID || !view || view.ownerKind !== "task")
+        return yield* Effect.fail(new Error(notReadable(call.taskID)))
+      const childSession = yield* sessions.get(sessionID)
+      const sliced = TaskRead.slice(TaskRead.document(yield* sessions.messages({ sessionID })), call.page ?? 1)
+      if (!sliced.ok) return yield* Effect.fail(new Error(sliced.error))
+      const { text, page, pages } = sliced
+      return {
+        title: "Task log",
+        // A page is bounded by the pagination itself and the next page is how the rest is read: the generic
+        // truncation must not cut it again, or a page would lose its end with no page that holds it.
+        metadata: { taskID: sessionID, page, pages, truncated: false },
+        output: [
+          `task_id: ${sessionID}`,
+          `agent: ${childSession.agent ?? "unknown"}`,
+          `state: ${runState(view)}`,
+          `page ${page}/${pages}`,
+          "",
+          text,
+          ...(page < pages ? [`Next page: ${readCall(sessionID)} page=${page + 1}`] : []),
+        ].join("\n"),
+      }
+    })
+
     // The agent types the task description lists (`describeAgents` in the registry: non-primary, non-composer, not
     // denied for the caller, hidden ones included), so an unknown type is answered with the names the model can use.
     const agentTypeNames = Effect.fn("TaskTool.agentTypeNames")(function* (callerName: string) {
@@ -530,6 +608,7 @@ export const TaskTool = Tool.define(
       const children = ctx.children
       if (!children) return yield* Effect.fail(new Error("TaskTool requires ctx.children"))
       if (call.kind === "cancel") return yield* cancelTask(children, call.taskID, ctx)
+      if (call.kind === "read") return yield* readTask(children, call)
       const { description, prompt, subagentType } = call
       const cfg = yield* config.get()
       // #1057: a user-issued background command survives ESC and is presented
@@ -1071,7 +1150,12 @@ export const TaskTool = Tool.define(
               }
               claim.job = outcomeOf(result)
               if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
-              if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
+              if (result?.status === "cancelled")
+                return yield* Effect.fail(
+                  new Error(
+                    `Task cancelled. Read what it did: ${readCall(nextSession.id)}. Continue it: ${resumeCall(nextSession.id, subagentType, "Continue the task.")}`,
+                  ),
+                )
               return {
                 title: description,
                 metadata,
@@ -1251,7 +1335,7 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: [DESCRIPTION, CANCEL_DESCRIPTION].join("\n\n"),
+      description: [DESCRIPTION, CANCEL_DESCRIPTION, READ_DESCRIPTION].join("\n\n"),
       effects: "unknown",
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,

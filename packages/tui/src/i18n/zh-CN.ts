@@ -748,6 +748,7 @@ export const zhCN = {
   "background.row.errorBare": "失败",
   "background.row.interrupted": "已中断 · 可重新运行",
   "background.row.cancelCall": "取消后台任务「{description}」",
+  "background.row.readCall": "读取任务「{description}」的日志",
   "background.row.cancelled": "已取消",
   "background.band.mark": "◇ 后台 {n}",
   "background.band.markQueued": "◇ 后台 {n}·排{k}",
