@@ -605,8 +605,7 @@ describe("built-in rules", () => {
     expect(withCatalog.sources.context).toBe("catalog")
   })
 
-  test("the shipped table is empty and any entry obeys the table rules", () => {
-    expect(BUILTIN_RULES).toEqual([])
+  test("every shipped rule obeys the table rules", () => {
     const names = BUILTIN_RULES.map((item) => item.name)
     expect(new Set(names).size).toBe(names.length)
     for (const item of BUILTIN_RULES) {
@@ -618,6 +617,70 @@ describe("built-in rules", () => {
 
   test("resolveProfile reads BUILTIN_RULES when no rules are passed", () => {
     expect(resolveProfile({ providerID: "relay", apiID: "gpt-4" }).sources).toEqual({})
+  })
+})
+
+describe("shipped rule edit-tools-apply-patch", () => {
+  // The predicate the rule replaces: `usesApplyPatch` of packages/graphagent/src/tool/editing-tools.ts at 296a1a5d0.
+  const replaced = (id: string) => id.includes("gpt-") && !id.includes("oss") && !id.includes("gpt-4")
+  const resolved = (apiID: string, extra: { config?: ProfileConfig; npm?: string } = {}) =>
+    resolveProfile({ providerID: "openai", apiID, ...extra })
+  const shipped = BUILTIN_RULES.find((item) => item.name === "edit-tools-apply-patch")
+
+  test("is in the shipped table, once, and cites the code it replaces", () => {
+    expect(shipped?.source).toBe("296a1a5d0:packages/graphagent/src/tool/editing-tools.ts:6")
+    expect(BUILTIN_RULES.filter((item) => item.name === "edit-tools-apply-patch")).toHaveLength(1)
+  })
+
+  test("matches exactly the lowercase ids the replaced predicate matched", () => {
+    const ids = [
+      "gpt-5",
+      "gpt-5.2",
+      "gpt-5-codex",
+      "gpt-5-mini",
+      "gpt-oss-120b",
+      "gpt-oss-20b",
+      "gpt-4",
+      "gpt-4.1",
+      "gpt-4o-mini",
+      "gpt-3.5-turbo",
+      "chatgpt-4o-latest",
+      "gpt5",
+      "o3",
+      "claude-sonnet-4",
+      "gemini-2.5-pro",
+      "openai/gpt-5",
+      "",
+    ]
+    const actual = ids.map((id): [string, string] => [id, resolved(id).editTools])
+    const expected = ids.map((id): [string, string] => [id, replaced(id) ? "apply_patch" : "edit"])
+    expect(actual).toEqual(expected)
+    expect(replaced("gpt-5")).toBe(true)
+  })
+
+  test("reads the API id ignoring case", () => {
+    for (const id of ["GPT-5", "Gpt-5-Codex", "GPT-5.2"]) expect(resolved(id).editTools).toBe("apply_patch")
+    for (const id of ["GPT-OSS-120B", "GPT-4.1", "Claude-Sonnet-4"]) expect(resolved(id).editTools).toBe("edit")
+  })
+
+  test("needs only the API id: provider, npm and the rest of the input do not matter", () => {
+    expect(shipped?.match({ providerID: "relay", apiID: "gpt-5" })).toBe(true)
+    expect(shipped?.match({ providerID: "relay", apiID: "gpt-4.1" })).toBe(false)
+    expect(resolved("gpt-5", { npm: "@ai-sdk/azure" }).editTools).toBe("apply_patch")
+    expect(resolveProfile({ providerID: "azure", apiID: "gpt-5", npm: "@ai-sdk/openai-compatible" }).editTools).toBe(
+      "apply_patch",
+    )
+  })
+
+  test("records its name as the source, and a configured value wins", () => {
+    const profile = resolved("gpt-5")
+    expect(profile.sources.editTools).toBe("builtin:edit-tools-apply-patch")
+    const configured = resolved("gpt-5", { config: { profile: { edit_tools: "edit" } } })
+    expect(configured.editTools).toBe("edit")
+    expect(configured.sources.editTools).toBe("config")
+    const other = resolved("claude-sonnet-4")
+    expect(other.editTools).toBe("edit")
+    expect(other.sources.editTools).toBeUndefined()
   })
 })
 

@@ -13,6 +13,17 @@ import type { BuiltinRule } from "./model-profile"
  * - `name` is unique across the table.
  * - `match` must tolerate a missing `npm`, `releaseDate` and `vendor`.
  *
- * The table starts empty; the readers that need a rule add it with the Issue that migrates them.
+ * A rule is added with the Issue that migrates the reader that needs it.
  */
-export const BUILTIN_RULES: ReadonlyArray<BuiltinRule> = []
+export const BUILTIN_RULES: ReadonlyArray<BuiltinRule> = [
+  {
+    // The gpt- family edits through apply_patch; gpt-4 and the open-weight gpt-oss keep edit and write.
+    name: "edit-tools-apply-patch",
+    source: "296a1a5d0:packages/graphagent/src/tool/editing-tools.ts:6",
+    match(input) {
+      const id = input.apiID.toLowerCase()
+      return id.includes("gpt-") && !id.includes("oss") && !id.includes("gpt-4")
+    },
+    set: () => ({ editTools: "apply_patch" }),
+  },
+]
