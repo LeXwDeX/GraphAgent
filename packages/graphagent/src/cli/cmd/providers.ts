@@ -19,6 +19,7 @@ import { errorMessage } from "@/util/error"
 import { text } from "node:stream/consumers"
 import { Effect, Option } from "effect"
 import { t } from "@graphagent/tui/i18n"
+import { ProvidersProbeCommand } from "./providers-probe"
 
 type PluginAuth = AuthHook
 
@@ -250,7 +251,12 @@ export const ProvidersCommand = cmd({
   aliases: ["auth"],
   describe: t("cli.providers.describe"),
   builder: (yargs) =>
-    yargs.command(ProvidersListCommand).command(ProvidersLoginCommand).command(ProvidersLogoutCommand).demandCommand(),
+    yargs
+      .command(ProvidersListCommand)
+      .command(ProvidersLoginCommand)
+      .command(ProvidersLogoutCommand)
+      .command(ProvidersProbeCommand)
+      .demandCommand(),
   async handler() {},
 })
 

@@ -97,6 +97,7 @@ Commands:
   graphagent providers list               list providers and credentials               [aliases: ls]
   graphagent providers login [url]        log in to a provider
   graphagent providers logout [provider]  log out from a configured provider
+  graphagent providers probe <model>      probe an endpoint and print a config snippet
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -363,6 +364,21 @@ log out from a configured provider
 
 Positionals:
   provider  provider id or name to log out from                                             [string]
+
+Options:
+  -h, --help        show help                                                              [boolean]
+  -v, --version     show version number                                                    [boolean]
+      --print-logs  print logs to stderr                                                   [boolean]
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
+`;
+
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent providers probe --help 1`] = `
+"graphagent providers probe <model>
+
+probe an endpoint and print a config snippet
+
+Positionals:
+  model  model to probe, as <provider>/<model>                                   [string] [required]
 
 Options:
   -h, --help        show help                                                              [boolean]

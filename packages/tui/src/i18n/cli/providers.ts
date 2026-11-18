@@ -55,6 +55,14 @@ export const providersZhCN = {
   "cli.providers.logout.none": "未找到凭据",
   "cli.providers.logout.unknownProvider": '未知的已配置 provider "{provider}"',
   "cli.providers.logout.success": "登出成功",
+  "cli.providers.probe.describe": "探测端点的能力，并输出可粘贴进配置的片段",
+  "cli.providers.probe.arg.model": "要探测的模型，格式为 <provider>/<model>",
+  "cli.providers.probe.plan": "最多发送 {count} 个请求，每个请求的输出上限为 {tokens} token",
+  "cli.providers.probe.invalidModel": '无效的模型 "{value}"：应为 <provider>/<model> 的格式',
+  "cli.providers.probe.modelNotFound":
+    "找不到模型 {model}：它不存在，或其 provider 没有凭据与配置。运行 `graphagent models` 查看可用模型",
+  "cli.providers.probe.unsupported": "模型 {model} 使用 {npm}，只能探测 OpenAI 兼容端点（@ai-sdk/openai-compatible）",
+  "cli.providers.probe.noResponse": "没有任何聊天请求得到成功响应，因此没有可输出的配置片段",
 } as const
 
 export const providersEn: Record<keyof typeof providersZhCN, string> = {
@@ -111,4 +119,13 @@ export const providersEn: Record<keyof typeof providersZhCN, string> = {
   "cli.providers.logout.none": "No credentials found",
   "cli.providers.logout.unknownProvider": 'Unknown configured provider "{provider}"',
   "cli.providers.logout.success": "Logout successful",
+  "cli.providers.probe.describe": "probe an endpoint and print a config snippet",
+  "cli.providers.probe.arg.model": "model to probe, as <provider>/<model>",
+  "cli.providers.probe.plan": "Sends at most {count} requests, each capped at {tokens} output tokens",
+  "cli.providers.probe.invalidModel": 'Invalid model "{value}": expected <provider>/<model>',
+  "cli.providers.probe.modelNotFound":
+    "Model {model} not found: it does not exist, or its provider has no credentials or configuration. Run `graphagent models` to list available models",
+  "cli.providers.probe.unsupported":
+    "Model {model} uses {npm}; only OpenAI-compatible endpoints (@ai-sdk/openai-compatible) can be probed",
+  "cli.providers.probe.noResponse": "No chat request got a successful response, so there is no config snippet to print",
 }
