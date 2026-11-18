@@ -13,6 +13,7 @@ import { MessageID, PartID, type SessionID } from "../schema"
 import type { Session } from "../session"
 import { SessionRole } from "../role"
 import type { Decide } from "./decide"
+import { renderHint, type HintKind } from "./hints"
 
 /**
  * Effectful Stop-hook phase of a completed turn (Issue #1019, PR7).
@@ -66,6 +67,12 @@ export interface StopFeedbackInput {
   readonly lastUser: SessionV1.User
   readonly result: TriggerResult
   readonly continuing: boolean
+}
+
+export interface HintInput {
+  readonly sessionID: SessionID
+  readonly lastUser: SessionV1.User
+  readonly hint: HintKind
 }
 
 const EMPTY_TRIGGER: TriggerResult = { additionalContexts: [], systemMessages: [] }
@@ -158,6 +165,44 @@ function makeHookRunner(deps: StopDeps) {
   })
 }
 
+interface SyntheticInput {
+  readonly sessionID: SessionID
+  readonly lastUser: SessionV1.User
+  /** `lastUser.id` appends to that message; any other id starts a new user message with that id. */
+  readonly target: MessageID
+  readonly texts: ReadonlyArray<string>
+}
+
+/** Writes harness text as synthetic parts on the user side of the conversation. */
+const appendSynthetic = Effect.fnUntraced(function* (sessions: Session.Interface, input: SyntheticInput) {
+  if (input.target !== input.lastUser.id) {
+    yield* sessions.updateMessage({
+      id: input.target,
+      sessionID: input.sessionID,
+      role: "user",
+      // The turn's mode is read from its last user message (`tools.ts`, `prepare.ts`, `loop.ts`), so the message
+      // that continues the turn must carry it; without it the next step runs with the defaults of a missing mode.
+      hookMode: input.lastUser.hookMode,
+      agent: input.lastUser.agent,
+      model: input.lastUser.model,
+      format: input.lastUser.format,
+      system: input.lastUser.system,
+      tools: input.lastUser.tools,
+      time: { created: Date.now() },
+    })
+  }
+  for (const text of input.texts) {
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: input.target,
+      sessionID: input.sessionID,
+      type: "text",
+      text,
+      synthetic: true,
+    } satisfies SessionV1.TextPart)
+  }
+})
+
 function makeFeedbackWriter(deps: StopDeps) {
   const { sessions } = deps
   return Effect.fnUntraced(function* (input: StopFeedbackInput) {
@@ -173,30 +218,25 @@ function makeFeedbackWriter(deps: StopDeps) {
     })
     if (input.continuing && input.result.blocked) feedback.push(input.result.blocked.reason || "Continue.")
     const target = input.continuing ? MessageID.ascending() : input.lastUser.id
-    if (target !== input.lastUser.id) {
-      yield* sessions.updateMessage({
-        id: target,
-        sessionID: input.sessionID,
-        role: "user",
-        agent: input.lastUser.agent,
-        model: input.lastUser.model,
-        format: input.lastUser.format,
-        system: input.lastUser.system,
-        tools: input.lastUser.tools,
-        time: { created: Date.now() },
-      })
-    }
-    for (const text of feedback) {
-      yield* sessions.updatePart({
-        id: PartID.ascending(),
-        messageID: target,
-        sessionID: input.sessionID,
-        type: "text",
-        text,
-        synthetic: true,
-      } satisfies SessionV1.TextPart)
-    }
+    yield* appendSynthetic(sessions, {
+      sessionID: input.sessionID,
+      lastUser: input.lastUser,
+      target,
+      texts: feedback,
+    })
   })
+}
+
+/** A runtime hint always opens a new synthetic user message after the assistant reply. */
+function makeHintWriter(deps: StopDeps) {
+  const { sessions } = deps
+  return (input: HintInput) =>
+    appendSynthetic(sessions, {
+      sessionID: input.sessionID,
+      lastUser: input.lastUser,
+      target: MessageID.ascending(),
+      texts: [renderHint(input.hint)],
+    })
 }
 
 export function makeStop(deps: StopDeps) {
@@ -204,6 +244,7 @@ export function makeStop(deps: StopDeps) {
     resolvePolicy: makePolicyResolver(deps),
     runStopHooks: makeHookRunner(deps),
     applyStopFeedback: makeFeedbackWriter(deps),
+    writeHint: makeHintWriter(deps),
   }
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SessionV1 } from "@graphagent/core/v1/session"
+import type { HintKind } from "./hints"
 
 /**
  * Pure turn state for the session loop (Issue #1019, PR7).
@@ -64,6 +65,8 @@ export interface TurnState {
   readonly continuing: "stop_block" | undefined
   /** Final-step protocol progress; see {@link FinalPhase}. */
   readonly final: FinalPhase
+  /** Runtime hints already written this turn, per kind; bounded by `HINT_LIMIT`. */
+  readonly hints: Record<HintKind, number>
 }
 
 export function initial(input: { stopCap: number }): TurnState {
@@ -77,6 +80,7 @@ export function initial(input: { stopCap: number }): TurnState {
     compactions: 0,
     continuing: undefined,
     final: "none",
+    hints: { pseudo_tool_call: 0 },
   }
 }
 
@@ -162,6 +166,11 @@ export function continueFromQueuedInput(state: TurnState): TurnState {
 /** A model step starts: consume the one-shot continuation and clear the settled break marker. */
 export function beginStep(state: TurnState): TurnState {
   return { ...state, continuing: undefined, stopped: false }
+}
+
+/** A runtime hint was written: count it against its per-turn limit. */
+export function recordHint(state: TurnState, hint: HintKind): TurnState {
+  return { ...state, hints: { ...state.hints, [hint]: state.hints[hint] + 1 } }
 }
 
 export function resetStopContinuations(state: TurnState): TurnState {

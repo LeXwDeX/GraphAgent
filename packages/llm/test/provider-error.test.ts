@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
-import { isContextOverflow } from "../src/provider-error"
+import { isContextOverflow, isContextOverflowFailure } from "../src/provider-error"
+import { LLMEvent, Usage } from "../src/schema"
 
 describe("isContextOverflow", () => {
   test("classifies repeated input-token-count prefix runs quickly", () => {
@@ -57,5 +58,30 @@ describe("isContextOverflow", () => {
     const start = performance.now()
     expect(isContextOverflow(message)).toBe(true)
     expect(performance.now() - start).toBeLessThan(1000)
+  })
+})
+
+describe("provider-error event usage", () => {
+  test("keeps its context-overflow classification when it carries the usage billed for the cut-off response", () => {
+    const event = LLMEvent.providerError({
+      message: "Provider finish_reason: model_context_window_exceeded",
+      classification: "context-overflow",
+      usage: { inputTokens: 10, outputTokens: 2 },
+    })
+    // A plain usage object is lifted to a Usage; the schema check behind the classification needs the instance.
+    expect(event.usage).toBeInstanceOf(Usage)
+    expect(event.usage?.inputTokens).toBe(10)
+    expect(isContextOverflowFailure(event)).toBe(true)
+  })
+
+  test("takes an existing Usage as is", () => {
+    const usage = new Usage({ inputTokens: 1 })
+    expect(LLMEvent.providerError({ message: "boom", usage }).usage).toBe(usage)
+  })
+
+  test("has no usage key when none was reported", () => {
+    const event = LLMEvent.providerError({ message: "boom", retryable: true })
+    expect("usage" in event).toBe(false)
+    expect(isContextOverflowFailure(event)).toBe(false)
   })
 })

@@ -202,6 +202,12 @@ export const ProviderErrorEvent = Schema.Struct({
   message: Schema.String,
   classification: Schema.optional(ProviderFailureClassification),
   retryable: Schema.optional(Schema.Boolean),
+  /**
+   * Usage the provider billed for the response this error cut off, for example a
+   * context window that ran out mid-generation. No `step-finish` follows such an
+   * error, so the consumer accounts it from here.
+   */
+  usage: Schema.optional(Usage),
   providerMetadata: Schema.optional(ProviderMetadata),
 }).annotate({ identifier: "LLM.Event.ProviderError" })
 export type ProviderErrorEvent = Schema.Schema.Type<typeof ProviderErrorEvent>
@@ -272,7 +278,8 @@ export const LLMEvent = Object.assign(llmEventTagged, {
       ...input,
       usage: input.usage === undefined ? undefined : Usage.from(input.usage),
     }),
-  providerError: ProviderErrorEvent.make,
+  providerError: ({ usage, ...input }: WithUsage<ProviderErrorEvent>) =>
+    ProviderErrorEvent.make(usage === undefined ? input : { ...input, usage: Usage.from(usage) }),
   is: {
     stepStart: llmEventTagged.guards["step-start"],
     textStart: llmEventTagged.guards["text-start"],
