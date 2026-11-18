@@ -1610,11 +1610,12 @@ describe("tool.edit LSP check state (#1451)", () => {
     }),
   )
 
-  for (const [status, line] of [
+  const unchecked: [LSP.Diagnostic.CheckStatus, string][] = [
     ["disabled", "not checked: LSP disabled"],
     ["no_server", "not checked: no language server"],
     ["timed_out", "not checked: timed out"],
-  ] as const) {
+  ]
+  for (const [status, line] of unchecked) {
     itWithLsp.instance(`words the ${status} status as "${line}"`, () =>
       Effect.gen(function* () {
         const test = yield* TestInstance

@@ -534,10 +534,11 @@ describe("LSPClient interop", () => {
   // The wait window runs from `after`. A touch that began just under the window ago reaches the timeout after a short
   // wait, so the cases where nothing is ever published do not sit through the real 5 and 10 seconds. The service-level
   // test in index.test.ts covers the full-length wait.
-  test.each([
+  const waits: ["document" | "full", number][] = [
     ["document", 5_000],
     ["full", 10_000],
-  ] as const)("%s mode reports false when the server publishes nothing in the window", async (mode, windowMs) => {
+  ]
+  test.each(waits)("%s mode reports false when the server publishes nothing in the window", async (mode, windowMs) => {
     const handle = fakeServerHandle()
     await using tmp = await tmpdir()
     const file = path.join(tmp.path, "client.ts")

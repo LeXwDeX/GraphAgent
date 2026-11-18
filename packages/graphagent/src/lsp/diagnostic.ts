@@ -81,11 +81,11 @@ export function afterEdit(file: string, issues: LSPClient.Diagnostic[], oldText:
  */
 export type CheckStatus = "checked" | "disabled" | "no_server" | "timed_out"
 
-const NOT_CHECKED = {
+const NOT_CHECKED: Record<Exclude<CheckStatus, "checked">, string> = {
   disabled: "LSP disabled",
   no_server: "no language server",
   timed_out: "timed out",
-} as const
+}
 
 /**
  * The status line of a write result. A check that ran counts the errors the edit is responsible for, the same ones

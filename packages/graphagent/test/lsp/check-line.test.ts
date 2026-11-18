@@ -21,11 +21,12 @@ const check = (issues: Diagnostic[]) => LSP.Diagnostic.checkLine("checked", file
 
 describe("Diagnostic.checkLine", () => {
   test("says why a check did not run", () => {
-    for (const [status, line] of [
+    const cases: [Exclude<LSP.Diagnostic.CheckStatus, "checked">, string][] = [
       ["disabled", "not checked: LSP disabled"],
       ["no_server", "not checked: no language server"],
       ["timed_out", "not checked: timed out"],
-    ] as const) {
+    ]
+    for (const [status, line] of cases) {
       // The diagnostics on hand are stale when nothing ran: none of them may turn into a verdict.
       expect(LSP.Diagnostic.checkLine(status, file, [at(5)], oldText, newText)).toBe(line)
       expect(LSP.Diagnostic.checkLine(status, file, [], oldText, newText)).toBe(line)
