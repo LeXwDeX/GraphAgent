@@ -3,6 +3,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { Cause, Clock, Duration, Effect, Schedule, Schema } from "effect"
 import { isRecord } from "@/util/record"
 import { REASONING_STATE_MESSAGE } from "@/provider/error"
+import { ProviderErrorClass } from "@/provider/error-class"
 
 export type Err = ReturnType<NamedError["toObject"]>
 
@@ -56,10 +57,13 @@ export type RetryBranch =
 
 /**
  * One row of the retry dispatch table. `maxRetries` counts retries after the
- * first attempt, so 0 means the failure is never resent.
+ * first attempt, so 0 means the failure is never resent. `class` says what the
+ * failure means (#1466); the retry branch alone cannot, since a retried `http`
+ * failure may be a server fault or a request that will never succeed.
  */
 export type RetryDecision = {
   branch: RetryBranch
+  class: ProviderErrorClass.ErrorClass
   status?: number
   message: string
   action?: Retryable["action"]
@@ -144,17 +148,24 @@ function messageOf(error: Err) {
   return typeof message === "string" && message ? message : error.name
 }
 
-function terminal(branch: "terminal" | "auth" | "compaction", message: string, status?: number): RetryDecision {
-  return { branch, message, status, maxRetries: 0 }
+function terminal(
+  branch: "terminal" | "auth" | "compaction",
+  cls: ProviderErrorClass.ErrorClass,
+  message: string,
+  status?: number,
+): RetryDecision {
+  return { branch, class: cls, message, status, maxRetries: 0 }
 }
 
 function retry(
   branch: "rate_limit" | "http" | "network" | "protocol",
+  cls: ProviderErrorClass.ErrorClass,
   message: string,
   options?: { status?: number; action?: Retryable["action"]; maxRetries?: number },
 ): RetryDecision {
   return {
     branch,
+    class: cls,
     message,
     status: options?.status,
     action: options?.action,
@@ -167,58 +178,95 @@ function overloaded(message: string) {
 }
 
 /**
+ * True when the error itself says time can fix it: the provider flagged it
+ * retryable, or its message or body names a rate limit, a timeout, an overload,
+ * a gateway circuit breaker, and so on.
+ */
+function transientSignal(error: Err): boolean {
+  return (
+    SessionV1.APIError.isInstance(error) &&
+    (error.data.isRetryable ||
+      matchesRetryableMessage(error.data.message) ||
+      matchesRetryableMessage(error.data.responseBody))
+  )
+}
+
+/**
+ * The provider error table's verdict on an API error, when a row names it. A
+ * spent quota, a content refusal and a request the table calls invalid are
+ * final; the per-minute allocation some providers report as a quota is a rate
+ * limit and keeps its backoff.
+ */
+function tableDecision(error: SessionV1.APIError, transient: boolean): RetryDecision | undefined {
+  const row = ProviderErrorClass.match(ProviderErrorClass.factsOf(error.data), transient)
+  if (row === undefined) return undefined
+  const { message, statusCode: status } = error.data
+  if (row === "rate_limited") return retry("rate_limit", row, overloaded(message), { status })
+  return terminal("terminal", row, message, status)
+}
+
+/**
  * The single dispatch table for retryable failures. Every HTTP 400–599
  * `APIError` and every network failure enters here first; the branch then
  * selects the bounded recovery. Keeping the table in one place means the base
  * backoff, the attempt cap and the terminal exceptions cannot drift.
+ *
+ * An API error first meets the provider error table (`ProviderErrorClass`), so
+ * what the provider said outranks the status code: a 429 that reports a spent
+ * plan is final, a 403 that reports a spent quota is not a credential failure.
  */
 export function classify(error: Err, provider: string): RetryDecision {
-  if (SessionV1.AbortedError.isInstance(error)) return terminal("terminal", messageOf(error))
-  if (SessionV1.ContextOverflowError.isInstance(error)) return terminal("compaction", messageOf(error))
-  if (SessionV1.AuthError.isInstance(error)) return terminal("auth", messageOf(error))
-  if (SessionV1.OutputLengthError.isInstance(error)) return terminal("terminal", messageOf(error))
-  if (SessionV1.StructuredOutputError.isInstance(error)) return terminal("terminal", messageOf(error))
-  if (SessionV1.ContentFilterError.isInstance(error)) return terminal("terminal", messageOf(error))
-  if (IncompleteResponseError.isInstance(error)) return retry("protocol", error.data.message)
-  if (EmptyResponseError.isInstance(error)) return retry("protocol", error.data.message)
-  if (IncompleteReasoningResponseError.isInstance(error)) return retry("protocol", error.data.message)
+  if (SessionV1.AbortedError.isInstance(error)) return terminal("terminal", "invalid_request", messageOf(error))
+  if (SessionV1.ContextOverflowError.isInstance(error))
+    return terminal("compaction", "context_overflow", messageOf(error))
+  if (SessionV1.AuthError.isInstance(error)) return terminal("auth", "auth", messageOf(error))
+  if (SessionV1.OutputLengthError.isInstance(error)) return terminal("terminal", "invalid_request", messageOf(error))
+  if (SessionV1.StructuredOutputError.isInstance(error))
+    return terminal("terminal", "invalid_request", messageOf(error))
+  if (SessionV1.ContentFilterError.isInstance(error)) return terminal("terminal", "content_refused", messageOf(error))
+  if (IncompleteResponseError.isInstance(error)) return retry("protocol", "transient", error.data.message)
+  if (EmptyResponseError.isInstance(error)) return retry("protocol", "transient", error.data.message)
+  if (IncompleteReasoningResponseError.isInstance(error)) return retry("protocol", "transient", error.data.message)
 
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     const message = error.data.message
     // Resending rejected signed reasoning cannot succeed; /compact is the recovery.
-    if (message === REASONING_STATE_MESSAGE) return terminal("terminal", message, status)
+    if (message === REASONING_STATE_MESSAGE) return terminal("terminal", "invalid_request", message, status)
+    const transient = transientSignal(error)
+    const row = tableDecision(error, transient)
+    if (row) return row
     // The provider auth loader refreshes credentials inside the request. One
     // bounded retry gives that recovery path a second chance; a second auth
     // failure stops instead of backing off blindly.
-    if (status === 401 || status === 403) return { branch: "auth", status, message, maxRetries: 1 }
+    if (status === 401 || status === 403) return { branch: "auth", class: "auth", status, message, maxRetries: 1 }
     // 413 and the parsed context-overflow error belong to compaction. Never
     // resend the same oversized request unchanged.
-    if (status === 413) return terminal("compaction", message, status)
+    if (status === 413) return terminal("compaction", "context_overflow", message, status)
 
     if (status !== undefined && status >= 400 && status < 600) {
-      return retry(status === 429 || status === 503 ? "rate_limit" : "http", overloaded(message), { status })
+      if (status === 429 || status === 503) return retry("rate_limit", "rate_limited", overloaded(message), { status })
+      // Past the table, a 4xx without a transient signal still backs off on the wire, but it is
+      // a request that fails again on resend: `invalid_request` is what `retryable` reads.
+      return retry("http", status >= 500 || transient ? "transient" : "invalid_request", overloaded(message), {
+        status,
+      })
     }
 
-    if (
-      error.data.isRetryable ||
-      matchesRetryableMessage(message) ||
-      matchesRetryableMessage(error.data.responseBody)
-    ) {
-      return retry("network", overloaded(message), { status })
-    }
+    if (transient) return retry("network", "transient", overloaded(message), { status })
   }
 
   const message = isRecord(error.data) ? error.data.message : undefined
   if (typeof message === "string") {
     const lower = message.toLowerCase()
-    if (lower.includes("too_many_requests")) return retry("rate_limit", "Too Many Requests")
+    if (lower.includes("too_many_requests")) return retry("rate_limit", "rate_limited", "Too Many Requests")
     if (lower.includes("exhausted") || lower.includes("unavailable"))
-      return retry("rate_limit", "Provider is overloaded")
-    if (matchesRetryableMessage(message)) return retry("network", message)
+      return retry("rate_limit", "rate_limited", "Provider is overloaded")
+    if (matchesRetryableMessage(message)) return retry("network", "transient", message)
   }
   return {
     branch: "fallback",
+    class: "transient",
     message: typeof message === "string" && message ? message : "Unknown error, reconnecting",
     maxRetries: FALLBACK_MAX_RETRIES,
   }
@@ -231,8 +279,9 @@ export function classify(error: Err, provider: string): RetryDecision {
  * not reported here.
  *
  * The HTTP policy retries every 4xx/5xx on the wire, but a deterministic 4xx
- * answer cannot succeed on resend. Report it as unrecoverable so the caller
- * pauses visibly instead of spending a recovery turn on the same rejection.
+ * answer (class `invalid_request`) cannot succeed on resend. Report it as
+ * unrecoverable so the caller pauses visibly instead of spending a recovery
+ * turn on the same rejection.
  * The exceptions keep the pre-existing transient signals: a flagged
  * `isRetryable`, or a message/body that names a rate limit, timeout, gateway
  * circuit breaker, and so on. 5xx answers stay recoverable regardless.
@@ -241,14 +290,7 @@ export function retryable(error: Err, provider: string) {
   const decision = classify(error, provider)
   if (decision.maxRetries === 0) return undefined
   if (decision.branch === "auth" || decision.branch === "fallback") return undefined
-  if (decision.branch === "http" && decision.status !== undefined && decision.status < 500) {
-    const transient =
-      SessionV1.APIError.isInstance(error) &&
-      (error.data.isRetryable ||
-        matchesRetryableMessage(error.data.message) ||
-        matchesRetryableMessage(error.data.responseBody))
-    if (!transient) return undefined
-  }
+  if (decision.class === "invalid_request") return undefined
   return { message: decision.message, ...(decision.action ? { action: decision.action } : {}) }
 }
 
@@ -266,6 +308,22 @@ export function fallback(error: Err): Retryable | undefined {
 /** True when the dispatch table hands this failure to context compaction. */
 export function isCompactionFailure(error: Err) {
   return classify(error, "").branch === "compaction"
+}
+
+/**
+ * The error as it is persisted for the user. A failure that ends the turn on a
+ * spent quota, rejected credentials or a content refusal gets one more line: the
+ * provider's own message first, then what to do about it (#1466). Only an
+ * `APIError` and a `ProviderAuthError` carry it; any other error, and any class
+ * that needs no advice, comes back as the same object.
+ */
+export function withHint<E extends Err>(error: E, provider: string): E
+export function withHint(error: Err, provider: string): Err {
+  if (!SessionV1.APIError.isInstance(error) && !SessionV1.AuthError.isInstance(error)) return error
+  const hint = ProviderErrorClass.hintOf(classify(error, provider).class, provider)
+  if (!hint || error.data.message.includes(hint)) return error
+  // Same name, same data shape: only the message gains a line, so the caller's own type still holds.
+  return { name: error.name, data: { ...error.data, message: `${error.data.message}\n${hint}` } }
 }
 
 function matchesRetryableMessage(value: unknown) {
