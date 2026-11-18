@@ -1,25 +1,22 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { Injection } from "@graphagent/core/system-context/injection"
+
 /**
  * The envelope of a dynamic value in a node prompt.
  *
  * Upstream node output, a recovery context and the engine's own facts reach the model inside tagged blocks.
- * A value is never rewritten: the only change is to the `<` that opens one of the envelope's own tags, so a
- * value can neither close its block nor pass for a harness injection (`<system-reminder>`) or for facts the
- * engine measured (`<engine-facts>`), and the block's header says that the change was made.
+ * A value is never rewritten: the only change is to the `<` that opens one of the envelope's own tags
+ * (`Injection.ESCAPED_TAGS`, the one table in the repository), so a value can neither close its block nor pass for a
+ * harness injection or for facts the engine measured (`<engine-facts>`), and the block's header says that the change
+ * was made.
  */
 
-/** The tags no value may carry. The one table in the repository: every escape and every block derives from it. */
-export const ENVELOPE_TAGS = ["system-reminder", "upstream-output", "engine-facts"] as const
-
-// An opening or closing tag of the table, in any letter case, whose name does not continue into a longer one.
-const ENVELOPE_TAG = new RegExp(`<(/?(?:${ENVELOPE_TAGS.join("|")}))(?![A-Za-z0-9_-])`, "gi")
-
 /** Write the `<` of every envelope tag (opening or closing, with or without attributes) as `&lt;`; the rest of
- * the text is left exactly as it is. */
+ * the text is left exactly as it is. This is `Injection.escape`: one escape for everything the model reads. */
 export function escapeEnvelopeTags(text: string): string {
-  return text.replace(ENVELOPE_TAG, "&lt;$1")
+  return Injection.escape(text)
 }
 
 /** The line under an upstream block's opening tag: what the model is looking at, and what was changed in it. */

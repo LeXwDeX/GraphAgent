@@ -21,6 +21,7 @@ import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
 import type { Lane } from "@/session/agent-scheduler-state"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { resolveLanguage } from "@graphagent/core/config/language"
 import { RequestCache } from "./request-cache"
 
@@ -214,15 +215,9 @@ export const layer = Layer.effect(
         const cached = RequestCache.get(fragments, key)
         if (cached) return cached.text
 
-        const text = [
-          "<mcp_instructions>",
-          ...instructions.flatMap((item) => [
-            `  <server name="${item.name}">`,
-            ...item.instructions.split("\n").map((line) => `    ${line}`),
-            "  </server>",
-          ]),
-          "</mcp_instructions>",
-        ].join("\n")
+        const text = instructions
+          .map((item) => Injection.wrap("mcp-instructions", item.instructions, { server: item.name }))
+          .join("\n\n")
         RequestCache.set(fragments, key, { text }, Buffer.byteLength(text))
         return text
       }),

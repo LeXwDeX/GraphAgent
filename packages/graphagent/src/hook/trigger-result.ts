@@ -13,10 +13,11 @@
  * rather than from the barrel; `index.ts` re-exports both for backward
  * compatibility with existing import paths.
  *
- * This module depends on `effect` only — no provider/plugin/session edges —
- * so it is safe to import from anywhere.
+ * This module depends on `effect` and core's pure `Injection` envelope only — no
+ * provider/plugin/session edges — so it is safe to import from anywhere.
  */
 import { Effect } from "effect"
+import { Injection } from "@graphagent/core/system-context/injection"
 
 export interface TriggerResult {
   /** additionalContext strings appended (deduplicated per session; tool events only within the trigger) */
@@ -82,13 +83,26 @@ export type PermissionUpdate =
   | { type: "setMode"; mode: string; destination: string }
   | { type: "addDirectories" | "removeDirectories"; directories: string[]; destination: string }
 
-/** Post hooks run after the side effect; report validation feedback to the model. */
-export function postHookFeedback(result: TriggerResult): string {
+/**
+ * Hook text as the model sees it: the non-empty lines, a blank line apart, in one block with `source="hook"`; the
+ * block escapes its text, so hook output can neither close it nor pass for another block. Empty without lines.
+ */
+export function hookBlock(lines: readonly string[]): string {
+  const kept = lines.filter(Boolean)
+  return kept.length > 0 ? Injection.wrap("hook", kept.join("\n\n")) : ""
+}
+
+function postHookLines(result: TriggerResult): string[] {
   return [
     ...(result.additionalContexts ?? []),
     ...(result.blocked ? [`[Post-tool hook blocked] ${result.blocked.reason}`] : []),
     ...(result.preventContinuation ? [`[Hook stopped] ${result.stopReason ?? "Hook requested stop"}`] : []),
-  ].join("\n\n")
+  ]
+}
+
+/** Post hooks run after the side effect; report validation feedback to the model. */
+export function postHookFeedback(result: TriggerResult): string {
+  return hookBlock(postHookLines(result))
 }
 
 export function withHookFeedback(output: string, result: TriggerResult): string {
@@ -98,8 +112,8 @@ export function withHookFeedback(output: string, result: TriggerResult): string 
 
 /** PreToolUse context stays attached to the result of the call it governed (denial, rejection or failure). */
 export function withPreContext(text: string, contexts: readonly string[] | undefined): string {
-  const lines = (contexts ?? []).filter(Boolean)
-  return lines.length ? `${text}\n\n${lines.join("\n\n")}` : text
+  const block = hookBlock(contexts ?? [])
+  return block ? `${text}\n\n${block}` : text
 }
 
 /** A failed tool whose PostToolUseFailure hook returned `continue:false`; the processor ends the turn on it. */
@@ -124,7 +138,7 @@ export function hookToolStop(error: unknown): HookToolStop | undefined {
 }
 
 export function withHookFailure(error: unknown, result: TriggerResult, preContexts: readonly string[] = []): unknown {
-  const feedback = [...preContexts.filter(Boolean), postHookFeedback(result)].filter(Boolean).join("\n\n")
+  const feedback = hookBlock([...preContexts, ...postHookLines(result)])
   if (!feedback) return error
   const message = `${error instanceof Error ? error.message : String(error)}\n\n${feedback}`
   if (result.preventContinuation)

@@ -7,6 +7,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Global } from "@graphagent/core/global"
 import { FSUtil } from "@graphagent/core/fs-util"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { Config } from "@/config/config"
 import { Flag } from "@graphagent/core/flag/flag"
 import { skillsSource, type SkillsSourceLayer } from "@/config/skills-source"
@@ -492,9 +493,12 @@ export function firstSentence(description: string) {
   return end === null ? line : line.slice(0, end.index + 1)
 }
 
-/** The only place a skill's description enters the list: `- <name>: <first sentence>`, cut at SKILL_LINE_MAX code points. */
+/**
+ * The only place a skill's description enters the list: `- <name>: <first sentence>`, escaped (a description can come
+ * from a repository the user does not control), then cut at SKILL_LINE_MAX code points.
+ */
 export function skillLine(skill: Info) {
-  const line = `- ${skill.name}: ${firstSentence(skill.description ?? "")}`
+  const line = `- ${skill.name}: ${Injection.escape(firstSentence(skill.description ?? ""))}`
   const points = Array.from(line)
   return points.length > SKILL_LINE_MAX ? `${points.slice(0, SKILL_LINE_MAX - 1).join("")}…` : line
 }

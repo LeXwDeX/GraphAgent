@@ -48,5 +48,5 @@ export function isReplayableAssistantMessage(message: SessionV1.WithParts): bool
 export function interruptionNote(error: NonNullable<SessionV1.Assistant["error"]>): string {
   const status =
     error.name === "APIError" && error.data.statusCode !== undefined ? `, HTTP ${error.data.statusCode}` : ""
-  return `[runtime] The previous assistant step ended with an error (${error.name}${status}). Tool calls from that step keep the results recorded for them; a result that says the call was aborted means it did not finish. The rest of that step was lost. Check the current state before repeating any work.`
+  return `The previous assistant step ended with an error (${error.name}${status}). Tool calls from that step keep the results recorded for them; a result that says the call was aborted means it did not finish. The rest of that step was lost. Check the current state before repeating any work.`
 }

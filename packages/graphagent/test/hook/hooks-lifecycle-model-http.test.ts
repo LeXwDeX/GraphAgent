@@ -207,6 +207,10 @@ cliIt.live("V1 process restart restores model context once without a model chang
     expect(calls[1].model).toBe("test-model")
     expect(JSON.stringify(calls[0])).not.toContain("RESTORED_MODEL_CONTEXT")
     expect(JSON.stringify(calls[1])).toContain("RESTORED_MODEL_CONTEXT")
+    // The context reaches the model in a block with source="hook" (#1456).
+    expect(JSON.stringify(calls[1])).toContain(
+      JSON.stringify('<system-reminder source="hook">\nRESTORED_MODEL_CONTEXT\n</system-reminder>').slice(1, -1),
+    )
   }),
 )
 
