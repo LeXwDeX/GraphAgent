@@ -13,6 +13,7 @@ import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@graphagent/core/flag/flag"
+import { formatCost } from "@graphagent/core/util/cost"
 import { Identifier } from "@graphagent/core/id/id"
 import { useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
@@ -111,11 +112,6 @@ export type PromptEditRequest = {
   /** When set, Enter commits the value here instead of sending a prompt. */
   commit?(value: string): void | Promise<void>
 }
-
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-})
 
 const DRAFT_RETENTION_MIN_CHARS = 20
 
@@ -316,7 +312,7 @@ export function Prompt(props: PromptProps) {
     const cost = session?.cost ?? 0
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? money.format(cost) : undefined,
+      cost: cost > 0 ? formatCost(cost) : undefined,
     }
   })
 

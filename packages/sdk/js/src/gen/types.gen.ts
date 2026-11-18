@@ -849,6 +849,31 @@ export type Session = {
   dagBudgetUnlimited?: boolean
 }
 
+export type SessionUsage = {
+  rootID: string
+  /**
+   * Sessions in the tree, the root included
+   */
+  sessions: number
+  /**
+   * Σ cost over the tree, in dollars; never negative
+   */
+  cost: number
+  /**
+   * A session in the tree recorded tokens at zero cost, so its price is unknown and not counted in cost
+   */
+  costUnknown: boolean
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+}
+
 export type SessionDagMode = {
   mode: "on" | "off"
   defaultMode: "on" | "off"
@@ -4960,6 +4985,37 @@ export type SessionDagModeResponses = {
 }
 
 export type SessionDagModeResponse = SessionDagModeResponses[keyof SessionDagModeResponses]
+
+export type SessionUsageData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/usage"
+}
+
+export type SessionUsageErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: BadRequestError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionUsageError = SessionUsageErrors[keyof SessionUsageErrors]
+
+export type SessionUsageResponses = {
+  /**
+   * Usage of the session's whole task tree
+   */
+  200: SessionUsage
+}
+
+export type SessionUsageResponse = SessionUsageResponses[keyof SessionUsageResponses]
 
 export type SessionChildrenData = {
   body?: never
