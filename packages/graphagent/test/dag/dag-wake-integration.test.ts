@@ -1433,7 +1433,7 @@ describe("DagLoop atomic wake integration", () => {
     }
   })
 
-  it("reports schema_invalid in workflow status and the parent wake for an unparseable final response", async () => {
+  it("reports schema_invalid in workflow status and the parent wake for a final response still unparseable after its correction turn", async () => {
     await Effect.runPromise(
       runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
         Effect.gen(function* () {
@@ -1454,6 +1454,10 @@ describe("DagLoop atomic wake integration", () => {
 
           const child = yield* takeWithin(childPrompts, "review node did not start")
           yield* Deferred.succeed(child.release, "not one JSON value")
+          // The one correction turn goes to the same child; the model repeats itself.
+          const correction = yield* takeWithin(childPrompts, "review node did not get its correction turn")
+          expect(promptText(correction.input)).toContain("the final response is not exactly one JSON value")
+          yield* Deferred.succeed(correction.release, "still not one JSON value")
 
           yield* pollWithTimeout(
             store.getNode(dagID, "review").pipe(Effect.map((item) => (item?.status === "failed" ? item : undefined))),
