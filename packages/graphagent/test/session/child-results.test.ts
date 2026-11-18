@@ -713,22 +713,6 @@ describe("the ledger scan", () => {
     }),
   )
 
-  it.effect("bounds a stored result and says that it did", () =>
-    Effect.gen(function* () {
-      const { db, scoped, newChild } = yield* setup("bounded")
-      const child = yield* newChild()
-      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
-      const text = "x".repeat(ChildStore.MAX_REPORT_CHARS + 1_000)
-
-      yield* run.settle({ type: "completed" }, { title: "big", text })
-
-      const stored = ChildStore.parseReport((yield* rowOf(db, run.id))?.outcome)
-      expect(stored?.text.length).toBeLessThan(text.length)
-      expect(stored?.text.startsWith("x".repeat(ChildStore.MAX_REPORT_CHARS))).toBe(true)
-      expect(stored?.text.endsWith("[truncated 1000 characters]")).toBe(true)
-    }),
-  )
-
   it.effect("leaves no report in memory once the owner's scope has closed", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

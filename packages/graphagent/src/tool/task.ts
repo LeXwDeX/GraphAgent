@@ -17,7 +17,7 @@ import type { SessionPrompt } from "../session/prompt"
 import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
 import { renderTask as renderOutput } from "../session/child/notice"
 import { Config } from "@/config/config"
-import { Cause, Effect, Exit, Schema, Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@graphagent/core/database/database"
@@ -26,6 +26,7 @@ import { SettingsHook, type TriggerResult } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTurnContext } from "@/hook/turn-context"
 import { isRecord } from "@/util/record"
+import { Truncate } from "./truncate"
 
 /**
  * What the shell tool's background mode prompts its own session with. The
@@ -233,6 +234,11 @@ interface RunClaim {
   job?: ChildRunOutcome
   /** Failure text of a foreground result a SubagentStop continuation replaced with an error. */
   failure?: string
+  /**
+   * The bounded report of this run's job, made by whichever of the settlement watcher and the notifier reads it
+   * first and awaited by the other (#1446): the text is cut and saved once, not once per reader.
+   */
+  report?: Deferred.Deferred<ChildRunReport | undefined>
 }
 
 // The run ends with the job that carries it, so the persisted outcome and the
@@ -285,6 +291,7 @@ export const TaskTool = Tool.define(
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
     const database = yield* Database.Service
+    const truncate = yield* Truncate.Service
     // Child runs share the process-level child pool (#1021). Optional so a
     // standalone harness without the app layer runs unconstrained.
     const scheduler = Option.getOrUndefined(yield* Effect.serviceOption(AgentScheduler.Service))
@@ -310,6 +317,22 @@ export const TaskTool = Tool.define(
         ),
       )
 
+    // What a finished job tells its parent is model-visible text like any tool output: cut to the output cap with
+    // the whole text saved, and only once per run, however many readers ask (`claim.report`). The first reader
+    // makes the deferred before its first yield, so a second one always finds it.
+    const boundReport = (claim: RunClaim, info: BackgroundJob.Info | undefined, title: string) =>
+      Effect.suspend(() => {
+        if (claim.report) return Deferred.await(claim.report)
+        const bounded = Deferred.makeUnsafe<ChildRunReport | undefined>()
+        claim.report = bounded
+        return Effect.gen(function* () {
+          const report = reportOf(info, title)
+          if (!report || report.text === "") return report
+          const cut = yield* truncate.output(report.text)
+          return { ...report, text: cut.content }
+        }).pipe(Effect.onExit((exit) => Deferred.done(bounded, exit)))
+      })
+
     // The settlement watcher owns a background run from here: it ends the run
     // with the job that carries it. Armed once, by whichever comes first (the
     // job's own start, or the tool call once the job exists), so neither a job
@@ -324,7 +347,13 @@ export const TaskTool = Tool.define(
           return restore(
             background
               .wait({ id: jobID })
-              .pipe(Effect.flatMap((waited) => handle.settle(outcomeOf(waited.info), reportOf(waited.info, title)))),
+              .pipe(
+                Effect.flatMap((waited) =>
+                  boundReport(claim, waited.info, title).pipe(
+                    Effect.flatMap((report) => handle.settle(outcomeOf(waited.info), report)),
+                  ),
+                ),
+              ),
           ).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
         }),
       )
@@ -799,7 +828,7 @@ export const TaskTool = Tool.define(
               // watcher, whoever swaps it first. A run the main agent cancelled
               // delivers nothing, even when its job finished in the window
               // before the job itself was cancelled.
-              yield* run.settle(outcomeOf(result.info), reportOf(result.info, description))
+              yield* run.settle(outcomeOf(result.info), yield* boundReport(claim, result.info, description))
               const cancelledRun = (yield* run.settled).type === "cancelled"
               if ((result.info?.status !== "completed" && result.info?.status !== "error") || cancelledRun) {
                 // No result follows (cancelled or vanished job): end the
