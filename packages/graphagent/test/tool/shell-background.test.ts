@@ -257,6 +257,42 @@ describe("shell background mode", () => {
       }),
   )
 
+  // A command killed by a signal has no exit code, but it is a finished job:
+  // it ends at once and delivers its notice instead of waiting forever.
+  const killed = [
+    { signal: "SIGKILL", cmd: "echo before; kill -KILL $$" },
+    { signal: "SIGSEGV", cmd: "echo before; kill -SEGV $$" },
+  ]
+
+  if (process.platform !== "win32") {
+    for (const { signal, cmd } of killed) {
+      it.live(
+        `ends the job and delivers the notice when the command is killed by signal ${signal}`,
+        (): Effect.Effect<void, unknown, ShellTestServices> =>
+          Effect.gen(function* () {
+            const tmp = yield* tmpdirScoped()
+            yield* provideInstance(tmp)(
+              Effect.gen(function* () {
+                const shell = yield* init()
+                yield* shell.execute({ command: cmd, background: true }, promptCtx)
+                const output = yield* awaitWithTimeout(
+                  hooks.started[0].run.pipe(Effect.orDie),
+                  "background shell did not end",
+                  "10 seconds",
+                )
+                expect(output).toContain("before")
+                expect(hooks.wakes).toHaveLength(1)
+                expect(hooks.wakes[0].payload).toContain(`Background shell terminated by signal ${signal}: ${cmd}`)
+                expect(hooks.prompts).toHaveLength(1)
+                expect(hooks.prompts[0].parts[0].text).toContain(`Command terminated by signal ${signal}`)
+              }),
+            )
+          }),
+        20_000,
+      )
+    }
+  }
+
   it.live(
     "marks the job settling before it wakes the goal and prompts the notice",
     (): Effect.Effect<void, unknown, ShellTestServices> =>

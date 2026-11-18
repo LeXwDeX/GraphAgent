@@ -1270,6 +1270,38 @@ describe("tool.shell abort", () => {
   )
 })
 
+// A command killed by a signal has no exit code, but it is a finished result:
+// the collected output comes back at once instead of waiting for the timeout.
+describe("tool.shell signal termination", () => {
+  const killed = [
+    { signal: "SIGKILL", command: "echo before; kill -KILL $$" },
+    { signal: "SIGSEGV", command: "echo before; kill -SEGV $$" },
+  ]
+
+  if (process.platform !== "win32") {
+    for (const { signal, command } of killed) {
+      it.live(
+        `returns the collected output when the command is killed by signal ${signal}`,
+        () =>
+          runIn(
+            projectRoot,
+            Effect.gen(function* () {
+              const started = Date.now()
+              const result = yield* run({ command, timeout: 10_000 })
+              expect(Date.now() - started).toBeLessThan(5_000)
+              expect(result.output).toContain("before")
+              expect(result.output).toContain(`Command terminated by signal ${signal}`)
+              expect(result.output).not.toContain("exceeding timeout")
+              expect(result.metadata.exit).toBe(null)
+              expect(result.hookFailure).toContain(`Terminated by signal ${signal}`)
+            }),
+          ),
+        20_000,
+      )
+    }
+  }
+})
+
 describe("tool.shell silence guard", () => {
   const collector = (warned: string[]) => ({
     ...ctx,
