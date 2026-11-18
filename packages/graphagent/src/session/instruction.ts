@@ -289,7 +289,8 @@ export const layer: Layer.Layer<
       if (previous && (previous.text.length !== text.length || previous.text.some((item, i) => item !== text[i])))
         yield* Effect.logInfo("session instruction files changed", {
           "session.id": input.sessionID,
-          paths,
+          // A remote path is its URL, which may carry a token; a local path stays as it is.
+          paths: paths.map((item) => (/^https?:\/\//i.test(item) ? loggableURL(item) : item)),
           bytes: Buffer.byteLength(text.join("")),
         })
       s.snapshots.set(input.sessionID, { turn: input.turn ?? "", text, remote })

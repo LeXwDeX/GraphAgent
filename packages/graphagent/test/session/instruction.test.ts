@@ -699,6 +699,28 @@ describe("Instruction.system remote instructions", () => {
     }),
   )
 
+  it.live("logs a change with remote URLs stripped of their credentials, query and fragment", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpWithFiles({ "AGENTS.md": "# One" })
+      const requests: string[] = []
+      const logs: Logged[] = []
+      const secretURL = "https://user:pass-secret@rules.example.test/team.md?token=tok-secret#frag-secret"
+      const client = answering(requests, () => new Response("remote rules", { status: 200 }))
+      yield* Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const sessionID = SessionID.descending()
+        const filepath = path.join(dir, "AGENTS.md")
+        yield* svc.system({ sessionID, turn: "msg_turn-1" })
+        yield* rewrite(filepath, "# Two, longer")
+        yield* svc.system({ sessionID, turn: "msg_turn-2" })
+        const changed = loggedFields(logs, CHANGED)
+        expect(changed).toHaveLength(1)
+        expect(changed[0]?.paths).toEqual(expect.arrayContaining([filepath, "https://rules.example.test/team.md"]))
+        expect(JSON.stringify(logs)).not.toMatch(/secret/)
+      }).pipe(recordLogs(logs), provideInstance(dir), Effect.provide(remoteInstructionLayer(dir, [secretURL], client)))
+    }),
+  )
+
   it.live("reports a transport failure as a network error and does not ask again", () =>
     Effect.gen(function* () {
       const dir = yield* tmpWithFiles({})
