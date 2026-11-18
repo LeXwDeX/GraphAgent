@@ -11801,6 +11801,9 @@
           "release_date": {
             "type": "string"
           },
+          "profile": {
+            "$ref": "#/components/schemas/ModelProfile"
+          },
           "variants": {
             "type": "object",
             "additionalProperties": {
@@ -11822,6 +11825,236 @@
           "release_date"
         ],
         "additionalProperties": false
+      },
+      "ModelProfile": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "type": "number"
+          },
+          "output": {
+            "type": "number"
+          },
+          "modalities": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["text", "audio", "image", "video", "pdf"]
+                }
+              },
+              "output": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["text", "audio", "image", "video", "pdf"]
+                }
+              }
+            },
+            "required": ["input", "output"],
+            "additionalProperties": false
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "effectiveContext": {
+            "type": "number"
+          },
+          "toolCallId": {
+            "type": "object",
+            "properties": {
+              "charset": {
+                "type": "string",
+                "enum": ["any", "alnum_dash", "alnum"]
+              },
+              "length": {
+                "type": "number"
+              }
+            },
+            "required": ["charset"],
+            "additionalProperties": false
+          },
+          "userAfterToolResult": {
+            "type": "string",
+            "enum": ["allow", "bridge"]
+          },
+          "toolResultMedia": {
+            "type": "string",
+            "enum": ["all", "image", "none"]
+          },
+          "cacheMarker": {
+            "type": "string",
+            "enum": ["explicit", "none"]
+          },
+          "reasoningMode": {
+            "type": "object",
+            "properties": {
+              "controls": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReasoningControl"
+                }
+              },
+              "toggle": {
+                "type": "object",
+                "properties": {
+                  "on": {
+                    "type": "object"
+                  },
+                  "off": {
+                    "type": "object"
+                  }
+                },
+                "required": ["on", "off"],
+                "additionalProperties": false
+              },
+              "placeholder": {
+                "type": "boolean"
+              },
+              "replay": {
+                "type": "string",
+                "enum": ["none", "field", "signed", "encrypted"]
+              },
+              "inlineTag": {
+                "type": "string"
+              }
+            },
+            "required": ["controls", "placeholder", "replay"],
+            "additionalProperties": false
+          },
+          "sampling": {
+            "type": "object",
+            "properties": {
+              "temperature": {
+                "type": "number"
+              },
+              "topP": {
+                "type": "number"
+              },
+              "topK": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          },
+          "finishReasons": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": ["content-filter", "stream_error", "context_overflow"]
+            }
+          },
+          "editTools": {
+            "type": "string",
+            "enum": ["edit", "apply_patch"]
+          },
+          "toolLimits": {
+            "type": "object",
+            "properties": {
+              "maxTools": {
+                "type": "number"
+              },
+              "nameMaxLength": {
+                "type": "number"
+              },
+              "namePattern": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "schemaFixes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["openai", "moonshot", "gemini"]
+            }
+          },
+          "sources": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["context", "output", "modalities", "reasoning"]
+            }
+          }
+        },
+        "required": [
+          "modalities",
+          "reasoning",
+          "toolCallId",
+          "userAfterToolResult",
+          "toolResultMedia",
+          "cacheMarker",
+          "reasoningMode",
+          "sampling",
+          "finishReasons",
+          "editTools",
+          "toolLimits",
+          "schemaFixes",
+          "sources",
+          "missing"
+        ],
+        "additionalProperties": false
+      },
+      "ReasoningControl": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["toggle"]
+              }
+            },
+            "required": ["type"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["effort"]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["type", "values"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["budget_tokens"]
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              }
+            },
+            "required": ["type"],
+            "additionalProperties": false
+          }
+        ]
       },
       "PermissionRequest": {
         "type": "object",
@@ -13199,55 +13432,6 @@
           }
         },
         "additionalProperties": false
-      },
-      "ReasoningControl": {
-        "anyOf": [
-          {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": ["toggle"]
-              }
-            },
-            "required": ["type"],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": ["effort"]
-              },
-              "values": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": ["type", "values"],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": ["budget_tokens"]
-              },
-              "min": {
-                "type": "number"
-              },
-              "max": {
-                "type": "number"
-              }
-            },
-            "required": ["type"],
-            "additionalProperties": false
-          }
-        ]
       },
       "LogLevel": {
         "type": "string",
