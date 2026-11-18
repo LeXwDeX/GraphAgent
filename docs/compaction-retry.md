@@ -97,23 +97,38 @@ not a promise of lower cost.
 ## Provider retry dispatch
 
 Every provider failure goes through one dispatch table before any backoff is
-scheduled. The base layer covers every HTTP `APIError` with a 4xx or 5xx status
-and every recognised network failure with the same exponential backoff: 2s
-initial delay, doubling per attempt, 25% jitter, capped at 30s, with five
-retries after the first attempt. A `rate_limit` answer with a usable
-`retry-after` or `retry-after-ms` header waits for the value the provider asked
-for instead; that value is capped only at the 32-bit timer limit.
+scheduled. An `APIError` first meets the provider error table: provider error
+codes and wordings, read top to bottom, where the first row that hits decides.
+What the provider reported therefore outranks the status code, and a failure
+the table does not name falls through to the branches below. A transient signal
+(a flagged `isRetryable`, or a message or body that reads as retryable, such as
+a timeout, an overload or a gateway circuit breaker) skips the table's
+deterministic-request rows, because gateways report a failing upstream as a 400.
+
+The base layer covers every HTTP `APIError` with a 4xx or 5xx status that the
+provider error table does not end, and every recognised network failure with
+the same exponential backoff: 2s initial delay, doubling per attempt, 25%
+jitter, capped at 30s, with five retries after the first attempt. A `rate_limit`
+answer with a usable `retry-after` or `retry-after-ms` header waits for the
+value the provider asked for instead; that value is capped only at the 32-bit
+timer limit.
 
 | Branch | Failures | Behaviour |
 | --- | --- | --- |
-| `rate_limit` | HTTP 429 and 503, rate-limit usage errors | Retries with the base backoff, honoring `retry-after` and `retry-after-ms` when present. |
-| `auth` | HTTP 401 and 403 | One bounded retry, giving the provider's in-request auth loader a chance to refresh credentials. A second auth failure stops. A missing-API-key `AuthError` enters the table as a terminal `auth` decision instead. |
-| `compaction` | HTTP 413 and parsed context overflow | Never resent unchanged. The processor hands the turn to compaction. |
-| `http` | Remaining HTTP 400–599 | The wire policy retries with the base backoff; `retry-after` headers are not honored outside `rate_limit`. Goal recovery treats a deterministic 4xx as final and pauses visibly, while a flagged `isRetryable` or a recognised transient message/body stays recoverable. |
+| `rate_limit` | HTTP 429 and 503, rate-limit usage errors, DashScope's per-minute allocation (reported under quota names) | Retries with the base backoff, honoring `retry-after` and `retry-after-ms` when present. A 429 that reports a spent quota or balance goes to `terminal` instead. |
+| `auth` | HTTP 401 and 403, unless the provider error table names the answer (a 403 that reports a spent quota is not a credential failure) | One bounded retry, giving the provider's in-request auth loader a chance to refresh credentials. A second auth failure stops. A missing-API-key `AuthError` enters the dispatch table as a terminal `auth` decision instead. |
+| `compaction` | HTTP 413 and parsed context overflow, including the Moonshot, DashScope and Zhipu wordings | Never resent unchanged. The processor hands the turn to compaction. |
+| `http` | Remaining HTTP 400–599: 5xx, a 4xx the provider error table does not name, and a 400 or 422 with a transient signal | The wire policy retries with the base backoff; `retry-after` headers are not honored outside `rate_limit`. Goal recovery treats a deterministic 4xx as final and pauses visibly, while a flagged `isRetryable` or a recognised transient message/body stays recoverable. |
 | `network` | Fetch, DNS, socket, timeout and recognised provider-network errors | Retries with the base backoff. |
 | `protocol` | Incomplete, empty and reasoning-only truncated responses | Retries with the base backoff while the processor's admission gates allow it. |
 | `fallback` | Unrecognised failures | Reconnects 3s, 6s, 6s, then surfaces the error. |
-| `terminal` | User abort, missing API key, output length, structured output, content filter, rejected signed reasoning state | Never retried. |
+| `terminal` | User abort, missing API key, output length, structured output, content filter, rejected signed reasoning state; from the provider error table, a spent quota or balance (HTTP 402, or `insufficient_quota` and similar codes on any status or inside the stream), a content refusal reported as an API error, and a deterministic request error (a 400 or 422 coded `invalid_request_error` or similar, or `invalid_prompt`) | Never retried. A content refusal ends the turn as `content_filter`. Goal recovery treats a spent quota, a content refusal and a deterministic request error as permanent and gives up at once instead of probing again after a delay. |
+
+When a spent quota, rejected credentials or a content refusal reported as an API
+error ends the turn, the error message the session records gains one last line
+saying what to do: top up or switch model, log in to the provider again, or
+rephrase the last message. Every other failure keeps the provider's message as
+it is.
 
 When a retryable failure stops, the session logs a `retry stopped` warning with
 `reason` (`gated` or `exhausted`), `branch`, `status` when known, `attempt`,
@@ -126,3 +141,9 @@ by default) disables `RequestExecutor` retries when the session processor drives
 the request, so this dispatch table owns retry timing and the total attempt
 count. Direct native-runtime calls that bypass the processor keep the executor's
 own bounded budget of two retries after the first attempt.
+
+The native runtime's `QuotaExceeded` and `ContentPolicy` failures read as a
+spent quota and a content refusal in the provider error table. The executor
+reports `ContentPolicy` only for 4xx answers other than 401 and 429, and matches
+`safety` as a whole word, so a `safety_settings` parameter error or a 5xx that
+mentions safety is not read as a content refusal.
