@@ -381,6 +381,21 @@ describe("tool.task", () => {
     },
   )
 
+  // B1 (#1453): each run takes its own tool-call budget (admit.ts makes one per input); the description said shared.
+  it.instance("description says each run has its own tool-call budget, not a shared one", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const build = yield* agent.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({ ...ref, agent: build })
+      const description = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
+
+      expect(description).toContain("each run has its own `maxToolCalls` budget")
+      expect(description).not.toContain("shared `maxToolCalls`")
+    }),
+  )
+
   it.instance(
     "workflow description lists configured subagents in stable name order",
     () =>
