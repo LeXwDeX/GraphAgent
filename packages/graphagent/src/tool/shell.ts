@@ -948,6 +948,8 @@ export const ShellTool = Tool.define(
             exit: code,
             truncated: cut,
             ...(cut && file ? { outputPath: file } : {}),
+            // A cancelled command still returns its partial output; `outcome` books it as aborted (#1473).
+            ...(aborted ? { outcome: "aborted" as const } : {}),
           },
           ...(rewritten ? ["shell_output_normalized"] : []),
         ),
