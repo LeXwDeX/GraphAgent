@@ -1386,14 +1386,15 @@ export type ProviderConfig = {
         }
       }
       limit?: {
-        context: number
+        context?: number
         input?: number
-        output: number
+        output?: number
       }
       modalities?: {
         input?: Array<"text" | "audio" | "image" | "video" | "pdf">
         output?: Array<"text" | "audio" | "image" | "video" | "pdf">
       }
+      profile?: ModelProfileOverride
       experimental?: boolean
       status?: "alpha" | "beta" | "deprecated" | "active"
       reasoningDistillation?: ConfigV2ModelReasoningDistillation
@@ -1419,6 +1420,64 @@ export type ProviderConfig = {
     }
   }
 }
+
+export type ModelProfileOverride = {
+  vendor?: string
+  effective_context?: number
+  tool_call_id?: {
+    /**
+     * Characters a tool call id may contain: any, alnum_dash ([A-Za-z0-9_-]) or alnum ([A-Za-z0-9]).
+     */
+    charset: "any" | "alnum_dash" | "alnum"
+    length?: number
+  }
+  user_after_tool_result?: "allow" | "bridge"
+  tool_result_media?: "all" | "image" | "none"
+  cache_marker?: "explicit" | "none"
+  reasoning_mode?: {
+    controls?: Array<ReasoningControl>
+    toggle?: {
+      on: {
+        [key: string]: unknown
+      }
+      off: {
+        [key: string]: unknown
+      }
+    }
+    placeholder?: boolean
+    replay?: "none" | "field" | "signed" | "encrypted"
+    inline_tag?: string
+  }
+  sampling?: {
+    temperature?: number
+    top_p?: number
+    top_k?: number
+  }
+  finish_reasons?: {
+    [key: string]: "content-filter" | "stream_error" | "context_overflow"
+  }
+  edit_tools?: "edit" | "apply_patch"
+  tool_limits?: {
+    max_tools?: number
+    name_max_length?: number
+    name_pattern?: string
+  }
+  schema_fixes?: Array<"openai" | "moonshot" | "gemini">
+}
+
+export type ReasoningControl =
+  | {
+      type: "toggle"
+    }
+  | {
+      type: "effort"
+      values: Array<string>
+    }
+  | {
+      type: "budget_tokens"
+      min?: number
+      max?: number
+    }
 
 /**
  * Log level

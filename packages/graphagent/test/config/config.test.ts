@@ -2206,3 +2206,55 @@ for (const enabled of [true, false]) {
     }),
   )
 }
+
+// #1462: a model declares its capabilities with `limit` (each key on its own) and the `profile` block. The
+// application's own Config service must load both, and reject a profile value outside the vocabulary.
+describe("model profile configuration (#1462)", () => {
+  const relay = (model: object) => ({ provider: { relay: { models: { astra: model } } } })
+
+  it.effect("AppLayer loads a limit with only one of context and output, and the profile block", () =>
+    withConfigTree(
+      {
+        global: {
+          provider: {
+            relay: {
+              models: {
+                window: { limit: { context: 200_000 } },
+                budget: { limit: { output: 8_192 } },
+                profiled: {
+                  limit: { context: 128_000 },
+                  profile: {
+                    vendor: "acme",
+                    edit_tools: "apply_patch",
+                    reasoning_mode: { replay: "field", controls: [{ type: "toggle" }] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      Effect.gen(function* () {
+        const config = yield* Config.Service.use((service) => service.get())
+        const models = config.provider?.relay?.models
+        expect(models?.window?.limit).toEqual({ context: 200_000 })
+        expect(models?.budget?.limit).toEqual({ output: 8_192 })
+        expect(models?.profiled?.profile).toEqual({
+          vendor: "acme",
+          edit_tools: "apply_patch",
+          reasoning_mode: { replay: "field", controls: [{ type: "toggle" }] },
+        })
+      }).pipe(Effect.provide(AppLayer)),
+    ),
+  )
+
+  it.effect("AppLayer rejects a profile value outside the vocabulary", () =>
+    withConfigTree(
+      { global: relay({ profile: { reasoning_mode: { replay: "sometimes" } } }) },
+      Effect.gen(function* () {
+        const exit = yield* Config.Service.use((service) => service.get()).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+      }).pipe(Effect.provide(AppLayer)),
+    ),
+  )
+})

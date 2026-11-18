@@ -12994,7 +12994,6 @@
                       "type": "number"
                     }
                   },
-                  "required": ["context", "output"],
                   "additionalProperties": false
                 },
                 "modalities": {
@@ -13016,6 +13015,9 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "profile": {
+                  "$ref": "#/components/schemas/ModelProfileOverride"
                 },
                 "experimental": {
                   "type": "boolean"
@@ -13067,6 +13069,185 @@
           }
         },
         "additionalProperties": false
+      },
+      "ModelProfileOverride": {
+        "type": "object",
+        "properties": {
+          "vendor": {
+            "type": "string"
+          },
+          "effective_context": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "exclusiveMinimum": 0
+          },
+          "tool_call_id": {
+            "type": "object",
+            "properties": {
+              "charset": {
+                "type": "string",
+                "enum": ["any", "alnum_dash", "alnum"],
+                "description": "Characters a tool call id may contain: any, alnum_dash ([A-Za-z0-9_-]) or alnum ([A-Za-z0-9])."
+              },
+              "length": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": ["charset"],
+            "additionalProperties": false
+          },
+          "user_after_tool_result": {
+            "type": "string",
+            "enum": ["allow", "bridge"]
+          },
+          "tool_result_media": {
+            "type": "string",
+            "enum": ["all", "image", "none"]
+          },
+          "cache_marker": {
+            "type": "string",
+            "enum": ["explicit", "none"]
+          },
+          "reasoning_mode": {
+            "type": "object",
+            "properties": {
+              "controls": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReasoningControl"
+                }
+              },
+              "toggle": {
+                "type": "object",
+                "properties": {
+                  "on": {
+                    "type": "object"
+                  },
+                  "off": {
+                    "type": "object"
+                  }
+                },
+                "required": ["on", "off"],
+                "additionalProperties": false
+              },
+              "placeholder": {
+                "type": "boolean"
+              },
+              "replay": {
+                "type": "string",
+                "enum": ["none", "field", "signed", "encrypted"]
+              },
+              "inline_tag": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "sampling": {
+            "type": "object",
+            "properties": {
+              "temperature": {
+                "type": "number"
+              },
+              "top_p": {
+                "type": "number"
+              },
+              "top_k": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          },
+          "finish_reasons": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": ["content-filter", "stream_error", "context_overflow"]
+            }
+          },
+          "edit_tools": {
+            "type": "string",
+            "enum": ["edit", "apply_patch"]
+          },
+          "tool_limits": {
+            "type": "object",
+            "properties": {
+              "max_tools": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "exclusiveMinimum": 0
+              },
+              "name_max_length": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "exclusiveMinimum": 0
+              },
+              "name_pattern": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "schema_fixes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["openai", "moonshot", "gemini"]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReasoningControl": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["toggle"]
+              }
+            },
+            "required": ["type"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["effort"]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["type", "values"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["budget_tokens"]
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              }
+            },
+            "required": ["type"],
+            "additionalProperties": false
+          }
+        ]
       },
       "LogLevel": {
         "type": "string",

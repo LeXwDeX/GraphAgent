@@ -9,6 +9,7 @@ import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { ConfigProvider } from "@graphagent/core/config/provider"
 import { ConfigMigrateV1 } from "@graphagent/core/v1/config/migrate"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import type { ModelProfileOverride } from "@graphagent/core/model-profile"
 import { ConfigErrorV1 } from "@graphagent/core/v1/config/error"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Global } from "@graphagent/core/global"
@@ -440,6 +441,97 @@ describe("Config", () => {
           decodeV1({ provider: { custom: { models: { astra: { cost: { input: 10, output: 50, tiers: [tier] } } } } } }),
         ).toThrow()
       }
+    }),
+  )
+
+  it.effect(
+    "decodes a model limit with only one of context and output, and migrates the missing key as undefined",
+    () =>
+      Effect.sync(() => {
+        const decodeV1 = Schema.decodeUnknownSync(ConfigV1.Info)
+        const decodeCurrent = Schema.decodeUnknownSync(Config.Info)
+        const limitOf = (limit: Record<string, number>) => {
+          const v1 = decodeV1({ snapshot: false, provider: { custom: { models: { astra: { limit } } } } })
+          expect(v1.provider?.custom?.models?.astra?.limit).toEqual(limit)
+          const migrated = ConfigMigrateV1.migrate(v1)
+          const current = decodeCurrent(migrated)
+          expect(current.providers?.custom?.models?.astra?.limit).toBeDefined()
+          return migrated.providers?.custom?.models?.astra?.limit
+        }
+        const contextOnly = limitOf({ context: 128_000 })
+        expect(contextOnly).toStrictEqual({ context: 128_000, input: undefined, output: undefined })
+        const outputOnly = limitOf({ output: 8_192 })
+        expect(outputOnly).toStrictEqual({ context: undefined, input: undefined, output: 8_192 })
+        expect(limitOf({ input: 100 })).toStrictEqual({ context: undefined, input: 100, output: undefined })
+        expect(limitOf({ context: 128_000, input: 100_000, output: 8_192 })).toStrictEqual({
+          context: 128_000,
+          input: 100_000,
+          output: 8_192,
+        })
+        // A fractional value still truncates, and a limit that is not a number is still rejected.
+        expect(limitOf({ context: 1_000.9 })).toStrictEqual({ context: 1_000, input: undefined, output: undefined })
+        expect(() => decodeV1({ provider: { custom: { models: { astra: { limit: { context: "big" } } } } } })).toThrow()
+      }),
+  )
+
+  it.effect("decodes the model profile block and rejects values outside its vocabulary", () =>
+    Effect.sync(() => {
+      const decodeV1 = Schema.decodeUnknownSync(ConfigV1.Info)
+      const decodeCurrent = Schema.decodeUnknownSync(Config.Info)
+      const withProfile = (profile: unknown) => ({
+        snapshot: false,
+        provider: { custom: { models: { astra: { profile } } } },
+      })
+      const profile: ModelProfileOverride = {
+        vendor: "zhipuai",
+        effective_context: 100_000,
+        tool_call_id: { charset: "alnum", length: 9 },
+        user_after_tool_result: "bridge",
+        tool_result_media: "image",
+        cache_marker: "explicit",
+        reasoning_mode: {
+          controls: [
+            { type: "toggle" },
+            { type: "effort", values: ["low", "high"] },
+            { type: "budget_tokens", max: 1 },
+          ],
+          toggle: { on: { thinking: { type: "enabled" } }, off: { thinking: { type: "disabled" } } },
+          placeholder: true,
+          replay: "encrypted",
+          inline_tag: "think",
+        },
+        sampling: { temperature: 0.6, top_p: 0.95, top_k: 20 },
+        finish_reasons: { sensitive: "content-filter" },
+        edit_tools: "apply_patch",
+        tool_limits: { max_tools: 128, name_max_length: 64, name_pattern: "^[a-z_]+$" },
+        schema_fixes: ["openai", "gemini"],
+      }
+      const v1 = decodeV1(withProfile(profile))
+      expect(v1.provider?.custom?.models?.astra?.profile).toEqual(profile)
+      // The profile stays a V1 key: it is not carried into the current configuration.
+      const migrated = decodeCurrent(ConfigMigrateV1.migrate(v1))
+      expect(migrated.providers?.custom?.models?.astra).not.toHaveProperty("profile")
+      expect(decodeV1(withProfile({})).provider?.custom?.models?.astra?.profile).toEqual({})
+
+      const invalid: Array<Record<string, unknown>> = [
+        { reasoning_mode: { replay: "sometimes" } },
+        { reasoning_mode: { controls: [{ type: "effort" }] } },
+        { reasoning_mode: { controls: [{ type: "unknown" }] } },
+        { reasoning_mode: { toggle: { on: {} } } },
+        { tool_call_id: { charset: "ascii" } },
+        { tool_call_id: { length: 9 } },
+        { user_after_tool_result: "never" },
+        { tool_result_media: "video" },
+        { cache_marker: "implicit" },
+        { edit_tools: "patch" },
+        { schema_fixes: ["anthropic"] },
+        { finish_reasons: { sensitive: "ignore" } },
+        { effective_context: 0 },
+        { effective_context: 1.5 },
+        { tool_limits: { max_tools: 0 } },
+        { tool_limits: { name_max_length: -1 } },
+      ]
+      for (const item of invalid) expect(() => decodeV1(withProfile(item))).toThrow()
     }),
   )
 
