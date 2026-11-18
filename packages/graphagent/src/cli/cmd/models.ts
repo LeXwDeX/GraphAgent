@@ -5,6 +5,7 @@ import { effectCmd, fail } from "../effect-cmd"
 import { UI } from "../ui"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { t } from "@graphagent/tui/i18n"
+import { ProviderRedact } from "@/provider/redact"
 
 export const ModelsCommand = effectCmd({
   command: "models [provider]",
@@ -41,7 +42,7 @@ export const ModelsCommand = effectCmd({
         process.stdout.write(`${providerID}/${modelID}`)
         process.stdout.write(EOL)
         if (verbose) {
-          process.stdout.write(JSON.stringify(model, null, 2))
+          process.stdout.write(JSON.stringify(ProviderRedact.redactModel(model), null, 2))
           process.stdout.write(EOL)
         }
       }
