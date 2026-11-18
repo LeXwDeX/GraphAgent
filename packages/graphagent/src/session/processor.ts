@@ -120,6 +120,19 @@ interface ProcessorContext extends Input {
 type StreamEvent = LLMEvent
 
 /**
+ * A provider error ends the attempt without a step-finish, so the usage the provider billed for the cut-off
+ * response is accumulated here; the failure itself, and so its routing, is untouched.
+ */
+function failProviderError(ctx: ProcessorContext, event: Extract<StreamEvent, { type: "provider-error" }>) {
+  if (event.usage)
+    accumulateUsage(
+      ctx.assistantMessage,
+      Session.getUsage({ model: ctx.model, usage: event.usage, metadata: event.providerMetadata }),
+    )
+  return Effect.fail(event)
+}
+
+/**
  * The verdict of every tool call of one provider request (SF-5): the processor
  * settles a call once its doom-loop check is through, and the tool's `execute`
  * reads the verdict before running. The AI SDK dispatches a tool concurrently
@@ -666,7 +679,7 @@ export const layer = Layer.effect(
           }
 
           case "provider-error":
-            yield* Effect.fail(value)
+            yield* failProviderError(ctx, value)
             return
 
           case "step-start":

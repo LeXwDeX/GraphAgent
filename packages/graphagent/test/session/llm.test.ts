@@ -12,7 +12,7 @@ import { LLM, strictJSON } from "../../src/session/llm"
 import { AgentScheduler } from "../../src/session/agent-scheduler"
 import * as AgentSchedulerState from "../../src/session/agent-scheduler-state"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
-import { LLMEvent } from "@graphagent/llm"
+import { isContextOverflowFailure, LLMEvent, Usage } from "@graphagent/llm"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -458,6 +458,46 @@ describe("session.llm.ai-sdk adapter", () => {
       message: "Provider finish_reason: model_context_window_exceeded",
     })
     expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("carries the billed usage and provider metadata on the context-overflow provider error", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({ type: "start-step", request: {}, warnings: [] }),
+      uncheckedAdapterEvent({
+        type: "finish-step",
+        finishReason: "length",
+        rawFinishReason: "model_context_window_exceeded",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+          inputTokenDetails: { noCacheTokens: 70, cacheReadTokens: 30, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: 15, reasoningTokens: 5 },
+        },
+        providerMetadata: { anthropic: { cacheCreationInputTokens: 7 } },
+      }),
+    ])
+    const error = events.at(-1)
+    if (error?.type !== "provider-error") throw new Error("expected a provider error")
+    expect(error.usage).toBeInstanceOf(Usage)
+    expect(error.usage).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      reasoningTokens: 5,
+      cacheReadInputTokens: 30,
+    })
+    expect(error.providerMetadata).toEqual({ anthropic: { cacheCreationInputTokens: 7 } })
+    // The route to compaction must not depend on the usage riding along.
+    expect(isContextOverflowFailure(error)).toBe(true)
+    expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("leaves usage off the context-overflow provider error when the stream reported none", async () => {
+    const error = (await adapt(finishStepWith("length", "model_context_window_exceeded"))).at(-1)
+    if (error?.type !== "provider-error") throw new Error("expected a provider error")
+    expect("usage" in error).toBe(false)
+    expect(isContextOverflowFailure(error)).toBe(true)
   })
 
   test("keeps an unlisted vendor finish_reason as unknown and carries the raw value", async () => {

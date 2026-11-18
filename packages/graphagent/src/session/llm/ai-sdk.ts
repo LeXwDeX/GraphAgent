@@ -145,6 +145,23 @@ function withRawFinishReason(metadata: ProviderMetadata | undefined, raw: string
   return { ...metadata, [METADATA_NAMESPACE]: { ...metadata?.[METADATA_NAMESPACE], rawFinishReason: raw } }
 }
 
+/** Provider metadata of one finished step, with the Copilot billing the raw chunks carried folded in. */
+function stepMetadata(state: ReturnType<typeof adapterState>, event: FinishStepEvent) {
+  const original = providerMetadata(event.providerMetadata)
+  const metadata =
+    state.copilotTotalNanoAiu === undefined
+      ? original
+      : {
+          ...original,
+          copilot: {
+            ...original?.copilot,
+            totalNanoAiu: state.copilotTotalNanoAiu,
+          },
+        }
+  state.copilotTotalNanoAiu = undefined
+  return metadata
+}
+
 function unlistedRawFinish(event: FinishStepEvent) {
   const raw = event.rawFinishReason
   if (event.finishReason !== "other" || !raw || raw === "other") return undefined
@@ -163,26 +180,18 @@ function finishStep(
   const target = FinishReasonRules.ruleOf(event.rawFinishReason)
   if (target === "stream_error")
     return Effect.fail(new ProviderError.ResponseStreamError(finishReasonMessage(event.rawFinishReason)))
+  // No step-finish follows this error, so the provider-error carries what the cut-off response was billed.
   if (target === "context_overflow")
-    return Effect.succeed([
+    return Effect.sync(() => [
       LLMEvent.providerError({
         message: finishReasonMessage(event.rawFinishReason),
         classification: "context-overflow",
+        usage: usage(event.usage),
+        providerMetadata: stepMetadata(state, event),
       }),
     ])
   return Effect.sync(() => {
-    const original = providerMetadata(event.providerMetadata)
-    const metadata =
-      state.copilotTotalNanoAiu === undefined
-        ? original
-        : {
-            ...original,
-            copilot: {
-              ...original?.copilot,
-              totalNanoAiu: state.copilotTotalNanoAiu,
-            },
-          }
-    state.copilotTotalNanoAiu = undefined
+    const metadata = stepMetadata(state, event)
     const reason: FinishReason =
       target === "content-filter"
         ? "content-filter"
