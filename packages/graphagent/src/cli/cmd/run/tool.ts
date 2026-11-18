@@ -756,14 +756,21 @@ function scrollTaskStart(_: ToolProps<typeof TaskTool>): string {
   return ""
 }
 
+const TASK_RESULT_OPEN = "<task_result>"
+const TASK_RESULT_CLOSE = "</task_result>"
+
 function taskResult(output: string): string | undefined {
   if (!output.trim()) {
     return undefined
   }
 
-  const match = output.match(/<task_result>\s*([\s\S]*?)\s*<\/task_result>/)
-  if (match) {
-    return match[1].trim() || undefined
+  // What the subagent wrote may hold a closing tag of its own: the body runs from the first opening tag to the last
+  // closing one, as in the TUI's `resultBody`.
+  const open = output.indexOf(TASK_RESULT_OPEN)
+  const start = open + TASK_RESULT_OPEN.length
+  const end = output.lastIndexOf(TASK_RESULT_CLOSE)
+  if (open !== -1 && end >= start) {
+    return output.slice(start, end).trim() || undefined
   }
 
   const next = output
