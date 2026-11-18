@@ -44,7 +44,6 @@ import { isMedia } from "@/util/media"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
-import { ContextFolding } from "./context-folding"
 import { EngineProcess } from "./engine-process"
 import { ModelHistory } from "./history/model"
 import { isReplayableAssistantMessage } from "./message-replay"
@@ -655,8 +654,6 @@ export async function toModelMessagesPerMessage(
   }
   return messages
 }
-
-export const contextFoldingHistory = ContextFolding.history
 
 export function toModelMessages(
   input: WithParts[],

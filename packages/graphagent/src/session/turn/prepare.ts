@@ -7,8 +7,6 @@ import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { ModelsDev } from "@graphagent/core/models-dev"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
-import { ConfigCompaction } from "@graphagent/core/config/compaction"
-import { Flag } from "@graphagent/core/flag/flag"
 import { NamedError } from "@graphagent/core/util/error"
 import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
@@ -1879,15 +1877,6 @@ export function makePrepare(deps: PrepareDeps) {
       sessionID, messages: msgs, enabled: enabledTools.includes("todowrite"),
     })
 
-    // Building the folding history walks every message; only do it when
-    // built-in dynamic folding is enabled for this request.
-    const foldingConfig = configured.compaction
-    const folding = ConfigCompaction.resolveDynamic({
-      disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
-      dynamic: foldingConfig?.dynamic,
-      prune: foldingConfig?.prune,
-    })
-
     // Permission.ask evaluates native rules before configured rules. Use
     // that same split for everything advertised to the model.
     const [
@@ -1900,7 +1889,6 @@ export function makePrepare(deps: PrepareDeps) {
       hooksDocs,
       memoryDocs,
       modelMsgs,
-      contextFoldingHistory,
     ] = yield* Effect.all(
       [
         sys.skills(agent, session.permission, nativePermission),
@@ -1922,9 +1910,6 @@ export function makePrepare(deps: PrepareDeps) {
         MessageV2.toModelMessagesEffect(msgs, model, {
           reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
         }),
-        folding.enabled
-          ? MessageV2.contextFoldingHistory({ messages: msgs, ledger: toolSources })
-          : Effect.succeed(undefined),
       ],
       { concurrency: "unbounded" },
     )
@@ -1974,7 +1959,6 @@ export function makePrepare(deps: PrepareDeps) {
       toolPolicy: refuseTools ? "refuse" : undefined,
       onToolRefused,
       purpose: "conversation",
-      contextFolding: contextFoldingHistory,
     }
     if (agentMessages && agentSnapshot) yield* associateAgentSnapshot({ agentMessages, identity, agentSnapshot, msgs })
     runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)))

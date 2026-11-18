@@ -24,13 +24,7 @@ import type { LLMClientShape } from "@graphagent/llm/route"
 import { RequestExecutor } from "@graphagent/llm/route"
 import { LLMNative } from "./native-request"
 import { ThinkingReplay } from "../thinking-replay"
-import {
-  ContextFolding,
-  type HistorySnapshot as ContextFoldingHistorySnapshot,
-  type RequestPurpose,
-} from "../context-folding"
-import type { SystemTransmission } from "@graphagent/core/session/context-folding"
-import type { ContextFoldingProjectionPlan } from "@graphagent/core/session/context-folding"
+import type { LLMPurpose } from "./purpose"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
@@ -39,7 +33,6 @@ export type StreamResult =
   | {
       readonly type: "supported"
       readonly stream: Stream.Stream<LLMEvent, unknown>
-      readonly contextFoldingPlan: ContextFoldingProjectionPlan | undefined
     }
   | { readonly type: "unsupported"; readonly reason: string }
 
@@ -63,12 +56,7 @@ type StreamInput = {
   /** The caller wraps the stream in the shared session retry policy; do not retry twice. */
   readonly sessionRetry?: boolean
   readonly onThinkingInvalidated?: (blocks: readonly string[]) => Effect.Effect<void>
-  readonly contextFolding?: {
-    readonly enabled: boolean
-    readonly purpose: RequestPurpose
-    readonly history?: ContextFoldingHistorySnapshot
-    readonly system: SystemTransmission
-  }
+  readonly purpose?: LLMPurpose.RequestPurpose
 }
 
 export function status(input: Pick<StreamInput, "model" | "provider" | "auth">): RuntimeStatus {
@@ -117,9 +105,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     // translation belongs here, not split across both packages.
     const tools = nativeTools(input.tools, input)
     const sourceOrigins = ThinkingReplay.replayOrigins(input.messages)
-    const sourceMessages = ContextFolding.copyModelMessages(input.messages)
-    const transformInput = ContextFolding.copyModelMessages(input.messages) ?? input.messages
-    const transformedMessages = ProviderTransform.message(transformInput, input.model, input.providerOptions ?? {})
+    const transformedMessages = ProviderTransform.message(input.messages, input.model, input.providerOptions ?? {})
     const headers = { ...providerHeaders(input.provider.options.headers), ...input.headers }
     // Only registered GraphAgent transports consume and strip the title routing marker.
     const consumesTitle = isTitleHeaderConsumer(fetch)
@@ -143,38 +129,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
       }),
       { tools: toDefinitions(tools) },
     )
-    const folding = input.contextFolding
-    const snapshot =
-      folding?.enabled && folding.history && folding.purpose === "conversation" && sourceMessages
-        ? ContextFolding.bindModelMessages(folding.history, sourceMessages)
-        : undefined
-    const projection =
-      folding?.enabled && snapshot && folding.purpose === "conversation"
-        ? ContextFolding.projectNative({
-            model: input.model,
-            purpose: folding.purpose,
-            snapshot,
-            request: canonical,
-            transformedMessages,
-            sourceMessages: sourceMessages ?? [],
-            messageTransformOptions: input.providerOptions ?? {},
-            tools: input.tools,
-            toolChoice: input.toolChoice,
-            maxOutputTokens: input.maxOutputTokens,
-            params: {
-              temperature: input.temperature,
-              topP: input.topP,
-              topK: input.topK,
-              maxOutputTokens: input.maxOutputTokens,
-              providerOptions: input.providerOptions,
-            },
-            system: folding.system,
-          })
-        : undefined
-    let request =
-      projection?.applied === true
-        ? LLMRequest.update(canonical, { messages: projection.request.messages as typeof canonical.messages })
-        : canonical
+    let request = canonical
     // Match SDK stream scope; executor retries and relay hops are not individually observed here.
     const diagnostic = {
       clientOperationID: randomUUID(),
@@ -263,7 +218,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
           )
         }),
       ),
-    ).pipe(Stream.provideService(RequestExecutor.RetryTimeouts, input.contextFolding?.purpose !== "compaction"))
+    ).pipe(Stream.provideService(RequestExecutor.RetryTimeouts, input.purpose !== "compaction"))
     // The session processor retries with the shared policy (including 429/503
     // retry-after and credential refresh), so the native executor must not
     // spend its own retry budget first.
@@ -273,7 +228,6 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
 
     return {
       ...current,
-      contextFoldingPlan: projection?.plan,
       stream: (fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream).pipe(
         Stream.map((event) => thinking?.bind(event) ?? event),
         Stream.tap((event) =>
