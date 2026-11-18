@@ -343,6 +343,15 @@ export function Main() {
     return boundary !== undefined && !orderedBefore(message, boundary)
   }
 
+  // What the user wrote, not what the server added after a run (#1408): a background result and the text a command
+  // leaves for the model are synthetic messages. One whose parts have not arrived is not known to be the user's.
+  // Undo and redo step over user messages and nothing else, so a result is never where either of them stops.
+  const userWrote = (message: Message) => {
+    if (message.role !== "user") return false
+    const parts = sync.data.part[message.id]
+    return parts !== undefined && !isSyntheticMessage(parts)
+  }
+
   const revertDiffFiles = createMemo(() => getRevertDiffFiles(revertInfo()?.diff ?? ""))
 
   const revertRevertedMessages = createMemo(() => {
@@ -1021,13 +1030,7 @@ export function Main() {
         if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
         const revert = session()?.revert?.messageID
         const revertMessage = revert ? messages().find((m) => m.id === revert) : undefined
-        // What the user wrote, not what the server added after a run (#1408): a background result and the text a command
-        // leaves for the model are synthetic messages. One whose parts have not arrived is not known to be the user's.
-        const message = messages().findLast((x) => {
-          if (x.role !== "user" || (revertMessage && !orderedBefore(x, revertMessage))) return false
-          const parts = sync.data.part[x.id]
-          return parts !== undefined && !isSyntheticMessage(parts)
-        })
+        const message = messages().findLast((x) => userWrote(x) && (!revertMessage || orderedBefore(x, revertMessage)))
         if (!message) return
         void sdk.client.session
           .revert({
@@ -1062,7 +1065,7 @@ export function Main() {
         if (!messageID) return
         const revertMessage = messages().find((m) => m.id === messageID)
         const message = revertMessage
-          ? messages().find((x) => x.role === "user" && orderedBefore(revertMessage, x))
+          ? messages().find((x) => userWrote(x) && orderedBefore(revertMessage, x))
           : undefined
         if (!message) {
           void sdk.client.session.unrevert({

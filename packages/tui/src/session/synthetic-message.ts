@@ -4,9 +4,9 @@
 /**
  * Whether a user message is one the user wrote (#1408). The server also adds user messages of its own: the result of
  * a finished background run (#1058) and the text a command leaves for the model, each a text part marked `synthetic`.
- * What undo, the jump to the last user message and the PR tracker's "the user spoke" mean by the user's message is
- * every user message that is not one of those, so they all ask this one function. Pure: the parts come in as an
- * argument.
+ * What undo and redo, the jump to the last user message and the PR tracker's "the user spoke" mean by the user's
+ * message is every user message that is not one of those, so they all ask this one function. Pure: the parts come in
+ * as an argument.
  */
 
 /** What the judgement reads of a part: its type, and for a text part whether the server wrote it. */

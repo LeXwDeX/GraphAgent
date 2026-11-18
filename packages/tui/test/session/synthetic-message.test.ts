@@ -5,8 +5,8 @@ import { expect, test } from "bun:test"
 import type { CompactionPart, FilePart, Part, TextPart } from "@graphagent/sdk"
 import { isSyntheticMessage } from "../../src/session/synthetic-message"
 
-// The one judgement undo, the jump to the last user message and the PR tracker share (#1408), on the parts the SDK
-// gives the store: a message is synthetic when it has text and every text part of it is.
+// The one judgement undo and redo, the jump to the last user message and the PR tracker share (#1408), on the parts
+// the SDK gives the store: a message is synthetic when it has text and every text part of it is.
 
 const base = { sessionID: "ses_synthetic", messageID: "msg_synthetic" }
 
