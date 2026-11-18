@@ -5,6 +5,7 @@ import { errorMessage } from "@/util/error"
 import { ProviderError } from "@/provider/error"
 import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { isRecord } from "@/util/record"
+import { FinishReasonRules } from "./finish-reason"
 
 type Result = Awaited<ReturnType<typeof streamText>>
 type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
@@ -127,6 +128,81 @@ function isMissingFinishReason(error: unknown) {
   return InvalidResponseDataError.isInstance(error) || ("name" in error && error.name === "AI_InvalidResponseDataError")
 }
 
+type FinishStepEvent = Extract<AISDKEvent, { type: "finish-step" }>
+
+/** Longest raw finish_reason kept in metadata and error text; the value comes from the endpoint. */
+const RAW_FINISH_REASON_LIMIT = 64
+
+const finishReasonMessage = (raw: string | undefined) => `Provider finish_reason: ${raw}`
+
+/**
+ * Carries a vendor finish_reason the SDK folded into `other` and no rule covers,
+ * so an empty-response error can name it. Same reserved namespace as
+ * `withSuppressedActivity`; the key lives only on the in-memory event.
+ */
+function withRawFinishReason(metadata: ProviderMetadata | undefined, raw: string | undefined) {
+  if (raw === undefined) return metadata
+  return { ...metadata, [METADATA_NAMESPACE]: { ...metadata?.[METADATA_NAMESPACE], rawFinishReason: raw } }
+}
+
+function unlistedRawFinish(event: FinishStepEvent) {
+  const raw = event.rawFinishReason
+  if (event.finishReason !== "other" || !raw || raw === "other") return undefined
+  return raw.slice(0, RAW_FINISH_REASON_LIMIT)
+}
+
+/**
+ * The raw finish_reason is read before the unified value: the SDK reports a
+ * vendor-specific stop as `other`, and the Anthropic provider reports
+ * `model_context_window_exceeded` as `length`.
+ */
+function finishStep(
+  state: ReturnType<typeof adapterState>,
+  event: FinishStepEvent,
+): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
+  const target = FinishReasonRules.ruleOf(event.rawFinishReason)
+  if (target === "stream_error")
+    return Effect.fail(new ProviderError.ResponseStreamError(finishReasonMessage(event.rawFinishReason)))
+  if (target === "context_overflow")
+    return Effect.succeed([
+      LLMEvent.providerError({
+        message: finishReasonMessage(event.rawFinishReason),
+        classification: "context-overflow",
+      }),
+    ])
+  return Effect.sync(() => {
+    const original = providerMetadata(event.providerMetadata)
+    const metadata =
+      state.copilotTotalNanoAiu === undefined
+        ? original
+        : {
+            ...original,
+            copilot: {
+              ...original?.copilot,
+              totalNanoAiu: state.copilotTotalNanoAiu,
+            },
+          }
+    state.copilotTotalNanoAiu = undefined
+    const reason: FinishReason =
+      target === "content-filter"
+        ? "content-filter"
+        : state.missingFinishReason
+          ? "unknown"
+          : finishReason(event.finishReason)
+    return [
+      LLMEvent.stepFinish({
+        index: state.step++,
+        reason,
+        usage: usage(event.usage),
+        providerMetadata: withRawFinishReason(
+          withSuppressedActivity(metadata, state.suppressedActivity),
+          target === undefined ? unlistedRawFinish(event) : undefined,
+        ),
+      }),
+    ]
+  })
+}
+
 export function toLLMEvents(
   state: ReturnType<typeof adapterState>,
   event: AISDKEvent,
@@ -140,30 +216,7 @@ export function toLLMEvents(
       return Effect.succeed([LLMEvent.stepStart({ index: state.step })])
 
     case "finish-step":
-      if (event.rawFinishReason === "network_error")
-        return Effect.fail(new ProviderError.ResponseStreamError("Provider finish_reason: network_error"))
-      return Effect.sync(() => {
-        const original = providerMetadata(event.providerMetadata)
-        const metadata =
-          state.copilotTotalNanoAiu === undefined
-            ? original
-            : {
-                ...original,
-                copilot: {
-                  ...original?.copilot,
-                  totalNanoAiu: state.copilotTotalNanoAiu,
-                },
-              }
-        state.copilotTotalNanoAiu = undefined
-        return [
-          LLMEvent.stepFinish({
-            index: state.step++,
-            reason: state.missingFinishReason ? "unknown" : finishReason(event.finishReason),
-            usage: usage(event.usage),
-            providerMetadata: withSuppressedActivity(metadata, state.suppressedActivity),
-          }),
-        ]
-      })
+      return finishStep(state, event)
 
     case "finish":
       return Effect.sync(() => {

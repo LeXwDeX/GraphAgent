@@ -1624,11 +1624,13 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
         ).toBe("stop")
 
         const parts = yield* MessageV2.parts(msg.id)
-        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const texts = parts.filter((part): part is SessionV1.TextPart => part.type === "text")
         const reasoning = parts.find((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
-        expect(text?.text).toBe("partial")
+        // Three reconnects dropped the text of the earlier attempts; only the final attempt's partial output
+        // stays, and it follows that attempt's reasoning.
+        expect(texts.map((part) => part.text)).toEqual(["partial"])
         expect(reasoning?.text).toBe("thinking")
-        expect(parts.indexOf(text!)).toBeLessThan(parts.indexOf(reasoning!))
+        expect(parts.indexOf(texts[0])).toBeGreaterThan(parts.indexOf(reasoning!))
       }),
     { config: cfg },
   ),

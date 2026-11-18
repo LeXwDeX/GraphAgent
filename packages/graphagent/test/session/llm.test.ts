@@ -423,6 +423,81 @@ describe("session.llm.ai-sdk adapter", () => {
     expect(stepFinish.providerMetadata).toBeUndefined()
   })
 
+  // The AI SDK folds every non-standard finish_reason into `other` and keeps the
+  // vendor value in `rawFinishReason`; the Anthropic provider maps
+  // model_context_window_exceeded onto `length`. The adapter reads the raw value first.
+  const finishStepEvent = (finishReason: string, rawFinishReason: string | undefined) =>
+    uncheckedAdapterEvent({ type: "finish-step", finishReason, rawFinishReason })
+  const finishStepWith = (finishReason: string, rawFinishReason: string | undefined) => [
+    uncheckedAdapterEvent({ type: "start-step", request: {}, warnings: [] }),
+    finishStepEvent(finishReason, rawFinishReason),
+  ]
+
+  test("maps a content-filter vendor finish_reason carried only in rawFinishReason", async () => {
+    const events = await adapt(finishStepWith("other", "sensitive"))
+    expect(events.at(-1)).toMatchObject({ type: "step-finish", reason: "content-filter" })
+  })
+
+  for (const raw of ["insufficient_system_resource", "aborted", "network_error"]) {
+    test(`fails the stream as a retryable response stream error for finish_reason ${raw}`, async () => {
+      const error = await Effect.runPromise(
+        Effect.flip(LLMAISDK.toLLMEvents(LLMAISDK.adapterState(), finishStepEvent("other", raw))),
+      )
+      expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+      if (!(error instanceof ProviderError.ResponseStreamError)) throw error
+      expect(error.message).toBe(`Provider finish_reason: ${raw}`)
+      expect(ProviderError.isRetryableResponseStreamError(error)).toBe(true)
+    })
+  }
+
+  test("turns model_context_window_exceeded into a context-overflow provider error even when mapped to length", async () => {
+    const events = await adapt(finishStepWith("length", "model_context_window_exceeded"))
+    expect(events.at(-1)).toMatchObject({
+      type: "provider-error",
+      classification: "context-overflow",
+      message: "Provider finish_reason: model_context_window_exceeded",
+    })
+    expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("keeps an unlisted vendor finish_reason as unknown and carries the raw value", async () => {
+    const events = await adapt(finishStepWith("other", "foo"))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.reason).toBe("unknown")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("foo")
+  })
+
+  test("truncates a long raw finish_reason to 64 characters", async () => {
+    const events = await adapt(finishStepWith("other", "x".repeat(100)))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("x".repeat(64))
+  })
+
+  for (const [finishReason, raw] of [
+    ["other", "other"],
+    ["other", undefined],
+    ["other", ""],
+    ["stop", "stop"],
+    ["length", "length"],
+  ] as const) {
+    test(`does not add rawFinishReason for ${finishReason}/${String(raw)}`, async () => {
+      const events = await adapt(finishStepWith(finishReason, raw))
+      const stepFinish = events.at(-1)
+      if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+      expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBeUndefined()
+    })
+  }
+
+  test("does not match inherited object keys as finish rules", async () => {
+    const events = await adapt(finishStepWith("other", "constructor"))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.reason).toBe("unknown")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("constructor")
+  })
+
   test("preserves tool-error cause", async () => {
     const error = new PermissionV1.RejectedError()
     const events = await Effect.runPromise(
