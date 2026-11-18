@@ -63,6 +63,17 @@ export type ChildRunOutcome =
   | { readonly type: "interrupted"; readonly reason?: string }
 
 /**
+ * What the engine measured of a task run (#1453), written for the model: the `<task_facts>` block as it reads, and
+ * when the engine cut the run short, why. The block is kept as text, so what a result notice says is what the run
+ * recorded, not what a later version would render.
+ */
+export interface ChildRunFacts {
+  readonly block: string
+  /** Set when the run ended on its agent's step limit or ran out of tool budget: its result is partial. */
+  readonly incomplete?: "step_limit" | "tool_budget_exhausted"
+}
+
+/**
  * What a detached run tells its parent when it ends, kept with the run's row
  * until the result ledger has delivered it (`child.result`). `title` names the
  * work and `text` is the result, or the failure, as the owner wants the parent
@@ -75,6 +86,8 @@ export interface ChildRunReport {
   readonly initiator?: "user" | "agent"
   /** The slash command that started a user-initiated run. */
   readonly command?: string
+  /** What the engine measured of the run (#1453); a run that finished without it, or a row from before it, has none. */
+  readonly facts?: ChildRunFacts
 }
 
 /**

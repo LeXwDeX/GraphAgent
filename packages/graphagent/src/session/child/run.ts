@@ -43,6 +43,7 @@ export {
   type ChildRunCancelResult,
   type ChildRunCredential,
   type ChildRunError,
+  type ChildRunFacts,
   type ChildRunHandle,
   type ChildRunOutcome,
   type ChildRunReport,
