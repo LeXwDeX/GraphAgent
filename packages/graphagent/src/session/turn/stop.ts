@@ -180,6 +180,9 @@ const appendSynthetic = Effect.fnUntraced(function* (sessions: Session.Interface
       id: input.target,
       sessionID: input.sessionID,
       role: "user",
+      // The turn's mode is read from its last user message (`tools.ts`, `prepare.ts`, `loop.ts`), so the message
+      // that continues the turn must carry it; without it the next step runs with the defaults of a missing mode.
+      hookMode: input.lastUser.hookMode,
       agent: input.lastUser.agent,
       model: input.lastUser.model,
       format: input.lastUser.format,

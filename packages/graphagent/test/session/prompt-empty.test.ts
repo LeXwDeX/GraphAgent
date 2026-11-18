@@ -381,3 +381,48 @@ it.instance(
     }),
   { config: cfg },
 )
+
+// The turn's mode is read from its last user message, so the runtime hint that continues the turn must carry it.
+for (const hookMode of ["interactive", "noninteractive", undefined] as const) {
+  it.instance(
+    `session.prompt loop keeps the turn's hook mode on the runtime hint message (${hookMode ?? "unset"})`,
+    () =>
+      Effect.gen(function* () {
+        let calls = 0
+        const llmLayer = Layer.succeed(
+          LLM.Service,
+          LLM.Service.of({
+            organizer: () => Effect.succeed(undefined),
+            stream: () => {
+              const script = calls === 0 ? pseudoToolCallScript : validScript
+              calls += 1
+              return Stream.fromIterable(script)
+            },
+          }),
+        )
+        yield* Effect.gen(function* () {
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const chat = yield* sessions.create({ title: "Hint hook mode" })
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            noReply: true,
+            ...(hookMode === undefined ? {} : { hookMode }),
+            parts: [{ type: "text", text: "read the file" }],
+          })
+
+          yield* prompt.loop({ sessionID: chat.id })
+
+          expect(calls).toBe(2)
+          const messages = yield* sessions.messages({ sessionID: chat.id })
+          const users = messages.flatMap((message) => (message.info.role === "user" ? [message.info] : []))
+          // The original message holds the mode the turn was started with; the hint continues the same turn.
+          expect(users).toHaveLength(2)
+          expect(users[0]?.hookMode).toBe(hookMode)
+          expect(users[1]?.hookMode).toBe(hookMode)
+        }).pipe(Effect.provide(makePrompt(llmLayer)))
+      }),
+    { config: cfg },
+  )
+}
