@@ -433,7 +433,7 @@ function makeOverflowGate(deps: LoopDeps) {
       lastFinishedIndex < 0
         ? []
         : input.msgs.slice(lastFinishedIndex + 1).filter((message) => message.info.role === "user")
-    // Same-model usage reflects the prior prepared request, including folding. Add new user text and
+    // Same-model usage reflects the prior prepared request. Add new user text and
     // pending tool results below. On a model switch, estimate the active projected history.
     // Media is stripped before either estimate and never logged.
     const freshEstimate = switchedModel || input.lastFinished.summary === true
@@ -453,8 +453,7 @@ function makeOverflowGate(deps: LoopDeps) {
     // request so that estimate still includes what the provider actually receives.
     const estimatedRequestOverhead = freshEstimate ? (input.requestOverheads.get(input.sessionID) ?? 0) : 0
     // Provider usage covers the request that produced lastFinished, but not tool results that completed
-    // afterward. Each result is still present until a projection actually folds it; text equality alone
-    // does not authorize a budget deduction (e.g. bash results are protected from folding).
+    // afterward. Each of those results is counted in full.
     const pendingToolOutputTokens = freshEstimate ? 0 : estimatePendingToolOutputTokens(input.msgs, lastFinishedIndex)
     const estimatedInputTokens = freshEstimate
       ? estimatedTextTokens + estimatedRequestOverhead
