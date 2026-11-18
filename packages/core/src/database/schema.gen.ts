@@ -155,6 +155,21 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_step\` (
+          \`part_id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`provider_id\` text NOT NULL,
+          \`model_id\` text NOT NULL,
+          \`prepare_ms\` integer NOT NULL,
+          \`request_ms\` integer NOT NULL,
+          \`ttft_ms\` integer NOT NULL,
+          \`tool_calls\` integer NOT NULL,
+          \`tool_errors\` integer NOT NULL,
+          \`retries\` integer NOT NULL,
+          CONSTRAINT \`fk_session_step_part_id_part_id_fk\` FOREIGN KEY (\`part_id\`) REFERENCES \`part\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`tool_outcome\` (
           \`part_id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -479,6 +494,8 @@ export default {
       yield* tx.run(
         `CREATE INDEX \`child_run_unreported\` ON \`child_run\` (\`parent_session_id\`) WHERE "child_run"."reported_at" is null and "child_run"."detached" = 1;`,
       )
+      yield* tx.run(`CREATE INDEX \`session_step_session_idx\` ON \`session_step\` (\`session_id\`);`)
+      yield* tx.run(`CREATE INDEX \`session_step_model_idx\` ON \`session_step\` (\`provider_id\`,\`model_id\`);`)
       yield* tx.run(`CREATE INDEX \`tool_outcome_session_idx\` ON \`tool_outcome\` (\`session_id\`);`)
       yield* tx.run(
         `CREATE INDEX \`tool_outcome_model_idx\` ON \`tool_outcome\` (\`provider_id\`,\`model_id\`,\`tool\`);`,

@@ -830,6 +830,55 @@
       "scenario": "S7",
       "delta": 1,
       "reason": "tool_outcome 每个终态工具部件一次 upsert"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S1",
+      "delta": 1,
+      "reason": "session_step 每个 step-finish 一次 upsert"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S2",
+      "delta": 3,
+      "reason": "session_step 每个 step-finish 一次 upsert（3 个 step）"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S3",
+      "delta": 1,
+      "reason": "session_step 每个 step-finish 一次 upsert"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S4",
+      "delta": 21,
+      "reason": "session_step 每个 step-finish 一次 upsert（21 个 step）"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S5",
+      "delta": 34,
+      "reason": "session_step 每个 step-finish 一次 upsert（34 个 step）"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S6",
+      "delta": 2,
+      "reason": "session_step 每个 step-finish 一次 upsert（2 个 step）"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S7",
+      "delta": 4,
+      "reason": "session_step 每个 step-finish 一次 upsert（4 个 step）"
     }
   ]
 }
