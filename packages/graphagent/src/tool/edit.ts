@@ -4,7 +4,7 @@
 // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
 
 import * as path from "path"
-import { Effect, Schema, Semaphore } from "effect"
+import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -118,18 +118,6 @@ function prepareEditArguments(value: unknown): unknown {
   }
 }
 
-const locks = new Map<string, Semaphore.Semaphore>()
-
-function lock(filePath: string) {
-  const resolvedFilePath = FSUtil.resolve(filePath)
-  const hit = locks.get(resolvedFilePath)
-  if (hit) return hit
-
-  const next = Semaphore.makeUnsafe(1)
-  locks.set(resolvedFilePath, next)
-  return next
-}
-
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({
     description: "Path to the file to edit; relative paths resolve from the project directory",
@@ -145,6 +133,30 @@ export const Parameters = Schema.Struct({
   }),
 })
 
+type EditParams = Schema.Schema.Type<typeof Parameters>
+
+/** What an edit does to one file: its text before and after, the BOM to write, and the diff shown for approval. */
+function planEdit(source: { readonly text: string; readonly bom: boolean }, params: EditParams, filePath: string) {
+  const contentOld = source.text
+  const ending = detectLineEnding(contentOld)
+  const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
+  const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
+
+  const next = Bom.split(replace(contentOld, old, replacement, params.replaceAll))
+  const diff = trimDiff(
+    createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(next.text)),
+  )
+  return { contentOld, contentNew: next.text, bom: source.bom || next.bom, diff }
+}
+
+/** The outcome of one edit; `outside` means the disk differed from the session's last record of the file. */
+interface Applied {
+  readonly contentOld: string
+  readonly contentNew: string
+  readonly diff: string
+  readonly outside: boolean
+}
+
 export const EditTool = Tool.define(
   "edit",
   Effect.gen(function* () {
@@ -153,6 +165,109 @@ export const EditTool = Tool.define(
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
     const fileState = yield* FileState.Service
+
+    const notFound = (filePath: string) => new Error(`File ${filePath} not found. Check the path with glob.`)
+
+    const askEdit = (ctx: Tool.Context, relative: string, filePath: string, diff: string) =>
+      ctx.ask({
+        permission: "edit",
+        patterns: [relative],
+        always: ["*"],
+        metadata: {
+          filepath: filePath,
+          diff,
+        },
+      })
+
+    // The write section, which runs under the path lock: write, let the formatter run, keep the BOM, record the
+    // final state and publish. Returns the text the file holds afterwards.
+    const commit = Effect.fnUntraced(function* (
+      ctx: Tool.Context,
+      filePath: string,
+      text: string,
+      bom: boolean,
+      event: "add" | "change",
+    ) {
+      yield* afs.writeWithDirs(filePath, Bom.join(text, bom))
+      let written = text
+      if (yield* format.file(filePath)) written = yield* Bom.syncFile(afs, filePath, bom)
+      yield* fileState.record(ctx.sessionID, filePath, "edit")
+      yield* events.publish(FileSystem.Event.Edited, { file: filePath })
+      yield* events.publish(Watcher.Event.Updated, { file: filePath, event })
+      return written
+    })
+
+    // An empty oldString creates a file. The question is asked outside the lock; under it the file must still be absent.
+    const create = Effect.fnUntraced(function* (
+      ctx: Tool.Context,
+      relative: string,
+      filePath: string,
+      params: EditParams,
+    ) {
+      if (yield* afs.existsSafe(filePath)) {
+        throw new Error(
+          "oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write for an intentional full-file replacement.",
+        )
+      }
+      const next = Bom.split(params.newString)
+      const diff = trimDiff(createTwoFilesPatch(filePath, filePath, "", next.text))
+      yield* askEdit(ctx, relative, filePath, diff)
+
+      return yield* FileState.withLocks([filePath])(
+        Effect.gen(function* () {
+          if (yield* afs.existsSafe(filePath)) throw new Error(FileState.changedWhileAskingMessage(filePath))
+          const contentNew = yield* commit(ctx, filePath, next.text, next.bom, "add")
+          return { contentOld: "", contentNew, diff, outside: false } satisfies Applied
+        }),
+      )
+    })
+
+    // Replace text in an existing file. The question is asked outside the lock; under it the file is read again, and
+    // when it changed in the meantime the edit is planned once more on what it holds now (a mismatch is reported as
+    // the original error). The disk differing from the session's record is not an error, only a note on the receipt.
+    const modify = Effect.fnUntraced(function* (
+      ctx: Tool.Context,
+      relative: string,
+      filePath: string,
+      params: EditParams,
+    ) {
+      const info = yield* afs.stat(filePath).pipe(
+        Effect.catchIf(
+          (error) => "reason" in error && error.reason._tag === "NotFound",
+          () => Effect.succeed(undefined),
+        ),
+      )
+      if (!info) throw notFound(filePath)
+      if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
+      if (Number(info.size) > FileState.MAX_EDITABLE_BYTES) throw new Error(FileState.tooLargeMessage(filePath))
+      const source = yield* Bom.readEditableFile(afs, filePath)
+      const plan = planEdit(source, params, filePath)
+      yield* askEdit(ctx, relative, filePath, plan.diff)
+
+      return yield* FileState.withLocks([filePath])(
+        Effect.gen(function* () {
+          const current = yield* Bom.readEditableFile(afs, filePath).pipe(
+            Effect.catchIf(
+              (error) => "reason" in error && error.reason._tag === "NotFound",
+              () => Effect.fail(notFound(filePath)),
+            ),
+          )
+          const outside = (yield* fileState.verify(ctx.sessionID, filePath)) === "changed"
+          const settled =
+            current.text === source.text && current.bom === source.bom ? plan : planEdit(current, params, filePath)
+          const contentNew = yield* commit(ctx, filePath, settled.contentNew, settled.bom, "change")
+          const diff = trimDiff(
+            createTwoFilesPatch(
+              filePath,
+              filePath,
+              normalizeLineEndings(settled.contentOld),
+              normalizeLineEndings(contentNew),
+            ),
+          )
+          return { contentOld: settled.contentOld, contentNew, diff, outside } satisfies Applied
+        }),
+      )
+    })
 
     return {
       description: DESCRIPTION,
@@ -184,103 +299,11 @@ export const EditTool = Tool.define(
             : path.join(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
-          let diff = ""
-          let contentOld = ""
-          let contentNew = ""
-          yield* lock(filePath).withPermits(1)(
-            Effect.gen(function* () {
-              if (params.oldString === "") {
-                const existed = yield* afs.existsSafe(filePath)
-                if (existed) {
-                  throw new Error(
-                    "oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write for an intentional full-file replacement.",
-                  )
-                }
-                const next = Bom.split(params.newString)
-                const desiredBom = next.bom
-                contentOld = ""
-                contentNew = next.text
-                diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-                yield* ctx.ask({
-                  permission: "edit",
-                  patterns: [path.relative(instance.worktree, filePath)],
-                  always: ["*"],
-                  metadata: {
-                    filepath: filePath,
-                    diff,
-                  },
-                })
-                yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
-                if (yield* format.file(filePath)) {
-                  contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-                }
-                yield* fileState.record(ctx.sessionID, filePath, "edit")
-                yield* events.publish(FileSystem.Event.Edited, { file: filePath })
-                yield* events.publish(Watcher.Event.Updated, {
-                  file: filePath,
-                  event: "add",
-                })
-                return
-              }
-
-              const info = yield* afs.stat(filePath).pipe(
-                Effect.catchIf(
-                  (error) => "reason" in error && error.reason._tag === "NotFound",
-                  () => Effect.succeed(undefined),
-                ),
-              )
-              if (!info) throw new Error(`File ${filePath} not found. Check the path with glob.`)
-              if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
-              if (Number(info.size) > FileState.MAX_EDITABLE_BYTES) throw new Error(FileState.tooLargeMessage(filePath))
-              const source = yield* Bom.readEditableFile(afs, filePath)
-              contentOld = source.text
-
-              const ending = detectLineEnding(contentOld)
-              const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
-              const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
-
-              const next = Bom.split(replace(contentOld, old, replacement, params.replaceAll))
-              const desiredBom = source.bom || next.bom
-              contentNew = next.text
-
-              diff = trimDiff(
-                createTwoFilesPatch(
-                  filePath,
-                  filePath,
-                  normalizeLineEndings(contentOld),
-                  normalizeLineEndings(contentNew),
-                ),
-              )
-              yield* ctx.ask({
-                permission: "edit",
-                patterns: [path.relative(instance.worktree, filePath)],
-                always: ["*"],
-                metadata: {
-                  filepath: filePath,
-                  diff,
-                },
-              })
-
-              yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
-              if (yield* format.file(filePath)) {
-                contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-              }
-              yield* fileState.record(ctx.sessionID, filePath, "edit")
-              yield* events.publish(FileSystem.Event.Edited, { file: filePath })
-              yield* events.publish(Watcher.Event.Updated, {
-                file: filePath,
-                event: "change",
-              })
-              diff = trimDiff(
-                createTwoFilesPatch(
-                  filePath,
-                  filePath,
-                  normalizeLineEndings(contentOld),
-                  normalizeLineEndings(contentNew),
-                ),
-              )
-            }).pipe(Effect.orDie),
-          )
+          const relative = path.relative(instance.worktree, filePath)
+          const applied = yield* (
+            params.oldString === "" ? create(ctx, relative, filePath, params) : modify(ctx, relative, filePath, params)
+          ).pipe(Effect.orDie)
+          const { contentOld, contentNew, diff, outside } = applied
 
           let additions = 0
           let deletions = 0
@@ -304,6 +327,7 @@ export const EditTool = Tool.define(
           })
 
           let output = "Edit applied successfully."
+          if (outside) output += `\n${FileState.changedOutsideNote(relative)}`
           yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
@@ -321,7 +345,7 @@ export const EditTool = Tool.define(
               diff,
               filediff,
             },
-            title: `${path.relative(instance.worktree, filePath)}`,
+            title: relative,
             output,
           }
         }),

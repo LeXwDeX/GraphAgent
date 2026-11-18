@@ -11,6 +11,7 @@ import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Format } from "../../src/format"
+import { EngineProcess } from "@/session/engine-process"
 import { FileState } from "@/session/file-state"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
@@ -748,4 +749,116 @@ describe("tool.write overwrite contract (#1452)", () => {
       }),
     )
   })
+})
+
+describe("tool.write write-point checks (#1452)", () => {
+  const rewrite = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content))
+  const text = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf8"))
+  /** A context whose permission question runs `action` before it is answered. */
+  const askThen = (action: Effect.Effect<void>) => ({ ...ctx, ask: () => action })
+
+  it.instance("does not overwrite a file that was rewritten while the question was open", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* rewrite(filepath, "what the model read")
+      yield* markRead(filepath)
+
+      const error = yield* fail(
+        { filePath: filepath, content: "clobbered" },
+        askThen(rewrite(filepath, "what someone wrote meanwhile")),
+      )
+
+      expect(error.message).toBe(FileState.changedWhileAskingMessage(filepath))
+      expect(error.message).toContain("changed while this call waited for permission")
+      expect(yield* text(filepath)).toBe("what someone wrote meanwhile")
+    }),
+  )
+
+  it.instance("does not recreate a file that was deleted while the question was open", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* rewrite(filepath, "what the model read")
+      yield* markRead(filepath)
+
+      const error = yield* fail(
+        { filePath: filepath, content: "clobbered" },
+        askThen(Effect.promise(() => fs.rm(filepath))),
+      )
+
+      expect(error.message).toBe(FileState.changedWhileAskingMessage(filepath))
+      expect(
+        yield* Effect.promise(() =>
+          fs.access(filepath).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      ).toBe(false)
+    }),
+  )
+
+  it.instance("does not overwrite a new file that someone else created while the question was open", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fresh.txt")
+
+      const error = yield* fail(
+        { filePath: filepath, content: "mine" },
+        askThen(rewrite(filepath, "created by someone else")),
+      )
+
+      expect(error.message).toBe(FileState.changedWhileAskingMessage(filepath))
+      expect(yield* text(filepath)).toBe("created by someone else")
+    }),
+  )
+
+  it.instance("writes when the file is still what the session read after the question", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* rewrite(filepath, "what the model read")
+      yield* markRead(filepath)
+
+      yield* run({ filePath: filepath, content: "replaced" }, askThen(Effect.void))
+
+      expect(yield* text(filepath)).toBe("replaced")
+    }),
+  )
+
+  it.instance("asks for permission without holding the path lock", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* rewrite(filepath, "what the model read")
+      yield* markRead(filepath)
+      const held: number[] = []
+      const next = {
+        ...ctx,
+        ask: () =>
+          Effect.gen(function* () {
+            held.push(yield* EngineProcess.fileLocks.size)
+          }),
+      }
+
+      yield* run({ filePath: filepath, content: "replaced" }, next)
+
+      expect(held).toEqual([0])
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+
+  it.instance("releases the lock when the write is refused", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* rewrite(filepath, "what the model read")
+      yield* markRead(filepath)
+
+      yield* fail({ filePath: filepath, content: "clobbered" }, askThen(rewrite(filepath, "changed")))
+
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
 })

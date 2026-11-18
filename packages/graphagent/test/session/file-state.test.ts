@@ -12,8 +12,9 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { ProjectID } from "@graphagent/schema/project-id"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EngineProcess } from "@/session/engine-process"
 import { FileState } from "@/session/file-state"
 import { SessionID } from "@/session/schema"
 import { TestInstance } from "../fixture/fixture"
@@ -380,6 +381,154 @@ describe("FileState.requireRead", () => {
         "/p/big.txt is larger than 10 MiB; edit and write do not load files this large. Use a shell command (sed, awk, python).",
       )
       expect(FileState.MAX_EDITABLE_BYTES).toBe(10 * 1024 * 1024)
+    }),
+  )
+})
+
+describe("FileState.requireSame", () => {
+  it.instance("passes while the disk matches the record", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      yield* put(file, "content")
+      yield* state.record(sessionA, file, "read")
+
+      yield* state.requireSame(sessionA, file)
+    }),
+  )
+
+  it.instance("fails with the permission-wait message once the file changed, is gone, or was never recorded", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const state = yield* FileState.Service
+      const file = path.join(test.directory, "a.txt")
+      const expected = `${file} changed while this call waited for permission. Read it again, then retry.`
+      yield* put(file, "content")
+
+      expect((yield* state.requireSame(sessionA, file).pipe(Effect.flip)).message).toBe(expected)
+
+      yield* state.record(sessionA, file, "read")
+      yield* put(file, "different")
+      expect((yield* state.requireSame(sessionA, file).pipe(Effect.flip)).message).toBe(expected)
+
+      yield* Effect.promise(() => fs.rm(file))
+      expect((yield* state.requireSame(sessionA, file).pipe(Effect.flip)).message).toBe(expected)
+    }),
+  )
+
+  it.instance("words the receipt note around the path the receipt shows", () =>
+    Effect.sync(() => {
+      expect(FileState.changedOutsideNote("src/a.ts")).toBe(
+        "Note: this file changed outside this session after your last read: src/a.ts. Your change was applied to its current content.",
+      )
+    }),
+  )
+})
+
+describe("FileState.withLocks", () => {
+  const lockFile = (name: string) => path.join(process.cwd(), `.file-state-lock-${name}`)
+  const relative = (name: string) => `./.file-state-lock-${name}`
+
+  // Runs two guarded sections and reports the order their steps happened in.
+  const interleaving = (first: ReadonlyArray<string>, second: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const log: string[] = []
+      const section = (name: string) =>
+        Effect.gen(function* () {
+          log.push(`${name}:start`)
+          yield* Effect.sleep("30 millis")
+          log.push(`${name}:end`)
+        })
+      yield* Effect.all([FileState.withLocks(first)(section("a")), FileState.withLocks(second)(section("b"))], {
+        concurrency: "unbounded",
+      })
+      return log
+    })
+
+  it.live("serializes sections that name the same path, relative or absolute", () =>
+    Effect.gen(function* () {
+      const log = yield* interleaving([relative("same")], [lockFile("same")])
+
+      // Whichever section got the lock first finished before the other started.
+      expect(log).toHaveLength(4)
+      expect(log[1]).toBe(log[0]?.replace(":start", ":end"))
+      expect(log[3]).toBe(log[2]?.replace(":start", ":end"))
+      expect(new Set(log.filter((entry) => entry.endsWith(":start")))).toEqual(new Set(["a:start", "b:start"]))
+    }),
+  )
+
+  it.live("lets sections on different paths run together", () =>
+    Effect.gen(function* () {
+      const log = yield* interleaving([lockFile("one")], [lockFile("two")])
+
+      expect(log.slice(0, 2).sort()).toEqual(["a:start", "b:start"])
+    }),
+  )
+
+  it.live("does not deadlock when two sections name the same two paths in opposite orders", () =>
+    Effect.gen(function* () {
+      const one = lockFile("order-one")
+      const two = lockFile("order-two")
+      const runs = Effect.all(
+        Array.from({ length: 20 }, (_, i) =>
+          FileState.withLocks(i % 2 === 0 ? [one, two] : [two, one])(Effect.sleep("2 millis")),
+        ),
+        { concurrency: "unbounded" },
+      )
+
+      const done = yield* runs.pipe(Effect.timeoutOption("5 seconds"))
+
+      expect(Option.isSome(done)).toBe(true)
+    }),
+  )
+
+  it.live("takes a path named twice once", () =>
+    Effect.gen(function* () {
+      const file = lockFile("twice")
+
+      const done = yield* FileState.withLocks([file, relative("twice"), file])(Effect.succeed("ran")).pipe(
+        Effect.timeoutOption("2 seconds"),
+      )
+
+      expect(done).toEqual(Option.some("ran"))
+    }),
+  )
+
+  it.live("holds the lock until the section ends, and releases every lock afterwards", () =>
+    Effect.gen(function* () {
+      const file = lockFile("release")
+      const entered = yield* Deferred.make<void>()
+      const leave = yield* Deferred.make<void>()
+      const holder = yield* FileState.withLocks([file])(
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(leave))),
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+      expect(yield* EngineProcess.fileLocks.size).toBe(1)
+
+      const waiter = yield* FileState.withLocks([file])(Effect.succeed("got it")).pipe(Effect.forkScoped)
+      expect(Option.isNone(yield* Fiber.await(waiter).pipe(Effect.timeoutOption("100 millis")))).toBe(true)
+
+      yield* Deferred.succeed(leave, undefined)
+      yield* Fiber.join(holder)
+      expect(yield* Fiber.join(waiter)).toBe("got it")
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
+    }),
+  )
+
+  it.live("releases the lock when the section fails or is interrupted", () =>
+    Effect.gen(function* () {
+      const file = lockFile("failure")
+
+      yield* FileState.withLocks([file])(Effect.fail(new Error("boom"))).pipe(Effect.flip)
+      const entered = yield* Deferred.make<void>()
+      const stuck = yield* FileState.withLocks([file])(
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+      yield* Fiber.interrupt(stuck)
+
+      expect(yield* EngineProcess.fileLocks.size).toBe(0)
     }),
   )
 })

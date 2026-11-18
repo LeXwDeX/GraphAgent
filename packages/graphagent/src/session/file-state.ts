@@ -19,7 +19,16 @@
  *
  * Overwriting an existing file (`write`, and `apply_patch` Add File and Move
  * onto an existing target) requires a record whose content still matches the
- * disk (`requireRead`); creating a new file needs none.
+ * disk (`requireRead`); creating a new file needs none. `edit` and `apply_patch`
+ * Update do not require a read: they work on the content they read themselves.
+ *
+ * `edit`, `write` and `apply_patch` share one in-process lock per path
+ * (`withLocks`). A call asks for permission outside the lock, then takes it for
+ * the write section only: it checks again that the disk still holds what the
+ * call planned against, writes, formats, records and publishes. A permission
+ * wait therefore never blocks another writer, and what a call changed is
+ * checked at the point where it is written. There is no cross-process lock and
+ * no file watching: another process can still change a file between two reads.
  */
 import { createHash } from "node:crypto"
 import * as path from "node:path"
@@ -29,6 +38,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { Context, Effect, Layer, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EngineProcess } from "./engine-process"
 import { SessionID } from "./schema"
 
 export type Source = "read" | "write" | "edit" | "apply_patch"
@@ -57,6 +67,18 @@ export const notReadMessage = (filePath: string) =>
 export const changedSinceReadMessage = (filePath: string) =>
   `${filePath} changed after it was last read in this session. Read it again, then retry.`
 
+/** The file differs from what the call planned against: it changed while the call waited for permission. */
+export const changedWhileAskingMessage = (filePath: string) =>
+  `${filePath} changed while this call waited for permission. Read it again, then retry.`
+
+/**
+ * Receipt line of an `edit` or `apply_patch` that wrote onto content the
+ * session had not seen: the disk no longer matched the last record of the file.
+ * `relativePath` is the path the receipt already shows for the file.
+ */
+export const changedOutsideNote = (relativePath: string) =>
+  `Note: this file changed outside this session after your last read: ${relativePath}. Your change was applied to its current content.`
+
 export const tooLargeMessage = (filePath: string) =>
   `${filePath} is larger than ${MAX_EDITABLE_LABEL}; edit and write do not load files this large. Use a shell command (sed, awk, python).`
 
@@ -73,6 +95,20 @@ export function keyOf(filePath: string): string {
     return path.resolve(filePath)
   }
 }
+
+/**
+ * Hold the lock of every given path while `effect` runs. Locks are taken in
+ * ascending key order, so two calls that name the same paths in another order
+ * cannot wait on each other. The lock is not reentrant: `effect` must not take
+ * a lock on one of these paths again. Keys are resolved when the effect starts.
+ */
+export const withLocks =
+  (paths: readonly string[]) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.suspend(() => {
+      const keys = [...new Set(paths.map(keyOf))].sort()
+      return keys.reduceRight((inner, key) => EngineProcess.fileLocks.withLock(key)(inner), effect)
+    })
 
 /** Same content as the record: hashes decide when both sides have one, else size and mtime. */
 function matches(entry: Entry, current: Snapshot): boolean {
@@ -97,6 +133,8 @@ export interface Interface {
   readonly verify: (sessionID: SessionID, filePath: string) => Effect.Effect<"unread" | "changed" | "same">
   /** Fail unless the file is a regular file the session has read and that still matches that record. */
   readonly requireRead: (sessionID: SessionID, filePath: string) => Effect.Effect<void, Error>
+  /** Fail with `changedWhileAskingMessage` unless the disk still matches the session's record. */
+  readonly requireSame: (sessionID: SessionID, filePath: string) => Effect.Effect<void, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionFileState") {}
@@ -182,7 +220,13 @@ export const layer = Layer.effect(
       if (status === "changed") yield* Effect.fail(new Error(changedSinceReadMessage(filePath)))
     })
 
-    return Service.of({ get, record, verify, requireRead })
+    const requireSame: Interface["requireSame"] = Effect.fn("FileState.requireSame")(function* (sessionID, filePath) {
+      if ((yield* verify(sessionID, filePath)) !== "same") {
+        yield* Effect.fail(new Error(changedWhileAskingMessage(filePath)))
+      }
+    })
+
+    return Service.of({ get, record, verify, requireRead, requireSame })
   }),
 )
 

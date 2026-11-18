@@ -8,6 +8,7 @@ import { LSP } from "@/lsp/lsp"
 import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Format } from "../../src/format"
+import { EngineProcess } from "@/session/engine-process"
 import { FileState } from "@/session/file-state"
 import { Agent } from "../../src/agent/agent"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
@@ -1072,4 +1073,321 @@ describe("tool.apply_patch malformed lines (#1452 B3)", () => {
       expect(yield* readText(target)).toBe("a\nB\nc\n")
     }),
   )
+})
+
+describe("tool.apply_patch write-point checks (#1452)", () => {
+  const prefix = "apply_patch verification failed: "
+  const rewrite = (filepath: string, content: string) => writeText(filepath, content)
+  /** A context whose permission question runs `action` before it is answered. */
+  const askThen = (action: Effect.Effect<void>): ToolCtx => ({ ...baseCtx, ask: () => action })
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+
+  describe("a source that changed after the last read", () => {
+    it.instance(
+      "is patched as it is now, with a note after the summary line",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const target = path.join(test.directory, "update.txt")
+          yield* writeText(target, "one\ntwo\n")
+          yield* markRead(target)
+          yield* writeText(target, "one\ntwo\nadded elsewhere\n")
+
+          const result = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, ctx)
+
+          expect(yield* readText(target)).toBe("uno\ntwo\nadded elsewhere\n")
+          expect(result.output.split("\n").slice(0, 3)).toEqual([
+            "Success. Updated the following files:",
+            "M update.txt",
+            FileState.changedOutsideNote("update.txt"),
+          ])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "is named by its destination in the note when the patch moves it",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const source = path.join(test.directory, "from.txt")
+          yield* writeText(source, "keep\nold\n")
+          yield* markRead(source)
+          yield* writeText(source, "keep\nold\nadded elsewhere\n")
+
+          const result = yield* execute(
+            {
+              patchText: patch("*** Update File: from.txt", "*** Move to: moved/to.txt", "@@", " keep", "-old", "+new"),
+            },
+            ctx,
+          )
+
+          expect(yield* readText(path.join(test.directory, "moved", "to.txt"))).toBe("keep\nnew\nadded elsewhere\n")
+          expect(result.output.split("\n").slice(0, 3)).toEqual([
+            "Success. Updated the following files:",
+            "M moved/to.txt",
+            FileState.changedOutsideNote("moved/to.txt"),
+          ])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "gets one note per changed file, after all the summary lines",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const changed = path.join(test.directory, "changed.txt")
+          const same = path.join(test.directory, "same.txt")
+          yield* writeText(changed, "a\n")
+          yield* writeText(same, "b\n")
+          yield* markRead(changed)
+          yield* markRead(same)
+          yield* writeText(changed, "a\nx\n")
+
+          const result = yield* execute(
+            {
+              patchText: patch(
+                "*** Update File: changed.txt",
+                "@@",
+                "-a",
+                "+A",
+                "*** Update File: same.txt",
+                "@@",
+                "-b",
+                "+B",
+              ),
+            },
+            ctx,
+          )
+
+          expect(result.output.split("\n")).toEqual([
+            "Success. Updated the following files:",
+            "M changed.txt",
+            "M same.txt",
+            FileState.changedOutsideNote("changed.txt"),
+          ])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "gets no note when the session never read it, or after its own earlier patch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const { ctx } = makeCtx()
+          const target = path.join(test.directory, "update.txt")
+          yield* writeText(target, "one\ntwo\nthree\n")
+
+          const first = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, ctx)
+          const second = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-two", "+dos") }, ctx)
+
+          expect(first.output).toBe("Success. Updated the following files:\nM update.txt")
+          expect(second.output).toBe("Success. Updated the following files:\nM update.txt")
+        }),
+      { git: true },
+    )
+  })
+
+  describe("a file that changed while the question was open", () => {
+    it.instance("fails an Update on a changed source and writes none of the other files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "source.txt")
+        const other = path.join(test.directory, "other.txt")
+        yield* writeText(source, "one\n")
+        yield* writeText(other, "before\n")
+
+        yield* expectFailure(
+          execute(
+            {
+              patchText: patch(
+                "*** Update File: other.txt",
+                "@@",
+                "-before",
+                "+after",
+                "*** Update File: source.txt",
+                "@@",
+                "-one",
+                "+uno",
+                "*** Add File: made.txt",
+                "+made",
+              ),
+            },
+            askThen(rewrite(source, "one, edited elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(source)}`,
+        )
+
+        expect(yield* readText(source)).toBe("one, edited elsewhere\n")
+        expect(yield* readText(other)).toBe("before\n")
+        yield* expectReadFailure(path.join(test.directory, "made.txt"))
+      }),
+    )
+
+    it.instance("fails an Add File over a file that changed, and one over a file that appeared", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const existing = path.join(test.directory, "existing.txt")
+        const appearing = path.join(test.directory, "appearing.txt")
+        const bystander = path.join(test.directory, "bystander.txt")
+        yield* writeText(existing, "what the model read\n")
+        yield* writeText(bystander, "before\n")
+        yield* markRead(existing)
+
+        yield* expectFailure(
+          execute(
+            {
+              patchText: patch(
+                "*** Update File: bystander.txt",
+                "@@",
+                "-before",
+                "+after",
+                "*** Add File: existing.txt",
+                "+clobbered",
+              ),
+            },
+            askThen(rewrite(existing, "someone else\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(existing)}`,
+        )
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Add File: appearing.txt", "+mine") },
+            askThen(rewrite(appearing, "created elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(appearing)}`,
+        )
+
+        expect(yield* readText(existing)).toBe("someone else\n")
+        expect(yield* readText(appearing)).toBe("created elsewhere\n")
+        expect(yield* readText(bystander)).toBe("before\n")
+      }),
+    )
+
+    it.instance("fails a Delete of a file that changed, and a file that vanished", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const changed = path.join(test.directory, "changed.txt")
+        const vanishing = path.join(test.directory, "vanishing.txt")
+        yield* writeText(changed, "what the model saw\n")
+        yield* writeText(vanishing, "soon gone\n")
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Delete File: changed.txt") },
+            askThen(rewrite(changed, "edited elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(changed)}`,
+        )
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Delete File: vanishing.txt") },
+            askThen(Effect.promise(() => fs.rm(vanishing))),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(vanishing)}`,
+        )
+
+        expect(yield* readText(changed)).toBe("edited elsewhere\n")
+      }),
+    )
+
+    it.instance("fails a Move whose destination changed, leaving the source in place", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "from.txt")
+        const destination = path.join(test.directory, "to.txt")
+        yield* writeText(source, "from\n")
+        yield* writeText(destination, "what the model read\n")
+        yield* markRead(destination)
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", "-from", "+new") },
+            askThen(rewrite(destination, "someone else\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(destination)}`,
+        )
+
+        expect(yield* readText(source)).toBe("from\n")
+        expect(yield* readText(destination)).toBe("someone else\n")
+      }),
+    )
+
+    it.instance("fails a Move to a destination that appeared", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "from.txt")
+        const destination = path.join(test.directory, "to.txt")
+        yield* writeText(source, "from\n")
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", "-from", "+new") },
+            askThen(rewrite(destination, "created elsewhere\n")),
+          ),
+          `${prefix}${FileState.changedWhileAskingMessage(destination)}`,
+        )
+
+        expect(yield* readText(source)).toBe("from\n")
+        expect(yield* readText(destination)).toBe("created elsewhere\n")
+      }),
+    )
+
+    it.instance("applies the patch when nothing changed in between", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "update.txt")
+        yield* writeText(target, "one\n")
+
+        yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, askThen(Effect.void))
+
+        expect(yield* readText(target)).toBe("uno\n")
+      }),
+    )
+  })
+
+  describe("the path locks", () => {
+    it.instance("are not held while the question is open, and are free afterwards", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "update.txt")
+        yield* writeText(target, "one\n")
+        const held: number[] = []
+        const next: ToolCtx = {
+          ...baseCtx,
+          ask: () =>
+            Effect.gen(function* () {
+              held.push(yield* EngineProcess.fileLocks.size)
+            }),
+        }
+
+        yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, next)
+
+        expect(held).toEqual([0])
+        expect(yield* EngineProcess.fileLocks.size).toBe(0)
+      }),
+    )
+
+    it.instance("are released when a check fails", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "update.txt")
+        yield* writeText(target, "one\n")
+
+        yield* expectFailure(
+          execute(
+            { patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") },
+            askThen(rewrite(target, "changed\n")),
+          ),
+        )
+
+        expect(yield* EngineProcess.fileLocks.size).toBe(0)
+      }),
+    )
+  })
 })

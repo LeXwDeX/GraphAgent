@@ -45,6 +45,14 @@ export const WriteTool = Tool.define(
       yield* fileState.requireRead(sessionID, filepath)
     })
 
+    // Under the path lock, the disk must still hold what the call planned against: the file as the session read it,
+    // or no file at all. The question that was asked in between could have taken a while.
+    const requireUnchanged = Effect.fnUntraced(function* (sessionID: SessionID, filepath: string, existed: boolean) {
+      if (existed) yield* fileState.requireSame(sessionID, filepath)
+      else if (yield* fs.existsSafe(filepath))
+        yield* Effect.fail(new Error(FileState.changedWhileAskingMessage(filepath)))
+    })
+
     return {
       description: DESCRIPTION,
       effects: "workspace_write",
@@ -76,18 +84,23 @@ export const WriteTool = Tool.define(
             },
           })
 
-          yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
-          if (yield* format.file(filepath)) {
-            // Keep the post-format text: diagnostics and afterEdit use disk line
-            // coordinates, so the pre-format snapshot would hide moved errors.
-            contentNew = yield* Bom.syncFile(fs, filepath, desiredBom)
-          }
-          yield* fileState.record(ctx.sessionID, filepath, "write")
-          yield* events.publish(FileSystem.Event.Edited, { file: filepath })
-          yield* events.publish(Watcher.Event.Updated, {
-            file: filepath,
-            event: exists ? "change" : "add",
-          })
+          yield* FileState.withLocks([filepath])(
+            Effect.gen(function* () {
+              yield* requireUnchanged(ctx.sessionID, filepath, exists)
+              yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
+              if (yield* format.file(filepath)) {
+                // Keep the post-format text: diagnostics and afterEdit use disk line
+                // coordinates, so the pre-format snapshot would hide moved errors.
+                contentNew = yield* Bom.syncFile(fs, filepath, desiredBom)
+              }
+              yield* fileState.record(ctx.sessionID, filepath, "write")
+              yield* events.publish(FileSystem.Event.Edited, { file: filepath })
+              yield* events.publish(Watcher.Event.Updated, {
+                file: filepath,
+                event: exists ? "change" : "add",
+              })
+            }),
+          )
 
           let output = "Wrote file successfully."
           yield* lsp.touchFile(filepath, "document")
