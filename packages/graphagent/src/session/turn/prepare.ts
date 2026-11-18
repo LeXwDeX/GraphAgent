@@ -64,7 +64,6 @@ import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
 import { TaskTool, type TaskOrigin, type TaskPromptOps } from "@/tool/task"
 import { decodeDataUrl } from "@/util/data-url"
 import { estimateOverhead } from "../overflow"
-import type { ToolSourceLedger } from "../tool-source-ledger"
 import type { Handle as ProcessorHandle } from "../processor"
 import type { ToolBatch as HookToolBatchState } from "@/hook/tool-batch"
 import type { Interface, PromptError, PromptInput, SetModelInput } from "../prompt"
@@ -242,7 +241,6 @@ export interface PrepareDeps {
   readonly db: Database.Interface["db"]
   readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly settingsHook: SettingsHook.Interface | undefined
-  readonly toolSources: ToolSourceLedger.Interface
   readonly todoReminders: Option.Option<TodoReminders.Interface>
   readonly dagModeReminders: Option.Option<DagModeReminder.Interface>
   readonly agentMessages: DagMessages.Interface | undefined
@@ -726,7 +724,6 @@ function resolveTurnTools(
       SessionRole.isRoot(session) && input.user.hookMode !== "interactive"
         ? (id, signal) => toolBatch.isSingle(id, signal)
         : undefined,
-    sourceLedger: deps.toolSources,
   }).pipe(
     Effect.provideService(Permission.Service, deps.permission),
     Effect.provideService(ToolRegistry.Service, deps.registry),
@@ -786,7 +783,6 @@ export function makePrepare(deps: PrepareDeps) {
     db,
     promptLocks,
     settingsHook,
-    toolSources,
     todoReminders,
     agentMessages,
     reasoningDistillationEnabled,
@@ -1078,7 +1074,6 @@ export function makePrepare(deps: PrepareDeps) {
       bypassAgentCheck: true,
       taskOrigin,
       hooks: settingsHook,
-      sourceLedger: toolSources,
       processor: {
         message: assistantMessage,
         updateToolCall: (_id, update) =>

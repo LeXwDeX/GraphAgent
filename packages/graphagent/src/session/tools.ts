@@ -9,7 +9,7 @@ import { TaskTool } from "@/tool/task"
 import { WorkflowTool } from "@/tool/workflow"
 import { Truncate } from "@/tool/truncate"
 import { ToolPipeline, toRecord } from "@/tool/pipeline"
-import type { DirectToolContext, ToolEntry, WrapInput } from "@/tool/pipeline"
+import type { DirectToolContext, WrapInput } from "@/tool/pipeline"
 import { SettingsHook } from "@/hook"
 import { ToolInputUpdated } from "@/permission/hook-control"
 import { type Tool as AITool, type ToolExecutionOptions } from "ai"
@@ -17,7 +17,6 @@ import { Effect } from "effect"
 import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { Hash } from "@graphagent/core/util/hash"
-import { ToolSourceLedger, type Registration as ToolSourceRegistration } from "./tool-source-ledger"
 import { serializedTools, TOOLS_JSON } from "./overflow"
 import { EngineProcess } from "./engine-process"
 import { SessionRole } from "./role"
@@ -39,10 +38,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
   const agentService = Option.getOrUndefined(yield* Effect.serviceOption(Agent.Service))
   const registry = yield* ToolRegistry.Service
   const truncate = yield* Truncate.Service
-  const sourceLedger =
-    input.sourceLedger ??
-    Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service)) ??
-    ToolSourceLedger.unavailable
   // Answers a PreToolUse hook supplied for the question tool; never taken from model input.
   const questionHookAnswers = new WeakMap<ToolExecutionOptions, ReadonlyArray<ReadonlyArray<string>>>()
   const resourceHookState = new WeakMap<
@@ -132,27 +127,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
         { ...(yield* hookContext(toolName)), sessionID: input.session.id },
       )
     }).pipe(Effect.interruptible, Effect.timeoutOption("250 millis"), Effect.ignoreCause)
-
-  const settlement = (entry: ToolEntry): ToolSourceRegistration =>
-    entry.source.kind === "builtin"
-      ? { sourceKind: "host-builtin", registrationID: entry.source.registrationID }
-      : entry.source.kind === "direct-shell"
-        ? { sourceKind: "host-builtin", registrationID: "host:explicit-shell" }
-        : entry.source.kind === "mcp"
-          ? { sourceKind: "mcp", registrationID: `mcp:${entry.id}` }
-          : { sourceKind: "mcp", registrationID: entry.source.registrationID }
-  const activeRegistrations = [...entries].toSorted((left, right) => left.id.localeCompare(right.id)).map(settlement)
-  let registrationGeneration = "inactive"
-
-  const recordSettlement = (entry: ToolEntry, callID: string) =>
-    sourceLedger.record({
-      sessionID: input.session.id,
-      assistantMessageID: input.processor.message.id,
-      callID,
-      toolName: entry.id,
-      ...settlement(entry),
-      registrationGeneration,
-    })
 
   // The pending tool part follows the validated input that will execute. A
   // deferred call returns before this boundary and retains its original input.
@@ -273,7 +247,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     // A PreToolUse hook's deny of a DAG node's call is part of the node's safety record (#1324 §5.2).
     hookDenied: (tool: string, reason: string) => HookGuard.recordDenial({ sessionID: input.session.id, tool, reason }),
     reportInterrupt,
-    recordSettlement,
     recordInput,
     rawContext,
     context,
@@ -293,7 +266,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     .toSorted(([left], [right]) => left.localeCompare(right))
     .map(([name, item]) => ({ name, strict: item.strict }))
   const signature = materializationSignature(input.model, serialized, strict)
-  registrationGeneration = yield* sourceLedger.activate(input.session.id, activeRegistrations, signature)
 
   // Serialize the model-facing fragment once and keep it for the next request
   // that materializes the same tools. The overhead estimate in `prepare` reads
@@ -337,7 +309,7 @@ function materializationSignature(
       }),
     )
   } catch {
-    // An unstable or unserializable tool shape must not reuse prior provenance.
+    // An unstable or unserializable tool shape must not match a cached fragment.
     return `unknown:${crypto.randomUUID()}`
   }
 }

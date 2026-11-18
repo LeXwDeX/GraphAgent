@@ -73,7 +73,6 @@ import { Lifecycle } from "@/lifecycle/service"
 import { Todo } from "./todo"
 import { TodoReminders } from "./todo-reminders"
 import { DagModeReminder } from "./dag-mode-reminder"
-import { ToolSourceLedger } from "./tool-source-ledger"
 import { SettingsHook } from "@/hook"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -261,8 +260,6 @@ export const layer = Layer.effect(
     const lsp = yield* LSP.Service
     const registry = yield* ToolRegistry.Service
     const truncate = yield* Truncate.Service
-    const toolSources =
-      Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service)) ?? ToolSourceLedger.unavailable
     const image = yield* Image.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const scope = yield* Scope.Scope
@@ -275,7 +272,7 @@ export const layer = Layer.effect(
     const scheduler = yield* AgentScheduler.Service
     const events = yield* EventV2Bridge.Service
     // Optional so tests and embedders that compose SessionPrompt without the
-    // lifecycle service keep working; mirrors the ToolSourceLedger seam.
+    // lifecycle service keep working.
     const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
     const flags = yield* RuntimeFlags.Service
     // Every session cache below is process-wide: one ManagedRuntime cannot
@@ -454,7 +451,6 @@ export const layer = Layer.effect(
       db,
       promptLocks,
       settingsHook,
-      toolSources,
       todoReminders,
       dagModeReminders,
       agentMessages,
@@ -567,7 +563,6 @@ export const layer = Layer.effect(
       mcp,
       truncate,
       instruction,
-      toolSources,
       settingsHook,
       agentMessages,
       agentInputHint: agentInputHint?.hint,
@@ -702,7 +697,6 @@ export const layer = Layer.effect(
       revert,
       events,
       settingsHook,
-      toolSources,
       permission,
       registry,
       mcp,
@@ -848,7 +842,6 @@ export const defaultLayer = Layer.suspend(() =>
         Question.defaultLayer,
         SettingsHook.defaultLayer,
         Todo.defaultLayer,
-        ToolSourceLedger.defaultLayer,
       ),
     ),
   ),
@@ -892,7 +885,6 @@ export const node = LayerNode.make(layer, [
   Question.node,
   SettingsHook.node,
   Goal.node,
-  ToolSourceLedger.node,
 ])
 
 export { admitIdleUnderFence, admitNowUnderFence } from "./turn/admit"

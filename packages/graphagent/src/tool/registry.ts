@@ -74,7 +74,6 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import { asSchema, type Tool as AITool } from "ai"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import type { ToolSourceKind } from "@graphagent/core/session/context-folding"
 
 export function webSearchEnabled(flags = { exa: false, parallel: false }) {
   return flags.exa || flags.parallel
@@ -241,7 +240,6 @@ export type ResolveInput = (
 
 export type RegisteredTool = Readonly<{
   definition: Tool.Def
-  sourceKind: Extract<ToolSourceKind, "host-builtin">
   registrationID: string
 }>
 
@@ -399,7 +397,6 @@ export const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       const registered: RegisteredTool[] = s.builtin.map((definition, index) => ({
         definition,
-        sourceKind: "host-builtin" as const,
         registrationID: `builtin:${index}:${definition.id}`,
       }))
       const filtered = registered.filter(({ definition: tool }) => {

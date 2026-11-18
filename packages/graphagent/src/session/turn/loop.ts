@@ -34,7 +34,6 @@ import { SessionRole } from "../role"
 import type { SessionStatus } from "../status"
 import type { SessionSummary } from "../summary"
 import { SessionTools } from "../tools"
-import type { ToolSourceLedger } from "../tool-source-ledger"
 import type { TurnExecution } from "../turns"
 import { Decide } from "./decide"
 import type { FinalPolicy } from "./final-policy"
@@ -83,7 +82,6 @@ export interface LoopDeps {
   readonly mcp: MCP.Interface
   readonly truncate: Truncate.Interface
   readonly instruction: Instruction.Interface
-  readonly toolSources: ToolSourceLedger.Interface
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly agentMessages: DagMessages.Interface | undefined
   /** H2 seam (#1021 PR3): `false` means this process saw no queued agent
@@ -259,7 +257,6 @@ function makeDeferredResumer(deps: LoopDeps) {
     mcp,
     truncate,
     settingsHook,
-    toolSources,
     prepareFns,
     settleFns,
     ops,
@@ -311,7 +308,6 @@ function makeDeferredResumer(deps: LoopDeps) {
       promptOps: yield* ops(),
       hooks: settingsHook,
       canDefer: SessionRole.isRoot(input.session) && input.lastUser.hookMode !== "interactive" ? () => true : undefined,
-      sourceLedger: toolSources,
     }).pipe(
       Effect.provideService(Permission.Service, permission),
       Effect.provideService(ToolRegistry.Service, registry),
