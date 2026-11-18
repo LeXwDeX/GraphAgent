@@ -1882,7 +1882,7 @@ export function makePrepare(deps: PrepareDeps) {
           sys.skills(agent, session.permission, nativePermission),
           sys.environment(model),
           sys.language(configured.language),
-          instruction.system({ sessionID }).pipe(Effect.orDie),
+          instruction.system({ sessionID, turn: lastUser.id }).pipe(Effect.orDie),
           sys.mcp(agent, session.permission, nativePermission),
           sys.goal(sessionID),
           sys.hooks(),

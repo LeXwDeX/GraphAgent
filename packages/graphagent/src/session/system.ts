@@ -88,6 +88,40 @@ const STOP_GUARD_POINTER =
 const GIT_GUARD_POINTER =
   "To reduce accidental force pushes or hard resets, use the configure-hooks skill's git-guard recipe."
 
+/**
+ * The most bytes of one MCP server's instructions that go into the system prompt. A third-party server states its
+ * own usage notes at whatever length it likes; what is over this is cut and the block says so.
+ */
+export const MCP_INSTRUCTIONS_MAX_BYTES = 2048
+
+/** The longest prefix of `text` that fits `max` UTF-8 bytes, cut between characters: a surrogate pair stays whole. */
+function headBytes(text: string, max: number): string {
+  let bytes = 0
+  let end = 0
+  for (const char of text) {
+    bytes += Buffer.byteLength(char)
+    if (bytes > max) break
+    end += char.length
+  }
+  return text.slice(0, end)
+}
+
+/** One server's usage notes as a block. Over the limit they are cut, with a line that says so, and logged. */
+const mcpBlock = Effect.fnUntraced(function* (item: { readonly name: string; readonly instructions: string }) {
+  const bytes = Buffer.byteLength(item.instructions)
+  if (bytes <= MCP_INSTRUCTIONS_MAX_BYTES) {
+    return Injection.wrap("mcp-instructions", item.instructions, { server: item.name })
+  }
+  yield* Effect.logWarning("mcp instructions truncated", {
+    server: item.name,
+    bytes,
+    limit: MCP_INSTRUCTIONS_MAX_BYTES,
+  })
+  const shown = headBytes(item.instructions, MCP_INSTRUCTIONS_MAX_BYTES)
+  const note = `[truncated: this server's instructions are ${bytes} bytes; the first ${Buffer.byteLength(shown)} bytes are shown]`
+  return Injection.wrap("mcp-instructions", `${shown}\n${note}`, { server: item.name })
+})
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -215,9 +249,7 @@ export const layer = Layer.effect(
         const cached = RequestCache.get(fragments, key)
         if (cached) return cached.text
 
-        const text = instructions
-          .map((item) => Injection.wrap("mcp-instructions", item.instructions, { server: item.name }))
-          .join("\n\n")
+        const text = (yield* Effect.forEach(instructions, mcpBlock)).join("\n\n")
         RequestCache.set(fragments, key, { text }, Buffer.byteLength(text))
         return text
       }),

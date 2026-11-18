@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Logger, Schema } from "effect"
 import * as fs from "fs/promises"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
@@ -293,6 +293,125 @@ describe("session.system", () => {
       )
     }),
   )
+
+  describe("MCP instructions limit", () => {
+    // `prompt.mcp` over servers with the given instructions, `big-server` first.
+    const mcpOver = (...instructions: string[]) =>
+      Effect.gen(function* () {
+        const prompt = yield* SystemPrompt.Service
+        const saved = mcpInstructions
+        mcpInstructions = instructions.map((text, i) => ({
+          name: i === 0 ? "big-server" : `small-server-${i}`,
+          instructions: text,
+          tools: [],
+        }))
+        try {
+          return (yield* prompt.mcp(build)) ?? ""
+        } finally {
+          mcpInstructions = saved
+        }
+      })
+
+    const bigBlock = (...body: string[]) =>
+      ['<system-reminder source="mcp-instructions" server="big-server">', ...body, "</system-reminder>"].join("\n")
+
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+
+    it.effect("the limit is 2048 bytes", () =>
+      Effect.sync(() => expect(SystemPrompt.MCP_INSTRUCTIONS_MAX_BYTES).toBe(2048)),
+    )
+
+    it.effect("keeps instructions of exactly 2048 bytes whole", () =>
+      Effect.gen(function* () {
+        expect(yield* mcpOver("x".repeat(2048))).toBe(bigBlock("x".repeat(2048)))
+      }),
+    )
+
+    it.effect("cuts longer instructions to 2048 bytes and says how much is shown", () =>
+      Effect.gen(function* () {
+        expect(yield* mcpOver("x".repeat(3000))).toBe(
+          bigBlock(
+            "x".repeat(2048),
+            "[truncated: this server's instructions are 3000 bytes; the first 2048 bytes are shown]",
+          ),
+        )
+        expect(yield* mcpOver("y".repeat(2049))).toBe(
+          bigBlock(
+            "y".repeat(2048),
+            "[truncated: this server's instructions are 2049 bytes; the first 2048 bytes are shown]",
+          ),
+        )
+      }),
+    )
+
+    it.effect("cuts between characters: 700 three-byte characters keep 682 and no U+FFFD", () =>
+      Effect.gen(function* () {
+        const output = yield* mcpOver("\u597d".repeat(700))
+        expect(output).toBe(
+          bigBlock(
+            "\u597d".repeat(682),
+            "[truncated: this server's instructions are 2100 bytes; the first 2046 bytes are shown]",
+          ),
+        )
+        expect(output).not.toContain("\uFFFD")
+      }),
+    )
+
+    it.effect("never splits a surrogate pair", () =>
+      Effect.gen(function* () {
+        const output = yield* mcpOver("a" + "\u{1F600}".repeat(600))
+        expect(output).toBe(
+          bigBlock(
+            "a" + "\u{1F600}".repeat(511),
+            "[truncated: this server's instructions are 2401 bytes; the first 2045 bytes are shown]",
+          ),
+        )
+        expect(output).not.toMatch(lone)
+        expect(output).not.toContain("\uFFFD")
+      }),
+    )
+
+    it.effect("cuts only the server that is over the limit", () =>
+      Effect.gen(function* () {
+        const output = yield* mcpOver("x".repeat(3000), "Use lookup before mutate.")
+        expect(output).toContain("[truncated: this server's instructions are 3000 bytes")
+        expect(output).toContain(
+          [
+            '<system-reminder source="mcp-instructions" server="small-server-1">',
+            "Use lookup before mutate.",
+            "</system-reminder>",
+          ].join("\n"),
+        )
+        expect(output.match(/\[truncated:/g)).toHaveLength(1)
+      }),
+    )
+
+    it.effect("logs a warning once per text, however many requests follow", () =>
+      Effect.gen(function* () {
+        const prompt = yield* SystemPrompt.Service
+        const logs: unknown[] = []
+        const saved = mcpInstructions
+        mcpInstructions = [{ name: "big-server", instructions: "x".repeat(3000), tools: [] }]
+        try {
+          yield* Effect.gen(function* () {
+            yield* prompt.mcp(build)
+            yield* prompt.mcp(build)
+          }).pipe(
+            Effect.provide(
+              Logger.layer([
+                Logger.make((options) => {
+                  if (options.logLevel === "Warn") logs.push(options.message)
+                }),
+              ]),
+            ),
+          )
+        } finally {
+          mcpInstructions = saved
+        }
+        expect(logs).toEqual([["mcp instructions truncated", { server: "big-server", bytes: 3000, limit: 2048 }]])
+      }),
+    )
+  })
 
   it.effect("MCP output omits servers when all advertised tools are denied", () =>
     Effect.gen(function* () {
