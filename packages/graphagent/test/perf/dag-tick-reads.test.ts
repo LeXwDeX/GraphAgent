@@ -20,6 +20,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { countingDatabaseLayer, reset, settle, snapshot } from "../lib/engine-probe"
 import { testEffect } from "../lib/effect"
+import { recordingInbox } from "../dag/fixture/inbox"
 
 // H0 read budget for the DAG inbox tick (Issue #1021). `scanSessions` is the
 // periodic store scan behind `dag.delivery`; every other trigger is event
@@ -276,13 +277,14 @@ const deliveryEffect = Effect.gen(function* () {
     messages: yield* DagMessages.Service,
     database: yield* Database.Service,
     // The tick only reads the two ledgers; delivery paths are unreachable
-    // here (no inbox, no idle trigger), so their services stay unused.
+    // here (the inbox drives nothing, no idle trigger), so their services stay
+    // unused.
     sessions: undefined as never,
     prompts: undefined as never,
     status: undefined as never,
     automation: undefined as never,
     events: undefined as never,
-    inbox: undefined,
+    inbox: recordingInbox().inbox,
     entries: () => undefined,
     lastAssistantMessage: () => Effect.succeed(undefined),
   })

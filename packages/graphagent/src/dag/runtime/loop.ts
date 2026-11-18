@@ -168,10 +168,10 @@ const serviceLayer = Layer.effect(
     const childRuns = yield* promptSvc.children
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const statusSvc = yield* SessionStatus.Service
-    // Optional: isolated unit graphs build DagLoop.layer without an inbox and
-    // keep the transitional scans. Production graphs provide the shared
-    // default layer and get the one per-instance idle subscription.
-    const inbox = Option.getOrUndefined(yield* Effect.serviceOption(SessionInbox.Service))
+    // The shared per-instance inbox: it owns the one idle subscription and is
+    // the only way a wake or a queued agent message reaches the parent session
+    // (#1344). Every graph that builds DagLoop provides one.
+    const inbox = yield* SessionInbox.Service
     const automation = yield* ExclusiveRegistry.Service
     const scheduler = yield* AgentScheduler.Service
     const database = yield* Database.Service
@@ -204,9 +204,11 @@ const serviceLayer = Layer.effect(
         const portFor = (dagID: string, token: DagLease.Token) =>
           RunnerPort.make({ dag, token, lost: runnerLease.refused(dagID, token) })
         // D7: all delivery scheduling (wake + agent mailbox) lives in
-        // DagDelivery. This forward reference is assigned below, before any
-        // event or recovery path can trigger it; every call site only nudges.
-        let delivery: DagDelivery.Interface = DagDelivery.unavailable
+        // DagDelivery, the `dag.delivery` source of the inbox. Every event
+        // source below only nudges the session through the inbox; the nudge is
+        // forked (`inbox.nudge` resolves after the drain it joins), so a handler
+        // never waits for a delivery.
+        const nudge = DagDelivery.nudger(inbox, stateScope)
 
         const checkpointDisposition = Effect.fn("DagLoop.checkpointDisposition")(function* (
           dagID: string,
@@ -339,7 +341,7 @@ const serviceLayer = Layer.effect(
           yield* automation
             .unregister(SessionID.make(wf.sessionId), { kind: "dag", id: wf.id })
             .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void)))
-          yield* delivery.nudge(wf.sessionId)
+          yield* nudge(wf.sessionId)
           return outcome
         })
 
@@ -999,7 +1001,7 @@ const serviceLayer = Layer.effect(
         const forkWakeAfter =
           (sessionID: string) =>
           <A, E>(exit: Exit.Exit<A, E>) =>
-            Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? Effect.void : delivery.nudge(sessionID)
+            Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? Effect.void : nudge(sessionID)
 
         startMessageContinuations = Effect.fn("DagLoop.startMessageContinuations")(function* (
           dagID: string,
@@ -1282,7 +1284,7 @@ const serviceLayer = Layer.effect(
             // the next idle event — the workflow just paused itself and the
             // parent is the only actor that can dispose of it.
             if (pausedForRecovery || pausedForCheckpoint) {
-              yield* delivery.nudge(wf.sessionId)
+              yield* nudge(wf.sessionId)
             }
           }).pipe(
             // No entry at the end: give the claim back instead of letting it run out.
@@ -1397,7 +1399,7 @@ const serviceLayer = Layer.effect(
           // the delivery drain re-registers its batch itself before
           // claiming the wake lease when a delivery is attempted.
           yield* automation.unregister(SessionID.make(entry.parentSessionID), { kind: "dag", id: dagID })
-          yield* delivery.nudge(entry.parentSessionID)
+          yield* nudge(entry.parentSessionID)
           return true
         })
 
@@ -1747,7 +1749,7 @@ const serviceLayer = Layer.effect(
               const dagID = evt.data.dagID as string
               const entry = runtimes.get(dagID)
               if (!entry) return
-              yield* delivery.nudge(entry.parentSessionID)
+              yield* nudge(entry.parentSessionID)
             }).pipe(guarded("NodeTimeoutEscalated")),
           ),
           Effect.forkScoped({ startImmediately: true }),
@@ -1781,7 +1783,7 @@ const serviceLayer = Layer.effect(
               // budget-paused predicate makes the batch deliverable, and the
               // durable wake receipt keeps it to exactly one turn.
               if (workflow?.status === "paused" && workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED) {
-                yield* delivery.nudge(entry.parentSessionID)
+                yield* nudge(entry.parentSessionID)
               }
             }).pipe(guarded("WorkflowPaused")),
           ),
@@ -2128,7 +2130,7 @@ const serviceLayer = Layer.effect(
                   // (swept at host level, or recovery that never adopted)
                   // still owes the parent one wake. The drain re-applies
                   // execution and notification-only ownership.
-                  yield* delivery.nudge(wf.sessionId)
+                  yield* nudge(wf.sessionId)
                 }
               }).pipe(guarded("WorkflowTerminal")),
             ),
@@ -2137,12 +2139,13 @@ const serviceLayer = Layer.effect(
         }
 
         // D7: one delivery scheduler owns the durable wake ledger and the
-        // agent mailbox ledger (see DagDelivery). The inbox idle drain calls
+        // agent mailbox ledger (see DagDelivery). The inbox drain calls
         // `deliver`; node-terminal handlers, pause recovery, escalation,
-        // moves, and the startup sweep still nudge the same in-flight
-        // reservations. Delivery keeps the fixed order — wake first, mailbox
-        // second — and returns true only when it consumed the boundary.
-        delivery = yield* DagDelivery.make({
+        // moves, and the startup sweep nudge the inbox, which serializes them
+        // per session with every other source. Delivery keeps the fixed
+        // order — wake first, mailbox second — and returns true only when it
+        // consumed the boundary.
+        const delivery = yield* DagDelivery.make({
           directory: ctx.directory,
           projectID: ctx.project.id,
           scope: stateScope,
@@ -2160,7 +2163,7 @@ const serviceLayer = Layer.effect(
         })
         // The idle subscription lives in SessionInbox (one per instance); this
         // delivery registers itself as the `dag.delivery` source there. The
-        // remaining event handlers below still nudge the delivery directly.
+        // remaining event handlers below nudge the inbox.
 
         // R5 session-deletion teardown: when the parent session is removed,
         // Session.remove publishes SessionV1.Event.Deleted and the FK cascade
@@ -2257,7 +2260,7 @@ const serviceLayer = Layer.effect(
                 }
                 // Wake rows that were wedged (mixed stamps → no owner) are now
                 // deliverable.
-                yield* delivery.nudge(sessionID)
+                yield* nudge(sessionID)
               }
             }).pipe(guarded("SessionMoved")),
           ),
@@ -2335,7 +2338,7 @@ const serviceLayer = Layer.effect(
             (workflow) => automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id }),
             { discard: true },
           )
-          yield* delivery.nudge(sessionID)
+          yield* nudge(sessionID)
         }
 
         return {}
@@ -2386,6 +2389,7 @@ export const node = LayerNode.make(layer, [
   SessionPrompt.node,
   Permission.node,
   SessionStatus.node,
+  SessionInbox.node,
   HookStartContext.node,
   HookLifecycle.node,
 ])

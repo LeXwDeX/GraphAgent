@@ -396,10 +396,8 @@ These PRs put new code in new files. `loop.ts` and `dag.ts` only lose lines.
 
 ## Deferred
 
-- The full split of `loop.ts` and `dag.ts`, the removal of the in-flight
-  delivery sets `wakeInFlight`, `wakePending`, and `mailboxInFlight` in favour
-  of `SessionInbox`, and an asynchronous git fingerprint in `DagLocation`:
-  #1344, v2.1.
+- The full split of `loop.ts` and `dag.ts`, and an asynchronous git
+  fingerprint in `DagLocation`: #1344, v2.1.
 - Writing the epoch into the event payload.
 - Having the host start instances for directories that have none.
 - Replacing the pid probe of `runnerAlive` with heartbeats.
@@ -984,3 +982,28 @@ dependencies, so that harness ran a `Dag` that does not ship.
   `recovering` reservation with its uses and the unusable-location branch are
   deleted, and the other triggers become calls of `reconcileAfter`. The new code
   is in `reconciler.ts` (the two entries and their flights).
+
+## Amendment 4 (#1344, the delivery sets)
+
+The part of #1344 that the Deferred list named and that is now done: the
+removal of the in-flight delivery sets of `DagDelivery` (the wake reservation
+with its pending mark, and the mailbox reservation) in favour of
+`SessionInbox`. The text above and Amendments 1 to 3 stay as written.
+
+- Delivery has one entry, the `dag.delivery` inbox claim. Every event source of
+  the loop and the startup scan nudge the session through the inbox (forked,
+  because `inbox.nudge` resolves after the drain it starts or joins); none of
+  them calls the delivery attempt itself, and the inbox is no longer optional
+  in `DagLoop`.
+- The inbox's per-session drain does what the sets did: one attempt per
+  session at a time, a nudge that arrives mid-attempt becomes exactly one more
+  pass over the durable rows, and the session is given back by a finalizer
+  when the attempt ends, is interrupted by its 7-minute lease, or dies. The
+  lease stays inside the claim, because the drain holds the session for as
+  long as the claim runs.
+- One semantic change: delivery and the other sources of one session
+  (`goal.continue`, reminders, `pr_watch`, ...) now share that lock. Before, a
+  delivery started by a DAG event ran beside another source's claim.
+  `dag-delivery-session-lock.test.ts` pins both directions.
+- The runner lease, the write fence and the reconciler are untouched: delivery
+  writes the workflow only through the entry's port, as before.
