@@ -52,14 +52,15 @@ export function recordWrites() {
   }
 }
 
-type Operation = "write" | "append"
+type Operation = "write" | "append" | "rename"
 
 /**
  * Stands in for the disk under `persistence.ts`, for one file. `mkdir` finishes at once, so a write that is free to
- * run reaches the disk within the same turn of the event loop. The first `Bun.write` ("write") or `appendFile`
- * ("append") to the file, whichever `hold` names, stays pending until `release` lets it run or `fail` rejects it. `ops`
- * lists the calls that reached the disk in the order they started. A write queued behind a held one is not in it, so a
- * test reads `ops` after one turn of the event loop rather than waiting for something not to happen.
+ * run reaches the disk within the same turn of the event loop. The first `Bun.write` ("write", to the file or to the
+ * temporary file of an atomic replacement), `appendFile` ("append") or `rename` onto the file ("rename"), whichever
+ * `hold` names, stays pending until `release` lets it run or `fail` rejects it. `ops` lists the calls that reached the
+ * disk in the order they started. A write queued behind a held one is not in it, so a test reads `ops` after one turn
+ * of the event loop rather than waiting for something not to happen.
  */
 export function interceptDisk(file: string, hold?: Operation) {
   const target = path.resolve(file)
@@ -73,6 +74,11 @@ export function interceptDisk(file: string, hold?: Operation) {
   })
   gate.catch(() => undefined)
   const reaches = (destination: unknown) => typeof destination === "string" && path.resolve(destination) === target
+  // `writeJsonAtomic` writes `<file>.<pid>.<uuid>.tmp` first and renames it onto the file.
+  const reachesTemporary = (destination: unknown) =>
+    typeof destination === "string" &&
+    path.resolve(destination).startsWith(`${target}.`) &&
+    destination.endsWith(".tmp")
 
   function enter(kind: Operation, run: () => Promise<unknown>) {
     ops.push(kind)
@@ -86,11 +92,13 @@ export function interceptDisk(file: string, hold?: Operation) {
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- as above.
   const realAppend = fsp.appendFile as (...args: unknown[]) => Promise<void>
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- as above.
+  const realRename = fsp.rename as (...args: unknown[]) => Promise<void>
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- as above.
   const realMkdir = fsp.mkdir as (...args: unknown[]) => Promise<unknown>
   const spies = [
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the stub is only as wide as the call it replaces.
     spyOn(Bun, "write").mockImplementation(((destination: unknown, ...rest: unknown[]) =>
-      reaches(destination)
+      reaches(destination) || reachesTemporary(destination)
         ? enter("write", () => realWrite.call(Bun, destination, ...rest))
         : realWrite.call(Bun, destination, ...rest)) as typeof Bun.write),
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the stub is only as wide as the call it replaces.
@@ -98,6 +106,11 @@ export function interceptDisk(file: string, hold?: Operation) {
       reaches(destination)
         ? enter("append", () => realAppend(destination, ...rest))
         : realAppend(destination, ...rest)) as typeof fsp.appendFile),
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the stub is only as wide as the call it replaces.
+    spyOn(fsp, "rename").mockImplementation(((source: unknown, destination: unknown) =>
+      reaches(destination)
+        ? enter("rename", () => realRename(source, destination))
+        : realRename(source, destination)) as typeof fsp.rename),
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the stub is only as wide as the call it replaces.
     spyOn(fsp, "mkdir").mockImplementation(((directory: unknown, ...rest: unknown[]) =>
       typeof directory === "string" && path.resolve(directory) === path.dirname(target)

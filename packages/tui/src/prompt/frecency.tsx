@@ -85,7 +85,7 @@ export const { use: useFrecency, provider: FrecencyProvider } = createSimpleCont
       const sorted = Object.entries(store.data)
         .sort(([, a], [, b]) => b.lastOpen - a.lastOpen)
         .slice(0, MAX_FRECENCY_ENTRIES)
-      setStore("data", Object.fromEntries(sorted))
+      setStore({ data: Object.fromEntries(sorted) })
       writeText(
         frecencyPath,
         sorted.map(([entryPath, entry]) => JSON.stringify({ path: entryPath, ...entry })).join("\n") + "\n",

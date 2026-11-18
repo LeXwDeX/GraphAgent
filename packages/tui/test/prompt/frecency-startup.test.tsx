@@ -207,3 +207,37 @@ test("a path recorded past the limit is not repeated by the append still on its 
     writes.restore()
   }
 })
+
+test("recording paths past the limit drops the oldest ones from memory as well as from the file", async () => {
+  const writes = recordWrites()
+  try {
+    const fixture = await mountWithHeldRead((directory) =>
+      Array.from({ length: MAX_FRECENCY_ENTRIES }, (_, index) =>
+        at(directory, `p${index}`, 1, MAX_FRECENCY_ENTRIES - index),
+      ),
+    )
+    try {
+      fixture.release()
+      await waitFor(() => fixture.frecency.getFrecency("p0") > 0, "the load to merge the file's entries")
+
+      // Each new path takes the count over the limit, and the path with the oldest lastOpen goes.
+      fixture.frecency.updateFrecency("new1.ts")
+      fixture.frecency.updateFrecency("new2.ts")
+      const oldest = [`p${MAX_FRECENCY_ENTRIES - 1}`, `p${MAX_FRECENCY_ENTRIES - 2}`]
+      expect(Object.keys(fixture.frecency.data())).toHaveLength(MAX_FRECENCY_ENTRIES)
+      for (const name of oldest) expect(fixture.frecency.getFrecency(name)).toBe(0)
+      expect(fixture.frecency.getFrecency("new1.ts")).toBeGreaterThan(0)
+      expect(fixture.frecency.getFrecency("new2.ts")).toBeGreaterThan(0)
+
+      await writes.landed()
+      const names = await fixture.names()
+      expect(names).toHaveLength(MAX_FRECENCY_ENTRIES)
+      expect(names.slice(0, 2).sort()).toEqual(["new1.ts", "new2.ts"])
+      for (const name of oldest) expect(names).not.toContain(name)
+    } finally {
+      await fixture.dispose()
+    }
+  } finally {
+    writes.restore()
+  }
+})

@@ -10,9 +10,10 @@ export function readJson<T>(filePath: string) {
 }
 
 /**
- * Writes to one file run one at a time, in the order they were issued. `Bun.write` and `appendFile` are separate
- * asynchronous operations, and two calls left alone reach the disk in either order: an append issued after a rewrite
- * can land first and be truncated by it, and one issued before it can land after it and repeat a line it holds.
+ * Writes to one file run one at a time, in the order they were issued. `Bun.write`, `appendFile` and `rename` are
+ * separate asynchronous operations, and calls left alone reach the disk in either order: an append issued after a
+ * rewrite can land first and be truncated by it, one issued before it can land after it and repeat a line it holds,
+ * and of two atomic replacements the one issued first can be renamed in last and leave the older content.
  * This keeps, per file, the end of the last write queued, until the file has none left.
  */
 const pending = new Map<string, Promise<void>>()
@@ -52,15 +53,21 @@ export function appendText(filePath: string, content: string) {
   })
 }
 
-export async function writeJsonAtomic(filePath: string, value: unknown) {
-  await mkdir(path.dirname(filePath), { recursive: true })
-  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
-  await Bun.write(temporary, JSON.stringify(value)).catch(async (error) => {
-    await rm(temporary, { force: true }).catch(() => undefined)
-    throw error
-  })
-  await rename(temporary, filePath).catch(async (error) => {
-    await rm(temporary, { force: true }).catch(() => undefined)
-    throw error
+/**
+ * Replaces the file with the JSON of `value` by renaming a finished temporary file over it, in the order `writeText`
+ * documents. `value` is serialized when the write's turn comes.
+ */
+export function writeJsonAtomic(filePath: string, value: unknown) {
+  return queued(filePath, async () => {
+    await mkdir(path.dirname(filePath), { recursive: true })
+    const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
+    await Bun.write(temporary, JSON.stringify(value)).catch(async (error) => {
+      await rm(temporary, { force: true }).catch(() => undefined)
+      throw error
+    })
+    await rename(temporary, filePath).catch(async (error) => {
+      await rm(temporary, { force: true }).catch(() => undefined)
+      throw error
+    })
   })
 }

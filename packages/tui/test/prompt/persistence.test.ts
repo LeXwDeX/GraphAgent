@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import path from "path"
-import { mkdtemp, rm } from "fs/promises"
+import { mkdtemp, readdir, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { appendText, readJson, readText, writeJsonAtomic, writeText } from "../../src/util/persistence"
 import { tmpdir as scratch } from "../fixture/fixture"
@@ -130,6 +130,54 @@ test("one file named in two ways shares a queue", async () => {
     disk.release()
     await Promise.all([rewrite, append])
     expect(await readText(file)).toBe("one\ntwo\n")
+  } finally {
+    disk.restore()
+  }
+})
+
+test("an atomic JSON write behind another one for the same file waits for it and leaves its own value", async () => {
+  await using tmp = await scratch()
+  const file = path.join(tmp.path, "state.json")
+  const disk = interceptDisk(file, "write")
+  try {
+    const first = writeJsonAtomic(file, { value: 1 })
+    const second = writeJsonAtomic(file, { value: 2 })
+    await nextTurn()
+    // Only the first one's temporary file has been started. Unordered, the second would already be on its way, could
+    // be renamed in before the first, and the first would then leave its older value in the file.
+    expect(disk.ops).toEqual(["write"])
+
+    disk.release()
+    await Promise.all([first, second])
+    expect(disk.ops).toEqual(["write", "rename", "write", "rename"])
+    expect(await readJson<{ value: number }>(file)).toEqual({ value: 2 })
+    // Each replacement renamed its temporary file away.
+    expect(await readdir(tmp.path)).toEqual(["state.json"])
+  } finally {
+    disk.restore()
+  }
+})
+
+test("a failed atomic JSON write does not hold up the next one for the same file", async () => {
+  await using tmp = await scratch()
+  const file = path.join(tmp.path, "state.json")
+  const disk = interceptDisk(file, "write")
+  try {
+    const failed = writeJsonAtomic(file, { value: 1 }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const behind = writeJsonAtomic(file, { value: 2 })
+    await nextTurn()
+    expect(disk.ops).toEqual(["write"])
+
+    disk.fail(new Error("disk full"))
+    expect(await failed).toMatchObject({ message: "disk full" })
+    await behind
+    // The failed write never got to its rename; the one behind it ran in full.
+    expect(disk.ops).toEqual(["write", "write", "rename"])
+    expect(await readJson<{ value: number }>(file)).toEqual({ value: 2 })
+    expect(await readdir(tmp.path)).toEqual(["state.json"])
   } finally {
     disk.restore()
   }
