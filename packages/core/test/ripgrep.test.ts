@@ -242,6 +242,128 @@ describe("Ripgrep", () => {
     ),
   )
 
+  it.live("reports the oversized matches it skipped and the files it searched", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            Promise.all([
+              fs.writeFile(path.join(tmp.path, "bundle.min.js"), `needle${"x".repeat(80_000)}\n`),
+              fs.writeFile(path.join(tmp.path, "plain.txt"), "needle here\n"),
+              fs.writeFile(path.join(tmp.path, "other.txt"), "nothing\n"),
+            ]),
+          )
+          const ripgrep = yield* Ripgrep.Service
+
+          const report = yield* ripgrep.grepReport({ cwd: tmp.path, pattern: "needle", limit: 10 })
+          expect(report.rows.map((row) => String(row.match.entry.path))).toEqual(["plain.txt"])
+          expect(report.skipped).toBe(1)
+          expect(report.searched).toBe(3)
+
+          // Nothing matched and nothing was skipped: the search still says how many files it looked at.
+          const none = yield* ripgrep.grepReport({ cwd: tmp.path, pattern: "absent-word", limit: 10 })
+          expect(none.rows).toEqual([])
+          expect(none.skipped).toBe(0)
+          expect(none.searched).toBe(3)
+
+          // A filter that lets no file through searches none.
+          const filtered = yield* ripgrep.grepReport({
+            cwd: tmp.path,
+            pattern: "needle",
+            include: "*.nomatch",
+            limit: 10,
+          })
+          expect(filtered.rows).toEqual([])
+          expect(filtered.searched).toBe(0)
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("reports no file count when the scan stops at the limit", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            Promise.all(
+              Array.from({ length: 5 }, (_, index) =>
+                fs.writeFile(path.join(tmp.path, `hit-${index}.txt`), "needle\n"),
+              ),
+            ),
+          )
+
+          const report = yield* (yield* Ripgrep.Service).grepReport({ cwd: tmp.path, pattern: "needle", limit: 1 })
+          expect(report.rows).toHaveLength(1)
+          expect(report.searched).toBeUndefined()
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("keeps context rows in a report", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(tmp.path, "context.txt"),
+              Array.from({ length: 5 }, (_, index) => `line${index + 1}`).join("\n"),
+            ),
+          )
+
+          const report = yield* (yield* Ripgrep.Service).grepReport({
+            cwd: tmp.path,
+            pattern: "line3",
+            limit: 20,
+            context: 1,
+          })
+          expect(report.rows.map((row) => `${row.kind}:${row.match.line}`)).toEqual([
+            "context:2",
+            "match:3",
+            "context:4",
+          ])
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("lists matches in path order when sorted", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const names = Array.from({ length: 30 }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`)
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "a-dir"))
+            await fs.mkdir(path.join(tmp.path, "sub"))
+            await Promise.all([
+              ...names.map((name) => fs.writeFile(path.join(tmp.path, name), "needle\n")),
+              fs.writeFile(path.join(tmp.path, "a-dir", "z.txt"), "needle\n"),
+              fs.writeFile(path.join(tmp.path, "sub", "inner.txt"), "needle\n"),
+              fs.writeFile(path.join(tmp.path, "sub", "aaa.txt"), "needle\n"),
+            ])
+          })
+
+          const report = yield* (yield* Ripgrep.Service).grepReport({
+            cwd: tmp.path,
+            pattern: "needle",
+            limit: 100,
+            sorted: true,
+          })
+          expect(report.rows.map((row) => String(row.match.entry.path))).toEqual([
+            "a-dir/z.txt",
+            ...names,
+            "sub/aaa.txt",
+            "sub/inner.txt",
+          ])
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("surfaces directory traversal failures instead of a partial-success result", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
