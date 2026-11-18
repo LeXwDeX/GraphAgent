@@ -100,7 +100,27 @@ function parsePatchHeader(
   return null
 }
 
-function parseUpdateFileChunks(lines: string[], startIdx: number): { chunks: UpdateFileChunk[]; nextIdx: number } {
+/** Lines a patch may carry anywhere without meaning anything: blank lines and git's `\ No newline at end of file`. */
+function isIgnorable(line: string): boolean {
+  return line.trim() === "" || line.startsWith("\\")
+}
+
+/**
+ * A patch line that fits no grammar position is rejected, not skipped: a skipped
+ * line makes the applied change differ from the one the model wrote while the
+ * call still reports success. `n` counts from the `*** Begin Patch` line as 1.
+ */
+function malformedLine(lines: string[], index: number, firstLine: number, where: string, advice: string): Error {
+  const text = JSON.stringify(lines[index].slice(0, 80))
+  return new Error(`malformed line ${index - firstLine + 1} in ${where}: ${text}. ${advice} and resend the patch.`)
+}
+
+function parseUpdateFileChunks(
+  lines: string[],
+  startIdx: number,
+  filePath: string,
+  firstLine: number,
+): { chunks: UpdateFileChunk[]; nextIdx: number } {
   const chunks: UpdateFileChunk[] = []
   let i = startIdx
 
@@ -135,6 +155,14 @@ function parseUpdateFileChunks(lines: string[], startIdx: number): { chunks: Upd
         } else if (changeLine.startsWith("+")) {
           // Add line - only in new
           newLines.push(changeLine.substring(1))
+        } else if (!isIgnorable(changeLine)) {
+          throw malformedLine(
+            lines,
+            i,
+            firstLine,
+            `the hunk for ${filePath}`,
+            'Start every hunk line with " ", "-" or "+"',
+          )
         }
 
         i++
@@ -147,6 +175,9 @@ function parseUpdateFileChunks(lines: string[], startIdx: number): { chunks: Upd
         is_end_of_file: isEndOfFile || undefined,
       })
     } else {
+      if (!isIgnorable(lines[i])) {
+        throw malformedLine(lines, i, firstLine, `the update for ${filePath}`, 'Start each hunk with an "@@" line')
+      }
       i++
     }
   }
@@ -154,13 +185,26 @@ function parseUpdateFileChunks(lines: string[], startIdx: number): { chunks: Upd
   return { chunks, nextIdx: i }
 }
 
-function parseAddFileContent(lines: string[], startIdx: number): { content: string; nextIdx: number } {
+function parseAddFileContent(
+  lines: string[],
+  startIdx: number,
+  filePath: string,
+  firstLine: number,
+): { content: string; nextIdx: number } {
   let content = ""
   let i = startIdx
 
   while (i < lines.length && !lines[i].startsWith("***")) {
     if (lines[i].startsWith("+")) {
       content += lines[i].substring(1) + "\n"
+    } else if (!isIgnorable(lines[i])) {
+      throw malformedLine(
+        lines,
+        i,
+        firstLine,
+        `the added file ${filePath}`,
+        'Start every line of an added file with "+"',
+      )
     }
     i++
   }
@@ -210,7 +254,7 @@ export function parsePatch(patchText: string): { hunks: Hunk[] } {
     }
 
     if (lines[i].startsWith("*** Add File:")) {
-      const { content, nextIdx } = parseAddFileContent(lines, header.nextIdx)
+      const { content, nextIdx } = parseAddFileContent(lines, header.nextIdx, header.filePath, beginIdx)
       hunks.push({
         type: "add",
         path: header.filePath,
@@ -224,7 +268,7 @@ export function parsePatch(patchText: string): { hunks: Hunk[] } {
       })
       i = header.nextIdx
     } else if (lines[i].startsWith("*** Update File:")) {
-      const { chunks, nextIdx } = parseUpdateFileChunks(lines, header.nextIdx)
+      const { chunks, nextIdx } = parseUpdateFileChunks(lines, header.nextIdx, header.filePath, beginIdx)
       hunks.push({
         type: "update",
         path: header.filePath,

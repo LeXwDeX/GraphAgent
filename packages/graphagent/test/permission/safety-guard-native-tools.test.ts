@@ -19,6 +19,7 @@ import { LSP } from "@/lsp/lsp"
 import { Permission } from "@/permission"
 import { ChildRegistry } from "@/session/child/registry"
 import { Instruction } from "@/session/instruction"
+import { FileState } from "@/session/file-state"
 import { MessageID, SessionID } from "@/session/schema"
 import { ApplyPatchTool } from "@/tool/apply_patch"
 import { EditTool } from "@/tool/edit"
@@ -60,6 +61,7 @@ const it = testEffect(
     Truncate.defaultLayer,
     Agent.defaultLayer,
     Instruction.defaultLayer,
+    FileState.defaultLayer,
     Ripgrep.defaultLayer,
     Git.defaultLayer,
   ),

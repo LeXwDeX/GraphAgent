@@ -31,12 +31,16 @@ function apiError(init: {
   statusCode?: number
   isRetryable?: boolean
   headers?: Record<string, string>
+  responseBody?: string
+  metadata?: Record<string, string>
 }): Err {
   return new SessionV1.APIError({
     message: init.message ?? "boom",
     isRetryable: init.isRetryable ?? false,
     statusCode: init.statusCode,
     responseHeaders: init.headers,
+    responseBody: init.responseBody,
+    metadata: init.metadata,
   }).toObject()
 }
 
@@ -74,6 +78,74 @@ describe("StopCondition.failureOf", () => {
     { name: "403", error: statusError(403), kind: "permanent" },
     { name: "a deterministic 400", error: statusError(400), kind: "permanent" },
     { name: "a deterministic 404", error: statusError(404), kind: "permanent" },
+    { name: "402", error: statusError(402), kind: "permanent" },
+    {
+      name: "a 429 whose body reports the plan limit",
+      error: apiError({
+        message: "status 429",
+        statusCode: 429,
+        responseBody: '{"error":{"code":"1308","message":"已达到 5 小时的使用上限"}}',
+      }),
+      kind: "permanent",
+    },
+    {
+      name: "a quota error flagged retryable on the wire",
+      error: apiError({
+        message: "Too Many Requests",
+        statusCode: 429,
+        isRetryable: true,
+        metadata: { code: "insufficient_quota" },
+      }),
+      kind: "permanent",
+    },
+    {
+      name: "the per-minute allocation reported as insufficient_quota",
+      error: apiError({
+        message: "Allocated quota exceeded, please increase your quota limit.",
+        statusCode: 429,
+        responseBody: '{"error":{"code":"insufficient_quota","message":"Allocated quota exceeded"}}',
+      }),
+      kind: "transient",
+    },
+    {
+      name: "a native quota 429 that says the limit is per minute",
+      error: apiError({
+        message:
+          "Provider request failed with HTTP 429: Quota exceeded for requests per minute. Please retry in 20 seconds.",
+        statusCode: 429,
+        responseBody: "Quota exceeded for requests per minute. Please retry in 20 seconds.",
+        metadata: { code: "QuotaExceeded" },
+      }),
+      kind: "transient",
+    },
+    {
+      name: "a native quota 429 with no sign of a temporary limit",
+      error: apiError({
+        message: "Provider request failed with HTTP 429: Quota exceeded. Please top up your account.",
+        statusCode: 429,
+        responseBody: "Quota exceeded. Please top up your account.",
+        metadata: { code: "QuotaExceeded" },
+      }),
+      kind: "permanent",
+    },
+    {
+      name: "a native content-policy refusal",
+      error: apiError({ message: "blocked", statusCode: 400, metadata: { code: "ContentPolicy" } }),
+      kind: "permanent",
+    },
+    {
+      name: "a 400 the table names as invalid",
+      error: apiError({ statusCode: 400, responseBody: '{"error":{"type":"invalid_request_error"}}' }),
+      kind: "permanent",
+    },
+    {
+      name: "a 400 the table names as invalid, carrying a transient signal",
+      error: apiError({
+        statusCode: 400,
+        responseBody: '{"error":{"type":"invalid_request_error","message":"upstream connection refused"}}',
+      }),
+      kind: "transient",
+    },
     {
       name: "a provider auth error",
       error: new SessionV1.AuthError({ providerID: "test", message: "bad key" }).toObject(),

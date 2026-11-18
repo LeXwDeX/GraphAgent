@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect"
 import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { MCP } from "@/mcp"
+import { McpCatalog } from "@/mcp/catalog"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { SessionID } from "@/session/schema"
@@ -72,6 +73,50 @@ describe("official MCP tool hook transport", () => {
       expect(input).toEqual({ path: "/tmp/fixture.txt" })
       expect(result.permissionDecision).toBe("deny")
       expect(result.permissionDecisionReason).toBe("fixture")
+    }),
+  )
+
+  it.instance("reads structuredContent as one JSON line when the server also returns text", () =>
+    Effect.gen(function* () {
+      const store = yield* SessionHooks.Service
+      const hook = yield* SettingsHook.Service
+      const sessionID = SessionID.descending()
+      // The real tool conversion over a client that answers with readable text and the decision as structuredContent.
+      const client = Object.assign(Object.create(null), {
+        callTool: async () => ({
+          content: [{ type: "text", text: "A readable summary that is not JSON" }],
+          structuredContent: {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: "from structuredContent",
+            },
+          },
+        }),
+      })
+      const mcp = Layer.mock(MCP.Service, {
+        tools: () =>
+          Effect.succeed({
+            audit_check: McpCatalog.convertTool(
+              { name: "check", inputSchema: { type: "object", properties: {} } },
+              client,
+              undefined,
+              "audit",
+            ),
+          }),
+      })
+      yield* store.add(sessionID, {
+        event: "PreToolUse",
+        hooks: [{ type: "mcp_tool", server: "audit", tool: "check" }],
+      })
+      const result = yield* hook
+        .trigger(
+          { event: "PreToolUse", toolName: "read", toolInput: {} },
+          { sessionID, transcript: () => Effect.succeed("") },
+        )
+        .pipe(Effect.provide(mcp))
+      expect(result.permissionDecision).toBe("deny")
+      expect(result.permissionDecisionReason).toBe("from structuredContent")
     }),
   )
 

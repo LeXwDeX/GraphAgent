@@ -3,7 +3,7 @@ import { describe, expect } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { Cause, Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import * as PlatformError from "effect/PlatformError"
 import { GrepTool } from "../../src/tool/grep"
 import { provideInstance, testInstanceStoreLayer, TestInstance } from "../fixture/fixture"
@@ -97,6 +97,16 @@ const failingGrep = (params: { pattern: string; path: string }, next?: Partial<t
     return yield* grep.execute(params, { ...ctx, ...next })
   })
 
+// The full message of the failure, not the first line of its pretty-printed cause.
+const failureMessage = (exit: Exit.Exit<unknown, unknown>): string => {
+  if (!Exit.isFailure(exit)) return ""
+  const cause = Cause.squash(exit.cause)
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
+const SKIPPED_LINE =
+  "[skipped: 1 matching line over 64 KB not shown. Preview them with the shell tool: rg -n -M 200 --max-columns-preview -e <pattern> <path>]"
+
 describe("tool.grep", () => {
   rooted.live("basic search", () =>
     Effect.gen(function* () {
@@ -130,8 +140,128 @@ describe("tool.grep", () => {
         },
         ctx,
       )
-      expect(result.metadata.matches).toBe(0)
-      expect(result.output).toBe("No files found")
+      expect(result.metadata).toEqual({ matches: 0, truncated: false })
+      expect(result.output).toStartWith(
+        `No matches: pattern="xyznonexistentpatternxyz123" path=${JSON.stringify(test.directory)} include=none; files searched: `,
+      )
+      expect(result.output).toMatch(/files searched: [1-9]\d*\. Rust regex, case-sensitive\.$/)
+      expect(result.output).not.toContain("No files found")
+      expect(result.output).not.toContain("[truncated:")
+    }),
+  )
+
+  it.instance("an include filter that lets no file through says so", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "test.txt"), "needle"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.nomatch" }, ctx)
+      expect(result.metadata).toEqual({ matches: 0, truncated: false })
+      expect(result.output).toBe(
+        `No matches: pattern="needle" path=${JSON.stringify(test.directory)} include="*.nomatch"; ` +
+          "files searched: 0. No file passed the include filter or ignore rules (.gitignore, .ignore).",
+      )
+    }),
+  )
+
+  it.instance("a match over 64 KB alone is counted instead of reported as no match", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Bun.write(path.join(test.directory, "bundle.min.js"), `needle${"x".repeat(80_000)}\n`),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory }, ctx)
+      expect(result.output).toBe(SKIPPED_LINE)
+      expect(result.metadata).toEqual({ matches: 0, truncated: false, corrections: ["long_lines_skipped"] })
+    }),
+  )
+
+  it.instance("a match over 64 KB beside ordinary matches is counted after them", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Bun.write(path.join(test.directory, "bundle.min.js"), `needle${"x".repeat(80_000)}\n`),
+      )
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "plain.txt"), "needle here\n"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory }, ctx)
+      expect(result.output).toStartWith("Found 1 matches\n")
+      expect(result.output).toContain("Line 1: needle here")
+      expect(result.output).toEndWith(`\n\n${SKIPPED_LINE}`)
+      expect(result.output).not.toContain("[truncated:")
+      expect(result.metadata).toEqual({ matches: 1, truncated: false, corrections: ["long_lines_skipped"] })
+    }),
+  )
+
+  it.instance("a search that skips nothing records no correction", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "plain.txt"), "needle here\n"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory }, ctx)
+      expect(result.metadata).toEqual({ matches: 1, truncated: false })
+      expect(result.output).not.toContain("[skipped:")
+    }),
+  )
+
+  it.instance("lists files in path order", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const names = Array.from({ length: 30 }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`)
+      yield* Effect.promise(async () => {
+        await Promise.all([
+          ...names.map((name) => Bun.write(path.join(test.directory, name), "needle")),
+          Bun.write(path.join(test.directory, "a-dir", "z.txt"), "needle"),
+          Bun.write(path.join(test.directory, "sub", "inner.txt"), "needle"),
+        ])
+      })
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory }, ctx)
+      const files = result.output.split("\n").filter((line) => line.endsWith(":") && line.startsWith(test.directory))
+      expect(files.map((line) => path.relative(test.directory, line.slice(0, -1)))).toEqual([
+        path.join("a-dir", "z.txt"),
+        ...names,
+        path.join("sub", "inner.txt"),
+      ])
+    }),
+  )
+
+  it.instance("explains that look-around is not supported instead of suggesting --pcre2", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "test.txt"), "ab"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      for (const pattern of ["(?<=a)b", "(a)\\1"]) {
+        const exit = yield* Effect.exit(grep.execute({ pattern, path: test.directory }, ctx))
+        expect(exit._tag).toBe("Failure")
+        const message = failureMessage(exit)
+        expect(message).toContain("regex parse error")
+        expect(message).not.toContain("Consider enabling PCRE2")
+        expect(message).toContain("grep uses Rust regex (no look-around or backreferences)")
+        expect(message).toContain("rg --pcre2 -n -e <pattern> <path> with the shell tool")
+      }
+    }),
+  )
+
+  it.instance("leaves other pattern errors as ripgrep reported them", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "test.txt"), "ab"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const exit = yield* Effect.exit(grep.execute({ pattern: "(abc", path: test.directory }, ctx))
+      expect(exit._tag).toBe("Failure")
+      const message = failureMessage(exit)
+      expect(message).toContain("regex parse error")
+      expect(message).toContain("unclosed group")
+      expect(message).not.toContain("grep uses Rust regex")
     }),
   )
 

@@ -14,10 +14,34 @@ import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@graphagent/core/filesystem"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
+import { FileState } from "@/session/file-state"
+import type { SessionID } from "@/session/schema"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
 })
+
+/** One file's part of a patch, planned before the question is asked and checked again under the path locks. */
+interface FileChange {
+  filePath: string
+  oldContent: string
+  newContent: string
+  type: "add" | "update" | "delete" | "move"
+  movePath?: string
+  diff: string
+  additions: number
+  deletions: number
+  bom: boolean
+  /** BOM of the file as read; the source for update, move and delete. */
+  oldBom: boolean
+  /**
+   * The add or move target as the call saw it, when it existed and the session had read it. The call's own
+   * baseline, compared with the disk under the locks: the session's record may have been replaced by then.
+   */
+  targetBaseline?: FileState.Baseline
+  /** Under the locks: the source no longer matched the session's last record of it. */
+  outside: boolean
+}
 
 export const ApplyPatchTool = Tool.define(
   "apply_patch",
@@ -26,6 +50,58 @@ export const ApplyPatchTool = Tool.define(
     const afs = yield* FSUtil.Service
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
+    const fileState = yield* FileState.Service
+
+    // Every refusal of this tool reads "apply_patch verification failed: ...", whichever check raised it.
+    const verificationFailed = (message: string) => new Error(`apply_patch verification failed: ${message}`)
+    const changedWhileAsking = (target: string) => verificationFailed(FileState.changedWhileAskingMessage(target))
+
+    // Add File and Move replace an existing target, which the session must have read in its current state. Returns
+    // the target as seen here (the call's baseline for the check under the locks), or undefined when it does not
+    // exist. The record is checked against that same observation.
+    const requireOverwriteRead = Effect.fnUntraced(function* (sessionID: SessionID, target: string) {
+      if (!(yield* afs.existsSafe(target))) return undefined
+      const baseline = yield* fileState.baseline(target)
+      yield* fileState
+        .requireRead(sessionID, target, baseline)
+        .pipe(Effect.mapError((error) => verificationFailed(error.message)))
+      return baseline
+    })
+
+    // Under the path locks the disk must still hold what the call planned against: an add or move target as the
+    // call saw it, or still absent, and a source file with the content the patch was derived from.
+    const requireTargetUnchanged = Effect.fnUntraced(function* (
+      target: string,
+      baseline: FileState.Baseline | undefined,
+    ) {
+      if (baseline)
+        yield* fileState.requireBaseline(target, baseline).pipe(Effect.mapError(() => changedWhileAsking(target)))
+      else if (yield* afs.existsSafe(target)) yield* Effect.fail(changedWhileAsking(target))
+    })
+
+    // Every check runs before the first write, so a patch that fails here leaves the tree as it was.
+    const recheck = Effect.fnUntraced(function* (sessionID: SessionID, changes: ReadonlyArray<FileChange>) {
+      for (const change of changes) {
+        if (change.type === "add") {
+          yield* requireTargetUnchanged(change.filePath, change.targetBaseline)
+          continue
+        }
+        const read = change.type === "delete" ? Bom.readFile : Bom.readEditableFile
+        const current = yield* read(afs, change.filePath).pipe(
+          Effect.catchIf(
+            (error) => "reason" in error && error.reason._tag === "NotFound",
+            () => Effect.fail(changedWhileAsking(change.filePath)),
+          ),
+        )
+        if (current.text !== change.oldContent || current.bom !== change.oldBom) {
+          yield* Effect.fail(changedWhileAsking(change.filePath))
+        }
+        if (change.type !== "delete") {
+          change.outside = (yield* fileState.verify(sessionID, change.filePath)) === "changed"
+        }
+        if (change.movePath) yield* requireTargetUnchanged(change.movePath, change.targetBaseline)
+      }
+    })
 
     const run = Effect.fn("ApplyPatchTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -55,17 +131,7 @@ export const ApplyPatchTool = Tool.define(
       const instance = yield* InstanceState.context
 
       // Validate file paths and check permissions
-      const fileChanges: Array<{
-        filePath: string
-        oldContent: string
-        newContent: string
-        type: "add" | "update" | "delete" | "move"
-        movePath?: string
-        diff: string
-        additions: number
-        deletions: number
-        bom: boolean
-      }> = []
+      const fileChanges: FileChange[] = []
 
       let totalDiff = ""
 
@@ -75,6 +141,7 @@ export const ApplyPatchTool = Tool.define(
 
         switch (hunk.type) {
           case "add": {
+            const targetBaseline = yield* requireOverwriteRead(ctx.sessionID, filePath)
             const oldContent = ""
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
@@ -97,6 +164,9 @@ export const ApplyPatchTool = Tool.define(
               additions,
               deletions,
               bom: next.bom,
+              oldBom: false,
+              targetBaseline,
+              outside: false,
             })
 
             totalDiff += diff + "\n"
@@ -152,6 +222,7 @@ export const ApplyPatchTool = Tool.define(
             const movePath =
               target && FSUtil.normalizePath(target) !== FSUtil.normalizePath(filePath) ? target : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
+            const targetBaseline = movePath ? yield* requireOverwriteRead(ctx.sessionID, movePath) : undefined
 
             fileChanges.push({
               filePath,
@@ -163,6 +234,9 @@ export const ApplyPatchTool = Tool.define(
               additions,
               deletions,
               bom,
+              oldBom: source.bom,
+              targetBaseline,
+              outside: false,
             })
 
             totalDiff += diff + "\n"
@@ -193,6 +267,8 @@ export const ApplyPatchTool = Tool.define(
               additions: 0,
               deletions,
               bom: source.bom,
+              oldBom: source.bom,
+              outside: false,
             })
 
             totalDiff += deleteDiff + "\n"
@@ -225,55 +301,66 @@ export const ApplyPatchTool = Tool.define(
         },
       })
 
-      // Apply the changes
-      const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
+      // The question was asked outside the locks. Under them, check once more that the disk still holds what the
+      // patch was planned against, then write, format, record and publish.
+      yield* FileState.withLocks(
+        fileChanges.flatMap((change) => (change.movePath ? [change.filePath, change.movePath] : [change.filePath])),
+      )(
+        Effect.gen(function* () {
+          yield* recheck(ctx.sessionID, fileChanges)
 
-      for (const change of fileChanges) {
-        const edited = change.type === "delete" ? undefined : (change.movePath ?? change.filePath)
-        switch (change.type) {
-          case "add":
-            // Create parent directories (recursive: true is safe on existing/root dirs)
+          // Apply the changes
+          const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
 
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
-            updates.push({ file: change.filePath, event: "add" })
-            break
+          for (const change of fileChanges) {
+            const edited = change.type === "delete" ? undefined : (change.movePath ?? change.filePath)
+            switch (change.type) {
+              case "add":
+                // Create parent directories (recursive: true is safe on existing/root dirs)
 
-          case "update":
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
-            updates.push({ file: change.filePath, event: "change" })
-            break
+                yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+                updates.push({ file: change.filePath, event: "add" })
+                break
 
-          case "move":
-            if (change.movePath) {
-              // Create parent directories (recursive: true is safe on existing/root dirs)
+              case "update":
+                yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+                updates.push({ file: change.filePath, event: "change" })
+                break
 
-              yield* afs.writeWithDirs(change.movePath!, Bom.join(change.newContent, change.bom))
-              yield* afs.remove(change.filePath)
-              updates.push({ file: change.filePath, event: "unlink" })
-              updates.push({ file: change.movePath, event: "add" })
+              case "move":
+                if (change.movePath) {
+                  // Create parent directories (recursive: true is safe on existing/root dirs)
+
+                  yield* afs.writeWithDirs(change.movePath!, Bom.join(change.newContent, change.bom))
+                  yield* afs.remove(change.filePath)
+                  updates.push({ file: change.filePath, event: "unlink" })
+                  updates.push({ file: change.movePath, event: "add" })
+                }
+                break
+
+              case "delete":
+                yield* afs.remove(change.filePath)
+                updates.push({ file: change.filePath, event: "unlink" })
+                break
             }
-            break
 
-          case "delete":
-            yield* afs.remove(change.filePath)
-            updates.push({ file: change.filePath, event: "unlink" })
-            break
-        }
-
-        if (edited) {
-          if (yield* format.file(edited)) {
-            // afterEdit runs against diagnostics in post-format disk coordinates,
-            // so retain the formatter's output rather than the patch snapshot.
-            change.newContent = yield* Bom.syncFile(afs, edited, change.bom)
+            if (edited) {
+              if (yield* format.file(edited)) {
+                // afterEdit runs against diagnostics in post-format disk coordinates,
+                // so retain the formatter's output rather than the patch snapshot.
+                change.newContent = yield* Bom.syncFile(afs, edited, change.bom)
+              }
+              yield* fileState.record(ctx.sessionID, edited, "apply_patch")
+              yield* events.publish(FileSystem.Event.Edited, { file: edited })
+            }
           }
-          yield* events.publish(FileSystem.Event.Edited, { file: edited })
-        }
-      }
 
-      // Publish file change events
-      for (const update of updates) {
-        yield* events.publish(Watcher.Event.Updated, update)
-      }
+          // Publish file change events
+          for (const update of updates) {
+            yield* events.publish(Watcher.Event.Updated, update)
+          }
+        }),
+      )
 
       // Notify LSP of file changes and collect diagnostics. Each touch may wait
       // up to the diagnostics timeout, so files settle concurrently rather than
@@ -297,6 +384,11 @@ export const ApplyPatchTool = Tool.define(
         return `M ${path.relative(instance.worktree, target).replaceAll("\\", "/")}`
       })
       let output = `Success. Updated the following files:\n${summaryLines.join("\n")}`
+      for (const change of fileChanges) {
+        if (!change.outside) continue
+        const shown = path.relative(instance.worktree, change.movePath ?? change.filePath).replaceAll("\\", "/")
+        output += `\n${FileState.changedOutsideNote(shown)}`
+      }
 
       for (const change of fileChanges) {
         if (change.type === "delete") continue

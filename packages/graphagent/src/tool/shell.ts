@@ -20,8 +20,10 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@graphagent/core/shell"
 import { ShellID } from "./shell/id"
+import { ShellNormalize } from "./shell/normalize"
 
 import * as Truncate from "./truncate"
+import { addCorrections } from "./corrections"
 import { ChildProcess } from "effect/process"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { ShellPrompt, SHELL_TAIL_LINES, type Parameters } from "./shell/prompt"
@@ -875,10 +877,15 @@ export const ShellTool = Tool.define(
       }
       const totalLines = streamNewlines + (streamBytes > 0 && !endsWithNewline ? 1 : 0)
       const lastLineBytes = endsWithNewline ? completedLineBytes : currentLineBytes
+      // The preview shows the output without progress frames and escape sequences; a saved copy keeps the original
+      // text, which the line counts above describe (#1447).
+      const original = raw
+      const normalized = ShellNormalize.normalize(raw)
+      raw = normalized.text
       const end = Truncate.tailPreview(raw, SHELL_TAIL_LINES, limits.maxBytes)
       if (end.cut) cut = true
       if (!file && end.cut && unsaved === undefined) {
-        const saved = yield* trunc.save(raw)
+        const saved = yield* trunc.save(original)
         if ("failed" in saved) unsaved = saved.failed
         else file = saved.path
       }
@@ -904,6 +911,8 @@ export const ShellTool = Tool.define(
         output += `\n\n[truncated: ${Truncate.unsavedNote(unsaved)}]`
       }
 
+      const rewritten = normalized.folded > 0 || normalized.ansi
+      if (rewritten) meta.push(ShellNormalize.note(normalized, file !== ""))
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
@@ -933,12 +942,15 @@ export const ShellTool = Tool.define(
             : undefined
       return {
         title: input.command,
-        metadata: {
-          output: last || preview(output),
-          exit: code,
-          truncated: cut,
-          ...(cut && file ? { outputPath: file } : {}),
-        },
+        metadata: addCorrections(
+          {
+            output: last || preview(output),
+            exit: code,
+            truncated: cut,
+            ...(cut && file ? { outputPath: file } : {}),
+          },
+          ...(rewritten ? ["shell_output_normalized"] : []),
+        ),
         output,
         ...(hookFailure ? { hookFailure } : {}),
       }

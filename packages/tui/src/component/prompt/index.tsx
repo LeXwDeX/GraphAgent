@@ -13,7 +13,7 @@ import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@graphagent/core/flag/flag"
-import { formatCost } from "@graphagent/core/util/cost"
+import { costLabel, unpriced } from "@graphagent/core/util/cost"
 import { Identifier } from "@graphagent/core/id/id"
 import { useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
@@ -45,6 +45,7 @@ import type { AssistantMessage, FilePart, UserMessage } from "@graphagent/sdk"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
+import { sessionTokenTotal } from "../../util/session-usage"
 import { t } from "../../i18n"
 import { openProviderPanel } from "../../panel/provider"
 import { askChoice } from "../../ask/local-ask"
@@ -309,10 +310,13 @@ export function Prompt(props: PromptProps) {
 
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
+    // #1475: the session's own cost. One that recorded tokens at no cost has no price: it reads as unknown, not as
+    // a free session; with neither a cost nor tokens there is nothing to say.
     const cost = session?.cost ?? 0
+    const unknown = unpriced(cost, sessionTokenTotal(session?.tokens))
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? formatCost(cost) : undefined,
+      cost: cost > 0 || unknown ? costLabel(cost, unknown, t("usage.unknown")) : undefined,
     }
   })
 

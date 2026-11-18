@@ -7,7 +7,9 @@ export * as HookTurnContext from "./turn-context"
 import { Effect } from "effect"
 import type { BackgroundJob } from "@/background/job"
 import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
+import { ProviderErrorClass } from "@/provider/error-class"
 import type { DagStore } from "@graphagent/core/dag/store"
+import { SessionV1 } from "@graphagent/core/v1/session"
 
 const clipped = (value: string) =>
   value.length <= 1000 ? value : `${value.slice(0, 1000)}… [+${value.length - 1000} chars]`
@@ -57,6 +59,19 @@ export const backgroundTasks = Effect.fn("HookTurnContext.backgroundTasks")(func
   ]
 })
 
+/**
+ * A stored API error the provider error table reads as a spent quota or balance.
+ * The status code cannot tell: OpenAI and Zhipu report it as a 429, which is
+ * otherwise a rate limit.
+ */
+function quotaExhausted(value: unknown): boolean {
+  return (
+    SessionV1.APIError.isInstance(value) &&
+    isRecord(value.data) &&
+    ProviderErrorClass.match(ProviderErrorClass.factsOf(value.data), false) === "quota_exhausted"
+  )
+}
+
 /** Normalize host API failures to the hook protocol's matcher vocabulary. */
 export function failure(value: unknown, displayedError?: string) {
   const outer = record(value)
@@ -81,7 +96,7 @@ export function failure(value: unknown, displayedError?: string) {
           : undefined
   const tag = data?._tag
   const lower = text.toLowerCase()
-  const error = lower.includes("oauth_org_not_allowed")
+  const classified = lower.includes("oauth_org_not_allowed")
     ? "oauth_org_not_allowed"
     : lower.includes("account_on_hold") || lower.includes("account is on hold")
       ? "account_on_hold"
@@ -107,6 +122,8 @@ export function failure(value: unknown, displayedError?: string) {
                       : tag === "ProviderInternal" || (status !== undefined && status >= 500)
                         ? "server_error"
                         : "unknown"
+  // A spent quota is a billing error whatever status it came with, ahead of the 429 rate-limit reading.
+  const error = quotaExhausted(value) ? "billing_error" : classified
   return {
     error,
     ...(displayedError === undefined ? {} : { errorDetails: displayedError, lastAssistantMessage: displayedError }),

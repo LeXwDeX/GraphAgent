@@ -22,6 +22,7 @@ import type {
   Goal,
   DagWorkflowSummary,
   SessionDagMode,
+  SessionUsage,
   PrWatchEntry,
   SessionReminder,
   ReferenceInfo,
@@ -73,7 +74,7 @@ import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { batch, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { TuiLog } from "../util/log"
@@ -233,6 +234,16 @@ export const {
         [rootSessionID: string]: SessionDagMode
       }
       /**
+       * What a whole task tree has used (`GET /session/:id/usage`, #1475): the tokens by kind and the cost summed over
+       * the root, its sub-agents and its DAG nodes, held per root session. Display only. A root is read only while
+       * something on screen watches it (`usage.watch`: the drawer while it is open), and then again on three
+       * triggers: the watch itself, a settled turn anywhere in the tree (`session.turn.settled`, the moment a
+       * session's usage is last written) and a reconnect. Nothing polls, and a root nobody watches costs no read.
+       */
+      usage: {
+        [rootSessionID: string]: SessionUsage
+      }
+      /**
        * The DAG slots running in the whole server process, as the latest report of any source says: a workflow
        * summary that carries `concurrencyRunning` (event or read), or a mode snapshot's `limits.running`, whichever
        * arrived last. The count belongs to the process, but a summary event carries it only for the session it is
@@ -306,6 +317,7 @@ export const {
       dag: {},
       dagNodes: {},
       dagMode: {},
+      usage: {},
       dagRunning: undefined,
       dag_focus: {},
       turn_settled: {},
@@ -372,6 +384,12 @@ export const {
     // The mode snapshot read in flight per session. A newer read replaces it and the older answer is dropped; a
     // read that is still out also stands in for another one that only wants the snapshot to exist.
     const dagModeReads = new Map<string, symbol>()
+    // #1475: the usage read in flight per root session (a newer read cannot start while one is out), the roots that
+    // were triggered again while their read was out and so are read once more when it ends, and how many surfaces
+    // watch each root. Only a watched root is read.
+    const usageReads = new Map<string, symbol>()
+    const usageDirty = new Set<string>()
+    const usageWatchers = new Map<string, number>()
     // #1036 F6: the PR watch read in flight per root session. A newer read replaces it and the older answer is
     // dropped. `touched` names the watches that events updated since the read began: they are newer than the answer.
     const prWatchReads = new Map<string, { touched: Set<string> }>()
@@ -571,6 +589,9 @@ export const {
     function dropSession(sessionID: string) {
       dropDagOwner(sessionID)
       dagModeReads.delete(sessionID)
+      usageReads.delete(sessionID)
+      usageDirty.delete(sessionID)
+      usageWatchers.delete(sessionID)
       // A read still out must not bring the session's entries back.
       prWatchReads.delete(sessionID)
       prWatchLoaded.delete(sessionID)
@@ -599,6 +620,7 @@ export const {
           delete draft.session_diff[sessionID]
           delete draft.dag[sessionID]
           delete draft.dagMode[sessionID]
+          delete draft.usage[sessionID]
           delete draft.dag_focus[sessionID]
           delete draft.turn_settled[sessionID]
           delete draft.session_status[sessionID]
@@ -993,6 +1015,70 @@ export const {
         ([ownerID, list]) => list.length > 0 && (ownerID === rootID || parentChain(ownerID).at(-1) === rootID),
       )
       if (on || owned) void fetchDagMode([rootID], true)
+    }
+
+    /**
+     * Read the usage of the trees whose roots are named (#1475) and take the answers in. A root whose read is still
+     * out is not asked again at once: it is marked, and read once more when that answer is in, so a burst of triggers
+     * costs one more read and not one each. A read that fails leaves what the slice held and is logged; the next
+     * trigger reads again. An answer is kept only while the root is still watched and not deleted, so a read that
+     * outlives its drawer brings nothing back.
+     */
+    function fetchUsage(rootIDs: readonly string[]) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        rootIDs.map(async (rootID) => {
+          if (usageReads.has(rootID)) {
+            usageDirty.add(rootID)
+            return
+          }
+          const read = Symbol(rootID)
+          usageReads.set(rootID, read)
+          try {
+            const response = await sdk.client.session.usage(
+              { sessionID: rootID },
+              { headers: locationHeaders({ workspace }) },
+            )
+            if (disposed || usageReads.get(rootID) !== read) return
+            const snapshot = response.data
+            if (!snapshot) {
+              TuiLog.write("error", "Loading the usage failed", {
+                sessionID: rootID,
+                status: response.response?.status,
+              })
+              return
+            }
+            if (usageWatchers.has(rootID)) setStore("usage", rootID, reconcile(snapshot))
+          } catch (error) {
+            if (!disposed)
+              TuiLog.write("error", "Loading the usage failed", { sessionID: rootID, error: String(error) })
+          } finally {
+            if (usageReads.get(rootID) === read) {
+              usageReads.delete(rootID)
+              if (usageDirty.delete(rootID) && !disposed && usageWatchers.has(rootID)) void fetchUsage([rootID])
+            }
+          }
+        }),
+      ).then(() => undefined)
+    }
+
+    /**
+     * Something on screen shows the usage of the tree rooted at `rootID`: count it and read it once. The function it
+     * returns lets go; the last one to go ends the reads of that root. A function called twice lets go once.
+     */
+    function watchUsage(rootID: string) {
+      usageWatchers.set(rootID, (usageWatchers.get(rootID) ?? 0) + 1)
+      // Called from an effect: the read must not make the effect depend on what it looks at (the workspace).
+      untrack(() => void fetchUsage([rootID]))
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const count = usageWatchers.get(rootID)
+        if (count === undefined) return
+        if (count > 1) usageWatchers.set(rootID, count - 1)
+        else usageWatchers.delete(rootID)
+      }
     }
 
     /**
@@ -1490,6 +1576,10 @@ export const {
         // back, so an event that arrives out of order must not replace a newer one.
         case "session.turn.settled": {
           const { sessionID, turnID, outcome, timeEnded } = event.properties
+          // #1475: a session's usage is last written when its turn settles, so a tree someone watches is read again
+          // here, whichever session of it settled and in whatever order the events came.
+          const rootID = rootOf(sessionID)
+          if (usageWatchers.has(rootID)) void fetchUsage([rootID])
           const previous = store.turn_settled[sessionID]
           if (previous && previous.timeEnded > timeEnded) break
           setStore("turn_settled", sessionID, { turnID, outcome: outcome.type, timeEnded })
@@ -2029,6 +2119,8 @@ export const {
       }
       if (unconfirmed) await applyDagWatches()
     })
+    // #1475: the usage of every tree something watches is read again, the answers being states, not events.
+    onResync(() => fetchUsage([...usageWatchers.keys()]))
     // The settled-turn slice has no read-back: a turn that settled during the
     // disconnect is unknown, and an old outcome must not pass for the latest.
     onResync(() => {
@@ -2076,6 +2168,9 @@ export const {
       dagWatches.clear()
       dagReads.clear()
       dagModeReads.clear()
+      usageReads.clear()
+      usageDirty.clear()
+      usageWatchers.clear()
       prWatchReads.clear()
       prWatchLoaded.clear()
       reminderReads.clear()
@@ -2285,6 +2380,10 @@ export const {
       },
       /** Subscribe a refresh function to the single reconnect entry point. */
       onResync,
+      /** #1475: the usage of whole task trees, read while a surface watches them (`data.usage`, keyed by root). */
+      usage: {
+        watch: watchUsage,
+      },
       /** #1032: the node tables of the workflows the display surfaces show. */
       dag: {
         watch: watchDag,
