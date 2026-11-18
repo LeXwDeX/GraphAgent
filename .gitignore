@@ -93,10 +93,6 @@ tsconfig.tsbuildinfo
 !/docs/unattended-permissions.en.md
 !/docs/功能清单.md
 /docs/agents/
-/docs/context-folding/evidence/
-/docs/continuation-2026-09-20/*.md
-/docs/continuation-2026-09-20/s09/*.md
-/docs/continuation-2026-09-20/s09/*.json
 /docs/evidence/
 /docs/examples/*
 !/docs/examples/internal-llm-aggregator.jsonc

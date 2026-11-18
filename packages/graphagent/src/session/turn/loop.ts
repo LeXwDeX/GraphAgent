@@ -34,10 +34,10 @@ import { SessionRole } from "../role"
 import type { SessionStatus } from "../status"
 import type { SessionSummary } from "../summary"
 import { SessionTools } from "../tools"
-import type { ToolSourceLedger } from "../tool-source-ledger"
 import type { TurnExecution } from "../turns"
 import { Decide } from "./decide"
 import type { FinalPolicy } from "./final-policy"
+import { Hints } from "./hints"
 import type { PrepareApi, TurnRequestInput } from "./prepare"
 import { Settle } from "./settle"
 import { State, type TurnState } from "./state"
@@ -83,7 +83,6 @@ export interface LoopDeps {
   readonly mcp: MCP.Interface
   readonly truncate: Truncate.Interface
   readonly instruction: Instruction.Interface
-  readonly toolSources: ToolSourceLedger.Interface
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly agentMessages: DagMessages.Interface | undefined
   /** H2 seam (#1021 PR3): `false` means this process saw no queued agent
@@ -259,7 +258,6 @@ function makeDeferredResumer(deps: LoopDeps) {
     mcp,
     truncate,
     settingsHook,
-    toolSources,
     prepareFns,
     settleFns,
     ops,
@@ -311,7 +309,6 @@ function makeDeferredResumer(deps: LoopDeps) {
       promptOps: yield* ops(),
       hooks: settingsHook,
       canDefer: SessionRole.isRoot(input.session) && input.lastUser.hookMode !== "interactive" ? () => true : undefined,
-      sourceLedger: toolSources,
     }).pipe(
       Effect.provideService(Permission.Service, permission),
       Effect.provideService(ToolRegistry.Service, registry),
@@ -437,7 +434,7 @@ function makeOverflowGate(deps: LoopDeps) {
       lastFinishedIndex < 0
         ? []
         : input.msgs.slice(lastFinishedIndex + 1).filter((message) => message.info.role === "user")
-    // Same-model usage reflects the prior prepared request, including folding. Add new user text and
+    // Same-model usage reflects the prior prepared request. Add new user text and
     // pending tool results below. On a model switch, estimate the active projected history.
     // Media is stripped before either estimate and never logged.
     const freshEstimate = switchedModel || input.lastFinished.summary === true
@@ -457,8 +454,7 @@ function makeOverflowGate(deps: LoopDeps) {
     // request so that estimate still includes what the provider actually receives.
     const estimatedRequestOverhead = freshEstimate ? (input.requestOverheads.get(input.sessionID) ?? 0) : 0
     // Provider usage covers the request that produced lastFinished, but not tool results that completed
-    // afterward. Each result is still present until a projection actually folds it; text equality alone
-    // does not authorize a budget deduction (e.g. bash results are protected from folding).
+    // afterward. Each of those results is counted in full.
     const pendingToolOutputTokens = freshEstimate ? 0 : estimatePendingToolOutputTokens(input.msgs, lastFinishedIndex)
     const estimatedInputTokens = freshEstimate
       ? estimatedTextTokens + estimatedRequestOverhead
@@ -842,11 +838,16 @@ function makeStopGate(deps: LoopDeps) {
       stopPolicy: resolved.policy,
       budgetExhausted: input.budget.exhausted,
       assistantFinish: input.lastAssistant?.finish,
+      pseudoToolCall: Hints.detectPseudoToolCall(input.lastAssistantMsg?.parts ?? []),
     }
     let transition = Decide.decide(input.state, signals)
     // The terminal step called a tool: run the single closing step before any
     // Stop hook observes the turn.
     if (transition.kind === "close") return { kind: "step", state: State.beginClosing(input.state) }
+    if (transition.kind === "hint") {
+      yield* stopFns.writeHint({ sessionID: input.sessionID, lastUser: input.lastUser, hint: transition.hint })
+      return { kind: "continue", state: State.recordHint(input.state, transition.hint) }
+    }
     if (transition.kind === "run_stop_hooks") {
       const result = yield* stopFns.runStopHooks({
         sessionID: input.sessionID,

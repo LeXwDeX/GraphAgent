@@ -445,9 +445,8 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   //   rebuilding, so the previous end is the message before the newest
   //   assistant turn; a new user turn only appends the user message, so its
   //   previous end is the newest assistant message. applyCaching receives no
-  //   request identity, so this is a structural inference; compaction or
-  //   folding can move the boundary and the walk-back then anchors an earlier
-  //   cacheable message.
+  //   request identity, so this is a structural inference; compaction can move
+  //   the boundary and the walk-back then anchors an earlier cacheable message.
   // - current_end: the newest cacheable message, which becomes the next
   //   request's hit prefix.
   const systemEnd = msgs.findLast((msg) => msg.role === "system" && cacheable(msg))

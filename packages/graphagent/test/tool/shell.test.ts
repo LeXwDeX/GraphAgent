@@ -17,6 +17,8 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { testEffect } from "../lib/effect"
+import { truncateFailingWith } from "../lib/truncate"
+import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
 import { Tool } from "@/tool/tool"
 import { SafetyGuard } from "@/permission/safety-guard"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -1270,6 +1272,63 @@ describe("tool.shell abort", () => {
   )
 })
 
+// A command killed by a signal has no exit code, but it is a finished result:
+// the collected output comes back at once instead of waiting for the timeout.
+describe("tool.shell signal termination", () => {
+  const killed = [
+    { signal: "SIGKILL", command: "echo before; kill -KILL $$" },
+    { signal: "SIGSEGV", command: "echo before; kill -SEGV $$" },
+  ]
+
+  if (process.platform !== "win32") {
+    for (const { signal, command } of killed) {
+      it.live(
+        `returns the collected output when the command is killed by signal ${signal}`,
+        () =>
+          runIn(
+            projectRoot,
+            Effect.gen(function* () {
+              const started = Date.now()
+              const result = yield* run({ command, timeout: 10_000 })
+              expect(Date.now() - started).toBeLessThan(5_000)
+              expect(result.output).toContain("before")
+              expect(result.output).toContain(`Command terminated by signal ${signal}`)
+              expect(result.output).not.toContain("exceeding timeout")
+              expect(result.metadata.exit).toBe(null)
+              expect(result.hookFailure).toContain(`Terminated by signal ${signal}`)
+            }),
+          ),
+        20_000,
+      )
+    }
+
+    // The shell is gone, but a process it started is still in its process
+    // group. The result must not wait for it, and it must not outlive the call.
+    it.live(
+      "stops a process the killed command left running",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* tmpdirScoped()
+          const { command, file } = yield* killedShell(tmp)
+          yield* runIn(
+            tmp,
+            Effect.gen(function* () {
+              const started = Date.now()
+              const result = yield* run({ command, timeout: 10_000 })
+              expect(Date.now() - started).toBeLessThan(2_000)
+              expect(result.output).toContain("before")
+              expect(result.output).toContain("Command terminated by signal SIGKILL")
+              expect(result.output).not.toContain("exceeding timeout")
+              expect(result.metadata.exit).toBe(null)
+            }),
+          )
+          yield* expectLeftBehindStopped(file)
+        }),
+      20_000,
+    )
+  }
+})
+
 describe("tool.shell silence guard", () => {
   const collector = (warned: string[]) => ({
     ...ctx,
@@ -1655,6 +1714,80 @@ describe("tool.shell truncation", () => {
       }),
     ),
   )
+})
+
+// The full output could not be written to disk: the command's own result (exit code, the tail) still comes back,
+// and says that the cut part cannot be read back.
+describe("tool.shell output that cannot be saved", () => {
+  let writes = 0
+  const unwritableIt = testEffect(
+    Layer.mergeAll(
+      CrossSpawnSpawner.defaultLayer,
+      FSUtil.defaultLayer,
+      truncateFailingWith("disk full", () => writes++),
+      Config.defaultLayer,
+      Agent.defaultLayer,
+      RuntimeFlags.defaultLayer,
+      BackgroundJob.defaultLayer,
+      testInstanceStoreLayer,
+    ),
+  )
+
+  unwritableIt.live("keeps the tail and the exit code when the final write fails", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        writes = 0
+        const result = yield* run({ command: fill("lines", 30) })
+
+        expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.truncated).toBe(true)
+        expect(result.metadata.outputPath).toBeUndefined()
+        expect(result.output).toContain("Full output could not be saved: disk full")
+        expect(result.output).toContain(`[truncated: ${Truncate.unsavedNote("disk full")}]`)
+        expect(result.output).toMatch(/^30$/m)
+        expect(result.output).toMatch(/^11$/m)
+        expect(result.output).not.toMatch(/^10$/m)
+        expect(result.output).not.toContain("--------- full output ---------")
+        expect(writes).toBe(1)
+      }),
+    ),
+  )
+
+  unwritableIt.live(
+    "does not write again at the end once a write failed while streaming",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          writes = 0
+          const result = yield* run({ command: fill("lines", 20_000) })
+
+          expect(result.metadata.exit).toBe(0)
+          expect(result.output).toContain("Full output could not be saved: disk full")
+          expect(result.output).toMatch(/^20000$/m)
+          expect(result.output).not.toContain("--------- full output ---------")
+          expect(writes).toBe(1)
+        }),
+      ),
+    30_000,
+  )
+
+  if (process.platform !== "win32") {
+    unwritableIt.live("puts the unsaved note before the command's own notes", () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const result = yield* run({ command: `${fill("lines", 30)}; exit 3` })
+
+          expect(result.metadata.exit).toBe(3)
+          const note = result.output.indexOf("Full output could not be saved")
+          expect(note).toBeGreaterThan(-1)
+          expect(result.output.indexOf("Command exited with code 3")).toBeGreaterThan(note)
+        }),
+      ),
+    )
+  }
 })
 
 describe("tool.shell preview", () => {

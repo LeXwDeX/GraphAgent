@@ -1,6 +1,5 @@
 import { test, expect, describe, afterEach, beforeEach, spyOn } from "bun:test"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
-import { ConfigCompaction } from "@graphagent/core/config/compaction"
 import { Flag } from "@graphagent/core/flag/flag"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { logLines } from "effect/testing/TestConsole"
@@ -1097,100 +1096,18 @@ it.effect("global config remains global when project config is disabled", () =>
   ),
 )
 
-describe("dynamic compaction configuration", () => {
-  const resolve = (config: ConfigV1.Info) =>
-    ConfigCompaction.resolveDynamic({
-      disabledByEnvironment: false,
-      dynamic: config.compaction?.dynamic,
-      prune: config.compaction?.prune,
-    })
-
-  it.instance("defaults off after loading without manufacturing explicit config", () =>
-    Effect.gen(function* () {
-      const config = yield* Config.use.get()
-      expect(config.compaction?.dynamic).toBeUndefined()
-      expect(config.compaction?.prune).toBeUndefined()
-      expect(resolve(config)).toMatchObject({
-        enabled: false,
-        source: "default",
-        deprecatedPrune: false,
-        skipped: "disabled",
-      })
-    }),
-  )
-
-  it.effect("lets project dynamic override the global dynamic value", () =>
-    withConfigTree(
-      {
-        global: { compaction: { dynamic: false } },
-        project: { compaction: { dynamic: true } },
-      },
-      Effect.gen(function* () {
-        const config = yield* Config.use.get()
-        expect(config.compaction?.dynamic).toBe(true)
-        expect(resolve(config)).toMatchObject({ enabled: true, source: "dynamic" })
-      }),
-    ),
-  )
-
-  it.effect("lets project dynamic disable override the global value", () =>
-    withConfigTree(
-      {
-        global: { compaction: { dynamic: true } },
-        project: { compaction: { dynamic: false } },
-      },
-      Effect.gen(function* () {
-        const config = yield* Config.use.get()
-        expect(config.compaction?.dynamic).toBe(false)
-        expect(resolve(config)).toMatchObject({ enabled: false, source: "dynamic", skipped: "disabled" })
-      }),
-    ),
-  )
-
-  it.effect("resolves new and legacy fields only after layered merge", () =>
-    withConfigTree(
-      {
-        global: { compaction: { dynamic: false } },
-        project: { compaction: { prune: true } },
-      },
-      Effect.gen(function* () {
-        const config = yield* Config.use.get()
-        expect(config.compaction).toMatchObject({ dynamic: false, prune: true })
-        expect(resolve(config)).toMatchObject({ enabled: false, source: "dynamic", deprecatedPrune: false })
-      }),
-    ),
-  )
-
+describe("compaction configuration", () => {
   it.instance(
-    "lets GRAPHAGENT_DISABLE_PRUNE override explicit dynamic enablement",
-    Effect.acquireUseRelease(
-      Effect.sync(() => {
-        const previous = Flag.GRAPHAGENT_DISABLE_PRUNE
-        Flag.GRAPHAGENT_DISABLE_PRUNE = true
-        return previous
-      }),
-      () =>
-        Effect.gen(function* () {
-          const config = yield* Config.use.get()
-          expect(config.compaction).toMatchObject({ dynamic: false, prune: false })
-        }),
-      (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_PRUNE = previous)),
-    ),
-    { config: { compaction: { dynamic: true, prune: true } } },
-  )
-
-  it.instance(
-    "keeps automatic full compaction independent from dynamic folding",
+    "keeps automatic full compaction",
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(config.compaction?.auto).toBe(false)
-      expect(resolve(config)).toMatchObject({ enabled: false, source: "default", skipped: "disabled" })
     }),
     { config: { compaction: { auto: false } } },
   )
 
   it.instance(
-    "keeps GRAPHAGENT_DISABLE_AUTOCOMPACT independent from dynamic folding",
+    "keeps GRAPHAGENT_DISABLE_AUTOCOMPACT",
     Effect.acquireUseRelease(
       Effect.sync(() => {
         const previous = Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT
@@ -1200,12 +1117,11 @@ describe("dynamic compaction configuration", () => {
       () =>
         Effect.gen(function* () {
           const config = yield* Config.use.get()
-          expect(config.compaction).toMatchObject({ auto: false, dynamic: true })
-          expect(resolve(config)).toMatchObject({ enabled: true, source: "dynamic" })
+          expect(config.compaction).toMatchObject({ auto: false })
         }),
       (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT = previous)),
     ),
-    { config: { compaction: { auto: true, dynamic: true } } },
+    { config: { compaction: { auto: true } } },
   )
 })
 

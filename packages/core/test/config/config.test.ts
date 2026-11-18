@@ -459,17 +459,17 @@ describe("Config", () => {
     ),
   )
 
-  it.effect("preserves explicit dynamic compaction intent without inventing a default", () =>
+  it.effect("ignores the removed dynamic and prune compaction keys", () =>
     Effect.sync(() => {
-      const missing = Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: {} })
-      expect(missing.compaction?.dynamic).toBeUndefined()
-      expect(Schema.decodeUnknownSync(Config.Info)({ compaction: {} }).compaction?.dynamic).toBeUndefined()
-
-      const migrated = ConfigMigrateV1.migrate(
-        Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { auto: false, dynamic: false, prune: true } }),
-      )
-      expect(migrated.compaction).toMatchObject({ auto: false, dynamic: false, prune: true })
-      expect(Schema.decodeUnknownSync(Config.Info)(migrated).compaction?.dynamic).toBe(false)
+      const input = { compaction: { auto: false, dynamic: true, prune: true } }
+      const v1 = Schema.decodeUnknownSync(ConfigV1.Info)(input)
+      const migrated = Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(v1))
+      const v2 = Schema.decodeUnknownSync(Config.Info)(input)
+      for (const compaction of [v1.compaction, migrated.compaction, v2.compaction]) {
+        expect(compaction).not.toHaveProperty("dynamic")
+        expect(compaction).not.toHaveProperty("prune")
+        expect(compaction?.auto).toBe(false)
+      }
     }),
   )
 
@@ -811,7 +811,6 @@ describe("Config", () => {
                 tool_output: { max_lines: 1000, max_bytes: 32768 },
                 compaction: {
                   auto: true,
-                  prune: false,
                   keep: { tokens: 2000 },
                   buffer: 10000,
                 },
@@ -872,7 +871,6 @@ describe("Config", () => {
             expect(documents[0]?.info.tool_output).toEqual({ max_lines: 1000, max_bytes: 32768 })
             expect(documents[0]?.info.compaction).toEqual({
               auto: true,
-              prune: false,
               keep: { tokens: 2000 },
               buffer: 10000,
             })
@@ -1064,7 +1062,6 @@ describe("Config", () => {
             })
             expect(documents[0]?.info.compaction).toEqual({
               auto: true,
-              prune: undefined,
               keep: { tokens: 2000 },
               buffer: 10000,
             })

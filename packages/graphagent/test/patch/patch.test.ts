@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { Effect } from "effect"
+import { Cause, Effect, Exit } from "effect"
 import * as fs from "fs/promises"
 import * as path from "path"
 import { tmpdir } from "os"
@@ -298,6 +298,48 @@ PATCH`
 
         const exit = yield* Effect.exit(Patch.applyPatch(patchText))
         expect(exit._tag).toBe("Failure")
+      }),
+    )
+
+    it.live("tells the model to read the file again when the patch context is not found", () =>
+      Effect.gen(function* () {
+        const target = path.join(tempDir, "context.txt")
+        yield* Effect.promise(() => fs.writeFile(target, "alpha\nbeta\n"))
+
+        const patchText = `*** Begin Patch
+*** Update File: ${target}
+@@ no such context
+-alpha
++gamma
+*** End Patch`
+
+        const exit = yield* Effect.exit(Patch.applyPatch(patchText))
+        if (!Exit.isFailure(exit)) throw new Error("expected the patch to fail")
+        const text = Cause.pretty(exit.cause)
+        expect(text).toContain("Failed to find context 'no such context'")
+        expect(text).toContain("Read the file again and resend the patch with exact context lines.")
+      }),
+    )
+
+    it.live("shows only the first 20 expected lines and then the next step", () =>
+      Effect.gen(function* () {
+        const target = path.join(tempDir, "lines.txt")
+        yield* Effect.promise(() => fs.writeFile(target, "present\n"))
+        const expected = Array.from({ length: 25 }, (_, index) => `missing line ${index + 1}`)
+
+        const patchText = `*** Begin Patch
+*** Update File: ${target}
+@@
+${expected.map((line) => `-${line}`).join("\n")}
++replacement
+*** End Patch`
+
+        const exit = yield* Effect.exit(Patch.applyPatch(patchText))
+        if (!Exit.isFailure(exit)) throw new Error("expected the patch to fail")
+        const text = Cause.pretty(exit.cause)
+        expect(text).toContain(`Failed to find expected lines in ${target}:\nmissing line 1\n`)
+        expect(text).toContain("missing line 20\n... (5 more lines)\nRead the file again and resend the patch")
+        expect(text).not.toContain("missing line 21")
       }),
     )
 

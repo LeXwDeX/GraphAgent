@@ -35,6 +35,7 @@ import { Dag, parseWorkflowConfig } from "../dag"
 import { DagLocation } from "../location"
 import { DagModeReader } from "../mode-read"
 import { deliverReport, isDisplayOnlyCompletion, selectReportNode, workflowWorktreeText } from "./report-delivery"
+import { workflowResultCall } from "@/tool/workflow/result-call"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -767,7 +768,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
             // so the parent can answer "when did this arrive?".
             const at = new Date(node.completedAt ?? node.startedAt ?? node.timeUpdated ?? Date.now()).toISOString()
             const retrieval = truncated
-              ? `\nComplete output: call workflow result with workflow_id="${node.workflowId}" and node_id="${node.id}".`
+              ? `\nComplete output: call ${workflowResultCall(node.workflowId, node.id)}.`
               : ""
             const safety = nodeSafetyWakeLine(node.safetyDenials?.total ?? 0)
             return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}${safety}`

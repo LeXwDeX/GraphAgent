@@ -1308,14 +1308,6 @@
               "type": "boolean",
               "description": "Enable automatic compaction when context is full (default: true)"
             },
-            "dynamic": {
-              "type": "boolean",
-              "description": "@deprecated Legacy context folding, off by default. When explicitly enabled, folds strictly duplicate older tool outputs only in prepared model requests. Stored history is unchanged; this is independent from automatic or manual full compaction."
-            },
-            "prune": {
-              "type": "boolean",
-              "description": "@deprecated Ignored. Context folding is off by default; set 'dynamic' to true to enable the legacy behavior."
-            },
             "tail_turns": {
               "type": "integer",
               "minimum": 0,

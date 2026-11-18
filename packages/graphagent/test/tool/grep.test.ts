@@ -14,6 +14,7 @@ import { Agent } from "../../src/agent/agent"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { testEffect } from "../lib/effect"
+import { unwritableTruncate } from "../lib/truncate"
 import { Permission } from "../../src/permission"
 import type * as Tool from "../../src/tool/tool"
 import { Git } from "@/git"
@@ -30,6 +31,17 @@ const toolLayer = () =>
 
 const it = testEffect(toolLayer())
 const rooted = testEffect(Layer.mergeAll(toolLayer(), testInstanceStoreLayer))
+// The same tools over a truncation service whose disk refuses every write.
+const unwritable = testEffect(
+  Layer.mergeAll(
+    CrossSpawnSpawner.defaultLayer,
+    FSUtil.defaultLayer,
+    Ripgrep.defaultLayer,
+    unwritableTruncate,
+    Agent.defaultLayer,
+    Git.defaultLayer,
+  ),
+)
 
 const ctx = {
   sessionID: SessionID.make("ses_test"),
@@ -225,6 +237,33 @@ describe("tool.grep", () => {
       expect(result.output).toContain("raise grep limit to 200 to show more")
       expect(result.metadata.matches).toBe(100)
       expect(result.metadata.truncated).toBe(true)
+    }),
+  )
+
+  // The saved listing is what the Continue line points at; when it cannot be written the preview stands alone.
+  unwritable.instance("says the full listing could not be saved instead of pointing at it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 101 }, (_, index) =>
+            Bun.write(path.join(test.directory, `match-${index}.txt`), "needle"),
+          ),
+        ),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt" }, ctx)
+
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.metadata.matches).toBe(100)
+      expect(result.output).toContain("Found 101 matches")
+      expect(result.output).toContain(
+        `[truncated: showing 100 of 101 matches. 1 match omitted. ${Truncate.unsavedNote("disk full")}]`,
+      )
+      expect(result.output).toContain("Full output could not be saved: disk full")
+      expect(result.output).not.toContain("Full output: ")
+      expect(result.output).not.toContain("Continue:")
     }),
   )
 

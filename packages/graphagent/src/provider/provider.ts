@@ -32,12 +32,21 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { inlineReasoningTag, wrapInlineReasoning } from "./inline-reasoning"
 import { OpenAIWebSocketPool } from "./openai-ws/ws-pool"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionCompactionEvent } from "@graphagent/schema/session-compaction-event"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
+
+/** Longest silence between two chunks of a streamed response before the stream counts as broken. */
+const CHUNK_TIMEOUT_DEFAULT = 300_000
+
+/** A configured positive number is used as is; anything else gets the default. */
+export function resolveChunkTimeout(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : CHUNK_TIMEOUT_DEFAULT
+}
 
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
@@ -1683,7 +1692,7 @@ export const layer = Layer.effect(
         }
 
         const customFetch = options["fetch"]
-        const chunkTimeout = options["chunkTimeout"]
+        const chunkTimeout = resolveChunkTimeout(options["chunkTimeout"])
         const headerTimeout = options["headerTimeout"]
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
@@ -1810,7 +1819,7 @@ export const layer = Layer.effect(
                 model,
               )
             : sdk.languageModel(model.api.id)
-          const normalized = unwrapLanguageStreamErrors(language)
+          const normalized = unwrapLanguageStreamErrors(wrapInlineReasoning(language, inlineReasoningTag(model)))
           s.models.set(key, normalized)
           return normalized
         },

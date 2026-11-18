@@ -1,4 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
+import { readdir, stat } from "node:fs/promises"
+import { join } from "node:path"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
@@ -574,6 +576,85 @@ describe("tool.task", () => {
         },
       },
     },
+  )
+
+  it.instance(
+    "an unknown subagent_type fails before any permission ask and lists the names the description lists",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* Agent.Service
+        const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
+        const registry = yield* ToolRegistry.Service
+        const description =
+          (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === TaskTool.id)?.description ?? ""
+        const catalog = description.slice(description.indexOf("Available agent types:"))
+        const listed = [...catalog.matchAll(/^- ([^:\n]+):/gm)].map((match) => match[1])
+        // Hidden agents are offered, denied and primary ones are not.
+        expect(listed).toContain("hidden-agent")
+        expect(listed).not.toContain("denied-agent")
+        expect(listed).not.toContain("primary-agent")
+        expect(listed.indexOf("alpha")).toBeGreaterThan(-1)
+        expect(listed.indexOf("zebra")).toBeGreaterThan(listed.indexOf("alpha"))
+
+        const { chat, assistant } = yield* seed()
+        const state = { asks: 0 }
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const exit = yield* def
+          .execute(
+            { description: "inspect bug", prompt: "look", subagent_type: "no_such_agent" },
+            taskCtx(chat, assistant, stubOps(), {
+              ask: () =>
+                Effect.sync(() => {
+                  state.asks += 1
+                }),
+            }),
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (!Exit.isFailure(exit)) return
+        expect(state.asks).toBe(0)
+        expect(Cause.squash(exit.cause)).toEqual(
+          new Error(
+            `Unknown agent type "no_such_agent". Available agent types: ${listed.join(", ")}. Use one of them as subagent_type.`,
+          ),
+        )
+      }),
+    {
+      config: {
+        permission: { task: { "*": "allow", "denied-agent": "deny" } },
+        agent: {
+          zebra: { description: "Zebra agent", mode: "subagent" },
+          alpha: { description: "Alpha agent", mode: "subagent" },
+          "denied-agent": { description: "Denied agent", mode: "subagent" },
+          "hidden-agent": { description: "Hidden agent", mode: "subagent", hidden: true },
+          "primary-agent": { description: "Primary agent", mode: "primary" },
+        },
+      },
+    },
+  )
+
+  it.instance("a valid subagent_type asks for permission once and then runs", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const asked: Array<readonly string[]> = []
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+      const result = yield* def.execute(
+        { ...general },
+        taskCtx(chat, assistant, stubOps({ text: "done" }), {
+          ask: (input) =>
+            Effect.sync(() => {
+              asked.push(input.patterns)
+            }),
+        }),
+      )
+
+      expect(asked).toEqual([["general"]])
+      expect(result.output).toContain("done")
+    }),
   )
 
   it.instance("execute resumes an existing task session from task_id", () =>
@@ -1846,6 +1927,95 @@ describe("tool.task", () => {
           evaluate: false,
         },
       ])
+    }),
+  )
+
+  // The report waits in the run's row until the parent reads it, and then it is model-visible text: cut once to the
+  // output cap, with the whole text in one saved file.
+  background.instance("a background result over the output cap is cut once and saved once", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+      const marker = `BIG_REPORT_${Bun.randomUUIDv7()}`
+      const text = [marker, ...Array.from({ length: 3000 }, (_, index) => `row ${index + 1}`)].join("\n")
+      const started = Date.now()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 5_000 })
+      expect(waited.info?.status).toBe("completed")
+      const ended = yield* endedRun(SessionID.make(result.metadata.sessionID))
+      const report = ChildStore.parseReport(ended.outcome)
+
+      expect(report?.text).toContain("[truncated: showing lines 1-2000 of 3001")
+      expect(report?.text).toContain("Full output: ")
+      expect(report?.text.length).toBeLessThan(40_000)
+      // However many times the ending reads the report, the text is saved once: one file holds the marker.
+      const holders = yield* Effect.promise(async () => {
+        const names = (await readdir(Truncate.DIR)).filter((name) => name.startsWith("tool_"))
+        const fresh = await Promise.all(
+          names.map(async (name) => {
+            const file = join(Truncate.DIR, name)
+            return (await stat(file)).mtimeMs >= started - 1_000 ? file : undefined
+          }),
+        )
+        const matches = await Promise.all(
+          fresh.map(async (file) => (file && (await Bun.file(file).text()).includes(marker) ? file : undefined)),
+        )
+        return matches.filter((file): file is string => file !== undefined)
+      })
+      expect(holders).toHaveLength(1)
+      expect(yield* Effect.promise(() => Bun.file(holders[0]).text())).toBe(text)
+    }),
+  )
+
+  background.instance("a background result under the output cap is delivered as it was", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text: "small result" }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const ended = yield* endedRun(SessionID.make(result.metadata.sessionID))
+
+      expect(ChildStore.parseReport(ended.outcome)?.text).toBe("small result")
     }),
   )
 

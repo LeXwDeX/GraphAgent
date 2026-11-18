@@ -13,8 +13,8 @@ import type { MessageID, SessionID } from "../schema"
  *
  * The conversion of one persisted message depends on its wire content, the
  * request model, the five conversion options and one compaction-boundary bit.
- * Everything else about the request (system prompt, tool definitions, folding
- * state) is applied downstream and must never be baked into a cached fragment.
+ * Everything else about the request (system prompt, tool definitions) is
+ * applied downstream and must never be baked into a cached fragment.
  *
  * Entries are keyed by `(sessionID, messageID, bucket)`. The bucket carries the
  * request model and option digest; the entry carries a content digest and the

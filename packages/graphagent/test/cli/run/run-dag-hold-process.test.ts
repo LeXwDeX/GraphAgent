@@ -70,6 +70,10 @@ function normalizeWorkflowIDs(stdout: string) {
   return stdout.replace(WORKFLOW_ID_RE, "dag_TEST")
 }
 
+// The result index tells the parent how to read one node's output, in the call's real shape.
+const RESULT_READ_LINE =
+  'Read a node\'s output with workflow({"params":{"action":"inspect","operation":"result","workflow_id":"dag_TEST","node_id":"<node_id>"}}).'
+
 // Two-node chain, the last node reporting to the parent: the s4 shape —
 // workflow started in turn one, children complete, the workflow terminalizes
 // and wakes the parent.
@@ -551,8 +555,9 @@ describe("graphagent run DAG hold (issue 614)", () => {
             "ok",
             "DAG · cli-hold-chain · result index",
             'Workflow "cli-hold-chain" completed. Results:',
-            '- final (completed): workflow result workflow_id="dag_TEST" node_id="final"',
-            '- first (completed): workflow result workflow_id="dag_TEST" node_id="first"',
+            RESULT_READ_LINE,
+            '- final (completed): node_id="final"',
+            '- first (completed): node_id="first"',
             "wake handled",
             "",
           ].join("\n"),
@@ -595,7 +600,8 @@ describe("graphagent run DAG hold (issue 614)", () => {
             "turn one done",
             "DAG · cli-hold-single · result index",
             'Workflow "cli-hold-single" completed. Results:',
-            '- only (completed): workflow result workflow_id="dag_TEST" node_id="only"',
+            RESULT_READ_LINE,
+            '- only (completed): node_id="only"',
             "wake handled",
             "",
           ].join("\n"),
@@ -687,8 +693,9 @@ describe("graphagent run DAG hold (issue 614)", () => {
             "ok",
             "DAG · cli-hold-checkpoint · result index",
             'Workflow "cli-hold-checkpoint" completed. Results:',
-            '- final (completed): workflow result workflow_id="dag_TEST" node_id="final"',
-            '- gate (completed): workflow result workflow_id="dag_TEST" node_id="gate"',
+            RESULT_READ_LINE,
+            '- final (completed): node_id="final"',
+            '- gate (completed): node_id="gate"',
             "adopted complete",
             "",
           ].join("\n"),

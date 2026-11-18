@@ -1,10 +1,12 @@
 import { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, type ToolResultValue as ToolResultValueType } from "@graphagent/llm"
 import { Effect, Schema } from "effect"
-import { InvalidResponseDataError, type streamText } from "ai"
+import { InvalidResponseDataError, InvalidToolInputError, NoSuchToolError, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
+import { ToolError } from "@/tool/tool-error"
 import { ProviderError } from "@/provider/error"
 import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { isRecord } from "@/util/record"
+import { FinishReasonRules } from "./finish-reason"
 
 type Result = Awaited<ReturnType<typeof streamText>>
 type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
@@ -44,8 +46,13 @@ export function adapterState() {
      * public event variant.
      */
     suppressedActivity: false,
-    /** Call IDs whose tool-call the SDK marked invalid (unexecuted input rejection). */
-    invalidToolCalls: new Set<string>(),
+    /**
+     * Call IDs whose tool-call the SDK marked invalid (unexecuted input
+     * rejection), mapped to the model-facing text for that rejection. The
+     * SDK's later tool-error carries only a string, so the typed error's text
+     * is kept from the tool-call; undefined when the cause has no fixed text.
+     */
+    invalidToolCalls: new Map<string, string | undefined>(),
   }
 }
 
@@ -66,6 +73,25 @@ function withSuppressedActivity(
     ...metadata,
     [METADATA_NAMESPACE]: { ...metadata?.[METADATA_NAMESPACE], ...SUPPRESSED_ACTIVITY_METADATA },
   }
+}
+
+/** An unexecuted invalid call keeps only the head of its raw input; the full text would replay on every later request. */
+const INVALID_INPUT_KEPT_CHARS = 200
+
+function boundedInput(event: { readonly invalid?: boolean; readonly input: unknown }): unknown {
+  if (event.invalid !== true || typeof event.input !== "string" || event.input.length <= INVALID_INPUT_KEPT_CHARS)
+    return event.input
+  const head = Array.from(event.input).slice(0, INVALID_INPUT_KEPT_CHARS).join("")
+  return `${head}… [${event.input.length} characters in total]`
+}
+
+/** The model-facing text for the two ways the SDK rejects a tool call before running it; other causes keep the SDK text. */
+function rejectedMessage(error: unknown): string | undefined {
+  if (NoSuchToolError.isInstance(error))
+    return ToolError.render({ kind: "unknown_tool", requested: error.toolName, available: error.availableTools ?? [] })
+  if (InvalidToolInputError.isInstance(error))
+    return ToolError.render({ kind: "invalid_json", tool: error.toolName, length: error.toolInput.length })
+  return undefined
 }
 
 function finishReason(value: string | undefined): FinishReason {
@@ -127,6 +153,90 @@ function isMissingFinishReason(error: unknown) {
   return InvalidResponseDataError.isInstance(error) || ("name" in error && error.name === "AI_InvalidResponseDataError")
 }
 
+type FinishStepEvent = Extract<AISDKEvent, { type: "finish-step" }>
+
+/** Longest raw finish_reason kept in metadata and error text; the value comes from the endpoint. */
+const RAW_FINISH_REASON_LIMIT = 64
+
+const finishReasonMessage = (raw: string | undefined) => `Provider finish_reason: ${raw}`
+
+/**
+ * Carries a vendor finish_reason the SDK folded into `other` and no rule covers,
+ * so an empty-response error can name it. Same reserved namespace as
+ * `withSuppressedActivity`; the key lives only on the in-memory event.
+ */
+function withRawFinishReason(metadata: ProviderMetadata | undefined, raw: string | undefined) {
+  if (raw === undefined) return metadata
+  return { ...metadata, [METADATA_NAMESPACE]: { ...metadata?.[METADATA_NAMESPACE], rawFinishReason: raw } }
+}
+
+/** Provider metadata of one finished step, with the Copilot billing the raw chunks carried folded in. */
+function stepMetadata(state: ReturnType<typeof adapterState>, event: FinishStepEvent) {
+  const original = providerMetadata(event.providerMetadata)
+  const metadata =
+    state.copilotTotalNanoAiu === undefined
+      ? original
+      : {
+          ...original,
+          copilot: {
+            ...original?.copilot,
+            totalNanoAiu: state.copilotTotalNanoAiu,
+          },
+        }
+  state.copilotTotalNanoAiu = undefined
+  return metadata
+}
+
+function unlistedRawFinish(event: FinishStepEvent) {
+  const raw = event.rawFinishReason
+  if (event.finishReason !== "other" || !raw || raw === "other") return undefined
+  return raw.slice(0, RAW_FINISH_REASON_LIMIT)
+}
+
+/**
+ * The raw finish_reason is read before the unified value: the SDK reports a
+ * vendor-specific stop as `other`, and the Anthropic provider reports
+ * `model_context_window_exceeded` as `length`.
+ */
+function finishStep(
+  state: ReturnType<typeof adapterState>,
+  event: FinishStepEvent,
+): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
+  const target = FinishReasonRules.ruleOf(event.rawFinishReason)
+  if (target === "stream_error")
+    return Effect.fail(new ProviderError.ResponseStreamError(finishReasonMessage(event.rawFinishReason)))
+  // No step-finish follows this error, so the provider-error carries what the cut-off response was billed.
+  if (target === "context_overflow")
+    return Effect.sync(() => [
+      LLMEvent.providerError({
+        message: finishReasonMessage(event.rawFinishReason),
+        classification: "context-overflow",
+        usage: usage(event.usage),
+        providerMetadata: stepMetadata(state, event),
+      }),
+    ])
+  return Effect.sync(() => {
+    const metadata = stepMetadata(state, event)
+    const reason: FinishReason =
+      target === "content-filter"
+        ? "content-filter"
+        : state.missingFinishReason
+          ? "unknown"
+          : finishReason(event.finishReason)
+    return [
+      LLMEvent.stepFinish({
+        index: state.step++,
+        reason,
+        usage: usage(event.usage),
+        providerMetadata: withRawFinishReason(
+          withSuppressedActivity(metadata, state.suppressedActivity),
+          target === undefined ? unlistedRawFinish(event) : undefined,
+        ),
+      }),
+    ]
+  })
+}
+
 export function toLLMEvents(
   state: ReturnType<typeof adapterState>,
   event: AISDKEvent,
@@ -140,30 +250,7 @@ export function toLLMEvents(
       return Effect.succeed([LLMEvent.stepStart({ index: state.step })])
 
     case "finish-step":
-      if (event.rawFinishReason === "network_error")
-        return Effect.fail(new ProviderError.ResponseStreamError("Provider finish_reason: network_error"))
-      return Effect.sync(() => {
-        const original = providerMetadata(event.providerMetadata)
-        const metadata =
-          state.copilotTotalNanoAiu === undefined
-            ? original
-            : {
-                ...original,
-                copilot: {
-                  ...original?.copilot,
-                  totalNanoAiu: state.copilotTotalNanoAiu,
-                },
-              }
-        state.copilotTotalNanoAiu = undefined
-        return [
-          LLMEvent.stepFinish({
-            index: state.step++,
-            reason: state.missingFinishReason ? "unknown" : finishReason(event.finishReason),
-            usage: usage(event.usage),
-            providerMetadata: withSuppressedActivity(metadata, state.suppressedActivity),
-          }),
-        ]
-      })
+      return finishStep(state, event)
 
     case "finish":
       return Effect.sync(() => {
@@ -287,13 +374,13 @@ export function toLLMEvents(
         // Track the ID so the matching tool-error can be wrapped; the set is
         // per stream (adapterState) and only widened by exactly this shape.
         if (event.invalid === true && event.providerExecuted !== true) {
-          state.invalidToolCalls.add(event.toolCallId)
+          state.invalidToolCalls.set(event.toolCallId, rejectedMessage(event.error))
         }
         return [
           LLMEvent.toolCall({
             id: event.toolCallId,
             name: event.toolName,
-            input: event.input,
+            input: boundedInput(event),
             providerExecuted: "providerExecuted" in event ? event.providerExecuted : undefined,
             providerMetadata: providerMetadata(event.providerMetadata),
           }),
@@ -320,12 +407,13 @@ export function toLLMEvents(
       return Effect.sync(() => {
         const name = state.toolNames[event.toolCallId] ?? ("toolName" in event ? event.toolName : "unknown")
         delete state.toolNames[event.toolCallId]
-        const message = errorMessage(event.error)
         // A tracked call ID means this error is the SDK's rejection of an
         // unparseable tool call, not a real execution failure: wrap it so the
         // processor can tell the two apart. Stale IDs (no matching invalid
         // tool-call) keep the plain error and are treated conservatively.
+        const rejectedText = state.invalidToolCalls.get(event.toolCallId)
         const rejected = state.invalidToolCalls.delete(event.toolCallId)
+        const message = rejectedText ?? errorMessage(event.error)
         return [
           LLMEvent.toolError({
             id: event.toolCallId,

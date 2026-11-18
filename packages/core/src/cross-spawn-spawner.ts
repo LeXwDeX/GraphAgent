@@ -97,6 +97,26 @@ const toPlatformError = (
   })
 }
 
+/**
+ * The cause of an `exitCode` failure when a signal ended the process: it has no
+ * exit code. The signal name is a field here because the platform error only
+ * carries it as message text.
+ */
+export class SignalExit extends globalThis.Error {
+  readonly signal: string
+
+  constructor(signal: string) {
+    super(`Process interrupted due to receipt of signal: '${signal}'`)
+    this.signal = signal
+  }
+}
+
+/** The signal that ended the process behind an `exitCode` failure, or `undefined` for any other error. */
+export const signalOf = (error: unknown): string | undefined => {
+  if (!PlatformError.isPlatformError(error)) return undefined
+  return error.cause instanceof SignalExit ? error.cause.signal : undefined
+}
+
 type ExitSignal = Deferred.Deferred<readonly [code: number | null, signal: NodeJS.Signals | null]>
 
 export const make = Effect.gen(function* () {
@@ -402,7 +422,11 @@ export const make = Effect.gen(function* () {
               if (done) {
                 const [code] = yield* Deferred.await(signal)
                 if (process.platform === "win32") return yield* Effect.void
-                if (code !== 0 && Predicate.isNotNull(code)) return yield* Effect.ignore(kill(killGroup))
+                // Only a clean exit leaves its group alone. A non-zero code, or a
+                // signal (which leaves no code), can strand members of the group
+                // that nothing waits on any more. The group may already be gone,
+                // so this is best effort and a failure is ignored.
+                if (code !== 0) return yield* Effect.ignore(kill(killGroup))
                 return yield* Effect.void
               }
               const send = (s: NodeJS.Signals) =>
@@ -433,13 +457,7 @@ export const make = Effect.gen(function* () {
             isRunning: Effect.map(Deferred.isDone(signal), (done) => !done),
             exitCode: Effect.flatMap(Deferred.await(signal), ([code, signal]) => {
               if (Predicate.isNotNull(code)) return Effect.succeed(ExitCode(code))
-              return Effect.fail(
-                toPlatformError(
-                  "exitCode",
-                  new Error(`Process interrupted due to receipt of signal: '${signal}'`),
-                  command,
-                ),
-              )
+              return Effect.fail(toPlatformError("exitCode", new SignalExit(signal ?? "unknown"), command))
             }),
             kill: (opts?: ChildProcess.KillOptions) => {
               const sig = opts?.killSignal ?? "SIGTERM"

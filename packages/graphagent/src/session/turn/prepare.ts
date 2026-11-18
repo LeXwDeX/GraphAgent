@@ -7,8 +7,6 @@ import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { ModelsDev } from "@graphagent/core/models-dev"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
-import { ConfigCompaction } from "@graphagent/core/config/compaction"
-import { Flag } from "@graphagent/core/flag/flag"
 import { NamedError } from "@graphagent/core/util/error"
 import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
@@ -66,7 +64,6 @@ import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
 import { TaskTool, type TaskOrigin, type TaskPromptOps } from "@/tool/task"
 import { decodeDataUrl } from "@/util/data-url"
 import { estimateOverhead } from "../overflow"
-import type { ToolSourceLedger } from "../tool-source-ledger"
 import type { Handle as ProcessorHandle } from "../processor"
 import type { ToolBatch as HookToolBatchState } from "@/hook/tool-batch"
 import type { Interface, PromptError, PromptInput, SetModelInput } from "../prompt"
@@ -244,7 +241,6 @@ export interface PrepareDeps {
   readonly db: Database.Interface["db"]
   readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly settingsHook: SettingsHook.Interface | undefined
-  readonly toolSources: ToolSourceLedger.Interface
   readonly todoReminders: Option.Option<TodoReminders.Interface>
   readonly dagModeReminders: Option.Option<DagModeReminder.Interface>
   readonly agentMessages: DagMessages.Interface | undefined
@@ -728,7 +724,6 @@ function resolveTurnTools(
       SessionRole.isRoot(session) && input.user.hookMode !== "interactive"
         ? (id, signal) => toolBatch.isSingle(id, signal)
         : undefined,
-    sourceLedger: deps.toolSources,
   }).pipe(
     Effect.provideService(Permission.Service, deps.permission),
     Effect.provideService(ToolRegistry.Service, deps.registry),
@@ -788,7 +783,6 @@ export function makePrepare(deps: PrepareDeps) {
     db,
     promptLocks,
     settingsHook,
-    toolSources,
     todoReminders,
     agentMessages,
     reasoningDistillationEnabled,
@@ -1080,7 +1074,6 @@ export function makePrepare(deps: PrepareDeps) {
       bypassAgentCheck: true,
       taskOrigin,
       hooks: settingsHook,
-      sourceLedger: toolSources,
       processor: {
         message: assistantMessage,
         updateToolCall: (_id, update) =>
@@ -1879,55 +1872,33 @@ export function makePrepare(deps: PrepareDeps) {
       sessionID, messages: msgs, enabled: enabledTools.includes("todowrite"),
     })
 
-    // Building the folding history walks every message; only do it when
-    // built-in dynamic folding is enabled for this request.
-    const foldingConfig = configured.compaction
-    const folding = ConfigCompaction.resolveDynamic({
-      disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
-      dynamic: foldingConfig?.dynamic,
-      prune: foldingConfig?.prune,
-    })
-
     // Permission.ask evaluates native rules before configured rules. Use
     // that same split for everything advertised to the model.
-    const [
-      skills,
-      env,
-      languageDocs,
-      instructions,
-      mcpInstructions,
-      goalDocs,
-      hooksDocs,
-      memoryDocs,
-      modelMsgs,
-      contextFoldingHistory,
-    ] = yield* Effect.all(
-      [
-        sys.skills(agent, session.permission, nativePermission),
-        sys.environment(model),
-        sys.language(configured.language),
-        instruction.system({ sessionID }).pipe(Effect.orDie),
-        sys.mcp(agent, session.permission, nativePermission),
-        sys.goal(sessionID),
-        sys.hooks(),
-        prepareStage(
-          "memory",
-          sys.memory({
-            sessionID,
-            messages: msgs,
-            main: SessionRole.isRoot(session),
-            lane: SessionRole.isChild(session) ? "child" : "interactive",
+    const [skills, env, languageDocs, instructions, mcpInstructions, goalDocs, hooksDocs, memoryDocs, modelMsgs] =
+      yield* Effect.all(
+        [
+          sys.skills(agent, session.permission, nativePermission),
+          sys.environment(model),
+          sys.language(configured.language),
+          instruction.system({ sessionID }).pipe(Effect.orDie),
+          sys.mcp(agent, session.permission, nativePermission),
+          sys.goal(sessionID),
+          sys.hooks(),
+          prepareStage(
+            "memory",
+            sys.memory({
+              sessionID,
+              messages: msgs,
+              main: SessionRole.isRoot(session),
+              lane: SessionRole.isChild(session) ? "child" : "interactive",
+            }),
+          ),
+          MessageV2.toModelMessagesEffect(msgs, model, {
+            reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
           }),
-        ),
-        MessageV2.toModelMessagesEffect(msgs, model, {
-          reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
-        }),
-        folding.enabled
-          ? MessageV2.contextFoldingHistory({ messages: msgs, ledger: toolSources })
-          : Effect.succeed(undefined),
-      ],
-      { concurrency: "unbounded" },
-    )
+        ],
+        { concurrency: "unbounded" },
+      )
     const system = [
       ...env,
       ...languageDocs,
@@ -1974,7 +1945,6 @@ export function makePrepare(deps: PrepareDeps) {
       toolPolicy: refuseTools ? "refuse" : undefined,
       onToolRefused,
       purpose: "conversation",
-      contextFolding: contextFoldingHistory,
     }
     if (agentMessages && agentSnapshot) yield* associateAgentSnapshot({ agentMessages, identity, agentSnapshot, msgs })
     runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)))

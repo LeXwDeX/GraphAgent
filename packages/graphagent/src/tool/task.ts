@@ -10,6 +10,8 @@ import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { AgentContract } from "../agent/contract"
+import { Permission } from "@/permission"
+import { ToolError } from "./tool-error"
 import { ResultContract } from "../agent/result-contract"
 import { TaskExecution } from "./task-execution"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
@@ -17,7 +19,7 @@ import type { SessionPrompt } from "../session/prompt"
 import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
 import { renderTask as renderOutput } from "../session/child/notice"
 import { Config } from "@/config/config"
-import { Cause, Effect, Exit, Schema, Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@graphagent/core/database/database"
@@ -26,6 +28,7 @@ import { SettingsHook, type TriggerResult } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTurnContext } from "@/hook/turn-context"
 import { isRecord } from "@/util/record"
+import { Truncate } from "./truncate"
 
 /**
  * What the shell tool's background mode prompts its own session with. The
@@ -233,6 +236,11 @@ interface RunClaim {
   job?: ChildRunOutcome
   /** Failure text of a foreground result a SubagentStop continuation replaced with an error. */
   failure?: string
+  /**
+   * The bounded report of this run's job, made by whichever of the settlement watcher and the notifier reads it
+   * first and awaited by the other (#1446): the text is cut and saved once, not once per reader.
+   */
+  report?: Deferred.Deferred<ChildRunReport | undefined>
 }
 
 // The run ends with the job that carries it, so the persisted outcome and the
@@ -285,6 +293,7 @@ export const TaskTool = Tool.define(
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
     const database = yield* Database.Service
+    const truncate = yield* Truncate.Service
     // Child runs share the process-level child pool (#1021). Optional so a
     // standalone harness without the app layer runs unconstrained.
     const scheduler = Option.getOrUndefined(yield* Effect.serviceOption(AgentScheduler.Service))
@@ -310,6 +319,22 @@ export const TaskTool = Tool.define(
         ),
       )
 
+    // What a finished job tells its parent is model-visible text like any tool output: cut to the output cap with
+    // the whole text saved, and only once per run, however many readers ask (`claim.report`). The first reader
+    // makes the deferred before its first yield, so a second one always finds it.
+    const boundReport = (claim: RunClaim, info: BackgroundJob.Info | undefined, title: string) =>
+      Effect.suspend(() => {
+        if (claim.report) return Deferred.await(claim.report)
+        const bounded = Deferred.makeUnsafe<ChildRunReport | undefined>()
+        claim.report = bounded
+        return Effect.gen(function* () {
+          const report = reportOf(info, title)
+          if (!report || report.text === "") return report
+          const cut = yield* truncate.output(report.text)
+          return { ...report, text: cut.content }
+        }).pipe(Effect.onExit((exit) => Deferred.done(bounded, exit)))
+      })
+
     // The settlement watcher owns a background run from here: it ends the run
     // with the job that carries it. Armed once, by whichever comes first (the
     // job's own start, or the tool call once the job exists), so neither a job
@@ -324,7 +349,13 @@ export const TaskTool = Tool.define(
           return restore(
             background
               .wait({ id: jobID })
-              .pipe(Effect.flatMap((waited) => handle.settle(outcomeOf(waited.info), reportOf(waited.info, title)))),
+              .pipe(
+                Effect.flatMap((waited) =>
+                  boundReport(claim, waited.info, title).pipe(
+                    Effect.flatMap((report) => handle.settle(outcomeOf(waited.info), report)),
+                  ),
+                ),
+              ),
           ).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
         }),
       )
@@ -404,6 +435,19 @@ export const TaskTool = Tool.define(
       }
     })
 
+    // The agent types the task description lists (`describeAgents` in the registry: non-primary, non-composer, not
+    // denied for the caller, hidden ones included), so an unknown type is answered with the names the model can use.
+    const agentTypeNames = Effect.fn("TaskTool.agentTypeNames")(function* (callerName: string) {
+      const caller = yield* agent.get(callerName)
+      return (yield* agent.list())
+        .filter((item) => item.mode !== "primary" && !AgentContract.isComposer(item))
+        .filter(
+          (item) => Permission.evaluate("task", item.name, ...(caller ? [caller.permission] : [])).action !== "deny",
+        )
+        .map((item) => item.name)
+        .toSorted((a, b) => a.localeCompare(b))
+    })
+
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
@@ -437,21 +481,14 @@ export const TaskTool = Tool.define(
       const initiator: TaskOrigin["initiator"] = origin?.initiator ?? "agent"
       const command = initiator === "user" ? origin?.command : undefined
 
-      if (!ctx.extra?.bypassAgentCheck) {
-        yield* ctx.ask({
-          permission: id,
-          patterns: [subagentType],
-          always: ["*"],
-          metadata: {
-            description,
-            subagent_type: subagentType,
-          },
-        })
-      }
-
       const next = yield* agent.get(subagentType)
       if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${subagentType} is not a valid agent type`))
+        const available = ToolError.nameList(yield* agentTypeNames(ctx.agent))
+        return yield* Effect.fail(
+          new Error(
+            `Unknown agent type "${ToolError.clipName(subagentType)}". Available agent types: ${available}. Use one of them as subagent_type.`,
+          ),
+        )
       }
       // A composer only plans how a DAG expands; the engine runs it inside a
       // workflow. Refuse before any session or run exists for it (#1158).
@@ -483,6 +520,19 @@ export const TaskTool = Tool.define(
       if (declared.kind === "unknown")
         return yield* Effect.fail(new Error(ResultContract.unknownMessage(subagentType, declared.artifact)))
       const resultContract = declared.kind === "contract" ? declared.contract : undefined
+
+      // Asked only once the call can run: a malformed call never prompts the user.
+      if (!ctx.extra?.bypassAgentCheck) {
+        yield* ctx.ask({
+          permission: id,
+          patterns: [subagentType],
+          always: ["*"],
+          metadata: {
+            description,
+            subagent_type: subagentType,
+          },
+        })
+      }
 
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined
       // A task_id resumes a task session this conversation started, nothing else:
@@ -799,7 +849,7 @@ export const TaskTool = Tool.define(
               // watcher, whoever swaps it first. A run the main agent cancelled
               // delivers nothing, even when its job finished in the window
               // before the job itself was cancelled.
-              yield* run.settle(outcomeOf(result.info), reportOf(result.info, description))
+              yield* run.settle(outcomeOf(result.info), yield* boundReport(claim, result.info, description))
               const cancelledRun = (yield* run.settled).type === "cancelled"
               if ((result.info?.status !== "completed" && result.info?.status !== "error") || cancelledRun) {
                 // No result follows (cancelled or vanished job): end the

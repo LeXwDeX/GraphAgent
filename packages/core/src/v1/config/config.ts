@@ -320,14 +320,6 @@ export const Info = Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({
         description: "Enable automatic compaction when context is full (default: true)",
       }),
-      dynamic: Schema.optional(Schema.Boolean).annotate({
-        description:
-          "@deprecated Legacy context folding, off by default. When explicitly enabled, folds strictly duplicate older tool outputs only in prepared model requests. Stored history is unchanged; this is independent from automatic or manual full compaction.",
-      }),
-      prune: Schema.optional(Schema.Boolean).annotate({
-        description:
-          "@deprecated Ignored. Context folding is off by default; set 'dynamic' to true to enable the legacy behavior.",
-      }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:
           "Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)",

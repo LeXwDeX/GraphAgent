@@ -3,7 +3,7 @@ import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import path from "path"
-import { InvalidResponseDataError, InvalidToolInputError, tool, type ModelMessage } from "ai"
+import { InvalidResponseDataError, InvalidToolInputError, NoSuchToolError, tool, type ModelMessage } from "ai"
 import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
@@ -12,7 +12,7 @@ import { LLM, strictJSON } from "../../src/session/llm"
 import { AgentScheduler } from "../../src/session/agent-scheduler"
 import * as AgentSchedulerState from "../../src/session/agent-scheduler-state"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
-import { LLMEvent } from "@graphagent/llm"
+import { isContextOverflowFailure, LLMEvent, Usage } from "@graphagent/llm"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -30,8 +30,6 @@ import { Session as SessionNs } from "@/session/session"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderError } from "@/provider/error"
-import { ContextFolding } from "@/session/context-folding"
-import { Flag } from "@graphagent/core/flag/flag"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
@@ -425,6 +423,121 @@ describe("session.llm.ai-sdk adapter", () => {
     expect(stepFinish.providerMetadata).toBeUndefined()
   })
 
+  // The AI SDK folds every non-standard finish_reason into `other` and keeps the
+  // vendor value in `rawFinishReason`; the Anthropic provider maps
+  // model_context_window_exceeded onto `length`. The adapter reads the raw value first.
+  const finishStepEvent = (finishReason: string, rawFinishReason: string | undefined) =>
+    uncheckedAdapterEvent({ type: "finish-step", finishReason, rawFinishReason })
+  const finishStepWith = (finishReason: string, rawFinishReason: string | undefined) => [
+    uncheckedAdapterEvent({ type: "start-step", request: {}, warnings: [] }),
+    finishStepEvent(finishReason, rawFinishReason),
+  ]
+
+  test("maps a content-filter vendor finish_reason carried only in rawFinishReason", async () => {
+    const events = await adapt(finishStepWith("other", "sensitive"))
+    expect(events.at(-1)).toMatchObject({ type: "step-finish", reason: "content-filter" })
+  })
+
+  for (const raw of ["insufficient_system_resource", "aborted", "network_error"]) {
+    test(`fails the stream as a retryable response stream error for finish_reason ${raw}`, async () => {
+      const error = await Effect.runPromise(
+        Effect.flip(LLMAISDK.toLLMEvents(LLMAISDK.adapterState(), finishStepEvent("other", raw))),
+      )
+      expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+      if (!(error instanceof ProviderError.ResponseStreamError)) throw error
+      expect(error.message).toBe(`Provider finish_reason: ${raw}`)
+      expect(ProviderError.isRetryableResponseStreamError(error)).toBe(true)
+    })
+  }
+
+  test("turns model_context_window_exceeded into a context-overflow provider error even when mapped to length", async () => {
+    const events = await adapt(finishStepWith("length", "model_context_window_exceeded"))
+    expect(events.at(-1)).toMatchObject({
+      type: "provider-error",
+      classification: "context-overflow",
+      message: "Provider finish_reason: model_context_window_exceeded",
+    })
+    expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("carries the billed usage and provider metadata on the context-overflow provider error", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({ type: "start-step", request: {}, warnings: [] }),
+      uncheckedAdapterEvent({
+        type: "finish-step",
+        finishReason: "length",
+        rawFinishReason: "model_context_window_exceeded",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+          inputTokenDetails: { noCacheTokens: 70, cacheReadTokens: 30, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: 15, reasoningTokens: 5 },
+        },
+        providerMetadata: { anthropic: { cacheCreationInputTokens: 7 } },
+      }),
+    ])
+    const error = events.at(-1)
+    if (error?.type !== "provider-error") throw new Error("expected a provider error")
+    expect(error.usage).toBeInstanceOf(Usage)
+    expect(error.usage).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      reasoningTokens: 5,
+      cacheReadInputTokens: 30,
+    })
+    expect(error.providerMetadata).toEqual({ anthropic: { cacheCreationInputTokens: 7 } })
+    // The route to compaction must not depend on the usage riding along.
+    expect(isContextOverflowFailure(error)).toBe(true)
+    expect(events.some((event) => event.type === "step-finish")).toBe(false)
+  })
+
+  test("leaves usage off the context-overflow provider error when the stream reported none", async () => {
+    const error = (await adapt(finishStepWith("length", "model_context_window_exceeded"))).at(-1)
+    if (error?.type !== "provider-error") throw new Error("expected a provider error")
+    expect("usage" in error).toBe(false)
+    expect(isContextOverflowFailure(error)).toBe(true)
+  })
+
+  test("keeps an unlisted vendor finish_reason as unknown and carries the raw value", async () => {
+    const events = await adapt(finishStepWith("other", "foo"))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.reason).toBe("unknown")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("foo")
+  })
+
+  test("truncates a long raw finish_reason to 64 characters", async () => {
+    const events = await adapt(finishStepWith("other", "x".repeat(100)))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("x".repeat(64))
+  })
+
+  for (const [finishReason, raw] of [
+    ["other", "other"],
+    ["other", undefined],
+    ["other", ""],
+    ["stop", "stop"],
+    ["length", "length"],
+  ] as const) {
+    test(`does not add rawFinishReason for ${finishReason}/${String(raw)}`, async () => {
+      const events = await adapt(finishStepWith(finishReason, raw))
+      const stepFinish = events.at(-1)
+      if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+      expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBeUndefined()
+    })
+  }
+
+  test("does not match inherited object keys as finish rules", async () => {
+    const events = await adapt(finishStepWith("other", "constructor"))
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.reason).toBe("unknown")
+    expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("constructor")
+  })
+
   test("preserves tool-error cause", async () => {
     const error = new PermissionV1.RejectedError()
     const events = await Effect.runPromise(
@@ -710,9 +823,142 @@ describe("session.llm.ai-sdk adapter", () => {
     if (toolError.type !== "tool-error") throw new Error("expected tool-error")
     expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
     if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
-      expect(toolError.error.message).toBe("Invalid input for tool lookup: bad json")
+      expect(toolError.error.message).toContain("are not valid JSON (5 characters)")
       expect(toolError.error.cause).toBe("Invalid input for tool lookup: bad json")
     }
+    expect(toolError.message).toContain("are not valid JSON (5 characters)")
+    expect(toolError.message).not.toContain("bad json")
+  })
+
+  test("renders NoSuchToolError as the unknown tool text with the active tool names", async () => {
+    const sdkText = "Model tried to call unavailable tool 'no_such_tool'. Available tools: lookup, read."
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-10",
+        toolName: "no_such_tool",
+        input: { query: "x" },
+        dynamic: true,
+        invalid: true,
+        error: new NoSuchToolError({ toolName: "no_such_tool", availableTools: ["lookup", "read"] }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-error",
+        toolCallId: "call-10",
+        toolName: "no_such_tool",
+        error: sdkText,
+        dynamic: true,
+      }),
+    ])
+
+    const toolError = events[1]
+    expect(toolError.type).toBe("tool-error")
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    const expected = 'Unknown tool "no_such_tool". Available tools: lookup, read. Use one of them.'
+    expect(toolError.message).toBe(expected)
+    expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+    if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
+      expect(toolError.error.message).toBe(expected)
+      expect(toolError.error.cause).toBe(sdkText)
+    }
+  })
+
+  test("lists no tools when the SDK reports none for an unknown tool", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-11",
+        toolName: "no_such_tool",
+        input: {},
+        dynamic: true,
+        invalid: true,
+        error: new NoSuchToolError({ toolName: "no_such_tool" }),
+      }),
+      uncheckedAdapterEvent({ type: "tool-error", toolCallId: "call-11", toolName: "no_such_tool", error: "sdk text" }),
+    ])
+
+    const toolError = events[1]
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.message).toBe('Unknown tool "no_such_tool". Available tools: (none). Use one of them.')
+  })
+
+  test("keeps the SDK text for an invalid call whose cause has no fixed text", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-12",
+        toolName: "lookup",
+        input: "{}",
+        dynamic: true,
+        invalid: true,
+        error: new Error("repair threw"),
+      }),
+      uncheckedAdapterEvent({ type: "tool-error", toolCallId: "call-12", toolName: "lookup", error: "sdk text" }),
+    ])
+
+    const toolError = events[1]
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.message).toBe("sdk text")
+    expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+  })
+
+  test("forwards only a bounded head of an invalid call's raw input", async () => {
+    const raw = "x".repeat(5000)
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-13",
+        toolName: "lookup",
+        input: raw,
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: raw, cause: new Error("bad json") }),
+      }),
+    ])
+
+    const call = events[0]
+    if (call.type !== "tool-call") throw new Error("expected tool-call")
+    expect(typeof call.input).toBe("string")
+    const input = String(call.input)
+    expect(input.length).toBeLessThan(400)
+    expect(input).toBe(`${"x".repeat(200)}… [5000 characters in total]`)
+  })
+
+  test("cuts an invalid call's raw input on code points and leaves short or valid input alone", async () => {
+    const wide = "😀".repeat(300)
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-14",
+        toolName: "lookup",
+        input: wide,
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: wide, cause: new Error("bad json") }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-15",
+        toolName: "lookup",
+        input: '{"que',
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: '{"que', cause: new Error("bad json") }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-16",
+        toolName: "lookup",
+        input: { query: "y".repeat(500) },
+      }),
+    ])
+
+    const [cut, short, valid] = events
+    if (cut.type !== "tool-call" || short.type !== "tool-call" || valid.type !== "tool-call")
+      throw new Error("expected tool-call events")
+    expect(cut.input).toBe(`${"😀".repeat(200)}… [${wide.length} characters in total]`)
+    expect(short.input).toBe('{"que')
+    expect(valid.input).toEqual({ query: "y".repeat(500) })
   })
 
   test("keeps provider-executed invalid tool errors unwrapped", async () => {
@@ -1003,121 +1249,6 @@ function createEventResponse(chunks: unknown[], includeDone = false) {
     headers: { "Content-Type": "text/event-stream" },
   })
 }
-
-const foldingBody = "abcdefghij ".repeat(55_000)
-const foldingMessages = (): ModelMessage[] => [
-  {
-    role: "assistant",
-    content: [
-      {
-        type: "tool-call",
-        toolCallId: "call-fold-source",
-        toolName: "read",
-        input: { filePath: "/workspace/source.ts" },
-      },
-    ],
-  },
-  {
-    role: "tool",
-    content: [
-      {
-        type: "tool-result",
-        toolCallId: "call-fold-source",
-        toolName: "read",
-        output: { type: "text", value: foldingBody },
-      },
-    ],
-  },
-  {
-    role: "assistant",
-    content: [
-      {
-        type: "tool-call",
-        toolCallId: "call-fold-witness",
-        toolName: "read",
-        input: { filePath: "/workspace/source.ts" },
-      },
-    ],
-  },
-  {
-    role: "tool",
-    content: [
-      {
-        type: "tool-result",
-        toolCallId: "call-fold-witness",
-        toolName: "read",
-        output: { type: "text", value: foldingBody },
-      },
-    ],
-  },
-  { role: "user", content: "Continue." },
-]
-
-const foldingSnapshot = (): ContextFolding.HistorySnapshot => {
-  const input = { filePath: "/workspace/source.ts" }
-  const evidence = {
-    input,
-    result: foldingBody,
-    comparisonMetadata: {
-      title: "context-folding.txt",
-      metadata: { loaded: [], contextFoldingInstructions: "none" },
-    },
-    outerMetadata: undefined,
-  }
-  return {
-    duplicatePlan: {
-      replacements: [
-        {
-          source: { messageID: "msg-fold-source", partID: "prt-fold-source", callID: "call-fold-source" },
-          witness: { messageID: "msg-fold-witness", partID: "prt-fold-witness", callID: "call-fold-witness" },
-        },
-      ],
-      protectedStepIDs: [],
-      exclusions: [],
-      skipReason: undefined,
-    },
-    references: [
-      {
-        ref: { messageID: "msg-fold-source", partID: "prt-fold-source", callID: "call-fold-source" },
-        toolName: "read",
-        complete: true,
-        resultKind: "text",
-        evidence,
-      },
-      {
-        ref: { messageID: "msg-fold-witness", partID: "prt-fold-witness", callID: "call-fold-witness" },
-        toolName: "read",
-        complete: true,
-        resultKind: "text",
-        evidence,
-      },
-    ],
-  }
-}
-
-const foldingTool = (description = "Read a file") =>
-  tool({
-    description,
-    inputSchema: z.object({ filePath: z.string() }),
-    execute: async () => ({ output: "unused" }),
-  })
-
-const foldingFixture = { providerID: "alibaba", modelID: "qwen3-235b-a22b" }
-const foldingResponse = () =>
-  new Response(createChatStream("done"), {
-    status: 200,
-    headers: { "Content-Type": "text/event-stream" },
-  })
-const foldingConfig = (): Partial<ConfigV1.Info> => ({
-  enabled_providers: [foldingFixture.providerID],
-  provider: {
-    [foldingFixture.providerID]: {
-      options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
-    },
-  },
-  // Dynamic folding is opt-in since v1.0.93; these tests measure the folded wire request.
-  compaction: { dynamic: true },
-})
 
 // The aux prompt embeds this reasoning body; the CJK-aware reserve estimator counts CJK at ~1 token per
 // character, so the body must stay well under the 32_768-token aux input cap (80_000 CJK chars was only
@@ -2018,159 +2149,6 @@ describe("session.llm.stream", () => {
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
-  it.instance(
-    "folds only the AI SDK outbound wire request when automatic full compaction is disabled",
-    () =>
-      Effect.gen(function* () {
-        const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-        const request = waitRequest("/chat/completions", foldingResponse())
-        const resolved = yield* Provider.use.getModel(
-          ProviderV2.ID.make(foldingFixture.providerID),
-          ModelV2.ID.make(model.id),
-        )
-        const sessionID = SessionID.make("session-test-folding-ai-sdk")
-        const agent = {
-          name: "test",
-          mode: "primary",
-          options: {},
-          permission: [{ permission: "*", pattern: "*", action: "allow" }],
-        } satisfies Agent.Info
-        const messages = foldingMessages()
-        const before = JSON.stringify(messages)
-
-        yield* drainWith(llmLayerWithExecutor(RequestExecutor.defaultLayer, { outputTokenMax: 8_192 }), {
-          user: {
-            id: MessageID.make("msg_user-folding-ai-sdk"),
-            sessionID,
-            role: "user",
-            time: { created: Date.now() },
-            agent: agent.name,
-            model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: resolved.id },
-          } satisfies SessionV1.User,
-          sessionID,
-          model: resolved,
-          agent,
-          system: [],
-          messages,
-          tools: { read: foldingTool() },
-          purpose: "conversation",
-          contextFolding: foldingSnapshot(),
-        })
-
-        const capture = yield* Effect.promise(() => request)
-        const wire = JSON.stringify(capture.body)
-        expect(wire).toContain("Duplicate tool output folded")
-        expect(wire).toContain(foldingBody)
-        expect(JSON.stringify(messages)).toBe(before)
-      }),
-    { config: () => ({ ...foldingConfig(), compaction: { auto: false, dynamic: true } }) },
-  )
-
-  it.instance(
-    "keeps AI SDK wire output unchanged when dynamic folding is disabled in config",
-    () =>
-      Effect.gen(function* () {
-        const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-        const request = waitRequest("/chat/completions", foldingResponse())
-        const resolved = yield* Provider.use.getModel(
-          ProviderV2.ID.make(foldingFixture.providerID),
-          ModelV2.ID.make(model.id),
-        )
-        const sessionID = SessionID.make("session-test-folding-disabled")
-        const agent = {
-          name: "test",
-          mode: "primary",
-          options: {},
-          permission: [{ permission: "*", pattern: "*", action: "allow" }],
-        } satisfies Agent.Info
-        const messages = foldingMessages()
-
-        yield* drainWith(llmLayerWithExecutor(RequestExecutor.defaultLayer, { outputTokenMax: 8_192 }), {
-          user: {
-            id: MessageID.make("msg_user-folding-disabled"),
-            sessionID,
-            role: "user",
-            time: { created: Date.now() },
-            agent: agent.name,
-            model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: resolved.id },
-          } satisfies SessionV1.User,
-          sessionID,
-          model: resolved,
-          agent,
-          system: [],
-          messages,
-          tools: { read: foldingTool() },
-          purpose: "conversation",
-          contextFolding: foldingSnapshot(),
-        })
-
-        const capture = yield* Effect.promise(() => request)
-        const wire = JSON.stringify(capture.body)
-        expect(wire).not.toContain("Duplicate tool output folded")
-        expect(wire.match(new RegExp(foldingBody.slice(0, 100), "g"))?.length).toBeGreaterThanOrEqual(2)
-      }),
-    {
-      config: () => ({
-        ...foldingConfig(),
-        compaction: { dynamic: false },
-      }),
-    },
-  )
-
-  it.instance(
-    "lets GRAPHAGENT_DISABLE_PRUNE disable the real outbound folding path",
-    Effect.acquireUseRelease(
-      Effect.sync(() => {
-        const previous = Flag.GRAPHAGENT_DISABLE_PRUNE
-        Flag.GRAPHAGENT_DISABLE_PRUNE = true
-        return previous
-      }),
-      () =>
-        Effect.gen(function* () {
-          const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-          const request = waitRequest("/chat/completions", foldingResponse())
-          const resolved = yield* Provider.use.getModel(
-            ProviderV2.ID.make(foldingFixture.providerID),
-            ModelV2.ID.make(model.id),
-          )
-          const sessionID = SessionID.make("session-test-folding-environment-disabled")
-          const agent = {
-            name: "test",
-            mode: "primary",
-            options: {},
-            permission: [{ permission: "*", pattern: "*", action: "allow" }],
-          } satisfies Agent.Info
-
-          yield* drainWith(llmLayerWithExecutor(RequestExecutor.defaultLayer, { outputTokenMax: 8_192 }), {
-            user: {
-              id: MessageID.make("msg_user-folding-environment-disabled"),
-              sessionID,
-              role: "user",
-              time: { created: Date.now() },
-              agent: agent.name,
-              model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: resolved.id },
-            } satisfies SessionV1.User,
-            sessionID,
-            model: resolved,
-            agent,
-            system: [],
-            messages: foldingMessages(),
-            tools: { read: foldingTool() },
-            purpose: "conversation",
-            contextFolding: foldingSnapshot(),
-          })
-
-          expect(JSON.stringify((yield* Effect.promise(() => request)).body)).not.toContain(
-            "Duplicate tool output folded",
-          )
-        }),
-      (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_PRUNE = previous)),
-    ),
-    {
-      config: () => ({ ...foldingConfig(), compaction: { dynamic: true } }),
-    },
-  )
-
   for (const none of [false, true])
     it.instance(
       `the reasoning organizer calls the small model through the engine with ${none ? "none" : "low"} effort`,
@@ -2356,207 +2334,6 @@ describe("session.llm.stream", () => {
         expect(capture.body.input).toContainEqual({ role: "user", content: [{ type: "input_text", text: "Hello" }] })
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
-  )
-
-  it.instance(
-    "folds only the Native canonical outbound request and keeps caller messages unchanged",
-    () =>
-      Effect.gen(function* () {
-        const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-        const request = waitRequest("/chat/completions", foldingResponse())
-        const resolved = yield* Provider.use.getModel(
-          ProviderV2.ID.make(foldingFixture.providerID),
-          ModelV2.ID.make(model.id),
-        )
-        const sessionID = SessionID.make("session-test-folding-native")
-        const agent = {
-          name: "test",
-          mode: "primary",
-          options: {},
-          permission: [{ permission: "*", pattern: "*", action: "allow" }],
-        } satisfies Agent.Info
-        const messages = foldingMessages()
-        const before = JSON.stringify(messages)
-
-        yield* drainWith(
-          llmLayerWithExecutor(RequestExecutor.defaultLayer, {
-            experimentalNativeLlm: true,
-            outputTokenMax: 8_192,
-          }),
-          {
-            user: {
-              id: MessageID.make("msg_user-folding-native"),
-              sessionID,
-              role: "user",
-              time: { created: Date.now() },
-              agent: agent.name,
-              model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: resolved.id },
-            } satisfies SessionV1.User,
-            sessionID,
-            model: resolved,
-            agent,
-            system: [],
-            messages,
-            tools: { read: foldingTool() },
-            purpose: "conversation",
-            contextFolding: foldingSnapshot(),
-          },
-        )
-
-        const capture = yield* Effect.promise(() => request)
-        const wire = JSON.stringify(capture.body)
-        expect(wire).toContain("Duplicate tool output folded")
-        expect(wire).toContain(foldingBody)
-        expect(JSON.stringify(messages)).toBe(before)
-      }),
-    { config: foldingConfig },
-  )
-
-  it.instance(
-    "counts Native tool definitions before deciding whether to fold",
-    () =>
-      Effect.gen(function* () {
-        const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-        const resolved = yield* Provider.use.getModel(
-          ProviderV2.ID.make(foldingFixture.providerID),
-          ModelV2.ID.make(model.id),
-        )
-        const expanded = { ...resolved, limit: { ...resolved.limit, context: 800_000, input: 800_000 } }
-        const agent = {
-          name: "test",
-          mode: "primary",
-          options: {},
-          permission: [{ permission: "*", pattern: "*", action: "allow" }],
-        } satisfies Agent.Info
-        const messages = foldingMessages()
-        const before = JSON.stringify(messages)
-        const descriptions = ["Read a file", `Read a file ${"schema detail ".repeat(100_000)}`]
-
-        for (const [index, description] of descriptions.entries()) {
-          const request = waitRequest("/chat/completions", foldingResponse())
-          const sessionID = SessionID.make(`session-test-folding-native-tool-budget-${index}`)
-          yield* drainWith(
-            llmLayerWithExecutor(RequestExecutor.defaultLayer, {
-              experimentalNativeLlm: true,
-              outputTokenMax: 8_192,
-            }),
-            {
-              user: {
-                id: MessageID.make(`msg_user-folding-native-tool-budget-${index}`),
-                sessionID,
-                role: "user",
-                time: { created: Date.now() },
-                agent: agent.name,
-                model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: expanded.id },
-              } satisfies SessionV1.User,
-              sessionID,
-              model: expanded,
-              agent,
-              system: [],
-              messages,
-              tools: { read: foldingTool(description) },
-              purpose: "conversation",
-              contextFolding: foldingSnapshot(),
-            },
-          )
-
-          const wire = (yield* Effect.promise(() => request)).body
-          expect(wire.tools).toHaveLength(1)
-          expect(wire.tools).toMatchObject([
-            {
-              type: "function",
-              function: {
-                name: "read",
-                description,
-                parameters: {
-                  type: "object",
-                  properties: { filePath: { type: "string" } },
-                  required: ["filePath"],
-                },
-              },
-            },
-          ])
-          const sent = JSON.stringify(wire)
-          expect(sent.includes("Duplicate tool output folded")).toBe(index === 1)
-          expect(sent.split(foldingBody)).toHaveLength(index === 1 ? 2 : 3)
-          expect(JSON.stringify(messages)).toBe(before)
-        }
-      }),
-    { config: foldingConfig },
-  )
-
-  it.instance(
-    "keeps Native canonical output unchanged when dynamic folding is disabled",
-    () =>
-      Effect.gen(function* () {
-        const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-        const request = waitRequest("/chat/completions", foldingResponse())
-        const resolved = yield* Provider.use.getModel(
-          ProviderV2.ID.make(foldingFixture.providerID),
-          ModelV2.ID.make(model.id),
-        )
-        const sessionID = SessionID.make("session-test-folding-native-disabled")
-        const agent = {
-          name: "test",
-          mode: "primary",
-          options: {},
-          permission: [{ permission: "*", pattern: "*", action: "allow" }],
-        } satisfies Agent.Info
-        const messages = foldingMessages()
-        const before = JSON.stringify(messages)
-
-        yield* drainWith(
-          llmLayerWithExecutor(RequestExecutor.defaultLayer, {
-            experimentalNativeLlm: true,
-            outputTokenMax: 8_192,
-          }),
-          {
-            user: {
-              id: MessageID.make("msg_user-folding-native-disabled"),
-              sessionID,
-              role: "user",
-              time: { created: Date.now() },
-              agent: agent.name,
-              model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: resolved.id },
-            } satisfies SessionV1.User,
-            sessionID,
-            model: resolved,
-            agent,
-            system: [],
-            messages,
-            tools: { read: foldingTool() },
-            purpose: "conversation",
-            contextFolding: foldingSnapshot(),
-          },
-        )
-
-        const body = (yield* Effect.promise(() => request)).body
-        expect(body.tools).toHaveLength(1)
-        expect(body.tools).toMatchObject([
-          {
-            type: "function",
-            function: {
-              name: "read",
-              description: "Read a file",
-              parameters: {
-                type: "object",
-                properties: { filePath: { type: "string" } },
-                required: ["filePath"],
-              },
-            },
-          },
-        ])
-        const wire = JSON.stringify(body)
-        expect(wire).not.toContain("Duplicate tool output folded")
-        expect(wire.split(foldingBody)).toHaveLength(3)
-        expect(JSON.stringify(messages)).toBe(before)
-      }),
-    {
-      config: () => ({
-        ...foldingConfig(),
-        compaction: { dynamic: false },
-      }),
-    },
   )
 
   it.instance(
