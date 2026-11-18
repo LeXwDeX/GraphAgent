@@ -244,6 +244,21 @@ export function contextWindow(profile: Pick<ModelProfile, "context" | "sources">
   return { tokens, source: profile.sources.context ?? "unknown" }
 }
 
+/**
+ * The window compaction is judged against, with where it came from: `contextWindow`, narrowed to `effectiveContext`
+ * when that is positive and smaller. A larger or absent effective window changes nothing, so the source stays that of
+ * the window itself, `default` included.
+ */
+export function compactionWindow(profile: Pick<ModelProfile, "context" | "sources" | "effectiveContext">): {
+  tokens: number
+  source: string
+} {
+  const window = contextWindow(profile)
+  const effective = positive(profile.effectiveContext)
+  if (effective !== undefined && effective < window.tokens) return { tokens: effective, source: "config" }
+  return window
+}
+
 type Values = {
   context: number
   output: number

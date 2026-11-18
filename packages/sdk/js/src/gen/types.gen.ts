@@ -1701,6 +1701,10 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+    /**
+     * Share (0.1-1) of the model's context window, or of its profile.effective_context when that is smaller, at which automatic compaction starts; never later than the usable input budget, which is also where it starts when unset
+     */
+    trigger_ratio?: number | "Infinity" | "-Infinity" | "NaN"
     mode?: "small" | "shared" | "auto"
   }
   btw?: {

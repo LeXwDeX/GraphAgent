@@ -13952,6 +13952,18 @@
                 "minimum": 0,
                 "maximum": 9007199254740991
               },
+              "trigger_ratio": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ],
+                "description": "Share (0.1-1) of the model's context window, or of its profile.effective_context when that is smaller, at which automatic compaction starts; never later than the usable input budget, which is also where it starts when unset"
+              },
               "mode": {
                 "type": "string",
                 "enum": ["small", "shared", "auto"]

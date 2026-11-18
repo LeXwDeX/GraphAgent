@@ -330,6 +330,10 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      trigger_ratio: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0.1, maximum: 1 }))).annotate({
+        description:
+          "Share (0.1-1) of the model's context window, or of its profile.effective_context when that is smaller, at which automatic compaction starts; never later than the usable input budget, which is also where it starts when unset",
+      }),
       mode: Schema.optional(Schema.Literals(["small", "shared", "auto"])).annotate({
         description:
           "Compaction request shape: 'small' sends a stripped request, 'shared' reuses the main request's cached system+tools prefix, and 'auto' picks the cheaper shape from model prices (default: small)",

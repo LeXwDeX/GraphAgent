@@ -1,6 +1,6 @@
 import type { Config } from "@/config/config"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
-import { contextWindow } from "@graphagent/core/model-profile"
+import { compactionWindow } from "@graphagent/core/model-profile"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { ProviderProfile } from "@/provider/profile"
 import type { Provider } from "@/provider/provider"
@@ -15,12 +15,12 @@ export function measured(tokens: SessionV1.Assistant["tokens"]) {
 }
 
 /**
- * The context window automatic compaction is judged against: the model's profile window, or the default window when
- * the model declares none. `limit.context` is 0 for an unknown window, which must not switch compaction off: the
- * provider would reject the oversized request instead.
+ * The context window automatic compaction is judged against: the model's profile window, narrowed to its
+ * `effective_context` when that is smaller, or the default window when the model declares none. `limit.context` is 0
+ * for an unknown window, which must not switch compaction off: the provider would reject the oversized request instead.
  */
 export function windowOf(model: Provider.Model): number {
-  return contextWindow(ProviderProfile.profileOf(model)).tokens
+  return compactionWindow(ProviderProfile.profileOf(model)).tokens
 }
 
 export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outputTokenMax?: number }) {
@@ -33,18 +33,28 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
   )
   if (input.model.limit.input) {
     const reserved = input.cfg.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, output)
-    return Math.max(0, input.model.limit.input - reserved)
+    // A declared effective window ends the context before an input cap above it would.
+    const narrowed = (ProviderProfile.profileOf(input.model).effectiveContext ?? 0) > 0
+    const cap = narrowed ? Math.min(input.model.limit.input, context) : input.model.limit.input
+    return Math.max(0, cap - reserved)
   }
-  // A budget that fits keeps the normal context-minus-output reserve. A budget at least as large as
-  // the context window cannot be reserved without leaving no usable input, so keep up to
-  // COMPACTION_BUFFER for automatic compaction instead.
-  if (output >= context) return Math.min(context, COMPACTION_BUFFER)
-  return Math.max(0, context - output)
+  // `compaction.reserved` replaces the output reserve. A reserve that fits keeps the normal context-minus-reserve
+  // budget. A reserve at least as large as the context window cannot be taken without leaving no usable input, so
+  // keep up to COMPACTION_BUFFER for automatic compaction instead.
+  const reserve = input.cfg.compaction?.reserved ?? output
+  if (reserve >= context) return Math.min(context, COMPACTION_BUFFER)
+  return Math.max(0, context - reserve)
 }
 
-/** Automatic compaction uses the model's usable context window and nothing else. */
+/**
+ * Where automatic compaction starts: the usable budget, or the `compaction.trigger_ratio` share of the compaction
+ * window when that is lower. The ratio only brings compaction forward; it never moves it past the usable budget.
+ */
 export function triggerLimit(input: { cfg: ConfigV1.Info; model: Provider.Model; outputTokenMax?: number }) {
-  return usable(input)
+  const limit = usable(input)
+  const ratio = input.cfg.compaction?.trigger_ratio
+  if (ratio === undefined) return limit
+  return Math.min(limit, Math.floor(windowOf(input.model) * ratio))
 }
 
 export function isOverflow(input: {

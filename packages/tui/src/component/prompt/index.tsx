@@ -42,6 +42,7 @@ import { StashPanel } from "../../panel/stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@graphagent/sdk"
+import { contextShare, estimateMark } from "../../util/context-window"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -309,7 +310,8 @@ export function Prompt(props: PromptProps) {
     if (tokens <= 0) return
 
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
+    const share = contextShare(tokens, model)
+    const pct = share ? `${estimateMark(share)}${share.percent}%` : undefined
     // #1475: the session's own cost. One that recorded tokens at no cost has no price: it reads as unknown, not as
     // a free session; with neither a cost nor tokens there is nothing to say.
     const cost = session?.cost ?? 0
