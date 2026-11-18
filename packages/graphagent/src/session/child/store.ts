@@ -12,6 +12,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { and, asc, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm"
 import { Cause, Effect, Option } from "effect"
 import { isRecord } from "@/util/record"
+import { headChars } from "@/util/text"
 import { SessionID } from "../schema"
 import type {
   ChildCancelBy,
@@ -60,7 +61,7 @@ export const MAX_REPORT_CHARS = 200_000
 export const ownerRef = (owner: ChildOwner): string | null =>
   owner.kind === "task" ? (owner.toolCallID ?? null) : `${owner.workflowID}/${owner.nodeID}`
 
-const truncate = (text: string) => (text.length > MAX_ERROR_CHARS ? `${text.slice(0, MAX_ERROR_CHARS)}...` : text)
+const truncate = (text: string) => (text.length > MAX_ERROR_CHARS ? `${headChars(text, MAX_ERROR_CHARS)}...` : text)
 
 const boundedReport = (report: ChildRunReport): ChildRunReport =>
   report.text.length > MAX_REPORT_CHARS

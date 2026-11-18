@@ -1032,6 +1032,56 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  // The compaction input is a bounded copy of the tool output; the text the summary model reads must stay valid.
+  const truncatedValue = async (output: string, metadata: Record<string, unknown>, maxChars: number) => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [{ ...basePart(userID, "u1"), type: "text", text: "run tool" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-1",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { cmd: "ls" },
+              output,
+              title: "Shell",
+              metadata,
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const messages = await MessageV2.toModelMessages(input, model, { toolOutputMaxChars: maxChars })
+    const result = messages.find((message) => message.role === "tool")
+    const part = Array.isArray(result?.content) ? result.content[0] : undefined
+    if (part?.type !== "tool-result" || part.output.type !== "text") throw new Error("expected a text tool result")
+    return part.output.value
+  }
+
+  test("does not split a surrogate pair when it truncates tool output", async () => {
+    const value = await truncatedValue(`${"a".repeat(1999)}😀b`, {}, 2000)
+
+    expect(value.isWellFormed()).toBe(true)
+    expect(value).toContain("omitted 3 chars")
+    expect(value.startsWith("a".repeat(1999) + "\n")).toBe(true)
+  })
+
+  test("keeps the saved-output pointer of a tool output it truncates", async () => {
+    const value = await truncatedValue("abcdefghij", { outputPath: "/tmp/tool_saved" }, 4)
+
+    expect(value).toBe("abcd\n[Tool output truncated for compaction: omitted 6 chars. Full output: /tmp/tool_saved]")
+  })
+
   test("converts assistant tool error into error-text tool result", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
