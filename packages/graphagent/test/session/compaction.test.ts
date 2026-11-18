@@ -747,7 +747,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "runs manual full compaction with dynamic folding disabled and orders hooks",
+    "runs manual full compaction and orders hooks",
     () => {
       const order: string[] = []
       const stub = llm()
@@ -783,7 +783,7 @@ describe("session.compaction.process", () => {
         expect(order.slice(0, 2)).toEqual(["memory", "precompact"])
       }).pipe(withCompaction({ llm: stub.layer, memory, settingsHook }))
     },
-    { git: true, config: { compaction: { dynamic: false } } },
+    { git: true },
   )
 
   itCompaction.instance(
@@ -2726,11 +2726,7 @@ describe("session.compaction.process", () => {
                     tools: {},
                     headers: {},
                     abort: new AbortController().signal,
-                    contextFolding: {
-                      enabled: false,
-                      purpose: input.purpose ?? "unknown",
-                      system: { kind: "messages" },
-                    },
+                    purpose: input.purpose,
                   })
                   if (native.type !== "supported") return yield* Effect.die(native.reason)
                   return native.stream

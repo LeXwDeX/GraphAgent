@@ -46,7 +46,6 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Memory } from "@/memory/memory"
-import { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { Skill } from "@/skill"
 import { Goal } from "@/goal/goal"
@@ -235,7 +234,6 @@ const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
     status,
     DagMessages.defaultLayer,
     DagStore.defaultLayer,
-    ToolSourceLedger.defaultLayer,
     AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
 
@@ -371,7 +369,6 @@ export function makeDagPerfLayer(provider: FakeProvider) {
     dag,
     dagStore,
     dagProjector,
-    ToolSourceLedger.defaultLayer,
     AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const dagQuestion = Question.layer.pipe(Layer.provideMerge(dagDeps))

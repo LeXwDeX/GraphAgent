@@ -33,7 +33,7 @@ const BACKGROUND_STARTERS = new Map<string, string>([
   ["src/tool/task.ts", "task"],
 ])
 
-async function toolSources(): Promise<ReadonlyArray<{ readonly file: string; readonly source: string }>> {
+async function toolSourceFiles(): Promise<ReadonlyArray<{ readonly file: string; readonly source: string }>> {
   const files = await Array.fromAsync(TOOL_SOURCES.scan({ cwd: ROOT, onlyFiles: true }))
   expect(files.length, "expected tool source files").toBeGreaterThan(20)
   return Promise.all(
@@ -50,7 +50,7 @@ describe("tool state contract (#1069)", () => {
   it("keeps runtime object state out of module-level mutable bindings", async () => {
     const offenders: string[] = []
     const declared = new Set<string>()
-    for (const { file, source: raw } of await toolSources()) {
+    for (const { file, source: raw } of await toolSourceFiles()) {
       const source = withoutBlockComments(raw)
       for (const match of source.matchAll(/^let\s+(\w+)/gm)) offenders.push(`${file}: module-level \`let ${match[1]}\``)
       for (const match of source.matchAll(
@@ -77,7 +77,7 @@ describe("tool state contract (#1069)", () => {
 
   it("starts background work through the registered BackgroundJob path", async () => {
     const starters: string[] = []
-    for (const { file, source } of await toolSources())
+    for (const { file, source } of await toolSourceFiles())
       if (/background\s*\.\s*start\s*\(/.test(withoutBlockComments(source))) starters.push(file)
     expect(
       starters.sort(),

@@ -411,7 +411,7 @@ describe("session.llm-native.request", () => {
           tools: {},
           headers: {},
           abort: new AbortController().signal,
-          contextFolding: { enabled: false, purpose, system: { kind: "messages" } },
+          purpose,
         })
         if (native.type !== "supported") throw new Error(native.reason)
         const error = yield* native.stream.pipe(
@@ -448,7 +448,7 @@ describe("session.llm-native.request", () => {
         headers: {},
         abort: new AbortController().signal,
         sessionRetry: true,
-        contextFolding: { enabled: false, purpose: "conversation", system: { kind: "messages" } },
+        purpose: "conversation",
       })
       if (native.type !== "supported") throw new Error(native.reason)
       const error = yield* native.stream.pipe(
