@@ -24,6 +24,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import type { Session } from "@/session/session"
 import {
   dropReverted,
+  endedTurnsSince,
   lastOutcomeOf,
   makeTurns,
   originFor,
@@ -523,6 +524,64 @@ describe("lastOutcome", () => {
         type: "completed",
       })
       expect(Option.isNone(yield* lastOutcomeOf({ db, sessions: mockSessions() }, fork))).toBe(true)
+    }),
+  )
+})
+
+// #1453: a child run reads the turns it ran, from the message its first prompt names.
+describe("endedTurnsSince", () => {
+  const row = (sessionID: SessionID, id: string, userMessageID: string | null, startedAt: number, rest = {}) => ({
+    id,
+    session_id: sessionID,
+    origin: JSON.stringify({ kind: "user", via: "prompt" }),
+    state: "ended",
+    outcome: { type: "completed" } as Record<string, unknown>,
+    user_message_id: userMessageID,
+    steps: 1,
+    runner_id: "1",
+    time_started: startedAt,
+    time_ended: startedAt + 1,
+    ...rest,
+  })
+
+  it.effect("reads the ended turns of one session from a message on, oldest first, with their outcomes and steps", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(`ses_since_${Date.now()}`)
+      const other = SessionID.make(`ses_since_other_${Date.now()}`)
+      yield* ensureSession(db, sessionID)
+      yield* ensureSession(db, other)
+      const before = MessageID.ascending()
+      const start = MessageID.ascending()
+      const second = MessageID.ascending()
+      const third = MessageID.ascending()
+      yield* db
+        .insert(SessionTurnTable)
+        .values([
+          // Written newest-first: the order comes from when each turn started.
+          row(sessionID, "since-third", third, 30, { outcome: { type: "tool_budget_exhausted" }, steps: 4 }),
+          row(sessionID, "since-start", start, 10, { steps: 2 }),
+          row(sessionID, "since-second", second, 20, { outcome: { type: "error", code: "boom", retryable: false } }),
+          // Before the start message, still running, anchored on nothing, of another session, or unreadable.
+          row(sessionID, "since-before", before, 5),
+          row(sessionID, "since-running", third, 40, { state: "running", outcome: null }),
+          row(sessionID, "since-unanchored", null, 50),
+          row(other, "since-other", third, 60),
+          row(sessionID, "since-odd", third, 70, { outcome: { type: "something_new" }, steps: null }),
+        ])
+        .run()
+        .pipe(Effect.orDie)
+
+      const turns = yield* endedTurnsSince({ db }, sessionID, start)
+
+      expect(turns).toEqual([
+        { outcome: { type: "completed" }, steps: 2 },
+        { outcome: { type: "error", code: "boom", retryable: false }, steps: 1 },
+        { outcome: { type: "tool_budget_exhausted" }, steps: 4 },
+        // An outcome this build cannot read is none, and a row that never counted its steps counts none.
+        { outcome: undefined, steps: 0 },
+      ])
+      expect(yield* endedTurnsSince({ db }, sessionID, MessageID.ascending())).toEqual([])
     }),
   )
 })

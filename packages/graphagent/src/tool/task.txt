@@ -1,6 +1,6 @@
 Delegate a self-contained task to a subagent. Use this for broad, open-ended exploration or work that needs several rounds of searching; use read, glob, or grep directly for a specific file, symbol, or small set of files.
 
-- Specify subagent_type from the available agent types. Respect inherited permissions and the shared `maxToolCalls` budget.
+- Specify subagent_type from the available agent types. Respect inherited permissions; each run has its own `maxToolCalls` budget.
 - Give each agent all needed context: a new agent starts fresh and does not see this conversation. State whether it should write code or research, and include verification steps.
 - Launch independent agents concurrently in one message. Do not repeat a delegated task; wait or continue other work.
 - The agent returns one message that the user cannot see; summarize it. Check key claims, such as changed files or test results, before relying on or reporting them.
