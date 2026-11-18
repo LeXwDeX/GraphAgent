@@ -45,6 +45,7 @@ import { LLMEvent, Usage } from "@graphagent/llm"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { Memory } from "@/memory/memory"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { SettingsHook, HOOK_REWAKE_SENTINEL } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { CompactionTimeoutError } from "../../src/session/compaction-timeout"
@@ -672,13 +673,16 @@ describe("session.compaction.isOverflow", () => {
   )
 
   it.live(
-    "returns false when model context limit is 0",
+    "judges a model with an unknown context window against the default window",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 0, output: 32_000 })
+        // The default 128_000 window minus the 32_000 output reserve leaves 96_000; 110_000 is above it.
         const tokens = { input: 100_000, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
-        expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
+        const small = { input: 60_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: small, model })).toBe(false)
       }),
     ),
   )
@@ -1800,9 +1804,10 @@ describe("session.compaction.process", () => {
         expect(result).toBe("continue")
         expect(sources).toEqual(["compact"])
         expect(last?.info.role).toBe("user")
+        // The hook's context comes back in a block with source="hook" (#1456).
         expect(syntheticTexts(last)).toEqual([
           expect.stringContaining("Continue if you have next steps"),
-          "compact-ctx",
+          Injection.wrap("hook", "compact-ctx"),
         ])
         expect(queued).toEqual([])
       }).pipe(
@@ -1848,14 +1853,55 @@ describe("session.compaction.process", () => {
         const texts = syntheticTexts(last)
         expect(result).toBe("continue")
         expect(sources).toEqual(["compact"])
-        expect(texts.filter((text) => text === "compact-ctx")).toEqual([])
-        expect(texts.filter((text) => text === "fresh-ctx")).toEqual(["fresh-ctx"])
+        expect(
+          texts.filter((text) => text === "compact-ctx" || text === Injection.wrap("hook", "compact-ctx")),
+        ).toEqual([])
+        expect(texts.filter((text) => text.includes("fresh-ctx"))).toEqual([Injection.wrap("hook", "fresh-ctx")])
         expect(texts.some((text) => text.includes("Continue if you have next steps"))).toBe(true)
         expect(queued).toEqual([])
       }).pipe(
         withCompaction({
           llm: stub.layer,
           settingsHook: sessionStartHook(sources, ["compact-ctx", "fresh-ctx", "fresh-ctx"]),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not re-inject SessionStart context already visible in its hook block",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        // Written by an earlier admission, which puts every hook context in its block.
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: session.id,
+          type: "text",
+          text: Injection.wrap("hook", "compact-ctx"),
+          synthetic: true,
+        })
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        yield* SessionCompaction.use.process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: true })
+
+        const texts = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1))
+        expect(texts.filter((text) => text.includes("compact-ctx"))).toEqual([])
+        expect(texts.filter((text) => text.includes("fresh-ctx"))).toEqual([Injection.wrap("hook", "fresh-ctx")])
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources, ["compact-ctx", "fresh-ctx"]),
           startContext: recordingStartContext(queued),
         }),
       )
@@ -1956,7 +2002,7 @@ describe("session.compaction.process", () => {
 
         const texts = syntheticTexts(stored.at(-1))
         expect(result).toBe("continue")
-        expect(texts).toContain(ctx)
+        expect(texts).toContain(Injection.wrap("hook", ctx))
         expect(
           texts.some((text) =>
             text.includes("Continue the pending work only if the latest user request still calls for it"),
@@ -2029,7 +2075,7 @@ describe("session.compaction.process", () => {
 
         const texts = syntheticTexts(stored.at(-1))
         expect(texts.join("\n")).toContain(request)
-        expect(texts).toContain(ctx)
+        expect(texts).toContain(Injection.wrap("hook", ctx))
         expect(queued).toEqual([])
       }).pipe(
         withCompaction({
@@ -2405,7 +2451,7 @@ describe("session.compaction.process", () => {
         const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
         expect(sources).toEqual(["compact"])
         expect(last?.info.role).toBe("user")
-        expect(syntheticTexts(last)).toEqual(["compact-ctx"])
+        expect(syntheticTexts(last)).toEqual([Injection.wrap("hook", "compact-ctx")])
         expect(last?.parts.some((part) => part.type === "text" && part.text === "replayed")).toBe(true)
         expect(queued).toEqual([])
       }).pipe(

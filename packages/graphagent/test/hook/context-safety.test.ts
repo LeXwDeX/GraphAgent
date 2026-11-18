@@ -52,4 +52,29 @@ describe("hook context safety", () => {
       await fs.rm(dir, { recursive: true, force: true })
     }
   })
+
+  // A cut inside a surrogate pair would leave a lone half, which serializes as an invalid character (#1456, B3).
+  const LONE_HALF = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+
+  test("truncating in place does not split a surrogate pair", () => {
+    const result = sanitizeHookContext(`${"a".repeat(9_999)}😀${"b".repeat(50)}`)
+    expect(result).not.toMatch(LONE_HALF)
+    expect(result).toContain("[truncated at 10000 characters]")
+    expect(result).toMatch(/^a{9999}\n/)
+  })
+
+  test("the spilled-file preview does not split a surrogate pair", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hook-context-"))
+    try {
+      const text = `${"a".repeat(1_999)}😀${"b".repeat(9_000)}`
+      const result = sanitizeHookContext(text, dir)
+      const [header, , preview] = result.split("\n")
+      const file = header.slice("Full context saved to ".length)
+      expect(preview).not.toMatch(LONE_HALF)
+      expect(preview).toBe("a".repeat(1_999))
+      expect(await fs.readFile(file, "utf8")).toBe(text)
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Database } from "@graphagent/core/database/database"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { Cause, Clock, Effect, Option, type Scope } from "effect"
 import { DagLocation } from "@/dag/location"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -108,7 +109,10 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
     const result = Store.parseReport(row.outcome)
     const runningAt = Store.parseRunningAt(row.outcome)
     const initiator = result?.initiator ?? "agent"
-    const notice = ChildNotice.resultNotice({ childSessionID, outcome, report: result })
+    const notice = Injection.wrap(
+      "background-result",
+      ChildNotice.resultNotice({ childSessionID, outcome, report: result }),
+    )
     const text = initiator === "user" ? `${ChildNotice.userBackgroundNotice(result?.command)}\n\n${notice}` : notice
     // The mark rides the transaction that commits the message: of two deliveries racing for one row, the
     // second finds it reported, fails here and rolls its message back.

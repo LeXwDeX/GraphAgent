@@ -1375,7 +1375,7 @@ describe("session.message-v2.toModelMessage", () => {
         {
           type: "text",
           text: expect.stringMatching(
-            /^\[runtime\] The previous assistant step ended with an error \(APIError, HTTP 502\)\./,
+            /^<system-reminder source="runtime">\nThe previous assistant step ended with an error \(APIError, HTTP 502\)\..*\n<\/system-reminder>$/s,
           ),
         },
       ],
@@ -1451,7 +1451,7 @@ describe("session.message-v2.toModelMessage", () => {
 
   test("words the runtime note from the stored error name and status", () => {
     const note = (name: string, status = "") =>
-      `[runtime] The previous assistant step ended with an error (${name}${status}). Tool calls from that step keep the results recorded for them; a result that says the call was aborted means it did not finish. The rest of that step was lost. Check the current state before repeating any work.`
+      `The previous assistant step ended with an error (${name}${status}). Tool calls from that step keep the results recorded for them; a result that says the call was aborted means it did not finish. The rest of that step was lost. Check the current state before repeating any work.`
     const cases: Array<[NonNullable<SessionV1.Assistant["error"]>, string]> = [
       [
         { name: "APIError", data: { message: "bad gateway", statusCode: 502, isRetryable: true } },

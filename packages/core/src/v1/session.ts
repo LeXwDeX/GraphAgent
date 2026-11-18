@@ -28,6 +28,7 @@ export {
   RetryPart,
   SessionInfo,
   SnapshotPart,
+  StepFinishMetrics,
   StepFinishPart,
   StepStartPart,
   SubtaskPart,

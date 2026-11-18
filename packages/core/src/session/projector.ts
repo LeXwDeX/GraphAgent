@@ -11,8 +11,8 @@ import { WorkspaceTable } from "../control-plane/workspace.sql"
 import { WorkspaceV2 } from "../workspace"
 import { WorkflowTable } from "../dag/sql"
 import { MessageTable, PartTable, SessionTable } from "./sql"
-import { ToolOutcomeTable } from "./outcome.sql"
-import { toolOutcomeRow } from "./outcome"
+import { SessionStepTable, ToolOutcomeTable } from "./outcome.sql"
+import { sessionStepRow, toolOutcomeRow } from "./outcome"
 import type { DeepMutable } from "../schema"
 import { SessionMessageID } from "./message-id"
 
@@ -146,6 +146,28 @@ function projectToolOutcome(
     .insert(ToolOutcomeTable)
     .values(row)
     .onConflictDoUpdate({ target: ToolOutcomeTable.part_id, set: changes })
+    .run()
+    .pipe(Effect.orDie)
+}
+
+/**
+ * #1473: book the `metrics` of a finished step in `session_step` under the model
+ * of its assistant message, with the same keying and attribution as
+ * `projectToolOutcome`. A step-finish part without metrics leaves no row.
+ */
+function projectStepMetrics(
+  db: DatabaseService,
+  part: Parameters<typeof sessionStepRow>[0],
+  model: { providerID: string | null; modelID: string | null },
+) {
+  if (part.type !== "step-finish" || !model.providerID || !model.modelID) return Effect.void
+  const row = sessionStepRow(part, { providerID: model.providerID, modelID: model.modelID })
+  if (!row) return Effect.void
+  const { part_id: _, ...changes } = row
+  return db
+    .insert(SessionStepTable)
+    .values(row)
+    .onConflictDoUpdate({ target: SessionStepTable.part_id, set: changes })
     .run()
     .pipe(Effect.orDie)
 }
@@ -332,6 +354,7 @@ export const layer = Layer.effectDiscard(
         if (previous) yield* applyUsage(db, row.session_id, previous, -1)
         if (next) yield* applyUsage(db, sessionID, next)
         yield* projectToolOutcome(db, event.data.part, message)
+        yield* projectStepMetrics(db, event.data.part, message)
       }),
     )
     yield* project(SessionV1.Event.AgentSwitched, (event) =>

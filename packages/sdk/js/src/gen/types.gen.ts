@@ -398,6 +398,16 @@ export type StepFinishPart = {
       write: number
     }
   }
+  metrics?: StepFinishMetrics
+}
+
+export type StepFinishMetrics = {
+  prepareMs: number
+  requestMs: number
+  ttftMs: number
+  toolCalls: number
+  toolErrors: number
+  retries: number
 }
 
 export type StepStartPart = {

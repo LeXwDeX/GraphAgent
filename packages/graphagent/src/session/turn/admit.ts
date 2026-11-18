@@ -9,11 +9,12 @@ import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Cause, Deferred, Effect, Exit, Fiber, Option, type Scope } from "effect"
-import { HOOK_REWAKE_SENTINEL, SettingsHook, type TriggerResult } from "@/hook"
+import { SettingsHook, isHookRewake, type TriggerResult } from "@/hook"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
 import type { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
+import { hookBlock } from "@/hook/trigger-result"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
 import type { SessionAttention } from "@/notification/attention"
@@ -446,11 +447,11 @@ export function makeAdmit(deps: AdmitDeps) {
     // Runs BEFORE the prompt is persisted: a blocked prompt (e.g. a secret scanner)
     // must never be stored as model-visible history (Claude Code erases it from
     // context). Loop guard (hook-async-rewake): skip hooks for rewake prompts (those
-    // whose text starts with HOOK_REWAKE_SENTINEL) to prevent hook → rewake → hook loops.
+    // whose text starts with HOOK_REWAKE_SENTINEL, or its legacy form) to prevent hook → rewake → hook loops.
     let hookAdditionalContexts: string[] = []
     let hookResult: TriggerResult | undefined
     const promptText = input.parts.map((p: any) => (p.type === "text" ? p.text : "")).join("\n")
-    const isRewake = promptText.startsWith(HOOK_REWAKE_SENTINEL)
+    const isRewake = isHookRewake(promptText)
     // Refuse a stale rewake before anything is committed. Cancel stays
     // lock-free; the post-commit fence below covers cancels that land while
     // admission is suspended inside hook callbacks.
@@ -575,7 +576,7 @@ export function makeAdmit(deps: AdmitDeps) {
 
     for (const ctx of [...resumeTexts, ...startContextTexts, ...hookAdditionalContexts]) {
       yield* sessions.updatePart(
-        syntheticTextPart({ sessionID: input.sessionID, messageID: message.info.id, text: ctx }),
+        syntheticTextPart({ sessionID: input.sessionID, messageID: message.info.id, text: hookBlock([ctx]) }),
       )
     }
 

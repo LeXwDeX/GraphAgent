@@ -4,8 +4,8 @@
 import { and, eq, gte, sql, type SQL } from "drizzle-orm"
 import { Effect } from "effect"
 import { Database } from "@graphagent/core/database/database"
-import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
-import { SessionTable } from "@graphagent/core/session/sql"
+import { SessionStepTable, ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
+import { MessageTable, SessionTable } from "@graphagent/core/session/sql"
 import { ID as ProjectID } from "@graphagent/core/project"
 import { t } from "@graphagent/tui/i18n"
 import type { Project } from "@/project/project"
@@ -91,6 +91,91 @@ export const queryOutcomes = Effect.fn("Cli.stats.queryOutcomes")(function* (
     .pipe(Effect.orDie)
   return rows satisfies OutcomeRow[]
 })
+
+/** What `session_step` and the failed assistant messages say about one model. */
+export interface ModelSteps {
+  /** Finished steps that carry metrics. */
+  steps: number
+  /** Mean request time of those steps, in whole milliseconds. */
+  avgRequestMs: number
+  retries: number
+  /** Tool calls that ended in an error or were aborted. */
+  toolErrors: number
+  /** Assistant messages that ended in a provider error; an abort is not one. */
+  requestFailures: number
+}
+
+/**
+ * The step statistics of every model with at least one recorded step or failed request, keyed by `provider/model`,
+ * over the sessions `--days` and `--project` select. A failed request leaves no step, so the failures come from the
+ * assistant messages themselves.
+ */
+export const queryModelSteps = Effect.fn("Cli.stats.queryModelSteps")(function* (
+  db: Database.Interface["db"],
+  filter: OutcomeFilter,
+) {
+  const conditions = sessionConditions(filter)
+  const recorded = yield* db
+    .select({
+      providerID: SessionStepTable.provider_id,
+      modelID: SessionStepTable.model_id,
+      steps: sql<number>`count(*)`,
+      requestMs: sql<number>`sum(${SessionStepTable.request_ms})`,
+      retries: sql<number>`sum(${SessionStepTable.retries})`,
+      toolErrors: sql<number>`sum(${SessionStepTable.tool_errors})`,
+    })
+    .from(SessionStepTable)
+    .innerJoin(SessionTable, eq(SessionStepTable.session_id, SessionTable.id))
+    .where(and(...conditions))
+    .groupBy(SessionStepTable.provider_id, SessionStepTable.model_id)
+    .all()
+    .pipe(Effect.orDie)
+  const providerID = sql<string>`json_extract(${MessageTable.data}, '$.providerID')`
+  const modelID = sql<string>`json_extract(${MessageTable.data}, '$.modelID')`
+  const failed = yield* db
+    .select({ providerID, modelID, count: sql<number>`count(*)` })
+    .from(MessageTable)
+    .innerJoin(SessionTable, eq(MessageTable.session_id, SessionTable.id))
+    .where(
+      and(
+        ...conditions,
+        sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
+        sql`json_extract(${MessageTable.data}, '$.error') IS NOT NULL`,
+        sql`json_extract(${MessageTable.data}, '$.error.name') IS NOT 'MessageAbortedError'`,
+      ),
+    )
+    .groupBy(providerID, modelID)
+    .all()
+    .pipe(Effect.orDie)
+
+  const models: Record<string, ModelSteps> = {}
+  for (const row of recorded) {
+    models[`${row.providerID}/${row.modelID}`] = {
+      steps: row.steps,
+      avgRequestMs: Math.round(row.requestMs / row.steps),
+      retries: row.retries,
+      toolErrors: row.toolErrors,
+      requestFailures: 0,
+    }
+  }
+  for (const row of failed) {
+    const name = `${row.providerID}/${row.modelID}`
+    models[name] ??= { steps: 0, avgRequestMs: 0, retries: 0, toolErrors: 0, requestFailures: 0 }
+    models[name].requestFailures += row.count
+  }
+  return models
+})
+
+/** The five rows `stats --models` adds to a model's block, after its cost: label and value of each. */
+export function modelStepRows(steps: ModelSteps): Array<[label: string, value: string]> {
+  return [
+    [t("cli.stats.row.steps"), steps.steps.toLocaleString()],
+    [t("cli.stats.row.avgRequestMs"), `${steps.avgRequestMs.toLocaleString()} ms`],
+    [t("cli.stats.row.retries"), steps.retries.toLocaleString()],
+    [t("cli.stats.row.toolFailures"), steps.toolErrors.toLocaleString()],
+    [t("cli.stats.row.requestFailures"), steps.requestFailures.toLocaleString()],
+  ]
+}
 
 interface ToolTally {
   calls: number

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { detectToolCallEnvelope } from "@graphagent/core/session/reasoning-distillation/control-markup"
+import { Injection } from "@graphagent/core/system-context/injection"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 
 /**
@@ -19,12 +20,12 @@ export const HINT_LIMIT: Record<HintKind, number> = { pseudo_tool_call: 1 }
 
 export const HINT_TEXT: Record<HintKind, string> = {
   pseudo_tool_call:
-    "[runtime] Tool calls must use the function-calling interface. The text above looks like a tool call and was not executed. Call the tool through that interface.",
+    "Tool calls must use the function-calling interface. The text above looks like a tool call and was not executed. Call the tool through that interface.",
 }
 
-/** The only place a hint becomes message text. */
+/** The only place a hint becomes message text: a block with source runtime. */
 export function renderHint(kind: HintKind): string {
-  return HINT_TEXT[kind]
+  return Injection.wrap("runtime", HINT_TEXT[kind])
 }
 
 const FENCED_BLOCK = /```[\s\S]*?```|~~~[\s\S]*?~~~/g

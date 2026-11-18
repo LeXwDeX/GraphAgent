@@ -56,13 +56,18 @@ const RESULT_ELEMENTS = [
   { open: "<task_error>", close: "</task_error>" },
 ] as const
 const SUMMARY_CLOSE = "</summary>"
+// The server writes the notice inside a block with source="background-result": its opening tag, then the notice, then
+// the closing tag (#1456). A run the user started has a line of instruction above the block.
+const BLOCK_OPEN = /<system-reminder\s[^>]*\bsource="background-result"[^>]*>\s*/
+const BLOCK_CLOSE = /\s*<\/system-reminder>\s*$/
 
 /**
  * What the run left, out of the text of the notice (`renderTask` on the server): the content between the tags of the
  * result or error element, trimmed. A notice for a run the user started has a line of instruction above the task
  * element, which is not part of the result. The element is looked for after the summary, which holds the title and the
  * title is free text, and it ends at the last closing tag, because what the run wrote may hold one too. A text without
- * either element (a shape the server does not write today) is shown with the wrapper taken off.
+ * either element (a shape the server does not write today) is shown with the wrapper, and the block around the notice,
+ * taken off.
  */
 export function resultBody(text: string, title?: string): string {
   const from = afterSummary(text, title)
@@ -78,7 +83,14 @@ export function resultBody(text: string, title?: string): string {
   if (!element) return withoutWrapper(text)
   const start = open + element.open.length
   const close = text.lastIndexOf(element.close)
-  return (close >= start ? text.slice(start, close) : text.slice(start).replace(/\s*<\/task>\s*$/, "")).trim()
+  return (
+    close >= start
+      ? text.slice(start, close)
+      : text
+          .slice(start)
+          .replace(BLOCK_CLOSE, "")
+          .replace(/\s*<\/task>\s*$/, "")
+  ).trim()
 }
 
 /**
@@ -97,11 +109,13 @@ function afterSummary(text: string, title: string | undefined): number {
   return close === -1 ? 0 : close + SUMMARY_CLOSE.length
 }
 
-/** The text with the `<task …>` tag, the `<summary>` element and the closing `</task>` of the notice taken off. */
+/** The text with the block around the notice, its `<task …>` tag, the `<summary>` element and the closing `</task>` taken off. */
 function withoutWrapper(text: string): string {
   return text
+    .replace(BLOCK_OPEN, "")
     .replace(/<task\b[^>]*>/, "")
     .replace(/<summary>[\s\S]*?<\/summary>/, "")
+    .replace(BLOCK_CLOSE, "")
     .replace(/\s*<\/task>\s*$/, "")
     .trim()
 }

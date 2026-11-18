@@ -957,10 +957,62 @@ describe("DagLoop atomic wake integration", () => {
           expect(wake).toContain('node_id="long-report"')
           expect(wake).toContain("truncated=true")
           expect(wake).toContain(
-            `Complete output: call workflow({"params":{"action":"inspect","operation":"result","workflow_id":"${dagID}","node_id":"long-report"}}).`,
+            `Showing the first 500 of 1513 characters. Complete output: call workflow({"params":{"action":"inspect","operation":"result","workflow_id":"${dagID}","node_id":"long-report"}}). Pass the reply's next_cursor as cursor to read the next page.`,
           )
           expect(wake).not.toContain("WAKE_SENTINEL")
           expect(wake.length).toBeLessThan(1_500)
+          yield* Deferred.succeed(parent.release, "success")
+        }),
+      ),
+    )
+  })
+
+  it("does not split a surrogate pair at the end of a truncated wake preview", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Pair at the preview edge",
+            config: { name: "pair-at-the-preview-edge", nodes: [node("pair-report")] },
+          })
+
+          const report = yield* takeWithin(childPrompts, "pair-report did not start")
+          // The 500th unit is the first half of the emoji and the 501st its second half.
+          yield* Deferred.succeed(report.release, `${"a".repeat(499)}😀tail`)
+          const parent = yield* takeWithin(parentPrompts, "pair report did not wake the parent")
+          const wake = promptText(parent.input)
+
+          expect(wake).toContain("truncated=true")
+          expect(wake).not.toMatch(/[\ud800-\udbff]\n\[DAG Result Reference\]/)
+          expect(wake).toContain(`Node "pair-report" completed: ${"a".repeat(499)}\n[DAG Result Reference]`)
+          // The count is of what is shown: the whole pair stays out, so 499 of the 505.
+          expect(wake).toContain("Showing the first 499 of 505 characters.")
+          yield* Deferred.succeed(parent.release, "success")
+        }),
+      ),
+    )
+  })
+
+  it("shows a pair that ends exactly at the wake preview edge whole", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Pair ends at the preview edge",
+            config: { name: "pair-ends-at-the-preview-edge", nodes: [node("whole-pair")] },
+          })
+
+          const report = yield* takeWithin(childPrompts, "whole-pair did not start")
+          yield* Deferred.succeed(report.release, `${"a".repeat(498)}😀tail`)
+          const parent = yield* takeWithin(parentPrompts, "whole pair report did not wake the parent")
+          const wake = promptText(parent.input)
+
+          expect(wake).toContain(`Node "whole-pair" completed: ${"a".repeat(498)}😀\n[DAG Result Reference]`)
+          expect(wake).toContain("Showing the first 500 of 504 characters.")
           yield* Deferred.succeed(parent.release, "success")
         }),
       ),
