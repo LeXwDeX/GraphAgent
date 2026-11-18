@@ -86,6 +86,7 @@ export function render(findings: ProbeFindings.Findings, ctx: ProbePlan.Context)
 export interface SnippetModel {
   limit?: { context: number }
   reasoning?: true
+  interleaved?: { field: ProbePlan.ReasoningField }
   profile?: { reasoning_mode: { replay: "field" | "none" } }
 }
 
@@ -97,15 +98,21 @@ export interface Snippet {
 /**
  * The configuration the findings back, under `provider.<providerID>.models.<modelID>`, and nothing else: the
  * measured window (`limit.context`, never `limit.output`), `reasoning` when a reasoning field was seen, and the
- * reasoning replay requirement when the endpoint answered it (`required` is `field`, `rejected` is `none`;
- * `accepted` says nothing about what the engine should do, so it writes nothing). A finding without a
- * conclusion has no key, so a probe that learned nothing yields an empty model entry.
+ * reasoning replay requirement when the endpoint answered it. `required` writes the profile's `replay: "field"` and
+ * `interleaved: { field }` with the measured field, because the engine replays reasoning under the model's
+ * `interleaved` field and does not read the profile's replay setting; `interleaved` is left out when no field was
+ * measured. `rejected` writes `replay: "none"` and no `interleaved`: the configuration cannot say
+ * `interleaved: false`, so a snippet with it would not load. `accepted` says nothing about what the engine should
+ * do, so it writes nothing. A finding without a conclusion has no key, so a probe that learned nothing yields an
+ * empty model entry.
  */
 export function snippet(findings: ProbeFindings.Findings, ctx: ProbePlan.Context): Snippet {
   const { context, reasoningField, replay } = findings
+  const field = ProbePlan.REASONING_FIELDS.find((name) => name === reasoningField)
   const model: SnippetModel = {
     ...(context.status === "found" && context.tokens !== undefined ? { limit: { context: context.tokens } } : {}),
-    ...(ProbePlan.REASONING_FIELDS.some((field) => field === reasoningField) ? { reasoning: true } : {}),
+    ...(field !== undefined ? { reasoning: true } : {}),
+    ...(replay === "required" && field !== undefined ? { interleaved: { field } } : {}),
     ...(replay === "required" ? { profile: { reasoning_mode: { replay: "field" } } } : {}),
     ...(replay === "rejected" ? { profile: { reasoning_mode: { replay: "none" } } } : {}),
   }

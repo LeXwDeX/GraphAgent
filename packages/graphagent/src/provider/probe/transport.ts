@@ -9,14 +9,18 @@ import { ProbePlan } from "./plan"
 
 /**
  * The two ways the probe talks to an endpoint. Chat requests go through the AI SDK model the engine itself would
- * use, so they carry exactly the request shape, headers and fetch wrapper a real turn does. The models request is a
- * plain `fetch`: the probe layer is a Promise interface, not an Effect service.
+ * use, so they carry exactly the request shape, headers and fetch wrapper a real turn does, plus the request-level
+ * provider options the transport is given. The models request is a plain `fetch`: the probe layer is a Promise
+ * interface, not an Effect service.
  *
  * Neither method throws. A failure is part of the result (a status, an error text, a timeout flag) because the probe
  * reports a failed item and goes on with the others.
  */
 export type ChatResult = ProbeFindings.ChatAttempt
 export type ModelsResult = ProbeFindings.ModelsAttempt
+
+/** The AI SDK's request-level provider options: one object of options per provider name. */
+export type ProviderOptions = NonNullable<Parameters<typeof streamText>[0]["providerOptions"]>
 
 export interface ChatRequest {
   readonly messages: ModelMessage[]
@@ -37,6 +41,12 @@ export interface Options {
   readonly apiKey?: string
   /** Headers of the models request, applied over the default bearer header. */
   readonly headers: Readonly<Record<string, string>>
+  /**
+   * What a normal turn sends beside the messages (the thinking switch of a reasoning model, say), set on every chat
+   * request; see `ProbeOptions`. The probe's own limits win over it: an output cap among these options is dropped
+   * (`OUTPUT_CAP_FIELDS`), and the output cap, retry count and deadline of the request are the probe's.
+   */
+  readonly providerOptions?: ProviderOptions
   readonly fetch?: typeof globalThis.fetch
   /** Deadline of each request. Defaults to `REQUEST_TIMEOUT_MS`. */
   readonly timeoutMs?: number
@@ -104,7 +114,28 @@ function failureOf(error: unknown): Failure {
   return { error: errorMessage(error) }
 }
 
-async function chat(language: LanguageModel, timeoutMs: number, request: ChatRequest): Promise<ChatResult> {
+/**
+ * Body fields that cap the output. The OpenAI-compatible SDK copies every provider option it does not know into the
+ * request body after `max_tokens`, so one of these among the options would replace the cap the probe sets.
+ */
+const OUTPUT_CAP_FIELDS: readonly string[] = ["max_tokens", "max_completion_tokens"]
+
+function withoutOutputCap(providerOptions: ProviderOptions | undefined): ProviderOptions | undefined {
+  if (providerOptions === undefined) return undefined
+  return Object.fromEntries(
+    Object.entries(providerOptions).map(([name, values]) => [
+      name,
+      Object.fromEntries(Object.entries(values).filter(([field]) => !OUTPUT_CAP_FIELDS.includes(field))),
+    ]),
+  )
+}
+
+async function chat(
+  language: LanguageModel,
+  timeoutMs: number,
+  providerOptions: ProviderOptions | undefined,
+  request: ChatRequest,
+): Promise<ChatResult> {
   const signal = AbortSignal.timeout(timeoutMs)
   const raw: unknown[] = []
   const toolCalls: ProbeFindings.ToolCallResult[] = []
@@ -114,6 +145,7 @@ async function chat(language: LanguageModel, timeoutMs: number, request: ChatReq
       model: language,
       messages: request.messages,
       tools: request.tools,
+      providerOptions,
       maxOutputTokens: request.maxOutputTokens,
       maxRetries: 0,
       includeRawChunks: true,
@@ -149,9 +181,10 @@ async function chat(language: LanguageModel, timeoutMs: number, request: ChatReq
 
 export function make(options: Options): Transport {
   const timeoutMs = options.timeoutMs ?? ProbePlan.REQUEST_TIMEOUT_MS
+  const providerOptions = withoutOutputCap(options.providerOptions)
   return {
     models: () => models(options, timeoutMs),
-    chat: (request) => chat(options.language, timeoutMs, request),
+    chat: (request) => chat(options.language, timeoutMs, providerOptions, request),
   }
 }
 

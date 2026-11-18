@@ -51,6 +51,7 @@ describe("ProbeReport.snippet", () => {
             "org/model-1.5": {
               limit: { context: 131_072 },
               reasoning: true,
+              interleaved: { field: "reasoning_content" },
               profile: { reasoning_mode: { replay: "field" } },
             },
           },
@@ -59,7 +60,7 @@ describe("ProbeReport.snippet", () => {
     })
   })
 
-  test("never writes limit.output, and only the three keys", () => {
+  test("never writes limit.output, and a rejected replay writes only limit, profile and reasoning", () => {
     const model = modelOf(
       findings({
         context: { status: "found", tokens: 8_000 },
@@ -84,6 +85,35 @@ describe("ProbeReport.snippet", () => {
     const silent: ProbeFindings.Findings["replay"][] = ["accepted", "inconclusive", "failed", "skipped"]
     for (const value of silent) {
       expect({ value, profile: replay(value) }).toEqual({ value, profile: undefined })
+    }
+  })
+
+  // The engine replays reasoning under `model.capabilities.interleaved.field` and never reads the profile's replay
+  // setting, so a required replay has to name the field there too, or pasting the snippet changes nothing at run time.
+  test("required also writes interleaved.field with the measured field", () => {
+    for (const field of ProbePlan.REASONING_FIELDS) {
+      expect({ field, model: modelOf(findings({ reasoningField: field, replay: "required" })) }).toEqual({
+        field,
+        model: { reasoning: true, interleaved: { field }, profile: { reasoning_mode: { replay: "field" } } },
+      })
+    }
+  })
+
+  test("required without a measured field writes no interleaved", () => {
+    const none: ProbeFindings.Findings["reasoningField"][] = ["absent", "failed"]
+    for (const value of none) {
+      const model = modelOf(findings({ reasoningField: value, replay: "required" }))
+      expect({ value, model }).toEqual({ value, model: { profile: { reasoning_mode: { replay: "field" } } } })
+    }
+  })
+
+  // The configuration has no `interleaved: false` (it takes `true` or `{ field }`), so a rejected replay can only
+  // say `replay: none`; writing `false` would make the pasted snippet fail to load.
+  test("only a required replay writes interleaved, and never interleaved: false", () => {
+    const others: ProbeFindings.Findings["replay"][] = ["accepted", "rejected", "inconclusive", "failed", "skipped"]
+    for (const value of others) {
+      const model = modelOf(findings({ reasoningField: "reasoning_content", replay: value }))
+      expect({ value, interleaved: model.interleaved }).toEqual({ value, interleaved: undefined })
     }
   })
 
@@ -118,6 +148,32 @@ describe("ProbeReport.snippet", () => {
     expect(decoded.provider).toEqual(out.provider)
     const empty = Schema.decodeUnknownSync(ConfigV1.Info)(ProbeReport.snippet(findings(), ctx))
     expect(empty.provider).toEqual({ relay: { models: { "org/model-1.5": {} } } })
+  })
+
+  test("every snippet the probe can print decodes through the configuration schema, key for key", () => {
+    const replays: ProbeFindings.Findings["replay"][] = [
+      "accepted",
+      "required",
+      "rejected",
+      "inconclusive",
+      "failed",
+      "skipped",
+    ]
+    const fields: ProbeFindings.Findings["reasoningField"][] = [...ProbePlan.REASONING_FIELDS, "absent", "failed"]
+    for (const replay of replays) {
+      for (const reasoningField of fields) {
+        const out = ProbeReport.snippet(
+          findings({ context: { status: "found", tokens: 4_096 }, reasoningField, replay }),
+          ctx,
+        )
+        const decoded = Schema.decodeUnknownSync(ConfigV1.Info)(out)
+        expect({ replay, reasoningField, provider: decoded.provider }).toEqual({
+          replay,
+          reasoningField,
+          provider: out.provider,
+        })
+      }
+    }
   })
 
   test("returns fresh objects on every call", () => {

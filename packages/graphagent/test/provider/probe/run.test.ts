@@ -13,6 +13,7 @@ import {
   API_KEY,
   BASE_URL,
   MODEL_ID,
+  PROVIDER_NAME,
   chunk,
   crash,
   end,
@@ -83,7 +84,13 @@ const REQUIRED: Script = {
 
 async function probe(
   script: Script,
-  opts: { timeoutMs?: number; baseURL?: string | undefined; headers?: Record<string, string>; apiKey?: string } = {},
+  opts: {
+    timeoutMs?: number
+    baseURL?: string | undefined
+    headers?: Record<string, string>
+    apiKey?: string
+    providerOptions?: ProbeTransport.ProviderOptions
+  } = {},
 ) {
   const endpoint = fakeEndpoint(script)
   const announced: Array<{ count: number; tokens: number; requestsBefore: number }> = []
@@ -92,6 +99,7 @@ async function probe(
     baseURL: "baseURL" in opts ? opts.baseURL : BASE_URL,
     apiKey: "apiKey" in opts ? opts.apiKey : API_KEY,
     headers: opts.headers ?? {},
+    providerOptions: opts.providerOptions,
     fetch: endpoint.fetch,
     timeoutMs: opts.timeoutMs,
   })
@@ -174,6 +182,28 @@ describe("ProbeRun.run: the plan", () => {
     const bodies = chats(out.requests).map(askOf)
     expect(bodies.map((body) => body.maxTokens)).toEqual([256, 256, 256, 256, 16])
     expect(bodies.every((body) => body.stream === true)).toBe(true)
+  })
+
+  test("every chat request carries the provider options; the replay still rides on the assistant message", async () => {
+    const out = await probe(REQUIRED, { providerOptions: { [PROVIDER_NAME]: { enable_thinking: true } } })
+    const bodies = chats(out.requests).map((request) => record(request.body))
+    expect(bodies).toHaveLength(5)
+    expect(bodies.map((body) => body.enable_thinking)).toEqual([true, true, true, true, true])
+    // The probe's own limits are the ones that apply, options or not.
+    expect(bodies.map((body) => body.max_tokens)).toEqual([256, 256, 256, 256, 16])
+    expect(bodies.every((body) => body.stream === true)).toBe(true)
+    // The reasoning of the with-request is a message-level option, not a request-level one: the options leave it be.
+    const [, , withReasoning, withoutReasoning] = chats(out.requests).map(askOf)
+    expect(withReasoning.messages[1].reasoning_content).toBe("I should call the tool")
+    expect(withoutReasoning.messages[1]).not.toHaveProperty("reasoning_content")
+    // The models request is a plain GET, with no body to carry them.
+    expect(out.requests[0].method).toBe("GET")
+    expect(out.requests[0].body).toBeUndefined()
+  })
+
+  test("without provider options no chat request carries any", async () => {
+    const out = await probe(REQUIRED)
+    for (const request of chats(out.requests)) expect(record(request.body)).not.toHaveProperty("enable_thinking")
   })
 
   test("the models request carries the key and the configured headers", async () => {
@@ -421,7 +451,11 @@ describe("ProbeRun.run: a failed probe does not stop the others", () => {
       // No window was measured, so the snippet has no limit.
       const model = ProbeReport.snippet(out.findings, ctx).provider.relay.models[MODEL_ID]
       expect(model).not.toHaveProperty("limit")
-      expect(model).toEqual({ reasoning: true, profile: { reasoning_mode: { replay: "field" } } })
+      expect(model).toEqual({
+        reasoning: true,
+        interleaved: { field: "reasoning_content" },
+        profile: { reasoning_mode: { replay: "field" } },
+      })
       const line = ProbeReport.render(out.findings, ctx)[0]
       expect(line).toContain("failed")
       expect(line).toContain(code)
@@ -585,6 +619,51 @@ describe("ProbeTransport.make", () => {
     const { transport: t, endpoint } = transport({ chat: [status(500), textReply()] })
     await t.chat(ask)
     expect(endpoint.requests).toHaveLength(1)
+  })
+
+  test("chat puts the provider options in the request body, next to the probe's own fields", async () => {
+    const { transport: t, endpoint } = transport(
+      { chat: [textReply()] },
+      { providerOptions: { [PROVIDER_NAME]: { enable_thinking: true, thinking: { type: "enabled" } } } },
+    )
+    await t.chat(ask)
+    expect(record(endpoint.requests[0].body)).toMatchObject({
+      model: MODEL_ID,
+      stream: true,
+      max_tokens: 8,
+      enable_thinking: true,
+      thinking: { type: "enabled" },
+    })
+  })
+
+  test("chat reads the options under the provider's own key only", async () => {
+    const { transport: t, endpoint } = transport(
+      { chat: [textReply()] },
+      { providerOptions: { "someone-else": { enable_thinking: true } } },
+    )
+    await t.chat(ask)
+    expect(record(endpoint.requests[0].body)).not.toHaveProperty("enable_thinking")
+  })
+
+  test("the probe's output cap wins: a cap among the provider options is dropped, the rest stays", async () => {
+    const options = { [PROVIDER_NAME]: { enable_thinking: true, max_tokens: 4_096, max_completion_tokens: 4_096 } }
+    const { transport: t, endpoint } = transport({ chat: [textReply()] }, { providerOptions: options })
+    await t.chat(ask)
+    const body = record(endpoint.requests[0].body)
+    expect(body.max_tokens).toBe(8)
+    expect(body).not.toHaveProperty("max_completion_tokens")
+    expect(body.enable_thinking).toBe(true)
+    // The caller's object is left as it was given.
+    expect(options[PROVIDER_NAME]).toEqual({ enable_thinking: true, max_tokens: 4_096, max_completion_tokens: 4_096 })
+  })
+
+  test("the probe's retry count and deadline hold with provider options set", async () => {
+    const options = { [PROVIDER_NAME]: { enable_thinking: true } }
+    const retried = transport({ chat: [status(500), textReply()] }, { providerOptions: options })
+    await retried.transport.chat(ask)
+    expect(retried.endpoint.requests).toHaveLength(1)
+    const stuck = transport({ chat: [hang] }, { providerOptions: options, timeoutMs: 50 })
+    expect((await stuck.transport.chat(ask)).timedOut).toBe(true)
   })
 
   test("models returns the parsed body of a 2xx", async () => {

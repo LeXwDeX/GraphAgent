@@ -140,6 +140,118 @@ describe("graphagent providers probe", () => {
   )
 
   cliIt.live(
+    "a header of any name is masked in the report, unless its value is too short to be a secret",
+    ({ graphagent, llm }) =>
+      Effect.gen(function* () {
+        const base = testProviderConfig(llm.url)
+        const declared = base.provider.test.models["test-model"]
+        const headers = {
+          "X-Custom-Auth": "custom-auth-value-456",
+          Cookie: "session=cookie-value-789",
+          "X-Edge-Auth": "Bearer tok7",
+          "X-Tenant": "7",
+        }
+        const config = JSON.stringify({
+          ...base,
+          provider: {
+            test: { ...base.provider.test, models: { "test-model": { ...declared, headers } } },
+          },
+        })
+        // The gateway echoes every header value in its error text, the tenant number and a bare token among them.
+        const message = "rejected custom-auth-value-456, session=cookie-value-789, token tok7, tenant 7"
+        const echoed = httpError(401, { error: { message } })
+        yield* llm.push(echoed, echoed, echoed, echoed)
+
+        const result = yield* graphagent.spawn(["providers", "probe", "test/test-model"], {
+          env: { GRAPHAGENT_CONFIG_CONTENT: config },
+        })
+        graphagent.expectExit(result, 1, "probe masks headers of any name")
+
+        expect(result.stderr).toContain("[redacted]")
+        for (const secret of ["custom-auth-value-456", "cookie-value-789", "tok7"]) {
+          expect(result.stdout).not.toContain(secret)
+          expect(result.stderr).not.toContain(secret)
+        }
+        // A value this short names no credential: masking "7" would blank every 7 in the report.
+        expect(result.stderr).toContain("tenant 7")
+      }),
+    120_000,
+  )
+
+  cliIt.live(
+    "every chat request carries the model's request options, and the probe's own limits still hold",
+    ({ graphagent, llm }) =>
+      Effect.gen(function* () {
+        const base = testProviderConfig(llm.url)
+        const declared = base.provider.test.models["test-model"]
+        // `max_tokens` among the options would replace the probe's cap in the body if it were passed on.
+        const options = { enable_thinking: true, custom_flag: "on", max_tokens: 4_096 }
+        const config = JSON.stringify({
+          ...base,
+          provider: {
+            test: { ...base.provider.test, models: { "test-model": { ...declared, options } } },
+          },
+        })
+        yield* llm.push(
+          reply().text("ok").stop(),
+          reply().tool("probe_echo", { text: "ping" }),
+          reply().text("1\n2\n3").stop(),
+        )
+
+        const result = yield* graphagent.spawn(["providers", "probe", "test/test-model"], {
+          env: { GRAPHAGENT_CONFIG_CONTENT: config },
+        })
+        graphagent.expectExit(result, 0, "probe with request options")
+
+        // No reasoning came back, so the replay probes were skipped: three chat requests, all with the options.
+        expect(yield* llm.calls).toBe(3)
+        const bodies = yield* llm.inputs
+        expect(bodies.map((body) => body.enable_thinking)).toEqual([true, true, true])
+        expect(bodies.map((body) => body.custom_flag)).toEqual(["on", "on", "on"])
+        expect(bodies.map((body) => body.max_tokens)).toEqual([256, 256, 16])
+        expect(bodies.every((body) => body.stream === true)).toBe(true)
+      }),
+    120_000,
+  )
+
+  cliIt.live(
+    "the engine's own request options for the model are sent too: the thinking switch of a reasoning model on alibaba-cn",
+    ({ graphagent, llm }) =>
+      Effect.gen(function* () {
+        const base = testProviderConfig(llm.url)
+        const declared = base.provider.test.models["test-model"]
+        const config = JSON.stringify({
+          ...base,
+          provider: {
+            "alibaba-cn": {
+              ...base.provider.test,
+              id: "alibaba-cn",
+              models: { "test-model": { ...declared, reasoning: true } },
+            },
+          },
+        })
+        yield* llm.push(
+          reply().reason("thinking about the word").text("ok").stop(),
+          reply().tool("probe_echo", { text: "ping" }),
+          reply().text("done").stop(),
+          reply().text("done").stop(),
+          reply().text("1\n2\n3").stop(),
+        )
+
+        const result = yield* graphagent.spawn(["providers", "probe", "alibaba-cn/test-model"], {
+          env: { GRAPHAGENT_CONFIG_CONTENT: config },
+        })
+        graphagent.expectExit(result, 0, "probe on alibaba-cn")
+
+        // Reasoning came back, so all five chat requests went out, the replay probes among them.
+        expect(yield* llm.calls).toBe(5)
+        const bodies = yield* llm.inputs
+        expect(bodies.map((body) => body.enable_thinking)).toEqual([true, true, true, true, true])
+      }),
+    120_000,
+  )
+
+  cliIt.live(
     "succeeds with a snippet on stdout and the plan and report on stderr",
     ({ graphagent, llm }) =>
       Effect.gen(function* () {
@@ -164,7 +276,16 @@ describe("graphagent providers probe", () => {
         const snippet = JSON.parse(result.stdout)
         expect(snippet).toEqual({
           provider: {
-            test: { models: { "test-model": { reasoning: true, profile: { reasoning_mode: { replay: "field" } } } } },
+            test: {
+              models: {
+                "test-model": {
+                  reasoning: true,
+                  // The engine replays reasoning under `interleaved`, so the snippet names the measured field there.
+                  interleaved: { field: "reasoning_content" },
+                  profile: { reasoning_mode: { replay: "field" } },
+                },
+              },
+            },
           },
         })
         expect(result.stdout).toBe(JSON.stringify(snippet, null, 2) + "\n")

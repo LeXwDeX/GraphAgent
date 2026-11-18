@@ -9,6 +9,8 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 export const BASE_URL = "https://api.example.com/v1"
 export const API_KEY = "fixture-key"
 export const MODEL_ID = "probe-model"
+/** The provider name of the SDK model: the key its request-level provider options are read under. */
+export const PROVIDER_NAME = "probe-test"
 
 /** What the endpoint does with one request. */
 export type Reply =
@@ -129,7 +131,7 @@ export function fakeEndpoint(script: Script = {}) {
     { preconnect: () => undefined },
   )
 
-  const provider = createOpenAICompatible({ name: "probe-test", baseURL: BASE_URL, apiKey: API_KEY, fetch })
+  const provider = createOpenAICompatible({ name: PROVIDER_NAME, baseURL: BASE_URL, apiKey: API_KEY, fetch })
 
   return {
     fetch,
