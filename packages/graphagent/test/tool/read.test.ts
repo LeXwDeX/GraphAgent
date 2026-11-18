@@ -851,6 +851,63 @@ describe("tool.read loaded instructions", () => {
   )
 })
 
+// A truncated result points at a file the 7-day cleanup removes; reading it afterwards must say so.
+describe("tool.read saved output", () => {
+  it.live("reports a removed saved output as expired and says how to regenerate it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const saved = path.join(Truncate.DIR, "tool_missing")
+
+      const err = yield* fail(dir, { filePath: saved })
+      expect(err.message).toContain("has expired")
+      expect(err.message).toBe(
+        `Saved output has expired: ${saved} was removed by the 7-day cleanup. Run the original command again to regenerate it.`,
+      )
+    }),
+  )
+
+  it.live("keeps the plain not-found message for other missing files in that directory", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const other = path.join(Truncate.DIR, "other_missing")
+
+      const err = yield* fail(dir, { filePath: other })
+      expect(err.message).toContain(`File not found: ${other}`)
+      expect(err.message).not.toContain("has expired")
+    }),
+  )
+
+  // The notice of a cut first line and `read` must count characters the same way, or the continuation skips or
+  // repeats some: both count code points.
+  it.live("the notice of a cut first line continues at the character after the last one shown", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      // Four-byte characters among letters, so that code points and UTF-16 units differ.
+      const line = Array.from({ length: 60_000 }, (_, index) =>
+        index % 7 === 0 ? "😀" : String.fromCharCode(97 + (index % 26)),
+      ).join("")
+      const cut = yield* (yield* Truncate.Service).output(`${line}\nsecond\nthird`)
+      if (!cut.truncated || cut.outputPath === undefined) throw new Error("expected a saved truncation")
+      const params = /offset=1 limit=1 charOffset=(\d+) maxLineLength=(\d+)/.exec(cut.content)
+      if (!params) throw new Error("the notice names no continuation")
+      expect(Number(params[1])).toBe(cut.details.shownChars + 1)
+
+      const next = yield* exec(dir, {
+        filePath: cut.outputPath,
+        offset: 1,
+        limit: 1,
+        charOffset: Number(params[1]),
+        maxLineLength: Number(params[2]),
+      })
+
+      const rest = Array.from(line)
+        .slice(cut.details.shownChars, cut.details.shownChars + 50)
+        .join("")
+      expect(next.output).toContain(`1: ${rest}`)
+    }),
+  )
+})
+
 describe("tool.read binary detection", () => {
   it.live("rejects text extension files with null bytes", () =>
     Effect.gen(function* () {

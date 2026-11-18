@@ -600,6 +600,8 @@ export const ShellTool = Tool.define(
       let sink: ReturnType<typeof createWriteStream> | undefined =
         file === "" ? undefined : createWriteStream(file, { flags: "a" })
       let cut = false
+      // Why the full output could not be saved, once a write failed: the preview then stands alone.
+      let unsaved: string | undefined
       let headPartial = false
       // Bytes in the most recently completed line and in the trailing line
       // that has no terminator yet. The last one is the true size of the final
@@ -725,16 +727,20 @@ export const ShellTool = Tool.define(
 
               if (file) {
                 sink?.write(chunk)
-              } else {
+              } else if (unsaved === undefined) {
                 full += chunk
                 if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return trunc.write(full).pipe(
-                    Effect.andThen((next) =>
+                  return trunc.save(full).pipe(
+                    Effect.andThen((saved) =>
                       Effect.sync(() => {
-                        file = next
                         cut = true
-                        sink = createWriteStream(next, { flags: "a" })
                         full = ""
+                        if ("failed" in saved) {
+                          unsaved = saved.failed
+                          return
+                        }
+                        file = saved.path
+                        sink = createWriteStream(saved.path, { flags: "a" })
                       }),
                     ),
                     Effect.andThen(streamPreview),
@@ -871,8 +877,10 @@ export const ShellTool = Tool.define(
       const lastLineBytes = endsWithNewline ? completedLineBytes : currentLineBytes
       const end = Truncate.tailPreview(raw, SHELL_TAIL_LINES, limits.maxBytes)
       if (end.cut) cut = true
-      if (!file && end.cut) {
-        file = yield* trunc.write(raw)
+      if (!file && end.cut && unsaved === undefined) {
+        const saved = yield* trunc.save(raw)
+        if ("failed" in saved) unsaved = saved.failed
+        else file = saved.path
       }
 
       let output = end.text
@@ -892,6 +900,8 @@ export const ShellTool = Tool.define(
             : undefined
         output =
           `${output}\n\n` + outputFooter(file, totalLines, streamBytes, shownLines, partialBytes, partialLineBytes)
+      } else if (cut && unsaved !== undefined) {
+        output += `\n\n[truncated: ${Truncate.unsavedNote(unsaved)}]`
       }
 
       if (meta.length > 0) {

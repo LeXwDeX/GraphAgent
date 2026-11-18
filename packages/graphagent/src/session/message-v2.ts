@@ -48,6 +48,7 @@ import { EngineProcess } from "./engine-process"
 import { ModelHistory } from "./history/model"
 import { isReplayableAssistantMessage } from "./message-replay"
 import { isRecord } from "@/util/record"
+import { headChars } from "@/util/text"
 import { ToolError } from "@/tool/tool-error"
 
 export const node = LayerNode.group([Database.node])
@@ -72,10 +73,15 @@ function replayErrorText(state: SessionV1.ToolStateError) {
   return state.metadata?.interrupted === true ? ToolError.render({ kind: "aborted" }) : state.error
 }
 
-function truncateToolOutput(text: string, maxChars?: number) {
+/**
+ * The compaction input keeps a tool output to `maxChars`. A result that was saved to a file keeps the path in the
+ * marker, so the summary names where the whole text is and the model can read it after the compaction.
+ */
+function truncateToolOutput(text: string, maxChars?: number, outputPath?: unknown) {
   if (!maxChars || text.length <= maxChars) return text
-  const omitted = text.length - maxChars
-  return `${text.slice(0, maxChars)}\n[Tool output truncated for compaction: omitted ${omitted} chars]`
+  const kept = headChars(text, maxChars)
+  const pointer = typeof outputPath === "string" && outputPath !== "" ? `. Full output: ${outputPath}` : ""
+  return `${kept}\n[Tool output truncated for compaction: omitted ${text.length - kept.length} chars${pointer}]`
 }
 
 export const Event = {
@@ -399,7 +405,7 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
         if (part.state.status === "completed") {
           const outputText = part.state.time.compacted
             ? "[Old tool result content cleared]"
-            : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
+            : truncateToolOutput(part.state.output, options?.toolOutputMaxChars, part.state.metadata?.outputPath)
           const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
 
           // For providers that don't support media in tool results, extract media files
