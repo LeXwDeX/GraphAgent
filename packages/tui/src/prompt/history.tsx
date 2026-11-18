@@ -57,14 +57,27 @@ export function isDuplicateEntry(previous: PromptInfo | undefined, next: PromptI
   return JSON.stringify(previous) === JSON.stringify(next)
 }
 
+/** The file's entries, then what was added in memory while it was being read, under the append rules. */
+function mergeLoaded(fromFile: readonly PromptInfo[], added: readonly PromptInfo[]) {
+  const merged = [...fromFile]
+  for (const entry of added) if (!isDuplicateEntry(merged.at(-1), entry)) merged.push(entry)
+  return merged.slice(-MAX_HISTORY_ENTRIES)
+}
+
 export const { use: usePromptHistory, provider: PromptHistoryProvider } = createSimpleContext({
   name: "PromptHistory",
   init: () => {
     const paths = useTuiPaths()
     const historyPath = path.join(paths.state, "prompt-history.jsonl")
+    // Until the startup read lands, memory holds only what was added since mount, not the history. Those entries stay
+    // out of the file: the load merges them behind the file's entries and its rewrite is what persists them.
+    let loaded = false
     onMount(async () => {
-      const lines = parsePromptHistory(await readText(historyPath).catch(() => ""))
-      setStore("history", lines)
+      const fromFile = parsePromptHistory(await readText(historyPath).catch(() => ""))
+      // Read after the await: this is what was added while the read was in flight.
+      const lines = mergeLoaded(fromFile, unwrap(store.history))
+      loaded = true
+      setStore({ history: lines, index: 0 })
 
       // Rewrite valid retained entries to self-heal corruption and enforce the
       // limit. Memory-only entries never belong in the file.
@@ -96,6 +109,7 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
         }),
       )
 
+      if (!loaded) return
       if (trimmed) {
         // An overflow rewrite only carries entries that exist on disk.
         writeText(historyPath, serialize(persisted(store.history))).catch(() => {})
