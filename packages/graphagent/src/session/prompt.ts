@@ -71,8 +71,6 @@ import { ref as stateRef } from "@graphagent/core/lifecycle/state"
 import { LifecycleEvent } from "@graphagent/schema/lifecycle-event"
 import { Lifecycle } from "@/lifecycle/service"
 import { Todo } from "./todo"
-import { TodoReminders } from "./todo-reminders"
-import { DagModeReminder } from "./dag-mode-reminder"
 import { SettingsHook } from "@/hook"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -355,10 +353,6 @@ export const layer = Layer.effect(
     const requestOverheads = runtimes.requestOverheads
     // Runtime-context blocks already sent per session, so later requests re-send them at the same positions.
     const runtimeContexts = runtimes.runtimeContexts
-    // Optional so callers that do not compose the todo reminder service keep working.
-    const todoReminders = yield* Effect.serviceOption(TodoReminders.Service)
-    // Optional for the same reason; without it a request carries no L3 note (#1031 M2).
-    const dagModeReminders = yield* Effect.serviceOption(DagModeReminder.Service)
     const activateAgentHooks = Effect.fn("SessionPrompt.activateAgentHooks")(function* (
       session: Session.Info,
       name?: string,
@@ -451,8 +445,6 @@ export const layer = Layer.effect(
       db,
       promptLocks,
       settingsHook,
-      todoReminders,
-      dagModeReminders,
       agentMessages,
       reasoningDistillationEnabled,
       queueModelSwitch,

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { ProviderTransform } from "@/provider/transform"
 import { LLMRequestPrep } from "@/session/llm/request"
-import { TodoReminders } from "@/session/todo-reminders"
 import { RuntimeContext } from "@/session/runtime-context"
 import { ProviderV2 } from "@graphagent/core/provider"
 import type { Provider } from "@/provider/provider"
@@ -13,6 +12,22 @@ import { generateText, jsonSchema, type ModelMessage } from "ai"
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { isRecord } from "@/util/record"
+
+// A part that is only part of the request opts out of cache coverage with `cache: "none"`. The todo reminder used to be
+// one (#953); it is a persisted part now (#1456), and the runtime context and the synthetic attachment remain. These
+// tests keep the boundary with a text part of that kind appended to the first, persisted user message.
+const withRequestOnlyPart = (messages: ModelMessage[], text: string): ModelMessage[] =>
+  messages.map((message, index) =>
+    index === 0 && message.role === "user" && Array.isArray(message.content)
+      ? {
+          ...message,
+          content: [
+            ...message.content,
+            { type: "text" as const, text, providerOptions: { graphagent: { cache: "none" } } },
+          ],
+        }
+      : message,
+  )
 
 describe("ProviderTransform.message - todo reminder cache boundary", () => {
   const model: Provider.Model = {
@@ -53,7 +68,7 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
   }
 
   test("keeps the positional cache breakpoint before the request-only reminder part", () => {
-    const withReminder = TodoReminders.append(
+    const withReminder = withRequestOnlyPart(
       [{ role: "user", content: [{ type: "text", text: "persisted user" }] }],
       "[todo reminder] ephemeral",
     )
@@ -74,7 +89,7 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
       state: [{ key: "goal", parts: ["epoch 1"], cleared: "cleared" }],
       events: [],
     })
-    const withReminder = TodoReminders.append(
+    const withReminder = withRequestOnlyPart(
       [
         ...placed.messages,
         { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: {} }] },
@@ -121,7 +136,7 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
       state: [{ key: "goal", parts: ["epoch 1"], cleared: "cleared" }],
       events: [],
     })
-    const withReminder = TodoReminders.append(
+    const withReminder = withRequestOnlyPart(
       [
         ...placed.messages,
         { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: {} }] },

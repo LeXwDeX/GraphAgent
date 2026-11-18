@@ -24,20 +24,13 @@ const session = { slug: "reminders", time: { created: 1 } } as Session.Info
 
 const persisted: SessionV1.Part[] = []
 
-const standard = Layer.mergeAll(
-  RuntimeFlags.layer({ experimentalPlanMode: false }),
-  FSUtil.defaultLayer,
-  Layer.mock(Session.Service, {}),
-)
+const sessions = Layer.mock(Session.Service, {
+  updatePart: <T extends SessionV1.Part>(part: T) => Effect.sync(() => (persisted.push(part), part)),
+})
+const standard = Layer.mergeAll(RuntimeFlags.layer({ experimentalPlanMode: false }), FSUtil.defaultLayer, sessions)
 const it = testEffect(standard)
 
-const experimental = Layer.mergeAll(
-  RuntimeFlags.layer({ experimentalPlanMode: true }),
-  FSUtil.defaultLayer,
-  Layer.mock(Session.Service, {
-    updatePart: <T extends SessionV1.Part>(part: T) => Effect.sync(() => (persisted.push(part), part)),
-  }),
-)
+const experimental = Layer.mergeAll(RuntimeFlags.layer({ experimentalPlanMode: true }), FSUtil.defaultLayer, sessions)
 const itPlan = testEffect(experimental)
 
 beforeEach(() => {
@@ -113,11 +106,10 @@ const stripIDs = (messages: SessionV1.WithParts[]) =>
     parts: message.parts.map((part) => ({ ...part, id: "<part>", messageID: "<message>", sessionID: "<session>" })),
   }))
 
-/** The pre-derivation implementation, kept as the byte-equality oracle. */
+/** The pre-derivation implementation of the experimental plan mode, kept as the byte-equality oracle. */
 function legacy(input: {
   messages: SessionV1.WithParts[]
   agent: Agent.Info
-  experimental: boolean
   tools: readonly string[]
   persist: (part: SessionV1.Part) => SessionV1.Part
 }): Effect.Effect<SessionV1.WithParts[], never, FSUtil.Service> {
@@ -126,17 +118,6 @@ function legacy(input: {
     const messages = structuredClone(input.messages)
     const userMessage = messages.findLast((msg) => msg.info.role === "user")
     if (!userMessage) return messages
-    if (!input.experimental) {
-      if (input.agent.name === "plan") userMessage.parts.push(textPart(String(PartID.ascending()), PLAN_REMINDER))
-      const lastAssistant = messages.findLast((msg) => msg.info.role === "assistant")
-      if (lastAssistant?.info.agent === "plan" && input.agent.name === "build") {
-        const already = userMessage.parts.some(
-          (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH_REMINDER,
-        )
-        if (!already) userMessage.parts.push(textPart(String(PartID.ascending()), BUILD_SWITCH_REMINDER))
-      }
-      return messages
-    }
     const assistantMessage = messages.findLast((msg) => msg.info.role === "assistant")
     const ctx = yield* InstanceState.context
     const target = Session.plan(session, ctx)
@@ -241,66 +222,96 @@ describe("session.reminders texts", () => {
 })
 
 describe("session.reminders plan transition", () => {
-  it.effect("injects the build switch once on the turn that leaves plan mode", () =>
+  // The plan reminder is a state reminder (#1456): `settle` writes the plan prompt on the plan agent's turn and the
+  // build switch on the turn that leaves it. The note the history holds is the memory; no assistant message is read.
+  const settle = (messages: SessionV1.WithParts[], agent: Agent.Info) => {
+    const lastUser = messages.findLast((message) => message.info.role === "user")?.info
+    if (lastUser?.role !== "user") throw new Error("the history has no user message")
+    return SessionReminders.settle({ messages, lastUser, agent, tools: [], dagEligible: false })
+  }
+  const planTurn = Effect.gen(function* () {
+    return yield* settle([user("msg_1")], plan)
+  })
+
+  it.effect("writes the build switch once on the turn that leaves plan mode", () =>
     Effect.gen(function* () {
-      const first = user("msg_1")
+      const history = yield* planTurn
+      persisted.length = 0
       const current = user("msg_2")
-      const messages = [first, assistant("msg_plan", "plan"), current]
+      const messages = deepFreeze([...history, assistant("msg_plan", "plan"), current])
 
-      const once = yield* derive(messages)
-      const twice = yield* derive(messages)
-
-      for (const next of [once, twice]) {
-        const switches = next
-          .find((message) => message.info.id === "msg_2")!
-          .parts.filter(
-            (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH_REMINDER,
-          )
-        expect(switches).toHaveLength(1)
-        expect(next.find((message) => message.info.id === "msg_1")!.parts).toHaveLength(0)
-      }
+      const once = yield* settle(messages, build)
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]).toMatchObject({ type: "text", text: BUILD_SWITCH_REMINDER, synthetic: true })
+      const appended = once.find((message) => message.info.id === "msg_2")!.parts
+      expect(appended).toHaveLength(1)
+      expect(appended[0]).toBe(persisted[0])
+      // The plan turn's own note stays where it was written.
+      expect(once.find((message) => message.info.id === "msg_1")!.parts).toHaveLength(1)
       expect(current.parts).toHaveLength(0)
+
+      // The turn's next request finds the note in the history it reads back, and adds nothing.
+      persisted.length = 0
+      yield* settle(once, build)
+      expect(persisted).toHaveLength(0)
     }),
   )
 
-  it.effect("does not re-inject the switch on later build turns", () =>
+  it.effect("does not write the switch again on later build turns", () =>
     Effect.gen(function* () {
-      const switched = user("msg_2", [textPart("prt_switch", BUILD_SWITCH_REMINDER)])
-      const current = user("msg_3")
-      const messages = [user("msg_1"), assistant("msg_plan", "plan"), switched, assistant("msg_build", "build"), current]
+      const history = yield* planTurn
+      const switched = yield* settle([...history, assistant("msg_plan", "plan"), user("msg_2")], build)
+      persisted.length = 0
 
-      const next = yield* derive(messages)
+      const next = yield* settle([...switched, assistant("msg_build", "build"), user("msg_3")], build)
 
+      expect(persisted).toHaveLength(0)
       expect(next.find((message) => message.info.id === "msg_3")!.parts).toHaveLength(0)
     }),
   )
 
-  it.effect("ignores a plan turn that is not the last assistant message", () =>
+  it.effect("writes no switch for a build turn when the history holds no plan note", () =>
     Effect.gen(function* () {
       const current = user("msg_2")
       const messages = [user("msg_1"), assistant("msg_plan", "plan"), assistant("msg_build", "build"), current]
 
-      const next = yield* derive(messages)
+      const next = yield* settle(messages, build)
 
-      expect(next.find((message) => message.info.id === "msg_2")!.parts).toHaveLength(0)
+      expect(persisted).toHaveLength(0)
+      expect(next).toBe(messages)
     }),
   )
 
-  it.effect("appends the plan prompt for a plan agent without mutating the input", () =>
+  it.effect("writes the plan prompt for a plan agent without mutating the input", () =>
     Effect.gen(function* () {
       const current = user("msg_2")
       const messages = deepFreeze([user("msg_1"), assistant("msg_build", "build"), current])
 
-      const next = yield* derive(messages, plan)
+      const next = yield* settle(messages, plan)
 
       const appended = next.find((message) => message.info.id === "msg_2")!.parts
       expect(appended).toHaveLength(1)
       expect(appended[0]).toMatchObject({ type: "text", text: PLAN_REMINDER, synthetic: true })
+      expect(persisted).toEqual([appended[0]])
       expect(current.parts).toHaveLength(0)
     }),
   )
 
-  it.effect("matches the previous implementation for the non-experimental scenarios", () =>
+  it.effect("writes the plan prompt once for the plan agent, not on every turn and step", () =>
+    Effect.gen(function* () {
+      const first = yield* planTurn
+      persisted.length = 0
+      const second = yield* settle([...first, assistant("msg_2", "plan"), user("msg_3")], plan)
+      // A later step of the turn has the assistant message last: nothing is written at all.
+      const step = yield* settle([...second, assistant("msg_4", "plan")], plan)
+      expect(persisted).toHaveLength(0)
+      expect(
+        step.flatMap((message) => message.parts.filter((part) => part.type === "text" && part.text === PLAN_REMINDER)),
+      ).toHaveLength(1)
+    }),
+  )
+
+  it.effect("leaves the history as it is in the default plan mode", () =>
     Effect.gen(function* () {
       const scenarios: Array<[string, SessionV1.WithParts[], Agent.Info]> = [
         ["plan prompt", [user("msg_1"), assistant("msg_build", "build"), user("msg_2")], plan],
@@ -314,14 +325,17 @@ describe("session.reminders plan transition", () => {
           ],
           build,
         ],
-        ["stale plan", [user("msg_1"), assistant("msg_plan", "plan"), assistant("msg_b", "build"), user("msg_2")], build],
+        [
+          "stale plan",
+          [user("msg_1"), assistant("msg_plan", "plan"), assistant("msg_b", "build"), user("msg_2")],
+          build,
+        ],
       ]
       for (const [name, messages, agent] of scenarios) {
         const frozen = deepFreeze(structuredClone(messages))
-        const actual = yield* derive(frozen, agent)
-        const expected = yield* legacy({ messages, agent, experimental: false, tools: [], persist: (part) => part })
-        expect(stripIDs(actual), name).toEqual(stripIDs(expected))
+        expect(yield* derive(frozen, agent), name).toBe(frozen)
       }
+      expect(persisted).toHaveLength(0)
     }),
   )
 })
@@ -435,7 +449,6 @@ describe("session.reminders experimental plan mode", () => {
           const expected = yield* legacy({
             messages,
             agent,
-            experimental: true,
             tools,
             persist: (part) => (written.push(part), part),
           })

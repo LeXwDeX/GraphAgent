@@ -33,7 +33,6 @@ import type { ChildRuns } from "../child/run"
 import { DEFAULT_USER_MAX_TOTAL_NODES } from "@/dag/dag"
 import { DagMode } from "@/dag/mode"
 import type { UnavailableReason } from "@/dag/mode-status"
-import { DagModeReminder } from "../dag-mode-reminder"
 import { EngineProcess } from "../engine-process"
 import { RuntimeSlots } from "../runtime-slots"
 import type { AgentScheduler } from "../agent-scheduler"
@@ -57,7 +56,6 @@ import { HistoryClaim } from "../history/claim"
 import { HistoryView } from "../history/view"
 import { SessionTools } from "../tools"
 import { SessionReminders } from "../reminders"
-import { TodoReminders } from "../todo-reminders"
 import { RuntimeContext } from "../runtime-context"
 import { MAX_STEPS_PROMPT } from "../max-steps"
 import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
@@ -243,8 +241,6 @@ export interface PrepareDeps {
   readonly db: Database.Interface["db"]
   readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly settingsHook: SettingsHook.Interface | undefined
-  readonly todoReminders: Option.Option<TodoReminders.Interface>
-  readonly dagModeReminders: Option.Option<DagModeReminder.Interface>
   readonly agentMessages: DagMessages.Interface | undefined
   readonly reasoningDistillationEnabled: (model: Provider.Model) => Effect.Effect<boolean>
   readonly queueModelSwitch: (
@@ -649,7 +645,7 @@ function publishDagMode(input: {
   })
 }
 
-/** The DAG turn state one request needs: L1 visibility, L2 publication and the L3 note. */
+/** The DAG turn state one request needs: L1 visibility, L2 publication and whether the L3 note applies. */
 const dagTurnState = Effect.fnUntraced(function* (input: {
   deps: PrepareDeps
   sessionID: SessionID
@@ -659,7 +655,6 @@ const dagTurnState = Effect.fnUntraced(function* (input: {
   model: Provider.Model
   nativePermission: PermissionV1.Ruleset
   configured: ConfigV1.Info
-  messages: SessionV1.WithParts[]
 }) {
   const facts = yield* dagRequestFacts({
     sessions: input.deps.sessions,
@@ -680,27 +675,8 @@ const dagTurnState = Effect.fnUntraced(function* (input: {
     facts,
   })
   const eligible = facts.advertised && facts.unavailable === undefined && facts.mode === "on"
-  const reminder = yield* requestReminder(input.deps.dagModeReminders, {
-    sessionID: input.sessionID,
-    messages: input.messages,
-    eligible,
-  })
-  return { advertised: facts.advertised, reminder }
+  return { advertised: facts.advertised, eligible }
 })
-
-/** Ask an optional per-turn reminder service; an absent service sends nothing. */
-const requestReminder = <Input>(
-  service: Option.Option<{ readonly forRequest: (input: Input) => Effect.Effect<string | undefined> }>,
-  input: Input,
-) =>
-  Option.match(service, {
-    onNone: () => Effect.succeed(undefined),
-    onSome: (reminders) => reminders.forRequest(input),
-  })
-
-/** The one request-only tail block: the todo reminder, then the DAG tail note. */
-const reminderText = (todo: string | undefined, dag: string | undefined) =>
-  [todo, dag].filter((text): text is string => !!text).join("\n\n") || undefined
 
 /**
  * The tool set this step advertises. Native and configured permission rules and
@@ -785,7 +761,6 @@ export function makePrepare(deps: PrepareDeps) {
     db,
     promptLocks,
     settingsHook,
-    todoReminders,
     agentMessages,
     reasoningDistillationEnabled,
     queueModelSwitch,
@@ -1864,15 +1839,12 @@ export function makePrepare(deps: PrepareDeps) {
 
     const configured = yield* config.get()
     const dagTurn = yield* dagTurnState({
-      deps, sessionID, session, agent, user: lastUser, model, nativePermission, configured, messages: msgs,
+      deps, sessionID, session, agent, user: lastUser, model, nativePermission, configured,
     })
-
-    // Reminder text is computed after the persisted user content and appended by
-    // the provider adapter after the persisted user content. It never
-    // reaches stored messages and only the current turn carries one.
-    const todoReminder = yield* requestReminder(todoReminders, {
-      sessionID, messages: msgs, enabled: enabledTools.includes("todowrite"),
-    })
+    // The todo, plan and DAG notes join the user message that opens a turn, once per change of their state (#1456).
+    msgs = yield* SessionReminders.settle({
+      messages: msgs, lastUser, agent, tools: enabledTools, dagEligible: dagTurn.eligible,
+    }).pipe(Effect.provideService(RuntimeFlags.Service, flags), Effect.provideService(Session.Service, sessions))
 
     // Permission.ask evaluates native rules before configured rules. Use
     // that same split for everything advertised to the model.
@@ -1961,8 +1933,7 @@ export function makePrepare(deps: PrepareDeps) {
     })
     if (runtime.ledger.length > 0) runtimeContextBySession.set(sessionID, runtime.ledger)
     else runtimeContextBySession.delete(sessionID)
-    const reminder = reminderText(todoReminder, dagTurn.reminder)
-    processInput.messages.splice(0, modelMsgs.length, ...TodoReminders.append(runtime.messages, reminder))
+    processInput.messages.splice(0, modelMsgs.length, ...runtime.messages)
     SystemSections.append(sections, "one_shot_event", ...runtime.unplaced)
     // The cached fragment is only valid for the resolved tool set; the
     // structured-output tool is added afterwards, so that request

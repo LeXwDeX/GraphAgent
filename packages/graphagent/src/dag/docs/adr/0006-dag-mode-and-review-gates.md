@@ -61,10 +61,14 @@ The agent is told in three layers (`src/dag/mode.ts`):
   restart. It reads ON with the user's limits, a cleared OFF, or "ON but
   unavailable", plus lines for the `plan` agent, a non-interactive run, the
   token-budget tier, and a `dag.permission` tier other than `allow`.
-- **L3, `DagModeReminder`** (`src/session/dag-mode-reminder.ts`). One static
-  tail note per user-authored turn while the mode is on, added to the request
-  only and withheld from automated turns and local commands. It is latched per
-  turn, so a mid-turn `/dag-mode` applies from the next user turn.
+- **L3, the DAG state reminder** (`SessionReminders.settle`,
+  `src/session/reminders.ts`). One static note, written into the user message
+  that opens a turn as a synthetic part when the mode is on and the history has
+  no such note in force. An unchanged mode adds nothing, so the request prefix
+  of the next turn is the one of the last; switching the mode off adds one note
+  (`DagMode.REMINDER_CLEARED`) that withdraws it. Automated turns and local
+  commands never get one. The decision is made on the first request of a turn
+  only, so a mid-turn `/dag-mode` applies from the next user turn.
 
 ### 2. Unattended sessions never ask the user by default
 

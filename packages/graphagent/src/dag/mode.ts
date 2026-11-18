@@ -14,7 +14,7 @@
  * M2 split the user's choice into three layers: L1 (`SYSTEM`, constant, in the
  * system prompt when the workflow tool is published), L2 (`state`, a runtime
  * slot that follows the live switch, limits and budget) and L3 (`REMINDER`, a
- * one-per-turn tail note the session prompt service latches).
+ * note written into the user message once, when the mode turns on).
  */
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
@@ -40,9 +40,12 @@ export const SYSTEM = [
   "Load the dag-auto skill before authoring a workflow. Model tiers come from the dag configuration; nodes do not pin models.",
 ].join("\n")
 
-/** L3: one tail note per user-authored turn while the mode is on. */
+/** L3: the note a user turn carries when the mode turns on (`SessionReminders.settle`). */
 export const REMINDER =
   "[Follow the latest dag_mode context: orchestrate this request unless it is conversational, trivial, or the user asked to work directly for this request.]"
+
+/** L3 cleared note: the turn that finds the mode off says the earlier note no longer applies. */
+export const REMINDER_CLEARED = "[The earlier DAG mode note no longer applies: follow the latest dag_mode context.]"
 
 /** L2 cleared block: a session that was switched off announces it once. */
 export const CLEARED =
