@@ -141,9 +141,10 @@ export function stepMetricsOf(input: StepMetricsInput): StepMetrics {
 
 /**
  * #1473: the tool and retry counts of the step in progress. The tool-call state
- * machine counts the calls that reach a terminal state. `retries` is the retry
- * policy's own number, which counts from 1 over one processing run, so the step
- * that finally goes through reports how many retries it needed. The processor
+ * machine counts the calls that reach a terminal state. `retries` counts the
+ * retries scheduled since the last step-finish: an empty response settles its
+ * own step-finish before it is retried, so each retry is booked once, in the
+ * step that follows it. The processor
  * starts a fresh one when the step finishes and when a run begins.
  */
 export interface StepStats {

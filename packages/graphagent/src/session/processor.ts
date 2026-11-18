@@ -846,8 +846,8 @@ export const layer = Layer.effect(
 
       // A retry retains the assistant message but must close partial parts and
       // discard unexecuted tool placeholders before the next attempt starts.
-      const settleRetryAttempt = Effect.fn("SessionProcessor.settleRetryAttempt")(function* (attempt: number) {
-        ctx.stepStats.retries = attempt
+      const settleRetryAttempt = Effect.fn("SessionProcessor.settleRetryAttempt")(function* () {
+        ctx.stepStats.retries += 1
         if (ctx.attempt.openText) {
           const end = Date.now()
           ctx.attempt.openText.time = { start: ctx.attempt.openText.time?.start ?? end, end }
@@ -1189,7 +1189,7 @@ export const layer = Layer.effect(
                             }).toObject()
                           : parse(error),
                 set: (info) =>
-                  settleRetryAttempt(info.attempt).pipe(
+                  settleRetryAttempt().pipe(
                     Effect.andThen(
                       status.set(ctx.sessionID, {
                         type: "retry",
