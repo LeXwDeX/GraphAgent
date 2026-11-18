@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Exit, Stream } from "effect"
+import { Cause, Effect, Exit, Stream } from "effect"
 import type * as PlatformError from "effect/PlatformError"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -282,6 +282,33 @@ describe("cross-spawn spawner", () => {
         yield* handle.exitCode
         const running = yield* handle.isRunning
         expect(running).toBe(false)
+      }),
+    )
+
+    fx.effect(
+      "exitCode names the signal that terminated the process",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const exit = yield* Effect.exit(
+          Effect.gen(function* () {
+            const handle = yield* js('process.kill(process.pid, "SIGKILL")')
+            return yield* handle.exitCode
+          }),
+        )
+        if (!Exit.isFailure(exit)) throw new Error("expected exitCode to fail for a signal termination")
+        expect(CrossSpawnSpawner.signalOf(Cause.squash(exit.cause))).toBe("SIGKILL")
+
+        // Anything that is not a signal termination has no signal.
+        expect(CrossSpawnSpawner.signalOf(new Error("x"))).toBeUndefined()
+        const spawnFailure = yield* Effect.exit(
+          Effect.gen(function* () {
+            const handle = yield* ChildProcess.make("nonexistent-command-12345")
+            return yield* handle.exitCode
+          }),
+        )
+        if (!Exit.isFailure(spawnFailure)) throw new Error("expected spawn to fail for a missing command")
+        expect(CrossSpawnSpawner.signalOf(Cause.squash(spawnFailure.cause))).toBeUndefined()
       }),
     )
   })
