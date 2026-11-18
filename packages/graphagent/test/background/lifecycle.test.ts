@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect } from "bun:test"
+import { afterAll, beforeAll, describe, expect } from "bun:test"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Lifecycle } from "@/lifecycle/service"
 import type { InstanceContext } from "@/project/instance-context"
+import { ChildRegistry } from "@/session/child/registry"
+import { SessionID } from "@/session/schema"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { ref } from "@graphagent/core/lifecycle/state"
@@ -28,6 +30,45 @@ import { testEffect } from "../lib/effect"
 const job = (id: string, status: BackgroundJob.Status): BackgroundJob.Info =>
   ({ id, type: "test", status, started_at: 0 }) as BackgroundJob.Info
 
+/** The child runs the task jobs below are carried by, in this process (#1407). */
+const run = (name: string) =>
+  ChildRegistry.create({
+    id: `crun_lifecycle_${name}`,
+    childSessionID: SessionID.make(`ses_lifecycle_${name}`),
+    parentSessionID: SessionID.make("ses_lifecycle_parent"),
+    ownerKind: "task",
+    ownerKey: { kind: "task" },
+    permission: { ask: "user" },
+    detached: true,
+    directory: undefined,
+    owner: {},
+  })
+const waiting = run("waiting")
+const begun = run("begun")
+
+// The registry is the process's: the runs are in it for this file's tests only.
+beforeAll(() => {
+  ChildRegistry.register(waiting)
+  ChildRegistry.register(begun)
+  ChildRegistry.begin(begun, 4_200)
+})
+afterAll(() => {
+  for (const entry of [waiting, begun]) {
+    ChildRegistry.end(entry, { type: "completed" })
+    ChildRegistry.driverStopped(entry)
+    ChildRegistry.persisted(entry)
+  }
+})
+
+/** A task job as the task tool starts it: carried by the child run named in its metadata. */
+const taskJob = (id: string, runID: string): BackgroundJob.Info => ({
+  id,
+  type: "task",
+  status: "running",
+  started_at: 1_000,
+  metadata: { childRunID: runID, sessionID: id },
+})
+
 const jobs = Layer.mock(BackgroundJob.Service, {
   get: (id) =>
     Effect.succeed(
@@ -37,7 +78,11 @@ const jobs = Layer.mock(BackgroundJob.Service, {
           ? job(id, "completed")
           : id === "job_failed"
             ? job(id, "error")
-            : undefined,
+            : id === "job_task_waiting"
+              ? taskJob(id, waiting.id)
+              : id === "job_task_begun"
+                ? taskJob(id, begun.id)
+                : undefined,
     ),
 })
 
@@ -58,6 +103,43 @@ describe("background lifecycle resolver", () => {
       expect(observed?.phase).toBe("running")
       expect(observed?.terminal).toBe(false)
       expect(observed?.source).toBe("live")
+    }),
+  )
+
+  it.live("reports a task job whose run waits for its slot as queued, with the moment it started waiting (#1407)", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+      const observed = Option.getOrUndefined(yield* lifecycle.get(ref("job", "job_task_waiting")))
+      expect(observed).toMatchObject({
+        domain: "job",
+        id: "job_task_waiting",
+        value: "queued",
+        phase: "pending",
+        terminal: false,
+        settled: false,
+        source: "live",
+        since: 1_000,
+      })
+    }),
+  )
+
+  it.live("reports a task job whose run holds its slot as running, since the run began", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+      const observed = Option.getOrUndefined(yield* lifecycle.get(ref("job", "job_task_begun")))
+      expect(observed).toMatchObject({ value: "running", phase: "running", terminal: false, since: 4_200 })
+      // A job no run carries is running since it started; only a server that tells the queue says `since` at all.
+      const plain = Option.getOrUndefined(yield* lifecycle.get(ref("job", "job_running")))
+      expect(plain).toMatchObject({ value: "running", since: 0 })
+    }),
+  )
+
+  it.live("a job that has ended says how, with no time of its own", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+      const done = Option.getOrUndefined(yield* lifecycle.get(ref("job", "job_done")))
+      expect(done).toBeDefined()
+      expect(Object.hasOwn(done ?? {}, "since")).toBe(false)
     }),
   )
 

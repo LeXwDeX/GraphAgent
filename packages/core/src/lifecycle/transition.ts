@@ -89,18 +89,22 @@ export const GOAL_TRANSITION_TABLE: TransitionTable = {
 /**
  * Background jobs keep their owner-specific rule: a job may finish without
  * settling (short work with no delivered side effect), and `settling` only
- * admits terminal states (#1069 P4).
+ * admits terminal states (#1069 P4). A job whose child run waits for a slot
+ * starts `queued` and moves on to `running` once the run holds it (#1407); it
+ * can also end while it is still queued (cancelled before it ever ran).
  */
 export const JOB_TRANSITION_TABLE: TransitionTable = {
   domain: "job",
   next: (from) =>
     from === null
-      ? ["running"]
-      : from === "running"
-        ? ["settling", "completed", "error", "cancelled"]
-        : from === "settling"
-          ? ["completed", "error", "cancelled"]
-          : [],
+      ? ["queued", "running"]
+      : from === "queued"
+        ? ["running", "settling", "completed", "error", "cancelled"]
+        : from === "running"
+          ? ["settling", "completed", "error", "cancelled"]
+          : from === "settling"
+            ? ["completed", "error", "cancelled"]
+            : [],
 }
 
 /**

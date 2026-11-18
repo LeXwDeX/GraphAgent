@@ -1228,6 +1228,66 @@ const scenarios: Scenario[] = [
       )
       check(missingJob.state === null, "an unknown job ref should carry a null state")
     }),
+  // #1407: a background task whose child run waits for its slot is `queued`; once the run holds it, `running` since then.
+  http.protected
+    .post("/lifecycle/states", "lifecycle.states.queue")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const parent = yield* ctx.session({ title: "Lifecycle queue parent" })
+        const waiting = yield* ctx.session({ title: "Lifecycle queued child", parentID: parent.id })
+        const began = yield* ctx.session({ title: "Lifecycle running child", parentID: parent.id })
+        yield* ctx.backgroundJob({ id: waiting.id, parentSessionID: parent.id })
+        yield* ctx.backgroundJob({ id: began.id, parentSessionID: parent.id, began: true })
+        return { waiting, began }
+      }),
+    )
+    .at((ctx) => ({
+      path: "/lifecycle/states",
+      headers: ctx.headers(),
+      body: {
+        refs: [
+          { domain: "job", id: ctx.state.waiting.id },
+          { domain: "job", id: ctx.state.began.id },
+        ],
+      },
+    }))
+    .json(200, (body, ctx) => {
+      array(body)
+      check(body.length === 2, "one entry should be returned per requested ref")
+      const [waiting, began] = body
+      check(isRecord(waiting) && isRecord(waiting.state), "the queued job should carry a state")
+      check(waiting.id === ctx.state.waiting.id, "the queued entry should echo its ref")
+      check(waiting.state.value === "queued", "a job whose run waits for its slot should read queued")
+      check(waiting.state.phase === "pending", "queued should map to the pending phase")
+      check(waiting.state.terminal === false && waiting.state.settled === false, "a queued job is live")
+      check(waiting.state.source === "live", "the state should come from the live registry")
+      check(typeof waiting.state.since === "number", "a queued job should say since when it waits")
+      check(isRecord(began) && isRecord(began.state), "the running job should carry a state")
+      check(began.state.value === "running", "a job whose run holds its slot should read running")
+      check(began.state.phase === "running", "running should map to the running phase")
+      check(typeof began.state.since === "number", "a running job should say since when its run began")
+    }),
+  http.protected
+    .get("/lifecycle/state/{domain}/{id}", "lifecycle.get.queued")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const parent = yield* ctx.session({ title: "Lifecycle queue read parent" })
+        const waiting = yield* ctx.session({ title: "Lifecycle queued read child", parentID: parent.id })
+        yield* ctx.backgroundJob({ id: waiting.id, parentSessionID: parent.id })
+        return { waiting }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/lifecycle/state/{domain}/{id}", { domain: "job", id: ctx.state.waiting.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      check(body.domain === "job" && body.id === ctx.state.waiting.id, "the state should echo its ref")
+      check(body.value === "queued", "a job whose run waits for its slot should read queued")
+      check(body.phase === "pending", "queued should map to the pending phase")
+      check(typeof body.since === "number", "a queued job should say since when it waits")
+    }),
   http.protected
     .post("/session/{sessionID}/hook", "session.hook.add")
     .seeded((ctx) => ctx.session({ title: "Hook session" }))

@@ -6,6 +6,7 @@ import type { BackgroundResult, TaskIndexEntry } from "../../src/context/session
 import {
   backgroundElapsed,
   backgroundItems,
+  backgroundRunningAt,
   backgroundStatus,
   isActive,
   type BackgroundItem,
@@ -33,6 +34,8 @@ function result(overrides: Partial<BackgroundResult> = {}): BackgroundResult {
 }
 
 const job = (value: string, reason?: string): BackgroundJob => ({ value, reason })
+/** A job as a server that reports the queue states it: with the moment it entered the value (#1407). */
+const reported = (value: string, since = 1_000): BackgroundJob => ({ value, since })
 const summary = (status: BackgroundSummary["status"], toolCalls?: number): BackgroundSummary => ({ status, toolCalls })
 
 describe("backgroundStatus: the result", () => {
@@ -96,6 +99,57 @@ describe("backgroundStatus: a job that has not ended", () => {
   test("a settling job is finishing: it runs", () => {
     expect(backgroundStatus({ entry: entry(), job: job("settling") })).toBe("running")
     expect(backgroundStatus({ entry: entry(), job: job("settling"), summary: summary("idle") })).toBe("running")
+  })
+})
+
+describe("backgroundStatus: a server that reports the queue", () => {
+  test("a queued job is queued, and nothing the child shows moves it", () => {
+    expect(backgroundStatus({ entry: entry(), job: reported("queued") })).toBe("queued")
+    expect(backgroundStatus({ entry: entry(), job: reported("queued"), summary: summary("idle", 0) })).toBe("queued")
+    // The server's word beats the summary, as the end of a job does.
+    expect(backgroundStatus({ entry: entry(), job: reported("queued"), summary: summary("busy", 4) })).toBe("queued")
+  })
+
+  test("a running job is running before its child is busy and before the first tool call", () => {
+    // Exactly what the inference got wrong: the run holds its slot, and its child has not shown anything yet.
+    expect(backgroundStatus({ entry: entry(), job: reported("running") })).toBe("running")
+    expect(backgroundStatus({ entry: entry(), job: reported("running"), summary: summary("unknown") })).toBe("running")
+    expect(backgroundStatus({ entry: entry(), job: reported("running"), summary: summary("idle", 0) })).toBe("running")
+    // Nor is the idle gap between two turns of a run that has called no tool a queue.
+    expect(backgroundStatus({ entry: entry(), job: reported("running"), summary: summary("idle") })).toBe("running")
+  })
+
+  test("a queued job without `since` is queued too: the value alone is the server's word", () => {
+    expect(backgroundStatus({ entry: entry(), job: job("queued") })).toBe("queued")
+    expect(backgroundStatus({ entry: entry(), job: job("queued"), summary: summary("busy") })).toBe("queued")
+  })
+
+  test("the end of the job and the result still come first", () => {
+    expect(backgroundStatus({ entry: entry(), job: reported("completed") })).toBe("completed")
+    expect(backgroundStatus({ entry: entry(), job: reported("cancelled"), summary: summary("busy") })).toBe("cancelled")
+    expect(backgroundStatus({ entry: entry({ result: result() }), job: reported("queued") })).toBe("completed")
+  })
+
+  test("a server that does not report the queue says `running` without `since`, and the inference stands", () => {
+    // The same job value, told by an older server: no mark, so the child decides as it always did.
+    expect(backgroundStatus({ entry: entry(), job: job("running") })).toBe("queued")
+    expect(backgroundStatus({ entry: entry(), job: job("running"), summary: summary("idle", 0) })).toBe("queued")
+    expect(backgroundStatus({ entry: entry(), job: job("running"), summary: summary("idle", 2) })).toBe("running")
+    expect(backgroundStatus({ entry: entry(), job: job("running"), summary: summary("busy") })).toBe("running")
+  })
+})
+
+describe("backgroundRunningAt", () => {
+  test("is the moment a running job began, as the server says", () => {
+    expect(backgroundRunningAt(reported("running", 4_200))).toBe(4_200)
+    expect(backgroundRunningAt(reported("running", 0))).toBe(0)
+  })
+
+  test("is not the start of the wait of a queued job, and is unknown without the server's word", () => {
+    expect(backgroundRunningAt(reported("queued", 900))).toBeUndefined()
+    expect(backgroundRunningAt(job("running"))).toBeUndefined()
+    expect(backgroundRunningAt(reported("completed", 7_000))).toBeUndefined()
+    expect(backgroundRunningAt(undefined)).toBeUndefined()
   })
 })
 
@@ -223,6 +277,63 @@ describe("backgroundItems", () => {
     expect(ids(groups.finished)).toEqual(["ses_later", "ses_own", "ses_result", "ses_job_only", "ses_none"])
   })
 
+  // The acceptance of #1407: three background tasks with a limit of one. The first runs; the second and the third wait,
+  // and the one that is next in line starts running when the first ends, before it has been busy or called a tool.
+  test("a limit of one: one run runs, the others are queued, and a run that begins is running at once", () => {
+    const taskIndex = {
+      ses_1: entry({ startedAt: 100 }),
+      ses_2: entry({ startedAt: 200 }),
+      ses_3: entry({ startedAt: 300 }),
+    }
+    const idle = { ses_1: summary("busy", 2), ses_2: summary("idle", 0), ses_3: summary("unknown") }
+    const waiting = backgroundItems({
+      taskIndex,
+      rootID: ROOT,
+      ...lookups(
+        { ses_1: reported("running", 150), ses_2: reported("queued", 200), ses_3: reported("queued", 300) },
+        idle,
+      ),
+    })
+    expect(ids(waiting.running)).toEqual(["ses_1"])
+    expect(ids(waiting.queued)).toEqual(["ses_3", "ses_2"])
+    expect(ids(waiting.unknown)).toEqual([])
+
+    // The first ended and the second began: a `running` job whose child has shown nothing yet.
+    const next = backgroundItems({
+      taskIndex: { ...taskIndex, ses_1: entry({ startedAt: 100, result: result({ startedAt: 100, endedAt: 900 }) }) },
+      rootID: ROOT,
+      ...lookups(
+        { ses_1: reported("completed"), ses_2: reported("running", 950), ses_3: reported("queued", 300) },
+        { ses_2: summary("idle", 0) },
+      ),
+    })
+    expect(ids(next.running)).toEqual(["ses_2"])
+    expect(ids(next.queued)).toEqual(["ses_3"])
+    expect(ids(next.finished)).toEqual(["ses_1"])
+    // The run that began is timed from then, not from the Task call that queued it.
+    expect(next.running[0].runningAt).toBe(950)
+    expect(backgroundElapsed(next.running[0], 1_450)).toBe(500)
+    expect(next.queued[0]).not.toHaveProperty("runningAt")
+  })
+
+  test("the same runs told by an older server are told apart by the inference, as before", () => {
+    const groups = backgroundItems({
+      taskIndex: {
+        ses_1: entry({ startedAt: 100 }),
+        ses_2: entry({ startedAt: 200 }),
+        ses_3: entry({ startedAt: 300 }),
+      },
+      rootID: ROOT,
+      ...lookups(
+        { ses_1: job("running"), ses_2: job("running"), ses_3: job("running") },
+        { ses_1: summary("busy", 2), ses_2: summary("idle", 0) },
+      ),
+    })
+    expect(ids(groups.running)).toEqual(["ses_1"])
+    expect(ids(groups.queued)).toEqual(["ses_3", "ses_2"])
+    for (const item of [...groups.running, ...groups.queued]) expect(item).not.toHaveProperty("runningAt")
+  })
+
   test("looks the job and the summary up by the child's own id", () => {
     const asked: string[] = []
     backgroundItems({
@@ -260,6 +371,33 @@ describe("backgroundElapsed", () => {
 
   test("a clock that reads before the start counts as zero", () => {
     expect(backgroundElapsed(item("running", { startedAt: 5_000 }), 4_000)).toBe(0)
+  })
+
+  test("a running run is timed from the moment it began, without the wait for its slot (#1407)", () => {
+    // Started at 1 s, waited until 4 s, now 6.5 s: it has run for 2.5 s.
+    const began = { ...item("running", { startedAt: 1_000 }), runningAt: 4_000 }
+    expect(backgroundElapsed(began, 6_500)).toBe(2_500)
+    expect(backgroundElapsed(began, 4_000)).toBe(0)
+    expect(backgroundElapsed(began, 3_000)).toBe(0)
+    // With no start of its own the moment it began still times it.
+    expect(backgroundElapsed({ ...item("running"), runningAt: 4_000 }, 6_500)).toBe(2_500)
+  })
+
+  test("a queued run is not timed from a moment it has not reached", () => {
+    // The wait so far, from the Task call: nothing shows it, and it never counts as run time.
+    const waiting = { ...item("queued", { startedAt: 1_000 }), runningAt: 4_000 }
+    expect(backgroundElapsed(waiting, 2_000)).toBe(1_000)
+  })
+
+  test("a run that ended took the span from the moment it began to its end", () => {
+    const began = { startedAt: 1_000, result: result({ startedAt: 1_000, runningAt: 4_000, endedAt: 9_500 }) }
+    expect(backgroundElapsed(item("completed", began), 1_000_000)).toBe(5_500)
+    expect(backgroundElapsed(item("error", began), 0)).toBe(5_500)
+    // Without it (an older server, a run lost with its process) the span runs from the start.
+    const unknown = { result: result({ startedAt: 1_000, endedAt: 9_500 }) }
+    expect(backgroundElapsed(item("completed", unknown), 0)).toBe(8_500)
+    // A moment after the end counts as zero.
+    expect(backgroundElapsed(item("completed", { result: result({ runningAt: 12_000, endedAt: 9_500 }) }), 0)).toBe(0)
   })
 
   test("a run that ended took the span of its result, whatever the time is now", () => {

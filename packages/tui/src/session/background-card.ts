@@ -23,7 +23,7 @@ export interface BackgroundCard {
   title: string
   /** The kind of agent that ran, as one displayable line: the Task link's, or `agent` when no link says. */
   kind: string
-  /** Milliseconds from the start to the end the server reported; never negative. */
+  /** Milliseconds the run took, from the moment it began running (its start when the server did not say) to its end; never negative. */
   elapsedMs: number
   /** What the run left: the content of the result (or error) element of the notice, trimmed. Empty when it left none. */
   body: string
@@ -45,7 +45,7 @@ export function backgroundCard(
     status: result.status,
     title: remoteLine(result.title) || UNKNOWN,
     kind: remoteLine(kind ?? "") || "agent",
-    elapsedMs: Math.max(0, result.endedAt - result.startedAt),
+    elapsedMs: Math.max(0, result.endedAt - (result.runningAt ?? result.startedAt)),
     body,
     firstLine: firstTextLine(body),
   }

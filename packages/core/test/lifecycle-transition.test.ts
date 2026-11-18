@@ -261,6 +261,25 @@ describe("job transitions", () => {
     })
   })
 
+  it("starts a job queued and moves it to running once its run holds a slot (#1407)", () => {
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: null, to: "queued" })).toEqual({
+      kind: "allowed",
+      phase: "pending",
+    })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "queued", to: "running" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    // A queued job can end before it ever ran, and never goes back to the queue.
+    for (const to of ["completed", "error", "cancelled"])
+      expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "queued", to })).toMatchObject({ kind: "allowed" })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "running", to: "queued" })).toEqual({
+      kind: "invalid",
+      allowed: ["settling", "completed", "error", "cancelled"],
+    })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "queued", to: "queued" })).toEqual({ kind: "duplicate" })
+  })
+
   it("settles only into terminal states and leaves terminal values empty", () => {
     for (const to of ["completed", "error", "cancelled"])
       expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to })).toMatchObject({ kind: "allowed" })

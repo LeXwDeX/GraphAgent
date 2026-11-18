@@ -10829,6 +10829,17 @@
                 "enum": ["Infinity", "-Infinity", "NaN"]
               }
             ]
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
           }
         },
         "required": ["domain", "id", "value", "phase", "terminal", "settled", "source", "observedAt"],

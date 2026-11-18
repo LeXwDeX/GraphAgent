@@ -10,6 +10,8 @@ export type Runtime = {
   Todo: (typeof import("../../../src/session/todo"))["Todo"]
   ReminderClock: (typeof import("../../../src/reminder/clock"))["ReminderClock"]
   EngineProcess: (typeof import("../../../src/session/engine-process"))["EngineProcess"]
+  BackgroundJob: (typeof import("../../../src/background/job"))["BackgroundJob"]
+  ChildRegistry: (typeof import("../../../src/session/child/registry"))["ChildRegistry"]
   Worktree: (typeof import("../../../src/worktree"))["Worktree"]
   Project: (typeof import("../../../src/project/project"))["Project"]
   Dag: typeof import("../../../src/dag/dag")
@@ -33,6 +35,8 @@ export function runtime() {
     const todo = await import("../../../src/session/todo")
     const reminderClock = await import("../../../src/reminder/clock")
     const engineProcess = await import("../../../src/session/engine-process")
+    const backgroundJob = await import("../../../src/background/job")
+    const childRegistry = await import("../../../src/session/child/registry")
     const worktree = await import("../../../src/worktree")
     const project = await import("../../../src/project/project")
     const dag = await import("../../../src/dag/dag")
@@ -50,6 +54,8 @@ export function runtime() {
       Todo: todo.Todo,
       ReminderClock: reminderClock.ReminderClock,
       EngineProcess: engineProcess.EngineProcess,
+      BackgroundJob: backgroundJob.BackgroundJob,
+      ChildRegistry: childRegistry.ChildRegistry,
       Worktree: worktree.Worktree,
       Project: project.Project,
       Dag: dag,

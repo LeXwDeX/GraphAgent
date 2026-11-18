@@ -311,6 +311,22 @@ describe("backgroundResultOf", () => {
     })
   })
 
+  test("reads the moment the run began running, after the wait for its slot (#1407)", () => {
+    const found = backgroundResultOf(resultPart({}, resultMetadata({ runningAt: 2_500 })))
+    expect(found?.result.runningAt).toBe(2_500)
+    expect(found?.result.startedAt).toBe(1_000)
+    // A run from before the server told it, or lost with its process, has none.
+    expect(backgroundResultOf(resultPart())?.result.runningAt).toBeUndefined()
+  })
+
+  test("a malformed `runningAt` is left out and the result stays", () => {
+    for (const runningAt of ["soon", Number.NaN, Number.POSITIVE_INFINITY, null, {}, true]) {
+      const found = backgroundResultOf(resultPart({}, resultMetadata({ runningAt })))
+      expect(found?.childSessionID).toBe("ses_child")
+      expect(found?.result.runningAt).toBeUndefined()
+    }
+  })
+
   test("accepts the three statuses the server reports", () => {
     for (const status of ["completed", "error", "interrupted"] as const) {
       expect(backgroundResultOf(resultPart({}, resultMetadata({ status })))?.result.status).toBe(status)

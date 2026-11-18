@@ -4,6 +4,8 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, spyOn, test } from "bun:test"
 import type { GlobalEvent } from "@graphagent/sdk"
+import { lifecycleKey } from "../../../../src/context/lifecycle-mirror"
+import { backgroundElapsed, backgroundItems, type BackgroundItem } from "../../../../src/session/background"
 import { tmpdir } from "../../../fixture/fixture"
 import { advanceUntil, nextTurn } from "../../../fixture/frames"
 import type { FetchHandler } from "../../../fixture/tui-sdk"
@@ -158,7 +160,7 @@ function isRef(value: unknown): value is Ref {
 }
 
 /** The values the owner answers with, by job id; a job that is not listed is unknown to it. */
-type States = Record<string, { value: string; phase: string }>
+type States = Record<string, { value: string; phase: string; since?: number }>
 
 function answerFor(ref: Ref, states: States) {
   const state = states[ref.id]
@@ -175,6 +177,7 @@ function answerFor(ref: Ref, states: States) {
       settled: state.phase === "succeeded",
       source: "live",
       observedAt: 5_000,
+      ...(state.since === undefined ? {} : { since: state.since }),
     },
   }
 }
@@ -747,6 +750,139 @@ describe("the job of a background run", () => {
       expect(sync.data.lifecycle["job:ses_bg1"]).toMatchObject({ value: "error", reason: "process_restart", at: 5_000 })
       expect(sync.data.lifecycle["job:ses_bg2"]).toMatchObject({ value: "completed", at: 5_000 })
       expect(sync.data.lifecycle["job:ses_bg2"]).not.toHaveProperty("reason")
+    } finally {
+      view.close()
+    }
+  })
+})
+
+// #1407: the queue of background runs. The server tells a run that waits for its slot (`queued`) from one that holds it
+// (`running`, with `since`, the moment it began), so the surfaces read the queue instead of guessing it from the child.
+describe("the queue of background runs", () => {
+  /** The background runs of the root as every surface lists them, from what the data layer holds. */
+  function groups(view: View) {
+    const { sync } = view
+    return backgroundItems({
+      taskIndex: sync.data.taskIndex,
+      rootID: ROOT,
+      job: (id) => sync.data.lifecycle[lifecycleKey({ domain: "job", id })],
+      summary: (id) => sync.data.summary[id],
+    })
+  }
+  const ids = (items: BackgroundItem[]) => items.map((item) => item.sessionID)
+
+  test("a limit of one: the first run runs, the second and third wait, and each runs the moment it begins", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    // Three tasks started at 100, 200 and 300; the first holds the slot since 150.
+    const view = await open(tmp.path, {
+      states: {
+        ses_bg1: { value: "running", phase: "running", since: 150 },
+        ses_bg2: { value: "queued", phase: "pending", since: 200 },
+        ses_bg3: { value: "queued", phase: "pending", since: 300 },
+      },
+    })
+    const { sync, reads } = view
+
+    try {
+      await sync.session.activate(ROOT)
+      for (const n of [1, 2, 3]) view.emit(transition({ id: `ses_bg${n}`, to: "queued", phase: "pending" }))
+      view.emit(transition({ id: "ses_bg1", from: "queued", to: "running", phase: "running" }))
+      view.emit(partEvent(taskPart(1)))
+      view.emit(partEvent(taskPart(2)))
+      view.emit(partEvent(taskPart(3)))
+      view.flush()
+
+      // The events alone say it: the second and third are queued, the first runs, though no child has shown anything.
+      expect(sync.data.lifecycle["job:ses_bg2"]).toMatchObject({ value: "queued", phase: "pending" })
+      expect(ids(groups(view).running)).toEqual(["ses_bg1"])
+      expect(ids(groups(view).queued)).toEqual(["ses_bg3", "ses_bg2"])
+
+      // The owner's answer agrees, and brings the moment the first run began.
+      await advanceUntil(view.sdk, () => view.calls.length === 1)
+      await reads.answered(0)
+      expect(sync.data.lifecycle["job:ses_bg1"]).toMatchObject({ value: "running", since: 150, at: 5_000 })
+      expect(sync.data.lifecycle["job:ses_bg2"]).toMatchObject({ value: "queued", since: 200 })
+      const waiting = groups(view)
+      expect(ids(waiting.running)).toEqual(["ses_bg1"])
+      expect(ids(waiting.queued)).toEqual(["ses_bg3", "ses_bg2"])
+      expect(waiting.running[0].runningAt).toBe(150)
+      // The run is timed from the moment it began (150), not from its Task call (100).
+      expect(backgroundElapsed(waiting.running[0], 1_150)).toBe(1_000)
+
+      // The first ends. The second is next in line and begins: the owner says so, and its child has not been busy or
+      // called a tool, which is exactly where the inference said "queued".
+      view.states.ses_bg1 = { value: "completed", phase: "succeeded" }
+      view.states.ses_bg2 = { value: "running", phase: "running", since: 950 }
+      view.emit(transition({ id: "ses_bg1", from: "running", to: "completed", phase: "succeeded" }))
+      view.emit(transition({ id: "ses_bg2", from: "queued", to: "running", phase: "running" }))
+      view.emit(partEvent(resultPart(1)))
+      view.flush()
+      expect(sync.data.summary.ses_bg2?.toolCalls ?? 0).toBe(0)
+      expect(sync.data.summary.ses_bg2?.status).not.toBe("busy")
+      expect(ids(groups(view).running)).toEqual(["ses_bg2"])
+      expect(ids(groups(view).queued)).toEqual(["ses_bg3"])
+      expect(ids(groups(view).finished)).toEqual(["ses_bg1"])
+      await advanceUntil(view.sdk, () => view.calls.length === 2)
+      await reads.answered(1)
+      const next = groups(view)
+      expect(next.running[0].runningAt).toBe(950)
+      expect(backgroundElapsed(next.running[0], 1_450)).toBe(500)
+      expect(ids(next.queued)).toEqual(["ses_bg3"])
+    } finally {
+      view.close()
+    }
+  })
+
+  test("a server that does not report the queue is read by the inference, as before", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    // An older server starts a job `running` and never says `queued`: no `since` on any answer.
+    const view = await open(tmp.path, {
+      states: {
+        ses_bg1: { value: "running", phase: "running" },
+        ses_bg2: { value: "running", phase: "running" },
+      },
+    })
+    const { sync, reads } = view
+
+    try {
+      await sync.session.activate(ROOT)
+      view.emit(transition({ id: "ses_bg1", to: "running", phase: "running" }))
+      view.emit(transition({ id: "ses_bg2", to: "running", phase: "running" }))
+      view.emit(partEvent(taskPart(1)))
+      view.emit(partEvent(taskPart(2)))
+      view.flush()
+      await advanceUntil(view.sdk, () => view.calls.length === 1)
+      await reads.answered(0)
+      expect(sync.data.lifecycle["job:ses_bg1"]).not.toHaveProperty("since")
+
+      // Both children have shown nothing: waiting for a slot, as far as the inference can tell.
+      expect(ids(groups(view).queued)).toEqual(["ses_bg2", "ses_bg1"])
+      expect(groups(view).queued.map((item) => item.runningAt)).toEqual([undefined, undefined])
+
+      // A child that called a tool runs; the time of such a run is counted from its Task call.
+      const read = {
+        id: "prt_tool_1",
+        sessionID: "ses_bg1",
+        messageID: "msg_child",
+        type: "tool" as const,
+        tool: "read",
+        callID: "call_read_1",
+        state: {
+          status: "completed",
+          input: { filePath: "a.ts" },
+          output: "",
+          title: "a.ts",
+          metadata: {},
+          time: { start: 400, end: 401 },
+        },
+      }
+      view.emit(partEvent(read))
+      view.flush()
+      expect(ids(groups(view).running)).toEqual(["ses_bg1"])
+      expect(ids(groups(view).queued)).toEqual(["ses_bg2"])
+      expect(backgroundElapsed(groups(view).running[0], 1_100)).toBe(1_100 - 100)
     } finally {
       view.close()
     }

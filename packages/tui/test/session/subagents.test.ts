@@ -259,6 +259,16 @@ describe("the trail of a row", () => {
     expect(subagentTrail(background("cancelled", "failed"), 0)).toBe("cancelled · tools 12 · 14s")
   })
 
+  test("a run that began is timed from then, not from the Task call that queued it (#1407)", () => {
+    // Started at 1 s, waited for its slot until 5 s, now 11 s: it has run for 6 s, and a finished one ran 10 s.
+    const running = row({ marker: "running", endedAt: undefined, startedAt: 1_000, runningAt: 5_000 })
+    expect(subagentElapsed(running, 11_000)).toBe("6s")
+    expect(subagentTrail(running, 11_000)).toBe("运行中 · 工具 12 · 6s")
+    expect(subagentElapsed(row({ startedAt: 1_000, runningAt: 5_000, endedAt: 15_000 }), 0)).toBe("10s")
+    // Without the server's word the wait is part of the time, as it always was.
+    expect(subagentElapsed(row({ marker: "running", endedAt: undefined, startedAt: 1_000 }), 11_000)).toBe("10s")
+  })
+
   test("a run that waits for its slot has not started: a dash for the count and for the time, and no clock", () => {
     const queued = row({
       background: true,
@@ -535,6 +545,54 @@ describe("the groups of the list", () => {
     expect(of("bg_error")).toMatchObject({ startedAt: 400, endedAt: 81 })
     // A foreground run keeps what it always had: the summary's start.
     expect(of("fg_done").startedAt).toBe(50)
+  })
+
+  test("a run the server says began running is timed from then; the order of the list stays the Task call's (#1407)", () => {
+    const { sessions, tasks, summaries, jobs } = mixed()
+    // bg_run_old (Task call at 100) waited and began at 180; bg_run_new began at 205, five after its call.
+    const reported = lookup(tasks, summaries, {
+      ...jobs,
+      bg_run_old: { value: "running", since: 180 },
+      bg_run_new: { value: "running", since: 205 },
+    })
+    const rows = subagentRows(sessions, "root", reported)
+    const of = (id: string) => rows.find((row) => row.id === id)!
+    expect(of("bg_run_old")).toMatchObject({ startedAt: 100, runningAt: 180 })
+    expect(of("bg_run_new")).toMatchObject({ startedAt: 200, runningAt: 205 })
+    expect(rows.filter((row) => row.group === "background").map((row) => row.id)).toEqual([
+      "bg_run_new",
+      "bg_run_old",
+      "bg_queued",
+      "bg_unknown",
+    ])
+    expect(subagentElapsed(of("bg_run_old"), 5_180)).toBe("5s")
+    // A queued run has not begun; neither a run that only the summary says runs.
+    expect(of("bg_queued")).not.toHaveProperty("runningAt")
+    // The result of a run that ended says it too, and wins over what the job said.
+    const ended = lookup(
+      { ...tasks, bg_done: { ...tasks.bg_done, result: { ...tasks.bg_done.result!, runningAt: 140 } } },
+      summaries,
+      jobs,
+    )
+    const done = subagentRows(sessions, "root", ended).find((row) => row.id === "bg_done")!
+    expect(done).toMatchObject({ startedAt: 110, runningAt: 140, endedAt: 160 })
+    expect(subagentElapsed(done, 0)).toBe("0s")
+  })
+
+  test("a server that reports the queue marks a run waiting for its slot queued; the child's summary does not", () => {
+    const { sessions, tasks, summaries, jobs } = mixed()
+    // bg_run_new has a busy child with a tool called, and the server says its job still waits.
+    const queued = lookup(tasks, summaries, { ...jobs, bg_run_new: { value: "queued", since: 200 } })
+    const rows = subagentRows(sessions, "root", queued)
+    expect(rows.find((row) => row.id === "bg_run_new")).toMatchObject({ marker: "queued", status: "queued" })
+    expect(rows.find((row) => row.id === "bg_run_new")).not.toHaveProperty("runningAt")
+    // bg_queued runs: the job says so with its mark, though its child has shown nothing yet.
+    const began = lookup(tasks, summaries, { ...jobs, bg_queued: { value: "running", since: 310 } })
+    expect(subagentRows(sessions, "root", began).find((row) => row.id === "bg_queued")).toMatchObject({
+      marker: "running",
+      status: "running",
+      runningAt: 310,
+    })
   })
 
   test("the initiator is the Task link's, an agent by default, and nothing without a link", () => {

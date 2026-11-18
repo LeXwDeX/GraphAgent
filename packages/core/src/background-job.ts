@@ -55,6 +55,11 @@ export type Transition = {
   readonly started_at?: number
   readonly output?: string
   readonly error?: string
+  /**
+   * The job moved while it still waited for the work it carries to be allowed to begin (`MakeOptions.waiting`). The
+   * registry's own status is `running` throughout; this is only what the observer is told of the moment.
+   */
+  readonly waiting?: boolean
 }
 
 type FinishResult = {
@@ -73,6 +78,14 @@ export type MakeOptions = {
    * event bridge (#1069 P4).
    */
   readonly onTransition?: (transition: Transition) => Effect.Effect<void>
+  /**
+   * Whether a running job still waits for the work it carries to be allowed to begin (a task run waiting for its
+   * slot). The registry does not know about such a wait and never changes a job for it: the answer only rides on the
+   * `Transition` the sink gets (`waiting`). It is asked synchronously, in the same step that moves the job and before
+   * anything that observes the move can run, so it is the job's state at that moment, which the sink, called later,
+   * could no longer read (#1407).
+   */
+  readonly waiting?: (info: Info) => boolean
 }
 
 type PromoteResult = {
@@ -165,6 +178,14 @@ export const makeWith = (options: MakeOptions = {}) =>
     }
     const notify = (transition: Transition) =>
       options.onTransition ? options.onTransition(transition).pipe(Effect.catchCause(() => Effect.void)) : Effect.void
+    const waitingOf = (info: Info): boolean => {
+      // An observation never changes the job: a probe that throws says no.
+      try {
+        return info.status === "running" && options.waiting?.(info) === true
+      } catch {
+        return false
+      }
+    }
     /** The sink sees one complete job snapshot per transition, so durable
      * observers never have to merge partial deltas (#1069 P5). */
     const transitionOf = (job: Active, from: Status | null, to: Status, info: Info = job.info): Transition => ({
@@ -179,6 +200,7 @@ export const makeWith = (options: MakeOptions = {}) =>
       started_at: info.started_at,
       output: info.output,
       error: info.error,
+      ...(waitingOf(job.info) ? { waiting: true } : {}),
     })
     const identities = new WeakMap<Info, { id: string; token: object; done: Deferred.Deferred<Info> }>()
     const snapshot = (job: Active): Info => {
@@ -328,6 +350,7 @@ export const makeWith = (options: MakeOptions = {}) =>
               title: input.title,
               metadata: input.metadata,
               started_at: result.info.started_at,
+              ...(waitingOf(result.info) ? { waiting: true } : {}),
             })
             yield* fork(
               result.scope,

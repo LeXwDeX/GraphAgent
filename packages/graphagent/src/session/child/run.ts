@@ -156,7 +156,16 @@ const reportEnding = (ctx: Ctx, entry: ActiveChildRun, outcome: ChildRunOutcome,
   if (entry.ownerKind !== "task") return
   if (outcome.type !== "completed" && outcome.type !== "error") return
   const directory = entry.directory === undefined ? undefined : DagLocation.canonicalDirectory(entry.directory)
-  Registry.record({ runID: entry.id, parentSessionID: entry.parentSessionID, directory, epoch, owner: ctx.owner })
+  Registry.record({
+    runID: entry.id,
+    parentSessionID: entry.parentSessionID,
+    directory,
+    epoch,
+    owner: ctx.owner,
+    // When the run left the queue, for the result the delivery writes (#1407). Memory only: the ledger row keeps what
+    // it always did, so a result delivered after a restart has no such time and is timed from the run's start.
+    ...(entry.runningAt === undefined ? {} : { runningAt: entry.runningAt }),
+  })
 }
 
 /**
@@ -251,14 +260,16 @@ const endWhere = (ctx: Ctx, predicate: (entry: ActiveChildRun) => boolean, outco
   )
 
 const markRunning = (ctx: Ctx, entry: ActiveChildRun): Effect.Effect<boolean> =>
-  Effect.suspend(() => {
-    if (!Registry.begin(entry)) return Effect.succeed(false)
-    return Store.markRunning(ctx.db, entry.id).pipe(
-      Effect.asVoid,
-      softly("child run running state was not persisted", entry.id),
-      Effect.as(true),
-    )
-  })
+  Clock.currentTimeMillis.pipe(
+    Effect.flatMap((now) => {
+      if (!Registry.begin(entry, now)) return Effect.succeed(false)
+      return Store.markRunning(ctx.db, entry.id).pipe(
+        Effect.asVoid,
+        softly("child run running state was not persisted", entry.id),
+        Effect.as(true),
+      )
+    }),
+  )
 
 const handleOf = (ctx: Ctx, entry: ActiveChildRun, attempt: number): ChildRunHandle => ({
   id: entry.id,

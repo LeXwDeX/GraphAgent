@@ -31,9 +31,14 @@ export interface BackgroundResult {
   initiator?: "user" | "agent"
   /** The command the user typed; only a run the user started has one. */
   command?: string
-  /** Epoch milliseconds. */
+  /** Epoch milliseconds. `startedAt` is when the run was started (and queued), `endedAt` when it ended. */
   startedAt: number
   endedAt: number
+  /**
+   * When the run began running, after the wait for its slot. A server that tells the queue reports it (#1407); an older
+   * one, and a run that was lost with its process, have none, and the run is timed from `startedAt`.
+   */
+  runningAt?: number
   /** The message and the text part that carry the notice. */
   messageID: string
   partID: string
@@ -209,7 +214,8 @@ export function taskIndexEntry(part: ToolPartLike): { childSessionID: string; en
 /**
  * Read the result a finished background run left in the message the server added to the parent session
  * (`metadata.backgroundResult` of a synthetic text part). The child, the status, the title and both times must be
- * well formed or the part is not a result; a malformed `initiator` or `command` is left out and the result stays.
+ * well formed or the part is not a result; a malformed `initiator`, `command` or `runningAt` is left out and the result
+ * stays.
  */
 export function backgroundResultOf(
   part: TextPartLike,
@@ -217,7 +223,7 @@ export function backgroundResultOf(
   if (part.type !== "text" || part.synthetic !== true) return undefined
   const raw = part.metadata?.backgroundResult
   if (!isRecord(raw)) return undefined
-  const { childSessionID, status, title, initiator, command, startedAt, endedAt } = raw
+  const { childSessionID, status, title, initiator, command, startedAt, endedAt, runningAt } = raw
   if (!nonEmpty(childSessionID) || !nonEmpty(title)) return undefined
   if (status !== "completed" && status !== "error" && status !== "interrupted") return undefined
   if (!finiteTime(startedAt) || !finiteTime(endedAt)) return undefined
@@ -230,6 +236,8 @@ export function backgroundResultOf(
       command: nonEmpty(command) ? command : undefined,
       startedAt,
       endedAt,
+      // A malformed time is left out, like a malformed `initiator`: the result stays and is timed from `startedAt`.
+      runningAt: finiteTime(runningAt) ? runningAt : undefined,
       messageID: part.messageID,
       partID: part.id,
     },

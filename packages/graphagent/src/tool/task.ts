@@ -2,6 +2,7 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { BackgroundJob } from "@/background/job"
+import { BackgroundQueue } from "@/background/queue"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
@@ -755,7 +756,11 @@ export const TaskTool = Tool.define(
       // appended input joins the running run and has no run of its own.
       const runWithSlot = Effect.fn("TaskTool.runWithSlot")(function* (run?: ChildRunHandle) {
         const execute = Effect.fnUntraced(function* () {
-          if (run && !(yield* run.markRunning)) return yield* Effect.interrupt
+          if (run) {
+            if (!(yield* run.markRunning)) return yield* Effect.interrupt
+            // The job this run carries was told to be `queued` when it started: it is `running` from here.
+            yield* BackgroundQueue.announceRunning(background, nextSession.id)
+          }
           return yield* runTask()
         })
         if (!scheduler) return yield* execute()

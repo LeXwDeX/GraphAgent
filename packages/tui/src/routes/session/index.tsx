@@ -76,7 +76,12 @@ import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
 import { nextSibling } from "../../session/siblings"
-import { backgroundElapsed, backgroundStatus, type BackgroundStatus } from "../../session/background"
+import {
+  backgroundElapsed,
+  backgroundRunningAt,
+  backgroundStatus,
+  type BackgroundStatus,
+} from "../../session/background"
 import { backgroundCard, type BackgroundCard } from "../../session/background-card"
 import {
   handbackLine,
@@ -3391,14 +3396,14 @@ function TaskRun(props: ToolProps) {
       },
   )
   // What a background run is doing. When nothing says, the row reads like a foreground one.
+  const job = createMemo(() => {
+    const id = sessionID()
+    return id ? sync.data.lifecycle[lifecycleKey({ domain: "job", id })] : undefined
+  })
   const backgroundState = createMemo((): Exclude<BackgroundStatus, "unknown"> | undefined => {
     const id = sessionID()
     if (!id || !background()) return undefined
-    const state = backgroundStatus({
-      entry: entry(),
-      job: sync.data.lifecycle[lifecycleKey({ domain: "job", id })],
-      summary: summary(),
-    })
+    const state = backgroundStatus({ entry: entry(), job: job(), summary: summary() })
     return state === "unknown" ? undefined : state
   })
 
@@ -3413,8 +3418,15 @@ function TaskRun(props: ToolProps) {
     const state = backgroundState()
     if (state === undefined) return undefined
     if (ticking()) ticker?.second()
+    // The time of a run that began is counted from then, not from the Task call that queued it (#1407).
+    const runningAt = state === "running" ? backgroundRunningAt(job()) : undefined
     return backgroundElapsed(
-      { sessionID: sessionID() ?? "", entry: entry(), status: state },
+      {
+        sessionID: sessionID() ?? "",
+        entry: entry(),
+        status: state,
+        ...(runningAt === undefined ? {} : { runningAt }),
+      },
       ticker?.now() ?? Date.now(),
     )
   })

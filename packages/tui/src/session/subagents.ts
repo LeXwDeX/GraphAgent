@@ -16,7 +16,7 @@ import type { BackgroundResult, SessionSummary, TaskIndexEntry } from "../contex
 import { formatDagDuration } from "../dag/model"
 import { t, type MessageKey } from "../i18n"
 import { remoteLine } from "../util/remote-text"
-import { backgroundStatus, type BackgroundJob, type BackgroundStatus } from "./background"
+import { backgroundRunningAt, backgroundStatus, type BackgroundJob, type BackgroundStatus } from "./background"
 import { childSessions } from "./siblings"
 
 /** The state of a sub-agent, drawn as one static glyph. */
@@ -137,6 +137,12 @@ export interface SubagentRow {
   /** Unknown (undefined) until a tool was seen: a cold start has no count, and must not say 0. */
   readonly toolCalls: number | undefined
   readonly startedAt: number
+  /**
+   * When a background run began running, after the wait for its slot (#1407), as the server says. The row is ordered by
+   * `startedAt` and timed from here, so the wait is not part of the time it shows; without it (an older server, a
+   * foreground run) it is timed from `startedAt`.
+   */
+  readonly runningAt?: number
   /** The end, for a sub-agent that is over; undefined while it runs or waits, when the clock ends it. */
   readonly endedAt: number | undefined
   /** Whether the run goes on in the background: started there, or moved there while it ran. */
@@ -198,9 +204,11 @@ function buildRow(session: SubagentSessionInfo, source: SubagentRowSource): { ro
   const task = source.task(session.id)
   const summary = source.summary(session.id)
   const link = task?.background === true ? task : undefined
-  const status = link ? backgroundStatus({ entry: link, job: source.job?.(session.id), summary }) : undefined
+  const job = link ? source.job?.(session.id) : undefined
+  const status = link ? backgroundStatus({ entry: link, job, summary }) : undefined
   const marker = status === undefined ? subagentMarker(summary) : BACKGROUND_MARKERS[status]
   const result = link?.result
+  const runningAt = result?.runningAt ?? (status === "running" ? backgroundRunningAt(job) : undefined)
   const { group, rank } = groupOf(status, marker)
   const row: SubagentRow = {
     id: session.id,
@@ -212,6 +220,7 @@ function buildRow(session: SubagentSessionInfo, source: SubagentRowSource): { ro
     // A background run is timed by the Task call that started it (a resumed task has a session far older than its run),
     // and by the server's own span once it reported one.
     startedAt: result?.startedAt ?? link?.startedAt ?? summary?.startedAt ?? session.time.created,
+    ...(runningAt === undefined ? {} : { runningAt }),
     // `lastActivityAt` is 0 in a summary made from a bare event; the session's own update time then stands in.
     endedAt:
       marker === "running" || marker === "queued"
@@ -307,9 +316,9 @@ const STATUS_KEYS: Record<Exclude<BackgroundStatus, "unknown">, MessageKey> = {
 /** Stands where a state, a tool count, a time or an initiator is not known. */
 const UNKNOWN = "—"
 
-/** Time spent: from the start to the end, or to `now` while it runs. */
-export function subagentElapsed(row: Pick<SubagentRow, "startedAt" | "endedAt">, now: number): string {
-  return formatDagDuration(row.startedAt, row.endedAt ?? now) ?? UNKNOWN
+/** Time spent: from the moment it began running (its start when none is known) to the end, or to `now` while it runs. */
+export function subagentElapsed(row: Pick<SubagentRow, "startedAt" | "runningAt" | "endedAt">, now: number): string {
+  return formatDagDuration(row.runningAt ?? row.startedAt, row.endedAt ?? now) ?? UNKNOWN
 }
 
 /** The word for how a row stands (`—` when unknown). */
@@ -324,7 +333,7 @@ function stateWord(row: Pick<SubagentRow, "marker" | "retrying" | "status">): st
  * for its slot has not started: its time is a dash, and no clock follows it.
  */
 export function subagentTrail(
-  row: Pick<SubagentRow, "marker" | "retrying" | "status" | "toolCalls" | "startedAt" | "endedAt">,
+  row: Pick<SubagentRow, "marker" | "retrying" | "status" | "toolCalls" | "startedAt" | "runningAt" | "endedAt">,
   now: number,
 ): string {
   const tools = t("subagent.row.tools", { count: row.toolCalls ?? UNKNOWN })
