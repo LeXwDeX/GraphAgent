@@ -84,6 +84,12 @@ test("the cost is dollars with cents, $0.00 without one", () => {
   expect(costText(1.234)).toBe("$1.23")
 })
 
+test("a cost under a cent keeps its digits, and one under a hundredth of a cent is not shown as zero (B1)", () => {
+  expect(costText(0.0027)).toBe("$0.0027")
+  expect(costText(0.00001)).toBe("<$0.0001")
+  expect(costText(0.01)).toBe("$0.01")
+})
+
 test("the goal line is the turns and the status, or the reason a waiting or paused goal gives", () => {
   const goal: Goal = { goal: "升级依赖", status: "active", turnsUsed: 3, maxTurns: 10 }
   expect(goalLine(goal)).toEqual({ turns: "第 3/10 轮", state: "进行中", warning: false })

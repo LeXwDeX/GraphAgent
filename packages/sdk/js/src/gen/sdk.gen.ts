@@ -250,6 +250,8 @@ import type {
   SessionUnrevertResponses,
   SessionUpdateErrors,
   SessionUpdateResponses,
+  SessionUsageErrors,
+  SessionUsageResponses,
   SubtaskPartInput,
   TextPartInput,
   VcsApplyErrors,
@@ -2457,6 +2459,25 @@ export class Session2 extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
     return (options?.client ?? this.client).get<SessionDagModeResponses, SessionDagModeErrors, ThrowOnError>({
       url: "/session/{sessionID}/dag-mode",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session tree usage
+   *
+   * Read the token usage and cost summed over the root session of the requested session's tree: the root, its task children, their descendants and the DAG node sessions. Display only; nothing is limited or blocked.
+   */
+  public usage<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionUsageResponses, SessionUsageErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<SessionUsageResponses, SessionUsageErrors, ThrowOnError>({
+      url: "/session/{sessionID}/usage",
       ...options,
       ...params,
     })

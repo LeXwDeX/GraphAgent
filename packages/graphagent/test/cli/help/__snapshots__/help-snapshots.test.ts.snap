@@ -168,7 +168,9 @@ Options:
       --tools       number of tools to show (default: all)                                  [number]
       --models      show model statistics (default: hidden). Pass a number to show top N, otherwise
                     shows all
-      --project     filter by project (default: all projects, empty string: current project)[string]"
+      --project     filter by project (default: all projects, empty string: current project)[string]
+      --roots       show usage per root session, sub-agents and DAG nodes included. Pass a number to
+                    show the latest N (default: 10)"
 `;
 
 exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent export --help 1`] = `
