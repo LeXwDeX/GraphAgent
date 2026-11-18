@@ -151,6 +151,33 @@ function createAssistantMessage(sessionID: SessionID, parentID: MessageID, root:
   )
 }
 
+function loadSkillPart(
+  sessionID: SessionID,
+  messageID: MessageID,
+  callID: string,
+  name: string,
+  metadata: Record<string, unknown> = {},
+) {
+  return SessionNs.Service.use((ssn) =>
+    ssn.updatePart({
+      id: PartID.ascending(),
+      messageID,
+      sessionID,
+      type: "tool",
+      callID,
+      tool: "skill",
+      state: {
+        status: "completed",
+        input: { name },
+        output: `<skill_content name="${name}">`,
+        title: `Loaded skill: ${name}`,
+        metadata: { name, dir: "/builtin", ...metadata },
+        time: { start: 1, end: 2 },
+      },
+    }),
+  )
+}
+
 function createSummaryAssistantMessage(sessionID: SessionID, parentID: MessageID, root: string, text: string) {
   return SessionNs.Service.use((ssn) =>
     Effect.gen(function* () {
@@ -910,6 +937,126 @@ describe("session.compaction.process", () => {
         expect(last.parts[0].text).toContain("Continue if you have next steps")
       }
     }),
+  )
+
+  const skillNote = (names: string) =>
+    `Skills loaded earlier in this conversation are no longer in context: ${names}. Call the skill tool with the name to load one again when needed.`
+  const fallbackText =
+    "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+
+  it.instance("lists the skills loaded in the compacted range after auto compaction", () =>
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const root = (yield* TestInstance).directory
+      const session = yield* ssn.create({})
+      const user = yield* createUserMessage(session.id, "hello")
+      const assistant = yield* createAssistantMessage(session.id, user.id, root)
+      yield* loadSkillPart(session.id, assistant.id, "call_1", "git-workflow")
+      yield* loadSkillPart(session.id, assistant.id, "call_2", "dag-auto")
+      // A second load of the same skill and a receipt must not add names.
+      yield* loadSkillPart(session.id, assistant.id, "call_3", "git-workflow")
+      yield* loadSkillPart(session.id, assistant.id, "call_4", "dag-policy", { alreadyLoaded: true })
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: user.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+      })
+
+      const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+      expect(result).toBe("continue")
+      expect(last?.info.role).toBe("user")
+      expect(syntheticTexts(last)[0]).toBe(`${fallbackText}\n\n${skillNote("dag-auto, git-workflow")}`)
+    }),
+  )
+
+  it.instance("keeps the auto-continue text unchanged when no skill was loaded", () =>
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const root = (yield* TestInstance).directory
+      const session = yield* ssn.create({})
+      const user = yield* createUserMessage(session.id, "hello")
+      const assistant = yield* createAssistantMessage(session.id, user.id, root)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "text",
+        text: "answer",
+      })
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      yield* SessionCompaction.use.process({
+        parentID: user.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+      })
+
+      const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+      expect(syntheticTexts(last)).toEqual([fallbackText])
+    }),
+  )
+
+  it.instance("does not add the skill note to a manual compaction", () =>
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const root = (yield* TestInstance).directory
+      const session = yield* ssn.create({})
+      const user = yield* createUserMessage(session.id, "hello")
+      const assistant = yield* createAssistantMessage(session.id, user.id, root)
+      yield* loadSkillPart(session.id, assistant.id, "call_1", "git-workflow")
+      yield* createSummaryCompaction(session.id)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      yield* SessionCompaction.use.process({
+        parentID: msgs.at(-1)!.info.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: false,
+      })
+
+      const texts = (yield* ssn.messages({ sessionID: session.id })).flatMap(syntheticTexts)
+      expect(texts.join("\n")).not.toContain("no longer in context")
+    }),
+  )
+
+  itCompaction.instance(
+    "lists only the skills loaded before the preserved tail",
+    () =>
+      Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const root = (yield* TestInstance).directory
+        const session = yield* ssn.create({})
+        const older = yield* createUserMessage(session.id, "older")
+        const olderReply = yield* createAssistantMessage(session.id, older.id, root)
+        yield* loadSkillPart(session.id, olderReply.id, "call_old", "git-workflow")
+        const recent = yield* createUserMessage(session.id, "recent")
+        const recentReply = yield* createAssistantMessage(session.id, recent.id, root)
+        yield* loadSkillPart(session.id, recentReply.id, "call_recent", "dag-auto")
+        yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: true })
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const after = yield* ssn.messages({ sessionID: session.id })
+        const last = after.at(-1)
+        const part = after
+          .flatMap((message) => message.parts)
+          .find((item): item is SessionV1.CompactionPart => item.type === "compaction")
+        expect(result).toBe("continue")
+        // The recent turn stays verbatim, so its skill body is still in context.
+        expect(part?.tail_start_id).toBe(recent.id)
+        expect(syntheticTexts(last)[0]).toBe(`${fallbackText}\n\n${skillNote("git-workflow")}`)
+      }).pipe(withCompaction({ config: cfg({ tail_turns: 1 }) })),
+    { git: true },
   )
 
   itCompaction.instance(
@@ -3766,4 +3913,98 @@ describe("shared compaction", () => {
       { git: true },
     )
   }
+})
+
+describe("session.compaction skill note", () => {
+  const sessionID = SessionID.make("ses_skill_note")
+
+  const withParts = (
+    ...tools: Array<{
+      tool: string
+      status?: "completed" | "error"
+      metadata?: Record<string, unknown>
+      compacted?: number
+    }>
+  ) =>
+    ({
+      info: {
+        id: MessageID.make("msg_skill_note"),
+        sessionID,
+        role: "assistant",
+        time: { created: 0 },
+        parentID: MessageID.make("msg_skill_note_parent"),
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        mode: "build",
+        agent: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      parts: tools.map((item, index) => ({
+        id: PartID.make(`prt_skill_note_${index}`),
+        sessionID,
+        messageID: MessageID.make("msg_skill_note"),
+        type: "tool" as const,
+        callID: `call_${index}`,
+        tool: item.tool,
+        state:
+          item.status === "error"
+            ? {
+                status: "error" as const,
+                input: {},
+                error: "boom",
+                metadata: item.metadata,
+                time: { start: 0, end: 1 },
+              }
+            : {
+                status: "completed" as const,
+                input: {},
+                output: "body",
+                title: "Loaded",
+                metadata: item.metadata ?? {},
+                time: { start: 0, end: 1, ...(item.compacted === undefined ? {} : { compacted: item.compacted }) },
+              },
+      })),
+    }) satisfies SessionV1.WithParts
+
+  test("loadedSkillNames returns the sorted, de-duplicated names of loaded skill bodies", () => {
+    const history = [
+      withParts(
+        { tool: "skill", metadata: { name: "git-workflow" } },
+        { tool: "skill", metadata: { name: "dag-auto" } },
+        { tool: "skill", metadata: { name: "git-workflow" } },
+      ),
+      withParts({ tool: "skill", metadata: { name: "configure-hooks" } }),
+    ]
+    expect(SessionCompaction.loadedSkillNames(history)).toEqual(["configure-hooks", "dag-auto", "git-workflow"])
+  })
+
+  test("loadedSkillNames skips receipts, failed calls, other tools and metadata without a name", () => {
+    const history = [
+      withParts(
+        { tool: "skill", metadata: { name: "dag-policy", alreadyLoaded: true } },
+        { tool: "skill", status: "error", metadata: { name: "dag-nodes" } },
+        { tool: "read", metadata: { name: "dag-blocks" } },
+        { tool: "skill", metadata: {} },
+        { tool: "skill", metadata: { name: 7 } },
+      ),
+    ]
+    expect(SessionCompaction.loadedSkillNames(history)).toEqual([])
+  })
+
+  test("loadedSkillNames still lists a skill whose body was pruned from the history", () => {
+    const message = withParts({ tool: "skill", metadata: { name: "git-workflow" }, compacted: 5 })
+    expect(SessionCompaction.loadedSkillNames([message])).toEqual(["git-workflow"])
+  })
+
+  test("skillContinuationNote is empty without names and names every skill otherwise", () => {
+    expect(SessionCompaction.skillContinuationNote([])).toBeUndefined()
+    expect(SessionCompaction.skillContinuationNote(["git-workflow"])).toBe(
+      "Skills loaded earlier in this conversation are no longer in context: git-workflow. Call the skill tool with the name to load one again when needed.",
+    )
+    expect(SessionCompaction.skillContinuationNote(["dag-auto", "git-workflow"])).toContain(
+      "no longer in context: dag-auto, git-workflow. Call the skill tool",
+    )
+  })
 })

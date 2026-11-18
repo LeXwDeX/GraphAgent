@@ -7346,6 +7346,154 @@ unixNoLLMServer(
   { config: cfg },
 )
 
+// The explicit shell result is model-visible text like any tool result: bounded once, the rest saved and readable.
+unixNoLLMServer(
+  "shell bounds a large output and keeps all of it in a saved file",
+  () =>
+    Effect.gen(function* () {
+      const { prompt, run, chat } = yield* boot()
+      const result = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "seq 1 3000" })
+
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      expect(tool.state.output).toContain("[truncated: showing lines 1-2000 of 3000")
+      expect(tool.state.output).toContain("Continue: read filePath=")
+      expect(tool.state.output.length).toBeLessThan(20_000)
+      expect(tool.state.metadata.truncated).toBe(true)
+      const saved = tool.state.metadata.outputPath
+      expect(typeof saved).toBe("string")
+      const full = yield* Effect.promise(() => Bun.file(String(saved)).text())
+      expect(full.trimEnd().split("\n")).toHaveLength(3000)
+      expect(full).toContain("\n3000\n")
+      yield* run.assertNotBusy(chat.id)
+    }),
+  { config: cfg },
+  30_000,
+)
+
+unixNoLLMServer(
+  "shell leaves a short output as it was and does not mark it truncated",
+  () =>
+    Effect.gen(function* () {
+      const { prompt, chat } = yield* boot()
+      const result = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "echo hi" })
+
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      expect(tool.state.output).toBe("hi\n")
+      expect(tool.state.metadata.truncated).toBe(false)
+      expect("outputPath" in tool.state.metadata).toBe(false)
+    }),
+  { config: cfg },
+)
+
+unixNoLLMServer(
+  "shell tells the model a command exited with a non-zero code",
+  () =>
+    Effect.gen(function* () {
+      const { prompt, chat } = yield* boot()
+      const result = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "echo oops >&2; exit 3" })
+
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      expect(tool.state.output).toContain("oops")
+      expect(tool.state.output).toContain("Command exited with code 3")
+      expect(tool.state.metadata.exit).toBe(3)
+    }),
+  { config: cfg },
+)
+
+unixNoLLMServer(
+  "shell adds no exit note for a command that exited with zero",
+  () =>
+    Effect.gen(function* () {
+      const { prompt, chat } = yield* boot()
+      const result = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "echo fine" })
+
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      expect(tool.state.output).not.toContain("Command exited with code")
+    }),
+  { config: cfg },
+)
+
+// The exit note and the signal note come after the cut, so the cut cannot remove them.
+unixNoLLMServer(
+  "shell keeps the exit code of a large output that was truncated",
+  () =>
+    Effect.gen(function* () {
+      const { prompt, chat } = yield* boot()
+      const result = yield* prompt.shell({ sessionID: chat.id, agent: "build", command: "seq 1 3000; exit 3" })
+
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      const cut = tool.state.output.indexOf("[truncated: showing lines 1-2000 of 3000")
+      expect(cut).toBeGreaterThan(-1)
+      expect(tool.state.output.indexOf("Command exited with code 3")).toBeGreaterThan(cut)
+      expect(tool.state.output.endsWith("Command exited with code 3\n</metadata>")).toBe(true)
+      expect(tool.state.metadata.exit).toBe(3)
+    }),
+  { config: cfg },
+  30_000,
+)
+
+// Every output chunk used to persist a part holding all the output so far: writes grew with chunks times output.
+unixNoLLMServer(
+  "shell publishes running output at a bounded rate and size",
+  () =>
+    withSh(() =>
+      Effect.gen(function* () {
+        const { prompt, chat } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+        // What each publish of the shell's part carried: its status and, while it runs, the output it showed.
+        const updates: Array<{ status: string; output: unknown }> = []
+        yield* events.subscribe(SessionV1.Event.PartUpdated).pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              const part = event.data.part
+              if (part.type !== "tool") return
+              updates.push({
+                status: part.state.status,
+                output: part.state.status === "running" ? part.state.metadata?.output : undefined,
+              })
+            }),
+          ),
+          Effect.forkChild,
+        )
+
+        const started = Date.now()
+        const result = yield* prompt.shell({
+          sessionID: chat.id,
+          agent: "build",
+          command: "for i in $(seq 1 100); do printf '%02000d\\n' \"$i\"; sleep 0.01; done",
+        })
+        const elapsed = Date.now() - started
+        yield* pollWithTimeout(
+          Effect.sync(() => (updates.some((update) => update.status === "completed") ? true : undefined)),
+          "timed out waiting for the completed shell part",
+        )
+
+        const running = updates.filter((update) => update.status === "running")
+        expect(running.length).toBeLessThanOrEqual(Math.ceil(elapsed / 200) + 3)
+        for (const update of running) {
+          if (typeof update.output === "string") expect(update.output.length).toBeLessThanOrEqual(30_005)
+        }
+        // The final output is the bounded whole, not the running tail.
+        const tool = completedTool(result.parts)
+        if (!tool) return
+        expect(tool.state.output).toContain("[truncated:")
+        expect(tool.state.metadata.truncated).toBe(true)
+      }),
+    ),
+  { config: cfg },
+  30_000,
+)
+
 // The shell is gone, but a process it started is still in its process group.
 unixNoLLMServer(
   "shell stops a process the killed command left running",

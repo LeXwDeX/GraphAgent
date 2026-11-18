@@ -226,6 +226,31 @@ function pendingContinuation(input: {
   return lines.join("\n")
 }
 
+/**
+ * Skills whose bodies `messages` loaded through the skill tool (receipts
+ * excluded): once those messages are summarized away the bodies are gone.
+ */
+export function loadedSkillNames(messages: readonly SessionV1.WithParts[]) {
+  const names = new Set<string>()
+  for (const message of messages)
+    for (const part of message.parts) {
+      if (part.type !== "tool" || part.tool !== "skill" || part.state.status !== "completed") continue
+      const { name, alreadyLoaded } = part.state.metadata
+      if (typeof name === "string" && alreadyLoaded !== true) names.add(name)
+    }
+  return [...names].toSorted((a, b) => a.localeCompare(b))
+}
+
+export function skillContinuationNote(names: readonly string[]) {
+  if (names.length === 0) return undefined
+  return `Skills loaded earlier in this conversation are no longer in context: ${names.join(", ")}. Call the skill tool with the name to load one again when needed.`
+}
+
+function withSkillNote(text: string, head: readonly SessionV1.WithParts[]) {
+  const note = skillContinuationNote(loadedSkillNames(head))
+  return note === undefined ? text : `${text}\n\n${note}`
+}
+
 function completedCompactions(messages: SessionV1.WithParts[]) {
   const users = new Map<MessageID, number>()
   for (let i = 0; i < messages.length; i++) {
@@ -929,7 +954,7 @@ export const layer = Layer.effect(
             // Internal marker for auto-compaction followups.
             metadata: { compaction_continue: true },
             synthetic: true,
-            text,
+            text: withSkillNote(text, selected.head),
             time: {
               start: Date.now(),
               end: Date.now(),

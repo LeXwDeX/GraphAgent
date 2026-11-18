@@ -958,6 +958,41 @@ const scenarios: Scenario[] = [
       // fresh session has none.
       check(body.quality === null, "a session without a strict review workflow has no quality summary")
     }),
+  // #1475: asked with a child's id, the usage is the whole tree's, read from the root.
+  http.protected
+    .get("/session/{sessionID}/usage", "session.usage")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const parent = yield* ctx.session({ title: "Usage root" })
+        const child = yield* ctx.session({ title: "Usage child", parentID: parent.id })
+        return { parent, child }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/usage", { sessionID: ctx.state.child.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      check(body.rootID === ctx.state.parent.id, "a child id should be answered with its root's usage")
+      check(body.sessions === 2, "the tree should count the root and the child")
+      check(typeof body.cost === "number" && body.cost === 0, "fresh sessions should have no cost")
+      check(body.costUnknown === false, "fresh sessions have no unpriced usage")
+      object(body.tokens)
+      check(
+        body.tokens.input === 0 && body.tokens.output === 0 && body.tokens.reasoning === 0,
+        "fresh sessions should have no tokens",
+      )
+      object(body.tokens.cache)
+      check(body.tokens.cache.read === 0 && body.tokens.cache.write === 0, "fresh sessions should have no cache usage")
+    }),
+  http.protected
+    .get("/session/{sessionID}/usage", "session.usage.missing")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/usage", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
   http.protected
     .patch("/session/{sessionID}", "session.update")
     .mutating()
