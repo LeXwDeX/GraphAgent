@@ -17,6 +17,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { testEffect } from "../lib/effect"
+import { truncateFailingWith } from "../lib/truncate"
 import { Tool } from "@/tool/tool"
 import { SafetyGuard } from "@/permission/safety-guard"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -1687,6 +1688,80 @@ describe("tool.shell truncation", () => {
       }),
     ),
   )
+})
+
+// The full output could not be written to disk: the command's own result (exit code, the tail) still comes back,
+// and says that the cut part cannot be read back.
+describe("tool.shell output that cannot be saved", () => {
+  let writes = 0
+  const unwritableIt = testEffect(
+    Layer.mergeAll(
+      CrossSpawnSpawner.defaultLayer,
+      FSUtil.defaultLayer,
+      truncateFailingWith("disk full", () => writes++),
+      Config.defaultLayer,
+      Agent.defaultLayer,
+      RuntimeFlags.defaultLayer,
+      BackgroundJob.defaultLayer,
+      testInstanceStoreLayer,
+    ),
+  )
+
+  unwritableIt.live("keeps the tail and the exit code when the final write fails", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        writes = 0
+        const result = yield* run({ command: fill("lines", 30) })
+
+        expect(result.metadata.exit).toBe(0)
+        expect(result.metadata.truncated).toBe(true)
+        expect(result.metadata.outputPath).toBeUndefined()
+        expect(result.output).toContain("Full output could not be saved: disk full")
+        expect(result.output).toContain(`[truncated: ${Truncate.unsavedNote("disk full")}]`)
+        expect(result.output).toMatch(/^30$/m)
+        expect(result.output).toMatch(/^11$/m)
+        expect(result.output).not.toMatch(/^10$/m)
+        expect(result.output).not.toContain("--------- full output ---------")
+        expect(writes).toBe(1)
+      }),
+    ),
+  )
+
+  unwritableIt.live(
+    "does not write again at the end once a write failed while streaming",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          writes = 0
+          const result = yield* run({ command: fill("lines", 20_000) })
+
+          expect(result.metadata.exit).toBe(0)
+          expect(result.output).toContain("Full output could not be saved: disk full")
+          expect(result.output).toMatch(/^20000$/m)
+          expect(result.output).not.toContain("--------- full output ---------")
+          expect(writes).toBe(1)
+        }),
+      ),
+    30_000,
+  )
+
+  if (process.platform !== "win32") {
+    unwritableIt.live("puts the unsaved note before the command's own notes", () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const result = yield* run({ command: `${fill("lines", 30)}; exit 3` })
+
+          expect(result.metadata.exit).toBe(3)
+          const note = result.output.indexOf("Full output could not be saved")
+          expect(note).toBeGreaterThan(-1)
+          expect(result.output.indexOf("Command exited with code 3")).toBeGreaterThan(note)
+        }),
+      ),
+    )
+  }
 })
 
 describe("tool.shell preview", () => {
