@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Event } from "@graphagent/sdk"
+import type { Event, Session } from "@graphagent/sdk"
 import type { AttentionSoundName } from "../config"
 import { backgroundResultOf, type BackgroundResult, type TaskIndexEntry } from "../context/session-summary"
 import { t } from "../i18n"
+import { isSubagent } from "../session/role"
 import { subagentKind } from "../session/subagents"
 import type { ToastOptions } from "../ui/toast"
 
@@ -43,7 +44,7 @@ type NotificationsInput = {
     on<T extends Event["type"]>(type: T, handler: (event: Extract<Event, { type: T }>) => void): () => void
   }
   sessions: {
-    get(sessionID: string): { title?: string; parentID?: string; agent?: string } | undefined
+    get(sessionID: string): (Pick<Session, "role"> & { title?: string; parentID?: string; agent?: string }) | undefined
   }
   attention: {
     notify(input: NotifyInput): Promise<unknown>
@@ -84,11 +85,10 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
 
   function notify(sessionID: string | undefined, message: string, sound: AttentionSoundName) {
     const session = sessionID ? input.sessions.get(sessionID) : undefined
-    const isSubagent = session?.parentID !== undefined
     void input.attention.notify({
       title: session?.title,
       message,
-      notification: isSubagent ? false : { when: "blurred" },
+      notification: isSubagent(session) ? false : { when: "blurred" },
       sound: { name: sound, when: "always" },
     })
   }
@@ -98,7 +98,7 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
     const reminders = input.subagent
     if (!reminders || !sessionID) return
     const session = input.sessions.get(sessionID)
-    if (session?.parentID === undefined) return
+    if (!session || !isSubagent(session)) return
     if (reminders.viewing() === sessionID) return
     const kind = subagentKind({ title: session.title ?? "", agent: session.agent }, reminders.task(sessionID))
     reminders.toast.show({
@@ -185,7 +185,7 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
         return
       }
       const session = input.sessions.get(sessionID)
-      notify(sessionID, t("attention.done"), session?.parentID ? "subagent_done" : "done")
+      notify(sessionID, t("attention.done"), isSubagent(session) ? "subagent_done" : "done")
     }),
     input.event.on("session.error", (event) => {
       const sessionID = event.properties.sessionID

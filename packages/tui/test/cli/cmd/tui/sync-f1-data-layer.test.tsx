@@ -16,6 +16,7 @@ type Row = {
   directory: string
   version: string
   parentID?: string
+  role: "root" | "task_child"
   time: { created: number; updated: number }
 }
 
@@ -27,6 +28,7 @@ function row(id: string, updated: number, parentID?: string): Row {
     directory,
     version: "test",
     parentID,
+    role: parentID ? "task_child" : "root",
     time: { created: 0, updated },
   }
 }

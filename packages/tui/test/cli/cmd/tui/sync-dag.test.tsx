@@ -106,6 +106,7 @@ describe("tui sync dag slice", () => {
     const sessionRow = {
       id: sid,
       slug: "dag-test",
+      role: "root",
       projectID: "proj_test",
       directory,
       version: "test",
@@ -144,6 +145,7 @@ describe("tui sync dag slice", () => {
     const visibleSessionRow = {
       id: sidVisibleUntracked,
       slug: "visible-untracked",
+      role: "root",
       projectID: "proj_test",
       directory,
       version: "test",

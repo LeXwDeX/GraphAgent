@@ -33,6 +33,7 @@ function row(id: string, updated: number, extra: Record<string, unknown> = {}, p
     version: "test",
     title: id,
     parentID,
+    role: parentID ? "task_child" : "root",
     time: { created: 0, updated },
     ...extra,
   }

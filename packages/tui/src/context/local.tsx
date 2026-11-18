@@ -13,6 +13,7 @@ import { useTheme } from "./theme"
 import { useRoute } from "./route"
 import { errorMessage } from "../util/error"
 import { TuiLog } from "../util/log"
+import { isRoot } from "../session/role"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -1080,7 +1081,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const event = useEvent()
 
       const slots = createMemo(() => {
-        const existing = new Set(sync.data.session.filter((x) => x.parentID === undefined).map((x) => x.id))
+        const existing = new Set(sync.data.session.filter((x) => isRoot(x)).map((x) => x.id))
         return sessionStore.pinned.filter((id) => existing.has(id)).slice(0, 9)
       })
 

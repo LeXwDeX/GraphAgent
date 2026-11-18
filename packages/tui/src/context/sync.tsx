@@ -77,6 +77,7 @@ import { batch, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { TuiLog } from "../util/log"
+import { isRoot } from "../session/role"
 
 type SdkEventOf<T extends SdkEvent["type"]> = Extract<SdkEvent, { type: T }>["properties"]
 
@@ -896,7 +897,7 @@ export const {
      */
     function currentTree(sessions: Session[]): Session[] {
       const rootID = sessions
-        .filter((session) => !session.parentID)
+        .filter((session) => isRoot(session))
         .toSorted((a, b) => b.time.updated - a.time.updated)[0]?.id
       return sessionTree(rootID, sessions)
     }

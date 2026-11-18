@@ -75,6 +75,7 @@ import { useHookStatus } from "../../context/hook-status"
 import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
+import { isRoot, isSubagent } from "../../session/role"
 import { nextSibling } from "../../session/siblings"
 import {
   backgroundElapsed,
@@ -319,9 +320,9 @@ export function Main() {
     ),
   )
   const askRequests = useAskSurfaceRequests()
-  const visible = createMemo(() => !session()?.parentID)
+  const visible = createMemo(() => !isSubagent(session()))
   // A sub-agent view is read-only (#1033 3.3): the keys that change the session or send it a request do nothing there.
-  const readOnly = createMemo(() => !!session()?.parentID)
+  const readOnly = createMemo(() => isSubagent(session()))
   const disabled = createMemo(() => askRequests().length > 0)
 
   const pending = createMemo(() => {
@@ -418,7 +419,7 @@ export function Main() {
   const delegation = createMemo(
     (): Delegation | undefined => {
       const current = session()
-      if (!current?.parentID) return undefined
+      if (!current || !isSubagent(current)) return undefined
       const first = messages()[0]
       if (first?.role !== "user" || !promptText(sync.data.part[first.id] ?? [])) return undefined
       return { messageID: first.id, description: subagentDescription(current, sync.data.taskIndex[current.id]) }
@@ -435,7 +436,7 @@ export function Main() {
   })
   const handback = createMemo(
     (): HandbackLine | undefined => {
-      if (!session()?.parentID) return undefined
+      if (!isSubagent(session())) return undefined
       const summary = sync.data.summary[route.sessionID]
       const outcome = subagentOutcome(summary, parentTask())
       return outcome ? handbackLine(outcome, summary) : undefined
@@ -930,7 +931,7 @@ export function Main() {
 
   function childSessionHandler(func: () => void) {
     return () => {
-      if (!session()?.parentID || (bottomZone?.host.depth() ?? 0) > 0) return
+      if (!isSubagent(session()) || (bottomZone?.host.depth() ?? 0) > 0) return
       func()
     }
   }
@@ -1099,8 +1100,8 @@ export function Main() {
       value: "session.dagmode.toggle",
       category: "Session",
       // Sub-agent views have no mode switch: the key is inert and unlisted there.
-      hidden: !!session()?.parentID,
-      enabled: !session()?.parentID,
+      hidden: isSubagent(session()),
+      enabled: !isSubagent(session()),
       run: () => {
         toggleDagMode()
       },
@@ -1479,7 +1480,7 @@ export function Main() {
       value: "session.parent",
       category: "Session",
       hidden: true,
-      enabled: !!session()?.parentID,
+      enabled: isSubagent(session()),
       run: childSessionHandler(() => {
         const parentID = session()?.parentID
         if (parentID) {
@@ -1495,7 +1496,7 @@ export function Main() {
       value: "session.child.next",
       category: "Session",
       hidden: true,
-      enabled: !!session()?.parentID,
+      enabled: isSubagent(session()),
       run: childSessionHandler(() => {
         moveChild(1)
       }),
@@ -1505,7 +1506,7 @@ export function Main() {
       value: "session.child.previous",
       category: "Session",
       hidden: true,
-      enabled: !!session()?.parentID,
+      enabled: isSubagent(session()),
       run: childSessionHandler(() => {
         moveChild(-1)
       }),
@@ -1548,7 +1549,7 @@ export function Main() {
   // optimistically here.
   function toggleDagMode() {
     const info = session()
-    if (!info || info.parentID) return
+    if (!info || !isRoot(info)) return
     const agent = local.agent.current()
     const model = local.model.current()
     void sdk.client.session
@@ -1624,7 +1625,7 @@ export function Main() {
 
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
-    enabled: () => !!session()?.parentID,
+    enabled: () => isSubagent(session()),
     priority: EscapePriority.subagent,
     bindings: [
       { key: "escape", desc: "Go to parent session", group: "Session", cmd: "session.parent" },
@@ -1796,7 +1797,7 @@ export function Main() {
                               <UserMessage
                                 index={index()}
                                 onMouseUp={
-                                  session()?.parentID ? undefined : () => openMessagePanel(message as UserMessage)
+                                  isSubagent(session()) ? undefined : () => openMessagePanel(message as UserMessage)
                                 }
                                 message={message as UserMessage}
                                 parts={sync.data.part[message.id] ?? []}
@@ -1825,7 +1826,7 @@ export function Main() {
                     positions={positions()}
                     pinned={pinnedKeys()}
                     revert={revert()}
-                    onUserMouseUp={session()?.parentID ? undefined : openMessagePanel}
+                    onUserMouseUp={isSubagent(session()) ? undefined : openMessagePanel}
                   />
                 </Show>
               </scrollbox>
