@@ -28,6 +28,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EngineProcess } from "@/session/engine-process"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -137,11 +138,13 @@ describe("DagLoop session move with a running workflow", () => {
               hooks: {},
             }),
         })
+        const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
         const loopLayer = DagLoop.layer.pipe(
           Layer.provide(base),
           Layer.provide(session),
           Layer.provide(prompt),
           Layer.provide(agent),
+          Layer.provide(inbox),
         )
         const refB = { directory: DIR_B, worktree: DIR_B, project: { id: PROJECT_ID } } as never
 

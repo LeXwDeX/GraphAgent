@@ -15,6 +15,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
@@ -86,11 +87,13 @@ function recoveryLayer(input: { wakes: string[] }) {
         }).pipe(Effect.map(() => Option.some(reply(value.sessionID as string, "wake handled")))),
     }),
   )
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(Layer.mock(Agent.Service, {})),
+    Layer.provide(inbox),
   )
   return Layer.merge(base, loop)
 }
