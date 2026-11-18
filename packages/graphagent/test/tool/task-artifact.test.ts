@@ -310,13 +310,16 @@ describe("task results that declare an artifact", () => {
     }),
   )
 
-  it.instance("asks a worker that declares no artifact for nothing and accepts prose as before", () =>
+  it.instance("asks a worker that declares no artifact for no artifact and accepts prose as before", () =>
     Effect.gen(function* () {
       const { ops, sent } = scripted("The persistence layer is in packages/core.")
       const result = yield* (yield* harness()).run("general", ops)
       expect(sent).toHaveLength(1)
       expect(sent[0].text).not.toContain("OUTPUT CONTRACT")
-      expect(sent[0].text).toBe("compare three persistence designs")
+      // The request stays as written; `general` is asked for its three free-text sections after it (#1453).
+      expect(sent[0].text.startsWith("compare three persistence designs")).toBe(true)
+      expect(sent[0].text).toContain("[RETURN CONTRACT]")
+      // Nothing parses or refuses the answer: prose outside the sections is returned as written.
       expect(outputOf(result)).toContain("The persistence layer is in packages/core.")
     }),
   )
@@ -376,8 +379,9 @@ describe("a worker that opts out of task calls with output.task false", () => {
       const result = yield* (yield* harness()).run("explore", ops)
 
       expect(sent).toHaveLength(1)
-      // Nothing is added to the caller's request.
-      expect(sent[0].text).toBe("compare three persistence designs")
+      // No artifact is asked for. The request stays as written, followed by the free-text return contract (#1453).
+      expect(sent[0].text.startsWith("compare three persistence designs")).toBe(true)
+      expect(sent[0].text).toContain("[RETURN CONTRACT]")
       expect(sent[0].text).not.toContain("OUTPUT CONTRACT")
       expect(outputOf(result)).toContain('state="completed"')
       expect(outputOf(result)).toContain(prose)
@@ -404,7 +408,8 @@ describe("a worker that opts out of task calls with output.task false", () => {
       const { ops, sent } = scripted(prose)
       const result = yield* (yield* harness()).run("explore", ops, { command: "map", prompt: "map the tool layer" })
       expect(sent).toHaveLength(1)
-      expect(sent[0].text).toBe("map the tool layer")
+      expect(sent[0].text.startsWith("map the tool layer")).toBe(true)
+      expect(sent[0].text).toContain("[RETURN CONTRACT]")
       expect(outputOf(result)).toContain(prose)
       expect(outputOf(result)).not.toContain('state="error"')
     }),
@@ -431,6 +436,8 @@ describe("a worker that opts out of task calls with output.task false", () => {
           const result = yield* (yield* harness()).run("explore", ops)
           expect(sent).toHaveLength(2)
           expect(sent[0].text).toContain("[OUTPUT CONTRACT]")
+          // An agent that owes an artifact is not also asked for the free-text sections.
+          expect(sent[0].text).not.toContain("RETURN CONTRACT")
           expect(sent[0].text).toContain('"const": "code_findings"')
           expect(sent[1].synthetic).toContain("one JSON value")
           expect(outputOf(result)).toContain(answer("code_findings"))
@@ -447,6 +454,7 @@ describe("a worker that opts out of task calls with output.task false", () => {
         yield* (yield* harness()).run("explore", ops)
         expect(sent).toHaveLength(1)
         expect(sent[0].text).not.toContain("OUTPUT CONTRACT")
+        expect(sent[0].text).toContain("[RETURN CONTRACT]")
       }),
     { config: { agent: { explore: { contract: { output: { artifact: "code_findings", task: false } } } } } },
   )
@@ -463,7 +471,11 @@ describe("a worker that opts out of task calls with output.task false", () => {
           expect(outputOf(result)).toContain("free text answer")
         }
         expect(sent).toHaveLength(2)
-        for (const one of sent) expect(one.text).not.toContain("OUTPUT CONTRACT")
+        for (const one of sent) {
+          expect(one.text).not.toContain("OUTPUT CONTRACT")
+          // Not built in, so not asked for the free-text return contract either (#1453).
+          expect(one.text).toBe("compare three persistence designs")
+        }
       }),
     {
       config: {

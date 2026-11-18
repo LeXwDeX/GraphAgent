@@ -169,6 +169,18 @@ function continuationFailure(cause: Cause.Cause<unknown>, prior: string): Effect
   )
 }
 
+// What the child is told after the caller's own request, which stays as written: the artifact an agent declares for
+// task calls, or the three free-text sections explore and general owe (#1453). Every other agent is asked nothing.
+function withReturnContract(
+  parts: SessionPrompt.PromptInput["parts"],
+  contract: ResultContract.Contract | undefined,
+  agent: Pick<AgentContract.Subject, "name" | "native" | "contract">,
+): SessionPrompt.PromptInput["parts"] {
+  if (contract) return [...parts, { type: "text", text: ResultContract.prompt(contract) }]
+  if (ResultContract.owesFreeText(agent)) return [...parts, { type: "text", text: ResultContract.freeTextPrompt() }]
+  return parts
+}
+
 const TaskParameterFields = {
   action: Schema.optional(Schema.Literal("cancel")).annotate({
     description:
@@ -739,10 +751,7 @@ export const TaskTool = Tool.define(
           startContexts = result.additionalContexts
         }
         const resolved = yield* children.resolvePromptParts(prompt)
-        // The contract follows the caller's own request, which stays as written.
-        const parts = resultContract
-          ? [...resolved, { type: "text" as const, text: ResultContract.prompt(resultContract) }]
-          : resolved
+        const parts = withReturnContract(resolved, resultContract, next)
         // Queue immediately before the first prompt (after parts resolved) so a failed resolve leaves no
         // stale queued context; admission of the child's first message drains it.
         if (startCtx) {
