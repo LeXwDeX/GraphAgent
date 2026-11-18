@@ -20,6 +20,7 @@ import { Hash } from "@graphagent/core/util/hash"
 import { ToolSourceLedger, type Registration as ToolSourceRegistration } from "./tool-source-ledger"
 import { serializedTools, TOOLS_JSON } from "./overflow"
 import { EngineProcess } from "./engine-process"
+import { SessionRole } from "./role"
 
 const outputFingerprint = (value: unknown) => {
   try {
@@ -107,7 +108,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     const binding = hookIdentity(toolName)
     // A tool executed under a child session is that subagent's own call: CC
     // names the child session and the executing agent in agent_id / agent_type.
-    const subagent = input.session.parentID ? { agentID: input.session.id, agentType: input.agent.name } : undefined
+    const subagent = SessionRole.isChild(input.session)
+      ? { agentID: input.session.id, agentType: input.agent.name }
+      : undefined
     return { permissionMode: mode === "manual" ? "default" : mode, ...binding, ...subagent }
   })
 
@@ -234,7 +237,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
                     ),
                 }
               : {}),
-            ...(input.session.parentID
+            ...(SessionRole.isChild(input.session)
               ? {
                   role: input.agent.name,
                   roleDefaultIndices: subagentRoleDefaultRuleIndices(input.session.permission ?? [], input.agent),

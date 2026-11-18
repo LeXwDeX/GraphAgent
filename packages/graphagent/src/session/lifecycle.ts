@@ -9,6 +9,7 @@ import { Skill } from "@/skill"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Session } from "@/session/session"
+import { SessionRole } from "@/session/role"
 import { Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
 import { SettingsHook } from "@/hook"
@@ -53,7 +54,7 @@ export const layer = Layer.effect(
       options?: CreateOptions,
     ) {
       const result = yield* session.create(input)
-      if (result.parentID) return result
+      if (SessionRole.isChild(result)) return result
       const startupGrant = options?.localGrant
       if (startupGrant) yield* startupGrant(result.id)
       if (lifecycle) yield* lifecycle.attach(result.id)

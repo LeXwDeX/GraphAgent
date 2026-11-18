@@ -4,6 +4,7 @@
 import { Effect, Option, Schema } from "effect"
 import { Memory } from "@/memory/memory"
 import { Session } from "@/session/session"
+import { SessionRole } from "@/session/role"
 import { Tool } from "./tool"
 
 export const Parameters = Schema.Struct({
@@ -39,7 +40,7 @@ export const MemorySearchTool = Tool.define<typeof Parameters, Metadata, never>(
         const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
         if (!memory || !sessions) return unavailable()
         const current = yield* sessions.get(ctx.sessionID).pipe(Effect.option)
-        if (Option.isNone(current) || current.value.parentID) return unavailable()
+        if (Option.isNone(current) || SessionRole.isChild(current.value)) return unavailable()
 
         const result = yield* memory.search({ sessionID: ctx.sessionID, messages: ctx.messages, query })
         // #350: an inert Memory answers "unavailable" with no field to carry

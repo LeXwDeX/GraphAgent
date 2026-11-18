@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Effect, Schema } from "effect"
-import type { SessionID } from "../schema"
+import { SessionRole } from "../role"
 import { ChildRegistry as Registry } from "./registry"
 import type { ChildRunCredential } from "./types"
 
@@ -69,8 +69,8 @@ const allowedWithoutCredential = (origin: Origin | undefined): boolean =>
   (origin?.kind === "inbox" && (origin.source === "dag.mailbox.step" || origin.source === "child.result"))
 
 /**
- * Enforces the engine guard. `admit` knows the session (and therefore
- * `parentID`); `loop` does not, so it enforces what a zero-read junction can:
+ * Enforces the engine guard. `admit` knows the session (and therefore whether
+ * it is a child); `loop` does not, so it enforces what a zero-read junction can:
  * a declared delegation (`child_run`) must carry a live credential, and a
  * carried credential must still be live. A user/inbox/hook loop start without
  * a credential is not a delegation claim and stays allowed; the admission
@@ -82,7 +82,7 @@ const allowedWithoutCredential = (origin: Origin | undefined): boolean =>
  */
 export const observe = (
   junction: Junction,
-  session: { readonly id: SessionID; readonly parentID?: SessionID },
+  session: SessionRole.Ref,
   credential: ChildRunCredential | undefined,
   origin?: Origin,
 ): Effect.Effect<void, Refused> =>
@@ -92,7 +92,7 @@ export const observe = (
     if (verdict === "live") return Effect.logDebug("child run credential presented", fields)
     if (Registry.activeFor(session.id)?.outcome?.type === "cancelled") return Effect.interrupt
     if (junction === "admit") {
-      if (session.parentID === undefined) return Effect.void
+      if (SessionRole.isRoot(session)) return Effect.void
       if (verdict === "none" && allowedWithoutCredential(origin))
         return Effect.logDebug("child session admitted under an allowed internal origin", {
           ...fields,
@@ -101,12 +101,12 @@ export const observe = (
       return Effect.fail(new Refused({ sessionID: session.id, junction, verdict }))
     }
     // The loop junction: stale/foreign never starts a turn; a declared
-    // delegation must carry a live credential even without a parentID (the
-    // zero-read path `prompt.loop` uses); another origin is refused only when
-    // the caller carried the session's parentID.
+    // delegation must carry a live credential even when the caller does not
+    // say the session is a child (the zero-read path `prompt.loop` uses);
+    // another origin is refused only when the caller does.
     if (verdict !== "none") return Effect.fail(new Refused({ sessionID: session.id, junction, verdict }))
     if (allowedWithoutCredential(origin)) return Effect.void
-    if (origin?.kind === "child_run" || session.parentID !== undefined)
+    if (origin?.kind === "child_run" || SessionRole.isChild(session))
       return Effect.fail(new Refused({ sessionID: session.id, junction, verdict }))
     return Effect.void
   })

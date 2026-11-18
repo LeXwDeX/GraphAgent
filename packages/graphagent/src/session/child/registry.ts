@@ -39,6 +39,7 @@ export function create(input: {
 }): ActiveChildRun {
   return {
     ...input,
+    rootSessionID: rootOf(input.parentSessionID),
     phase: "queued",
     runningAt: undefined,
     outcome: undefined,
@@ -89,6 +90,19 @@ export function get(runID: string): ActiveChildRun | undefined {
 export function activeFor(childSessionID: string): ActiveChildRun | undefined {
   const runID = registry.bySession.get(childSessionID)
   return runID === undefined ? undefined : registry.byRun.get(runID)
+}
+
+/**
+ * The root of the conversation `sessionID` belongs to, as this process's
+ * registry knows it (Issue #1288): a session that is a registered child run
+ * has the root recorded with its run, any other session is its own root. The
+ * registry sees only the live chain, which is what a run's registration needs:
+ * a run is started by a session that is running now, a running child is a
+ * registered run of this process, and a root session is none. The durable
+ * answer for a session with no live run is `SessionRole.rootOf`.
+ */
+export function rootOf(sessionID: ActiveChildRun["parentSessionID"]): ActiveChildRun["rootSessionID"] {
+  return activeFor(sessionID)?.rootSessionID ?? sessionID
 }
 
 export function activeWhere(predicate: (entry: ActiveChildRun) => boolean): ActiveChildRun[] {
@@ -174,15 +188,28 @@ export function keepScopedHooks(childSessionID: string): boolean {
  * one. Synchronous and read-free: permission hot paths use it to decide
  * whether an ask is unattended. A session with no active run has no subject
  * (the SDK, a finished child, a dead process's row).
+ *
+ * `parentSessionID` is the session that started the run; `rootSessionID` is
+ * the root of its conversation. They are the same session while a root starts
+ * the run, and they were one field (named root, holding the parent) before
+ * Issue #1288.
  */
-export function subjectOf(
-  childSessionID: string,
-):
-  | { readonly owner: ChildOwner; readonly permission: ChildPermissionPolicy; readonly rootSessionID: string }
+export function subjectOf(childSessionID: string):
+  | {
+      readonly owner: ChildOwner
+      readonly permission: ChildPermissionPolicy
+      readonly parentSessionID: ActiveChildRun["parentSessionID"]
+      readonly rootSessionID: ActiveChildRun["rootSessionID"]
+    }
   | undefined {
   const entry = activeFor(childSessionID)
   if (!entry || entry.phase === "ended") return undefined
-  return { owner: entry.ownerKey, permission: entry.permission, rootSessionID: entry.parentSessionID }
+  return {
+    owner: entry.ownerKey,
+    permission: entry.permission,
+    parentSessionID: entry.parentSessionID,
+    rootSessionID: entry.rootSessionID,
+  }
 }
 
 /**

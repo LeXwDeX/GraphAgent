@@ -43,6 +43,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { registerDisposer } from "@/effect/instance-registry"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { SessionRole } from "@/session/role"
 import { SessionInbox } from "@/session/inbox"
 import { Dag } from "./dag"
 import { DagLocation } from "./location"
@@ -496,8 +497,9 @@ const make = Effect.gen(function* () {
     if (!isRecord(event.data) || typeof event.data.sessionID !== "string" || !isRecord(event.data.info)) return
     const sessionID = event.data.sessionID
     const info = event.data.info
-    // Child sessions never own a DAG budget.
-    if (typeof info.parentID === "string") return
+    // Child sessions never own a DAG budget. The event carries the row as an unvalidated record.
+    const parentID = typeof info.parentID === "string" ? info.parentID : undefined
+    if (SessionRole.isChild({ parentID })) return
     const instance = yield* InstanceRef
     const directory = event.location?.directory
     if (instance && directory) {

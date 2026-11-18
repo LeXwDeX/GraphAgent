@@ -30,6 +30,7 @@ import { DagControl } from "@/dag/control"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { ChildRegistry } from "@/session/child/registry"
 import { ChildPolicy } from "@/session/child/policy"
+import { SessionRole } from "@/session/role"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -86,12 +87,13 @@ export function webSearchEnabled(flags = { exa: false, parallel: false }) {
  * it has an active DAG node run, and a node session while its own run is
  * active. A finished or paused workflow with no running node therefore hides
  * the tool (Issue #1026 migration), where the durable workflow row used to keep
- * it visible.
+ * it visible. The role is the live one (`SessionRole.liveRoleOf`): a root sees
+ * its nodes, a DAG node its owner, and a task child nothing.
  */
 export const canUseAgentMessages = Effect.fn("ToolRegistry.canUseAgentMessages")(function* (session: Session.Info) {
-  return session.parentID === undefined
-    ? ChildRegistry.hasDagChild(session.id)
-    : ChildRegistry.dagOwnerOf(session.id) !== undefined
+  const role = SessionRole.liveRoleOf(session)
+  if (role === "root") return ChildRegistry.hasDagChild(session.id)
+  return role === "dag_node" && ChildRegistry.dagOwnerOf(session.id) !== undefined
 })
 
 type TaskDef = Tool.InferDef<typeof TaskTool>
@@ -562,7 +564,7 @@ RequestCache.set(
       }
 
       for (const builtin of builtins) {
-        if (input.session.parentID && ROOT_ONLY_TOOLS.has(builtin.id)) continue
+        if (SessionRole.isChild(input.session) && ROOT_ONLY_TOOLS.has(builtin.id)) continue
         if (workspaceWritesDenied && builtin.effects === "workspace_write") continue
         if (builtin.id === AgentTool.id) {
           const turnID = input.turnID

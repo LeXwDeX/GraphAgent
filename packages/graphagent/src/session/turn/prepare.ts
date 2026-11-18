@@ -15,6 +15,7 @@ import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "../session"
+import { SessionRole } from "../role"
 import type { Agent } from "../../agent/agent"
 import type { Command } from "@/command"
 import { Provider } from "@/provider/provider"
@@ -599,11 +600,11 @@ const dagRequestFacts = Effect.fnUntraced(function* (input: {
   const disabled = input.configured.tools?.workflow === false
   const denied = Permission.disabledByPolicy(["workflow"], input.nativePermission, permission).has("workflow")
   const switchedOff = input.user.tools?.workflow === false
-  const advertised = !input.session.parentID && !disabled && !denied && !switchedOff
+  const advertised = SessionRole.isRoot(input.session) && !disabled && !denied && !switchedOff
   // The status degradation order: tool switch, deny rule, then model
   // capabilities. `no_worker` needs the agent catalog and stays with the
   // `/dag-mode status` snapshot.
-  const unavailable: UnavailableReason | undefined = input.session.parentID
+  const unavailable: UnavailableReason | undefined = SessionRole.isChild(input.session)
     ? undefined
     : !advertised
       ? disabled
@@ -637,7 +638,7 @@ function publishDagMode(input: {
   user: SessionV1.User
   facts: DagRequestFacts
 }) {
-  if (input.session.parentID) return
+  if (SessionRole.isChild(input.session)) return
   DagMode.set(input.sessionID, {
     mode: input.facts.mode,
     budget: input.facts.budget,
@@ -724,7 +725,7 @@ function resolveTurnTools(
     promptOps: extra.promptOps,
     hooks: deps.settingsHook,
     canDefer:
-      !session.parentID && input.user.hookMode !== "interactive"
+      SessionRole.isRoot(session) && input.user.hookMode !== "interactive"
         ? (id, signal) => toolBatch.isSingle(id, signal)
         : undefined,
     sourceLedger: deps.toolSources,
@@ -966,7 +967,7 @@ export function makePrepare(deps: PrepareDeps) {
     providerID: ProviderV2.ID
     modelID: ModelV2.ID
   }) {
-    if (input.session.parentID) return
+    if (SessionRole.isChild(input.session)) return
     if (!Session.isDefaultTitle(input.session.title)) return
 
     const real = (m: SessionV1.WithParts) =>
@@ -1914,8 +1915,8 @@ export function makePrepare(deps: PrepareDeps) {
           sys.memory({
             sessionID,
             messages: msgs,
-            main: !session.parentID,
-            lane: session.parentID ? "child" : "interactive",
+            main: SessionRole.isRoot(session),
+            lane: SessionRole.isChild(session) ? "child" : "interactive",
           }),
         ),
         MessageV2.toModelMessagesEffect(msgs, model, {

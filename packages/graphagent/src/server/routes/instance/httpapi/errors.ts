@@ -150,7 +150,7 @@ export class SessionBusyError extends Schema.Error<SessionBusyError>("SessionBus
   { httpApiStatus: 409 },
 ) {}
 
-// #1026: a child session (parentID != null) only takes input from its parent
+// #1026: a child session (a task or DAG node run) only takes input from its parent
 // agent, so a write that addresses one over HTTP is refused. Same
 // `{name, data:{sessionID, message}}` envelope as SessionBusyError; clients
 // branch on `name`, there is no separate `code` field.

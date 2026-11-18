@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Clock, Effect, Option } from "effect"
+import { SessionRole } from "@/session/role"
 import { ReminderClock } from "./clock"
 import { ReminderSchedule } from "./schedule"
 
@@ -53,7 +54,7 @@ const when = (info: ReminderClock.Info, now: number): string => {
 
 /** Runs one `/remind` line for a session and returns the receipt text. */
 export const run = Effect.fn("ReminderCommand.run")(function* (input: Input) {
-  if (input.parentID) return "提醒只适用于主会话。"
+  if (SessionRole.isChild(input)) return "提醒只适用于主会话。"
   const clock = Option.getOrUndefined(yield* Effect.serviceOption(ReminderClock.Service))
   if (!clock) return "提醒服务当前不可用。"
   const now = yield* Clock.currentTimeMillis

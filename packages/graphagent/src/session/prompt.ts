@@ -8,6 +8,7 @@ import { SessionID, MessageID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
 import { EngineProcess } from "./engine-process"
+import { SessionRole } from "./role"
 import { AgentScheduler } from "./agent-scheduler"
 import { makeSessionLocks } from "./locks"
 import { SessionRevert } from "./revert"
@@ -381,7 +382,7 @@ export const layer = Layer.effect(
           origin,
           source: selected.hookSource,
           hooks: selected.hooks,
-          child: !!session.parentID,
+          child: SessionRole.isChild(session),
         })
         active.set(session.id, origin)
       } else active.delete(session.id)

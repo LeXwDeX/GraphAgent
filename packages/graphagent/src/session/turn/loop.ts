@@ -30,6 +30,7 @@ import { measured } from "../overflow"
 import type { Handle as ProcessorHandle, SessionProcessor } from "../processor"
 import { MessageID, PartID, type SessionID } from "../schema"
 import { Session } from "../session"
+import { SessionRole } from "../role"
 import type { SessionStatus } from "../status"
 import type { SessionSummary } from "../summary"
 import { SessionTools } from "../tools"
@@ -309,7 +310,7 @@ function makeDeferredResumer(deps: LoopDeps) {
       messages: input.msgs,
       promptOps: yield* ops(),
       hooks: settingsHook,
-      canDefer: !input.session.parentID && input.lastUser.hookMode !== "interactive" ? () => true : undefined,
+      canDefer: SessionRole.isRoot(input.session) && input.lastUser.hookMode !== "interactive" ? () => true : undefined,
       sourceLedger: toolSources,
     }).pipe(
       Effect.provideService(Permission.Service, permission),
@@ -1059,7 +1060,7 @@ function makeTurnLoop(deps: LoopDeps) {
         messages: msgs,
         budget,
         state,
-        child: !!session.parentID,
+        child: SessionRole.isChild(session),
         completed: Decide.isCompletionCandidate(state, {
           assistantFinished: !!previous.assistant?.finish && previous.assistant.finish !== "tool-calls",
           userBeforeAssistant:
@@ -1143,7 +1144,8 @@ function makeScopedAgentCleanup(deps: LoopDeps) {
       // Only a foreground task's tool call delivers the later SubagentStop and
       // needs the scoped hooks kept; a DAG node's notifyStop re-registers them,
       // so its per-turn cleanup still unregisters (Issue #1026, PR4).
-      if (Option.isNone(session) || !session.value.parentID || ChildRegistry.keepScopedHooks(sessionID)) return
+      if (Option.isNone(session) || SessionRole.isRoot(session.value) || ChildRegistry.keepScopedHooks(sessionID))
+        return
       const active = yield* readScopedAgents()
       const origin = active.get(sessionID)
       if (origin && settingsHook?.unregisterScoped) yield* settingsHook.unregisterScoped(sessionID, origin)

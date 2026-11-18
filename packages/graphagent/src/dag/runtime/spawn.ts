@@ -43,6 +43,7 @@ import { Database } from "@graphagent/core/database/database"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionID, MessageID, PartID } from "@/session/schema"
+import { SessionRole } from "@/session/role"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
 import type { ChildRunHandle } from "@/session/child/run"
@@ -564,6 +565,9 @@ export function spawnNode(
       return yield* failWithoutFiber(Cause.pretty(parentOutcome.cause), "parent session lookup")
     }
     const parent = parentOutcome.value
+    // The scheduler's slot queue rotates between roots, so the fairness key is
+    // the root of the owner's conversation, not the owner (Issue #1288).
+    const fairnessRoot = SessionRole.liveRootOf(parent.id)
     const persistedNodeModel =
       input.node.modelId && input.node.modelProviderId
         ? Dag.normalizeModel({
@@ -749,7 +753,7 @@ export function spawnNode(
         // anchored below, at the moment the permit is held.
         const acquirePermit = () =>
           scheduler.childSlot(schedule.limit, schedule.cap, {
-            rootSessionID: input.parentSessionID,
+            rootSessionID: fairnessRoot,
           })
         let slot: AgentScheduler.SlotPermit | undefined = yield* acquirePermit()
         yield* Effect.gen(function* () {
@@ -1257,7 +1261,7 @@ export function spawnNode(
             }
             if (releasedForPause) {
               slot = yield* scheduler.childSlot(schedule.limit, schedule.cap, {
-                rootSessionID: input.parentSessionID,
+                rootSessionID: fairnessRoot,
               })
             }
             return !!currentWorkflow && ["running", "stepping"].includes(currentWorkflow.status)

@@ -11,6 +11,7 @@ import { Effect } from "effect"
 import { ChildRegistry } from "../child/registry"
 import { MessageID, PartID, type SessionID } from "../schema"
 import type { Session } from "../session"
+import { SessionRole } from "../role"
 import type { Decide } from "./decide"
 
 /**
@@ -72,7 +73,11 @@ const EMPTY_TRIGGER: TriggerResult = { additionalContexts: [], systemMessages: [
 function makePolicyResolver(deps: StopDeps) {
   const { settingsHook } = deps
   return Effect.fnUntraced(function* (input: StopPolicyInput) {
-    const event: Decide.StopHookEvent = input.error ? "StopFailure" : input.session.parentID ? "SubagentStop" : "Stop"
+    const event: Decide.StopHookEvent = input.error
+      ? "StopFailure"
+      : SessionRole.isChild(input.session)
+        ? "SubagentStop"
+        : "Stop"
     // Main-agent Stop does not fire for a foreground task-tool subagent's clean
     // exit: task.ts fires SubagentStop (and drives its continuation) for it.
     // task.ts fails a child that ended in error or was cancelled without

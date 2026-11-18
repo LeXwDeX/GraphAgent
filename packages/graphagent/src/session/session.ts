@@ -56,6 +56,7 @@ import { DagBudgetTokens, DagMode } from "@graphagent/schema/dag-mode"
 import { TuiEvent } from "@graphagent/schema/tui-event"
 import { Goal } from "@/goal/goal"
 import { ExclusiveRegistry } from "./engine-process"
+import { SessionRole } from "./role"
 import { SessionStatus } from "./status"
 import { Dag } from "@/dag/dag"
 import { isTerminalWorkflowStatusValue, isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
@@ -665,7 +666,7 @@ export const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       // #1031 M1: explicit creation value, then the global `dag.mode` default.
       // A child session never inherits a mode; it has no workflow budget.
-      const dagMode: DagMode = input.parentID
+      const dagMode: DagMode = SessionRole.isChild(input)
         ? "off"
         : (input.dagMode ?? (config ? ((yield* config.dagGlobal()).mode ?? "off") : "off"))
       const result: Info = {
@@ -677,7 +678,8 @@ export const layer: Layer.Layer<
         path: input.path,
         workspaceID: input.workspaceID,
         parentID: input.parentID,
-        title: input.title ?? (input.parentID ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
+        title:
+          input.title ?? (SessionRole.isChild(input) ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
         agent: input.agent,
         model: input.model,
         metadata: {
@@ -761,7 +763,7 @@ export const layer: Layer.Layer<
         }
 
         // A deletion ends only the attached top-level client session; child lifetime uses SubagentStop.
-        if (!session.parentID && callSettings) {
+        if (SessionRole.isRoot(session) && callSettings) {
           const finish = Effect.gen(function* () {
             // The engine materializes the transcript only when a SessionEnd handler matches.
             if (hookLifecycle && !(yield* hookLifecycle.claimEnd(sessionID))) return
@@ -1231,7 +1233,7 @@ export const layer: Layer.Layer<
       mode: DagMode
     }) {
       const current = yield* get(input.sessionID)
-      yield* current.parentID
+      yield* SessionRole.isChild(current)
         ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "child_session" }))
         : Effect.void
       yield* patch(input.sessionID, { dagMode: input.mode, time: { updated: Date.now() } }).pipe(Effect.orDie)
@@ -1242,7 +1244,7 @@ export const layer: Layer.Layer<
       tokens: number | null
     }) {
       const current = yield* get(input.sessionID)
-      yield* current.parentID
+      yield* SessionRole.isChild(current)
         ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "child_session" }))
         : Effect.void
       yield* input.tokens !== null && (!Number.isSafeInteger(input.tokens) || input.tokens <= 0)
