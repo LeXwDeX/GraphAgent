@@ -20,7 +20,7 @@ import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { isManagedOutputFileRef } from "@/dag/runtime/output-ref"
-import { upstreamBlock } from "@/dag/templates/envelope"
+import { UPSTREAM_HEADER, upstreamBlock } from "@/dag/templates/envelope"
 import { ReadTool } from "@/tool/read"
 import { FileState } from "@/session/file-state"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -216,6 +216,8 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
     Layer.provide(prompt),
     Layer.provide(agent),
     Layer.provide(inbox),
+    // The one DagLoop reads, when present, to spill an oversized upstream string to disk.
+    Layer.provide(Truncate.defaultLayer),
   )
   return Layer.merge(base, loop)
 }
@@ -581,6 +583,122 @@ describe("DagLoop input_mapping execution boundary", () => {
     ),
   )
 
+  /** The file the first `Full output:` pointer in a prompt names, read back. */
+  const pointedAt = (text: string) =>
+    Effect.gen(function* () {
+      const file = /Full output: (.+?)\]/.exec(text)?.[1]
+      if (!file) return yield* Effect.fail(new Error("the prompt has no pointer to the full text"))
+      return yield* Effect.promise(() => fs.readFile(file, "utf-8"))
+    })
+
+  it.live("hands a consumer the first 4096 bytes of an oversized upstream string and a pointer to all of it", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const consumer = node("consumer", ["producer"], { log: "producer.output.log", notes: "producer.output.notes" })
+        consumer.prompt_template = { inline: "Log: {{log}}" }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Oversized upstream",
+          config: { name: "oversized-upstream", nodes: [node("producer"), consumer] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "producer did not start")
+        const log = `${"A".repeat(4_096)}${"Z".repeat(20_000)}`
+        const notes = { detail: "n".repeat(20_000) }
+        yield* dag.nodeCompleted(dagID, "producer", { log, notes })
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "consumer did not start")
+        // The interpolated string: its first 4096 bytes, then the pointer, in the block it always sits in.
+        expect(prompt.text).toContain(
+          `Log: <upstream-output name="log">\n${UPSTREAM_HEADER}\n${"A".repeat(4_096)}\n\n[truncated: `,
+        )
+        expect(prompt.text).toContain("Full output: ")
+        expect(prompt.text).not.toContain("ZZZZ")
+        expect(yield* pointedAt(prompt.text)).toBe(log)
+        // An object value is never bounded.
+        expect(prompt.text).toContain("n".repeat(20_000))
+      }),
+    ),
+  )
+
+  it.live("bounds an oversized string that reaches the Context block through the default mapping", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Oversized default mapping",
+          config: { name: "oversized-default-mapping", nodes: [node("producer"), node("consumer", ["producer"])] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "producer did not start")
+        const report = `${"A".repeat(4_096)}${"Z".repeat(20_000)}`
+        yield* dag.nodeCompleted(dagID, "producer", report)
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "consumer did not start")
+        expect(prompt.text).toContain('Context:\n<upstream-output name="context">')
+        // Context is pretty-printed JSON, so the blank line before the pointer is written escaped.
+        expect(prompt.text).toContain(`"producer": "${"A".repeat(4_096)}\\n\\n[truncated: `)
+        expect(prompt.text).not.toContain("ZZZZ")
+        expect(yield* pointedAt(prompt.text)).toBe(report)
+      }),
+    ),
+  )
+
+  it.live("leaves a string at the limit whole", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const consumer = node("consumer", ["producer"], { log: "producer.output.log" })
+        consumer.prompt_template = { inline: "Log: {{log}}" }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Upstream at the limit",
+          config: { name: "upstream-at-the-limit", nodes: [node("producer"), consumer] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "producer did not start")
+        const log = "L".repeat(16_384)
+        yield* dag.nodeCompleted(dagID, "producer", { log })
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "consumer did not start")
+        expect(prompt.text).toContain(upstreamBlock("log", log))
+        expect(prompt.text).not.toContain("Full output:")
+      }),
+    ),
+  )
+
+  it.live("judges a diff review's evidence on the full text, then hands the reviewer its head and a pointer", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Oversized review evidence",
+          config: {
+            name: "oversized-review-evidence",
+            nodes: [node("implement"), node("verify", ["implement"]), diffReviewer()],
+          },
+        })
+        const diff = `+${"x".repeat(20_000)}`
+        // The PASS sits after more than 16384 bytes: a check made on the cut head could not find it.
+        const verification = JSON.stringify({ notes: "n".repeat(20_000), verdict: "PASS" })
+        yield* awaitWithTimeout(Queue.take(records), "implement did not start")
+        yield* dag.nodeCompleted(dagID, "implement", { diff, fingerprint: "current-fingerprint" })
+        yield* awaitWithTimeout(Queue.take(records), "verify did not start")
+        yield* dag.nodeCompleted(dagID, "verify", verification)
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "reviewer did not start")
+        expect(prompt.title).toBe("reviewer")
+        expect(prompt.text).toContain(
+          `Review this diff: <upstream-output name="diff">\n${UPSTREAM_HEADER}\n+${"x".repeat(4_095)}\n\n[truncated: `,
+        )
+        expect(prompt.text).not.toContain("x".repeat(4_096))
+        expect(yield* pointedAt(prompt.text)).toBe(diff)
+        // The fingerprint is short: delivered as it is.
+        expect(prompt.text).toContain('"implementation_fingerprint": "current-fingerprint"')
+      }),
+    ),
+  )
+
   for (const [label, diff] of [
     ["empty", ""],
     ["whitespace", "  \n"],
@@ -715,6 +833,49 @@ describe("DagLoop input_mapping execution boundary", () => {
         expect(judged.indexOf("Context:")).toBeLessThan(judged.indexOf("<engine-facts"))
         expect(judged.indexOf("</engine-facts>")).toBeLessThan(judged.indexOf("[OUTPUT CONTRACT]"))
         expect(byTitle("notes")?.text).not.toContain("engine-facts")
+      }),
+    ),
+  )
+
+  it.live("bounds an oversized upstream report and still hands a judging node the engine's change facts whole", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const verify: NodeConfig = {
+          ...node("verify", ["implement"], { report: "implement.output.report" }),
+          block: "verify",
+          output_schema: { type: "object", required: ["verdict"], properties: { verdict: { enum: ["PASS", "FAIL"] } } },
+        }
+        verify.prompt_template = { inline: "Check: {{report}}" }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Engine facts beside a bounded report",
+          config: { name: "engine-facts-bounded", nodes: [node("implement"), verify] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "implement did not start")
+        const report = `${"R".repeat(4_096)}${"Z".repeat(20_000)}`
+        yield* dag.nodeCompleted(
+          dagID,
+          "implement",
+          { report, changed_files: ["a.ts"], fingerprint: "fp" },
+          undefined,
+          undefined,
+          undefined,
+          ["b.ts"],
+        )
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "verify did not start")
+        expect(prompt.text).toContain(
+          `Check: <upstream-output name="report">\n${UPSTREAM_HEADER}\n${"R".repeat(4_096)}`,
+        )
+        expect(prompt.text).toContain("Full output: ")
+        expect(prompt.text).not.toContain("ZZZZ")
+        // The facts are the engine's own text, not an upstream value: nothing of them is cut.
+        expect(prompt.text).toContain('<engine-facts source="git">')
+        expect(prompt.text).toContain("reported, not recorded: a.ts")
+        expect(prompt.text).toContain("recorded, not reported: b.ts")
+        expect(prompt.text).toContain("recorded paths (1):\n- b.ts (no line counts)\n</engine-facts>")
+        expect(prompt.text.indexOf("</engine-facts>")).toBeLessThan(prompt.text.indexOf("[OUTPUT CONTRACT]"))
       }),
     ),
   )
