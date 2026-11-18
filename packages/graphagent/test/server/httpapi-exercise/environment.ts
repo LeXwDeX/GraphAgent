@@ -6,7 +6,7 @@ import path from "path"
 const preserveExerciseGlobalRoot = !!process.env.GRAPHAGENT_HTTPAPI_EXERCISE_GLOBAL
 export const exerciseGlobalRoot =
   process.env.GRAPHAGENT_HTTPAPI_EXERCISE_GLOBAL ??
-  path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-global-${process.pid}`)
+  path.join(process.env.TMPDIR ?? "/tmp", `graphagent-httpapi-global-${process.pid}`)
 process.env.XDG_DATA_HOME = path.join(exerciseGlobalRoot, "data")
 process.env.XDG_CONFIG_HOME = path.join(exerciseGlobalRoot, "config")
 process.env.XDG_STATE_HOME = path.join(exerciseGlobalRoot, "state")
@@ -41,7 +41,7 @@ export const invokingWorktrees = () => {
 const preserveExerciseDatabase = !!process.env.GRAPHAGENT_HTTPAPI_EXERCISE_DB
 export const exerciseDatabasePath =
   process.env.GRAPHAGENT_HTTPAPI_EXERCISE_DB ??
-  path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-exercise-${process.pid}.db`)
+  path.join(process.env.TMPDIR ?? "/tmp", `graphagent-httpapi-exercise-${process.pid}.db`)
 process.env.GRAPHAGENT_DB = exerciseDatabasePath
 Flag.GRAPHAGENT_DB = exerciseDatabasePath
 

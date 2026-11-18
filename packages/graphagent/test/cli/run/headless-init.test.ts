@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Regression test for #404: headless /init never stamped project.time_initialized,
-// leaving MEMORY fail-closed inert. Root cause: `opencode run "/init"` and serve
+// leaving MEMORY fail-closed inert. Root cause: `graphagent run "/init"` and serve
 // text prompts deliver "/init" as a plain text part at POST /session/:id/message —
 // slash routing existed only in the TUI (client-side), so SessionPrompt.command
 // never ran, Command.Event.Executed never fired, and the project init listener in
@@ -77,28 +77,28 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
   // The #404 repro: "/init" as a plain text prompt through the run CLI.
   // RED before the fix (the text path never reached SessionPrompt.command).
   cliIt.live(
-    'opencode run "/init" stamps the project row',
-    ({ llm, home, opencode }) =>
+    'graphagent run "/init" stamps the project row',
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
         yield* llm.text("AGENTS.md initialized")
-        const result = yield* opencode.run("/init", { env: { PWD: home, GRAPHAGENT_DB: "" } })
-        opencode.expectExit(result, 0)
-        yield* expectStamped(home, 'opencode run "/init"')
+        const result = yield* graphagent.run("/init", { env: { PWD: home, GRAPHAGENT_DB: "" } })
+        graphagent.expectExit(result, 0)
+        yield* expectStamped(home, 'graphagent run "/init"')
       }),
     180_000,
   )
 
   // Control: the explicit --command flag always used the /command endpoint.
   cliIt.live(
-    "opencode run --command init stamps the project row",
-    ({ llm, home, opencode }) =>
+    "graphagent run --command init stamps the project row",
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
         yield* llm.text("AGENTS.md initialized")
-        const result = yield* opencode.run("", { command: "init", env: { PWD: home, GRAPHAGENT_DB: "" } })
-        opencode.expectExit(result, 0)
-        yield* expectStamped(home, "opencode run --command init")
+        const result = yield* graphagent.run("", { command: "init", env: { PWD: home, GRAPHAGENT_DB: "" } })
+        graphagent.expectExit(result, 0)
+        yield* expectStamped(home, "graphagent run --command init")
       }),
     180_000,
   )
@@ -107,10 +107,10 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
   // headless serve process — proves the stamp chain works without a TUI.
   cliIt.live(
     "serve POST /session/:id/command stamps the project row",
-    ({ llm, home, opencode }) =>
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
-        const server = yield* opencode.host({ env: { GRAPHAGENT_DB: "" } })
+        const server = yield* graphagent.host({ env: { GRAPHAGENT_DB: "" } })
         const client = yield* HttpClient.HttpClient
         const headers = { "x-graphagent-directory": encodeURIComponent(home) }
 
@@ -131,10 +131,10 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
   // RED before the fix (the stamp landed only via the /command endpoint).
   cliIt.live(
     'serve POST /session/:id/message with text "/init" stamps the project row',
-    ({ llm, home, opencode }) =>
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
-        const server = yield* opencode.host({ env: { GRAPHAGENT_DB: "" } })
+        const server = yield* graphagent.host({ env: { GRAPHAGENT_DB: "" } })
         const client = yield* HttpClient.HttpClient
         const headers = { "x-graphagent-directory": encodeURIComponent(home) }
 

@@ -92,7 +92,7 @@ function recordEvidence(
 describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
   cliIt.concurrent(
     "dispatches dag-auto and sends the exact expanded resident prompt",
-    ({ llm, opencode, target: resolvedTarget }) =>
+    ({ llm, graphagent, target: resolvedTarget }) =>
       Effect.gen(function* () {
         const argumentsText = "DAG_PROMPT_ROUTE_SENTINEL inspect this bounded request"
         // The skill body has no $ARGUMENTS placeholder; expandCommandTemplate
@@ -100,7 +100,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
         const expanded = `${dagAuto.content}\n\n${argumentsText}`.trim()
         yield* llm.text("dag-auto prompt loaded")
 
-        const result = yield* opencode.run(argumentsText, { command: "dag-auto" })
+        const result = yield* graphagent.run(argumentsText, { command: "dag-auto" })
         const requests = yield* llm.inputs
 
         yield* recordEvidence("dag-auto-dispatch", {
@@ -109,7 +109,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
           requests,
           expected: { dagAutoSha256: sha256(dagAuto.content), argumentsText },
         })
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.target).toEqual(resolvedTarget)
         expect(result.stdout).toBe("dag-auto prompt loaded\n")
         expect(strings(requests).some((value) => value.includes(expanded))).toBe(true)
@@ -119,7 +119,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
 
   cliIt.concurrent(
     "loads all six dag skills through the skill tool with exact content",
-    ({ llm, opencode, target: resolvedTarget }) =>
+    ({ llm, graphagent, target: resolvedTarget }) =>
       Effect.gen(function* () {
         const marker = "DAG_SKILLS_LOAD_SENTINEL"
         const escaped = (value: string) => JSON.stringify(value.trim()).slice(1, -1)
@@ -136,7 +136,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
           reply().text("skills loaded").stop().item(),
         )
 
-        const result = yield* opencode.run(marker, { extraArgs: ["--dangerously-skip-permissions"] })
+        const result = yield* graphagent.run(marker, { extraArgs: ["--dangerously-skip-permissions"] })
         const requests = yield* llm.inputs
         const serialized = JSON.stringify(requests)
 
@@ -146,7 +146,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
           requests,
           expected: Object.fromEntries(dagSkills.map((skill) => [`${skill.name}Sha256`, sha256(skill.content)])),
         })
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stdout).toBe("skills loaded\n")
         for (const skill of dagSkills) {
           expect(serialized).toContain(escaped(skill.content))
@@ -157,7 +157,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
 
   cliIt.concurrent(
     "sends the exact workflow routing description and the converged action schema",
-    ({ llm, opencode, target: resolvedTarget }) =>
+    ({ llm, graphagent, target: resolvedTarget }) =>
       Effect.gen(function* () {
         const marker = "DAG_GUIDES_ROUTE_SENTINEL"
 
@@ -166,7 +166,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
         // per-operation branches.
         yield* llm.pushMatch(turnIncludes(marker), reply().text("workflow routing loaded").stop().item())
 
-        const result = yield* opencode.run(marker, { extraArgs: ["--dangerously-skip-permissions"] })
+        const result = yield* graphagent.run(marker, { extraArgs: ["--dangerously-skip-permissions"] })
         const requests = yield* llm.inputs
         const serialized = JSON.stringify(requests)
 
@@ -176,7 +176,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
           requests,
           expected: { workflowRoutingSha256: sha256(CommandPlugin.WorkflowContent) },
         })
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.target).toEqual(resolvedTarget)
         expect(result.stdout).toBe("workflow routing loaded\n")
         expect(

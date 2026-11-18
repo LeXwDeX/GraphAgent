@@ -61,7 +61,7 @@ async function initRepo(dir: string, opts?: { commit?: boolean; remote?: string 
   await $`git init`.cwd(dir).quiet()
   await $`git config core.fsmonitor false`.cwd(dir).quiet()
   await $`git config commit.gpgsign false`.cwd(dir).quiet()
-  await $`git config user.email test@opencode.test`.cwd(dir).quiet()
+  await $`git config user.email test@graphagent.test`.cwd(dir).quiet()
   await $`git config user.name Test`.cwd(dir).quiet()
   if (opts?.commit) await $`git commit --allow-empty -m root`.cwd(dir).quiet()
   if (opts?.remote) await $`git remote add origin ${opts.remote}`.cwd(dir).quiet()

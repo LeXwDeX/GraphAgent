@@ -239,7 +239,7 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-describe("session.context-folding OpenCode wire adapters", () => {
+describe("session.context-folding GraphAgent wire adapters", () => {
   test("projects the AI SDK final provider-visible request without mutating stored messages", () => {
     const stored = messages()
     const before = structuredClone(stored)

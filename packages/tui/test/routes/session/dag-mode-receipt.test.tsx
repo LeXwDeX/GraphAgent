@@ -57,7 +57,7 @@ const message: UserMessage = {
   sessionID,
   role: "user",
   agent: "build",
-  model: { providerID: "opencode", modelID: "test-model" },
+  model: { providerID: "test", modelID: "test-model" },
   time: { created: 1 },
 }
 

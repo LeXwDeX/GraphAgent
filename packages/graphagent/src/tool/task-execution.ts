@@ -23,7 +23,7 @@ import { isRecord } from "@/util/record"
  *
  * A declaration of `auto` says nothing, so it is skipped like an absent one.
  *
- * One rule of the turn sits above all of them: a non-interactive turn (`opencode run`, a hook followup) has no user
+ * One rule of the turn sits above all of them: a non-interactive turn (`graphagent run`, a hook followup) has no user
  * waiting for a later message, so nothing in it runs in the background, whatever the argument, a command or the agent
  * asks for (the #1057 invariant for commands, extended to every task call). The call runs in the foreground and the
  * source says `noninteractive`.

@@ -99,7 +99,7 @@ function runtime(probe: Probe) {
         roots.push(directory)
         rmSync(directory, { recursive: true, force: true })
         git(ctx!.directory, ["worktree", "add", "--detach", directory, "HEAD"])
-        return { name: input?.name ?? "wt", branch: `opencode/${input?.name ?? "wt"}`, directory }
+        return { name: input?.name ?? "wt", branch: `graphagent/${input?.name ?? "wt"}`, directory }
       }),
     remove: () => Effect.succeed(true),
   })

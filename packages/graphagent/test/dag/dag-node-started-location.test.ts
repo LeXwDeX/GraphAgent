@@ -158,7 +158,7 @@ describe("node worktree view (#946)", () => {
     expect(
       DagLocation.nodeLocationView({
         worktreeDirectory: "/data/worktree/wf/node",
-        worktreeBranch: "opencode/dag-wf-node",
+        worktreeBranch: "graphagent/dag-wf-node",
         worktreeCommit: "abcdef1234567890",
         worktreePatchPath: "/repo/.agents/workflow-reports/dag_wf/node.patch",
         worktreePatchSha256: "a".repeat(64),
@@ -169,7 +169,7 @@ describe("node worktree view (#946)", () => {
     ).toMatchObject({
       worktree: {
         directory: "/data/worktree/wf/node",
-        branch: "opencode/dag-wf-node",
+        branch: "graphagent/dag-wf-node",
         commit: "abcdef1234567890",
         patch_path: "/repo/.agents/workflow-reports/dag_wf/node.patch",
         patch_sha256: "a".repeat(64),
@@ -195,7 +195,7 @@ describe("node worktree view (#946)", () => {
           directory: "/data/worktree/wf/node",
           worktree: {
             directory: "/data/worktree/wf/node",
-            branch: "opencode/dag-wf-node",
+            branch: "graphagent/dag-wf-node",
             touchedPaths: [],
             state: "active",
             conflictsWith: [],
@@ -205,7 +205,7 @@ describe("node worktree view (#946)", () => {
         expect(yield* store.getNode(dagID, nodeID)).toMatchObject({
           directory: "/data/worktree/wf/node",
           worktreeDirectory: "/data/worktree/wf/node",
-          worktreeBranch: "opencode/dag-wf-node",
+          worktreeBranch: "graphagent/dag-wf-node",
           worktreeState: "active",
         })
 
@@ -217,7 +217,7 @@ describe("node worktree view (#946)", () => {
           touchedPaths: ["src/a.ts"],
           worktree: {
             directory: "/data/worktree/wf/node",
-            branch: "opencode/dag-wf-node",
+            branch: "graphagent/dag-wf-node",
             commit: "abcdef1234567890",
             baseHead: "0123456789abcdef",
             patchPath: "/repo/.agents/workflow-reports/dag_wf/node.patch",

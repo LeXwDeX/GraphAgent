@@ -1,6 +1,6 @@
 # @graphagent/llm
 
-Schema-first LLM core for opencode. One typed request, response, event, and tool language; provider quirks live in adapters, not in calling code.
+Schema-first LLM core for GraphAgent. One typed request, response, event, and tool language; provider quirks live in adapters, not in calling code.
 
 ```ts
 import { Effect } from "effect"

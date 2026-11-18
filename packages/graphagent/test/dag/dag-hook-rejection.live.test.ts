@@ -28,7 +28,7 @@ test.skipIf(!setting)(
     const { providerID, modelID } = model
     await Effect.runPromise(
       Effect.scoped(
-        withCliFixture(({ opencode, home, env }) =>
+        withCliFixture(({ graphagent, home, env }) =>
           Effect.gen(function* () {
             const dir = path.join(home, "workspace")
             yield* Effect.promise(() => fs.mkdir(path.join(dir, ".agents"), { recursive: true }))
@@ -59,7 +59,7 @@ test.skipIf(!setting)(
               compaction: { auto: false },
               reasoningDistillation: { enabled: false },
             }
-            const server = yield* opencode.host({
+            const server = yield* graphagent.host({
               readyTimeoutMs: 30000,
               env: {
                 ...env,

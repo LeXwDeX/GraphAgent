@@ -1889,7 +1889,7 @@ describe("session.message-v2.fromError", () => {
 
   test("classifies ZlibError from fetch as retryable APIError", () => {
     const zlibError = new Error(
-      'ZlibError fetching "https://opencode.cloudflare.dev/anthropic/messages". For more information, pass `verbose: true` in the second argument to fetch()',
+      'ZlibError fetching "https://gateway.example.test/anthropic/messages". For more information, pass `verbose: true` in the second argument to fetch()',
     )
     ;(zlibError as any).code = "ZlibError"
     ;(zlibError as any).errno = 0
@@ -1904,7 +1904,7 @@ describe("session.message-v2.fromError", () => {
 
   test("classifies ZlibError as AbortedError when abort context is provided", () => {
     const zlibError = new Error(
-      'ZlibError fetching "https://opencode.cloudflare.dev/anthropic/messages". For more information, pass `verbose: true` in the second argument to fetch()',
+      'ZlibError fetching "https://gateway.example.test/anthropic/messages". For more information, pass `verbose: true` in the second argument to fetch()',
     )
     ;(zlibError as any).code = "ZlibError"
     ;(zlibError as any).errno = 0

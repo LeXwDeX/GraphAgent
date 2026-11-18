@@ -83,8 +83,8 @@ export function append(messages: ModelMessage[], reminder: string | undefined): 
     if (!Array.isArray(message.content)) return false
     return message.content.some((part) => {
       const options = "providerOptions" in part && isRecord(part.providerOptions) ? part.providerOptions : undefined
-      const opencode = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
-      return opencode?.synthetic === "attachment"
+      const partGraphagent = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
+      return partGraphagent?.synthetic === "attachment"
     })
   }
   const at = messages.findLastIndex(

@@ -35,7 +35,7 @@ export const layer = Layer.effect(
     // sqlite driver BEFORE WAL init. A legacy database keeps its NONE mode —
     // converting one silently at startup would need a blocking full VACUUM —
     // so it is only detected and surfaced softly here; conversion is the
-    // explicit user-triggered `opencode db vacuum --db <path>` command.
+    // explicit user-triggered `graphagent db vacuum --db <path>` command.
     // Detect-only means detect-only: a failed readback degrades to a warning
     // (the layer body is orDie'd, so an unhandled failure would kill startup),
     // while an interruption is always re-raised.
@@ -50,7 +50,7 @@ export const layer = Layer.effect(
     )
     if (autoVacuum?.auto_vacuum === 0)
       yield* Effect.logWarning(
-        "database auto_vacuum is NONE — deleted pages stay allocated until converted; run `opencode db vacuum --db <path>` (prints its path with `opencode db path`)",
+        "database auto_vacuum is NONE — deleted pages stay allocated until converted; run `graphagent db vacuum --db <path>` (prints its path with `graphagent db path`)",
       )
     yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
     yield* DatabaseMigration.apply(db)

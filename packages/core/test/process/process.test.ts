@@ -138,7 +138,7 @@ describe("AppProcess", () => {
       it.live(
         "timeout cleans up the scoped child process",
         Effect.acquireUseRelease(
-          Effect.promise(() => fs.mkdtemp(path.join(tmpdir(), "opencode-process-timeout-"))),
+          Effect.promise(() => fs.mkdtemp(path.join(tmpdir(), "graphagent-process-timeout-"))),
           (directory) => {
             const ready = path.join(directory, "ready")
             const settled = path.join(directory, "settled")
@@ -159,7 +159,7 @@ describe("AppProcess", () => {
       it.live(
         "fiber interruption cleans up the scoped child process after readiness",
         Effect.acquireUseRelease(
-          Effect.promise(() => fs.mkdtemp(path.join(tmpdir(), "opencode-process-interrupt-"))),
+          Effect.promise(() => fs.mkdtemp(path.join(tmpdir(), "graphagent-process-interrupt-"))),
           (directory) => {
             const ready = path.join(directory, "ready")
             const settled = path.join(directory, "settled")

@@ -54,7 +54,7 @@ function worktree(root: string, dagID: string): { directory: string; branch: str
   const directory = mkdtempSync(path.join(tmpdir(), "dag-workflow-settle-wt-"))
   roots.push(directory)
   rmSync(directory, { recursive: true, force: true })
-  const branch = `opencode/dag-${dagID}-workflow`
+  const branch = `graphagent/dag-${dagID}-workflow`
   git(root, ["worktree", "add", "-b", branch, directory, "HEAD"])
   return { directory, branch, baseHead: git(root, ["rev-parse", "HEAD"]) }
 }
@@ -555,7 +555,7 @@ describe("terminal workflow worktree settlement seam (#1030)", () => {
 describe("workflow worktree views (#1030)", () => {
   const settled = {
     directory: "/repo/.agents/worktree/dag-dag_x-workflow",
-    branch: "opencode/dag-dag_x-workflow",
+    branch: "graphagent/dag-dag_x-workflow",
     baseHead: "base-sha-123456",
     head: "head-sha-123456",
     patchPath: "/reports/dag_x/_workflow.patch",

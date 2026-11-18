@@ -8,7 +8,7 @@ import path from "node:path"
 import { pollWithTimeout } from "../lib/effect"
 import { cliIt } from "../lib/cli-process"
 
-cliIt.live("a real DAG child emits one scoped Stop after final-response settlement", ({ home, env, llm, opencode }) =>
+cliIt.live("a real DAG child emits one scoped Stop after final-response settlement", ({ home, env, llm, graphagent }) =>
   Effect.gen(function* () {
     const audit = path.join(home, "dag-hooks.jsonl")
     const script = path.join(home, "dag-hook.ts")
@@ -81,7 +81,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
       params: { action: "run", operation: "start", spec_path: spec },
     })
     yield* llm.textMatch(childMatch, "FINAL_DAG_REPORT")
-    const server = yield* opencode.host({
+    const server = yield* graphagent.host({
       env: {
         GRAPHAGENT_CONFIG_CONTENT: JSON.stringify({
           ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT),

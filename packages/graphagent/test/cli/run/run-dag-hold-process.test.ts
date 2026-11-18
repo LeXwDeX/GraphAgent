@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Subprocess integration tests for the consumer-only DAG hold (issue 614).
-// Each test drives the real `opencode run` CLI binary against the in-process
+// Each test drives the real `graphagent run` CLI binary against the in-process
 // TestLLMServer (same harness as run-process.test.ts): a scripted provider
 // plays the parent model, workflow children, and wake turns; assertions cover
 // the child process exit code and stdout ordering. The DAG engine itself is
@@ -220,11 +220,11 @@ config:
 
 function emittedText(
   result: RunResult,
-  opencode: { parseJsonEvents(stdout: string): Array<Record<string, unknown>> },
+  graphagent: { parseJsonEvents(stdout: string): Array<Record<string, unknown>> },
   format: "default" | "json",
 ) {
   if (format === "default") return result.stdout.trimEnd().split("\n")
-  return opencode
+  return graphagent
     .parseJsonEvents(result.stdout)
     .filter((event) => event.type === "text")
     .map((event) => event.part)
@@ -294,11 +294,11 @@ function writeSpec(home: string, name: string, content: string) {
   return Effect.promise(() => Bun.write(path.join(home, name), content))
 }
 
-describe("opencode run DAG hold (issue 614)", () => {
+describe("graphagent run DAG hold (issue 614)", () => {
   for (const format of ["default", "json"] as const) {
     cliIt.concurrent(
       `prints the final_response delivery node exactly once and exits (${format})`,
-      ({ home, llm, opencode, target }) =>
+      ({ home, llm, graphagent, target }) =>
         Effect.gen(function* () {
           const spec = path.join(home, "wf-final-response.yaml")
           yield* writeSpec(home, "wf-final-response.yaml", finalResponseSpec)
@@ -311,11 +311,11 @@ describe("opencode run DAG hold (issue 614)", () => {
           yield* llm.pushMatch(bodyIncludes(parentPlanMarker), reply().text(parentPlanText).stop().item())
           yield* llm.pushMatch(bodyIncludes(childFinalMarker), reply().text(childFinalText).stop().item())
 
-          const result = yield* opencode.run(`${parentPlanMarker}: start the workflow and report the plan`, {
+          const result = yield* graphagent.run(`${parentPlanMarker}: start the workflow and report the plan`, {
             format,
             extraArgs: SKIP_PERMISSIONS,
           })
-          opencode.expectExit(result, 0)
+          graphagent.expectExit(result, 0)
           expect(result.target).toEqual(target)
 
           if (format === "default") {
@@ -324,7 +324,7 @@ describe("opencode run DAG hold (issue 614)", () => {
             expect(lines.filter((line) => line === childFinalText)).toHaveLength(1)
             expect(lines.at(-1)).toBe(childFinalText)
           } else {
-            const events = opencode.parseJsonEvents(result.stdout)
+            const events = graphagent.parseJsonEvents(result.stdout)
             const text = events
               .filter((event) => event.type === "text")
               .map((event) => event.part)
@@ -357,7 +357,7 @@ describe("opencode run DAG hold (issue 614)", () => {
   for (const format of ["default", "json"] as const) {
     cliIt.concurrent(
       `with DAG mode on prints the delivery leaf report once and then the parent's completion turn (${format})`,
-      ({ home, llm, opencode }) =>
+      ({ home, llm, graphagent }) =>
         Effect.gen(function* () {
           const spec = path.join(home, "wf-final-response-on.yaml")
           yield* writeSpec(home, "wf-final-response-on.yaml", modeOnFinalSpec)
@@ -371,13 +371,13 @@ describe("opencode run DAG hold (issue 614)", () => {
           yield* llm.pushMatch(bodyIncludes(childFinalMarker), reply().text(childFinalText).stop().item())
           yield* llm.pushMatch(wakeCompleted, reply().text(completionTurnText).stop().item())
 
-          const result = yield* opencode.run(`${parentPlanMarker}: start the workflow and report the plan`, {
+          const result = yield* graphagent.run(`${parentPlanMarker}: start the workflow and report the plan`, {
             format,
             extraArgs: [...SKIP_PERMISSIONS, "--dag-mode", "on"],
           })
-          opencode.expectExit(result, 0)
+          graphagent.expectExit(result, 0)
 
-          const text = emittedText(result, opencode, format)
+          const text = emittedText(result, graphagent, format)
           expect(text.filter((value) => value === parentPlanText)).toHaveLength(1)
           expect(text.filter((value) => value === childFinalText)).toHaveLength(1)
           expect(text.filter((value) => value === completionTurnText)).toHaveLength(1)
@@ -399,7 +399,7 @@ describe("opencode run DAG hold (issue 614)", () => {
   for (const format of ["default", "json"] as const) {
     cliIt.concurrent(
       `waits for both completed final_response workflows and emits each answer once (${format})`,
-      ({ home, llm, opencode }) =>
+      ({ home, llm, graphagent }) =>
         Effect.gen(function* () {
           const specs = multiFinals.map((workflow) => ({
             ...workflow,
@@ -419,12 +419,12 @@ describe("opencode run DAG hold (issue 614)", () => {
             yield* llm.pushMatch(bodyIncludes(workflow.marker), reply().text(workflow.answer).stop().item())
           }
 
-          const result = yield* opencode.run(`${multiParentMarker}: start both workflows`, {
+          const result = yield* graphagent.run(`${multiParentMarker}: start both workflows`, {
             format,
             extraArgs: SKIP_PERMISSIONS,
           })
-          opencode.expectExit(result, 0)
-          const text = emittedText(result, opencode, format)
+          graphagent.expectExit(result, 0)
+          const text = emittedText(result, graphagent, format)
           expect(text.filter((value) => value === multiPlanText)).toHaveLength(1)
           for (const workflow of specs) expect(text.filter((value) => value === workflow.answer)).toHaveLength(1)
           expect(new Set<string>(specs.map((workflow) => workflow.answer)).has(text.at(-1) ?? "")).toBe(true)
@@ -444,7 +444,7 @@ describe("opencode run DAG hold (issue 614)", () => {
 
   cliIt.concurrent(
     "finishes the parent decision turn and then emits the completed mixed-batch report once",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const finalPath = path.join(home, "wf-mixed-final.yaml")
         const decisionPath = path.join(home, "wf-mixed-decision.yaml")
@@ -494,11 +494,11 @@ describe("opencode run DAG hold (issue 614)", () => {
             .item(),
         )
 
-        const result = yield* opencode.run(`${mixedParentMarker}: start report and checkpoint workflows`, {
+        const result = yield* graphagent.run(`${mixedParentMarker}: start report and checkpoint workflows`, {
           extraArgs: SKIP_PERMISSIONS,
         })
-        opencode.expectExit(result, 0)
-        const lines = emittedText(result, opencode, "default")
+        graphagent.expectExit(result, 0)
+        const lines = emittedText(result, graphagent, "default")
         expect(lines.filter((line) => line === mixedPlanText)).toHaveLength(1)
         expect(lines).toContain(mixedDecisionText)
         expect(lines.filter((line) => line === mixedFinalAnswer)).toHaveLength(1)
@@ -516,11 +516,11 @@ describe("opencode run DAG hold (issue 614)", () => {
 
   cliIt.concurrent(
     "no-DAG single-turn prompt exits with the exact reply",
-    ({ llm, opencode, target }) =>
+    ({ llm, graphagent, target }) =>
       Effect.gen(function* () {
         yield* llm.text("plain exact reply")
-        const result = yield* opencode.run("just talk, start no workflow")
-        opencode.expectExit(result, 0)
+        const result = yield* graphagent.run("just talk, start no workflow")
+        graphagent.expectExit(result, 0)
         expect(result.target).toEqual(target)
         expect(result.stdout).toBe("plain exact reply\n")
         yield* recordArtifactEvidence("no-dag", yield* llm.inputs, target, result)
@@ -535,16 +535,16 @@ describe("opencode run DAG hold (issue 614)", () => {
   // reporting checkpoint) and the wake turn's reply, last.
   cliIt.concurrent(
     "holds through a running workflow and prints the final wake reply last",
-    ({ home, llm, opencode, target }) =>
+    ({ home, llm, graphagent, target }) =>
       Effect.gen(function* () {
         const spec = path.join(home, "wf-s4.yaml")
         yield* writeSpec(home, "wf-s4.yaml", chainSpec)
         yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(wakeCompleted, reply().text("wake handled").stop().item())
 
-        const result = yield* opencode.run("S4 run the two node chain", { extraArgs: SKIP_PERMISSIONS })
+        const result = yield* graphagent.run("S4 run the two node chain", { extraArgs: SKIP_PERMISSIONS })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.target).toEqual(target)
         expect(normalizeWorkflowIDs(result.stdout)).toBe(
           [
@@ -570,7 +570,7 @@ describe("opencode run DAG hold (issue 614)", () => {
   // way (the grace is a race boundary, not a readiness signal).
   cliIt.concurrent(
     "holds when the workflow terminalizes within turn one",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const spec = path.join(home, "wf-early.yaml")
         yield* writeSpec(home, "wf-early.yaml", singleSpec)
@@ -582,14 +582,14 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* llm.pushMatch(bodyIncludes("EARLY-TOKEN"), reply().wait(released).text("turn one done").stop().item())
         yield* llm.pushMatch(wakeCompleted, reply().text("wake handled").stop().item())
 
-        const run = yield* opencode.startRun("EARLY-TOKEN start the single node workflow", {
+        const run = yield* graphagent.startRun("EARLY-TOKEN start the single node workflow", {
           extraArgs: SKIP_PERMISSIONS,
         })
         yield* Effect.sleep("3 seconds")
         release()
         const result = yield* run.result
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(normalizeWorkflowIDs(result.stdout)).toBe(
           [
             "turn one done",
@@ -609,18 +609,18 @@ describe("opencode run DAG hold (issue 614)", () => {
   // summary reply before a clean exit.
   cliIt.concurrent(
     "bounds failures: failed workflow delivers its wake summary and exits 0",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const spec = path.join(home, "wf-fail.yaml")
         yield* writeSpec(home, "wf-fail.yaml", failSpec)
         yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(bodyIncludes("[DAG Workflow failed]"), reply().text("failure acknowledged").stop().item())
 
-        const result = yield* opencode.run("FAIL-BOUND start the required verdict node", {
+        const result = yield* graphagent.run("FAIL-BOUND start the required verdict node", {
           extraArgs: SKIP_PERMISSIONS,
         })
 
-        opencode.expectExit(result, 0)
+        graphagent.expectExit(result, 0)
         expect(result.stdout).toBe("ok\nfailure acknowledged\n")
       }),
     180_000,
@@ -643,11 +643,11 @@ describe("opencode run DAG hold (issue 614)", () => {
   // the running-at-adoption decision path is covered in the unit table.
   cliIt.concurrent(
     "adopts a checkpoint-paused workflow via --continue and holds through its resumed run",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const spec = path.join(home, "wf-adopt.yaml")
         yield* writeSpec(home, "wf-adopt.yaml", checkpointSpec)
-        const dbEnv = { GRAPHAGENT_DB: path.join(home, "opencode-adopt-test.db") }
+        const dbEnv = { GRAPHAGENT_DB: path.join(home, "graphagent-adopt-test.db") }
 
         yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(
@@ -659,8 +659,8 @@ describe("opencode run DAG hold (issue 614)", () => {
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Node Result"), reply().text("checkpoint seen").stop().item())
 
-        const first = yield* opencode.run("ADOPT run the gated workflow", { extraArgs: SKIP_PERMISSIONS, env: dbEnv })
-        opencode.expectExit(first, 0)
+        const first = yield* graphagent.run("ADOPT run the gated workflow", { extraArgs: SKIP_PERMISSIONS, env: dbEnv })
+        graphagent.expectExit(first, 0)
         expect(first.stdout).toBe("ok\ncheckpoint seen\n")
 
         // The durable workflow id appears in the recorded request bodies (the
@@ -676,12 +676,12 @@ describe("opencode run DAG hold (issue 614)", () => {
         })
         yield* llm.pushMatch(wakeCompleted, reply().text("adopted complete").stop().item())
 
-        const second = yield* opencode.run("ADOPT resume and finish the workflow", {
+        const second = yield* graphagent.run("ADOPT resume and finish the workflow", {
           extraArgs: ["--continue", ...SKIP_PERMISSIONS],
           env: dbEnv,
         })
 
-        opencode.expectExit(second, 0)
+        graphagent.expectExit(second, 0)
         expect(normalizeWorkflowIDs(second.stdout)).toBe(
           [
             "ok",

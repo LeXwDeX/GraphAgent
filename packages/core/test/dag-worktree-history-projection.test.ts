@@ -95,7 +95,7 @@ describe("DAG worktree history projection (#946)", () => {
           childSessionID: SessionSchema.ID.make("ses_first"),
           worktree: {
             directory: "/repo/.worktrees/first",
-            branch: "opencode/dag-node-first",
+            branch: "graphagent/dag-node-first",
             touchedPaths: ["src/first.ts"],
             state: "active",
             conflictsWith: [],
@@ -118,7 +118,7 @@ describe("DAG worktree history projection (#946)", () => {
           childSessionID: SessionSchema.ID.make("ses_second"),
           worktree: {
             directory: "/repo/.worktrees/second",
-            branch: "opencode/dag-node-second",
+            branch: "graphagent/dag-node-second",
             touchedPaths: ["src/second.ts"],
             state: "active",
             conflictsWith: [],
@@ -133,7 +133,7 @@ describe("DAG worktree history projection (#946)", () => {
             worktreeHistory: [
               {
                 directory: "/repo/.worktrees/first",
-                branch: "opencode/dag-node-first",
+                branch: "graphagent/dag-node-first",
                 touchedPaths: [],
                 state: "active",
                 conflictsWith: [],
@@ -190,7 +190,7 @@ describe("DAG worktree history projection (#946)", () => {
         const nodeID = DagEvent.NodeID.make("node")
         const first: DagEvent.NodeWorktree = {
           directory: "/repo/.worktrees/first",
-          branch: "opencode/first",
+          branch: "graphagent/first",
           baseHead: "first-base",
           touchedPaths: [],
           state: "active",
@@ -198,7 +198,7 @@ describe("DAG worktree history projection (#946)", () => {
         }
         const second: DagEvent.NodeWorktree = {
           directory: "/repo/.worktrees/second",
-          branch: "opencode/second",
+          branch: "graphagent/second",
           baseHead: "second-base",
           touchedPaths: [],
           state: "kept",

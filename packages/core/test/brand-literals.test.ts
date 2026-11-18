@@ -310,7 +310,7 @@ const CATEGORIES: Category[] = [
   {
     id: "uppercase-identifier",
     stage: 2,
-    // Identifier shape only: the standalone product word "OpenCode" is B4 copy.
+    // Identifier shape only: the standalone product word is the terminal stage below.
     pattern: /OpenCode[A-Za-z]+/,
     allow: [],
   },
@@ -438,7 +438,7 @@ describe("brand literals", () => {
     ]) {
       expect({ category: id, detected: categories.has(id) }).toEqual({ category: id, detected: true })
     }
-    // The standalone OpenCode word stays unflagged.
+    // The standalone product word belongs to the terminal stage, not these categories.
     expect(hits.filter((hit) => /product word/.test(hit.text))).toEqual([])
   })
 
@@ -451,6 +451,284 @@ describe("brand literals", () => {
     await writeFile(path.join(root, "packages", "example", "node_modules", "index.js"), "dist/opencode-linux-x64\n")
 
     expect(await scan(await listFiles([root]), active())).toEqual([])
+  })
+})
+
+// Terminal stage (#1012 B4): the upstream product word itself. Every tracked
+// text file is scanned for `opencode` (any case). A hit is a violation unless a
+// closed, itemised entry below covers it: a whole file, a path prefix ending in
+// `/`, or an exact line fragment in an otherwise guarded file. External
+// identifiers that merely contain the word are removed from a line before it is
+// matched. Each entry must keep matching something (see the "needed" test).
+type TerminalAllow = { file: string; reason: string; fragment?: string }
+
+const TERMINAL_EXTERNAL_TOKENS: { token: string; reason: string }[] = [
+  {
+    token: "opencode-dag-config",
+    reason: "name of the external curated workflow repository; B1 tracks the repository rename",
+  },
+  {
+    token: "@lexwdex-org/opencode-dcp",
+    reason: "package identity of the external DCP plugin that context folding detects",
+  },
+]
+
+const TERMINAL_ALLOW: TerminalAllow[] = [
+  { file: "LICENSE", reason: "upstream MIT copyright line; the license text is not rewritten" },
+  { file: "NOTICE", reason: "upstream attribution kept on purpose (independent development keeps the source note)" },
+  ...OC_ASSET_ALLOW,
+  {
+    file: "script/oc-path-priority.test.sh",
+    reason: "installer path-priority tests pin the current installer names until G1",
+  },
+  {
+    file: "docs/continuation-2026-09-20/",
+    reason: "dated evidence record; its scripts replay the environment of that run",
+  },
+  {
+    file: "README.md",
+    fragment: "起源于 opencode 的早期版本",
+    reason: "project origin statement",
+  },
+  { file: "README.md", fragment: "起源于早期的 opencode", reason: "license attribution section" },
+  {
+    file: "README.md",
+    fragment: "`opencode-ai` 装的是上游 opencode",
+    reason: "tells readers the upstream npm package is not GraphAgent",
+  },
+  { file: "README.en.md", fragment: "descends from an early version of opencode", reason: "project origin statement" },
+  { file: "README.en.md", fragment: "descends from an early opencode", reason: "license attribution section" },
+  {
+    file: "README.en.md",
+    fragment: "`opencode-ai` package installs upstream opencode",
+    reason: "tells readers the upstream npm package is not GraphAgent",
+  },
+  {
+    file: "docs/install.md",
+    fragment: "`opencode-ai` package installs upstream opencode",
+    reason: "origin statement and the upstream npm package warning",
+  },
+  {
+    file: "script/check-license.ts",
+    fragment: "Copyright (c) 2025 opencode",
+    reason: "the license check pins the upstream MIT copyright line in LICENSE",
+  },
+  {
+    file: "patches/@silvia-odwyer%2Fphoton-node@0.3.4.patch",
+    reason: "dependency patch content; editing it changes the Nix fixed-output hashes",
+  },
+  {
+    file: "packages/tui/test/i18n/brand-words.test.ts",
+    reason: "negative fixtures proving the TUI brand guard rejects the upstream word",
+  },
+  {
+    file: "packages/http-recorder/LICENSE",
+    fragment: "Copyright (c) 2025 opencode",
+    reason: "upstream MIT copyright line of the inherited package",
+  },
+  {
+    file: "packages/core/src/models-dev.ts",
+    fragment: '"opencode", "opencode-go"',
+    reason: "external models.dev provider ids that are excluded from the catalogue",
+  },
+  {
+    file: "packages/graphagent/src/ide/index.ts",
+    fragment: '"sst-dev.opencode"',
+    reason: "external VS Code extension id",
+  },
+  {
+    file: "packages/graphagent/src/image/image.ts",
+    fragment: "__OPENCODE_PHOTON_WASM_PATH",
+    reason: "global read by the photon dependency patch, whose content is pinned by Nix hashes",
+  },
+  {
+    file: "packages/graphagent/src/provider/adapter/codex.ts",
+    fragment: 'originator = "opencode"',
+    reason: "Codex OAuth originator, an external client identity registered upstream",
+  },
+  {
+    file: "packages/graphagent/src/provider/adapter/codex.ts",
+    fragment: 'originator: "opencode"',
+    reason: "Codex OAuth originator, an external client identity registered upstream",
+  },
+  {
+    file: "packages/graphagent/src/provider/adapter/xai.ts",
+    fragment: 'referrer: "opencode"',
+    reason: "xAI OAuth referrer, an external client identity",
+  },
+  {
+    file: "packages/core/test/flag.test.ts",
+    fragment: "OPENCODE_",
+    reason: "negative test: the legacy environment variables are not read",
+  },
+  {
+    file: "packages/core/test/project.test.ts",
+    fragment: '".git", "opencode"',
+    reason: "negative test: the retired project cache file stays ignored",
+  },
+  {
+    file: "packages/tui/test/component/error-component.test.tsx",
+    fragment: "not.toMatch(/opencode/i)",
+    reason: "negative test: error frames never show the upstream word",
+  },
+  {
+    file: "packages/tui/test/util/presentation.test.ts",
+    fragment: "not.toMatch(/opencode/i)",
+    reason: "negative test: the epilogue never shows the upstream word",
+  },
+  {
+    file: "packages/tui/test/panel/flows.test.tsx",
+    fragment: 'providerFixture("opencode',
+    reason: "external models.dev provider ids the panel must hide",
+  },
+  {
+    file: "packages/tui/test/panel/flows.test.tsx",
+    fragment: 'not.toContain("opencode.ai")',
+    reason: "negative test: the hidden providers' site never appears",
+  },
+  {
+    file: "packages/tui/test/source-guards.test.ts",
+    fragment: "@opencode-ai\\/plugin",
+    reason: "source guard pattern rejecting the upstream plugin package",
+  },
+  {
+    file: "packages/tui/test/theme.test.ts",
+    fragment: "DEFAULT_THEMES.opencode",
+    reason: "negative test: the retired upstream theme is gone",
+  },
+  {
+    file: "packages/graphagent/test/command/import-claude.test.ts",
+    fragment: '"." + "opencode"',
+    reason: "negative test: the imported template must not mention the legacy directory",
+  },
+  {
+    file: "packages/graphagent/test/hook/scoped-frontmatter.test.ts",
+    fragment: "OPENCODE_HOOKS_REQUIRE_TRUST",
+    reason: "negative test: the retired trust variable no longer filters hooks",
+  },
+  {
+    file: "packages/graphagent/test/hook/workspace-trust.test.ts",
+    fragment: "OPENCODE_HOOKS_REQUIRE_TRUST",
+    reason: "negative test: the retired trust variable no longer filters hooks",
+  },
+  {
+    file: "packages/graphagent/test/provider/adapter/xai.test.ts",
+    fragment: 'toBe("opencode")',
+    reason: "pins the xAI OAuth referrer, an external client identity",
+  },
+  {
+    file: "packages/graphagent/test/session/llm-request.test.ts",
+    fragment: "GraphAgent / OpenCode capabilities",
+    reason: "negative test: the removed system-prompt catalogue heading must not return",
+  },
+  {
+    file: "packages/tui/AGENTS.md",
+    reason: "TUI guidance (owned by F1) names the retired theme and the words its own guard rejects",
+  },
+  {
+    file: "packages/tui/script/check-tui-text.ts",
+    reason: "the TUI brand guard's own pattern",
+  },
+]
+
+function terminalAllowed(file: string, line: string) {
+  return TERMINAL_ALLOW.some((entry) => {
+    const covers = entry.file.endsWith("/") ? file.startsWith(entry.file) : file === entry.file
+    if (!covers) return false
+    return entry.fragment === undefined || line.includes(entry.fragment)
+  })
+}
+
+function terminalHits(file: string, text: string): Hit[] {
+  const hits: Hit[] = []
+  for (const [index, raw] of text.split("\n").entries()) {
+    let line = raw
+    for (const { token } of TERMINAL_EXTERNAL_TOKENS) line = line.replaceAll(token, "")
+    if (/opencode/i.test(line)) hits.push({ category: "product-word", file, line: index + 1, text: raw.trim() })
+  }
+  return hits
+}
+
+async function trackedTextFiles(repo: string): Promise<string[]> {
+  const listed = Bun.spawnSync(["git", "ls-files", "-z"], { cwd: repo, stdout: "pipe", stderr: "pipe" })
+  expect(listed.exitCode).toBe(0)
+  const files: string[] = []
+  for (const file of listed.stdout.toString().split("\0")) {
+    if (!file || file === "bun.lock" || SKIP_FILES.includes(file)) continue
+    if (SKIP_PATHS.some((skipped) => file.startsWith(`${skipped}/`))) continue
+    const handle = Bun.file(path.join(repo, file))
+    if (!(await handle.exists())) continue
+    const head = new Uint8Array(await handle.slice(0, 8192).arrayBuffer())
+    if (head.includes(0)) continue
+    files.push(file)
+  }
+  return files
+}
+
+async function terminalViolations(repo: string, files: string[]) {
+  const violations: string[] = []
+  for (const file of files) {
+    for (const hit of terminalHits(file, await Bun.file(path.join(repo, file)).text())) {
+      if (!terminalAllowed(file, hit.text)) violations.push(`${file}:${hit.line}: ${hit.text}`)
+    }
+  }
+  return violations.sort()
+}
+
+describe("brand literals: terminal stage", () => {
+  test("tracked text files mention opencode only inside the closed allowlist", async () => {
+    const files = await trackedTextFiles(REPO)
+    expect(files.length).toBeGreaterThan(1000)
+    expect(files).toContain("packages/core/src/brand.ts")
+    expect(files).toContain("README.md")
+    expect(await terminalViolations(REPO, files)).toEqual([])
+  })
+
+  test("the terminal allowlist stays justified and needed", async () => {
+    const tracked = new Set(await trackedTextFiles(REPO))
+    for (const entry of TERMINAL_ALLOW) {
+      expect(entry.reason.length).toBeGreaterThan(0)
+      const covered = [...tracked].filter((file) =>
+        entry.file.endsWith("/") ? file.startsWith(entry.file) : file === entry.file,
+      )
+      expect({ entry: entry.file, tracked: covered.length > 0 }).toEqual({ entry: entry.file, tracked: true })
+      let needed = false
+      for (const file of covered) {
+        const hits = terminalHits(file, await Bun.file(path.join(REPO, file)).text())
+        if (hits.some((hit) => entry.fragment === undefined || hit.text.includes(entry.fragment))) needed = true
+      }
+      expect({ entry: entry.file, fragment: entry.fragment, needed }).toEqual({
+        entry: entry.file,
+        fragment: entry.fragment,
+        needed: true,
+      })
+    }
+    for (const { token, reason } of TERMINAL_EXTERNAL_TOKENS) {
+      expect(reason.length).toBeGreaterThan(0)
+      const found = Bun.spawnSync(["git", "grep", "-l", "-F", token], { cwd: REPO, stdout: "pipe" })
+      expect({ token, needed: found.exitCode === 0 }).toEqual({ token, needed: true })
+    }
+  })
+
+  test("the terminal scan detects planted violations and honours the allowlist", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "brand-literals-"))
+    roots.push(root)
+    await mkdir(path.join(root, "packages", "example"), { recursive: true })
+    await writeFile(
+      path.join(root, "packages", "example", "index.ts"),
+      [
+        "// Return to OpenCode when done",
+        'const url = "https://github.com/LeXwDeX/opencode-dag-config"',
+        'const cli = "opencode run"',
+        "const clean = 1",
+      ].join("\n"),
+    )
+    await writeFile(path.join(root, "NOTICE"), "This repository is a fork of opencode\n")
+    const violations = await terminalViolations(root, ["packages/example/index.ts", "NOTICE"])
+    expect(violations).toEqual([
+      "packages/example/index.ts:1: // Return to OpenCode when done",
+      'packages/example/index.ts:3: const cli = "opencode run"',
+    ])
   })
 })
 

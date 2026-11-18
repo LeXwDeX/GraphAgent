@@ -89,7 +89,7 @@ try {
 console.log(
   JSON.stringify(
     {
-      packager: "opencode dag-template-packager v1",
+      packager: "graphagent dag-template-packager v1",
       archive: resolvedArchive,
       files: [...files, "runtime-compat.json", ...distributionFiles].sort(),
       template_files: files,

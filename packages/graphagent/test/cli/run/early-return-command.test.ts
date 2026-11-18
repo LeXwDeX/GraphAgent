@@ -8,7 +8,7 @@
 // an assistant step. The run CLI exits its event loop only on the
 // `session.status {type:"idle"}` event, which the runner publishes on the
 // busy→idle transition — a transition these commands never made, so
-// `opencode run "/memory"` (and `run --command memory`) waited forever.
+// `graphagent run "/memory"` (and `run --command memory`) waited forever.
 //
 // Secondary bug under test: run.ts prints text parts only when `time.end` is
 // set; the early-return response parts carried no `time`, so even a fixed
@@ -42,11 +42,11 @@ describe("run mode early-return commands complete (#409)", () => {
   // The #409 repro: "/memory" as a plain text prompt through the run CLI.
   // RED before the fix (hangs until the spawn timeout kills it).
   cliIt.live(
-    'opencode run "/memory" prints the status and exits',
-    ({ llm, home, opencode }) =>
+    'graphagent run "/memory" prints the status and exits',
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.text("unused")
-        const result = yield* opencode.run("/memory", { env: { PWD: home, ...RUN_ENV }, timeoutMs: 30_000 })
+        const result = yield* graphagent.run("/memory", { env: { PWD: home, ...RUN_ENV }, timeoutMs: 30_000 })
         expectCompleted(result)
       }),
     120_000,
@@ -54,11 +54,15 @@ describe("run mode early-return commands complete (#409)", () => {
 
   // The --command flag arm from the issue evidence (v1.0.29 hangs the same way).
   cliIt.live(
-    "opencode run --command memory prints the status and exits",
-    ({ llm, home, opencode }) =>
+    "graphagent run --command memory prints the status and exits",
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.text("unused")
-        const result = yield* opencode.run("", { command: "memory", env: { PWD: home, ...RUN_ENV }, timeoutMs: 30_000 })
+        const result = yield* graphagent.run("", {
+          command: "memory",
+          env: { PWD: home, ...RUN_ENV },
+          timeoutMs: 30_000,
+        })
         expectCompleted(result)
       }),
     120_000,
@@ -66,11 +70,11 @@ describe("run mode early-return commands complete (#409)", () => {
 
   // /goal with no arguments takes the non-kick early-return shape (status line).
   cliIt.live(
-    'opencode run "/goal" prints the goal status and exits',
-    ({ llm, home, opencode }) =>
+    'graphagent run "/goal" prints the goal status and exits',
+    ({ llm, home, graphagent }) =>
       Effect.gen(function* () {
         yield* llm.text("unused")
-        const result = yield* opencode.run("/goal", { env: { PWD: home, ...RUN_ENV }, timeoutMs: 30_000 })
+        const result = yield* graphagent.run("/goal", { env: { PWD: home, ...RUN_ENV }, timeoutMs: 30_000 })
         expectCompleted(result)
       }),
     120_000,
@@ -79,7 +83,7 @@ describe("run mode early-return commands complete (#409)", () => {
 
 cliIt.live(
   "retired trust command follows normal unknown-command handling and preserves old trust data",
-  ({ llm, home, opencode }) =>
+  ({ llm, home, graphagent }) =>
     Effect.gen(function* () {
       yield* llm.text("unused")
       const file = path.join(home, ".local/share/graphagent/trusted-workspaces.json")
@@ -89,7 +93,7 @@ cliIt.live(
         await fs.writeFile(file, old)
       })
       for (const args of ["", "status"]) {
-        const result = yield* opencode.run(args, {
+        const result = yield* graphagent.run(args, {
           command: "trust",
           env: { PWD: home, ...RUN_ENV },
           timeoutMs: 30_000,

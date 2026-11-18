@@ -117,6 +117,6 @@ steps:
 
   - ${{ if parameters.gitIdentity }}:
       - bash: |
-          git config --global user.email "bot@opencode.ai"
-          git config --global user.name "opencode"
+          git config --global user.email "bot@graphagent.invalid"
+          git config --global user.name "graphagent"
         displayName: Configure Git identity

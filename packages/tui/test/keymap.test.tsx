@@ -116,7 +116,7 @@ test("session interrupt binds a meta-modified escape fallback for merged double-
   }
 })
 
-test("mode-less bindings stay active when opencode mode changes", async () => {
+test("mode-less bindings stay active when graphagent mode changes", async () => {
   const counts: Record<string, Record<string, number>> = {}
 
   function Harness() {

@@ -37,7 +37,7 @@ async function initRepo(directory: string) {
   await $`git init`.cwd(directory).quiet()
   await $`git config core.fsmonitor false`.cwd(directory).quiet()
   await $`git config commit.gpgsign false`.cwd(directory).quiet()
-  await $`git config user.email test@opencode.test`.cwd(directory).quiet()
+  await $`git config user.email test@graphagent.test`.cwd(directory).quiet()
   await $`git config user.name Test`.cwd(directory).quiet()
   await $`git commit --allow-empty -m root`.cwd(directory).quiet()
 }

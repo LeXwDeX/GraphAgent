@@ -774,7 +774,10 @@ const ensureDir = Effect.fn("test.ensureDir")(function* (dir: string) {
 const writeConfig = Effect.fn("test.writeConfig")(function* (dir: string, config: Partial<ConfigV1.Info>) {
   yield* writeText(
     path.join(dir, ".agents", "settings.json"),
-    JSON.stringify({ $schema: "https://opencode.ai/config.json", ...config }),
+    JSON.stringify({
+      $schema: "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json",
+      ...config,
+    }),
   )
 })
 
@@ -3553,7 +3556,7 @@ backgroundUnix(
   30_000,
 )
 
-// The same model-made calls in a non-interactive turn (`opencode run`, a hook followup): nobody waits for a later
+// The same model-made calls in a non-interactive turn (`graphagent run`, a hook followup): nobody waits for a later
 // message, so the run is in the foreground whether the agent declared the background or the model asked for it.
 backgroundUnix(
   "a task call that says nothing to an agent declaring the background runs in the foreground in a noninteractive turn (#1357)",

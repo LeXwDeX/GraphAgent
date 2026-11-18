@@ -1,11 +1,11 @@
-// Subprocess test harness for the opencode CLI. Spawns the real binary against
+// Subprocess test harness for the graphagent CLI. Spawns the real binary against
 // a TestLLMServer running in-process at a random port, with full env isolation.
 //
 // This is the missing test tier: in-process tests can't catch bugs that span
 // argv parsing → server boot → SDK call → event consumption → exit code (like
 // the original /event race or #27371's invalid-model hang).
 //
-// Configuration flows through opencode's built-in test affordances:
+// Configuration flows through graphagent's built-in test affordances:
 //   - GRAPHAGENT_CONFIG_CONTENT      : provider config inline, no files to find
 //   - GRAPHAGENT_TEST_HOME           : pins os.homedir() → tmpdir
 //   - GRAPHAGENT_DISABLE_PROJECT_CONFIG : skip walking up for graphagent.json
@@ -171,7 +171,7 @@ export type RunHandle = {
 
 export type SpawnOpts = { readonly timeoutMs?: number; readonly env?: Record<string, string>; readonly cwd?: string }
 
-// Typed equivalent of constructing argv for `opencode run`. New flags should
+// Typed equivalent of constructing argv for `graphagent run`. New flags should
 // land here so tests stay grep-able and refactor-safe.
 export type RunOpts = SpawnOpts & {
   readonly model?: string
@@ -183,7 +183,7 @@ export type RunOpts = SpawnOpts & {
   readonly extraArgs?: string[]
 }
 
-// `opencode.host` is a test-only long-lived process. It serves the same fetch
+// `graphagent.host` is a test-only long-lived process. It serves the same fetch
 // handler as the TUI worker without product listening code. The handle lives
 // inside the caller's Scope and the URL bound by the OS is parsed off stdout.
 export type HostOpts = SpawnOpts & {
@@ -208,7 +208,7 @@ export type HostHandle = {
   readonly exited: Promise<number>
 }
 
-// `opencode acp` speaks newline-delimited JSON-RPC over stdin/stdout. It is
+// `graphagent acp` speaks newline-delimited JSON-RPC over stdin/stdout. It is
 // long-lived and exits cleanly when stdin is closed. The handle exposes the
 // duplex stream as send/receive rather than raw pipes so tests don't have to
 // reimplement framing on every call site.
@@ -239,7 +239,7 @@ export type GraphagentCli = {
   // the returned handle is killed when the caller's Scope closes. Fails if the
   // listening line doesn't appear within `readyTimeoutMs`.
   readonly host: (opts?: HostOpts) => Effect.Effect<HostHandle, Error, Scope.Scope>
-  // Spawn `opencode acp` and return a duplex JSON-RPC handle. Long-lived:
+  // Spawn `graphagent acp` and return a duplex JSON-RPC handle. Long-lived:
   // the subprocess exits on stdin close, which the scope finalizer triggers.
   readonly acp: (opts?: AcpOpts) => Effect.Effect<AcpHandle, Error, Scope.Scope>
   // Escape hatch: any CLI invocation with full control over argv. Used to test
@@ -259,7 +259,7 @@ export type CliFixture = {
   readonly llm: TestLLMServer["Service"]
   readonly home: string
   readonly env: Readonly<Record<string, string>>
-  readonly opencode: GraphagentCli
+  readonly graphagent: GraphagentCli
   readonly target: ResolvedCliTarget
 }
 
@@ -308,9 +308,9 @@ export function withCliFixture<A, E>(
       }),
     )
 
-    const spawn = Effect.fn("opencode.spawn")(function* (args: string[], opts?: SpawnOpts) {
+    const spawn = Effect.fn("graphagent.spawn")(function* (args: string[], opts?: SpawnOpts) {
       const start = Date.now()
-      // `opencode run` boots bun + transpiles + runs a turn against the in-process
+      // `graphagent run` boots bun + transpiles + runs a turn against the in-process
       // TestLLMServer. Locally ~23s for the happy path; CI runners are 2-3x slower,
       // so 30s killed the subprocess there. 120s gives margin without masking a real
       // hang (per-test timeouts in run-process.test.ts are the outer bound).
@@ -389,7 +389,7 @@ export function withCliFixture<A, E>(
       return spawn(runArgs(message, opts), runOpts(opts))
     }
 
-    const startRun = Effect.fn("opencode.startRun")(function* (message: string, opts?: RunOpts) {
+    const startRun = Effect.fn("graphagent.startRun")(function* (message: string, opts?: RunOpts) {
       const start = Date.now()
       const options = runOpts(opts)
       yield* Effect.promise(() => verifyCliTarget(target))
@@ -426,9 +426,9 @@ export function withCliFixture<A, E>(
     })
 
     const serverHostEntry = path.join(import.meta.dir, "server-host.ts")
-    const host = Effect.fn("opencode.host")(function* (opts?: HostOpts) {
+    const host = Effect.fn("graphagent.host")(function* (opts?: HostOpts) {
       if (target.mode !== "source") {
-        return yield* Effect.fail(new Error("opencode.host only supports the source CLI target"))
+        return yield* Effect.fail(new Error("graphagent.host only supports the source CLI target"))
       }
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
@@ -470,7 +470,7 @@ export function withCliFixture<A, E>(
           orElse: () =>
             Effect.fail(
               new Error(
-                `opencode test host did not become ready within ${readyTimeoutMs}ms\n` +
+                `graphagent test host did not become ready within ${readyTimeoutMs}ms\n` +
                   `stderr (last 2000):\n${stderrChunks.join("").slice(-2000)}`,
               ),
             ),
@@ -489,7 +489,7 @@ export function withCliFixture<A, E>(
       } satisfies HostHandle
     })
 
-    const acp = Effect.fn("opencode.acp")(function* (opts?: AcpOpts) {
+    const acp = Effect.fn("graphagent.acp")(function* (opts?: AcpOpts) {
       const argv = ["acp"]
       if (opts?.cwd) argv.push("--cwd", opts.cwd)
       if (opts?.extraArgs) argv.push(...opts.extraArgs)
@@ -570,11 +570,11 @@ export function withCliFixture<A, E>(
       } satisfies AcpHandle
     })
 
-    const opencode: GraphagentCli = { target, run, startRun, host, acp, spawn, expectExit, parseJsonEvents }
+    const graphagent: GraphagentCli = { target, run, startRun, host, acp, spawn, expectExit, parseJsonEvents }
 
-    return yield* fn({ llm, home, env, opencode, target })
+    return yield* fn({ llm, home, env, graphagent, target })
     // FetchHttpClient is provided so test bodies can `yield* HttpClient.HttpClient`
-    // and hit endpoints on `opencode.host()` without rolling their own fetch.
+    // and hit endpoints on `graphagent.host()` without rolling their own fetch.
   }).pipe(
     Effect.provide(
       Layer.mergeAll(TestLLMServer.layer, FetchHttpClient.layer, FSUtil.defaultLayer, AppProcess.defaultLayer),
@@ -596,7 +596,7 @@ function normalizeLines(value: string) {
 
 // Convenience for the common assertion pattern. Dumps stderr/stdout when
 // the exit code doesn't match — saves debugging time on CI failures.
-function expectExit(result: RunResult, expected: number, label = "opencode") {
+function expectExit(result: RunResult, expected: number, label = "graphagent") {
   if (result.exitCode === expected) return
   const tail = (s: string, n: number) => (s.length > n ? "..." + s.slice(-n) : s)
   // eslint-disable-next-line no-console
@@ -610,13 +610,13 @@ function expectExit(result: RunResult, expected: number, label = "opencode") {
 
 // `cliIt.live(name, fixture => effect)` is the same as
 // `it.live(name, () => withCliFixture(fixture))` — one fewer nesting level at
-// every call site. Use this for any test that needs the opencode CLI fixture.
+// every call site. Use this for any test that needs the graphagent CLI fixture.
 //
 // Subprocess tests must run against the real clock — a TestClock-paused
 // environment can't drive a child process. If you need `.only` or `.skip`, fall
 // back to `it.live` + `withCliFixture` directly.
 // Body's R is `Scope.Scope | never` so tests can yield* scope-requiring
-// resources (e.g. `opencode.host`) without an extra `Effect.scoped` wrapper —
+// resources (e.g. `graphagent.host`) without an extra `Effect.scoped` wrapper —
 // `withCliFixture`'s outer scope is the natural lifetime.
 export function cliItFor(target: CliTarget) {
   return {

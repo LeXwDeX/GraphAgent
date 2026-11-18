@@ -873,7 +873,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
     })
   }
 
-  // Resource helpers are OpenCode-owned tools too: the same settings hooks
+  // Resource helpers are GraphAgent-owned tools too: the same settings hooks
   // must govern them, not only server-provided MCP callTool definitions.
   for (const entry of resourceEntries) {
     const name = entry.id

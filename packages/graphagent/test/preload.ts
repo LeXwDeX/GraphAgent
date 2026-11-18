@@ -15,7 +15,7 @@ process.env.LANG = "en_US.UTF-8"
 delete process.env.LC_MESSAGES
 
 // Set XDG env vars FIRST, before any src/ imports
-const dir = path.join(os.tmpdir(), "opencode-test-data-" + process.pid)
+const dir = path.join(os.tmpdir(), "graphagent-test-data-" + process.pid)
 await fs.mkdir(dir, { recursive: true })
 afterAll(async () => {
   const { AppRuntime } = await import("../src/effect/app-runtime")

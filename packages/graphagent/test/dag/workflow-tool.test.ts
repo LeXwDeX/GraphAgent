@@ -161,7 +161,7 @@ const mockNodes = (id: string) =>
             baseHead: "0123456789abcdef",
             targetFingerprint,
             worktreeDirectory: "/repo/.worktrees/status-node-running",
-            worktreeBranch: "opencode/dag-status-node-running",
+            worktreeBranch: "graphagent/dag-status-node-running",
             worktreeCommit: "fedcba9876543210",
             worktreeState: "removed",
             worktreeConflictsWith: ["node_failed"],
@@ -170,7 +170,7 @@ const mockNodes = (id: string) =>
             worktreeHistory: [
               {
                 directory: "/repo/.worktrees/status-node-retired",
-                branch: "opencode/dag-status-node-retired",
+                branch: "graphagent/dag-status-node-retired",
                 touchedPaths: ["src/retired.ts"],
                 state: "kept" as const,
                 conflictsWith: [],
@@ -206,7 +206,7 @@ const mockNodes = (id: string) =>
             modelProviderId: null,
             childSessionId: "ses_failed_child",
             worktreeDirectory: "/repo/.worktrees/status-node-failed",
-            worktreeBranch: "opencode/dag-status-node-failed",
+            worktreeBranch: "graphagent/dag-status-node-failed",
             worktreeCommit: "0123456789abcdef",
             worktreePatchPath: "/repo/.agents/workflow-reports/dag_status/node_failed.patch",
             worktreePatchSha256: "a".repeat(64),
@@ -530,7 +530,7 @@ const store = Layer.mock(DagStore.Service, {
               required: false,
               superseded: true,
               worktreeDirectory: "/repo/.worktrees/status-node-orphan",
-              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeBranch: "graphagent/dag-status-node-orphan",
               worktreeState: "active",
               touchedPaths: ["src/orphan.ts"],
             }),
@@ -553,7 +553,7 @@ const store = Layer.mock(DagStore.Service, {
               required: false,
               superseded: true,
               worktreeDirectory: "/repo/.worktrees/status-node-orphan",
-              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeBranch: "graphagent/dag-status-node-orphan",
               worktreeState: "active",
               touchedPaths: ["src/orphan.ts"],
             })
@@ -1661,7 +1661,7 @@ describe("workflow tool execution", () => {
       // #946: worktree evidence and conflict views are part of the status.
       expect(result.output).toContain('"worktrees"')
       expect(result.output).toContain('"state": "kept"')
-      expect(result.output).toContain('"branch": "opencode/dag-status-node-failed"')
+      expect(result.output).toContain('"branch": "graphagent/dag-status-node-failed"')
       // A cancelled/restarted superseded row still owns an active worktree.
       expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-orphan"')
       expect(result.output).toContain('"state": "active"')
@@ -2524,6 +2524,45 @@ describe("workflow tool execution", () => {
     }),
   )
 
+  runtime.effect("start leaves the compiler-owned skip_ok out of the standard review advisory", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      const info = yield* WorkflowTool
+      const workflow = yield* info.init()
+      const spec_path = yield* writeWorkflowSpec("block-advisory", {
+        config: {
+          name: "block-advisory",
+          objective: "Implement and review session recovery",
+          blocks: [
+            { id: "build", kind: "coding" },
+            { id: "verify", kind: "verify", depends_on: ["build"] },
+            { id: "review", kind: "review", depends_on: ["verify"] },
+          ],
+        },
+      })
+      const result = yield* workflow.execute(
+        Schema.decodeUnknownSync(Parameters)({ params: { action: "run", operation: "start", spec_path } }),
+        toolContext(),
+      )
+      expect(result.title).toBe("Workflow started: block-advisory")
+      // The decision waits on the verify verdict, so the standard compile keeps
+      // it skippable. A template cannot change that: neither the tool output
+      // the model reads nor Dag.create's own log asks for it, while the gaps a
+      // template can fix are still reported in both.
+      const created = published.find((event) => event.type === DagEvent.WorkflowCreated.type)?.data
+      const persisted = JSON.parse(
+        typeof created === "object" && created !== null && "config" in created ? String(created.config) : "{}",
+      )
+      expect(persisted.nodes.find((node: { id: string }) => node.id === "review").skip_ok).toBe(true)
+      expect(result.output).toContain("review: strict review decision must include the completeness lens")
+      expect(result.output).toContain("must declare config.acceptance")
+      expect(result.output).not.toContain("skip_ok")
+      const logs = JSON.stringify(yield* logLines)
+      expect(logs).toContain("review: strict review decision must include the completeness lens")
+      expect(logs).not.toContain("skip_ok")
+    }),
+  )
+
   runtime.effect("extends from a YAML workflow file", () =>
     Effect.gen(function* () {
       published.length = 0
@@ -2584,6 +2623,58 @@ describe("workflow tool execution", () => {
       expect(published.find((event) => event.type === DagEvent.NodeRegistered.type)?.data).toEqual(
         expect.objectContaining({ nodeID: "repair", dependsOn: ["node_running"] }),
       )
+    }),
+  )
+
+  runtime.effect("extend and replan leave the compiler-owned skip_ok out of the standard review advisory", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      const workflow = yield* (yield* WorkflowTool).init()
+      const reviewed = [
+        { id: "repair", kind: "coding", depends_on: ["node_running"] },
+        { id: "repair-check", kind: "verify", depends_on: ["repair"] },
+        { id: "repair-review", kind: "review", depends_on: ["repair-check"] },
+      ]
+      const extendPath = yield* writeWorkflowSpec("block-extend-advisory", {
+        objective: "Repair from the current diagnostic evidence",
+        blocks: reviewed,
+      })
+      const extended = yield* workflow.execute(
+        Schema.decodeUnknownSync(Parameters)({
+          params: { action: "run", operation: "extend", workflow_id: "dag_status", spec_path: extendPath },
+        }),
+        toolContext(),
+      )
+      expect(extended.title).toBe("Workflow extended: 5 nodes added")
+      expect(extended.output).not.toContain("skip_ok")
+      // The merged graph's structural check logs the gaps a fragment author can
+      // fix; the compiler-owned skip_ok is not one of them.
+      const extendLogs = JSON.stringify(yield* logLines)
+      expect(extendLogs).toContain("repair-review: strict review decision must include the completeness lens")
+      expect(extendLogs).not.toContain("skip_ok")
+
+      const again = [
+        { id: "again-repair", kind: "coding", depends_on: ["node_running"] },
+        { id: "again-check", kind: "verify", depends_on: ["again-repair"] },
+        { id: "again-review", kind: "review", depends_on: ["again-check"] },
+      ]
+      const replanPath = yield* writeWorkflowSpec("block-replan-advisory", {
+        fragment: {
+          name: "block-replan-advisory",
+          objective: "Repair from the current diagnostic evidence",
+          blocks: again,
+        },
+      })
+      const replanned = yield* workflow.execute(
+        Schema.decodeUnknownSync(Parameters)({
+          params: { action: "control", operation: "replan", workflow_id: "dag_status", spec_path: replanPath },
+        }),
+        toolContext(),
+      )
+      expect(replanned.output).not.toContain("skip_ok")
+      const replanLogs = JSON.stringify(yield* logLines)
+      expect(replanLogs).toContain("again-review: strict review decision must include the completeness lens")
+      expect(replanLogs).not.toContain("skip_ok")
     }),
   )
 

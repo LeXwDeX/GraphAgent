@@ -59,6 +59,6 @@ describe("heap snapshot rotation", () => {
   })
 
   test("tolerates a missing log directory", async () => {
-    await expect(Heap.pruneHeapSnapshots(path.join("/", "opencode-missing-log-dir"))).resolves.toBeUndefined()
+    await expect(Heap.pruneHeapSnapshots(path.join("/", "graphagent-missing-log-dir"))).resolves.toBeUndefined()
   })
 })

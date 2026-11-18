@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 process.env.AGENT = "1"
-process.env.OPENCODE = "1"
+process.env.GRAPHAGENT = "1"
 // Tests assert failure reporting through `stderrTail()`, so the host must
 // mirror the file logger to stderr under the same switch the CLI uses.
 process.env.GRAPHAGENT_PRINT_LOGS = "1"
@@ -17,4 +17,4 @@ const server = Bun.serve({
   fetch: Server.Default().app.fetch,
 })
 
-console.log(`opencode test host listening on http://${hostname}:${server.port}`)
+console.log(`graphagent test host listening on http://${hostname}:${server.port}`)

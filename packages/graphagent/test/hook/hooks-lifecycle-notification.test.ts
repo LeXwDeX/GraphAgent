@@ -8,7 +8,7 @@ import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 import { pollWithTimeout } from "../lib/effect"
 
-cliIt.live("a real pending permission emits Notification through a command hook", ({ home, opencode }) =>
+cliIt.live("a real pending permission emits Notification through a command hook", ({ home, graphagent }) =>
   Effect.gen(function* () {
     const audit = path.join(home, "notification-hook.jsonl")
     const script = path.join(home, "notification-hook.ts")
@@ -23,7 +23,7 @@ cliIt.live("a real pending permission emits Notification through a command hook"
         JSON.stringify({ Notification: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })
-    const server = yield* opencode.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "ask" }) } })
+    const server = yield* graphagent.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "ask" }) } })
     const headers = { "content-type": "application/json", "x-graphagent-directory": home }
     const post = (route: string, body: object) =>
       Effect.promise(() => fetch(server.url + route, { method: "POST", headers, body: JSON.stringify(body) }))

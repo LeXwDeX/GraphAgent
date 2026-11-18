@@ -267,7 +267,7 @@
             "background",
             "auto"
           ],
-          "description": "How a task call to this agent runs by default: \"foreground\" waits for the result, \"background\" detaches the run and delivers the result later, \"auto\" (default) leaves it to the call. The call's own background argument and a command's execution take precedence over it. An interactive agent (its own rules name and allow question or plan_exit) always runs in the foreground, and so does every call in a non-interactive turn (opencode run, a hook follow-up)."
+          "description": "How a task call to this agent runs by default: \"foreground\" waits for the result, \"background\" detaches the run and delivers the result later, \"auto\" (default) leaves it to the call. The call's own background argument and a command's execution take precedence over it. An interactive agent (its own rules name and allow question or plan_exit) always runs in the foreground, and so does every call in a non-interactive turn (graphagent run, a hook follow-up)."
         }
       }
     },
@@ -873,7 +873,7 @@
             ],
             "additionalProperties": true
           },
-          "description": "Command configuration, see https://opencode.ai/docs/commands"
+          "description": "Command configuration"
         },
         "skills": {
           "type": "object",
@@ -1111,7 +1111,7 @@
               "$ref": "#/$defs/AgentConfigEncoded"
             }
           },
-          "description": "Agent configuration, see https://opencode.ai/docs/agents"
+          "description": "Agent configuration"
         },
         "provider": {
           "type": "object",
@@ -1260,7 +1260,7 @@
             }
           },
           "additionalProperties": true,
-          "description": "OpenCode-owned permission hook mode and additional directory grants"
+          "description": "GraphAgent-owned permission hook mode and additional directory grants"
         },
         "tools": {
           "type": "object",
