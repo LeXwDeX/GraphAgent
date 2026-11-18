@@ -63,6 +63,7 @@ import { DagConfig } from "../config"
 import { DagSection } from "@/config/dag-section"
 import { spawnNode, makeDeadlineWatcher } from "./spawn"
 import { DagComposeExpansion } from "./compose-expansion"
+import { collectChangeFacts, renderChangeFacts } from "./change-facts"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
@@ -733,6 +734,11 @@ const serviceLayer = Layer.effect(
             if (Object.keys(remainingContext).length > 0) {
               promptParts.push({ type: "text", text: `\n\nContext:\n${upstreamBlock("context", remainingContext)}` })
             }
+
+            // #1455: a judging node is told which paths the engine recorded for the writers upstream, beside
+            // what those writers reported, so completion rests on facts the engine measured.
+            const changeFacts = collectChangeFacts({ node, nodeConfig, nodes: nodesSnapshot, directory: nodeDirectory })
+            if (changeFacts) promptParts.push({ type: "text", text: `\n\n${renderChangeFacts(changeFacts)}` })
 
             if (nodeConfig?.output_schema) {
               promptParts.push({

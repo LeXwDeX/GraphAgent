@@ -674,6 +674,91 @@ describe("DagLoop input_mapping execution boundary", () => {
     ),
   )
 
+  it.live("hands a judging node the engine's change facts beside the writer's own report, and no other node", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const verify: NodeConfig = {
+          ...node("verify", ["implement"]),
+          block: "verify",
+          output_schema: { type: "object", required: ["verdict"], properties: { verdict: { enum: ["PASS", "FAIL"] } } },
+        }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Engine facts",
+          config: { name: "engine-facts", nodes: [node("implement"), verify, node("notes", ["implement"])] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "implement did not start")
+        // The writer says it changed a.ts; the engine recorded b.ts.
+        yield* dag.nodeCompleted(
+          dagID,
+          "implement",
+          { summary: "done", changed_files: ["a.ts"], fingerprint: "fp" },
+          undefined,
+          undefined,
+          undefined,
+          ["b.ts"],
+        )
+        const first = yield* awaitWithTimeout(Queue.take(records), "first dependent did not start")
+        const second = yield* awaitWithTimeout(Queue.take(records), "second dependent did not start")
+        const byTitle = (title: string) => [first, second].find((record) => record.title === title)
+        const judged = byTitle("verify")?.text ?? ""
+        expect(judged).toContain('<engine-facts source="git">')
+        expect(judged).toContain("Measured by the engine from git, not reported by any model.")
+        expect(judged).toContain("reported, not recorded: a.ts")
+        expect(judged).toContain("recorded, not reported: b.ts")
+        expect(judged).toContain("recorded paths (1):\n- b.ts (no line counts)\n</engine-facts>")
+        // After the Context block, before the output contract.
+        expect(judged.indexOf("Context:")).toBeLessThan(judged.indexOf("<engine-facts"))
+        expect(judged.indexOf("</engine-facts>")).toBeLessThan(judged.indexOf("[OUTPUT CONTRACT]"))
+        expect(byTitle("notes")?.text).not.toContain("engine-facts")
+      }),
+    ),
+  )
+
+  it.live("hands a judging node no facts when no upstream writer changed anything", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const reviewer = { ...node("reviewer", ["implement"]), worker_type: "review" }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Review facts",
+          config: { name: "review-facts", nodes: [node("implement"), reviewer] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "implement did not start")
+        yield* dag.nodeCompleted(dagID, "implement", { summary: "done" }, undefined, undefined, undefined, [])
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "reviewer did not start")
+        expect(prompt.text).not.toContain("engine-facts")
+      }),
+    ),
+  )
+
+  it.live("hands a review worker the record alone when no writer reported a change", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const reviewer = { ...node("reviewer", ["implement"]), worker_type: "review" }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Review facts",
+          config: { name: "review-facts", nodes: [node("implement"), reviewer] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "implement did not start")
+        yield* dag.nodeCompleted(dagID, "implement", { summary: "done" }, undefined, undefined, undefined, ["src/x.ts"])
+        const prompt = yield* awaitWithTimeout(Queue.take(records), "reviewer did not start")
+        // Nobody reported a change, so there is nothing to compare: the record alone.
+        expect(prompt.text).toContain('<engine-facts source="git">')
+        expect(prompt.text).toContain("recorded paths (1):\n- src/x.ts (no line counts)")
+        expect(prompt.text).not.toContain("recorded, not reported")
+        expect(prompt.text).not.toContain("reported, not recorded")
+      }),
+    ),
+  )
+
   it.live("fails a missing declared field before creating a child session", () =>
     runLoopTest(({ dag, loop, store, records, created }) =>
       Effect.gen(function* () {

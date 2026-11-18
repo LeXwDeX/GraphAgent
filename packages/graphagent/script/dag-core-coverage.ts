@@ -110,6 +110,8 @@ export async function runDagCoreCoverageGate() {
         { file: "src/dag/workflow-create.ts", lines: 99, functions: 100 },
         // #1455: the envelope of dynamic prompt values is small and fully exercised.
         { file: "src/dag/templates/envelope.ts", lines: 100, functions: 100 },
+        // #1455: the change facts a judging node is given.
+        { file: "src/dag/runtime/change-facts.ts", lines: 100, functions: 100 },
         { file: "src/dag/control.ts", lines: 90, functions: 85 },
         { file: "src/dag/runtime/loop.ts", lines: 90, functions: 88 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },
