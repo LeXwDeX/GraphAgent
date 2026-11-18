@@ -208,6 +208,11 @@ export interface ToolBinding {
   readonly source: string
   /** The server marked this tool `_meta["anthropic/requiresUserInteraction"] === true`. */
   readonly requiresUserInteraction?: boolean
+  /**
+   * The key this tool had before `assignToolKeys` shortened it or made it unique (#1459); set only on such a tool.
+   * A deny or ask rule written for that key still applies to the tool.
+   */
+  readonly baseKey?: string
 }
 
 const bindings = new WeakMap<object, ToolBinding>()

@@ -629,6 +629,37 @@ it.instance(
 )
 
 it.instance(
+  "tools() binds a rewritten key to the key the tool had before, and a plain key to nothing",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const long = "very_long_tool_name_".repeat(5)
+        yield* connectWith(mcp, "a.b", ["c"])
+        yield* connectWith(mcp, "a", ["b.c"])
+        yield* connectWith(mcp, "plain", ["y"])
+        yield* connectWith(mcp, "long", [long])
+        yield* connectWith(mcp, "mcp", ["describe"])
+
+        const tools = yield* mcp.tools()
+        const binding = (key: string) => McpCatalog.toolBinding(tools[key])
+        // Two tools that sanitize to `a_b_c`, an overlong key and a reserved name each remember the key they had.
+        expect(binding(`a_b_c_${toolKeySuffix("a.b", "c")}`)?.baseKey).toBe("a_b_c")
+        expect(binding(`a_b_c_${toolKeySuffix("a", "b.c")}`)?.baseKey).toBe("a_b_c")
+        expect(binding(("long_" + long).slice(0, 55) + "_" + toolKeySuffix("long", long))?.baseKey).toBe("long_" + long)
+        expect(binding(`mcp_describe_${toolKeySuffix("mcp", "describe")}`)?.baseKey).toBe("mcp_describe")
+        // A key that stayed as it was carries nothing: its binding is what it was before.
+        expect(binding("plain_y")).toEqual({
+          server: "plain",
+          tool: "y",
+          source: "unknown",
+          requiresUserInteraction: false,
+        })
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
   "tools() keeps the first of a tool a server lists twice and says it skipped the other",
   () =>
     MCP.Service.use((mcp: MCPNS.Interface) =>

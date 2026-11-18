@@ -120,66 +120,83 @@ describe("official MCP tool hook transport", () => {
     }),
   )
 
-  it.instance("finds the tool a hook names by its binding when two tools share one sanitized key", () =>
+  // A server tool that records its call and answers with a hook decision that names it.
+  const answering = (called: string[], server: string, name: string) =>
+    McpCatalog.bindTool(
+      tool({
+        inputSchema: jsonSchema({ type: "object", properties: {} }),
+        execute: async () => {
+          called.push(`${server}/${name}`)
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "deny",
+                    permissionDecisionReason: `${server}/${name}`,
+                  },
+                }),
+              },
+            ],
+          }
+        },
+      }),
+      { server, tool: name, source: "unknown" },
+    )
+
+  // What the `mcp_tool` hook of `server` and `name` decides, over a service that hands out `registry`.
+  const decide = (registry: Record<string, ReturnType<typeof answering>>, server: string, name: string) =>
     Effect.gen(function* () {
       const store = yield* SessionHooks.Service
       const hook = yield* SettingsHook.Service
-      const called: string[] = []
-      const bound = (server: string, name: string) =>
-        McpCatalog.bindTool(
-          tool({
-            inputSchema: jsonSchema({ type: "object", properties: {} }),
-            execute: async () => {
-              called.push(`${server}/${name}`)
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify({
-                      hookSpecificOutput: {
-                        hookEventName: "PreToolUse",
-                        permissionDecision: "deny",
-                        permissionDecisionReason: `${server}/${name}`,
-                      },
-                    }),
-                  },
-                ],
-              }
-            },
-          }),
-          { server, tool: name, source: "unknown" },
+      const sessionID = SessionID.descending()
+      yield* store.add(sessionID, { event: "PreToolUse", hooks: [{ type: "mcp_tool", server, tool: name }] })
+      return yield* hook
+        .trigger(
+          { event: "PreToolUse", toolName: "read", toolInput: {} },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
+        .pipe(Effect.provide(Layer.mock(MCP.Service, { tools: () => Effect.succeed(registry) })))
+    })
+
+  it.instance("finds the tool a hook names by its binding when two tools share one sanitized key", () =>
+    Effect.gen(function* () {
+      const called: string[] = []
       // Server `a.b`'s `c` and server `a`'s `b.c` both sanitize to `a_b_c`, so the service hands them out under
       // keys that carry a hash suffix: neither can be rebuilt from the names in the hook.
-      const mcp = Layer.mock(MCP.Service, {
-        tools: () =>
-          Effect.succeed({
-            a_b_c_1a2b3c4d: bound("a.b", "c"),
-            a_b_c_5e6f7a8b: bound("a", "b.c"),
-          }),
-      })
-      const decide = (server: string, name: string) =>
-        Effect.gen(function* () {
-          const sessionID = SessionID.descending()
-          yield* store.add(sessionID, {
-            event: "PreToolUse",
-            hooks: [{ type: "mcp_tool", server, tool: name }],
-          })
-          return yield* hook
-            .trigger(
-              { event: "PreToolUse", toolName: "read", toolInput: {} },
-              { sessionID, transcript: () => Effect.succeed("") },
-            )
-            .pipe(Effect.provide(mcp))
-        })
+      const registry = {
+        a_b_c_1a2b3c4d: answering(called, "a.b", "c"),
+        a_b_c_5e6f7a8b: answering(called, "a", "b.c"),
+      }
 
-      const dotted = yield* decide("a.b", "c")
+      const dotted = yield* decide(registry, "a.b", "c")
       expect(called).toEqual(["a.b/c"])
       expect(dotted.permissionDecisionReason).toBe("a.b/c")
 
-      const other = yield* decide("a", "b.c")
+      const other = yield* decide(registry, "a", "b.c")
       expect(called).toEqual(["a.b/c", "a/b.c"])
       expect(other.permissionDecisionReason).toBe("a/b.c")
+    }),
+  )
+
+  it.instance("calls only the server a hook names when another server's name sanitizes to the same", () =>
+    Effect.gen(function* () {
+      const called: string[] = []
+      // `a:b` and `a_b` both read `a_b` once `:` is replaced; both have a `check`. `a:b` comes first.
+      const registry = {
+        a_b_check_1111aaaa: answering(called, "a:b", "check"),
+        a_b_check_2222bbbb: answering(called, "a_b", "check"),
+      }
+
+      const underscored = yield* decide(registry, "a_b", "check")
+      expect(called).toEqual(["a_b/check"])
+      expect(underscored.permissionDecisionReason).toBe("a_b/check")
+
+      const colon = yield* decide(registry, "a:b", "check")
+      expect(called).toEqual(["a_b/check", "a:b/check"])
+      expect(colon.permissionDecisionReason).toBe("a:b/check")
     }),
   )
 

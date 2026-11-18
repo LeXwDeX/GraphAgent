@@ -52,6 +52,7 @@ export const mcpToolHandler: HookHandler = {
     const exit = yield* invokeMcpHook(
       mcpSvc,
       command,
+      { server: entry.server, tool: entry.tool },
       mcpInput(entry, envelope),
       typeof envelope.session_id === "string" ? envelope.session_id : undefined,
     ).pipe(Effect.timeout(timeoutMs), Effect.exit)
@@ -71,13 +72,14 @@ export const mcpToolHandler: HookHandler = {
 // ── MCP hook execution ──────────────────────────────────────────
 
 /**
- * The tool whose binding names this server (with `:` as `_`, as the hook command spells it) and tool. Its key cannot
- * always be rebuilt from the names (#1459), but its binding always says which server and tool it is.
+ * The tool whose binding names exactly this server and tool, as the hook entry spells them: no sanitizing, so servers
+ * that read the same once sanitized (`a:b`, `a_b`) stay apart. A tool's key cannot always be rebuilt from the names
+ * (#1459), but its binding always says which server and tool it is.
  */
-function boundTool<T extends object>(tools: Record<string, T>, server: string, name: string) {
+function boundTool<T extends object>(tools: Record<string, T>, target: { server: string; tool: string }) {
   return Object.values(tools).find((item) => {
     const binding = McpCatalog.toolBinding(item)
-    return binding !== undefined && binding.server.replaceAll(":", "_") === server && binding.tool === name
+    return binding !== undefined && binding.server === target.server && binding.tool === target.tool
   })
 }
 
@@ -88,12 +90,12 @@ function boundTool<T extends object>(tools: Record<string, T>, server: string, n
  *
  * The fork's MCP service stores tools under `sanitize(server)_sanitize(tool)`
  * (see src/mcp/index.ts), except that a key two tools share or one longer than
- * 64 characters carries a hash suffix. We strip the leading `mcp__`, split on
- * `__` for the server/tool boundary and look for the tool whose real binding
- * names that server and tool; failing that, we sanitize each side and rejoin
- * with a single underscore to look up the key. This keeps the on-disk hook
- * config in lock step with Claude Code while staying compatible with the
- * fork's internal tool registry naming.
+ * 64 characters carries a hash suffix. We first look for the tool whose real
+ * binding names exactly the hook entry's server and tool. Failing that, we
+ * strip the leading `mcp__`, split on `__` for the server/tool boundary,
+ * sanitize each side and rejoin with a single underscore to look up the key.
+ * This keeps the on-disk hook config in lock step with Claude Code while
+ * staying compatible with the fork's internal tool registry naming.
  *
  * Calls MCP.Service.tools() to get the tool registry and invokes the matching
  * tool with the hook envelope as `arguments`. The first text content item is
@@ -103,6 +105,7 @@ function boundTool<T extends object>(tools: Record<string, T>, server: string, n
 function invokeMcpHook(
   mcpSvc: MCP.Interface,
   command: string,
+  target: { server: string; tool: string },
   input: Record<string, unknown>,
   sessionID?: string,
 ): Effect.Effect<{ json?: HookJSONOutput; rawStdout?: string; succeeded?: boolean }, unknown> {
@@ -122,8 +125,7 @@ function invokeMcpHook(
       sepIdx === -1
         ? sanitizeIdent(stripped)
         : sanitizeIdent(stripped.slice(0, sepIdx)) + "_" + sanitizeIdent(stripped.slice(sepIdx + 2))
-    const bound = sepIdx === -1 ? undefined : boundTool(tools, stripped.slice(0, sepIdx), stripped.slice(sepIdx + 2))
-    const tool = bound ?? tools[internalKey] ?? tools[command]
+    const tool = boundTool(tools, target) ?? tools[internalKey] ?? tools[command]
     if (!tool) {
       log.warn("mcp hook tool not found", {
         command,

@@ -3,6 +3,7 @@ import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { Auth } from "@/auth"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
+import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
 import type { Provider } from "@/provider/provider"
@@ -222,8 +223,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
 export function resolveTools(
   input: Pick<PrepareInput, "tools" | "agent" | "permission" | "nativePermission" | "user">,
 ) {
-  const disabled = Permission.disabledByPolicy(
-    Object.keys(input.tools),
+  const disabled = Permission.disabledTools(
+    // A rewritten MCP key also answers to the deny rules of the key it had before (#1459).
+    Object.entries(input.tools).map(([id, item]) => ({ id, alias: McpCatalog.toolBinding(item)?.baseKey })),
     input.nativePermission ?? [],
     Permission.merge(input.agent.permission, input.permission ?? []),
   )

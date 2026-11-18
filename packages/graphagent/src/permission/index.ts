@@ -52,6 +52,12 @@ export interface AskOptions {
   readonly canonicalToolName?: string
   /** Real MCP server of the tool that is asking. */
   readonly mcpServer?: { name: string; source: string }
+  /**
+   * The key a rewritten MCP tool had before it was shortened or made unique (#1459). A deny or ask rule written for
+   * it still applies to the tool: the stricter of the two keys' rules decides, and an allow written for the old key
+   * does not carry over.
+   */
+  readonly alias?: string
   readonly resolveRuleset?: (mode?: "plan") => Effect.Effect<{
     native: PermissionV1.Ruleset
     rules: PermissionV1.Ruleset
@@ -110,6 +116,31 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
       pattern: "*",
     }
   )
+}
+
+/**
+ * `rules` plus, for a rewritten MCP key (#1459), the denial or question the key it had before (`alias`) would have
+ * raised, so the stricter of the two keys decides. For each pattern, the last rule that matches `alias` is looked at:
+ * if it matches `permission` too, `permission` already meets it in the right order; if it only names `alias` and
+ * denies, a copy for `permission` is appended; if it only names `alias` and asks, so is one, unless `permission` is
+ * denied already. An allow is never copied: a rewritten key needs an allow of its own.
+ */
+function withAlias(
+  permission: string,
+  alias: string | undefined,
+  patterns: readonly string[],
+  rules: PermissionV1.Ruleset,
+): PermissionV1.Ruleset {
+  if (alias === undefined) return rules
+  const copies = patterns.flatMap((pattern) => {
+    const rule = rules.findLast(
+      (entry) => Wildcard.match(alias, entry.permission) && Wildcard.match(pattern, entry.pattern),
+    )
+    if (rule === undefined || rule.action === "allow" || Wildcard.match(permission, rule.permission)) return []
+    if (rule.action === "ask" && evaluate(permission, pattern, rules).action === "deny") return []
+    return [{ ...rule, permission }]
+  })
+  return copies.length === 0 ? rules : [...rules, ...copies]
 }
 
 function matchingRuleIndex(permission: string, pattern: string, ruleset: PermissionV1.Ruleset) {
@@ -346,7 +377,11 @@ export const layer = Layer.effect(
       const resolved = options?.resolveRuleset
         ? yield* options.resolveRuleset(policy.mode === "plan" ? "plan" : undefined)
         : { native: [], rules: originalRuleset }
-      const ruleset = [...resolved.rules, ...policy.rules]
+      // A rewritten MCP key (#1459) keeps the deny and ask rules written for the key it had before.
+      const aliased = (rules: PermissionV1.Ruleset) =>
+        withAlias(request.permission, options?.alias, request.patterns, rules)
+      const native = aliased(resolved.native)
+      const ruleset = aliased([...resolved.rules, ...policy.rules])
       const force = options?.force === true
       // A forced ask still needs a dialog unless the unattended adjudicator
       // settles every pattern (`allow`); `forced` is cleared per pattern by
@@ -453,7 +488,7 @@ export const layer = Layer.effect(
         )
 
       for (const pattern of request.patterns) {
-        const nativeRule = evaluate(request.permission, pattern, resolved.native)
+        const nativeRule = evaluate(request.permission, pattern, native)
         const configuredRule = evaluate(request.permission, pattern, ruleset)
         // Denials are checked BEFORE remembered approvals, any hook result, or
         // a readonly-tier override: a deny the agent's own permission or the
@@ -479,7 +514,7 @@ export const layer = Layer.effect(
                   role: options?.role,
                   permission: request.permission,
                   patterns: [pattern],
-                  native: resolved.native,
+                  native,
                   ruleset,
                   resolvedRuleCount: resolved.rules.length,
                   roleDefaultIndices: options?.roleDefaultIndices ?? [],
@@ -617,7 +652,8 @@ export const layer = Layer.effect(
           const refreshed = options?.resolveRuleset
             ? yield* options.resolveRuleset(refreshedPolicy.mode === "plan" ? "plan" : undefined)
             : { native: [], rules: originalRuleset }
-          const freshRules = [...refreshed.rules, ...refreshedPolicy.rules]
+          const freshNative = aliased(refreshed.native)
+          const freshRules = aliased([...refreshed.rules, ...refreshedPolicy.rules])
           explicitAskRequired ||= freshRules.some(
             (entry) =>
               entry.action === "ask" &&
@@ -634,7 +670,7 @@ export const layer = Layer.effect(
           if (
             request.patterns.some(
               (pattern) =>
-                evaluate(request.permission, pattern, refreshed.native).action === "deny" ||
+                evaluate(request.permission, pattern, freshNative).action === "deny" ||
                 evaluate(request.permission, pattern, freshRules).action === "deny",
             )
           ) {
@@ -642,7 +678,7 @@ export const layer = Layer.effect(
               role: options?.role,
               permission: request.permission,
               patterns: request.patterns,
-              native: refreshed.native,
+              native: freshNative,
               ruleset: freshRules,
               resolvedRuleCount: refreshed.rules.length,
               roleDefaultIndices: options?.roleDefaultIndices ?? [],
@@ -971,6 +1007,32 @@ export function disabledByPolicy(
 
 export function disabled(tools: string[], ruleset: PermissionV1.Ruleset, options?: GlobCoversOptions): Set<string> {
   return deniedTools(tools, [ruleset], options)
+}
+
+/**
+ * The ids `disabledByPolicy` hides among `tools`, where a rewritten MCP key (#1459) also carries the key it had before
+ * as its `alias`: the deny rules of both keys count, as in `ask`. Tools without an alias are exactly
+ * `disabledByPolicy`'s.
+ */
+export function disabledTools(
+  tools: ReadonlyArray<{ readonly id: string; readonly alias?: string }>,
+  native: PermissionV1.Ruleset,
+  configured: PermissionV1.Ruleset,
+  options?: GlobCoversOptions,
+): Set<string> {
+  const result = disabledByPolicy(
+    tools.filter((tool) => tool.alias === undefined).map((tool) => tool.id),
+    native,
+    configured,
+    options,
+  )
+  for (const { id, alias } of tools) {
+    if (alias === undefined) continue
+    const aliasedNative = withAlias(id, alias, ["*"], native)
+    const aliasedConfigured = withAlias(id, alias, ["*"], configured)
+    if (disabledByPolicy([id], aliasedNative, aliasedConfigured, options).size > 0) result.add(id)
+  }
+  return result
 }
 
 export const defaultLayer = layer.pipe(

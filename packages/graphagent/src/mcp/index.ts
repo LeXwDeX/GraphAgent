@@ -820,7 +820,8 @@ export const layer = Layer.effect(
             })
             continue
           }
-          if (key !== McpCatalog.sanitize(clientName) + "_" + McpCatalog.sanitize(mcpTool.name)) {
+          const plain = McpCatalog.sanitize(clientName) + "_" + McpCatalog.sanitize(mcpTool.name)
+          if (key !== plain) {
             yield* Effect.logWarning("MCP tool key rewritten to stay unique and within 64 characters", {
               server: clientName,
               tool: mcpTool.name,
@@ -834,6 +835,8 @@ export const layer = Layer.effect(
             source: "unknown",
             // Only the boolean `true` marks a tool; any other value is ignored.
             requiresUserInteraction: mcpTool._meta?.["anthropic/requiresUserInteraction"] === true,
+            // A rewritten key remembers the key it had, so the deny and ask rules written for that key still apply.
+            ...(key === plain ? {} : { baseKey: plain }),
           })
         }
       }

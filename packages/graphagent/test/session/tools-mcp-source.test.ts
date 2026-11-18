@@ -4,6 +4,7 @@
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- partial agent, session and processor fixtures use `as never`.
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { describe, expect } from "bun:test"
 import { jsonSchema, tool } from "ai"
 import { Effect, Exit, Fiber, Layer, Schema } from "effect"
@@ -41,7 +42,7 @@ const configLayer = TestConfig.layer({
 })
 
 let mcpRuns = 0
-const makeMcp = (name: string, requiresUserInteraction?: boolean) =>
+const makeMcp = (name: string, requiresUserInteraction?: boolean, baseKey?: string) =>
   McpCatalog.bindTool(
     tool({
       inputSchema: jsonSchema({ type: "object", properties: {} }),
@@ -50,7 +51,13 @@ const makeMcp = (name: string, requiresUserInteraction?: boolean) =>
         return { content: [{ type: "text" as const, text: "MCP_RAN" }] }
       },
     }),
-    { server: "srv", tool: name, source: "unknown", ...(requiresUserInteraction ? { requiresUserInteraction } : {}) },
+    {
+      server: "srv",
+      tool: name,
+      source: "unknown",
+      ...(requiresUserInteraction ? { requiresUserInteraction } : {}),
+      ...(baseKey === undefined ? {} : { baseKey }),
+    },
   )
 // `resolve` wraps server tools in place, so each case needs fresh instances.
 let mcpTools: Record<string, ReturnType<typeof makeMcp>> = {}
@@ -109,11 +116,16 @@ const ALLOW_ALL = [{ permission: "*", pattern: "*", action: "allow" as const }]
 type Tools = Record<string, { execute: (args: unknown, options: unknown) => Promise<{ output?: string }> }>
 
 /** The tools of one session as the model's runtime would run them, wrapped by the real pipeline. */
-const resolveTools = (sessionID: SessionID, rules: ReadonlyArray<(typeof ALLOW_ALL)[number]> = ALLOW_ALL) =>
+const resolveTools = (sessionID: SessionID, rules: ReadonlyArray<PermissionV1.Rule> = ALLOW_ALL) =>
   Effect.gen(function* () {
     const instance = yield* TestInstance
     mcpRuns = 0
-    mcpTools = { srv_lookup: makeMcp("lookup"), srv_guarded: makeMcp("guarded", true) }
+    // `srv_call_1a2b3c4d` is a key that was rewritten: the tool was `srv_call` before (#1459).
+    mcpTools = {
+      srv_lookup: makeMcp("lookup"),
+      srv_guarded: makeMcp("guarded", true),
+      srv_call_1a2b3c4d: makeMcp("call", false, "srv_call"),
+    }
     return (yield* SessionTools.resolve({
       agent: { name: "general", permission: rules, options: {} } as never,
       model: ProviderTest.model(),
@@ -345,5 +357,128 @@ describe("MCP source mark and the ask tier (#1324)", () => {
         expect(yield* permission.list()).toEqual([])
       }),
     ),
+  )
+})
+
+/** What one call of a tool comes to: its output, or the message of the error the pipeline rejects with. */
+const settle = (tools: Tools, name: string) =>
+  Effect.promise(() =>
+    tools[name]
+      .execute({}, { toolCallId: `call-${name}`, messages: [], abortSignal: new AbortController().signal })
+      .then(
+        (value) => ({ ok: true as const, output: value.output ?? "" }),
+        (error: unknown) => ({ ok: false as const, message: error instanceof Error ? error.message : String(error) }),
+      ),
+  )
+
+const REWRITTEN = "srv_call_1a2b3c4d"
+const rule = (permission: string, action: PermissionV1.Rule["action"]): PermissionV1.Rule => ({
+  permission,
+  pattern: "*",
+  action,
+})
+
+describe("a rewritten MCP key keeps the deny and ask rules of the key it had before (#1459)", () => {
+  it.instance(
+    "a deny written for the old key refuses the call; the other tools and the old key's allows are unaffected",
+    () =>
+      Effect.gen(function* () {
+        const permission = yield* Permission.Service
+        const tools = yield* resolveTools(SessionID.descending(), [...ALLOW_ALL, rule("srv_call", "deny")])
+
+        const refused = yield* settle(tools, REWRITTEN)
+        expect(refused.ok).toBe(false)
+        expect(refused.ok ? "" : refused.message).toContain("The user has specified a rule")
+        expect(mcpRuns).toBe(0)
+
+        // A tool whose key never changed is not touched by a rule about another key.
+        const lookup = yield* settle(tools, "srv_lookup")
+        expect(lookup.ok).toBe(true)
+        expect(mcpRuns).toBe(1)
+        expect(yield* permission.list()).toEqual([])
+      }),
+  )
+
+  it.instance("an ask written for the old key still asks, with the new key as the permission", () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      const tools = yield* resolveTools(SessionID.descending(), [...ALLOW_ALL, rule("srv_call", "ask")])
+
+      const call = yield* start(tools, REWRITTEN)
+      const request = yield* pendingRequest
+      expect(request.permission).toBe(REWRITTEN)
+      expect(mcpRuns).toBe(0)
+      yield* permission.reply({ requestID: request.id, reply: "once" })
+      expect(Exit.isSuccess(yield* Fiber.await(call))).toBe(true)
+      expect(mcpRuns).toBe(1)
+
+      // The tool that never had another key is not asked.
+      expect((yield* settle(tools, "srv_lookup")).ok).toBe(true)
+      expect(yield* permission.list()).toEqual([])
+    }),
+  )
+
+  it.instance("an always reply settles the question for that tool only", () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      const tools = yield* resolveTools(SessionID.descending(), [...ALLOW_ALL, rule("srv_call", "ask")])
+
+      const first = yield* start(tools, REWRITTEN)
+      const request = yield* pendingRequest
+      yield* permission.reply({ requestID: request.id, reply: "always" })
+      expect(Exit.isSuccess(yield* Fiber.await(first))).toBe(true)
+
+      const again = yield* settle(tools, REWRITTEN)
+      expect(again.ok).toBe(true)
+      expect(mcpRuns).toBe(2)
+      expect(yield* permission.list()).toEqual([])
+    }),
+  )
+
+  it.instance(
+    "an ask for the old key never lifts a deny of the new key, and the new key's own deny still refuses",
+    () =>
+      Effect.gen(function* () {
+        const tools = yield* resolveTools(SessionID.descending(), [
+          ...ALLOW_ALL,
+          rule("srv_call", "ask"),
+          rule(REWRITTEN, "deny"),
+        ])
+        expect((yield* settle(tools, REWRITTEN)).ok).toBe(false)
+        expect(mcpRuns).toBe(0)
+
+        const own = yield* resolveTools(SessionID.descending(), [...ALLOW_ALL, rule(REWRITTEN, "deny")])
+        expect((yield* settle(own, REWRITTEN)).ok).toBe(false)
+        expect(mcpRuns).toBe(0)
+      }),
+  )
+
+  it.instance("an allow written for the old key does not free the call where nothing else allows it", () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      const tools = yield* resolveTools(SessionID.descending(), [rule("srv_call", "allow")])
+
+      const call = yield* start(tools, REWRITTEN)
+      const request = yield* pendingRequest
+      expect(request.permission).toBe(REWRITTEN)
+      expect(mcpRuns).toBe(0)
+      yield* permission.reply({ requestID: request.id, reply: "once" })
+      expect(Exit.isSuccess(yield* Fiber.await(call))).toBe(true)
+    }),
+  )
+
+  it.instance(
+    "a rule the later catch-all overrides, and an allow of the new key after a catch-all deny, decide as before",
+    () =>
+      Effect.gen(function* () {
+        // The old key's deny is overridden by the later `*` allow, for the old key and the new one alike.
+        const overridden = yield* resolveTools(SessionID.descending(), [rule("srv_call", "deny"), ...ALLOW_ALL])
+        expect((yield* settle(overridden, REWRITTEN)).ok).toBe(true)
+
+        // The user allowed the new key by name after denying everything.
+        const named = yield* resolveTools(SessionID.descending(), [rule("*", "deny"), rule(REWRITTEN, "allow")])
+        expect((yield* settle(named, REWRITTEN)).ok).toBe(true)
+        expect((yield* settle(named, "srv_lookup")).ok).toBe(false)
+      }),
   )
 })
