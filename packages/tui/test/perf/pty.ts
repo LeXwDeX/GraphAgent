@@ -24,9 +24,18 @@ const expected = process.env.TUI_PTY_EXPECTED ?? "Ask anything"
 const timeoutMs = Number(process.env.TUI_PTY_TIMEOUT_MS ?? 30_000)
 const baselinePath = process.env.TUI_PTY_BASELINE
 
+/**
+ * The commit the run measured. A copy of the tree without its `.git` (rsync'd or exported) has none to name, and
+ * neither does a repository with no commit yet: both are `unknown`. `--verify` is for the second: a plain
+ * `git rev-parse HEAD` prints the word `HEAD` on stdout before it fails.
+ */
 function gitCommit() {
   try {
-    const output = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root, stdout: "pipe", stderr: "ignore" })
+    const output = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], {
+      cwd: root,
+      stdout: "pipe",
+      stderr: "ignore",
+    })
     return new TextDecoder().decode(output.stdout).trim() || "unknown"
   } catch {
     return "unknown"

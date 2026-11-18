@@ -41,6 +41,23 @@ async function measure(directory: string, body: string, env: Record<string, stri
   return { code: result.exitCode, report, wallMs: performance.now() - started }
 }
 
+/**
+ * The commit a report should name: this checkout's own `HEAD`, or `unknown` where the tree is not a checkout. A copy
+ * made with rsync or an export has no `.git`, and the report cannot invent a commit for it.
+ */
+function commitOf(directory: string) {
+  try {
+    const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], {
+      cwd: directory,
+      stdout: "pipe",
+      stderr: "ignore",
+    })
+    return head.exitCode === 0 ? head.stdout.toString().trim() : "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
 ptyTest("the wait ends at the input box, not at the first `>` of the terminal query", async () => {
   await using directory = await tmpdir()
   const { code, report } = await measure(directory.path, `${QUERY}\nsleep 0.8\n${INPUT_BOX}\nexec sleep 30`)
@@ -50,8 +67,22 @@ ptyTest("the wait ends at the input box, not at the first `>` of the terminal qu
   expect(report.elapsedMs).toBeGreaterThanOrEqual(800)
   expect(report.elapsedMs).toBeLessThan(15_000)
   expect(report.machine.platform).toBe(process.platform)
-  expect(report.commit).toMatch(/^[0-9a-f]{40}$/)
+  // The script runs with a temp directory as its cwd, so a checkout's HEAD shows it asked git from the repository root.
+  expect(report.commit).toBe(commitOf(repoRoot))
   expect(report.outputTail).toBeUndefined()
+})
+
+ptyTest("the commit is `unknown` when git has none to name, not whatever git printed instead", async () => {
+  await using directory = await tmpdir()
+  // Where there is no commit, git still prints: the word `HEAD` for a repository with no commit yet, nothing for a
+  // directory that is not a repository. `GIT_DIR` makes both cases the same in any checkout.
+  const unborn = path.join(directory.path, "unborn.git")
+  expect(Bun.spawnSync(["git", "init", "--bare", "--quiet", unborn]).exitCode).toBe(0)
+  for (const gitDir of [unborn, path.join(directory.path, "missing.git")]) {
+    const { code, report } = await measure(directory.path, `${INPUT_BOX}\nexec sleep 30`, { GIT_DIR: gitDir })
+    expect(code).toBe(0)
+    expect(report.commit).toBe("unknown")
+  }
 })
 
 ptyTest("a process that ends before it draws the input box fails at once and says what it printed", async () => {
