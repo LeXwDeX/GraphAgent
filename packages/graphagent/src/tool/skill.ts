@@ -4,6 +4,7 @@ import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Hash } from "@graphagent/core/util/hash"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Agent } from "@/agent/agent"
+import { isReplayableAssistantMessage } from "@/session/message-replay"
 import { Skill } from "../skill"
 import { SettingsHook } from "@/hook"
 import * as Tool from "./tool"
@@ -15,8 +16,10 @@ export const Parameters = Schema.Struct({
 
 /**
  * True when an earlier call of this skill tool put the same body into the
- * history and it is still readable there: the call finished, its output was
- * neither pruned nor truncated, and it was a real load rather than a receipt.
+ * history and the model can still read it there: the message holding the call
+ * is replayed to the model (one that ended with a provider error is dropped
+ * from the wire), the call finished, its output was neither pruned nor
+ * truncated, and it was a real load rather than a receipt.
  * The history is the turn's snapshot, already cut at the compaction boundary.
  */
 export function alreadyLoaded(
@@ -25,19 +28,21 @@ export function alreadyLoaded(
   name: string,
   hash: string,
 ) {
-  return messages.some((message) =>
-    message.parts.some(
-      (part) =>
-        part.type === "tool" &&
-        part.tool === "skill" &&
-        part.callID !== callID &&
-        part.state.status === "completed" &&
-        part.state.time.compacted === undefined &&
-        part.state.metadata.name === name &&
-        part.state.metadata.hash === hash &&
-        part.state.metadata.alreadyLoaded !== true &&
-        part.state.metadata.truncated !== true,
-    ),
+  return messages.some(
+    (message) =>
+      isReplayableAssistantMessage(message) &&
+      message.parts.some(
+        (part) =>
+          part.type === "tool" &&
+          part.tool === "skill" &&
+          part.callID !== callID &&
+          part.state.status === "completed" &&
+          part.state.time.compacted === undefined &&
+          part.state.metadata.name === name &&
+          part.state.metadata.hash === hash &&
+          part.state.metadata.alreadyLoaded !== true &&
+          part.state.metadata.truncated !== true,
+      ),
   )
 }
 

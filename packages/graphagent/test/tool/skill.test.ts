@@ -10,11 +10,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import type { Tool } from "@/tool/tool"
 import { alreadyLoaded, SkillTool } from "../../src/tool/skill"
+import { MessageV2 } from "../../src/session/message-v2"
 import { BUILTIN_SKILLS } from "../../src/skill/builtin"
 import { SettingsHook } from "../../src/hook"
 import { ToolRegistry } from "@/tool/registry"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
+import { ProviderTest } from "../fake/provider"
 import { testEffect } from "../lib/effect"
 
 const baseCtx: Omit<Tool.Context, "ask"> = {
@@ -61,6 +63,8 @@ const skillTool = Effect.gen(function* () {
   return tool
 })
 
+const SKILL_BODY = "SKILL_BODY_MARKER"
+
 // A history message holding one earlier tool call, shaped like what the
 // session persists for a finished skill load (or a receipt for one).
 function skillHistory(input: {
@@ -72,6 +76,8 @@ function skillHistory(input: {
   compacted?: number
   receipt?: boolean
   truncated?: boolean
+  /** How the assistant message holding the call ended: a provider failure or an abort. */
+  error?: "provider" | "aborted"
 }): SessionV1.WithParts {
   const sessionID = SessionID.make("ses_test")
   const messageID = MessageID.make(`msg_history_${input.callID}`)
@@ -83,12 +89,19 @@ function skillHistory(input: {
     ...(input.receipt ? { alreadyLoaded: true } : {}),
     ...(input.truncated ? { truncated: true } : {}),
   }
+  const error: SessionV1.Assistant["error"] =
+    input.error === "provider"
+      ? { name: "APIError", data: { message: "boom", isRetryable: true } }
+      : input.error === "aborted"
+        ? { name: "MessageAbortedError", data: { message: "aborted" } }
+        : undefined
   return {
     info: {
       id: messageID,
       sessionID,
       role: "assistant",
       time: { created: 0 },
+      ...(error === undefined ? {} : { error }),
       parentID: MessageID.make("msg_history_parent"),
       modelID: ModelV2.ID.make("gpt-5"),
       providerID: ProviderV2.ID.make("graphagent"),
@@ -112,7 +125,7 @@ function skillHistory(input: {
             : {
                 status: "completed",
                 input: { name: input.name },
-                output: "body",
+                output: SKILL_BODY,
                 title: `Loaded skill: ${input.name}`,
                 metadata,
                 time: { start: 0, end: 1, ...(input.compacted === undefined ? {} : { compacted: input.compacted }) },
@@ -340,6 +353,8 @@ Use this skill.
         ["earlier receipt", skillHistory({ callID: "call-1", name: "git-workflow", hash, receipt: true })],
         ["still running", skillHistory({ callID: "call-1", name: "git-workflow", hash, status: "running" })],
         ["truncated output", skillHistory({ callID: "call-1", name: "git-workflow", hash, truncated: true })],
+        // The model wire drops a message that ended with a provider error, tool results included.
+        ["provider error ending", skillHistory({ callID: "call-1", name: "git-workflow", hash, error: "provider" })],
       ]
       for (const [label, history] of cases) {
         const again = yield* tool.execute(
@@ -483,5 +498,24 @@ describe("tool.skill alreadyLoaded", () => {
 
   test("ignores tool parts of other tools", () => {
     expect(alreadyLoaded([earlier({ tool: "read" })], base.callID, base.name, base.hash)).toBe(false)
+  })
+
+  test("rejects a load whose message ended with a provider error, which the model never sees", () => {
+    expect(alreadyLoaded([earlier({ error: "provider" })], base.callID, base.name, base.hash)).toBe(false)
+  })
+
+  test("counts a load exactly when its output reaches the model wire", async () => {
+    const model = ProviderTest.model()
+    const onWire: boolean[] = []
+    const counted: boolean[] = []
+    for (const error of [undefined, "provider", "aborted"] as const) {
+      const message = earlier({ error })
+      onWire.push(JSON.stringify(await MessageV2.toModelMessages([message], model)).includes(SKILL_BODY))
+      counted.push(alreadyLoaded([message], base.callID, base.name, base.hash))
+    }
+    expect(counted).toEqual(onWire)
+    // The provider-error ending is the shape the wire drops, so the comparison is not vacuous.
+    expect(onWire).toContain(false)
+    expect(onWire).toContain(true)
   })
 })
