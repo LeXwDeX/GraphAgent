@@ -13,12 +13,9 @@ import { DagTransact } from "@graphagent/core/dag/transact"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import type { BatchEvent } from "@graphagent/core/event"
 import { Database } from "@graphagent/core/database/database"
-import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
 import { planReplan } from "@graphagent/core/dag/core/replan"
 import {
-  getValidNextWorkflowStatuses,
-  getValidNextNodeStatuses,
   isWorkflowTerminalStatus,
   isTerminalWorkflowStatusValue,
   isNodeTerminalStatus,
@@ -54,6 +51,7 @@ import {
   withoutSkipOk,
 } from "./workflow-config"
 import { CompletionGateError, ReviewGateError, requiredCompletionGaps } from "./completion-gate"
+import { DagCommandCore, ID, NodeID, readUserMaxTotalNodes, type WorkflowLock } from "./command-core"
 import { DagValidation, StructuralValidationError } from "./validation"
 import { DagLocation } from "./location"
 import { DagIsolation } from "./isolation"
@@ -66,12 +64,7 @@ import { verifyOutputFileRef } from "./runtime/output-ref"
 export { StructuralValidationError } from "./validation"
 export { DEFAULT_WORKFLOW_CONFIG, computeMergedConfig, normalizeModel, parseWorkflowConfig } from "./workflow-config"
 export { CompletionGateError, ReviewGateError, requiredCompletionGaps } from "./completion-gate"
-
-// Re-export domain types
-export const ID = DagEvent.DagID
-export type ID = typeof ID.Type
-export const NodeID = DagEvent.NodeID
-export type NodeID = typeof NodeID.Type
+export { DEFAULT_USER_MAX_TOTAL_NODES, ID, NodeID, WORKFLOW_LOCK_TIMEOUT } from "./command-core"
 
 export interface WorkflowOwner {
   readonly projectID: string
@@ -125,37 +118,6 @@ export interface RetargetResult {
   readonly toFingerprint: DagEvent.TargetFingerprint
   readonly graphRev: number
 }
-
-/**
- * The user's node ceiling while `dag.max_total_nodes` is unset (Issue #1031 M4,
- * #1290). It belongs to the user cap, not to a workflow: a workflow declares its
- * own `max_total_nodes` (or none) and the effective ceiling is the lower of that
- * and this cap (`DagValidation.effectiveMaxTotalNodes`). Validation, the mode
- * announcement and the status read all fall back to this one value.
- */
-export const DEFAULT_USER_MAX_TOTAL_NODES = 100
-
-/**
- * The user's global node ceiling (`dag.max_total_nodes`, Issue #1031 M4), read
- * from the global config layer when the caller's environment provides one. The
- * mode announcement and the scheduler read the same key, so a workflow sees one
- * ceiling everywhere. Direct service callers and unit harnesses without Config
- * keep the documented default (`DEFAULT_USER_MAX_TOTAL_NODES`).
- */
-const readUserMaxTotalNodes = Effect.fn("Dag.readUserMaxTotalNodes")(function* () {
-  const { Config } = yield* Effect.promise(() => import("@/config/config"))
-  const config = yield* Effect.serviceOption(Config.Service)
-  if (Option.isNone(config)) return undefined
-  const dag = yield* config.value.dagGlobal()
-  return dag.max_total_nodes
-})
-
-// Cap on workflow-lock acquisition + critical section (ADR-0004). The critical
-// section is a synchronous DB write, so exceeding this means the workflow is
-// already broken — interrupt loudly via Effect's builtin TimeoutException. The
-// critical section must never await async work; that is the only way this bound
-// can fire.
-export const WORKFLOW_LOCK_TIMEOUT = "30 seconds" as const
 
 /** A node as declared in the workflow's YAML config. */
 export interface NodeConfig {
@@ -552,17 +514,6 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Dag") {}
 
-// The per-workflow KeyedMutex is single-permit and NOT reentrant: a guarded
-// command invoked without the lock races its status guards, and one invoked
-// while the lock is already held deadlocks silently (the permit never frees).
-// The witness turns that convention into a type — only withWorkflowLock mints
-// a WorkflowLock, so every guarded command below carries compile-time proof
-// that it runs inside the lock's critical section. Internal composition
-// (extend → replan → nodeFailed) forwards the caller's witness instead of
-// re-acquiring the lock.
-declare const WorkflowLockHeld: unique symbol
-type WorkflowLock = { readonly [WorkflowLockHeld]: true }
-
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -570,97 +521,17 @@ export const layer = Layer.effect(
     const store = yield* DagStore.Service
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
     const transactService = yield* DagTransact.Service
-    const withMailbox = <A, E, R>(
-      dagID: string,
-      reason: string | undefined | ((result: A) => string | undefined),
-      commit: Effect.Effect<A, E, R>,
-    ) => (Option.isSome(mailboxService) ? mailboxService.value.fenceWorkflow(dagID, reason, commit) : commit)
-    const workflowLocks = KeyedMutex.makeUnsafe<string>()
-    const lockWitness = {} as WorkflowLock
-    const withWorkflowLock =
-      (dagID: string) =>
-      <A, E, R>(body: (lock: WorkflowLock) => Effect.Effect<A, E, R>) =>
-        workflowLocks
-          .withLock(dagID)(Effect.suspend(() => body(lockWitness)))
-          .pipe(Effect.timeout(WORKFLOW_LOCK_TIMEOUT))
-    // ADR-0008 decision 3: the guard and the publish of a write run in ONE
-    // IMMEDIATE transaction (`DagTransact`, a required service), so nothing can
-    // change the workflow between them.
-    //
-    // A runner write carries its lease token (ADR-0008 decision 4): the runner
-    // port provides it around the call (`DagTransact.Fence`) and `underFence`
-    // hands it to the transaction's fence. An intent write finds none.
-    const transact = <A, E, R>(
-      dagID: string,
-      body: Effect.Effect<A, E, R>,
-    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> => DagTransact.underFence(transactService, dagID, body)
-    // A command that changes workflow state: the in-process lock queues it, then
-    // one transaction carries its guard and its publish.
-    const command =
-      (dagID: string) =>
-      <A, E, R>(body: (lock: WorkflowLock) => Effect.Effect<A, E, R>) =>
-        withWorkflowLock(dagID)((lock) => transact(dagID, body(lock)))
-
-    const guardWorkflow = Effect.fn("Dag.guardWorkflow")(function* (dagID: string, target: WorkflowStatus) {
-      const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-      if (!wf) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
-      const current = wf.status as WorkflowStatus
-      if (!getValidNextWorkflowStatuses(current).includes(target)) {
-        return yield* Effect.fail(new InvalidTransitionError(dagID, current, target))
-      }
-      return wf
-    })
-
-    const guardWorkflowNotTerminal = Effect.fn("Dag.guardWorkflowNotTerminal")(function* (
-      dagID: string,
-      attemptedStatus: string,
-    ) {
-      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-      if (!workflow) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
-      if (isWorkflowTerminalStatus(workflow.status as WorkflowStatus)) {
-        return yield* Effect.fail(new TerminalViolationError(dagID, workflow.status, attemptedStatus))
-      }
-      return workflow
-    })
-
-    const guardNodeAttempt = (node: DagStore.NodeRow, graphRev: number, attempt?: NodeExecutionAttempt) => {
-      if (!attempt) return Effect.void
-      const stale =
-        node.replanAttempts !== attempt.replanAttempts ||
-        (attempt.nodeSeq !== undefined && node.seq !== attempt.nodeSeq) ||
-        (attempt.childSessionID !== undefined && node.childSessionId !== attempt.childSessionID) ||
-        (attempt.graphRev !== undefined && graphRev !== attempt.graphRev)
-      return stale
-        ? Effect.fail(
-            new StaleNodeAttemptError(node.id, attempt, {
-              replanAttempts: node.replanAttempts,
-              nodeSeq: node.seq,
-              childSessionID: node.childSessionId,
-              graphRev,
-            }),
-          )
-        : Effect.void
-    }
-
-    const guardNode = Effect.fn("Dag.guardNode")(function* (
-      dagID: string,
-      nodeID: string,
-      target: NodeStatus,
-      attempt?: NodeExecutionAttempt,
-    ) {
-      const workflow = yield* guardWorkflowNotTerminal(dagID, target)
-      const node = yield* store.getNode(dagID, nodeID).pipe(Effect.orDie)
-      if (!node) return yield* Effect.fail(new Error(`Node not found: ${nodeID}`))
-      yield* guardNodeAttempt(node, workflow.graphRev, attempt)
-      const current = node.status as NodeStatus
-      if (isNodeTerminalStatus(current)) {
-        return yield* Effect.fail(new TerminalViolationError(nodeID, current, target))
-      }
-      if (!getValidNextNodeStatuses(current).includes(target)) {
-        return yield* Effect.fail(new InvalidTransitionError(nodeID, current, target))
-      }
-      return node
-    })
+    const core = yield* DagCommandCore.make({ events, store, mailboxService, transactService })
+    const {
+      withMailbox,
+      withWorkflowLock,
+      transact,
+      command,
+      guardWorkflow,
+      guardWorkflowNotTerminal,
+      guardNodeAttempt,
+      guardNode,
+    } = core
 
     const create = Effect.fn("Dag.create")(function* (input: {
       projectID: string
