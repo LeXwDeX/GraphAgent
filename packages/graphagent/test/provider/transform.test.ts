@@ -408,6 +408,40 @@ describe("ProviderTransform.sortVariants", () => {
   })
 })
 
+describe("ProviderTransform.highestVariant", () => {
+  const named = (...names: string[]) => ({ variants: Object.fromEntries(names.map((name) => [name, {}])) })
+
+  test("picks the top-ranked effort regardless of insertion order", () => {
+    expect(ProviderTransform.highestVariant(named("low", "high", "medium"))).toBe("high")
+    expect(ProviderTransform.highestVariant(named("xhigh", "none", "high"))).toBe("xhigh")
+    expect(ProviderTransform.highestVariant(named("ultra", "max", "high", "low"))).toBe("ultra")
+    expect(ProviderTransform.highestVariant(named("max", "high"))).toBe("max")
+    expect(ProviderTransform.highestVariant(named("high"))).toBe("high")
+  })
+
+  test("agrees with sortVariants: the last known name in sorted order", () => {
+    const variants = Object.fromEntries(
+      ["max", "medium", "ultra", "high", "low", "xhigh", "none", "minimal"].map((name) => [name, {}]),
+    )
+    const sorted = Object.keys(ProviderTransform.sortVariants(variants))
+    expect(ProviderTransform.highestVariant({ variants })).toBe(sorted[sorted.length - 1])
+  })
+
+  test("ignores custom names, even ones listed after the known efforts", () => {
+    expect(ProviderTransform.highestVariant(named("quality", "low", "fast", "medium"))).toBe("medium")
+  })
+
+  test("is undefined when every variant name is custom", () => {
+    expect(ProviderTransform.highestVariant(named("quality", "fast"))).toBeUndefined()
+  })
+
+  test("is undefined when the model has no variants", () => {
+    expect(ProviderTransform.highestVariant({})).toBeUndefined()
+    expect(ProviderTransform.highestVariant({ variants: undefined })).toBeUndefined()
+    expect(ProviderTransform.highestVariant({ variants: {} })).toBeUndefined()
+  })
+})
+
 describe("ProviderTransform.options - setCacheKey", () => {
   const sessionID = "test-session-123"
 

@@ -857,6 +857,25 @@ export function sortVariants<T>(variants: Record<string, T>): Record<string, T> 
   return Object.fromEntries(Object.entries(variants).sort(([a], [b]) => rank(a) - rank(b)))
 }
 
+/**
+ * Name of the highest-ranked variant of `model`, by the same effort order `sortVariants` uses
+ * (#1328: the loop analysis asks for the model's top thinking tier). Custom names have no ranking
+ * and are ignored, so the result is undefined both when the model has no variants and when every
+ * variant name is custom; the caller tells the two apart by checking whether `model.variants` is empty.
+ */
+export function highestVariant(model: Pick<Provider.Model, "variants">): string | undefined {
+  let best: string | undefined
+  let bestRank = -1
+  for (const name of Object.keys(model.variants ?? {})) {
+    const rank = VARIANT_EFFORT_ORDER.indexOf(name)
+    if (rank > bestRank) {
+      best = name
+      bestRank = rank
+    }
+  }
+  return best
+}
+
 const OPENAI_GPT5_1_EFFORTS = ["none", ...WIDELY_SUPPORTED_EFFORTS]
 const OPENAI_GPT5_2_PLUS_EFFORTS = [...OPENAI_GPT5_1_EFFORTS, "xhigh"]
 const OPENAI_GPT5_PRO_EFFORTS = ["high"]
