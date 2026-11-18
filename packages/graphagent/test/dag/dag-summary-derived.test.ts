@@ -364,6 +364,13 @@ describe("DagSummaryDerived.toWire (#1027 D6b)", () => {
     escalatedNodes: 0,
     tokens: 10,
     tokensCacheRead: 4,
+    // #1475: distinct values, so a field mapped to the wrong source shows up in the equality below.
+    tokensInput: 3,
+    tokensOutput: 4,
+    tokensReasoning: 1,
+    tokensCacheWrite: 2,
+    cost: 0.0042,
+    costUnknown: true,
     checkpointPending: false,
   }
 
@@ -401,5 +408,29 @@ describe("DagSummaryDerived.toWire (#1027 D6b)", () => {
     expect(encode({ ...wire, quality: null }).quality).toBeNull()
     expect(encode({ ...wire, quality: { ...quality, completeness: null } }).quality?.completeness).toBeNull()
     expect(() => encode({ ...wire, quality: { ...quality, raised: -1 } })).toThrow()
+  })
+
+  // #1475: the usage figures ride the same schema as optional fields, so an older server's summary still decodes.
+  test("carries the itemised tokens, cost and unknown flag, all optional on the wire", () => {
+    const encode = Schema.encodeUnknownSync(DagSummary.WorkflowSummary)
+    const wire = DagSummaryDerived.toWire(summary, undefined)
+    expect(wire).toMatchObject({
+      tokensInput: 3,
+      tokensOutput: 4,
+      tokensReasoning: 1,
+      tokensCacheWrite: 2,
+      cost: 0.0042,
+      costUnknown: true,
+    })
+    // The budget total keeps its definition: the four itemised counts, cache reads left out.
+    expect(wire.tokens).toBe(3 + 2 + 4 + 1)
+
+    const older = { ...wire }
+    const added = ["tokensInput", "tokensOutput", "tokensReasoning", "tokensCacheWrite", "cost", "costUnknown"] as const
+    for (const key of added) delete older[key]
+    expect(encode(older)).toEqual(older)
+    expect(() => encode({ ...wire, cost: Number.NaN })).toThrow()
+    expect(() => encode({ ...wire, tokensInput: -1 })).toThrow()
+    expect(() => encode({ ...wire, costUnknown: "yes" })).toThrow()
   })
 })
