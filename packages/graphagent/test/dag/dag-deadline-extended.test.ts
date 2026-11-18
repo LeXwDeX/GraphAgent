@@ -230,6 +230,35 @@ describe("nodeExtendTimeout command-layer guard (Q3)", () => {
     )
   })
 
+  it("attempt-guard rejection is NOT an event: returns 0 when the caller names another child session or an older attempt", async () => {
+    await Effect.runPromise(
+      runTest(({ dag, store, db }) =>
+        Effect.gen(function* () {
+          const dagID = yield* createWorkflow(dag, "extend-wrong-attempt")
+          yield* dag.nodeQueued(dagID, "a", Date.now() - 1000)
+          yield* dag.nodeStarted(dagID, "a", "ses_child_1", Date.now() + 60_000, true)
+
+          // A watcher that outlived its attempt carries the identity it was armed
+          // with: another child session or replan attempt is someone else's run.
+          expect(
+            yield* dag.nodeExtendTimeout(dagID, "a", 99_999, { replanAttempts: 0, childSessionID: "ses_other_child" }),
+          ).toBe(0)
+          expect(
+            yield* dag.nodeExtendTimeout(dagID, "a", 99_999, { replanAttempts: 1, childSessionID: "ses_child_1" }),
+          ).toBe(0)
+          expect(yield* deadlineExtendedCount(db, dagID, "a")).toBe(0)
+          expect((yield* store.getNode(dagID, "a"))?.deadlineMs).not.toBe(99_999)
+
+          // The attempt that owns the node can still re-time it.
+          expect(
+            yield* dag.nodeExtendTimeout(dagID, "a", 99_999, { replanAttempts: 0, childSessionID: "ses_child_1" }),
+          ).toBe(1)
+          expect(yield* deadlineExtendedCount(db, dagID, "a")).toBe(1)
+        }),
+      ),
+    )
+  })
+
   it("Q2 delivery gate rejection is NOT an event: returns -2 (NOT 0 — the node is still running) when the escalation wake is undelivered", async () => {
     await Effect.runPromise(
       runTest(({ dag, store, db }) =>

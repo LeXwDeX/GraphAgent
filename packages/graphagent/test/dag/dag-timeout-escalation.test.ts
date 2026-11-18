@@ -22,6 +22,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -207,11 +208,13 @@ function loopLayer(
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   return { layer: Layer.merge(base, loop), getCancelCount: () => cancelCount }
 }

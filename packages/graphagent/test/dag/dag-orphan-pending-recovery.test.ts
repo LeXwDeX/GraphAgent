@@ -19,6 +19,7 @@ import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EngineProcess } from "@/session/engine-process"
+import { SessionInbox } from "@/session/inbox"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
@@ -54,11 +55,13 @@ function orphanRecoveryLayer(input: { promptCalls: string[] }) {
       deliver: () => Effect.succeed(Option.none()),
     }),
   )
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(Layer.mock(Agent.Service, {})),
+    Layer.provide(inbox),
   )
   return Layer.merge(base, loop)
 }

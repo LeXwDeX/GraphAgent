@@ -23,6 +23,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import * as AgentSchedulerState from "@/session/agent-scheduler-state"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -179,11 +180,13 @@ function harness() {
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   return { scheduler, peaks, prompts, created, layer: Layer.mergeAll(base, loop) }
 }

@@ -84,7 +84,7 @@ function start(directory: string) {
     yield* seed(directory)
     const dag = yield* Dag.Service
     const dagID = yield* dag.create({ projectID, sessionID, title: "retarget", config })
-    const fingerprint = DagLocation.fingerprintTarget(directory)
+    const fingerprint = yield* DagLocation.fingerprintTarget(directory)
     yield* dag.nodeStarted(
       dagID,
       "review",
@@ -262,11 +262,11 @@ describe("recovery context target evidence", () => {
             ],
           }
           const id = yield* dag.create({ projectID, sessionID, title: "recover", config: workflowConfig })
-          const initial = DagLocation.fingerprintTarget(worktree)
+          const initial = yield* DagLocation.fingerprintTarget(worktree)
           yield* dag.nodeStarted(id, "writer", "ses_writer", undefined, false, undefined, worktree, undefined, initial)
           writeFileSync(path.join(worktree, "change.txt"), "writer change")
           yield* dag.nodeCompleted(id, "writer", "written")
-          const reviewed = DagLocation.fingerprintTarget(worktree)
+          const reviewed = yield* DagLocation.fingerprintTarget(worktree)
           expect(DagLocation.sameFingerprint(initial, reviewed)).toBe(false)
           yield* dag.nodeStarted(id, "review", "ses_review", undefined, false, undefined, worktree, undefined, reviewed)
           yield* dag.nodeCompleted(id, "review", { verdict: "ACCEPT" })
@@ -299,7 +299,7 @@ describe("Dag retarget", () => {
         const before = yield* store.getNode(dagID, "review")
         const workflow = yield* store.getWorkflow(dagID)
         writeFileSync(path.join(tmp.path, "change.txt"), "changed")
-        const current = DagLocation.fingerprintTarget(tmp.path)
+        const current = yield* DagLocation.fingerprintTarget(tmp.path)
         const rejected = yield* dag.retarget(dagID, { fingerprint: fingerprintArg(current) }).pipe(Effect.flip)
         expect(rejected.message).toContain("review")
         expect(yield* store.getNode(dagID, "review")).toEqual(before)
@@ -399,7 +399,7 @@ describe("Dag retarget", () => {
         const store = yield* DagStore.Service
         const mismatch = yield* dag.retarget(dagID, { fingerprint: "deadbeef" }).pipe(Effect.flip)
         expect(mismatch.message).toContain("expected target fingerprint deadbeef")
-        const empty = yield* dag.retarget(dagID, { fingerprint: fingerprintArg(DagLocation.fingerprintTarget(tmp.path)), nodeIDs: [] }).pipe(Effect.flip)
+        const empty = yield* dag.retarget(dagID, { fingerprint: fingerprintArg(yield* DagLocation.fingerprintTarget(tmp.path)), nodeIDs: [] }).pipe(Effect.flip)
         expect(empty.message).toContain("node_ids must not be empty")
         const missing = yield* dag.retarget(dagID, {}).pipe(Effect.flip)
         expect(missing.message).toContain("provide workspace or fingerprint")
@@ -426,7 +426,7 @@ describe("Dag retarget", () => {
         expect(result.nodes).toEqual(["review"])
         const workflow = yield* store.getWorkflow(dagID)
         expect(workflow?.executionDirectory).toBe(resolved)
-        expect(workflow?.targetFingerprint).toEqual(DagLocation.fingerprintTarget(resolved))
+        expect(workflow?.targetFingerprint).toEqual(yield* DagLocation.fingerprintTarget(resolved))
         expect(Dag.parseWorkflowConfig(workflow!.config)?.workspace).toBe(resolved)
         expect(yield* store.getNode(dagID, "review")).toMatchObject({ status: "pending", replanAttempts: 1 })
         const audit = yield* store.getLatestRetarget!(dagID)

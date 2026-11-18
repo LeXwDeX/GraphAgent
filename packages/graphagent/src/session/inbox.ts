@@ -45,7 +45,7 @@ export * as SessionInbox from "./inbox"
 
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
-import { Cause, Context, Duration, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
+import { Cause, Context, Duration, Effect, Exit, Layer, Option, Schema, Scope, Stream } from "effect"
 import type { InstanceContext } from "@/project/instance-context"
 import { DagLocation } from "@/dag/location"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -408,9 +408,18 @@ export const layer = Layer.effect(
             }),
           )
           .pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                if (data.inFlight.get(sessionID) === token) data.inFlight.delete(sessionID)
+            // A nudge that lands after the loop's last `again` check but before
+            // this release still finds the token and only sets `again`. Checking
+            // it here, in the same synchronous step that drops the token, closes
+            // that window: after a pass that finished, such a nudge gets its own
+            // pass instead of waiting for the next idle event or scan tick. An
+            // interrupted pass gives the session back without one, as before.
+            Effect.onExit((exit) =>
+              Effect.suspend(() => {
+                if (data.inFlight.get(sessionID) !== token) return Effect.void
+                data.inFlight.delete(sessionID)
+                if (!token.again || !Exit.isSuccess(exit)) return Effect.void
+                return drainFor(data, sessionID).pipe(Effect.forkIn(data.scope), Effect.asVoid)
               }),
             ),
           )
