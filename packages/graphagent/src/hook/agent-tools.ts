@@ -25,17 +25,25 @@ const MAX_READ_LINES_DEFAULT = 2000
 
 // ── factory ─────────────────────────────────────────────────────
 
-export interface BuildAgentToolsDeps {
+export interface BuildReadonlyToolsDeps {
   spawner: ChildProcessSpawner["Service"]
   fs: FSUtil.Interface
   signal: AbortSignal
   cwd: string
+}
+
+export interface BuildAgentToolsDeps extends BuildReadonlyToolsDeps {
   /** Mutable slot the synthetic_output tool writes to. Loop polls .value. */
   captured: { value: HookEvaluatorOutput | null }
 }
 
-export function buildAgentTools(deps: BuildAgentToolsDeps): Record<string, Tool> {
-  const { spawner, fs, signal, cwd, captured } = deps
+/**
+ * The read-only inspection tools shared by every model-driven background agent: read_file, list_dir, grep and the
+ * whitelisted bash. They write nothing, reach no network and observe the abort signal; a caller adds its own
+ * terminating tool (the hook agent's synthetic_output, the loop analysis's submit_analysis).
+ */
+export function buildReadonlyTools(deps: BuildReadonlyToolsDeps): Record<string, Tool> {
+  const { spawner, fs, signal, cwd } = deps
 
   const read_file = tool({
     description: "Read a UTF-8 file. Optional 1-indexed offset and max line limit (default 2000).",
@@ -222,6 +230,12 @@ export function buildAgentTools(deps: BuildAgentToolsDeps): Record<string, Tool>
     },
   })
 
+  return { read_file, list_dir, grep, bash }
+}
+
+export function buildAgentTools(deps: BuildAgentToolsDeps): Record<string, Tool> {
+  const { signal, captured } = deps
+
   const synthetic_output = tool({
     description: "Emit the final hook decision and stop. Call this exactly once when ready to terminate.",
     inputSchema: HookEvaluatorOutputSchema,
@@ -238,7 +252,7 @@ export function buildAgentTools(deps: BuildAgentToolsDeps): Record<string, Tool>
     },
   })
 
-  return { read_file, list_dir, grep, bash, synthetic_output }
+  return { ...buildReadonlyTools(deps), synthetic_output }
 }
 
 export * as AgentTools from "./agent-tools"
