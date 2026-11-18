@@ -23,7 +23,7 @@ import { ShellID } from "./shell/id"
 import { ShellNormalize } from "./shell/normalize"
 
 import * as Truncate from "./truncate"
-import { addCorrections } from "./corrections"
+import { addCorrections } from "@graphagent/core/session/outcome"
 import { ChildProcess } from "effect/process"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { ShellPrompt, SHELL_TAIL_LINES, type Parameters } from "./shell/prompt"
