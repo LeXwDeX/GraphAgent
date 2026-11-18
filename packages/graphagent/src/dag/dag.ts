@@ -29,6 +29,7 @@ import {
   TerminalViolationError,
   WorkflowStatus,
   NodeStatus,
+  PAUSE_REASON_ARCHIVED,
   PAUSE_REASON_CHECKPOINT,
   PAUSE_REASON_BUDGET_EXHAUSTED,
   ERROR_CLASS_BUDGET_EXHAUSTED,
@@ -712,6 +713,20 @@ export interface Interface {
    */
   readonly pauseForBudget: (dagID: string) => Effect.Effect<"paused" | "ignored", Error>
   /**
+   * #1289: the owner session was archived. A `running` or `stepping` workflow
+   * is paused with reason `archived` (`paused`); a workflow that is already
+   * paused, whatever its reason, keeps its pause and only the reason becomes
+   * `archived` (`relabeled`). A terminal, `pending` or missing workflow, and one
+   * already held for the archive, is left untouched (`ignored`). In-flight
+   * nodes are not cancelled: this is the same pause a control request makes,
+   * and archiving is reversible where cancelling is not. Relabeling a budget
+   * pause also requeues the nodes the budget cancelled, as the budget's own
+   * resume would have (it no longer sees the workflow), so a later resume reruns
+   * them. An intent write, like `pauseForBudget`: no lease token, and a user
+   * action that has to take effect whichever process drives the workflow.
+   */
+  readonly pauseForArchive: (dagID: string) => Effect.Effect<"paused" | "relabeled" | "ignored", Error>
+  /**
    * D12 requeue primitive: return budget-cancelled nodes of a budget-paused
    * workflow to `pending` for a fresh attempt. It consumes no replan count and
    * only touches rows failed with error_class `budget_exhausted`.
@@ -722,6 +737,18 @@ export interface Interface {
     reason: string,
   ) => Effect.Effect<{ readonly requeued: readonly string[] }, Error>
   readonly resume: (dagID: string) => Effect.Effect<void, Error>
+  /**
+   * #1289: the automatic resume of one pause episode (`DagBudget`'s own, held
+   * for `budget_exhausted`). It lifts the pause only while the workflow is
+   * still paused for `reason`, checked under the workflow lock and again inside
+   * the transaction that publishes `WorkflowResumed`: a pause the owner's
+   * archive relabeled in between (or a workflow someone else already resumed or
+   * ended) is left alone and reported as `skipped`, not as an error. A resume
+   * that goes ahead consults the `ResumeGuard` like `resume`. The explicit
+   * `resume` is unchanged and lifts any pause, an archive's included: that is
+   * the main agent's decision.
+   */
+  readonly resumeIfPausedFor: (dagID: string, reason: PauseReason) => Effect.Effect<"resumed" | "skipped", Error>
   readonly step: (
     dagID: string,
   ) => Effect.Effect<{ status: "stepping"; nodeID?: string } | { status: "no_ready_nodes" }, Error>
@@ -1295,6 +1322,21 @@ export const layer = Layer.effect(
     const resume = Effect.fn("Dag.resume")(function* (lock: WorkflowLock, dagID: string) {
       yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
       yield* events.publish(DagEvent.WorkflowResumed, { dagID: dagID as ID, timestamp: yield* DateTime.now })
+    })
+    // Whether the workflow is still the pause episode the caller means to lift.
+    const stillPausedFor = (workflow: DagStore.WorkflowRow, reason: PauseReason) =>
+      workflow.status === "paused" && workflow.pauseReason === reason
+    const resumeIfPausedFor = Effect.fn("Dag.resumeIfPausedFor")(function* (
+      lock: WorkflowLock,
+      dagID: string,
+      reason: PauseReason,
+    ) {
+      // The transaction's own read: the policy check that precedes it ran outside
+      // it, and what the caller read before that may be older still.
+      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+      if (!workflow || !stillPausedFor(workflow, reason)) return "skipped" as const
+      yield* resume(lock, dagID)
+      return "resumed" as const
     })
 
     const step = Effect.fn("Dag.step")(function* (lock: WorkflowLock, dagID: string) {
@@ -2558,6 +2600,38 @@ export const layer = Layer.effect(
       return { requeued: eligible }
     })
 
+    const pauseForArchive = Effect.fn("Dag.pauseForArchive")(function* (lock: WorkflowLock, dagID: string) {
+      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+      if (!workflow || workflow.status === "pending" || isTerminalWorkflowStatusValue(workflow.status))
+        return "ignored" as const
+      if (workflow.status !== "paused") {
+        yield* pause(lock, dagID, PAUSE_REASON_ARCHIVED)
+        return "paused" as const
+      }
+      if (workflow.pauseReason === PAUSE_REASON_ARCHIVED) return "ignored" as const
+      // A budget pause cancelled its in-flight attempts, and only the budget's
+      // own resume requeues them (`DagBudget`, which stops seeing the workflow
+      // once its reason changes). Requeue them with the relabel, so the main
+      // agent's resume reruns them instead of settling the workflow on required
+      // nodes the budget, not an agent, failed.
+      if (workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED) {
+        const cancelled = (yield* store.getCurrentNodes(dagID).pipe(Effect.orDie))
+          .filter((node) => node.status === "failed" && node.errorClass === ERROR_CLASS_BUDGET_EXHAUSTED)
+          .map((node) => node.id)
+        if (cancelled.length > 0) yield* requeueNodes(lock, dagID, cancelled, "session archived")
+      }
+      // Already paused (a budget, checkpoint, recovery or manual pause): the
+      // state machine has no paused -> paused transition, so this is not
+      // `pause`. The projector accepts the pause event from `paused` for this
+      // reason alone and changes only the reason.
+      yield* events.publish(DagEvent.WorkflowPaused, {
+        dagID: DagEvent.DagID.make(dagID),
+        timestamp: yield* DateTime.now,
+        reason: PAUSE_REASON_ARCHIVED,
+      })
+      return "relabeled" as const
+    })
+
     const nodeSkipped = Effect.fn("Dag.nodeSkipped")(function* (
       lock: WorkflowLock,
       dagID: string,
@@ -2773,6 +2847,7 @@ export const layer = Layer.effect(
       store,
       pause: (dagID, reason) => command(dagID)((lock) => pause(lock, dagID, reason)),
       pauseForBudget: (dagID) => command(dagID)((lock) => pauseForBudget(lock, dagID)),
+      pauseForArchive: (dagID) => command(dagID)((lock) => pauseForArchive(lock, dagID)),
       requeueNodes: (dagID, nodeIDs, reason) => command(dagID)((lock) => requeueNodes(lock, dagID, nodeIDs, reason)),
       pauseForCheckpoint: (dagID, checkpointSeq) =>
         command(dagID)((lock) => pauseForCheckpoint(lock, dagID, checkpointSeq)),
@@ -2789,6 +2864,15 @@ export const layer = Layer.effect(
             const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
             yield* ResumeGuard.check(workflow)
             yield* transact(dagID, resume(lock, dagID))
+          }),
+        ),
+      resumeIfPausedFor: (dagID, reason) =>
+        withWorkflowLock(dagID)((lock) =>
+          Effect.gen(function* () {
+            const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+            if (!workflow || !stillPausedFor(workflow, reason)) return "skipped" as const
+            yield* ResumeGuard.check(workflow)
+            return yield* transact(dagID, resumeIfPausedFor(lock, dagID, reason))
           }),
         ),
       step: (dagID) =>

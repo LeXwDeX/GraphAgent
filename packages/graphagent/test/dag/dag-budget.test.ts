@@ -18,7 +18,11 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { TuiEvent } from "@graphagent/schema/tui-event"
-import { PAUSE_REASON_BUDGET_EXHAUSTED, ERROR_CLASS_BUDGET_EXHAUSTED } from "@graphagent/schema/dag-status"
+import {
+  PAUSE_REASON_ARCHIVED,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
+  ERROR_CLASS_BUDGET_EXHAUSTED,
+} from "@graphagent/schema/dag-status"
 import { Dag } from "@/dag/dag"
 import { DagBudget, tierOf } from "@/dag/budget"
 import { DagMode } from "@/dag/mode"
@@ -77,6 +81,9 @@ interface HarnessOptions {
   readonly requeueOutcomes?: ReadonlyArray<"fail" | "partial">
   /** Scripted resume outcomes: "fail" throws a transient workflow lock error. */
   readonly resumeOutcomes?: ReadonlyArray<"fail">
+  /** The owner's archive lands right after the budget has read a pause and
+   *  decided to resume it, before the resume call is issued (#1289). */
+  readonly archiveBeforeResume?: boolean
   /** The inbox mock requires an instance context, like the real submit. */
   readonly inboxRequiresInstance?: boolean
 }
@@ -119,7 +126,7 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
   const requeueOutcomes = options.requeueOutcomes ?? []
   const resumeOutcomes = options.resumeOutcomes ?? []
   const dag =
-    failPause === 0 && requeueOutcomes.length === 0 && resumeOutcomes.length === 0
+    failPause === 0 && requeueOutcomes.length === 0 && resumeOutcomes.length === 0 && !options.archiveBeforeResume
       ? rawDag
       : Layer.effect(
           Dag.Service,
@@ -128,6 +135,8 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
             let pauseRemaining = failPause
             let requeueCall = 0
             let resumeCall = 0
+            const archiveFirst = (dagID: string) =>
+              options.archiveBeforeResume ? Effect.asVoid(original.pauseForArchive(dagID)) : Effect.void
             return Dag.Service.of({
               ...original,
               pauseForBudget: (dagID) =>
@@ -146,10 +155,18 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
                     return original.requeueNodes(dagID, nodeIDs.slice(0, -1), reason)
                   return original.requeueNodes(dagID, nodeIDs, reason)
                 }),
+              // The budget's automatic resume is the conditional one (#1289); the
+              // plain one is wrapped the same way so either call meets the script
+              // and the interleaved archive.
               resume: (dagID) =>
                 Effect.suspend(() => {
-                  if (resumeOutcomes[resumeCall++] !== "fail") return original.resume(dagID)
-                  return Effect.fail(new Error("workflow lock timeout"))
+                  if (resumeOutcomes[resumeCall++] === "fail") return Effect.fail(new Error("workflow lock timeout"))
+                  return archiveFirst(dagID).pipe(Effect.andThen(original.resume(dagID)))
+                }),
+              resumeIfPausedFor: (dagID, reason) =>
+                Effect.suspend(() => {
+                  if (resumeOutcomes[resumeCall++] === "fail") return Effect.fail(new Error("workflow lock timeout"))
+                  return archiveFirst(dagID).pipe(Effect.andThen(original.resumeIfPausedFor(dagID, reason)))
                 }),
             })
           }),
@@ -348,6 +365,13 @@ const readNodes = Effect.gen(function* () {
   return yield* store.getCurrentNodes(dagID).pipe(Effect.orDie)
 })
 
+/** `[id, status, errorClass]` of every current node, in node-id order. */
+const nodeStates = Effect.map(readNodes, (nodes) =>
+  nodes
+    .map((node) => [node.id, node.status, node.errorClass])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+)
+
 /** The owner instance a bootstrap `init` runs under. */
 const ownerInstance = {
   directory: process.cwd(),
@@ -492,6 +516,123 @@ describe("DagBudget raise", () => {
         // A repeated reconcile finds nothing paused: no second wake.
         expect(yield* budget.onBudgetChanged(parent)).toBe(0)
         expect(harness.wakes).toHaveLength(1)
+      }),
+    )
+  })
+})
+
+describe("DagBudget raise after an archive (#1289)", () => {
+  test("a workflow the archive holds is not resumed by a raise or by the owner's next bootstrap, budget enforcement leaves it be, and the main agent's resume reruns the budget-cancelled nodes", async () => {
+    const harness = makeHarness({ globalBudget: 1000 })
+    await run(
+      harness,
+      Effect.gen(function* () {
+        yield* seed()
+        yield* createWorkflow()
+        yield* startNode("a", child)
+        yield* queueNode("b")
+        yield* setChildTokens({ input: 1200, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 })
+        const budget = yield* DagBudget.Service
+        const dag = yield* Dag.Service
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).pauseReason).toBe(PAUSE_REASON_BUDGET_EXHAUSTED)
+        expect(yield* nodeStates).toEqual([
+          ["a", "failed", ERROR_CLASS_BUDGET_EXHAUSTED],
+          ["b", "failed", ERROR_CLASS_BUDGET_EXHAUSTED],
+        ])
+
+        // The owner session is archived while the workflow is budget-paused:
+        // the pause stays and only its reason changes. The budget's own resume
+        // would have requeued the cancelled attempts and no longer sees the
+        // workflow, so the relabel requeues them.
+        expect(yield* dag.pauseForArchive(dagID)).toBe("relabeled")
+        const requeued = [
+          ["a", "pending", null],
+          ["b", "pending", null],
+        ]
+        expect(yield* nodeStates).toEqual(requeued)
+
+        // The user raises the budget: nothing is resumed or woken.
+        harness.state.globalBudget = 5000
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+        // The owner instance bootstraps again (the restart path): the same.
+        yield* budget.init().pipe(Effect.provideService(InstanceRef, ownerInstance))
+        const held = yield* readWorkflow
+        expect({ status: held.status, pauseReason: held.pauseReason }).toEqual({
+          status: "paused",
+          pauseReason: PAUSE_REASON_ARCHIVED,
+        })
+        expect(yield* nodeStates).toEqual(requeued)
+        expect(harness.wakes).toHaveLength(0)
+
+        // Budget exhaustion again does not turn the archive pause back into a
+        // budget pause either: it is not the budget's workflow any more.
+        harness.state.globalBudget = 1000
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).pauseReason).toBe(PAUSE_REASON_ARCHIVED)
+        expect(yield* nodeStates).toEqual(requeued)
+
+        // The resume guard still refuses a resume while the budget is exhausted;
+        // once it is raised again the main agent's resume continues the workflow.
+        expect((yield* dag.resume(dagID).pipe(Effect.flip)).message).toContain("budget")
+        harness.state.globalBudget = 5000
+        yield* dag.resume(dagID)
+        const resumed = yield* readWorkflow
+        expect({ status: resumed.status, pauseReason: resumed.pauseReason }).toEqual({
+          status: "running",
+          pauseReason: null,
+        })
+        expect(yield* nodeStates).toEqual(requeued)
+      }),
+    )
+  })
+
+  test("an archive that lands between the budget's read of the pause and its resume is not undone by the raise", async () => {
+    // The harness issues the archive right after the budget has filtered the
+    // budget-paused workflows and requeued their cancelled nodes, just before
+    // the resume call: the interleaving that a filter-then-resume leaves open.
+    const harness = makeHarness({ globalBudget: 1000 }, { archiveBeforeResume: true })
+    await run(
+      harness,
+      Effect.gen(function* () {
+        yield* seed()
+        yield* createWorkflow()
+        yield* startNode("a", child)
+        yield* queueNode("b")
+        yield* setChildTokens({ input: 1200, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 })
+        const budget = yield* DagBudget.Service
+        const dag = yield* Dag.Service
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).pauseReason).toBe(PAUSE_REASON_BUDGET_EXHAUSTED)
+
+        // The raise: the budget would resume the workflow, but by the time its
+        // resume is issued the owner has been archived.
+        harness.state.globalBudget = 5000
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+
+        const held = yield* readWorkflow
+        expect({ status: held.status, pauseReason: held.pauseReason }).toEqual({
+          status: "paused",
+          pauseReason: PAUSE_REASON_ARCHIVED,
+        })
+        // Nothing was resumed, so nothing is announced as resumed.
+        expect(harness.wakes).toHaveLength(0)
+        expect(yield* nodeStates).toEqual([
+          ["a", "pending", null],
+          ["b", "pending", null],
+        ])
+
+        // Nothing is left pending for the budget to retry either.
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+        expect((yield* readWorkflow).pauseReason).toBe(PAUSE_REASON_ARCHIVED)
+
+        // The explicit resume is the main agent's decision and still works.
+        yield* dag.resume(dagID)
+        const resumed = yield* readWorkflow
+        expect({ status: resumed.status, pauseReason: resumed.pauseReason }).toEqual({
+          status: "running",
+          pauseReason: null,
+        })
       }),
     )
   })

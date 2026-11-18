@@ -427,7 +427,9 @@ describe("DagDelivery reads the DAG mode at the terminal boundary", () => {
         control.reads = 0
         yield* delivery.drain(PARENT)
         expect(control.admissions).toBe(1)
-        expect(control.reads).toBe(0)
+        // The one read is the archived-owner judgment (#1289), asked because
+        // there is something to deliver; the mode is not read on top of it.
+        expect(control.reads).toBe(1)
       }),
     )
   })

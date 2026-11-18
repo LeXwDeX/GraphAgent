@@ -42,8 +42,9 @@ import type { Dag } from "../dag"
  *   - intent writes (a user, an agent or a policy asked), no token: everything
  *     `DagControl` applies (`pause`, `resume`, `step`, `cancel`, `complete`,
  *     `nodeCancelled`, `replan`, `extend`, `recover`, `extendTimeout`,
- *     `retarget`), `create`, `cancel` on session removal, and `DagBudget`
- *     (`pauseForBudget`, `requeueNodes`, `resume`);
+ *     `retarget`), `create`, `cancel` on session removal, `pauseForArchive` on
+ *     session archive (#1289), and `DagBudget` (`pauseForBudget`,
+ *     `requeueNodes`, `resumeIfPausedFor`);
  *   - durable-fact writes, no token: `failUnrecoverable`; and the writes of the
  *     host sweep, which holds no lease.
  * `pause` and `extend` appear in both lists: the runner's own use of them (the

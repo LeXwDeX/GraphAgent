@@ -239,6 +239,12 @@ const scenarios: ReadonlyArray<Scenario> = [
     run: (dag, id) => dag.resume(id),
     publishes: "dag.workflow.resumed",
   },
+  {
+    name: "resumeIfPausedFor",
+    prepare: (dag, id) => dag.pause(id, "budget_exhausted"),
+    run: (dag, id) => dag.resumeIfPausedFor(id, "budget_exhausted"),
+    publishes: "dag.workflow.resumed",
+  },
   { name: "step", run: (dag, id) => dag.step(id), publishes: "dag.workflow.stepped" },
   { name: "pauseForCheckpoint", run: (dag, id) => dag.pauseForCheckpoint(id, 1), publishes: "dag.workflow.paused" },
   {
@@ -246,6 +252,13 @@ const scenarios: ReadonlyArray<Scenario> = [
     prepare: (dag, id, harness) => start(dag, id, "a", harness),
     run: (dag, id) => dag.pauseForBudget(id),
     publishes: "dag.node.failed",
+  },
+  { name: "pauseForArchive", run: (dag, id) => dag.pauseForArchive(id), publishes: "dag.workflow.paused" },
+  {
+    name: "pauseForArchive (a workflow that is already paused)",
+    prepare: (dag, id) => dag.pause(id),
+    run: (dag, id) => dag.pauseForArchive(id),
+    publishes: "dag.workflow.paused",
   },
   {
     name: "requeueNodes",

@@ -3,13 +3,13 @@
 
 export * as DagProjector from "./projector"
 
-import { and, eq, inArray, isNull, sql } from "drizzle-orm"
+import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer } from "effect"
 import { Database } from "../database/database"
 import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
 import { DagEvent } from "@graphagent/schema/dag-event"
-import { ERROR_CLASS_BUDGET_EXHAUSTED, ERROR_CLASS_CANCELLED } from "@graphagent/schema/dag-status"
+import { ERROR_CLASS_BUDGET_EXHAUSTED, ERROR_CLASS_CANCELLED, PAUSE_REASON_ARCHIVED } from "@graphagent/schema/dag-status"
 import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "./sql"
 
 type WorkflowStatus = DagEvent.WorkflowStatus
@@ -77,6 +77,14 @@ export const NodeStatusProjection = {
 export const WorkflowStatusProjection = {
   started: { to: "running", from: ["pending"] },
   paused: { to: "paused", from: ["running", "stepping"] },
+  /**
+   * #1289: archiving the owner session relabels a workflow that is already
+   * paused: the same `WorkflowPaused` event with reason `archived`, accepted
+   * from `paused` for that reason alone. A self-transition (the status stays,
+   * only the reason changes), so the drift test exempts it like any idempotent
+   * re-application.
+   */
+  pausedRelabeled: { to: "paused", from: ["paused"] },
   resumed: { to: "running", from: ["paused", "stepping"] },
   stepped: { to: "stepping", from: ["running", "stepping"] },
   completed: { to: "completed", from: ["running", "stepping"] },
@@ -166,22 +174,48 @@ export const layer = Layer.effectDiscard(
     )
 
     yield* project(DagEvent.WorkflowPaused, (event) =>
-      db
-        .update(WorkflowTable)
-        .set({
-          status: "paused",
-          seq: event.durable!.seq,
-          time_updated: toMillis(event.data.timestamp),
-          // D12: the reason rides on the durable event so a restart/replay
-          // reconstructs it; an absent reason projects to NULL.
-          pause_reason: event.data.reason ?? null,
-          // One bounded reminder is available for each pause episode. Its
-          // delivery is acknowledged through the existing wake batch marker.
-          wake_reported: false,
-        })
-        .where(and(eq(WorkflowTable.id, event.data.dagID), inArray(WorkflowTable.status, [...WorkflowStatusProjection.paused.from])))
-        .run()
-        .pipe(Effect.orDie),
+      Effect.gen(function* () {
+        yield* db
+          .update(WorkflowTable)
+          .set({
+            status: "paused",
+            seq: event.durable!.seq,
+            time_updated: toMillis(event.data.timestamp),
+            // D12: the reason rides on the durable event so a restart/replay
+            // reconstructs it; an absent reason projects to NULL.
+            pause_reason: event.data.reason ?? null,
+            // One bounded reminder is available for each pause episode. Its
+            // delivery is acknowledged through the existing wake batch marker.
+            wake_reported: false,
+          })
+          .where(and(eq(WorkflowTable.id, event.data.dagID), inArray(WorkflowTable.status, [...WorkflowStatusProjection.paused.from])))
+          .run()
+          .pipe(Effect.orDie)
+        // #1289: an archive holds a workflow that is already paused, whatever
+        // its reason, by relabeling it. Only the reason changes: the pause
+        // episode (and its reminder marker) is the one the workflow was already
+        // in. The seq guard keeps the legs idempotent, so the leg above (which
+        // has just stamped this event's seq) and a re-applied event are no-ops,
+        // and an older event can never overwrite a later pause episode.
+        if (event.data.reason === PAUSE_REASON_ARCHIVED)
+          yield* db
+            .update(WorkflowTable)
+            .set({
+              seq: event.durable!.seq,
+              time_updated: toMillis(event.data.timestamp),
+              pause_reason: PAUSE_REASON_ARCHIVED,
+            })
+            .where(
+              and(
+                eq(WorkflowTable.id, event.data.dagID),
+                inArray(WorkflowTable.status, [...WorkflowStatusProjection.pausedRelabeled.from]),
+                lt(WorkflowTable.seq, event.durable!.seq),
+                or(isNull(WorkflowTable.pause_reason), ne(WorkflowTable.pause_reason, PAUSE_REASON_ARCHIVED)),
+              ),
+            )
+            .run()
+            .pipe(Effect.orDie)
+      }),
     )
     // Leaving a pause ends that pause episode. A reminder already delivered for
     // it (wake_reported=true) must not suppress the next report, so the

@@ -53,11 +53,12 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionMessageID } from "@graphagent/schema/session-message-id"
 import { DagBudgetTokens, DagMode } from "@graphagent/schema/dag-mode"
+import { TuiEvent } from "@graphagent/schema/tui-event"
 import { Goal } from "@/goal/goal"
 import { ExclusiveRegistry } from "./engine-process"
 import { SessionStatus } from "./status"
 import { Dag } from "@/dag/dag"
-import { isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
+import { isTerminalWorkflowStatusValue, isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
 import { landSystemMessages } from "@/hook/trigger-result"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -473,6 +474,16 @@ export class DagModeError extends Schema.TaggedError<DagModeError>()("SessionDag
 
 export type NotFound = NotFoundError
 
+/** What archiving a session did to the workflows it owns (#1289). */
+export interface ArchiveReceipt {
+  /**
+   * Workflows the archive paused (reason `archived`): the ones that were
+   * running or stepping. A workflow that was already paused only has its reason
+   * changed, and one that already ended is untouched; neither is counted.
+   */
+  readonly pausedWorkflows: number
+}
+
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly create: (input?: InternalCreateInput) => Effect.Effect<Info>
@@ -484,7 +495,7 @@ export interface Interface {
     title: string
     source?: "custom" | "generated"
   }) => Effect.Effect<void>
-  readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
+  readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<ArchiveReceipt>
   readonly setAgent: (input: { sessionID: SessionID; agent: string; timestamp?: number }) => Effect.Effect<void>
   readonly setModelSelection: (input: {
     sessionID: SessionID
@@ -1107,8 +1118,56 @@ export const layer: Layer.Layer<
       }).pipe(Effect.orDie)
     })
 
+    // #1289: archiving holds every workflow the session owns, so nothing keeps
+    // running and spending tokens behind an archived session. Running and
+    // stepping workflows are paused and already-paused ones relabeled, both with
+    // reason `archived`, which no automatic recovery path lifts (budget raise,
+    // restart) and un-archiving does not either: the main agent resumes through
+    // the workflow tool. Pause, not cancel: archiving is reversible. A workflow
+    // that cannot be paused is logged and left to a repeated archive; the
+    // archive itself never fails on it (the same degrade as `remove`'s cancel).
+    const pauseOwnedWorkflows = Effect.fn("Session.pauseOwnedWorkflows")(function* (sessionID: SessionID) {
+      const workflows = yield* dag.store.listBySession(sessionID).pipe(Effect.orDie)
+      let paused = 0
+      for (const workflow of workflows) {
+        if (isTerminalWorkflowStatusValue(workflow.status)) continue
+        const outcome = yield* dag.pauseForArchive(workflow.id).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("workflow pause failed during session archive", {
+                  dagID: workflow.id,
+                  sessionID,
+                  cause,
+                }).pipe(Effect.as("failed" as const)),
+          ),
+        )
+        if (outcome === "paused") paused++
+      }
+      return paused
+    })
+
     const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
+      // The workflows are paused before the session is marked archived: a crash
+      // or a failure between the two then leaves paused workflows under a live
+      // session (safe, resumable) instead of a running workflow under an
+      // archived one. An absent time is the opposite direction and touches no
+      // workflow.
+      const pausedWorkflows = input.time === undefined ? 0 : yield* pauseOwnedWorkflows(input.sessionID)
       yield* patch(input.sessionID, { time: { archived: input.time } }).pipe(Effect.orDie)
+      // The receipt for clients: archive is a PATCH that returns the session,
+      // so the count reaches them as a toast, the channel `DagBudget` uses for
+      // the same kind of pause.
+      if (pausedWorkflows > 0)
+        yield* events
+          .publish(TuiEvent.ToastShow, {
+            title: "Session archived",
+            message: `${pausedWorkflows} workflow${pausedWorkflows === 1 ? "" : "s"} paused (archived). Un-archiving does not resume them; ask the main agent to resume.`,
+            variant: "info",
+            duration: 8000,
+          })
+          .pipe(Effect.catchCause(() => Effect.void))
+      return { pausedWorkflows }
     })
 
     const setAgent = Effect.fn("Session.setAgent")(function* (input: {

@@ -79,6 +79,15 @@ describe("projector from-guards vs declared transition tables", () => {
     expect([...WorkflowStatusProjection.recoveryReopen.from]).toEqual(["failed", "cancelled"])
   })
 
+  it("scopes the archive relabel to paused→paused only", () => {
+    // #1289: the same pause event, accepted from `paused` for the archived
+    // reason; a self-transition, so the drift test above exempts it, and this
+    // pin keeps it from growing into a second source status.
+    expect(WorkflowStatusProjection.pausedRelabeled.to).toBe("paused")
+    expect([...WorkflowStatusProjection.pausedRelabeled.from]).toEqual(["paused"])
+    expect(getValidNextWorkflowStatuses("paused" as WorkflowStatus)).not.toContain("paused")
+  })
+
   it("scopes the budget requeue to failed→pending only", () => {
     expect(NodeStatusProjection.requeued.to).toBe("pending")
     expect([...NodeStatusProjection.requeued.from]).toEqual(["failed"])

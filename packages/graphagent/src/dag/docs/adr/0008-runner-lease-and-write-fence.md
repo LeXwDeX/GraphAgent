@@ -195,9 +195,10 @@ the loop pauses a workflow because recovery invented failures.
   (`src/dag/control.ts`): `pause`, `resume`, `step`, `cancel`, `complete`,
   `nodeCancelled`, `replan`, `extend`, `recover`, `extendTimeout`, and
   `retarget`, plus its parking `pause` and automatic `resume`; `create`;
-  `cancel` on session removal; and `DagBudget` (`pauseForBudget`,
-  `requeueNodes`, `resume`), which enforces a limit the user set and has to
-  take effect whichever runner holds the workflow. They still run in the
+  `cancel` on session removal; `pauseForArchive` on session archive; and
+  `DagBudget` (`pauseForBudget`, `requeueNodes`, `resumeIfPausedFor`), which enforces a
+  limit the user set and has to take effect whichever runner holds the
+  workflow. They still run in the
   transaction of decision 3, without its fence step, and a lease never refuses
   them: a user can pause, cancel, or replan a workflow whatever process drives
   it. The lease holder meets the result in the guard of its next write, for

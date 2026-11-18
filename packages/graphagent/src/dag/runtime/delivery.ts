@@ -9,6 +9,7 @@ import type { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import {
   ERROR_CLASS_BUDGET_EXHAUSTED,
   ERROR_CLASS_CANCELLED,
+  PAUSE_REASON_ARCHIVED,
   PAUSE_REASON_BUDGET_EXHAUSTED,
   displayState,
   isNodeTerminalStatus,
@@ -71,11 +72,18 @@ export function wakeBatchIdentity(sessionID: string, batch: DagStore.WakeBatch) 
 }
 
 export function isPausedReminderDue(
-  workflow: Pick<DagStore.WorkflowRow, "status" | "wakeReported" | "timeUpdated">,
+  workflow: Pick<DagStore.WorkflowRow, "status" | "wakeReported" | "timeUpdated"> &
+    Partial<Pick<DagStore.WorkflowRow, "pauseReason">>,
   now: number,
 ) {
   return (
-    workflow.status === "paused" && !workflow.wakeReported && now - workflow.timeUpdated >= PAUSED_REMINDER_DELAY_MS
+    workflow.status === "paused" &&
+    // #1289: a pause the owner's archive holds is not a stalled workflow nobody
+    // noticed, and the reminder would wake the archived session to ask the main
+    // agent to resume it. `DagStore.getSessionsWithDueWakes` is this predicate in SQL.
+    workflow.pauseReason !== PAUSE_REASON_ARCHIVED &&
+    !workflow.wakeReported &&
+    now - workflow.timeUpdated >= PAUSED_REMINDER_DELAY_MS
   )
 }
 
@@ -471,6 +479,24 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           ),
         )
 
+  /**
+   * #1289: whether the owner session is archived. An archived session is not
+   * woken: every path that admits a turn for a session (`deliverWake` for the
+   * wake ledger, `deliverAgentMessages` for the mailbox) asks this once it has
+   * found something to deliver, and leaves the durable rows as they are (the
+   * unreported flags, the queued messages), so the items wait for the session to
+   * come back and the next idle boundary or 30s tick delivers them. Asking only
+   * after finding an item keeps the idle drain of an ordinary session free of
+   * this read. It fails open: a session that cannot be read (deleted, a store
+   * blip) is judged by the other gates, never silenced.
+   */
+  const sessionArchived = Effect.fnUntraced(function* (sessionID: string) {
+    return yield* Effect.suspend(() => sessions.get(SessionID.make(sessionID))).pipe(
+      Effect.map((info) => info.time.archived !== undefined),
+      Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(false))),
+    )
+  })
+
   let tryDeliverWake: (sessionID: string, claimEpoch?: number) => Effect.Effect<boolean> = () => Effect.succeed(false)
   const deliverWake = Effect.fn("DagDelivery.deliverWake")(function* (sessionID: string, claimEpoch?: number) {
     // Cross-instance guard via the execution-location authority: wake
@@ -561,6 +587,10 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           }
           return admitted
         }
+
+        // #1289: an archived owner is not woken, and its results are not written
+        // to its transcript either; they stay unreported until it is back.
+        if (yield* sessionArchived(sessionID)) return admitted
 
         if ((yield* status.get(SessionID.make(sessionID))).type !== "idle") return admitted
 
@@ -976,6 +1006,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         if (!queued.ok) return false
         const message = queued.value.find((item) => item.state === "queued")
         if (!message || message.recipient.kind !== "main") return false
+        // #1289: the message stays queued for an archived owner.
+        if (yield* sessionArchived(sessionID)) return false
         const history = yield* sessions.messages({ sessionID: SessionID.make(sessionID), limit: 20 })
         const latestAssistant = history
           .filter((item) => item.info.role === "assistant")
@@ -1124,8 +1156,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   const scanSessions = (): Effect.Effect<ReadonlyArray<string>> =>
     Effect.gen(function* () {
       const sessions = new Set<string>()
-      // Due means `isPausedReminderDue`: now - timeUpdated >= delay. The store
-      // takes the cutoff `now - delay` from this Clock, not from SQL time.
+      // Due means `isPausedReminderDue`: now - timeUpdated >= delay, and not a
+      // pause the owner's archive holds. The store takes the cutoff `now - delay`
+      // from this Clock, not from SQL time.
       const now = yield* Clock.currentTimeMillis
       // The wake and paused ledgers share one read, so a failure hides both
       // from this tick (the next tick retries); the mailbox read below stays
