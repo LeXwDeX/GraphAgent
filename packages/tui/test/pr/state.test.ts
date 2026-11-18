@@ -16,6 +16,7 @@ import {
   prLineState,
   prLineWords,
   prMark,
+  prNoticeAt,
   prTailMark,
   prToastFor,
   type PrAssistant,
@@ -753,6 +754,26 @@ describe("facts and words", () => {
       text: "PR #7 agent not responding",
       level: "warning",
     })
+  })
+})
+
+describe("prNoticeAt", () => {
+  test("is where the three minutes of an owed or delivered notice started, the boundary the line itself uses", () => {
+    const owedAt = owed({ updatedAt: T0 + 5 * SECOND })
+    expect(prNoticeAt(owedAt)).toBe(T0 + 5 * SECOND)
+    expect(prLineState(owedAt, idle(), T0 + 6 * SECOND).nextAt).toBe(prNoticeAt(owedAt) + PR_UNRESPONSIVE_MS)
+
+    const at = delivered({}, T0 + 7 * SECOND)
+    expect(prNoticeAt(at)).toBe(T0 + 7 * SECOND)
+    expect(prLineState(at, idle(), T0 + 8 * SECOND).nextAt).toBe(prNoticeAt(at) + PR_UNRESPONSIVE_MS)
+  })
+
+  test("falls back to the entry's last write when the delivery has no usable time, as the line does", () => {
+    for (const deliveredAt of [undefined, Number.NaN]) {
+      const odd = entry({ delivery: { state: "delivered", deliveredAt }, updatedAt: T0 + 9 * SECOND })
+      expect(prNoticeAt(odd)).toBe(T0 + 9 * SECOND)
+      expect(prLineState(odd, idle(), T0 + 10 * SECOND).nextAt).toBe(T0 + 9 * SECOND + PR_UNRESPONSIVE_MS)
+    }
   })
 })
 

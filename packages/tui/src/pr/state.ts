@@ -217,6 +217,17 @@ function finiteOr(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
 
+/**
+ * When the three minutes of a notice started: the write that made it owed (`delivering`), or the moment it was
+ * delivered. A watch that is owed and later delivered has two of them, and ends in an unresponsive line for each, so
+ * this is what tells one such warning from the next. `awaiting` and `notified` carry `prNoticeAt + PR_UNRESPONSIVE_MS`
+ * as their `nextAt`.
+ */
+export function prNoticeAt(entry: Pick<PrWatchEntry, "phase" | "updatedAt" | "delivery">): number {
+  const owed = entry.phase === "delivering" || entry.delivery?.state === "pending"
+  return owed ? entry.updatedAt : finiteOr(entry.delivery?.deliveredAt, entry.updatedAt)
+}
+
 /** The outcome is known: the notice is owed, delivered, or (after a restart) unaccounted for. */
 function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineFacts {
   const { outcome, delivery } = entry
