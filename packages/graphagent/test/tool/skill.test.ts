@@ -353,8 +353,11 @@ Use this skill.
         ["earlier receipt", skillHistory({ callID: "call-1", name: "git-workflow", hash, receipt: true })],
         ["still running", skillHistory({ callID: "call-1", name: "git-workflow", hash, status: "running" })],
         ["truncated output", skillHistory({ callID: "call-1", name: "git-workflow", hash, truncated: true })],
-        // The model wire drops a message that ended with a provider error, tool results included.
-        ["provider error ending", skillHistory({ callID: "call-1", name: "git-workflow", hash, error: "provider" })],
+        // No tool call settled in the message that ended with a provider error, so the model wire drops it whole.
+        [
+          "unsettled call, provider error ending",
+          skillHistory({ callID: "call-1", name: "git-workflow", hash, status: "running", error: "provider" }),
+        ],
       ]
       for (const [label, history] of cases) {
         const again = yield* tool.execute(
@@ -500,22 +503,36 @@ describe("tool.skill alreadyLoaded", () => {
     expect(alreadyLoaded([earlier({ tool: "read" })], base.callID, base.name, base.hash)).toBe(false)
   })
 
-  test("rejects a load whose message ended with a provider error, which the model never sees", () => {
-    expect(alreadyLoaded([earlier({ error: "provider" })], base.callID, base.name, base.hash)).toBe(false)
+  test("accepts a load whose message ended with a provider error, since its settled call is replayed", () => {
+    expect(alreadyLoaded([earlier({ error: "provider" })], base.callID, base.name, base.hash)).toBe(true)
+  })
+
+  test("rejects a load that was still running when its message ended with a provider error", () => {
+    expect(alreadyLoaded([earlier({ error: "provider", status: "running" })], base.callID, base.name, base.hash)).toBe(
+      false,
+    )
   })
 
   test("counts a load exactly when its output reaches the model wire", async () => {
     const model = ProviderTest.model()
+    const shapes: Array<Partial<Parameters<typeof skillHistory>[0]>> = [
+      {},
+      { error: "provider" },
+      { error: "aborted" },
+      // Nothing settled in the message that ended with a provider error, so the wire drops it whole.
+      { error: "provider", status: "running" },
+      { status: "running" },
+      { compacted: 1 },
+    ]
     const onWire: boolean[] = []
     const counted: boolean[] = []
-    for (const error of [undefined, "provider", "aborted"] as const) {
-      const message = earlier({ error })
+    for (const shape of shapes) {
+      const message = earlier(shape)
       onWire.push(JSON.stringify(await MessageV2.toModelMessages([message], model)).includes(SKILL_BODY))
       counted.push(alreadyLoaded([message], base.callID, base.name, base.hash))
     }
     expect(counted).toEqual(onWire)
-    // The provider-error ending is the shape the wire drops, so the comparison is not vacuous.
-    expect(onWire).toContain(false)
-    expect(onWire).toContain(true)
+    // Both outcomes occur, so the comparison is not vacuous.
+    expect(onWire).toEqual([true, true, true, false, false, false])
   })
 })

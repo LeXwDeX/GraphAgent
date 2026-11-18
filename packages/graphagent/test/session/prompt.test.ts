@@ -75,6 +75,7 @@ import { RuntimeContext } from "../../src/session/runtime-context"
 import { Shell } from "@graphagent/core/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
+import { FileState } from "@/session/file-state"
 import { Dag } from "@/dag/dag"
 import { DagMode } from "@/dag/mode"
 import { DagControl } from "@/dag/control"
@@ -485,6 +486,7 @@ function makePrompt(input?: PromptLayerOptions) {
     Layer.provide(Git.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
+    Layer.provide(FileState.defaultLayer),
     Layer.provide(flags),
     Layer.provideMerge(todo),
     Layer.provideMerge(question),

@@ -131,12 +131,16 @@ describe("the DAG mode line of the drawer", () => {
       harness.events.emit(event("goal.updated", { sessionID: ROOT, goal }))
       const lines = await column(
         harness,
-        (all) => all.some((line) => line.includes("DAG 模式")) && all.some((line) => line.startsWith("目标")),
-        "the line and the goal",
+        (all) =>
+          all.some((line) => line.includes("DAG 模式")) &&
+          all.some((line) => line.startsWith("目标")) &&
+          all.some((line) => line.includes("缓存 读")),
+        "the line, the goal and the cost",
       )
       const at = (needle: string) => lines.findIndex((line) => line.includes(needle))
       expect(at("费用")).toBeGreaterThan(-1)
-      expect(at("DAG 模式")).toBeGreaterThan(at("$0.00"))
+      // Under the whole cost section: the heading and the lines of the usage that is read once the drawer is open.
+      expect(at("DAG 模式")).toBeGreaterThan(at("缓存 读"))
       expect(at("DAG 模式")).toBeLessThan(at("目标"))
     } finally {
       await harness.dispose()
