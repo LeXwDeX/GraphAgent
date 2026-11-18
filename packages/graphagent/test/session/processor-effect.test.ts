@@ -1208,7 +1208,8 @@ it.live("session.processor effect tests retry an incomplete tool response and ex
         const { processors, session, provider } = yield* boot()
 
         // Attempt 1: tool input starts but the stream ends without a finish reason.
-        yield* llm.push(reply().pendingTool("lookup", { query: "x" }).item())
+        // The partial text is long on purpose: the rejection must not echo it.
+        yield* llm.push(reply().pendingTool("lookup", { query: "x".repeat(400) }).item())
         // Attempt 2 (retry): the complete tool call followed by a normal finish.
         yield* llm.push(reply().tool("lookup", { query: "x" }).stop().item())
 
@@ -1256,13 +1257,15 @@ it.live("session.processor effect tests retry an incomplete tool response and ex
         const calls = parts.filter((part): part is SessionV1.ToolPart => part.type === "tool")
         expect(calls).toHaveLength(2)
         // Both attempts reuse call_1: the failed rejected-input placeholder
-        // keeps its terminal error (the SDK's InvalidToolInputError message,
-        // never an executed repair artifact), the retried call settles into
-        // its own part.
+        // keeps its terminal error (the bounded invalid-JSON text, never an
+        // executed repair artifact and never the SDK's echo of the raw input),
+        // the retried call settles into its own part.
         expect(calls[0]?.state.status).toBe("error")
         if (calls[0]?.state.status === "error") {
-          expect(calls[0].state.error).toContain("Invalid input for tool")
+          expect(calls[0].state.error).toContain("are not valid JSON")
           expect(calls[0].state.error).not.toContain("unavailable tool")
+          expect(calls[0].state.error).not.toContain("x".repeat(50))
+          expect(calls[0].state.error.length).toBeLessThan(400)
         }
         expect(calls[1]?.state.status).toBe("completed")
         if (calls[1]?.state.status === "completed") {
@@ -1347,11 +1350,11 @@ it.live("session.processor effect tests never execute the repair artifact for un
         let executed = 0
         let invalidExecuted = 0
         const { processors, session, provider } = yield* boot()
-        // A fully unknown tool name: the repair artifact renames the call to
-        // the reserved "invalid" tool name, but that name is excluded from
-        // activeTools, so the SDK's parse fails with NoSuchToolError and the
-        // emitted invalid tool-call error is never executed. The model still
-        // sees the error text and the request is never auto-retried.
+        // A fully unknown tool name: the repair declines, so the SDK's parse
+        // fails with NoSuchToolError and the emitted invalid tool-call error is
+        // never executed. The reserved "invalid" tool is excluded from
+        // activeTools, so the model reads the unknown-tool text listing only
+        // the active names, and the request is never auto-retried.
         yield* llm.push(reply().tool("no_such_tool", { query: "x" }).stop().item())
 
         const chat = yield* session.create({})
@@ -1412,7 +1415,7 @@ it.live("session.processor effect tests never execute the repair artifact for un
         expect(calls).toHaveLength(1)
         expect(calls[0]?.state.status).toBe("error")
         if (calls[0]?.state.status === "error") {
-          expect(calls[0].state.error).toContain("unavailable tool 'invalid'")
+          expect(calls[0].state.error).toBe('Unknown tool "no_such_tool". Available tools: lookup. Use one of them.')
         }
         expect(msg.error).toBeUndefined()
       }),
