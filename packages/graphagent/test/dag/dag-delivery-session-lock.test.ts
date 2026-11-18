@@ -10,14 +10,13 @@
 // session. These probes pin the shared lock from both sides, with the real
 // DagLoop and a real inbox: a DAG wake never overlaps another source's claim on
 // the same session, and whichever side ends first lets the other continue.
-import { describe, expect, it } from "bun:test"
+import { describe, expect } from "bun:test"
 import { Deferred, Effect, Layer, Option, Queue, type Scope } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { EventV2 } from "@graphagent/core/event"
-import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
@@ -27,19 +26,23 @@ import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { AgentScheduler } from "@/session/agent-scheduler"
-import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import type { InstanceContext } from "@/project/instance-context"
 import { SessionInbox, type InboxSource } from "@/session/inbox"
 import type { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { requireInstance } from "../fixture/fixture"
+import { testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { mockSessionPrompt } from "../lib/child-runs"
 import { transactLayer } from "./fixture/transact"
 
 const PARENT = "ses_parent"
 const OTHER = "ses_other"
+
+const it = testEffect(Layer.empty)
 
 function reply(sessionID: string, text: string): SessionV1.WithParts {
   return {
@@ -139,7 +142,8 @@ function probeSource(claims: string[]): InboxSource {
   }
 }
 
-function graph(queues: {
+function graph(input: {
+  readonly instance: InstanceContext
   readonly childPrompts: Queue.Queue<ChildGate>
   readonly parentPrompts: Queue.Queue<WakeGate>
 }) {
@@ -149,12 +153,12 @@ function graph(queues: {
     if (sessionID === PARENT) {
       const release = yield* Deferred.make<void>()
       const text = value.parts.map((part) => (part.type === "text" ? part.text : "")).join("\n")
-      yield* Queue.offer(queues.parentPrompts, { text, release })
+      yield* Queue.offer(input.parentPrompts, { text, release })
       yield* Deferred.await(release)
       return reply(sessionID, "parent handled wake")
     }
     const release = yield* Deferred.make<string>()
-    yield* Queue.offer(queues.childPrompts, { sessionID, release })
+    yield* Queue.offer(input.childPrompts, { sessionID, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
 
@@ -173,8 +177,8 @@ function graph(queues: {
         id: SessionID.make(PARENT),
         slug: "parent",
         role: "root",
-        projectID: Project.ID.make("project-1"),
-        directory: process.cwd(),
+        projectID: input.instance.project.id,
+        directory: input.instance.directory,
         title: "parent",
         agent: "build",
         model: { providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") },
@@ -219,6 +223,7 @@ function graph(queues: {
 }
 
 interface Probe {
+  readonly projectID: string
   readonly dag: Dag.Interface
   readonly store: DagStore.Interface
   readonly inbox: SessionInbox.Interface
@@ -226,56 +231,56 @@ interface Probe {
   readonly parentPrompts: Queue.Queue<WakeGate>
 }
 
-const run = <A>(body: (probe: Probe) => Effect.Effect<A, unknown, Scope.Scope>) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const childPrompts = yield* Queue.unbounded<ChildGate>()
-      const parentPrompts = yield* Queue.unbounded<WakeGate>()
-      return yield* Effect.gen(function* () {
-        const db = yield* Database.Service
-        yield* db.db
-          .insert(ProjectTable)
-          .values({ id: Project.ID.make("project-1"), worktree: AbsolutePath.make(process.cwd()), sandboxes: [] })
-          .run()
-          .pipe(Effect.orDie)
-        yield* db.db
-          .insert(SessionTable)
-          .values({
-            id: SessionID.make(PARENT),
-            project_id: Project.ID.make("project-1"),
-            slug: "parent",
-            directory: AbsolutePath.make(process.cwd()),
-            title: "Parent",
-            version: "test",
-          })
-          .run()
-          .pipe(Effect.orDie)
-        const loop = yield* DagLoop.Service
-        yield* loop.init()
-        return yield* body({
-          dag: yield* Dag.Service,
-          store: yield* DagStore.Service,
-          inbox: yield* SessionInbox.Service,
-          childPrompts,
-          parentPrompts,
+/**
+ * Bring up the real loop and inbox over the instance `it.instance` bound, and hand `body` the services it
+ * probes. The parent session is seeded under that instance's own project and directory, so the loop owns
+ * the workflows created for it.
+ */
+const withProbe = <A, E>(body: (probe: Probe) => Effect.Effect<A, E, Scope.Scope>) =>
+  Effect.gen(function* () {
+    const instance = yield* requireInstance
+    const childPrompts = yield* Queue.unbounded<ChildGate>()
+    const parentPrompts = yield* Queue.unbounded<WakeGate>()
+    return yield* Effect.gen(function* () {
+      const db = yield* Database.Service
+      // Inside `it.instance` the database may already hold the instance's own project
+      // (the global one, for a non-git directory).
+      yield* db.db
+        .insert(ProjectTable)
+        .values({ id: instance.project.id, worktree: AbsolutePath.make(instance.worktree), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+      yield* db.db
+        .insert(SessionTable)
+        .values({
+          id: SessionID.make(PARENT),
+          project_id: instance.project.id,
+          slug: "parent",
+          directory: AbsolutePath.make(instance.directory),
+          title: "Parent",
+          version: "test",
         })
-      }).pipe(
-        Effect.provide(graph({ childPrompts, parentPrompts })),
-        Effect.provideService(InstanceRef, {
-          directory: process.cwd(),
-          worktree: process.cwd(),
-          project: { id: "project-1" },
-        } as never),
-        Effect.scoped,
-      )
-    }),
-  )
+        .run()
+        .pipe(Effect.orDie)
+      const loop = yield* DagLoop.Service
+      yield* loop.init()
+      return yield* body({
+        projectID: instance.project.id,
+        dag: yield* Dag.Service,
+        store: yield* DagStore.Service,
+        inbox: yield* SessionInbox.Service,
+        childPrompts,
+        parentPrompts,
+      })
+    }).pipe(Effect.provide(graph({ instance, childPrompts, parentPrompts })))
+  })
 
 /** Run one workflow to its terminal state; its terminal event is what asks delivery for a wake. */
 const complete = (probe: Probe, title: string) =>
   Effect.gen(function* () {
     const dagID = yield* probe.dag.create({
-      projectID: "project-1",
+      projectID: probe.projectID,
       sessionID: PARENT,
       title,
       config: { name: title, nodes: [node(title.toLowerCase())] },
@@ -290,8 +295,8 @@ const complete = (probe: Probe, title: string) =>
   })
 
 describe("DAG delivery and the other sources of one session share the inbox's session lock", () => {
-  it("a DAG wake does not run while another source holds a claim on the session, and runs once it ends", () =>
-    run((probe) =>
+  it.instance("a DAG wake does not run while another source holds a claim on the session, and runs once it ends", () =>
+    withProbe((probe) =>
       Effect.gen(function* () {
         const entered = yield* Queue.unbounded<string>()
         const gate = yield* Deferred.make<void>()
@@ -314,10 +319,11 @@ describe("DAG delivery and the other sources of one session share the inbox's se
         yield* Deferred.succeed(wake!.release, undefined)
         expect((yield* probe.store.getWorkflow(dagID))?.wakeReported).toBe(true)
       }),
-    ))
+    ),
+  )
 
-  it("another source's claim does not run while a DAG wake is being delivered, and runs once it ends", () =>
-    run((probe) =>
+  it.instance("another source's claim does not run while a DAG wake is being delivered, and runs once it ends", () =>
+    withProbe((probe) =>
       Effect.gen(function* () {
         const claims: string[] = []
         yield* probe.inbox.register(probeSource(claims))
@@ -336,10 +342,11 @@ describe("DAG delivery and the other sources of one session share the inbox's se
         expect(yield* until(() => claims.includes(PARENT))).toBe(true)
         expect((yield* probe.store.getWorkflow(dagID))?.wakeReported).toBe(true)
       }),
-    ))
+    ),
+  )
 
-  it("holds the lock per session: a claim parked on another session does not delay a DAG wake", () =>
-    run((probe) =>
+  it.instance("holds the lock per session: a claim parked on another session does not delay a DAG wake", () =>
+    withProbe((probe) =>
       Effect.gen(function* () {
         const entered = yield* Queue.unbounded<string>()
         const gate = yield* Deferred.make<void>()
@@ -354,5 +361,6 @@ describe("DAG delivery and the other sources of one session share the inbox's se
         expect((yield* probe.store.getWorkflow(dagID))?.wakeReported).toBe(true)
         yield* Deferred.succeed(gate, undefined)
       }),
-    ))
+    ),
+  )
 })
