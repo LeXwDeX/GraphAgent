@@ -883,8 +883,10 @@ describe("LoopAnalysis input (#1328)", () => {
     withSession(
       (session) =>
         Effect.gen(function* () {
+          // The tiny window leaves about 140 estimated tokens for the transcript: sized so two of these entries (about
+          // 60 tokens each) fit the first request and one fits the half-budget restart.
           for (let index = 0; index < 8; index++)
-            yield* seedUser(session.id, `message ${index} ${"filler ".repeat(200)}`)
+            yield* seedUser(session.id, `message ${index} ${"filler ".repeat(23)}`)
           const overflow = providerFailure(400, "This model's maximum context length is 1000 tokens", false)
           state.scripts = [fails(overflow), submit()]
           ok(yield* analyse(session.id))

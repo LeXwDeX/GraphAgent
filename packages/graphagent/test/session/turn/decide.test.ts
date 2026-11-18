@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { NamedError } from "@graphagent/core/util/error"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { AUTO_COMPACTION_LIMIT, Decide } from "@/session/turn/decide"
+import { AUTO_COMPACTION_LIMIT, Decide, OVERFLOW_RECOVERY_LIMIT } from "@/session/turn/decide"
 import { State, type TurnState } from "@/session/turn/state"
 
 /**
@@ -543,6 +543,32 @@ describe("decideOverflow", () => {
   test("no overflow keeps the step counter reset", () => {
     expect(Decide.decideOverflow(state({ compactions: 2 }), { overflow: false })).toEqual({ kind: "step" })
     expect(State.resetAutoCompactions(state({ compactions: 2 })).compactions).toBe(0)
+  })
+})
+
+describe("decideOverflowRecovery", () => {
+  test("answers a provider rejection with a compaction while fewer than two recoveries ran", () => {
+    expect(Decide.decideOverflowRecovery(state({ overflowRecoveries: 0 }))).toEqual({ kind: "compact" })
+    expect(Decide.decideOverflowRecovery(state({ overflowRecoveries: 1 }))).toEqual({ kind: "compact" })
+  })
+
+  test("ends the turn when a request is rejected after two consecutive recoveries", () => {
+    expect(OVERFLOW_RECOVERY_LIMIT).toBe(2)
+    expect(Decide.decideOverflowRecovery(state({ overflowRecoveries: OVERFLOW_RECOVERY_LIMIT }))).toEqual({
+      kind: "finish",
+      outcome: { type: "context_overflow" },
+    })
+  })
+
+  test("counts recoveries apart from the pre-step compactions and resets only a moved counter", () => {
+    const initial = State.initial({ stopCap: 3 })
+    expect(initial.overflowRecoveries).toBe(0)
+    const once = State.recordOverflowRecovery(initial)
+    expect(once.overflowRecoveries).toBe(1)
+    expect(once.compactions).toBe(0)
+    expect(State.recordAutoCompaction(once).overflowRecoveries).toBe(1)
+    expect(State.resetOverflowRecoveries(once).overflowRecoveries).toBe(0)
+    expect(State.resetOverflowRecoveries(initial)).toBe(initial)
   })
 })
 

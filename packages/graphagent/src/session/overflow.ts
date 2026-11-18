@@ -1,6 +1,8 @@
 import type { Config } from "@/config/config"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { contextWindow } from "@graphagent/core/model-profile"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { ProviderProfile } from "@/provider/profile"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import type { MessageV2 } from "./message-v2"
@@ -12,9 +14,17 @@ export function measured(tokens: SessionV1.Assistant["tokens"]) {
   return tokens.total || tokens.input + tokens.output + tokens.cache.read + tokens.cache.write
 }
 
+/**
+ * The context window automatic compaction is judged against: the model's profile window, or the default window when
+ * the model declares none. `limit.context` is 0 for an unknown window, which must not switch compaction off: the
+ * provider would reject the oversized request instead.
+ */
+export function windowOf(model: Provider.Model): number {
+  return contextWindow(ProviderProfile.profileOf(model)).tokens
+}
+
 export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outputTokenMax?: number }) {
-  const context = input.model.limit.context
-  if (context === 0) return 0
+  const context = windowOf(input.model)
 
   const output = ProviderTransform.maxOutputTokens(
     input.model,
@@ -45,10 +55,32 @@ export function isOverflow(input: {
   estimatedInputTokens?: number
 }) {
   if (input.cfg.compaction?.auto === false) return false
-  if (input.model.limit.context === 0) return false
 
   const count = measured(input.tokens)
   return Math.max(count, input.estimatedInputTokens ?? 0) >= triggerLimit(input)
+}
+
+/**
+ * Provider usage covers the request that produced the assistant message at `messageIndex`, but not the tool results that
+ * completed afterward. Each of those results is counted in full, at the reserve rate: tool output is often CJK text, and
+ * the pre-step gate must not undercount what the next request will carry.
+ */
+export function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messageIndex: number) {
+  const current = messages[messageIndex]
+  if (!current || current.info.role !== "assistant") return 0
+
+  let pending = 0
+  for (const part of current.parts) {
+    if (part.type !== "tool") continue
+    const content =
+      part.state.status === "completed" && part.state.time.compacted === undefined
+        ? part.state.output
+        : part.state.status === "error"
+          ? part.state.error
+          : undefined
+    if (content) pending += Token.estimateReserve(content)
+  }
+  return pending
 }
 
 // AI SDK tools expose their JSON schema as `inputSchema` (usually an object with a `jsonSchema`
