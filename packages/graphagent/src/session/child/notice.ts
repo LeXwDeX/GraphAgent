@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SessionID } from "../schema"
-import type { ChildRunOutcome, ChildRunReport } from "./types"
+import type { ChildRunFacts, ChildRunOutcome, ChildRunReport } from "./types"
 
 /**
  * How a task run is written down for a model (Issue #1026, PR3a): the tool
@@ -13,11 +13,26 @@ import type { ChildRunOutcome, ChildRunReport } from "./types"
 
 export type TaskState = "running" | "completed" | "error" | "cancelled"
 
-export function renderTask(input: { sessionID: SessionID; state: TaskState; summary?: string; text: string }) {
+/**
+ * The facts block (#1453) goes after the summary and before the result, so what the engine measured is read ahead
+ * of what the subagent wrote. A completed run the engine cut short reads as `incomplete`, with the reason; it is how
+ * the result reads, not a state of the run.
+ */
+export function renderTask(input: {
+  sessionID: SessionID
+  state: TaskState
+  summary?: string
+  text: string
+  facts?: ChildRunFacts
+}) {
   const tag = input.state === "error" ? "task_error" : "task_result"
+  const cut = input.state === "completed" ? input.facts?.incomplete : undefined
   return [
-    `<task id="${input.sessionID}" state="${input.state}">`,
+    cut === undefined
+      ? `<task id="${input.sessionID}" state="${input.state}">`
+      : `<task id="${input.sessionID}" state="incomplete" reason="${cut}">`,
     ...(input.summary ? [`<summary>${input.summary}</summary>`] : []),
+    ...(input.facts ? [input.facts.block] : []),
     `<${tag}>`,
     input.text,
     `</${tag}>`,
@@ -57,6 +72,7 @@ export function resultNotice(input: {
         state: "completed",
         summary: `Background task completed: ${title}`,
         text: report?.text ?? "",
+        facts: report?.facts,
       })
     case "error":
       return renderTask({

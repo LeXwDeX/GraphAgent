@@ -5,7 +5,7 @@ import type { Database } from "@graphagent/core/database/database"
 import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { and, desc, eq } from "drizzle-orm"
+import { and, asc, desc, eq, gte } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Option, type Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import type { Goal } from "@/goal/goal"
@@ -446,6 +446,44 @@ export function lastOutcomeOf(deps: LookupDeps, sessionID: SessionID): Effect.Ef
       if (Option.isSome(outcome)) return outcome
     }
     return Option.none<TurnOutcome>()
+  })
+}
+
+/** One ended turn as a child run reads it back: how it ended (none for an outcome this build cannot read) and its steps. */
+export interface EndedTurn {
+  readonly outcome: TurnOutcome | undefined
+  readonly steps: number
+}
+
+/**
+ * The ended turns of a session from the one that answered `sinceMessageID` on, oldest first (#1453). Message ids
+ * ascend with time, so a task run that names its first prompt's message up front reads the turns that prompt and its
+ * follow-ups ran, and none of an earlier run of the same session. A turn still running, one anchored on no message,
+ * and a row that never counted its steps (it reads 0) are the stored state, taken as it is.
+ */
+export function endedTurnsSince(
+  deps: Pick<LookupDeps, "db">,
+  sessionID: SessionID,
+  sinceMessageID: MessageID,
+): Effect.Effect<ReadonlyArray<EndedTurn>> {
+  return Effect.gen(function* () {
+    const rows = yield* deps.db
+      .select()
+      .from(SessionTurnTable)
+      .where(
+        and(
+          eq(SessionTurnTable.session_id, sessionID),
+          eq(SessionTurnTable.state, "ended"),
+          gte(SessionTurnTable.user_message_id, sinceMessageID),
+        ),
+      )
+      .orderBy(asc(SessionTurnTable.time_started))
+      .all()
+      .pipe(Effect.orDie)
+    return rows.map((row) => ({
+      outcome: Option.getOrUndefined(storedOutcome(row.outcome)),
+      steps: row.steps ?? 0,
+    }))
   })
 }
 

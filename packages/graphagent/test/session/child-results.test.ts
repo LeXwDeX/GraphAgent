@@ -166,6 +166,104 @@ describe("the ledger of a detached run", () => {
     }),
   )
 
+  // #1453 PR1: the facts a run's report carries are written between the summary and the result, and an engine cut
+  // changes the state the notice names.
+  const FACTS_BLOCK = ["<task_facts>", "end: unknown", "steps: unknown", "</task_facts>"].join("\n")
+
+  it.effect("delivers the facts of a report between its summary and its result", () =>
+    Effect.gen(function* () {
+      const { db, parent, delivery, scoped, newChild } = yield* setup("facts")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* run.markRunning
+      yield* run.settle(
+        { type: "completed" },
+        { title: "inspect bug", text: "found the cause", facts: { block: FACTS_BLOCK } },
+      )
+
+      // The facts ride in the row with the rest of the report, and come back out of it.
+      const row = yield* rowOf(db, run.id)
+      expect(ChildStore.parseReport(row?.outcome)).toEqual({
+        title: "inspect bug",
+        text: "found the cause",
+        facts: { block: FACTS_BLOCK },
+      })
+      expect(yield* delivery.claim(parent)).toBe(true)
+      expect(textOf(delivery.admitted[0])).toBe(
+        [
+          `<task id="${child}" state="completed">`,
+          "<summary>Background task completed: inspect bug</summary>",
+          FACTS_BLOCK,
+          "<task_result>",
+          "found the cause",
+          "</task_result>",
+          "</task>",
+        ].join("\n"),
+      )
+    }),
+  )
+
+  for (const reason of ["step_limit", "tool_budget_exhausted"] as const)
+    it.effect(`delivers a result the engine cut short (${reason}) as incomplete, with the reason`, () =>
+      Effect.gen(function* () {
+        const { db, parent, delivery, scoped, newChild } = yield* setup(`incomplete-${reason}`)
+        const child = yield* newChild()
+        const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+        yield* run.markRunning
+        yield* run.settle(
+          { type: "completed" },
+          { title: "inspect bug", text: "what it had", facts: { block: FACTS_BLOCK, incomplete: reason } },
+        )
+
+        expect(ChildStore.parseReport((yield* rowOf(db, run.id))?.outcome)?.facts?.incomplete).toBe(reason)
+        expect(yield* delivery.claim(parent)).toBe(true)
+        const text = textOf(delivery.admitted[0])
+        expect(text.startsWith(`<task id="${child}" state="incomplete" reason="${reason}">\n<summary>`)).toBe(true)
+        expect(text).toContain(`</summary>\n${FACTS_BLOCK}\n<task_result>\nwhat it had\n</task_result>`)
+        // The run ended completed; the notice says what the engine measured, not a new ending.
+        expect((yield* rowOf(db, run.id))?.outcome).toMatchObject({ type: "completed" })
+      }),
+    )
+
+  it.effect("keeps a failed run's notice free of facts, whatever its report carries", () =>
+    Effect.gen(function* () {
+      const { parent, delivery, scoped, newChild } = yield* setup("facts-error")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* run.markRunning
+      yield* run.settle(
+        { type: "error", message: "boom" },
+        { title: "inspect bug", text: "boom", facts: { block: FACTS_BLOCK, incomplete: "step_limit" } },
+      )
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+      const text = textOf(delivery.admitted[0])
+      expect(text).toContain(`<task id="${child}" state="error">`)
+      expect(text).not.toContain("<task_facts>")
+      expect(text).not.toContain("incomplete")
+    }),
+  )
+
+  it.effect("reads the facts of a stored report only when they have the shape of facts", () =>
+    Effect.sync(() => {
+      const base = { title: "t", text: "x" }
+      const read = (facts: unknown) => ChildStore.parseReport({ report: { ...base, facts } })
+      expect(read({ block: FACTS_BLOCK })?.facts).toEqual({ block: FACTS_BLOCK })
+      expect(read({ block: FACTS_BLOCK, incomplete: "step_limit" })?.facts).toEqual({
+        block: FACTS_BLOCK,
+        incomplete: "step_limit",
+      })
+      // A reason this build does not know is dropped; the block still reads.
+      expect(read({ block: FACTS_BLOCK, incomplete: "something_new" })?.facts).toEqual({ block: FACTS_BLOCK })
+      // Anything else is no facts, and the report is still the report.
+      for (const bad of [undefined, null, "text", 3, [], {}, { block: 3 }, { incomplete: "step_limit" }]) {
+        expect(read(bad)).toEqual(base)
+      }
+      expect(ChildStore.parseFacts({ block: FACTS_BLOCK })).toEqual({ block: FACTS_BLOCK })
+      expect(ChildStore.parseFacts("text")).toBeUndefined()
+    }),
+  )
+
   it.effect("presents a user background command result as findings and carries the run in the part metadata", () =>
     Effect.gen(function* () {
       const { parent, delivery, scoped, newChild } = yield* setup("user-command")

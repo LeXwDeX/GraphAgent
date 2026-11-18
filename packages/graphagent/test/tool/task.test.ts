@@ -31,6 +31,7 @@ import { initTaskTool, type Drive } from "../lib/child-runs"
 import { resultDelivery, type Admitted } from "../lib/child-results"
 import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
 import { SessionTable } from "@graphagent/core/session/sql"
+import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { ChildRegistry } from "@/session/child/registry"
 import { ChildStore } from "@/session/child/store"
 import { EngineProcess } from "@/session/engine-process"
@@ -293,6 +294,71 @@ const offeredCall = (message: string) => {
     Object.fromEntries([...line.matchAll(/(\w+)="([^"]*)"/g)].map((pair) => [pair[1], pair[2]])),
   )
 }
+
+/** The `<task_facts>` block of a run nothing was recorded for (#1453): every item reads unknown. */
+const UNKNOWN_FACTS = [
+  "<task_facts>",
+  "end: unknown",
+  "steps: unknown",
+  "tokens: unknown",
+  "tool_errors: unknown",
+  "changed_files: unknown",
+  "</task_facts>",
+].join("\n")
+
+/** The facts a detached run's report carries, whatever the block says. */
+const SOME_FACTS = { block: expect.stringContaining("<task_facts>") }
+
+/**
+ * The stub child's prompt stands in for a whole session turn, which writes the row of the turn it ran when it ends.
+ * This leaves that row for the prompt it answers: the turn of `input.messageID`, the message the task looks its
+ * run's turns up by.
+ */
+const endedTurn = (
+  db: Database.Interface["db"],
+  sessionID: SessionID,
+  userMessageID: string | undefined,
+  turn: { readonly outcome: Record<string, unknown>; readonly steps: number },
+) =>
+  db
+    .insert(SessionTurnTable)
+    .values({
+      id: `turn_${Bun.randomUUIDv7()}`,
+      session_id: sessionID,
+      origin: JSON.stringify({ kind: "user", via: "prompt" }),
+      state: "ended",
+      outcome: turn.outcome,
+      user_message_id: userMessageID ?? null,
+      steps: turn.steps,
+      runner_id: "1",
+      time_started: Date.now(),
+      time_ended: Date.now(),
+    })
+    .run()
+    .pipe(Effect.orDie)
+
+/** A child that ends each prompt with the next of `turns` recorded for it, and answers with `text`. */
+const turnOps = (
+  db: Database.Interface["db"],
+  turns: ReadonlyArray<{ readonly outcome: Record<string, unknown>; readonly steps: number }>,
+  text = "done",
+): TaskPromptOps => {
+  let sent = 0
+  return {
+    cancel: () => Effect.void,
+    resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+    prompt: (input) =>
+      Effect.gen(function* () {
+        const turn = turns[Math.min(sent, turns.length - 1)]
+        if (!turn) return yield* Effect.die(new Error("turnOps needs at least one turn"))
+        sent += 1
+        yield* endedTurn(db, input.sessionID, input.messageID, turn)
+        return reply(input, text)
+      }),
+  }
+}
+
+const STEPPER = { agent: { stepper: { description: "Stops after three steps", mode: "subagent", steps: 3 } } } as const
 
 describe("tool.task", () => {
   it.instance("rejects direct task execution from a child before permission or session creation", () =>
@@ -1723,7 +1789,7 @@ describe("tool.task", () => {
       expect(ended.outcome).toEqual({
         type: "completed",
         runningAt: expect.any(Number),
-        report: { title: "inspect bug", text: "background done" },
+        report: { title: "inspect bug", text: "background done", facts: SOME_FACTS },
       })
       // The parent is told once, by the ledger.
       expect(yield* delivery.claim(chat.id)).toBe(true)
@@ -2050,6 +2116,232 @@ describe("tool.task", () => {
 
       expect(ChildStore.parseReport(ended.outcome)?.text).toBe("small result")
     }),
+  )
+
+  // #1453 PR1: what the engine measured of a run rides with its result, ahead of what the subagent wrote.
+  it.instance(
+    "a foreground result carries the facts block before the result; items nothing recorded read unknown",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+
+        const result = yield* def.execute(general, taskCtx(chat, assistant, stubOps({ text: "found it" })))
+
+        expect(result.output).toBe(
+          [
+            `<task id="${result.metadata.sessionID}" state="completed">`,
+            UNKNOWN_FACTS,
+            "<task_result>",
+            "found it",
+            "</task_result>",
+            "</task>",
+          ].join("\n"),
+        )
+      }),
+  )
+
+  background.instance(
+    "a background result carries the facts block after its summary, in the report and the notice",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const delivery = yield* resultDelivery()
+
+        const result = yield* def.execute(
+          { ...general, background: true },
+          taskCtx(chat, assistant, stubOps({ text: "small result" })),
+        )
+        const child = SessionID.make(result.metadata.sessionID)
+        const ended = yield* endedRun(child)
+
+        // The report keeps the block next to the bounded text, not inside it.
+        expect(ChildStore.parseReport(ended.outcome)).toEqual({
+          title: "inspect bug",
+          text: "small result",
+          facts: { block: UNKNOWN_FACTS },
+        })
+        expect(yield* delivery.claim(chat.id)).toBe(true)
+        expect(noticeOf(delivery.admitted[0])).toBe(
+          [
+            `<task id="${child}" state="completed">`,
+            "<summary>Background task completed: inspect bug</summary>",
+            UNKNOWN_FACTS,
+            "<task_result>",
+            "small result",
+            "</task_result>",
+            "</task>",
+          ].join("\n"),
+        )
+      }),
+  )
+
+  it.instance(
+    "a child that ended on its agent's step limit is incomplete, with the reason and its facts",
+    () =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const promptOps = turnOps(db, [{ outcome: { type: "completed" }, steps: 3 }], "partial findings")
+
+        const result = yield* def.execute({ ...general, subagent_type: "stepper" }, taskCtx(chat, assistant, promptOps))
+
+        const child = result.metadata.sessionID
+        expect(result.output).toContain(`<task id="${child}" state="incomplete" reason="step_limit">`)
+        expect(result.output).toContain("<task_facts>\nend: step_limit\nsteps: 3\n")
+        expect(result.output).toContain("<task_result>\npartial findings\n</task_result>")
+        // Incomplete is how the result reads; the run itself ended the way every finished run does.
+        expect((yield* runsOf(SessionID.make(child)))[0]).toMatchObject({
+          state: "ended",
+          outcome: { type: "completed" },
+        })
+      }),
+    { config: STEPPER },
+  )
+
+  it.instance(
+    "a child that ended one step short of its agent's limit is completed",
+    () =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const promptOps = turnOps(db, [{ outcome: { type: "completed" }, steps: 2 }])
+
+        const result = yield* def.execute({ ...general, subagent_type: "stepper" }, taskCtx(chat, assistant, promptOps))
+
+        expect(result.output).toContain(`<task id="${result.metadata.sessionID}" state="completed">`)
+        expect(result.output).toContain("end: completed\nsteps: 2\n")
+      }),
+    { config: STEPPER },
+  )
+
+  it.instance("an agent without a step limit never ends on one", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+      const promptOps = turnOps(db, [{ outcome: { type: "completed" }, steps: 40 }])
+
+      const result = yield* def.execute(general, taskCtx(chat, assistant, promptOps))
+
+      expect(result.output).toContain(`<task id="${result.metadata.sessionID}" state="completed">`)
+      expect(result.output).toContain("end: completed\nsteps: 40\n")
+    }),
+  )
+
+  it.instance("a child whose tool budget ran out is incomplete, with the reason", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* initTaskTool(tool)
+      const promptOps = turnOps(db, [{ outcome: { type: "tool_budget_exhausted" }, steps: 2 }], "what I had")
+
+      const result = yield* def.execute(general, taskCtx(chat, assistant, promptOps))
+
+      expect(result.output).toContain(
+        `<task id="${result.metadata.sessionID}" state="incomplete" reason="tool_budget_exhausted">`,
+      )
+      expect(result.output).toContain("end: tool_budget_exhausted\nsteps: 2\n")
+    }),
+  )
+
+  it.instance(
+    "a resumed run reports only the turns it ran itself",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { db } = yield* Database.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const earlier = yield* def.children
+          .forParent(chat.id)
+          .start({ childSessionID: child.id, owner: { kind: "task", toolCallID: "call_earlier" }, detached: false })
+        yield* earlier.settle({ type: "completed" })
+        // The first run used up its steps; its turn answers a message older than anything the resumed run sends.
+        yield* endedTurn(db, child.id, MessageID.ascending(), { outcome: { type: "completed" }, steps: 3 })
+        const promptOps = turnOps(db, [{ outcome: { type: "completed" }, steps: 1 }])
+
+        const result = yield* def.execute(
+          { ...general, subagent_type: "stepper", action: "resume", task_id: child.id },
+          taskCtx(chat, assistant, promptOps),
+        )
+
+        expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
+        expect(result.output).toContain("end: completed\nsteps: 1\n")
+      }),
+    { config: STEPPER },
+  )
+
+  background.instance(
+    "a background child that ended on its agent's step limit is delivered as incomplete",
+    () =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        const delivery = yield* resultDelivery()
+        const promptOps = turnOps(db, [{ outcome: { type: "completed" }, steps: 3 }], "partial findings")
+
+        const result = yield* def.execute(
+          { ...general, subagent_type: "stepper", background: true },
+          taskCtx(chat, assistant, promptOps),
+        )
+        const child = SessionID.make(result.metadata.sessionID)
+        const ended = yield* endedRun(child)
+
+        expect(ChildStore.parseReport(ended.outcome)?.facts).toEqual({
+          block: expect.stringContaining("end: step_limit\nsteps: 3\n"),
+          incomplete: "step_limit",
+        })
+        expect(ended.outcome).toMatchObject({ type: "completed" })
+        expect(yield* delivery.claim(chat.id)).toBe(true)
+        const text = noticeOf(delivery.admitted[0]) ?? ""
+        expect(text).toContain(`<task id="${child}" state="incomplete" reason="step_limit">`)
+        expect(text.indexOf("</summary>")).toBeLessThan(text.indexOf("<task_facts>"))
+        expect(text.indexOf("</task_facts>")).toBeLessThan(text.indexOf("<task_result>"))
+      }),
+    { config: STEPPER },
+  )
+
+  stopped.instance(
+    "a SubagentStop continuation's result carries the facts of the whole run",
+    () =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* initTaskTool(tool)
+        // The first turn stops short; the continuation the hook asked for runs to the step limit.
+        const promptOps = turnOps(
+          db,
+          [
+            { outcome: { type: "completed" }, steps: 1 },
+            { outcome: { type: "completed" }, steps: 3 },
+          ],
+          "FINAL-VERIFIED-ANSWER",
+        )
+
+        const result = yield* def.execute({ ...general, subagent_type: "stepper" }, taskCtx(chat, assistant, promptOps))
+
+        expect(result.output).toContain(
+          `<task id="${result.metadata.sessionID}" state="incomplete" reason="step_limit">`,
+        )
+        expect(result.output).toContain("<task_facts>\nend: step_limit\nsteps: 4\n")
+        expect(result.output).toContain("<task_result>\nFINAL-VERIFIED-ANSWER\n</task_result>")
+      }),
+    { config: STEPPER },
   )
 
   background.instance("background tasks complete through the background job service", () =>
@@ -2584,7 +2876,7 @@ describe("tool.task child runs", () => {
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "completed",
         runningAt: expect.any(Number),
-        report: { title: "inspect bug", text: "second done" },
+        report: { title: "inspect bug", text: "second done", facts: SOME_FACTS },
       })
       expect(yield* runsOf(child)).toHaveLength(1)
     }),
@@ -2961,7 +3253,7 @@ describe("tool.task child runs", () => {
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "completed",
         runningAt: expect.any(Number),
-        report: { title: "inspect bug", text: "late answer" },
+        report: { title: "inspect bug", text: "late answer", facts: SOME_FACTS },
       })
       expect(yield* delivery.claim(chat.id)).toBe(true)
       expect(noticeOf(delivery.admitted[0])).toContain("late answer")
@@ -3176,7 +3468,7 @@ describe("tool.task child runs", () => {
       expect((yield* endedRun(child, 2)).outcome).toEqual({
         type: "completed",
         runningAt: expect.any(Number),
-        report: { title: "inspect bug", text: "second answer" },
+        report: { title: "inspect bug", text: "second answer", facts: SOME_FACTS },
       })
     }),
   )
@@ -3279,7 +3571,7 @@ describe("tool.task child runs", () => {
       expect((yield* runsOf(child))[0]?.outcome).toEqual({
         type: "completed",
         runningAt: expect.any(Number),
-        report: { title: "inspect bug", text: "late answer" },
+        report: { title: "inspect bug", text: "late answer", facts: SOME_FACTS },
       })
       // Told once: the late cancel changed neither the run nor what the parent heard.
       expect(yield* delivery.claim(chat.id)).toBe(false)
