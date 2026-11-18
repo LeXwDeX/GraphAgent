@@ -2,33 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import { expect, spyOn, test } from "bun:test"
-import { testRender } from "@opentui/solid"
-import path from "path"
+import { expect, test } from "bun:test"
 import { MAX_HISTORY_ENTRIES, PromptHistoryProvider, usePromptHistory, type PromptInfo } from "../../src/prompt/history"
-import * as persistence from "../../src/util/persistence"
 import { readText } from "../../src/util/persistence"
-import { FRAME_WAIT_MS, pause } from "../fixture/frames"
-import { TestTuiContexts } from "../fixture/tui-environment"
-import { tmpdir } from "../fixture/fixture"
+import { nextTurn } from "../fixture/frames"
+import { interceptDisk, mountStoreWithHeldRead, recordWrites, waitFor } from "../fixture/held-io"
 
 type History = ReturnType<typeof usePromptHistory>
 
 const entry = (input: string): PromptInfo => ({ input, parts: [] })
 const jsonl = (entries: readonly PromptInfo[]) => entries.map((item) => JSON.stringify(item)).join("\n") + "\n"
-
-async function waitFor(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = FRAME_WAIT_MS) {
-  const deadline = performance.now() + timeoutMs
-  for (let round = 0; !(await predicate()); round++) {
-    if (performance.now() >= deadline) throw new Error(`${what} was not reached within ${timeoutMs}ms`)
-    await pause(round)
-  }
-}
-
-function Probe(props: { ready: (history: History) => void }) {
-  props.ready(usePromptHistory())
-  return <box />
-}
 
 /** What the up arrow walks through, newest first. The history position ends where it began, on the draft. */
 function recalled(history: History) {
@@ -43,94 +26,29 @@ function recalled(history: History) {
   return inputs
 }
 
-type Write = { readonly kind: "write" | "append"; readonly target: string; readonly done: Promise<void> }
-
-/**
- * Records every write the provider issues through the persistence helpers, with the promise of its completion, so a
- * test can tell which writes happened and wait for all of them to land instead of sleeping.
- */
-function recordWrites() {
-  const writes: Write[] = []
-  const realWrite = persistence.writeText
-  const realAppend = persistence.appendText
-  const write = spyOn(persistence, "writeText").mockImplementation((target, content) => {
-    const done = realWrite(target, content)
-    writes.push({ kind: "write", target, done })
-    return done
-  })
-  const append = spyOn(persistence, "appendText").mockImplementation((target, content) => {
-    const done = realAppend(target, content)
-    writes.push({ kind: "append", target, done })
-    return done
-  })
-  return {
-    to: (file: string) => writes.filter((item) => item.target === file),
-    /** Every write issued so far has finished, whether it succeeded or not. */
-    landed: () => Promise.allSettled(writes.map((item) => item.done)),
-    restore() {
-      write.mockRestore()
-      append.mockRestore()
-    },
-  }
-}
-
 /**
  * Mounts the provider over a history file holding `seed`, with the provider's startup read held back: it resolves
  * only when `release` is called, with the text the file had when the read began. Whatever the test adds to the
  * history before that is added while the read is in flight.
  */
 async function mountWithHeldRead(seed: readonly PromptInfo[]) {
-  const tmp = await tmpdir()
-  const file = path.join(tmp.path, "prompt-history.jsonl")
-  await Bun.write(file, jsonl(seed))
-
-  let requested = false
-  let release!: (text: string) => void
-  const held = new Promise<string>((resolve) => (release = resolve))
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the stub forwards every other call with the arguments it was given.
-  const realFile = Bun.file as (...args: unknown[]) => ReturnType<typeof Bun.file>
-  const spy = spyOn(Bun, "file").mockImplementation(((target: unknown, ...rest: unknown[]) => {
-    const blob = realFile.call(Bun, target, ...rest)
-    if (target !== file) return blob
-    requested = true
-    return Object.assign(blob, { text: () => held })
-  }) as typeof Bun.file)
-
-  let history!: History
-  let app: Awaited<ReturnType<typeof testRender>> | undefined
-  try {
-    app = await testRender(
-      () => (
-        <TestTuiContexts cwd={tmp.path} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
-          <PromptHistoryProvider>
-            <Probe ready={(value) => (history = value)} />
-          </PromptHistoryProvider>
-        </TestTuiContexts>
-      ),
-      { width: 20, height: 5 },
-    )
-    await waitFor(() => requested, "the provider's startup read through Bun.file(...).text()")
-  } catch (error) {
-    app?.renderer.destroy()
-    await tmp[Symbol.asyncDispose]()
-    throw error
-  } finally {
-    // The provider already holds its read; whatever reads the file from here on must see the real one.
-    spy.mockRestore()
-  }
+  const fixture = await mountStoreWithHeldRead({
+    name: "prompt-history.jsonl",
+    seed: () => jsonl(seed),
+    Provider: PromptHistoryProvider,
+    use: usePromptHistory,
+  })
+  const history = fixture.store
   return {
     history,
-    file,
-    release: () => release(jsonl(seed)),
+    file: fixture.file,
+    release: fixture.release,
     /** Waits until the released read has merged into the history and it holds `count` entries. */
     merged: (count: number) => waitFor(() => recalled(history).length === count, `${count} entries in the history`),
     /** Waits for the startup rewrite to leave the file holding exactly `entries`. */
     settled: (entries: readonly PromptInfo[]) =>
-      waitFor(async () => (await readText(file)) === jsonl(entries), "the startup rewrite of the history file"),
-    async dispose() {
-      app.renderer.destroy()
-      await tmp[Symbol.asyncDispose]()
-    },
+      waitFor(async () => (await readText(fixture.file)) === jsonl(entries), "the startup rewrite of the history file"),
+    dispose: fixture.dispose,
   }
 }
 
@@ -229,6 +147,28 @@ test("the load puts the history position back on the draft", async () => {
     // The next up arrow starts from the newest entry again instead of skipping past it.
     expect(fixture.history.move(-1, "")?.input).toBe("early")
   } finally {
+    await fixture.dispose()
+  }
+})
+
+test("an entry added right after the load is appended behind the load's rewrite, not under it", async () => {
+  const seed = [entry("q0"), entry("q1")]
+  const fixture = await mountWithHeldRead(seed)
+  const disk = interceptDisk(fixture.file, "write")
+  try {
+    fixture.release()
+    await waitFor(disk.entered, "the startup rewrite to reach the disk")
+
+    fixture.history.append(entry("late"))
+    await nextTurn()
+    // The rewrite is still on its way to the disk. An append straight to the file would run under it and be truncated.
+    expect(disk.ops).toEqual(["write"])
+
+    disk.release()
+    await fixture.settled([...seed, entry("late")])
+    expect(disk.ops).toEqual(["write", "append"])
+  } finally {
+    disk.restore()
     await fixture.dispose()
   }
 })
