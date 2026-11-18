@@ -23,6 +23,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
+import { SessionInbox } from "@/session/inbox"
 import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
@@ -186,11 +187,13 @@ function restartLayer(filename: string, probe: Probe) {
       })
     }),
   ).pipe(Layer.provide(database))
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(Layer.mock(Agent.Service, {})),
+    Layer.provide(inbox),
   )
   return Layer.fresh(Layer.mergeAll(base, loop))
 }

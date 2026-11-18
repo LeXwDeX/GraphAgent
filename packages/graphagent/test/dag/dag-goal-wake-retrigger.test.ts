@@ -23,6 +23,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { ExclusiveRegistry } from "@/session/engine-process"
+import { SessionInbox } from "@/session/inbox"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
@@ -256,29 +257,32 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
         hooks: {},
       }),
   })
+  // The goal's judge is resolved from the context the shared inbox was built in
+  // when a drain runs the goal claim, so the inbox gets the same judge layer.
+  const judge = Layer.succeed(
+    GoalLoopJudgeLLM,
+    GoalLoopJudgeLLM.of({
+      call: () =>
+        Effect.sync(() => {
+          judgeCalls += 1
+          return JSON.stringify({ done: false, reason: "more steps needed" })
+        }),
+    }),
+  )
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status), Layer.provide(judge))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   // Real GoalLoop over the same shared bus/status/goal/lease instances.
   const goalLoop = GoalLoop.layer.pipe(
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(Layer.mock(ProviderService.Service, {})),
-    Layer.provide(
-      Layer.succeed(
-        GoalLoopJudgeLLM,
-        GoalLoopJudgeLLM.of({
-          call: () =>
-            Effect.sync(() => {
-              judgeCalls += 1
-              return JSON.stringify({ done: false, reason: "more steps needed" })
-            }),
-        }),
-      ),
-    ),
+    Layer.provide(judge),
     Layer.provide(goal),
     Layer.provide(status),
     Layer.provide(bridge),

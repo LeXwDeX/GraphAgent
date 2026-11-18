@@ -16,6 +16,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { fingerprintBrief } from "@/dag/admission"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
@@ -76,11 +77,13 @@ function recoveryLayer(input: { childStatuses: Map<string, ChildStatus>; cancell
       deliver: () => Effect.succeed(Option.none()),
     }),
   )
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(Layer.mock(Agent.Service, {})),
+    Layer.provide(inbox),
   )
   return Layer.merge(base, loop)
 }

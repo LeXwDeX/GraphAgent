@@ -36,6 +36,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Provider } from "@/provider/provider"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -133,11 +134,13 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, catalog: readonly Agen
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   const config = Layer.mock(Config.Service, { dagGlobal: () => Effect.succeed({} as never) })
   const budget = DagBudget.layer.pipe(Layer.provide(Layer.mergeAll(base, session, config)))
