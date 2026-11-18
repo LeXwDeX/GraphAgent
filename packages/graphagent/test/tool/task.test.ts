@@ -3,7 +3,7 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { ResultContract } from "@/agent/result-contract"
 import { BackgroundJob } from "@/background/job"
@@ -18,7 +18,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
 import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook"
-import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
+import { Parameters as TaskParameters, TaskTool, validateTaskCall, type TaskPromptOps } from "../../src/tool/task"
 import { WorkflowTool } from "../../src/tool/workflow"
 import { GoalLoop } from "@/goal/loop"
 import type { Goal } from "@/goal/goal"
@@ -283,6 +283,17 @@ const taskCtx = (
 })
 
 const general = { description: "inspect bug", prompt: "look into the cache key path", subagent_type: "general" }
+
+/**
+ * The `Continue: task ...` call a failure text offers, read back the way a model copies it: its `key="value"` pairs
+ * become the call's arguments. B1 (#1450): the offered call must pass the tool's own validation.
+ */
+const offeredCall = (message: string) => {
+  const line = /Continue: task ([^\n]*)/.exec(message)?.[1] ?? ""
+  return Schema.decodeUnknownSync(TaskParameters)(
+    Object.fromEntries([...line.matchAll(/(\w+)="([^"]*)"/g)].map((pair) => [pair[1], pair[2]])),
+  )
+}
 
 describe("tool.task", () => {
   it.instance("rejects direct task execution from a child before permission or session creation", () =>
@@ -678,6 +689,7 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
+          action: "resume",
           task_id: child.id,
         },
         {
@@ -890,8 +902,10 @@ describe("tool.task", () => {
         expect(message).toContain("output token cap")
         expect(message).toContain("reasoning 32000")
         expect(message).toContain("text 0")
-        expect(message).toContain(`task_id="${childSession}"`)
-        expect(message).toContain('prompt="Continue the task and write the final answer now."')
+        expect(message).toContain(
+          `Continue: task action="resume" task_id="${childSession}" subagent_type="general" description="Continue task" prompt="Continue the task and write the final answer now."`,
+        )
+        expect(validateTaskCall(offeredCall(message))).toMatchObject({ kind: "run", subagentType: "general" })
       }
     }),
   )
@@ -939,7 +953,8 @@ describe("tool.task", () => {
       if (Exit.isFailure(exit)) {
         const message = Cause.pretty(exit.cause)
         expect(message).toContain("empty final answer")
-        expect(message).toContain(`task_id="${childSession}"`)
+        expect(message).toContain(`action="resume" task_id="${childSession}" subagent_type="general"`)
+        expect(validateTaskCall(offeredCall(message))).toMatchObject({ kind: "run", subagentType: "general" })
       }
     }),
   )
@@ -1401,7 +1416,7 @@ describe("tool.task", () => {
       expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
       // Nothing can start a second run on it meanwhile.
       const resumed = yield* def
-        .execute({ ...general, task_id: child }, taskCtx(chat, assistant, promptOps))
+        .execute({ ...general, action: "resume", task_id: child }, taskCtx(chat, assistant, promptOps))
         .pipe(Effect.exit)
       expect(Exit.isFailure(resumed)).toBe(true)
       if (Exit.isFailure(resumed)) expect(Cause.pretty(resumed.cause)).toContain("finishing its previous run")
@@ -1480,6 +1495,7 @@ describe("tool.task", () => {
             description: "inspect bug",
             prompt: "look into the cache key path",
             subagent_type: "general",
+            action: "resume",
             task_id: "ses_missing",
           },
           {
@@ -1525,6 +1541,7 @@ describe("tool.task", () => {
               description: "resume work",
               prompt: "continue from the previous result",
               subagent_type: "general",
+              action: "resume",
               task_id: child.id,
             },
             {
@@ -1865,6 +1882,7 @@ describe("tool.task", () => {
           description: "add investigation scope",
           prompt: "also inspect cancellation",
           subagent_type: "general",
+          action: "resume",
           task_id: started.metadata.sessionID,
         },
         context,
@@ -2504,7 +2522,7 @@ describe("tool.task child runs", () => {
       yield* endedRun(child)
 
       const resumed = yield* def.execute(
-        { ...general, task_id: child },
+        { ...general, action: "resume", task_id: child },
         taskCtx(chat, assistant, stubOps(), { callID: "call_resume" }),
       )
 
@@ -2538,7 +2556,10 @@ describe("tool.task child runs", () => {
 
       const started = yield* def.execute({ ...general, background: true }, ctx)
       const child = SessionID.make(started.metadata.sessionID)
-      const updated = yield* def.execute({ ...general, prompt: "also inspect cancellation", task_id: child }, ctx)
+      const updated = yield* def.execute(
+        { ...general, action: "resume", prompt: "also inspect cancellation", task_id: child },
+        ctx,
+      )
 
       expect(updated.output).toContain("Background task updated")
       const rows = yield* runsOf(child)
@@ -2600,7 +2621,7 @@ describe("tool.task child runs", () => {
         const runsBefore = (yield* runsOf(target)).length
         const exit = yield* def
           .execute(
-            { ...general, task_id: target },
+            { ...general, action: "resume", task_id: target },
             taskCtx(
               chat,
               assistant,
@@ -3036,7 +3057,7 @@ describe("tool.task child runs", () => {
         .pipe(Effect.forkChild)
       yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
       const resume = def.execute(
-        { ...general, prompt: "follow-up question", task_id: child, background: true },
+        { ...general, action: "resume", prompt: "follow-up question", task_id: child, background: true },
         taskCtx(chat, assistant, resumeOps, { callID: "call_resume" }),
       )
       return { ...fixture, child, prompted, cancelling, resume }
@@ -3120,7 +3141,7 @@ describe("tool.task child runs", () => {
       // The old job completes inside the window and frees the child; the resume starts its own job.
       const resuming = yield* def
         .execute(
-          { ...general, prompt: "follow-up question", task_id: child, background: true },
+          { ...general, action: "resume", prompt: "follow-up question", task_id: child, background: true },
           taskCtx(chat, assistant, resumeOps, { callID: "call_resume" }),
         )
         .pipe(Effect.forkChild)
@@ -3256,13 +3277,102 @@ describe("tool.task child runs", () => {
     }),
   )
 
-  it.instance("action cancel without a task_id is rejected by the schema", () =>
+  // #1450: the shape of a call is checked before anything is looked up or asked, so a malformed call never prompts.
+  const shapeFault = Effect.fn("TaskToolTest.shapeFault")(function* (args: unknown) {
+    const { chat, assistant } = yield* seed()
+    const def = yield* initTaskTool(yield* TaskTool)
+    const asks: string[] = []
+    const exit = yield* executeRaw(def.execute)(
+      args,
+      taskCtx(chat, assistant, stubOps(), {
+        ask: (request) =>
+          Effect.sync(() => {
+            asks.push(request.permission)
+          }),
+      }),
+    ).pipe(Effect.exit)
+    if (!Exit.isFailure(exit)) throw new Error("expected the call to be rejected")
+    const error = Cause.squash(exit.cause)
+    if (!(error instanceof Tool.InvalidArgumentsError))
+      throw new Error(`expected InvalidArgumentsError, got ${String(error)}`)
+    return { detail: error.detail, tool: error.tool, asks }
+  })
+
+  it.instance("rule (a): a task_id without an action is rejected", () =>
     Effect.gen(function* () {
-      const { chat, assistant, def, promptOps } = yield* cancelFixture
-      const exit = yield* executeRaw(def.execute)({ action: "cancel" }, taskCtx(chat, assistant, promptOps)).pipe(
-        Effect.exit,
+      const fault = yield* shapeFault({ ...general, task_id: "ses_other" })
+      expect(fault).toEqual({
+        tool: "task",
+        detail: 'task_id needs action "resume" or "cancel". To start a new task, omit task_id.',
+        asks: [],
+      })
+    }),
+  )
+
+  it.instance("rule (b): an action without a task_id is rejected", () =>
+    Effect.gen(function* () {
+      expect(yield* shapeFault({ action: "cancel" })).toMatchObject({
+        detail: 'task_id is required when action is "cancel".',
+        asks: [],
+      })
+      expect(
+        yield* shapeFault({ action: "cancel", description: "d", prompt: "p", subagent_type: "general" }),
+      ).toMatchObject({ detail: 'task_id is required when action is "cancel".', asks: [] })
+      expect(yield* shapeFault({ ...general, action: "resume", task_id: "" })).toMatchObject({
+        detail: 'task_id is required when action is "resume".',
+        asks: [],
+      })
+    }),
+  )
+
+  it.instance("rule (c): a cancel that carries run arguments is rejected, naming them", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* shapeFault({
+          action: "cancel",
+          task_id: "ses_child",
+          description: "d",
+          prompt: "p",
+          subagent_type: "general",
+          background: false,
+        }),
+      ).toMatchObject({
+        detail: 'action "cancel" takes only task_id; remove description, prompt, subagent_type, background.',
+        asks: [],
+      })
+      expect(yield* shapeFault({ action: "cancel", task_id: "ses_child", background: true })).toMatchObject({
+        detail: 'action "cancel" takes only task_id; remove background.',
+        asks: [],
+      })
+    }),
+  )
+
+  it.instance("rule (d): a run or a resume that lacks a required field is rejected, naming what is missing", () =>
+    Effect.gen(function* () {
+      expect(yield* shapeFault({ description: "d", subagent_type: "general" })).toMatchObject({
+        detail: "description, prompt and subagent_type are required (missing: prompt).",
+        asks: [],
+      })
+      expect(yield* shapeFault({ description: "", prompt: "p", subagent_type: "" })).toMatchObject({
+        detail: "description, prompt and subagent_type are required (missing: description, subagent_type).",
+        asks: [],
+      })
+      expect(yield* shapeFault({ action: "resume", task_id: "ses_child", description: "d" })).toMatchObject({
+        detail: "description, prompt and subagent_type are required (missing: prompt, subagent_type).",
+        asks: [],
+      })
+    }),
+  )
+
+  it.instance("a command the engine adds to a command-driven call is ignored, not rejected", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const result = yield* executeRaw(def.execute)(
+        { ...general, command: "review" },
+        taskCtx(chat, assistant, stubOps()),
       )
-      expect(Exit.isFailure(exit)).toBe(true)
+      expect(result.output).toContain('state="completed"')
     }),
   )
 
@@ -3361,7 +3471,10 @@ describe("tool.task child driving", () => {
       yield* endedRun(child)
       const old = def.drives[0]?.credential
 
-      yield* def.execute({ ...general, task_id: child }, taskCtx(chat, assistant, stubOps(), { callID: "call_resume" }))
+      yield* def.execute(
+        { ...general, action: "resume", task_id: child },
+        taskCtx(chat, assistant, stubOps(), { callID: "call_resume" }),
+      )
 
       const runs = yield* runsOf(child)
       expect(def.drives).toHaveLength(2)
@@ -3393,7 +3506,7 @@ describe("tool.task child driving", () => {
 
       const started = yield* def.execute({ ...general, background: true }, ctx)
       const child = SessionID.make(started.metadata.sessionID)
-      yield* def.execute({ ...general, prompt: "also inspect cancellation", task_id: child }, ctx)
+      yield* def.execute({ ...general, action: "resume", prompt: "also inspect cancellation", task_id: child }, ctx)
       // The appended input registered no run of its own, and its prompt is the second one the child received.
       first.resolve()
       yield* pollWithTimeout(Effect.sync(() => (def.drives.length === 2 ? true : undefined)), "the appended input was never sent")

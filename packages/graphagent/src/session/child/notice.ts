@@ -70,7 +70,7 @@ export function resultNotice(input: {
         sessionID: childSessionID,
         state: "error",
         summary: `Background task interrupted: ${title}`,
-        text: `The background task was interrupted before it finished, so it left no result. If its work is still needed, continue it with task_id="${childSessionID}".`,
+        text: `The background task was interrupted before it finished, so it left no result. If its work is still needed, continue it with the task tool: action="resume", task_id="${childSessionID}", plus subagent_type, description and prompt.`,
       })
     default:
       return renderTask({

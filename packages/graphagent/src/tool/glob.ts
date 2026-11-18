@@ -18,7 +18,7 @@ const SCAN_LIMIT = 1000
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The glob pattern to match files against" }),
   path: Schema.optional(Schema.String).annotate({
-    description: `The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.`,
+    description: `The directory to search in; relative paths resolve from the project directory. If not specified, the project directory is used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.`,
   }),
   limit: Schema.optional(PositiveInt).annotate({
     description: `Maximum paths to show (defaults to ${DEFAULT_LIMIT}, capped at ${MAX_LIMIT})`,

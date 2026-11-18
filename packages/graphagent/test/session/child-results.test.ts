@@ -545,7 +545,7 @@ describe("which results enter the parent's turn, and which are only written", ()
       const text = textOf(delivery.admitted[0])
       expect(text).toContain(`<task id="${child}" state="error">`)
       expect(text).toContain("interrupted")
-      expect(text).toContain(`task_id="${child}"`)
+      expect(text).toContain(`action="resume", task_id="${child}", plus subagent_type, description and prompt`)
       expect((yield* rowOf(db, run.id))?.reported_at).not.toBeNull()
       // Recovery ends a run it holds no entry for, so it has no moment to write (#1426): the row carries none and a
       // reader times the lost run from `startedAt`.

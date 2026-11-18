@@ -8,15 +8,25 @@ import { Todo } from "../session/todo"
 // identical, and it removes the last zod dependency from this tool.
 const TodoItem = Schema.Struct({
   content: Schema.String.annotate({ description: "Brief description of the task" }),
-  status: Schema.String.annotate({
+  status: Schema.Literals(["pending", "in_progress", "completed", "cancelled"]).annotate({
     description: "Current status of the task: pending, in_progress, completed, cancelled",
   }),
-  priority: Schema.String.annotate({ description: "Priority level of the task: high, medium, low" }),
+  priority: Schema.Literals(["high", "medium", "low"]).annotate({
+    description: "Priority level of the task: high, medium, low",
+  }),
 })
 
 export const Parameters = Schema.Struct({
-  todos: Schema.mutable(Schema.Array(TodoItem)).annotate({ description: "The updated todo list" }),
+  todos: Schema.mutable(Schema.Array(TodoItem)).annotate({
+    description: "The complete todo list after this call. It replaces the stored list: every omitted item is deleted.",
+  }),
 })
+
+// The receipt's first line states what the call did to the stored list, so a model that sent only the changed items
+// sees the deleted rest at once instead of discovering it later.
+function replaceReceipt(previous: number, now: number) {
+  return `Todo list replaced: ${previous} before, ${now} now.`
+}
 
 type Metadata = {
   todos: Todo.Info[]
@@ -40,6 +50,7 @@ export const TodoWriteTool = Tool.define<typeof Parameters, Metadata, Todo.Servi
             metadata: {},
           })
 
+          const previous = (yield* todo.get(ctx.sessionID)).length
           yield* todo
             .update({
               sessionID: ctx.sessionID,
@@ -49,7 +60,7 @@ export const TodoWriteTool = Tool.define<typeof Parameters, Metadata, Todo.Servi
 
           return {
             title: `${params.todos.filter((x) => x.status !== "completed").length} todos`,
-            output: JSON.stringify(params.todos, null, 2),
+            output: `${replaceReceipt(previous, params.todos.length)}\n${JSON.stringify(params.todos, null, 2)}`,
             metadata: {
               todos: params.todos,
             },
