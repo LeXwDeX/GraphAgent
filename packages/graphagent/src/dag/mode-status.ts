@@ -27,9 +27,21 @@ export const Status = Schema.Struct({
     usedCacheRead: Schema.Finite,
     warnRatio: Schema.Finite,
   }),
+  // #1290: each limit comes as the value the engine enforces and the value the
+  // user configured (null while unset), so a configured value the engine cuts
+  // down can be shown next to what is in force.
   limits: Schema.Struct({
+    /**
+     * Most DAG nodes running at once across the process: the scheduler's DAG
+     * layer, `dag.concurrency` (or its default) cut to the child pool.
+     */
     concurrency: Schema.Finite,
+    /** `dag.concurrency` in the global configuration; null while unset. */
+    configuredConcurrency: Schema.NullOr(Schema.Finite),
+    /** Most nodes one workflow may hold: the user's `dag.max_total_nodes`, or its default while unset. */
     maxTotalNodes: Schema.Finite,
+    /** `dag.max_total_nodes` in the global configuration; null while unset. */
+    configuredMaxTotalNodes: Schema.NullOr(Schema.Finite),
     running: Schema.Finite,
   }),
   // #1027 D6b: the review quality of the session's workflows, combined (the

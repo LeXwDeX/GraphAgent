@@ -310,6 +310,12 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   if (dagModeStatus?.unavailableReason) dagModeStatus.unavailableReason = nullable(dagModeStatus.unavailableReason)
   if (dagModeStatus?.budget?.properties?.tokens)
     dagModeStatus.budget.properties.tokens = nullable(dagModeStatus.budget.properties.tokens)
+  // #1290: a limit the user left unset has no configured value; null, not optional.
+  const dagModeLimits = dagModeStatus?.limits?.properties
+  if (dagModeLimits?.configuredConcurrency)
+    dagModeLimits.configuredConcurrency = nullable(dagModeLimits.configuredConcurrency)
+  if (dagModeLimits?.configuredMaxTotalNodes)
+    dagModeLimits.configuredMaxTotalNodes = nullable(dagModeLimits.configuredMaxTotalNodes)
   // #1027 D6b: review quality is genuinely null outside the strict review gate
   // (and a completeness verdict is null until a completeness lane completes),
   // on the session status and on every workflow summary alike.

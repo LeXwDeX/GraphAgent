@@ -931,7 +931,13 @@ function usageWorld(tokens: number, extra: Partial<DagWorkflowSummary> = {}): Wo
 const budgeted = (tokens: number | null = 1000, extra: { concurrency?: number } = {}) =>
   dagModeStatus({
     budget: { tokens, used: 620, usedCacheRead: 0, warnRatio: 0.8 },
-    limits: { concurrency: extra.concurrency ?? 12, maxTotalNodes: 100, running: 3 },
+    limits: {
+      concurrency: extra.concurrency ?? 12,
+      configuredConcurrency: null,
+      maxTotalNodes: 100,
+      configuredMaxTotalNodes: null,
+      running: 3,
+    },
   })
 
 const sessionUpdated = (info: Session) => event({ type: "session.updated", properties: { info } })

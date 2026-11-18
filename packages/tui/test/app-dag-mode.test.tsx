@@ -190,7 +190,13 @@ test("the band, the panel and the footer take a budget in its own tier and the a
     dagMode: () =>
       dagModeStatus({
         budget: { tokens: 1000, used: 1000, usedCacheRead: 0, warnRatio: 0.8 },
-        limits: { concurrency: 12, maxTotalNodes: 100, running: 3 },
+        limits: {
+          concurrency: 12,
+          configuredConcurrency: null,
+          maxTotalNodes: 100,
+          configuredMaxTotalNodes: null,
+          running: 3,
+        },
       }),
     handler: server(WORKFLOW),
   })

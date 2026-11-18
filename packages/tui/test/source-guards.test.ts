@@ -49,7 +49,7 @@ function filesOf(found: readonly string[]) {
 
 test("the scan sees the files the guards depend on", () => {
   const names = new Set(sources.map((entry) => entry.file))
-  for (const file of ["app.tsx", "config/keybind.ts", "context/ticker.ts", "ui/width.ts"]) {
+  for (const file of ["app.tsx", "config/keybind.ts", "context/ticker.ts", "panel/config.tsx", "ui/width.ts"]) {
     expect(names.has(file)).toBe(true)
   }
 })
@@ -88,4 +88,10 @@ test("color literals only appear in the three documented exceptions", () => {
 
 test("the retired plugin slot API does not come back", () => {
   expect(hits(/@graphagent\/plugin|@opencode-ai\/plugin|pluginRuntime|api\??\.slots|Slot name=/)).toEqual([])
+})
+
+// The limits in force are the server's to say: the `/config` panel shows what the DAG mode read reports and what is
+// configured, and never a default of its own (#1290). A numeric fallback after `??` is how such a default creeps back.
+test("the config panel keeps no numeric fallback for a setting", () => {
+  expect(hits(/\?\?\s*\d/, { only: ["panel/config.tsx"] })).toEqual([])
 })

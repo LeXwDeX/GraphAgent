@@ -196,6 +196,8 @@ export const zhCN = {
   "panel.config.dag.concurrency": "DAG 并发上限",
   "panel.config.dag.concurrency.invalid": "必须是 1–64 的整数",
   "panel.config.dag.concurrency.description": "所有会话共享；立即热生效，在途节点不中断",
+  "panel.config.dag.concurrency.default": "默认值",
+  "panel.config.dag.concurrency.capped": "实际生效 {effective}，配置值",
   "panel.config.dag.budget": "DAG token 预算",
   "panel.config.dag.budget.invalid": "必须是正整数，留空表示不设预算",
   "panel.config.dag.budget.empty": "未设预算",

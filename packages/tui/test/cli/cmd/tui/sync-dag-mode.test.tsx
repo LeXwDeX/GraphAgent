@@ -3,6 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
+import { createMemo, createRoot } from "solid-js"
 import type { DagWorkflowSummary, GlobalEvent, SessionDagMode } from "@graphagent/sdk"
 import { tmpdir } from "../../../fixture/fixture"
 import { probeStoreWrites } from "../../../fixture/store-write-probe"
@@ -37,6 +38,18 @@ function row(id: string, updated: number, extra: Record<string, unknown> = {}, p
   }
 }
 
+/** Nothing configured, so the values in force are the defaults. */
+function limits(extra: Partial<SessionDagMode["limits"]> = {}): SessionDagMode["limits"] {
+  return {
+    concurrency: 12,
+    configuredConcurrency: null,
+    maxTotalNodes: 100,
+    configuredMaxTotalNodes: null,
+    running: 3,
+    ...extra,
+  }
+}
+
 function status(extra: Partial<SessionDagMode> = {}): SessionDagMode {
   return {
     mode: "on",
@@ -44,7 +57,7 @@ function status(extra: Partial<SessionDagMode> = {}): SessionDagMode {
     availability: "available",
     unavailableReason: null,
     budget: { tokens: 1000, used: 100, usedCacheRead: 0, warnRatio: 0.8 },
-    limits: { concurrency: 12, maxTotalNodes: 100, running: 3 },
+    limits: limits(),
     quality: null,
     ...extra,
   }
@@ -365,7 +378,7 @@ describe("tui sync dag mode snapshot: what keeps it current", () => {
         await wait(() => sync.data.dagMode.ses_old !== undefined)
         server.reads.length = 0
 
-        server.answers.ses_new = () => status({ limits: { concurrency: 8, maxTotalNodes: 100, running: 1 } })
+        server.answers.ses_new = () => status({ limits: limits({ concurrency: 8, running: 1 }) })
         server.answers.ses_old = () => status({ mode: "off" })
         reconnect()
         await wait(
@@ -506,7 +519,7 @@ describe("tui sync dag mode snapshot: the global dag configuration", () => {
         await wait(() => sync.data.dagMode.ses_old !== undefined)
         server.reads.length = 0
 
-        server.answers.ses_new = () => status({ limits: { concurrency: 8, maxTotalNodes: 50, running: 1 } })
+        server.answers.ses_new = () => status({ limits: limits({ concurrency: 8, maxTotalNodes: 50, running: 1 }) })
         server.answers.ses_old = () => status({ budget: { tokens: 4000, used: 100, usedCacheRead: 0, warnRatio: 0.8 } })
         emit(configUpdated(["dag"]))
         sdk.frameClock.flushNow()
@@ -528,7 +541,7 @@ describe("tui sync dag mode snapshot: the global dag configuration", () => {
       await wait(() => sync.data.dagMode.ses_new !== undefined)
       server.reads.length = 0
 
-      server.answers.ses_new = () => status({ limits: { concurrency: 6, maxTotalNodes: 50, running: 0 } })
+      server.answers.ses_new = () => status({ limits: limits({ concurrency: 6, maxTotalNodes: 50, running: 0 }) })
       emit(global("server.instance.disposed", { directory }))
       sdk.frameClock.flushNow()
       await wait(() => sync.data.dagMode.ses_new?.limits.concurrency === 6)
@@ -731,7 +744,7 @@ describe("tui sync dag mode snapshot: the slots of the whole process", () => {
       await wait(() => sync.data.dagRunning === 5)
 
       // A change to the dag configuration reads the snapshot again, and its count is the newest.
-      server.answers.ses_new = () => status({ limits: { concurrency: 12, maxTotalNodes: 100, running: 1 } })
+      server.answers.ses_new = () => status({ limits: limits({ running: 1 }) })
       emit(configUpdated(["dag"]))
       sdk.frameClock.flushNow()
       await wait(() => sync.data.dagRunning === 1)
@@ -776,6 +789,127 @@ describe("tui sync dag mode snapshot: the slots of the whole process", () => {
       await wait(() => sync.data.dagRunning === 6)
       // The route's own tree has none, so nothing else was read.
       expect(server.reads).toEqual([])
+    })
+  })
+})
+
+// #1290: a tree with DAG mode off and no workflow reads no snapshot by itself, but the `/config` panel shows the limits in
+// force, which only the server knows, so a surface can ask for the snapshot of the tree it is in.
+describe("tui sync dag mode snapshot: asked for by a surface", () => {
+  // What these two tests check is that a read is NOT made. A request reaches the server in the order it is made, so each
+  // test follows the calls under test with the read of the other tree, and waits for that one to land: a read made
+  // earlier would already be in `reads` ahead of it, and nothing is waited for by the clock.
+  test("a plain tree is read on request, at its root, whichever session of the tree is named", async () => {
+    await withMount(TREE, async ({ server, sync }) => {
+      // Entering the tree reads nothing: DAG mode is off and it has no workflow.
+      await sync.session.activate("ses_old_child")
+      sync.dag.readMode("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      expect(server.reads).toEqual(["ses_new"])
+      server.reads.length = 0
+
+      sync.dag.readMode("ses_old_child")
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      expect(server.reads).toEqual(["ses_old"])
+      expect(sync.data.dagMode.ses_old).toEqual(status())
+    })
+  })
+
+  test("a held snapshot is not read again by a request for any session of its tree", async () => {
+    await withMount(TREE, async ({ server, sync }) => {
+      sync.dag.readMode("ses_old_child")
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      expect(server.reads).toEqual(["ses_old"])
+
+      sync.dag.readMode("ses_old")
+      sync.dag.readMode("ses_old_child")
+      sync.dag.readMode("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      expect(server.reads).toEqual(["ses_old", "ses_new"])
+    })
+  })
+
+  test("a request while the read is out joins it instead of starting another", async () => {
+    const slow = gate()
+    await withMount(
+      TREE,
+      async ({ server, sync }) => {
+        sync.dag.readMode("ses_old")
+        await wait(() => server.reads.length === 1)
+        sync.dag.readMode("ses_old_child")
+        slow.open()
+        await wait(() => sync.data.dagMode.ses_old !== undefined)
+        expect(server.reads).toEqual(["ses_old"])
+      },
+      (server) => {
+        server.answers.ses_old = async () => {
+          await slow.opened
+          return status()
+        }
+      },
+    )
+  })
+
+  test("once held, a dag configuration change reads it again with the others", async () => {
+    await withMount(TREE, async ({ emit, sdk, server, sync }) => {
+      sync.dag.readMode("ses_old")
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      server.reads.length = 0
+
+      server.answers.ses_old = () =>
+        status({ limits: limits({ concurrency: 14, configuredConcurrency: 30, running: 0 }) })
+      emit(configUpdated(["dag"]))
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.dagMode.ses_old?.limits.concurrency === 14)
+      expect(server.reads).toEqual(["ses_old"])
+      expect(sync.data.dagMode.ses_old?.limits.configuredConcurrency).toBe(30)
+    })
+  })
+})
+
+// The `/config` panel finds the tree its snapshot is held under with `sync.session.root`, from a selector: it follows
+// the sessions of that one chain and does not traverse the session list (#1290).
+describe("tui sync: the root of a session's tree", () => {
+  test("is the session itself for a root, the top of the parent chain for a descendant, the id for an unknown one", async () => {
+    await withMount(TREE, async ({ sync }) => {
+      expect(sync.session.root("ses_old")).toBe("ses_old")
+      expect(sync.session.root("ses_old_child")).toBe("ses_old")
+      expect(sync.session.root("ses_new_child")).toBe("ses_new")
+      expect(sync.session.root("ses_unknown")).toBe("ses_unknown")
+    })
+  })
+
+  test("a selector on it follows a change of its own chain and is not run again by a rename elsewhere", async () => {
+    await withMount(TREE, async ({ emit, sdk, sync }) => {
+      await createRoot(async (dispose) => {
+        try {
+          let runs = 0
+          const root = createMemo(() => {
+            runs++
+            return sync.session.root("ses_old_child")
+          })
+          expect(root()).toBe("ses_old")
+          expect(runs).toBe(1)
+
+          // The session moves under the other tree's root: a change of its own chain, which has to run the selector.
+          emit(updated(row("ses_old_child", 41, {}, "ses_new")))
+          sdk.frameClock.flushNow()
+          await wait(() => root() === "ses_new")
+          expect(runs).toBe(2)
+
+          // Two sessions outside the chain are renamed, one after the other. The selector runs inside the write that
+          // changes what it read, so a run a rename caused is counted by the time the new title can be seen.
+          emit(updated(row("ses_old", 51, { title: "renamed root" })))
+          sdk.frameClock.flushNow()
+          await wait(() => sync.session.get("ses_old")?.title === "renamed root")
+          emit(updated(row("ses_new_child", 91, { title: "renamed child" }, "ses_new")))
+          sdk.frameClock.flushNow()
+          await wait(() => sync.session.get("ses_new_child")?.title === "renamed child")
+          expect(runs).toBe(2)
+        } finally {
+          dispose()
+        }
+      })
     })
   })
 })

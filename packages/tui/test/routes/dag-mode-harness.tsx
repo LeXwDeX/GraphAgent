@@ -65,7 +65,13 @@ export function dagModeStatus(extra: Partial<SessionDagMode> = {}): SessionDagMo
     availability: "available",
     unavailableReason: null,
     budget: { tokens: null, used: 0, usedCacheRead: 0, warnRatio: 0.8 },
-    limits: { concurrency: 4, maxTotalNodes: 32, running: 0 },
+    limits: {
+      concurrency: 4,
+      configuredConcurrency: null,
+      maxTotalNodes: 32,
+      configuredMaxTotalNodes: null,
+      running: 0,
+    },
     quality: null,
     ...extra,
   }

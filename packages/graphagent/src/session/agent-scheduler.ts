@@ -742,26 +742,34 @@ export const make = (
   limits: () => refresh(state, readLimits).pipe(Effect.map(() => state.limits)),
 })
 
+/**
+ * The limits the process-wide pool enforces, read from the global layer only —
+ * a project file must not resize the budget for every other directory sharing
+ * this process, and a changed global file is observed without rebuilding the
+ * instance. `dag.concurrency` is already stripped from project files. This is
+ * the one place a configured value meets its default; the DAG layer cap that
+ * `capacity` reports (and that the status read and the mode announcement
+ * state) is derived from the result.
+ */
+export const limitsFrom = (config: Pick<Config.Interface, "getGlobal" | "dagGlobal">) =>
+  Effect.gen(function* () {
+    const [info, dag] = yield* Effect.all([config.getGlobal(), config.dagGlobal()])
+    return {
+      global: info.engine?.concurrency?.global ?? DEFAULT_LIMITS.global,
+      perProvider: info.engine?.concurrency?.perProvider ?? DEFAULT_LIMITS.perProvider,
+      childGlobal: info.engine?.concurrency?.childGlobal ?? DEFAULT_LIMITS.childGlobal,
+      taskReserve: info.engine?.concurrency?.taskReserve ?? DEFAULT_LIMITS.taskReserve,
+      dagConcurrency: dag.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
+    } satisfies SchedulerLimits
+  })
+
 const liveLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    // Capture the config service at layer construction: the pool is
-    // process-wide, so it reads the global layer only — a project file must
-    // not resize the budget for every other directory sharing this process,
-    // and a changed global file is observed without rebuilding the instance.
-    // `dag.concurrency` is already stripped from project files.
+    // Capture the config service at layer construction; the limits are read
+    // again on every acquisition.
     const config = yield* Config.Service
-    const readLimits = Effect.gen(function* () {
-      const [info, dag] = yield* Effect.all([config.getGlobal(), config.dagGlobal()])
-      return {
-        global: info.engine?.concurrency?.global ?? DEFAULT_LIMITS.global,
-        perProvider: info.engine?.concurrency?.perProvider ?? DEFAULT_LIMITS.perProvider,
-        childGlobal: info.engine?.concurrency?.childGlobal ?? DEFAULT_LIMITS.childGlobal,
-        taskReserve: info.engine?.concurrency?.taskReserve ?? DEFAULT_LIMITS.taskReserve,
-        dagConcurrency: dag.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
-      }
-    })
-    return make(EngineProcess.scheduler, () => readLimits)
+    return make(EngineProcess.scheduler, () => limitsFrom(config))
   }),
 )
 

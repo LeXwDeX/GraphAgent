@@ -11357,14 +11357,34 @@
               "concurrency": {
                 "type": "number"
               },
+              "configuredConcurrency": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "maxTotalNodes": {
                 "type": "number"
+              },
+              "configuredMaxTotalNodes": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "running": {
                 "type": "number"
               }
             },
-            "required": ["concurrency", "maxTotalNodes", "running"],
+            "required": ["concurrency", "configuredConcurrency", "maxTotalNodes", "configuredMaxTotalNodes", "running"],
             "additionalProperties": false
           },
           "quality": {

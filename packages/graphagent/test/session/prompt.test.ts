@@ -8620,6 +8620,34 @@ it.instance("states no tier in the DAG mode block under the default tier (#1324)
   }),
 )
 
+// #1290: the announcement states the limits in force, the same ones the status
+// read reports: the scheduler's DAG layer (a configured `dag.concurrency` cut to
+// the child pool) and the user's node cap.
+it.instance("states the DAG layer in force and the user's node cap in the DAG mode block (#1290)", () =>
+  withGlobalDag(
+    { concurrency: 30, max_total_nodes: 40 },
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      yield* sessions.setDagMode({ sessionID: chat.id, mode: "on" })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "orchestrate this request" }],
+      })
+      yield* llm.text("on done")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const conversation = JSON.stringify(requestMessages((yield* llm.inputs)[0]).conversation)
+      // 30 asked for, 16 child slots less the 2 kept for the task tool.
+      expect(conversation).toContain("concurrency 14 shared by all sessions")
+      expect(conversation).not.toContain("concurrency 30")
+      expect(conversation).toContain("40 nodes per workflow")
+    }),
+  ),
+)
+
 withMemoryContext.instance("does not inject MEMORY data into child agent sessions", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

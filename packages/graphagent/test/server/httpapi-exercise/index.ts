@@ -939,8 +939,14 @@ const scenarios: Scenario[] = [
       check(body.budget.usedCacheRead === 0, "a fresh session should have no cache-read usage")
       check(body.budget.warnRatio === 0.8, "warnRatio should default to 0.8")
       object(body.limits)
-      check(typeof body.limits.concurrency === "number", "concurrency limit should be numeric")
-      check(typeof body.limits.maxTotalNodes === "number", "node limit should be numeric")
+      // #1290: each limit comes as the value in force and the configured value.
+      // Nothing is configured here, so the values in force are the scheduler's
+      // DAG layer (12 of the 14 child-pool slots) and the user's default node
+      // cap, and the configured ones are null.
+      check(body.limits.concurrency === 12, "unset concurrency should report the scheduler's DAG layer")
+      check(body.limits.configuredConcurrency === null, "unset concurrency should have no configured value")
+      check(body.limits.maxTotalNodes === 100, "unset node cap should report the default user cap")
+      check(body.limits.configuredMaxTotalNodes === null, "unset node cap should have no configured value")
       check(body.limits.running === 0, "no workflow nodes should be running")
       // #1027 D6b: quality combines the session's strict review workflows; a
       // fresh session has none.

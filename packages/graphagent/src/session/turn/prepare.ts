@@ -31,13 +31,13 @@ import type { SystemPrompt } from "../system"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ChildSlot } from "../child/slot"
 import type { ChildRuns } from "../child/run"
-import { DEFAULT_WORKFLOW_CONFIG } from "@/dag/dag"
+import { DEFAULT_USER_MAX_TOTAL_NODES } from "@/dag/dag"
 import { DagMode } from "@/dag/mode"
 import type { UnavailableReason } from "@/dag/mode-status"
 import { DagModeReminder } from "../dag-mode-reminder"
 import { EngineProcess } from "../engine-process"
 import { RuntimeSlots } from "../runtime-slots"
-import { DEFAULT_LIMITS } from "../agent-scheduler-state"
+import type { AgentScheduler } from "../agent-scheduler"
 import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
@@ -265,6 +265,8 @@ export interface PrepareDeps {
   readonly commands: Command.Interface
   /** The parent's delegations travel in the request's runtime context (`ChildSlot`). */
   readonly children: ChildRuns.Interface
+  /** The concurrency the DAG announcement states is the scheduler's own DAG layer (#1290). */
+  readonly scheduler: Pick<AgentScheduler.Interface, "capacity">
   readonly ops: () => Effect.Effect<TaskPromptOps>
 }
 
@@ -585,6 +587,7 @@ interface DagRequestFacts {
 const dagRequestFacts = Effect.fnUntraced(function* (input: {
   sessions: Session.Interface
   config: Config.Interface
+  scheduler: Pick<AgentScheduler.Interface, "capacity">
   session: Session.Info
   agent: Agent.Info
   user: SessionV1.User
@@ -611,13 +614,17 @@ const dagRequestFacts = Effect.fnUntraced(function* (input: {
         : undefined
   const live = yield* reconcileDagMode(input.sessions, input.session.id, input.session)
   const dag = yield* input.config.dagGlobal()
+  // #1290: the cap the model plans against is the one the scheduler enforces
+  // (the DAG layer: `dag.concurrency` or its default, cut to the child pool),
+  // the same read the status endpoint makes.
+  const capacity = yield* input.scheduler.capacity()
   return {
     advertised,
     unavailable,
     mode: live.mode,
     budget: live.budgetUnlimited ? null : (live.budgetTokens ?? dag.budget?.tokens ?? null),
-    concurrency: dag.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
-    maxTotalNodes: dag.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+    concurrency: capacity.children.dagCap,
+    maxTotalNodes: dag.max_total_nodes ?? DEFAULT_USER_MAX_TOTAL_NODES,
     ...(dag.permission ? { permission: dag.permission } : {}),
   }
 })
@@ -658,6 +665,7 @@ const dagTurnState = Effect.fnUntraced(function* (input: {
   const facts = yield* dagRequestFacts({
     sessions: input.deps.sessions,
     config: input.deps.config,
+    scheduler: input.deps.scheduler,
     session: input.session,
     agent: input.agent,
     user: input.user,

@@ -90,9 +90,9 @@ export interface Snapshot {
   readonly mode: DagModeType
   /** Effective DAG token budget; null means unlimited. */
   readonly budget: number | null
-  /** Effective global node concurrency (`dag.concurrency`, bounded by the child pool). */
+  /** Effective global node concurrency: the scheduler's DAG layer (`dag.concurrency` or its default, bounded by the child pool). */
   readonly concurrency: number
-  /** Per-workflow node cap (`dag.max_total_nodes`). */
+  /** The user's per-workflow node ceiling (`dag.max_total_nodes`, 100 while unset). */
   readonly maxTotalNodes: number
   /** M5 live usage and tier; merged from the process cache when omitted. */
   readonly budgetState?: BudgetState
