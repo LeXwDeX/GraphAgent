@@ -513,10 +513,14 @@ function fingerprintText(value: unknown): string | undefined {
  * without the authored blocks. Hand-authored node graphs carry no marker and
  * are grandfathered: they were accepted by an earlier gate, and a persisted
  * deep workflow must stay recoverable. The non-block writer rejection lives
- * where the source shape is still known (authoring compileBlockSource). */
+ * where the source shape is still known (authoring compileBlockSource).
+ * `checkSkipOk: false` drops the `skip_ok: false` requirement on decisions:
+ * the standard advisory on a freshly block-compiled document uses it, because
+ * the compiler owns that field there (see strictReviewCoverageDiagnostics). */
 export function strictReviewCoverageErrors(input: {
   nodes: readonly NodeConfig[]
   acceptance?: readonly { id: string }[]
+  checkSkipOk?: boolean
 }): string[] {
   const nodes = input.nodes
   const decisions = nodes.filter((node) => node.review_arbitration === true)
@@ -559,7 +563,8 @@ export function strictReviewCoverageErrors(input: {
   }
   for (const decision of decisions) {
     if (decision.required !== true) errors.push(`${decision.id}: strict review decision must set required: true`)
-    if (decision.skip_ok !== false) errors.push(`${decision.id}: strict review decision must set skip_ok: false`)
+    if (input.checkSkipOk !== false && decision.skip_ok !== false)
+      errors.push(`${decision.id}: strict review decision must set skip_ok: false`)
     if (!(decision.review_lenses ?? []).includes("completeness"))
       errors.push(`${decision.id}: strict review decision must include the completeness lens`)
     if (!isReadOnlyProfile(decision.worker_type))

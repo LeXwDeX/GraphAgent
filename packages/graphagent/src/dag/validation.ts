@@ -821,10 +821,15 @@ export interface StructuralInput {
 
 /** Strict review-coverage diagnostics shared by create, validate, and replan.
  * The strict gate fails on a gap; the standard gate reports the same gaps as
- * warnings. A block-compiled document already ran the block compiler's own
- * check at the strict gate, so only persisted graphs and the standard advisory
- * pass re-run it here. Hand-authored node graphs carry no block marker and
- * are grandfathered (see strictReviewCoverageErrors). */
+ * warnings, except `skip_ok` on a freshly block-compiled document. A
+ * block-compiled document already ran the block compiler's own check at the
+ * strict gate, so only persisted graphs and the standard advisory pass re-run
+ * it here. The compiler owns `skip_ok` on its review decisions (strict
+ * compiles false, standard keeps a conditional decision skippable and
+ * Dag.create normalizes an unset one) and a review block has no such field,
+ * so nothing in the document could change it: that advisory is left out, and
+ * persisted graphs keep the check. Hand-authored node graphs carry no block
+ * marker and are grandfathered (see strictReviewCoverageErrors). */
 function strictReviewCoverageDiagnostics(input: {
   nodes: readonly NodeConfig[]
   mode?: ExecutionMode
@@ -834,7 +839,13 @@ function strictReviewCoverageDiagnostics(input: {
 }): Diagnostic[] {
   const strict = input.mode === "deep" || input.review_gate === "strict"
   if (strict && input.block_compiled === true) return []
-  return strictReviewCoverageErrors({ nodes: input.nodes, acceptance: input.acceptance }).map((error) =>
+  return strictReviewCoverageErrors({
+    nodes: input.nodes,
+    acceptance: input.acceptance,
+    // Past the early return, a block-compiled document is the standard
+    // advisory: the compiler owns its skip_ok.
+    checkSkipOk: input.block_compiled !== true,
+  }).map((error) =>
     diagnostic({
       severity: strict ? "error" : "warning",
       code: DIAGNOSTIC_CODES.dagInvalid,
