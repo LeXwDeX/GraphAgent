@@ -560,7 +560,9 @@ export const TaskTool = Tool.define(
       const { text, page, pages } = sliced
       return {
         title: "Task log",
-        metadata: { taskID: sessionID, page, pages },
+        // A page is bounded by the pagination itself and the next page is how the rest is read: the generic
+        // truncation must not cut it again, or a page would lose its end with no page that holds it.
+        metadata: { taskID: sessionID, page, pages, truncated: false },
         output: [
           `task_id: ${sessionID}`,
           `agent: ${childSession.agent ?? "unknown"}`,

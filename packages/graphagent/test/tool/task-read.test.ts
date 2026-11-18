@@ -451,6 +451,22 @@ describe("tool.task read", () => {
       }),
   )
 
+  it.instance("a page is already bounded: the tool wrapper does not cut it again, however many lines it holds", () =>
+    Effect.gen(function* () {
+      const { def, ctx, child } = yield* harness()
+      // 2500 lines in 5000 characters: one page, past the generic 2000-line limit.
+      const lines = "x\n".repeat(2500)
+      const task = yield* child([[{ text: lines }]], { outcome: { type: "completed" } })
+
+      const result = yield* def.execute({ action: "read", task_id: task }, ctx())
+
+      expect(result.output).toContain("page 1/1")
+      expect(result.output).toContain(lines.trimEnd())
+      expect(result.metadata).toMatchObject({ page: 1, pages: 1, truncated: false })
+      expect(result.metadata).not.toHaveProperty("outputPath")
+    }),
+  )
+
   it.instance("page is optional and 1 is the first page", () =>
     Effect.gen(function* () {
       const { def, ctx, child } = yield* harness()
