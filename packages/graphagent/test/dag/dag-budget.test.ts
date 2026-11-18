@@ -18,7 +18,11 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { TuiEvent } from "@graphagent/schema/tui-event"
-import { PAUSE_REASON_BUDGET_EXHAUSTED, ERROR_CLASS_BUDGET_EXHAUSTED } from "@graphagent/schema/dag-status"
+import {
+  PAUSE_REASON_ARCHIVED,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
+  ERROR_CLASS_BUDGET_EXHAUSTED,
+} from "@graphagent/schema/dag-status"
 import { Dag } from "@/dag/dag"
 import { DagBudget, tierOf } from "@/dag/budget"
 import { DagMode } from "@/dag/mode"
@@ -492,6 +496,78 @@ describe("DagBudget raise", () => {
         // A repeated reconcile finds nothing paused: no second wake.
         expect(yield* budget.onBudgetChanged(parent)).toBe(0)
         expect(harness.wakes).toHaveLength(1)
+      }),
+    )
+  })
+})
+
+describe("DagBudget raise after an archive (#1289)", () => {
+  test("a workflow the archive holds is not resumed by a raise or by the owner's next bootstrap, budget enforcement leaves it be, and the main agent's resume reruns the budget-cancelled nodes", async () => {
+    const harness = makeHarness({ globalBudget: 1000 })
+    await run(
+      harness,
+      Effect.gen(function* () {
+        yield* seed()
+        yield* createWorkflow()
+        yield* startNode("a", child)
+        yield* queueNode("b")
+        yield* setChildTokens({ input: 1200, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 })
+        const budget = yield* DagBudget.Service
+        const dag = yield* Dag.Service
+        const nodeStates = Effect.map(readNodes, (nodes) =>
+          nodes
+            .map((node) => [node.id, node.status, node.errorClass])
+            .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+        )
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).pauseReason).toBe(PAUSE_REASON_BUDGET_EXHAUSTED)
+        expect(yield* nodeStates).toEqual([
+          ["a", "failed", ERROR_CLASS_BUDGET_EXHAUSTED],
+          ["b", "failed", ERROR_CLASS_BUDGET_EXHAUSTED],
+        ])
+
+        // The owner session is archived while the workflow is budget-paused:
+        // the pause stays and only its reason changes. The budget's own resume
+        // would have requeued the cancelled attempts and no longer sees the
+        // workflow, so the relabel requeues them.
+        expect(yield* dag.pauseForArchive(dagID)).toBe("relabeled")
+        const requeued = [
+          ["a", "pending", null],
+          ["b", "pending", null],
+        ]
+        expect(yield* nodeStates).toEqual(requeued)
+
+        // The user raises the budget: nothing is resumed or woken.
+        harness.state.globalBudget = 5000
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+        // The owner instance bootstraps again (the restart path): the same.
+        yield* budget.init().pipe(Effect.provideService(InstanceRef, ownerInstance))
+        const held = yield* readWorkflow
+        expect({ status: held.status, pauseReason: held.pauseReason }).toEqual({
+          status: "paused",
+          pauseReason: PAUSE_REASON_ARCHIVED,
+        })
+        expect(yield* nodeStates).toEqual(requeued)
+        expect(harness.wakes).toHaveLength(0)
+
+        // Budget exhaustion again does not turn the archive pause back into a
+        // budget pause either: it is not the budget's workflow any more.
+        harness.state.globalBudget = 1000
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).pauseReason).toBe(PAUSE_REASON_ARCHIVED)
+        expect(yield* nodeStates).toEqual(requeued)
+
+        // The resume guard still refuses a resume while the budget is exhausted;
+        // once it is raised again the main agent's resume continues the workflow.
+        expect((yield* dag.resume(dagID).pipe(Effect.flip)).message).toContain("budget")
+        harness.state.globalBudget = 5000
+        yield* dag.resume(dagID)
+        const resumed = yield* readWorkflow
+        expect({ status: resumed.status, pauseReason: resumed.pauseReason }).toEqual({
+          status: "running",
+          pauseReason: null,
+        })
+        expect(yield* nodeStates).toEqual(requeued)
       }),
     )
   })

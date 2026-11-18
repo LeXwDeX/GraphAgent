@@ -247,6 +247,13 @@ const scenarios: ReadonlyArray<Scenario> = [
     run: (dag, id) => dag.pauseForBudget(id),
     publishes: "dag.node.failed",
   },
+  { name: "pauseForArchive", run: (dag, id) => dag.pauseForArchive(id), publishes: "dag.workflow.paused" },
+  {
+    name: "pauseForArchive (a workflow that is already paused)",
+    prepare: (dag, id) => dag.pause(id),
+    run: (dag, id) => dag.pauseForArchive(id),
+    publishes: "dag.workflow.paused",
+  },
   {
     name: "requeueNodes",
     prepare: (dag, id, harness) => Effect.andThen(start(dag, id, "a", harness), dag.pauseForBudget(id)),

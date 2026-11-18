@@ -82,7 +82,14 @@ export const PAUSE_REASON_BUDGET_EXHAUSTED = "budget_exhausted"
 /** #1027 D6: the workflow parked on a replan checkpoint until the main agent
  * acknowledges it; the summary reports this episode as checkpointPending. */
 export const PAUSE_REASON_CHECKPOINT = "checkpoint"
-export type PauseReason = typeof PAUSE_REASON_BUDGET_EXHAUSTED | typeof PAUSE_REASON_CHECKPOINT
+/** #1289: the owner session was archived. The workflow is held until the main
+ * agent resumes it through the workflow tool; no automatic recovery path (a
+ * budget raise, a restart) lifts it, and un-archiving does not either. */
+export const PAUSE_REASON_ARCHIVED = "archived"
+export type PauseReason =
+  | typeof PAUSE_REASON_BUDGET_EXHAUSTED
+  | typeof PAUSE_REASON_CHECKPOINT
+  | typeof PAUSE_REASON_ARCHIVED
 
 /** Structured `error_class` values the runtime interprets. The durable
  * `NodeFailed.errorClass` field stays an optional plain string. */

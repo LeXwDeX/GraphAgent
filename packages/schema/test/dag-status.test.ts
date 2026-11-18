@@ -7,7 +7,9 @@ import {
   ERROR_CLASS_CANCELLED,
   NODE_STATUS_VALUES,
   NODE_TERMINAL_STATUS_VALUES,
+  PAUSE_REASON_ARCHIVED,
   PAUSE_REASON_BUDGET_EXHAUSTED,
+  PAUSE_REASON_CHECKPOINT,
   WORKFLOW_STATUS_VALUES,
   WORKFLOW_TERMINAL_STATUS_VALUES,
   displayState,
@@ -78,6 +80,11 @@ describe("DAG status vocabulary (D11)", () => {
 
   test("pause reason and error-class constants are stable wire values", () => {
     expect(PAUSE_REASON_BUDGET_EXHAUSTED).toBe("budget_exhausted")
+    expect(PAUSE_REASON_CHECKPOINT).toBe("checkpoint")
+    // #1289: a pause reason, not a workflow status: the status vocabulary above
+    // still has no `archived`.
+    expect(PAUSE_REASON_ARCHIVED).toBe("archived")
+    expect(WORKFLOW_STATUS_VALUES as readonly string[]).not.toContain(PAUSE_REASON_ARCHIVED)
     expect(ERROR_CLASS_CANCELLED).toBe("cancelled")
     expect(ERROR_CLASS_BUDGET_EXHAUSTED).toBe("budget_exhausted")
   })

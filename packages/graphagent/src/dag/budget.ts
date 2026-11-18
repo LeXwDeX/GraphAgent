@@ -315,6 +315,13 @@ const make = Effect.gen(function* () {
    * new budget. Budget-cancelled nodes go back to pending first (a fresh
    * attempt, no replan count); the resume re-enters scheduling through the
    * normal WorkflowResumed path. Returns how many workflows resumed.
+   *
+   * The pause reason is the selector, so a pause held for another reason is
+   * not this gate's to lift: in particular a workflow the owner's archive holds
+   * (reason `archived`, #1289, relabeled over a budget pause too) stays paused
+   * until the main agent resumes it. The relabel already requeued the nodes
+   * this gate cancelled, so nothing is left for the gate to replay. `enforce`,
+   * `init` and the `/config` scan below read the reason the same way.
    */
   const resumePaused = Effect.fn("DagBudget.resumePaused")(function* (sessionID: string, next: BudgetState) {
     if (next.budget !== null && next.used >= next.budget) return 0

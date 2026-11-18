@@ -235,6 +235,7 @@ const CLASSES = {
   pause: "both",
   pauseForCheckpoint: "runner",
   pauseForBudget: "intent",
+  pauseForArchive: "intent",
   requeueNodes: "intent",
   resume: "intent",
   step: "intent",
