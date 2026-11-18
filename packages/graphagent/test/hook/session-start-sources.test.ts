@@ -219,6 +219,25 @@ it.live("resume fires once on the first admission of a pre-existing top-level se
   ),
 )
 
+it.live("the resume context of a /goal command turn is written in its hook block (#1456)", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Pre-existing goal", permission: [] })
+      yield* seedHistory(sessions, session.id)
+      yield* llm.text("working on it")
+
+      yield* prompt.command({ sessionID: session.id, command: "goal", arguments: "write the docs" })
+
+      expect(forSession(session.id)).toEqual(["resume"])
+      const texts = syntheticTexts(yield* sessions.messages({ sessionID: session.id })).flat()
+      expect(texts).toEqual(['<system-reminder source="hook">\nctx-resume\n</system-reminder>'])
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("resume does not fire for a session that has no earlier messages", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {
