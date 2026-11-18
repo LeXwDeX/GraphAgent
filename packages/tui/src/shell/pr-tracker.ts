@@ -24,7 +24,11 @@
  * - a `pr.watch.updated` event for the root of the route on screen compares the watch's previous state with the
  *   one the event gives it (`prToastFor`);
  * - the clock alone can enter a sticky warning (notified, then unresponsive at three minutes): that one transition
- *   toasts from the callback of the pending `ticker.at`.
+ *   toasts from the effect below, which the callback of the pending `ticker.at` wakes. The callback runs a little
+ *   after the boundary, so a read or another watch's event can evaluate the rows first; whoever evaluates first
+ *   says it. Only the clock's own move counts (`announceClock`): the very notice that was waiting (same entry, same
+ *   `prNoticeAt`) is now unresponsive. Anything else a read brings in that gap (another entry, outcome, delivery or
+ *   CI counts) is folded in silently like any read.
  * Snapshot loads and reconnect reads replace the store's entries without a word; the effect below folds them into
  * the "previous state" so a later event does not toast what was already on screen. The store does not say where a
  * change came from, so the event listener relies on the order of the SDK's dispatch: a frame of events runs in one
@@ -35,7 +39,6 @@
 
 import type { Message, Part, PrWatchEntry, SessionReminder, SessionStatus } from "@graphagent/sdk"
 import {
-  batch,
   createEffect,
   createMemo,
   createSignal,
@@ -49,7 +52,9 @@ import type { Ticker } from "../context/ticker"
 import { formatReminderIn, reminderNextAt } from "../pr/reminder"
 import {
   prAlertDismissed,
+  prClockMoved,
   prLineFacts,
+  prNoticeAt,
   prToastFor,
   type PrAlert,
   type PrAssistant,
@@ -107,12 +112,20 @@ interface Held {
   readonly dismissed: boolean
 }
 
+/** What the tracker remembers of a watch after it last folded the store in: the state, and which notice it is about. */
+interface Committed {
+  readonly state: PrLineFacts
+  /** When the three minutes of its notice started (`prNoticeAt`): which warning of the watch an unresponsive row is. */
+  readonly noticeAt: number
+  /** What names its entry apart from the state (`identityOf`): a read that changes it brought another entry. */
+  readonly identity: string
+}
+
 /** A watch's state and what a toast about it needs, for every watch whether it is drawn or not. */
-interface WatchState {
+interface WatchState extends Committed {
   readonly root: string
   readonly url: string
   readonly number: number
-  readonly state: PrLineFacts
 }
 
 interface Core {
@@ -182,6 +195,15 @@ function sameItem(a: PrBandItem, b: PrBandItem): boolean {
   )
 }
 
+/**
+ * What names the entry a state was made from, apart from the state: its PR and its CI counts. A read that changes any
+ * of them brought another entry, which is not something the clock did.
+ */
+function identityOf(entry: PrWatchEntry): string {
+  const checks = entry.checks
+  return JSON.stringify([entry.url, entry.number, checks?.total, checks?.pending, checks?.failed, checks?.passed])
+}
+
 function sameItems(a: readonly PrBandItem[], b: readonly PrBandItem[]): boolean {
   return a.length === b.length && a.every((item, index) => sameItem(item, b[index]))
 }
@@ -198,7 +220,7 @@ function openable(url: string): boolean {
 export function createPrTracker(deps: PrTrackerDeps): PrTracker {
   const [tick, setTick] = createSignal(0)
   // The state each watch had when it was last folded in: what an event is compared with.
-  const committed = new Map<string, PrLineFacts>()
+  const committed = new Map<string, Committed>()
   const toasted = new Set<string>()
   // The assistant messages of each root as last seen while its history was loaded: the evidence of an answer that
   // outlives the history cache. Kept for the roots that still have watches or held warnings.
@@ -274,7 +296,14 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
 
       for (const entry of Object.values(entries ?? {})) {
         const state = prLineFacts(entry, session, now)
-        states.set(entry.watchID, { root, url: entry.url, number: entry.number, state })
+        states.set(entry.watchID, {
+          root,
+          url: entry.url,
+          number: entry.number,
+          state,
+          noticeAt: prNoticeAt(entry),
+          identity: identityOf(entry),
+        })
         if (state.nextAt !== undefined) wakes.push(state.nextAt)
         if (state.hidden) continue
         const row = rowOf(entry, state)
@@ -351,9 +380,16 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
     return view
   }
 
-  function announce(toast: PrToast | undefined, url: string) {
-    if (!toast || toasted.has(toast.key)) return
-    toasted.add(toast.key)
+  /**
+   * `episode` is given for the warning of an unanswered notice: one watch says each thing once, except that a notice
+   * owed for three minutes and then delivered and left unanswered for three more is two warnings, one per notice.
+   * The toast's own key stays the same, so the footer still merges a repeat within ten seconds.
+   */
+  function announce(toast: PrToast | undefined, url: string, episode?: number) {
+    if (!toast) return
+    const said = episode === undefined ? toast.key : `${toast.key}@${episode}`
+    if (toasted.has(said)) return
+    toasted.add(said)
     if (toasted.size > TOASTED_MAX) {
       const oldest = toasted.values().next()
       if (!oldest.done) toasted.delete(oldest.value)
@@ -367,18 +403,30 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
     })
   }
 
-  /** The pending callback has run: evaluate again, and say what only the clock changed. */
+  /** The pending callback has run: evaluate again. What only the clock changed is said by the effect below. */
   function onClock() {
     armed = undefined
-    batch(() => {
-      setTick((count) => count + 1)
-      const root = deps.currentRoot()
-      // Read inside the batch, the memo is evaluated now; `committed` still holds the states before it.
-      for (const [watchID, watch] of core().states) {
-        if (watch.root !== root) continue
-        announce(prToastFor(committed.get(watchID), watch.state, { watchID, number: watch.number }), watch.url)
-      }
-    })
+    setTick((count) => count + 1)
+  }
+
+  /**
+   * Say what the clock alone did: the notice that was waiting for its three minutes, the same entry and the same
+   * notice (`prNoticeAt`), is unresponsive now that its boundary has passed (`prClockMoved`). The callback is not the
+   * only way to get here: it runs a little after the boundary, and a read or another watch's event that lands in
+   * that gap evaluates the rows first. Nothing else is the clock's, and that read may bring anything: another entry,
+   * another outcome, a delivery that stopped, a failed turn, other CI counts. Those are folded in silently, as every
+   * read is; an event has its own listener. `committed` still holds the states from before this evaluation.
+   */
+  function announceClock(states: ReadonlyMap<string, WatchState>) {
+    const now = deps.ticker.now()
+    const root = deps.currentRoot()
+    for (const [watchID, watch] of states) {
+      const before = committed.get(watchID)
+      if (before === undefined || watch.root !== root) continue
+      if (before.noticeAt !== watch.noticeAt || before.identity !== watch.identity) continue
+      if (!prClockMoved(before.state, watch.state, now)) continue
+      announce(prToastFor(before.state, watch.state, { watchID, number: watch.number }), watch.url, watch.noticeAt)
+    }
   }
 
   function arm(time: number | undefined) {
@@ -392,14 +440,18 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
     armed = { time, cancel }
   }
 
-  // The one effect. It folds what the store holds into `committed` (reads and the clock move states without a
-  // toast; the listener and the callback above compared before this ran) and keeps the single pending `ticker.at`
-  // at the earliest boundary. It writes no signal and no store.
+  // The one effect. It says what the clock did (`announceClock`), folds what the store holds into `committed` (reads
+  // move states without a toast; the listener compared before this ran) and keeps the single pending `ticker.at` at
+  // the earliest boundary. It writes no signal and no data store (a toast is all it shows); the route and the toast
+  // store it reads are not its dependencies, so they are read untracked.
   createEffect(() => {
     tick()
     const current = core()
-    committed.clear()
-    for (const [watchID, watch] of current.states) committed.set(watchID, watch.state)
+    untrack(() => {
+      announceClock(current.states)
+      committed.clear()
+      for (const [watchID, watch] of current.states) committed.set(watchID, watch)
+    })
     arm(current.nextAt)
   })
 
@@ -408,11 +460,12 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
     const held = deps.data.pr_watch[entry.sessionID]?.[entry.watchID]
     if (held && held.updatedAt > entry.updatedAt) return
     const next = prLineFacts(entry, sessionOf(entry.sessionID), deps.ticker.now())
-    const previous = committed.get(entry.watchID)
-    committed.set(entry.watchID, next)
+    const previous = committed.get(entry.watchID)?.state
+    const noticeAt = prNoticeAt(entry)
+    committed.set(entry.watchID, { state: next, noticeAt, identity: identityOf(entry) })
     // A watch of a root off screen is remembered, not announced: the line it feeds is not drawn.
     if (entry.sessionID !== deps.currentRoot()) return
-    announce(prToastFor(previous, next, entry), entry.url)
+    announce(prToastFor(previous, next, entry), entry.url, next.kind === "unresponsive" ? noticeAt : undefined)
   })
 
   onCleanup(() => {

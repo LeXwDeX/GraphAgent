@@ -350,13 +350,13 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 形状：`{ text, level: info|success|warning|error, duration?, onActivate?, dedupeKey? }`。只经页脚右侧的共享位置显示，不自建浮层。`grep -rn "<Toast" packages/tui/src` 只命中页脚一处。
 - 页脚右侧是一个共享位置，优先级：leader 待选提示 > toast > hook 执行进度。toast 显示期间替换按键提示；hook 进度（F3 8）也占这个位置，不再放页脚左侧。
-- 同时最多显示 1 条，排队最多 3 条，溢出丢最旧的 `info`。
+- 同时最多显示 1 条，排队最多 3 条。溢出先丢最旧的 `info`，再丢最旧的 `success`，队列里只剩 `warning`、`error` 时才丢最旧的一条：较新的 `success` 不会把仍在排队的警示挤掉。
 - 相同 `dedupeKey` 10 秒内合并。新增 toast 必须声明自己的 `dedupeKey`。
 - `onActivate` 存在时点击触发（如 F5 的"点击进入"）。
 - 时长经 `ticker.at`，不得自建计时器。默认 4 秒，`error` 8 秒（F3 9）。
 - 变体颜色：`info` 用 `text`，`success` 用 `success`，`warning` 用 `warning`，`error` 用 `error`。
 - 超宽错误被截断，完整文本写日志并进 `/status` 的"最近消息"（最近 20 条），页脚附 `… /status`。
-- 来源侧的去重规则：预算警告档每会话每档至多一次（F4 7.1），这一份由服务端发出，TUI 不自弹第二份；PR 状态只在事件引起的迁移时弹，快照加载与重连刷新不弹，`cancelled` 不弹（F6 2.4）。
+- 来源侧的去重规则：预算警告档每会话每档至多一次（F4 7.1），这一份由服务端发出，TUI 不自弹第二份；PR 状态只在事件引起的迁移时弹，快照加载与重连刷新不弹，`cancelled` 不弹（F6 2.4）；唯一例外是纯由时间引起的“已通知”到“未响应”，到点弹一次：tracker 的 effect 在到点之后第一次重算时弹（回调比到点晚几毫秒，期间的读取或别的 watch 的事件可能先重算，不能因此吞掉它）。只有时钟自己的那一步才算：同一条目、同一份通知（`prNoticeAt` 相同）在自己的 `nextAt` 过后由 `awaiting`/`notified` 变成 `unresponsive`（`prClockMoved`）；读取在这段时间里带来的别的差异（条目被换掉、结果变了、`noReply`、失败的回合、CI 计数）一律静默并入，快照与重连仍不弹。toast 键按 watch 加迁移区分（`pr:<watch>:<结果或警示种类>`），所以不同迁移不会互相合并；同一 watch 先因通知积压超过三分钟弹过一次“未响应”、送达后又三分钟没回应时，按通知（`prNoticeAt`）各弹一次，同一份通知不重复弹。
 - 后台运行结束的 toast（#1058 7，`attention/notify.ts`）：触发是结果 part 的 `message.part.updated` 事件（通过 `backgroundResultOf` 的 synthetic 文本，服务端写进启动该运行的会话），不是子会话的 `session.status`/`session.error`；快照加载、hydrate、重连刷新不走事件通路，所以不弹，同一子会话同一 `endedAt` 的结果重复到达也只弹一次。只对当前根会话的树，正在看那个子会话时不弹；完成用 `background.toast.done`（`success`），失败与已中断用 `background.toast.failed`（`error`），`dedupeKey` 是子会话 id。点击（`onActivate`）把用户带到结果所在的会话并滚到结果消息（`openResult(sessionID, messageID)`，跳转见 `routes/` 一节），落在结果卡上。toast 只能用鼠标点击激活（`shell/footer-status.tsx` 的 `onMouseDown`），没有键位，所以文案写“点击查看”，不写 `⏎`：主会话输入框有焦点时 `⏎` 会提交草稿。同一子会话 10 秒内的第二个结果与第一个合并（`dedupeKey` 相同，`ui/toast.tsx` 的 `merge` 换成第二个的文字与点击目标并重新起算窗口，不叠成两个）；第一个已经消失（成功 4 秒、失败 8 秒之后）就是一个新 toast。前台子 agent 的结束不弹，权限请求的 toast（`subagent.toast.permission`，点击进入该子 agent）不变。
 - 服务端 `tui.toast.show` 事件走同一入口。
 

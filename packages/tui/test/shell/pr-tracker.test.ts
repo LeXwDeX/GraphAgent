@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import type { Message, Part, PrWatchEntry, SessionReminder, SessionStatus } from "@graphagent/sdk"
 import { batch, createEffect, createRoot } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -10,7 +10,7 @@ import { reminderNextAt } from "../../src/pr/reminder"
 import { PR_HANDLED_VISIBLE_MS, PR_UNRESPONSIVE_MS, prLineWords } from "../../src/pr/state"
 import { createPrTracker } from "../../src/shell/pr-tracker"
 import type { PrBandItem } from "../../src/shell/pr-tracker-context"
-import type { ToastOptions } from "../../src/ui/toast"
+import { FooterToastProvider, useToast, type FooterToasts, type ToastOptions } from "../../src/ui/toast"
 
 // The tracker is driven directly, with no app around it: a fake ticker that only has `at` and `now` (the tracker
 // has no other clock to reach for, so a `second` or `frame` call would be a TypeError here), a fake toast, a fake
@@ -131,6 +131,12 @@ function fakeTicker(start: number) {
   let current = start
   const pending = new Set<{ time: number; cb: () => void }>()
   let widest = 0
+  function runDue() {
+    for (const timer of [...pending].toSorted((a, b) => a.time - b.time)) {
+      if (timer.time > current || !pending.delete(timer)) continue
+      timer.cb()
+    }
+  }
   return {
     ticker: {
       now: () => current,
@@ -152,15 +158,21 @@ function fakeTicker(start: number) {
     /** The clock reaches `time`; what is due runs once, earliest first, like the real ticker's loop. */
     advanceTo(time: number) {
       current = time
-      for (const timer of [...pending].toSorted((a, b) => a.time - b.time)) {
-        if (timer.time > time || !pending.delete(timer)) continue
-        timer.cb()
-      }
+      runDue()
     },
+    /**
+     * The clock passes `time` and no timer has run yet: a timer fires a little after its time (a busy frame, the
+     * loop's own order), and whatever else runs in that gap reads a clock that is already past the boundary.
+     */
+    passTo(time: number) {
+      current = time
+    },
+    /** The late timers run: everything due, earliest first. */
+    runDue,
   }
 }
 
-function mount(options: { start?: number } = {}) {
+function mount(options: { start?: number; toast?: (toast: ToastOptions) => void } = {}) {
   const clock = fakeTicker(options.start ?? T0)
   tickers.push(clock)
   const toasts: ToastOptions[] = []
@@ -181,7 +193,12 @@ function mount(options: { start?: number } = {}) {
     const tracker = createPrTracker({
       data,
       ticker: clock.ticker,
-      toast: { show: (toast) => toasts.push(toast) },
+      toast: {
+        show: (toast) => {
+          toasts.push(toast)
+          options.toast?.(toast)
+        },
+      },
       onPrWatchEvent(listener) {
         listeners.add(listener)
         return () => {
@@ -777,6 +794,304 @@ describe("pr tracker: toasts", () => {
     })
     expect(toasts).toHaveLength(1)
     expect(toasts[0].onActivate).toBeUndefined()
+  })
+})
+
+// The warning for a notice nobody answers comes from the clock alone, from one callback at the boundary (#1410). A
+// callback is a timer: it runs a little after the boundary, and whatever else reads the rows in that gap already sees
+// the state after it. Whoever sees it first has to say it, or nobody does.
+describe("pr tracker: the unresponsive warning around its boundary", () => {
+  const BOUNDARY = T0 + PR_UNRESPONSIVE_MS
+  const unresponsive = (h: Harness) => h.toasts.filter((toast) => toast.dedupeKey === "pr:w1:unresponsive")
+  /** A watch of the same session, for the events and reads that are not about the notice. */
+  const other = (over: Partial<PrWatchEntry> = {}) =>
+    entry({ watchID: "w2", number: 8, url: "https://forge.test/acme/app/pull/8", updatedAt: BOUNDARY, ...over })
+
+  /** A notice delivered at `T0` and not answered: the one pending callback waits for three minutes on. */
+  function waiting() {
+    const h = mount()
+    h.deliver(delivered(T0))
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.clock.pending()).toEqual([BOUNDARY])
+    return h
+  }
+
+  test("the callback at the boundary toasts it once", () => {
+    const h = waiting()
+    h.clock.advanceTo(BOUNDARY)
+    expect(unresponsive(h)).toHaveLength(1)
+    expect(h.clock.pending()).toEqual([])
+  })
+
+  test("an event of another PR in the gap between the boundary and the late callback does not swallow it", () => {
+    const h = waiting()
+    h.clock.passTo(BOUNDARY)
+    h.deliver(other({ checks: { total: 2, pending: 1, failed: 0, passed: 1 } }))
+    expect(kinds(h)).toEqual(["w1:unresponsive", "w2:watching"])
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+    expect(unresponsive(h)[0]).toMatchObject({ text: "PR #7 agent not responding", level: "warning" })
+    expect(h.clock.pending()).toEqual([])
+    expect(h.clock.widest).toBe(1)
+  })
+
+  test("a change of the session's status in that gap does not swallow it", () => {
+    const h = waiting()
+    h.clock.passTo(BOUNDARY)
+    h.setStatus("idle")
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+  })
+
+  test("a read of another tree in that gap does not swallow it", () => {
+    const h = waiting()
+    h.clock.passTo(BOUNDARY)
+    h.replace(OTHER, [entry({ sessionID: OTHER, watchID: "w9", number: 9 })])
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+  })
+
+  test("an event of the same watch in that gap toasts it once, and the late callback adds nothing", () => {
+    const h = waiting()
+    h.clock.passTo(BOUNDARY)
+    h.deliver(delivered(T0, { updatedAt: BOUNDARY }))
+    expect(unresponsive(h)).toHaveLength(1)
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+  })
+
+  test("an event and the callback in one frame toast it once, whichever runs first", () => {
+    for (const eventFirst of [true, false]) {
+      const h = waiting()
+      h.clock.passTo(BOUNDARY)
+      batch(() => {
+        if (eventFirst) h.deliver(other())
+        h.clock.runDue()
+        if (!eventFirst) h.deliver(other())
+      })
+      expect(unresponsive(h), `event first: ${eventFirst}`).toHaveLength(1)
+      expect(h.clock.pending()).toEqual([])
+    }
+  })
+
+  test("two notices that cross the boundary together toast once each", () => {
+    const h = mount()
+    h.deliver(delivered(T0))
+    h.deliver(delivered(T0, { watchID: "w2", number: 8, url: "https://forge.test/acme/app/pull/8" }))
+    h.clock.passTo(BOUNDARY)
+    h.setStatus("idle")
+    h.clock.runDue()
+    expect(h.toasts.map((toast) => toast.dedupeKey).filter((key) => key?.endsWith(":unresponsive"))).toEqual([
+      "pr:w1:unresponsive",
+      "pr:w2:unresponsive",
+    ])
+  })
+
+  test("a reconnect read that lands after the boundary of a known notice lets the clock say it, once", () => {
+    const h = mount()
+    h.replace(ROOT, [delivered(T0)])
+    expect(h.clock.pending()).toEqual([BOUNDARY])
+    h.clock.passTo(BOUNDARY + MINUTE)
+    // The read itself says nothing new; the boundary it came after is the clock's, and that is what is announced.
+    h.replace(ROOT, [delivered(T0, { updatedAt: T0 + 1 })])
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+  })
+
+  // A read that lands after the boundary may bring anything. Only the clock's own move of the very notice that was
+  // waiting is announced; whatever else the read changed is folded in without a word, like every read (F6 2.4).
+  const owedEntry = (over: Partial<PrWatchEntry> = {}) =>
+    entry({ phase: "delivering", outcome: "success", updatedAt: T0, delivery: { state: "pending" }, ...over })
+
+  /** A tree read with a notice owed since `T0`, and the clock past its boundary before the callback has run. */
+  function owedAndLate(over: Partial<PrWatchEntry> = {}) {
+    const h = mount()
+    h.replace(ROOT, [owedEntry(over)])
+    expect(kinds(h)).toEqual(["w1:awaiting"])
+    expect(h.clock.pending()).toEqual([BOUNDARY])
+    h.clock.passTo(BOUNDARY)
+    return h
+  }
+
+  test("a reconnect read after the boundary that replaces the entry with a stopped delivery says nothing", () => {
+    const h = owedAndLate()
+    h.replace(ROOT, [
+      delivered(T0, { delivery: { state: "delivered", deliveredAt: BOUNDARY - SECOND, noReply: true } }),
+    ])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:noReply"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read after the boundary that brings another outcome says nothing", () => {
+    const h = owedAndLate()
+    h.replace(ROOT, [owedEntry({ outcome: "failure" })])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read after the boundary that brings other CI counts says nothing", () => {
+    const h = owedAndLate({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } })
+    h.replace(ROOT, [owedEntry({ checks: { total: 6, pending: 0, failed: 0, passed: 6 } })])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read after the boundary that brings an older notice says nothing: it is another notice, not time", () => {
+    const h = mount()
+    // Delivered a minute in: its three minutes end at `T0 + 4m`.
+    h.replace(ROOT, [delivered(T0 + MINUTE)])
+    expect(h.clock.pending()).toEqual([T0 + 4 * MINUTE])
+    h.clock.passTo(T0 + 4 * MINUTE)
+    // The read says it was delivered at `T0`: those three minutes ended a minute ago.
+    h.replace(ROOT, [delivered(T0)])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a failed turn that arrives after the boundary is not the clock either", () => {
+    const h = mount()
+    h.replace(ROOT, [delivered(T0)])
+    expect(kinds(h)).toEqual(["w1:notified"])
+    h.clock.passTo(BOUNDARY)
+    h.addMessage(assistant("msg_a", T0 + SECOND, T0 + 2 * SECOND, true))
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:turnError"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read that only refreshes an owed notice after the boundary lets the clock say it, once", () => {
+    const h = owedAndLate()
+    // Nothing the line or its identity reads changes: the same notice, the same outcome, the same counts.
+    h.replace(ROOT, [owedEntry({ startedAt: T0 - 2 * MINUTE })])
+    expect(unresponsive(h)).toHaveLength(1)
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+    expect(h.toasts).toHaveLength(1)
+  })
+
+  test("a read that brings a notice in already unresponsive stays silent, whatever the clock says", () => {
+    const h = mount({ start: BOUNDARY + MINUTE })
+    h.replace(ROOT, [delivered(T0)])
+    h.replace(OTHER, [entry({ sessionID: OTHER, watchID: "w9", number: 9 })])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a notice owed for three minutes and then delivered and left unanswered for three more is two warnings, once each", () => {
+    const h = mount()
+    h.deliver(entry())
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(
+      entry({ phase: "delivering", outcome: "success", updatedAt: T0 + SECOND, delivery: { state: "pending" } }),
+    )
+    h.clock.advanceTo(T0 + SECOND + PR_UNRESPONSIVE_MS)
+    expect(unresponsive(h)).toHaveLength(1)
+
+    const delivery = T0 + 4 * MINUTE
+    h.clock.advanceTo(delivery)
+    h.deliver(delivered(delivery))
+    expect(kinds(h)).toEqual(["w1:notified"])
+    h.clock.advanceTo(delivery + PR_UNRESPONSIVE_MS - 1)
+    expect(unresponsive(h)).toHaveLength(1)
+    h.clock.advanceTo(delivery + PR_UNRESPONSIVE_MS)
+    expect(unresponsive(h)).toHaveLength(2)
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+
+    // The same warning again (a late event, a redelivery) is not a third.
+    h.deliver(delivered(delivery, { updatedAt: delivery + 1 }))
+    h.clock.advanceTo(delivery + 2 * PR_UNRESPONSIVE_MS)
+    expect(unresponsive(h)).toHaveLength(2)
+  })
+
+  test("the same warning brought back by a late event after a read dropped the watch is not said twice", () => {
+    const h = mount({ start: BOUNDARY })
+    h.deliver(delivered(T0))
+    expect(unresponsive(h)).toHaveLength(1)
+    h.replace(ROOT, [])
+    h.deliver(delivered(T0, { updatedAt: T0 + 1 }))
+    expect(unresponsive(h)).toHaveLength(1)
+  })
+
+  test("a boundary passed while another root is on screen is not announced, then or when the user comes back", () => {
+    const h = waiting()
+    h.setCurrentRoot(OTHER)
+    h.clock.advanceTo(BOUNDARY)
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    h.setCurrentRoot(ROOT)
+    h.deliver(other())
+    h.clock.advanceTo(BOUNDARY + MINUTE)
+    expect(unresponsive(h)).toEqual([])
+  })
+})
+
+// The real footer store behind the tracker, on the same clock (#1410): the toasts a watch raises do not merge into one
+// another, because a merge needs the same key and every transition has its own.
+describe("pr tracker: the warning in the footer's toast store", () => {
+  const BOUNDARY = T0 + PR_UNRESPONSIVE_MS
+  let clock: { mockRestore(): void } | undefined
+
+  afterEach(() => {
+    clock?.mockRestore()
+    clock = undefined
+  })
+
+  function footer(): FooterToasts {
+    let store: FooterToasts | undefined
+    createRoot((dispose) => {
+      disposers.push(dispose)
+      FooterToastProvider({
+        get children() {
+          store = useToast()
+          return undefined
+        },
+      })
+    })
+    if (!store) throw new Error("the toast store was not created")
+    return store
+  }
+
+  /** The tracker over the real store, with the store's own clock (`Date.now`, its ten-second window) on the test's. */
+  function wired() {
+    const store = footer()
+    const h = mount({ toast: (toast) => store.show(toast) })
+    clock = spyOn(Date, "now").mockImplementation(() => h.clock.ticker.now())
+    return { h, store }
+  }
+
+  test("an outcome that changes five seconds before the boundary shows next to the warning, not in its place", () => {
+    const { h, store } = wired()
+    h.deliver(delivered(T0))
+    // The toast of the first outcome has been shown and taken down by the footer's timer.
+    store.dismiss()
+    h.clock.advanceTo(BOUNDARY - 5 * SECOND)
+    h.deliver(delivered(T0, { outcome: "review", updatedAt: BOUNDARY - 5 * SECOND }))
+    expect(store.currentToast).toMatchObject({ dedupeKey: "pr:w1:review", level: "info" })
+
+    h.clock.advanceTo(BOUNDARY)
+    expect(store.currentToast?.dedupeKey).toBe("pr:w1:review")
+    expect(store.queued.map((toast) => [toast.dedupeKey, toast.level])).toEqual([["pr:w1:unresponsive", "warning"]])
+
+    // The footer's timer takes the first one down; the warning is next, whole.
+    store.dismiss()
+    expect(store.currentToast).toMatchObject({ dedupeKey: "pr:w1:unresponsive", text: "PR #7 agent not responding" })
+  })
+
+  test("the warning behind other toasts of the same watch keeps its place in the queue", () => {
+    const { h, store } = wired()
+    h.deliver(entry())
+    h.clock.advanceTo(T0 + SECOND)
+    h.deliver(delivered(T0 + SECOND))
+    store.show({ text: "something else", level: "info", dedupeKey: "other.1" })
+    store.show({ text: "something more", level: "info", dedupeKey: "other.2" })
+    h.clock.advanceTo(T0 + SECOND + PR_UNRESPONSIVE_MS)
+    expect(store.currentToast?.dedupeKey).toBe("pr:w1:success")
+    expect(store.queued.map((toast) => toast.dedupeKey)).toEqual(["other.1", "other.2", "pr:w1:unresponsive"])
   })
 })
 

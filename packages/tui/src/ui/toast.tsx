@@ -30,6 +30,8 @@ export type CurrentToast = ToastOptions & { id: number }
 type Entry = { id: number; options: ToastOptions; at: number }
 
 export const TOAST_QUEUE_LIMIT = 3
+/** The levels an overflow may drop, least urgent first; a warning or an error is dropped only when none is queued. */
+const OVERFLOW_ORDER: readonly ToastLevel[] = ["info", "success"]
 export const TOAST_RECENT_LIMIT = 20
 export const TOAST_DEDUPE_MS = 10_000
 export const TOAST_DEFAULT_MS = 4_000
@@ -99,10 +101,12 @@ function init() {
     }
     const queue = [...store.queue, entry]
     if (queue.length > TOAST_QUEUE_LIMIT) {
-      // Overflow drops the oldest info first; a queue of warnings keeps its
-      // oldest entry instead of silently discarding a more urgent message.
-      const info = queue.findIndex((item) => item.options.level === "info")
-      queue.splice(info >= 0 ? info : 0, 1)
+      // Overflow drops the least urgent first: the oldest info, then the oldest success. Only a queue of warnings and
+      // errors loses its oldest entry, so a newer success never pushes out a warning that is still waiting.
+      const dropped = OVERFLOW_ORDER.map((level) => queue.findIndex((item) => item.options.level === level)).find(
+        (index) => index >= 0,
+      )
+      queue.splice(dropped ?? 0, 1)
     }
     setStore("queue", queue)
     record(entry)

@@ -217,6 +217,17 @@ function finiteOr(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
 
+/**
+ * When the three minutes of a notice started: the write that made it owed (`delivering`), or the moment it was
+ * delivered. A watch that is owed and later delivered has two of them, and ends in an unresponsive line for each, so
+ * this is what tells one such warning from the next. `awaiting` and `notified` carry `prNoticeAt + PR_UNRESPONSIVE_MS`
+ * as their `nextAt`.
+ */
+export function prNoticeAt(entry: Pick<PrWatchEntry, "phase" | "updatedAt" | "delivery">): number {
+  const owed = entry.phase === "delivering" || entry.delivery?.state === "pending"
+  return owed ? entry.updatedAt : finiteOr(entry.delivery?.deliveredAt, entry.updatedAt)
+}
+
 /** The outcome is known: the notice is owed, delivered, or (after a restart) unaccounted for. */
 function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineFacts {
   const { outcome, delivery } = entry
@@ -473,6 +484,24 @@ export function prToastFor(
     }
   }
   return undefined
+}
+
+/**
+ * Whether `next` is what the clock alone made of `previous` at `now`: a notice that was waiting for its three minutes
+ * (`awaiting` or `notified`, whose `nextAt` is that boundary) is `unresponsive` now that the boundary has passed, for
+ * the same outcome. That is the one move time makes by itself. A read can bring much more in the same gap (a delivery
+ * that stopped, a failed turn, another outcome, an older notice), and none of that is time passing, so none of it
+ * counts. The caller also checks that it is the same entry and the same notice (`prNoticeAt`).
+ */
+export function prClockMoved(previous: PrLineFacts | undefined, next: PrLineFacts, now: number): boolean {
+  return (
+    previous !== undefined &&
+    (previous.kind === "awaiting" || previous.kind === "notified") &&
+    previous.nextAt !== undefined &&
+    previous.nextAt <= now &&
+    next.kind === "unresponsive" &&
+    next.outcome === previous.outcome
+  )
 }
 
 /** A sticky warning on screen: the PR it is about, the watch that raised it, and when it was raised. */
