@@ -538,7 +538,7 @@ function budget(
 
 function identity(input: ProjectionInput, runtime: "ai-sdk" | "native") {
   return {
-    adapter: "opencode-context-folding-v1",
+    adapter: "graphagent-context-folding-v1",
     runtime,
     purpose: input.purpose,
     providerID: input.model.providerID,

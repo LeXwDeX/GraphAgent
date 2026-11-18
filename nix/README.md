@@ -38,7 +38,7 @@ This historical result does not certify later source or dependency changes.
 Each affected revision still requires its own native measurements and builds.
 
 Nix outputs are development builds (`0.0.0-dev.<revision>` and channel `dev`).
-They do not derive a product release version from the opencode package version.
+They do not derive a product release version from the package version.
 Stable GraphAgent versions come only from `graphagent-v*` tags through the
 existing `release-fork.yml` build path.
 

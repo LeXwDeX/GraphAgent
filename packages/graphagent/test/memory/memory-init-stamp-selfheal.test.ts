@@ -31,7 +31,7 @@ import { testEffect } from "../lib/effect"
 // know, turning the post-heal statusReason into a model-unavailable blocker.
 // Pin a private config dir per file so the global file can never be
 // contaminated by earlier files.
-const pinnedConfigDir = path.join(os.tmpdir(), `opencode-memory-selfheal-${process.pid}`)
+const pinnedConfigDir = path.join(os.tmpdir(), `graphagent-memory-selfheal-${process.pid}`)
 const previousConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 beforeAll(() => {
   fs.mkdirSync(pinnedConfigDir, { recursive: true })

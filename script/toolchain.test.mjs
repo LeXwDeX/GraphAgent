@@ -28,7 +28,7 @@ void test("Turbo schedules every workspace that declares a test script", () => {
 })
 
 function fixture(t) {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-toolchain-"))
+  const dir = mkdtempSync(join(tmpdir(), "graphagent-toolchain-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   mkdirSync(join(dir, "config_assistant"))
   mkdirSync(join(dir, "packages/containers"), { recursive: true })
@@ -108,7 +108,7 @@ void test("Nix's copied source includes every shared policy input", (t) => {
   const fileset = source.match(/lib\.fileset\.unions \[([\s\S]*?)\]/)?.[1]
   assert.ok(fileset)
   const entries = [...fileset.matchAll(/\.\.\/([A-Za-z0-9_./-]+)/g)].map((match) => match[1])
-  const dir = mkdtempSync(join(tmpdir(), "opencode-nix-source-"))
+  const dir = mkdtempSync(join(tmpdir(), "graphagent-nix-source-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   for (const path of [
     "script/toolchain.mjs",

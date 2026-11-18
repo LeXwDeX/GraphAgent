@@ -436,7 +436,7 @@ describe("workflow spec validator", () => {
     it.effect("resolves prompt assets from the node's effective execution directory", () =>
       Effect.gen(function* () {
         const owner = yield* tmpdirScoped({ git: true })
-        const linkedPath = path.join(os.tmpdir(), `opencode-dag-prompt-${Math.random().toString(36).slice(2)}`)
+        const linkedPath = path.join(os.tmpdir(), `graphagent-dag-prompt-${Math.random().toString(36).slice(2)}`)
         yield* Effect.promise(() => $`git worktree add --detach ${linkedPath} HEAD`.cwd(owner).quiet())
         const workspace = yield* Effect.promise(() => fs.realpath(linkedPath))
         yield* Effect.addFinalizer(() =>

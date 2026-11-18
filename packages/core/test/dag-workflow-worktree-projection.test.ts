@@ -69,7 +69,7 @@ function seed(input?: { status?: string; config?: string }) {
 
 const settled: DagEvent.WorkflowWorktree = {
   directory: "/repo/.agents/worktree/dag-dag-worktree-workflow",
-  branch: "opencode/dag-dag-worktree-workflow",
+  branch: "graphagent/dag-dag-worktree-workflow",
   baseHead: "base-sha",
   head: "head-sha",
   patchPath: "/reports/dag_worktree/workflow.patch",

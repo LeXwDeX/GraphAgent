@@ -35,7 +35,7 @@ async function gitHead(cwd: string): Promise<string | undefined> {
 const validation = await validateDagTemplateDirectory(resolvedDir)
 const invalid = validation.results.filter((entry) => !entry.valid)
 const report = {
-  validator: "opencode WorkflowAuthoring.portable v1",
+  validator: "graphagent WorkflowAuthoring.portable v1",
   templates_dir: resolvedDir,
   runtime_commit: await gitHead(path.resolve(import.meta.dir, "..", "..", "..")),
   template_commit: await gitHead(resolvedDir),

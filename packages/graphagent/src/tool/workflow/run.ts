@@ -178,6 +178,7 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
             ...config,
             ...(prepared.admission ? { admission: createAdmissionRecord(prepared.admission) } : {}),
           },
+          ...(prepared.blockCompiled === true ? { blockCompiled: true } : {}),
         })
         .pipe(Effect.orDie)
       const mode = config.mode ?? "standard"

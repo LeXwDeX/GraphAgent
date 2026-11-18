@@ -32,7 +32,7 @@ test("local startup identity is single-use, target-bound and cannot survive a Re
 for (const authorized of [false, true])
   cliIt.live(
     `actual local CLI ${authorized ? "explicit flag" : "no flag"} gates hook bypass`,
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const audit = path.join(home, "startup-permissions")
         const script = path.join(home, "startup-permission.ts")
@@ -51,7 +51,7 @@ for (const authorized of [false, true])
         yield* llm.tool("bash", { command: "printf first", description: "first synthetic call" })
         yield* llm.tool("bash", { command: "printf second", description: "second synthetic call" })
         yield* llm.text("STARTUP_CAPABILITY_DONE")
-        const result = yield* opencode.run("Exercise startup capability", {
+        const result = yield* graphagent.run("Exercise startup capability", {
           format: "json",
           permission: { "*": "ask" },
           env: { GRAPHAGENT_DB: path.join(home, "startup-persistent.sqlite") },
@@ -66,7 +66,7 @@ for (const authorized of [false, true])
           yield* llm.tool("bash", { command: "printf resumed-first", description: "resumed synthetic call" })
           yield* llm.tool("bash", { command: "printf resumed-second", description: "resumed second synthetic call" })
           yield* llm.text("RESUMED_CAPABILITY_DONE")
-          const resumed = yield* opencode.run("Resume startup capability", {
+          const resumed = yield* graphagent.run("Resume startup capability", {
             format: "json",
             permission: { "*": "ask" },
             env: { GRAPHAGENT_DB: path.join(home, "startup-persistent.sqlite") },
@@ -86,7 +86,7 @@ for (const authorized of [false, true])
       }),
   )
 
-cliIt.live("explicit local CLI capability applies to the first resumed deferred tool", ({ home, llm, opencode }) =>
+cliIt.live("explicit local CLI capability applies to the first resumed deferred tool", ({ home, llm, graphagent }) =>
   Effect.gen(function* () {
     const allowed = path.join(home, "allow-deferred")
     const audit = path.join(home, "deferred-startup.jsonl")
@@ -108,14 +108,14 @@ cliIt.live("explicit local CLI capability applies to the first resumed deferred 
       env: { GRAPHAGENT_DB: path.join(home, "deferred-startup.sqlite") },
     }
     yield* llm.tool("bash", { command: "printf deferred-first", description: "first deferred synthetic tool" })
-    const deferred = yield* opencode.run("Create a deferred tool", opts)
+    const deferred = yield* graphagent.run("Create a deferred tool", opts)
     expect(deferred.exitCode).toBe(0)
     expect(deferred.stdout).toContain('"stop_reason":"tool_deferred"')
     const original = JSON.parse((yield* Effect.promise(() => fs.readFile(audit, "utf8"))).trim().split("\n")[0])
     yield* Effect.promise(() => fs.writeFile(allowed, "yes"))
     yield* llm.tool("bash", { command: "printf deferred-second", description: "second synthetic tool" })
     yield* llm.text("DEFERRED_RESUME_DONE")
-    const resumed = yield* opencode.run("", {
+    const resumed = yield* graphagent.run("", {
       ...opts,
       extraArgs: ["--session", original.session, "--dangerously-skip-permissions"],
     })

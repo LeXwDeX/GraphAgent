@@ -6,12 +6,12 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { ClientDetach } from "@/session/client-detach"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { APP_NAME } from "@graphagent/core/brand"
-// CLI entry point for `opencode run` and `opencode --mini`.
+// CLI entry point for `graphagent run` and `graphagent --mini`.
 //
 // Handles three modes:
 //   1. Non-interactive (default): sends a single prompt, streams events to
 //      stdout, and exits when the session goes idle.
-//   2. Interactive local (`opencode --mini`): boots the split-footer direct mode
+//   2. Interactive local (`graphagent --mini`): boots the split-footer direct mode
 //      with an in-process server (no external HTTP).
 //
 // Also supports `--command` for slash-command execution, `--format json` for

@@ -9,7 +9,7 @@ import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
   "explicit /init runs only UserPromptExpansion before the model; Setup is project bootstrap only",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "init-hook-audit.jsonl")
       const script = path.join(home, "init-hook.ts")
@@ -26,8 +26,8 @@ cliIt.live(
         )
       })
       yield* llm.text("INITIALIZED")
-      const result = yield* opencode.run("/init", { format: "json", env: { PWD: home, GRAPHAGENT_DB: "" } })
-      opencode.expectExit(result, 0)
+      const result = yield* graphagent.run("/init", { format: "json", env: { PWD: home, GRAPHAGENT_DB: "" } })
+      graphagent.expectExit(result, 0)
       const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
         .trim()
         .split("\n")

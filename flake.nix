@@ -1,5 +1,5 @@
 {
-  description = "OpenCode development flake";
+  description = "GraphAgent development flake";
 
   inputs = {
     # nix develop resolves Bash through this conventional input, including on Intel Darwin.

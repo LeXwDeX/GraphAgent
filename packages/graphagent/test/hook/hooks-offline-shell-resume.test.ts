@@ -10,7 +10,7 @@ import { decodeRecord, decodeRecords, decodeSession, decodeString } from "../lib
 
 cliIt.live(
   "cold HTTP resume skips an unavailable old model and validates the explicit replacement",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "switch-events.jsonl")
       const script = path.join(home, "switch-hook.ts")
@@ -27,7 +27,7 @@ cliIt.live(
         )
       })
       const options = { env: { GRAPHAGENT_DB: path.join(home, "cold-model.sqlite") } }
-      const first = yield* opencode.host(options)
+      const first = yield* graphagent.host(options)
       const post = (url: string, route: string, body: object) =>
         Effect.promise(() =>
           fetch(url + route, {
@@ -46,7 +46,7 @@ cliIt.live(
       expect(decodeRecord(session.model).id).toBe("removed-model")
       first.kill()
       yield* Effect.promise(() => first.exited)
-      const second = yield* opencode.host(options)
+      const second = yield* graphagent.host(options)
       yield* llm.text("VALID_REPLACEMENT")
       const response = yield* post(second.url, `/session/${id}/message`, {
         model: { providerID: "test", modelID: "test-model" },
@@ -78,7 +78,7 @@ cliIt.live(
 for (const deny of [false, true]) {
   cliIt.live(
     `offline explicit shell ${deny ? "preserves native deny" : "rewrites the actual command"} and releases execution`,
-    ({ home, llm, opencode }) =>
+    ({ home, llm, graphagent }) =>
       Effect.gen(function* () {
         const marker = path.join(home, "rewritten-marker")
         const original = path.join(home, "original-marker")
@@ -95,7 +95,7 @@ for (const deny of [false, true]) {
             JSON.stringify({ PreToolUse: hooks, PostToolUse: hooks }),
           )
         })
-        const server = yield* opencode.host({
+        const server = yield* graphagent.host({
           env: {
             GRAPHAGENT_CONFIG_CONTENT: JSON.stringify({ provider: {}, enabled_providers: [] }),
             ...(deny ? { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "deny" }) } : {}),

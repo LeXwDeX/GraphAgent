@@ -57,7 +57,7 @@ const request: UserMessage = {
   sessionID,
   role: "user",
   agent: "build",
-  model: { providerID: "opencode", modelID: "test-model" },
+  model: { providerID: "test", modelID: "test-model" },
   time: { created: 1 },
 }
 
@@ -89,7 +89,7 @@ const delivery: AssistantMessage = {
   agent: "build",
   mode: "build",
   modelID: "test-model",
-  providerID: "opencode",
+  providerID: "test",
   path: { cwd: directory, root: directory },
   time: { created: 10, completed: 10 },
   cost: 0,
@@ -102,7 +102,7 @@ const followup: UserMessage = {
   sessionID,
   role: "user",
   agent: "build",
-  model: { providerID: "opencode", modelID: "test-model" },
+  model: { providerID: "test", modelID: "test-model" },
   time: { created: 20 },
 }
 

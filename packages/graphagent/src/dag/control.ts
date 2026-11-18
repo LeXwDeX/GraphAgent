@@ -655,12 +655,17 @@ const make = Effect.gen(function* () {
             return { op: "cancel_node", workflowID: dagID, nodeID: request.nodeID }
           }
           case "replan": {
-            const result = yield* dag.replan(dagID, { nodes: request.prepared.nodes })
+            const result = yield* dag.replan(dagID, {
+              nodes: request.prepared.nodes,
+              ...(request.prepared.blockCompiled === true ? { blockCompiled: true } : {}),
+            })
             const resume = yield* resumeAfterMutation(dagID, "replan")
             return { op: "replan", workflowID: dagID, result, resume }
           }
           case "extend": {
-            const result = yield* dag.extend(dagID, request.prepared.nodes)
+            const result = yield* request.prepared.blockCompiled === true
+              ? dag.extend(dagID, request.prepared.nodes, undefined, { blockCompiled: true })
+              : dag.extend(dagID, request.prepared.nodes)
             const resume = yield* resumeAfterMutation(dagID, "extend")
             return { op: "extend", workflowID: dagID, result, resume }
           }

@@ -3,7 +3,7 @@
 
 /**
  * Regenerates LICENSE-UPSTREAM.txt, the authoritative list of files inherited
- * from the upstream opencode project that stay under the MIT license.
+ * from the upstream project that stay under the MIT license.
  *
  * The list is derived from Git history and must only be regenerated from a
  * full-history checkout of this repository:
@@ -24,7 +24,7 @@
  * third-party copyright headers) are not governed by the upstream/Apache
  * file-header rules. When such a file existed at BASE_COMMIT it still belongs
  * to this list because the list tracks origin, not headers. Vendored
- * third_party/ trees are not upstream opencode and are never listed.
+ * third_party/ trees are not upstream and are never listed.
  */
 import { $ } from "bun"
 import path from "node:path"
@@ -51,7 +51,7 @@ export const UPSTREAM_CHERRY_PICKS = [
 export const MANUAL_UPSTREAM: readonly string[] = []
 
 /**
- * Vendored third-party trees are not upstream opencode. Rename detection can
+ * Vendored third-party trees are not upstream. Rename detection can
  * pair a deleted upstream text file with a vendored license that merely has
  * the same license body, so destinations under these prefixes are never
  * treated as upstream lineage.

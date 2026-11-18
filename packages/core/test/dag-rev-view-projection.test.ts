@@ -193,7 +193,7 @@ describe("Train A rev-view — projector marking", () => {
             status: "running",
             child_session_id: SessionSchema.ID.create(),
             worktree_directory: "/repo/.worktrees/wt",
-            worktree_branch: "opencode/wt",
+            worktree_branch: "graphagent/wt",
             worktree_state: "active",
             touched_paths: ["src/a.ts"],
           })
@@ -210,7 +210,7 @@ describe("Train A rev-view — projector marking", () => {
         const node = yield* (yield* DagStore.Service).getNode("dag_rev", "n1")
         expect(node?.status).toBe("pending")
         expect(node?.worktreeDirectory).toBe("/repo/.worktrees/wt")
-        expect(node?.worktreeBranch).toBe("opencode/wt")
+        expect(node?.worktreeBranch).toBe("graphagent/wt")
         expect(node?.worktreeState).toBe("active")
         expect(node?.touchedPaths).toEqual(["src/a.ts"])
       }).pipe(Effect.provide(projectorLayer()), Effect.scoped),

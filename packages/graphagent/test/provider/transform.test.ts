@@ -3186,10 +3186,10 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
   test("preserves metadata using providerID key when store is false", () => {
     const graphagentModel = {
       ...openaiModel,
-      providerID: "opencode",
+      providerID: "graphagent",
       api: {
-        id: "opencode-test",
-        url: "https://api.opencode.ai",
+        id: "graphagent-test",
+        url: "https://api.graphagent.test",
         npm: "@ai-sdk/openai-compatible",
       },
     }
@@ -3201,7 +3201,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
             type: "text",
             text: "Hello",
             providerOptions: {
-              opencode: {
+              graphagent: {
                 itemId: "msg_123",
                 otherOption: "value",
               },
@@ -3213,17 +3213,17 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
 
     const result = ProviderTransform.message(msgs, graphagentModel, { store: false }) as any[]
 
-    expect(result[0].content[0].providerOptions?.opencode?.itemId).toBe("msg_123")
-    expect(result[0].content[0].providerOptions?.opencode?.otherOption).toBe("value")
+    expect(result[0].content[0].providerOptions?.graphagent?.itemId).toBe("msg_123")
+    expect(result[0].content[0].providerOptions?.graphagent?.otherOption).toBe("value")
   })
 
   test("preserves itemId across all providerOptions keys", () => {
     const graphagentModel = {
       ...openaiModel,
-      providerID: "opencode",
+      providerID: "graphagent",
       api: {
-        id: "opencode-test",
-        url: "https://api.opencode.ai",
+        id: "graphagent-test",
+        url: "https://api.graphagent.test",
         npm: "@ai-sdk/openai-compatible",
       },
     }
@@ -3232,7 +3232,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
         role: "assistant",
         providerOptions: {
           openai: { itemId: "msg_root" },
-          opencode: { itemId: "msg_opencode" },
+          graphagent: { itemId: "msg_graphagent" },
           extra: { itemId: "msg_extra" },
         },
         content: [
@@ -3241,7 +3241,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
             text: "Hello",
             providerOptions: {
               openai: { itemId: "msg_openai_part" },
-              opencode: { itemId: "msg_opencode_part" },
+              graphagent: { itemId: "msg_graphagent_part" },
               extra: { itemId: "msg_extra_part" },
             },
           },
@@ -3252,10 +3252,10 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
     const result = ProviderTransform.message(msgs, graphagentModel, { store: false }) as any[]
 
     expect(result[0].providerOptions?.openai?.itemId).toBe("msg_root")
-    expect(result[0].providerOptions?.opencode?.itemId).toBe("msg_opencode")
+    expect(result[0].providerOptions?.graphagent?.itemId).toBe("msg_graphagent")
     expect(result[0].providerOptions?.extra?.itemId).toBe("msg_extra")
     expect(result[0].content[0].providerOptions?.openai?.itemId).toBe("msg_openai_part")
-    expect(result[0].content[0].providerOptions?.opencode?.itemId).toBe("msg_opencode_part")
+    expect(result[0].content[0].providerOptions?.graphagent?.itemId).toBe("msg_graphagent_part")
     expect(result[0].content[0].providerOptions?.extra?.itemId).toBe("msg_extra_part")
   })
 

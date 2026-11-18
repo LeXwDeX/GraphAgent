@@ -9,7 +9,7 @@ import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
   "a real task child fires one start and stop, including its agent-frontmatter Stop hook",
-  ({ home, env, llm, opencode }) =>
+  ({ home, env, llm, graphagent }) =>
     Effect.gen(function* () {
       const script = path.join(home, "child-hooks.ts")
       const audit = path.join(home, "child-hooks.jsonl")
@@ -41,12 +41,12 @@ cliIt.live(
       yield* llm.tool("task", { description: "Local child", prompt: "respond once", subagent_type: "lifecycle_child" })
       yield* llm.text("REAL_CHILD_RESPONSE")
       yield* llm.text("REAL_PARENT_FINISHED")
-      const result = yield* opencode.run("delegate one local child", {
+      const result = yield* graphagent.run("delegate one local child", {
         format: "json",
         extraArgs: ["--variant", "high"],
         env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) },
       })
-      opencode.expectExit(result, 0)
+      graphagent.expectExit(result, 0)
       expect(result.stdout).toContain("REAL_PARENT_FINISHED")
       const rows = yield* Effect.promise(async () =>
         (await fs.readFile(audit, "utf8"))

@@ -88,7 +88,7 @@ export function mcpEntries(items: Record<string, AITool>): Extract<ToolEntry, { 
     })
 }
 
-/** Registry entries for the OpenCode-owned MCP resource helpers, in resolution order. */
+/** Registry entries for the GraphAgent-owned MCP resource helpers, in resolution order. */
 export function mcpResourceEntries(
   ops: readonly McpResourceOp[] = MCP_RESOURCE_ORDER,
 ): Extract<ToolEntry, { source: { kind: "mcp-resource" } }>[] {

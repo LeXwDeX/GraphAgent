@@ -4,7 +4,7 @@
 import type { JSONSchema7 } from "@ai-sdk/provider"
 
 /**
- * Model-facing names of the OpenCode-owned MCP resource helpers. They are not
+ * Model-facing names of the GraphAgent-owned MCP resource helpers. They are not
  * server-provided tools: the pipeline builds them from the connected clients'
  * `resources` capability, and the registry lists them in this fixed order.
  */

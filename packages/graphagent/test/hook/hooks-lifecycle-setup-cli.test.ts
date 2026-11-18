@@ -44,14 +44,14 @@ function rows(file: string) {
 
 cliIt.live(
   "ordinary run does not emit Setup",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = yield* auditLayer(home)
       yield* llm.text("OK")
-      const result = yield* opencode.spawn(["run", "hello"], {
+      const result = yield* graphagent.spawn(["run", "hello"], {
         env: { PWD: home, GRAPHAGENT_DB: "" },
       })
-      opencode.expectExit(result, 0)
+      graphagent.expectExit(result, 0)
       expect(yield* rows(audit)).toEqual([])
     }),
   TIMEOUT,
@@ -59,14 +59,14 @@ cliIt.live(
 
 cliIt.live(
   "run --init emits Setup(init) with the real session and continues the prompt",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = yield* auditLayer(home)
       yield* llm.text("INITIALIZED")
-      const result = yield* opencode.spawn(["run", "--init", "hello"], {
+      const result = yield* graphagent.spawn(["run", "--init", "hello"], {
         env: { PWD: home, GRAPHAGENT_DB: "" },
       })
-      opencode.expectExit(result, 0)
+      graphagent.expectExit(result, 0)
       const events = yield* rows(audit)
       expect(events.map((row) => [row.event, row.trigger])).toEqual([["Setup", "init"]])
       expect(events[0].session).toMatch(/^ses_/)
@@ -78,14 +78,14 @@ cliIt.live(
 
 cliIt.live(
   "run --maintenance emits Setup(maintenance)",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = yield* auditLayer(home)
       yield* llm.text("MAINTAINED")
-      const result = yield* opencode.spawn(["run", "--maintenance", "hello"], {
+      const result = yield* graphagent.spawn(["run", "--maintenance", "hello"], {
         env: { PWD: home, GRAPHAGENT_DB: "" },
       })
-      opencode.expectExit(result, 0)
+      graphagent.expectExit(result, 0)
       const events = yield* rows(audit)
       expect(events.map((row) => [row.event, row.trigger])).toEqual([["Setup", "maintenance"]])
     }),
@@ -94,13 +94,13 @@ cliIt.live(
 
 cliIt.live(
   "run --init-only emits Setup(init) and exits without a model turn",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const audit = yield* auditLayer(home)
-      const result = yield* opencode.spawn(["run", "--init-only"], {
+      const result = yield* graphagent.spawn(["run", "--init-only"], {
         env: { PWD: home, GRAPHAGENT_DB: "" },
       })
-      opencode.expectExit(result, 0)
+      graphagent.expectExit(result, 0)
       const events = yield* rows(audit)
       expect(events.map((row) => [row.event, row.trigger])).toEqual([["Setup", "init"]])
       expect(yield* llm.inputs).toEqual([])

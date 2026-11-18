@@ -10,7 +10,7 @@
 #           (the build job is gated on `github.event_name == 'workflow_dispatch'`)
 # Version : Independent GraphAgent SemVer derived only from graphagent-v* tags.
 #           main builds X.Y.Z and marks it Latest. Historical dev tags do not
-#           advance the stable line. OpenCode package versions are ignored.
+#           advance the stable line. Package versions are ignored.
 # Inputs  : create_release — when true, create a GitHub Release with the
 #                            built binaries + SHA256SUMS attached. The default
 #                            is false so an ordinary dispatch exercises
@@ -208,7 +208,7 @@ jobs:
           save-cache: ${{ matrix.name == 'macos' }}
 
       # Embed a models.dev catalog snapshot into the binary so air-gapped
-      # users can start opencode without reaching https://models.dev at
+      # users can start GraphAgent without reaching https://models.dev at
       # runtime (see packages/graphagent/script/generate.ts fallback order).
       - name: Fetch models.dev Snapshot
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)

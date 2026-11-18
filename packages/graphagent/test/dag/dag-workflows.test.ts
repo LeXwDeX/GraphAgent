@@ -208,7 +208,7 @@ describe("DagWorkflows.resolve", () => {
     const linked = path.join(dir, "linked")
     await fs.mkdir(main, { recursive: true })
     git(main, "init")
-    git(main, "config", "user.email", "test@opencode.test")
+    git(main, "config", "user.email", "test@graphagent.test")
     git(main, "config", "user.name", "Test")
     git(main, "commit", "--allow-empty", "-m", "init")
     git(main, "worktree", "add", "--detach", linked, "HEAD")

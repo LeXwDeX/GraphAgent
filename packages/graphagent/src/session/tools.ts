@@ -177,7 +177,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
       model: input.model,
       bypassAgentCheck: input.bypassAgentCheck,
       ...(input.taskOrigin === undefined ? {} : { taskOrigin: input.taskOrigin }),
-      // A turn nobody waits on (`opencode run`, a hook followup): the task tool keeps its calls in the foreground (#1357).
+      // A turn nobody waits on (`graphagent run`, a hook followup): the task tool keeps its calls in the foreground (#1357).
       ...(input.user?.hookMode === "noninteractive" ? { noninteractive: true } : {}),
       promptOps: input.promptOps,
       ...(questionHookAnswers.has(options) ? { hookAnswers: questionHookAnswers.get(options) } : {}),

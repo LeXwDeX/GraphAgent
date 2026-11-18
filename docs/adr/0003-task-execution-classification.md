@@ -323,7 +323,7 @@ F-n and B-n IDs below are the revised ones of Amendment 1.
    `background: false`. A user command's declaration reaches the call through the task origin, not as
    an argument nobody wrote.
 3. **Non-interactive turns.** One rule of the turn sits above that order. A non-interactive turn
-   (`opencode run`, a hook follow-up) has no user waiting for a later message, so every `task` call
+   (`graphagent run`, a hook follow-up) has no user waiting for a later message, so every `task` call
    in it runs in the foreground, whatever the argument, the command or the agent asks for. This is
    Decision 3 extended from commands to every task call. `SessionTools` hands the task tool the
    turn's mode (`extra.noninteractive`). The call is not refused, since it is satisfiable: that

@@ -55,7 +55,7 @@ const PathCommand = effectCmd({
 
 // #524: the ONLY conversion path for legacy auto_vacuum=NONE databases.
 // Deliberate invocation by design — the target file must be named explicitly
-// with --db, never a default path; pair it with `opencode db path`. Refuses
+// with --db, never a default path; pair it with `graphagent db path`. Refuses
 // anything that is not an existing regular file (a typo must not create a
 // database). Converts FULL -> VACUUM -> wal_checkpoint(TRUNCATE) outside any
 // startup path and fails nonzero unless the readback is FULL.

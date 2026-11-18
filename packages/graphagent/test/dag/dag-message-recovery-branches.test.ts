@@ -630,7 +630,7 @@ describe("message recovery continuation admission and settlement branches", () =
     })
   test("runs a recovered continuation with the bound workspace mailbox identity", async () => {
     await using owner = await tmpdir({ git: true })
-    const linkedPath = path.join(os.tmpdir(), `opencode-recovery-ws-${Math.random().toString(36).slice(2)}`)
+    const linkedPath = path.join(os.tmpdir(), `graphagent-recovery-ws-${Math.random().toString(36).slice(2)}`)
     await $`git worktree add --detach ${linkedPath} HEAD`.cwd(owner.path).quiet()
     const workspace = await fs.realpath(linkedPath)
     try {
@@ -650,7 +650,7 @@ describe("message recovery continuation admission and settlement branches", () =
   test("non-git continuation output authorizes outside paths against the instance boundary", async () => {
     await using owner = await tmpdir()
     const inside = path.join(owner.path, "inside.txt")
-    const outside = path.join(os.tmpdir(), `opencode-dag-outside-${Math.random().toString(36).slice(2)}.txt`)
+    const outside = path.join(os.tmpdir(), `graphagent-dag-outside-${Math.random().toString(36).slice(2)}.txt`)
     await Bun.write(inside, "inside evidence")
     await Bun.write(outside, "outside evidence")
     try {

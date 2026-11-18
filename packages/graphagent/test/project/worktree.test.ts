@@ -306,7 +306,7 @@ describe("Worktree", () => {
 
           expect(info.name).toBeDefined()
           expect(typeof info.name).toBe("string")
-          expect(info.branch).toBe(`opencode/${info.name}`)
+          expect(info.branch).toBe(`graphagent/${info.name}`)
           expect(info.directory).toContain(info.name)
         }),
       { git: true },
@@ -320,7 +320,7 @@ describe("Worktree", () => {
           const info = yield* svc.makeWorktreeInfo({ name: "my-feature" })
 
           expect(info.name).toBe("my-feature")
-          expect(info.branch).toBe("opencode/my-feature")
+          expect(info.branch).toBe("graphagent/my-feature")
         }),
       { git: true },
     )
@@ -343,7 +343,7 @@ describe("Worktree", () => {
         Effect.gen(function* () {
           const test = yield* TestInstance
           const svc = yield* Worktree.Service
-          yield* git(test.directory, ["branch", "opencode/my-feature"])
+          yield* git(test.directory, ["branch", "graphagent/my-feature"])
 
           const info = yield* svc.makeWorktreeInfo({ name: "my-feature", detached: true })
 
@@ -441,7 +441,7 @@ describe("Worktree", () => {
         withCreatedWorktree(undefined, ({ info }) =>
           Effect.gen(function* () {
             expect(info.name).toBeDefined()
-            expect(info.branch ?? "").toStartWith("opencode/")
+            expect(info.branch ?? "").toStartWith("graphagent/")
             expect(info.directory).toBeDefined()
           }),
         ),
@@ -476,7 +476,7 @@ describe("Worktree", () => {
             const svc = yield* Worktree.Service
 
             expect(info.name).toBeDefined()
-            expect(info.branch ?? "").toStartWith("opencode/")
+            expect(info.branch ?? "").toStartWith("graphagent/")
 
             expect(ready.name).toBe(info.name)
             expect(ready.branch).toBe(info.branch)
@@ -531,7 +531,7 @@ describe("Worktree", () => {
         withCreatedWorktree({ name: "test-workspace" }, ({ info }) =>
           Effect.gen(function* () {
             expect(info.name).toBe("test-workspace")
-            expect(info.branch).toBe("opencode/test-workspace")
+            expect(info.branch).toBe("graphagent/test-workspace")
           }),
         ),
       { git: true },
@@ -554,7 +554,7 @@ describe("Worktree", () => {
           const main = yield* fs.realPath(test.directory)
           const directory = path.join(main, ".agents", "worktree", "reset-fails")
           expect(yield* fs.exists(directory).pipe(Effect.orDie)).toBe(false)
-          const branches = yield* gitResult(test.directory, ["branch", "--list", "opencode/reset-fails"])
+          const branches = yield* gitResult(test.directory, ["branch", "--list", "graphagent/reset-fails"])
           expect(branches.text().trim()).toBe("")
           const current = yield* project.get(ctx.project.id)
           expect(current?.sandboxes ?? []).not.toContain(directory)

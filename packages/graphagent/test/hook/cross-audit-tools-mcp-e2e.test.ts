@@ -13,7 +13,7 @@ import { cliIt } from "../lib/cli-process"
  */
 cliIt.live(
   "real stdio MCP tool fires canonical and native matchers on every tool event with a real mcp_server",
-  ({ home, llm, opencode }) =>
+  ({ home, llm, graphagent }) =>
     Effect.gen(function* () {
       const serverScript = path.join(home, "mcp-server.ts")
       const hookScript = path.join(home, "audit-hook.ts")
@@ -63,7 +63,7 @@ cliIt.live(
       yield* llm.tool("fixture_pick", {})
       yield* llm.tool("fixture_boom", {})
       yield* llm.text("MCP_AUDIT_DONE")
-      const server = yield* opencode.host()
+      const server = yield* graphagent.host()
       const request = (route: string, method = "GET", body?: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

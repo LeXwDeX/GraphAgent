@@ -31,7 +31,7 @@ export class NotFull extends Schema.TaggedError<NotFull>()("VacuumNotFull", {
   autoVacuum: Schema.Number,
 }) {
   override get message() {
-    return `vacuum did not take full effect for ${this.filename}: PRAGMA auto_vacuum reads back ${this.autoVacuum}, expected 1 (FULL) — close running opencode processes that use this file and retry`
+    return `vacuum did not take full effect for ${this.filename}: PRAGMA auto_vacuum reads back ${this.autoVacuum}, expected 1 (FULL) — close running graphagent processes that use this file and retry`
   }
 }
 
@@ -58,7 +58,7 @@ const validateTarget = Effect.fn("Vacuum.validateTarget")(function* (fs: FileSys
   if (info === undefined) {
     yield* new Refused({
       filename,
-      reason: "no such file — vacuum never creates a database (print the default path with `opencode db path`)",
+      reason: "no such file — vacuum never creates a database (print the default path with `graphagent db path`)",
     })
     return
   }

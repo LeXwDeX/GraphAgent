@@ -12,10 +12,11 @@ import path from "path"
 import os from "os"
 import { Effect } from "effect"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
+import { alive, readLaunches } from "./launch-log"
 
 // A direct subprocess does not run test/preload.ts. Set its own paths before
 // importing application modules, including xdg-basedir's import-time cache.
-const isolation = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-tree-"))
+const isolation = await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-mcp-tree-"))
 process.env.XDG_DATA_HOME = path.join(isolation, "share")
 process.env.XDG_CACHE_HOME = path.join(isolation, "cache")
 process.env.XDG_CONFIG_HOME = path.join(isolation, "config")
@@ -28,19 +29,13 @@ delete process.env.GRAPHAGENT_CONFIG
 delete process.env.GRAPHAGENT_CONFIG_CONTENT
 await fs.mkdir(process.env.GRAPHAGENT_TEST_HOME, { recursive: true })
 const { MCP } = await import("../../../src/mcp/index")
-const { TestInstance, withTmpdirInstance } = await import("../../fixture/fixture")
+const { withTmpdirInstance } = await import("../../fixture/fixture")
 const { Process } = await import("../../../src/util/process")
 const { AppRuntime } = await import("../../../src/effect/app-runtime")
 const ownedPids: number[] = []
-
-function alive(pid: number) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
+// The fixture appends one line per launch (see launch-log.ts). The test passes
+// the path so it can check for leftovers after this process exits.
+const launchLog = process.argv[2] ?? path.join(isolation, "fixture-launches.log")
 
 function waitDead(pid: number, timeoutMs: number) {
   return new Promise<boolean>((resolve) => {
@@ -54,14 +49,15 @@ function waitDead(pid: number, timeoutMs: number) {
   })
 }
 
-async function waitForPidFile(file: string, timeoutMs: number) {
+// One connect launches the server more than once (the SDK negotiates the era on
+// a disposable sibling first), so match the launch by this session's server pid
+// instead of trusting whichever launch wrote last.
+async function waitForChild(file: string, serverPid: number, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    try {
-      return parseInt(await fs.readFile(file, "utf8"), 10)
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
+    const launch = (await readLaunches(file)).find((entry) => entry.server === serverPid)
+    if (launch) return launch.child
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
   return undefined
 }
@@ -72,13 +68,10 @@ try {
     withTmpdirInstance({ mcp: {} })(
       Effect.gen(function* () {
         const mcp = yield* MCP.Service
-        const { directory } = yield* TestInstance
-        const childPidFile = path.join(directory, "fixture-child.pid")
-
         yield* mcp.add("tree-server", {
           type: "local",
           command: [process.execPath, path.join(import.meta.dir, "server-stdio.ts")],
-          environment: { MCP_FIXTURE_CHILD_PID_FILE: childPidFile },
+          environment: { MCP_FIXTURE_CHILD_PID_FILE: launchLog },
         })
 
         const status = (yield* mcp.status())["tree-server"]
@@ -89,7 +82,7 @@ try {
         if (typeof rootPid !== "number") return { ok: false, stage: "root-pid" }
         ownedPids.push(rootPid)
 
-        const childPid = yield* Effect.promise(() => waitForPidFile(childPidFile, 5_000))
+        const childPid = yield* Effect.promise(() => waitForChild(launchLog, rootPid, 5_000))
         if (childPid === undefined) return { ok: false, stage: "child-pid-file", rootPid }
         ownedPids.push(childPid)
 
@@ -107,8 +100,11 @@ try {
   )
 } finally {
   // Cleanup follows the observations and never changes a failed result into a
-  // pass. Only fixture-owned PIDs are eligible, even when pgrep is unavailable.
-  await Process.stopTree(ownedPids)
+  // pass. Only fixture-owned PIDs are eligible, even when pgrep is unavailable:
+  // this session's server and child, plus every child the fixture logged. The
+  // era-negotiation sibling started a child of its own that only the log knows.
+  const logged = (await readLaunches(launchLog)).map((launch) => launch.child)
+  await Process.stopTree([...new Set([...ownedPids, ...logged])])
   await AppRuntime.dispose()
   await fs.rm(isolation, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }

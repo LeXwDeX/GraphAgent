@@ -685,6 +685,10 @@ export interface Interface {
     sessionID: string
     title: string
     config: WorkflowConfig
+    /** The config was compiled from blocks in this request, so the compiler
+     * owns `skip_ok` on its review decisions and the standard review-coverage
+     * advisory leaves it out. The strict re-check is unchanged. */
+    blockCompiled?: boolean
   }) => Effect.Effect<ID, Error>
   readonly store: DagStore.Interface
   readonly pause: (dagID: string, reason?: PauseReason) => Effect.Effect<void, Error>
@@ -759,7 +763,8 @@ export interface Interface {
   readonly exclusive: <A, E, R>(dagID: string, body: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly replan: (
     dagID: string,
-    fragment: { nodes: NodeConfig[] },
+    /** `blockCompiled`: the fragment was compiled from blocks (see `create`). */
+    fragment: { nodes: NodeConfig[]; blockCompiled?: boolean },
   ) => Effect.Effect<{ cancel: string[]; restart: string[]; replace: string[]; add: string[]; ignore: string[] }, Error>
   readonly extend: (
     dagID: string,
@@ -767,6 +772,8 @@ export interface Interface {
     /** Runtime-initiated extends (fan-out) apply only while this pending node
      * still matches the scheduling attempt that planned them. */
     fence?: { nodeID: string; attempt: NodeExecutionAttempt },
+    /** `blockCompiled`: the fragment was compiled from blocks (see `create`). */
+    options?: { blockCompiled?: boolean },
   ) => Effect.Effect<{ cancel: string[]; restart: string[]; replace: string[]; add: string[]; ignore: string[] }, Error>
   readonly recover: (
     dagID: string,
@@ -977,6 +984,7 @@ export const layer = Layer.effect(
       sessionID: string
       title: string
       config: WorkflowConfig
+      blockCompiled?: boolean
     }) {
       const config = normalizeWorkflowConfig(input.config)
       // Structural validation first, via the shared authority (the same one
@@ -994,6 +1002,7 @@ export const layer = Layer.effect(
         max_total_nodes: config.max_total_nodes,
         user_max_total_nodes: yield* readUserMaxTotalNodes(),
         acceptance: config.acceptance,
+        ...(input.blockCompiled === true ? { compiler_owns_skip_ok: true } : {}),
       })
       const structuralErrors = DagValidation.sortDiagnostics(structural.filter((d) => d.severity === "error"))
       for (const warning of structural.filter((d) => d.severity === "warning")) {
@@ -1533,7 +1542,7 @@ export const layer = Layer.effect(
     const _replan = Effect.fn("Dag._replan")(function* (
       lock: WorkflowLock,
       dagID: string,
-      fragment: { nodes: NodeConfig[] },
+      fragment: { nodes: NodeConfig[]; blockCompiled?: boolean },
       reopenCompleted = false,
       action: "extend" | "replan" = "replan",
     ) {
@@ -1681,6 +1690,7 @@ export const layer = Layer.effect(
         isolation: wfConfig.isolation,
         terminalNodeIds,
         grandfatheredNodeIds: persistedGateNodeIds(merged.nodes, cfgById),
+        ...(fragment.blockCompiled === true ? { compiler_owns_skip_ok: true } : {}),
       })
       const replanErrors = DagValidation.sortDiagnostics(replanDiagnostics.filter((d) => d.severity === "error"))
       for (const warning of replanDiagnostics.filter((d) => d.severity === "warning")) {
@@ -1858,6 +1868,7 @@ export const layer = Layer.effect(
       dagID: string,
       newNodes: NodeConfig[],
       fence?: { nodeID: string; attempt: NodeExecutionAttempt },
+      options?: { blockCompiled?: boolean },
     ) {
       const wf = yield* store.getWorkflow(dagID)
       if (!wf) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
@@ -1958,7 +1969,13 @@ export const layer = Layer.effect(
       }
       // Internal call to _replan — shares the caller's lock holding period,
       // does NOT re-acquire the per-workflow lock or go through Service.of.
-      return yield* _replan(lock, dagID, { nodes: [...preserved, ...newNodes] }, reopenCompleted, "extend")
+      return yield* _replan(
+        lock,
+        dagID,
+        { nodes: [...preserved, ...newNodes], ...(options?.blockCompiled === true ? { blockCompiled: true } : {}) },
+        reopenCompleted,
+        "extend",
+      )
     })
 
     const recover: Interface["recover"] = Effect.fn("Dag.recover")(function* (dagID, input) {
@@ -2801,8 +2818,8 @@ export const layer = Layer.effect(
         ),
       replan: (dagID, fragment) =>
         command(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
-      extend: (dagID, nodes, fence) =>
-        command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence))),
+      extend: (dagID, nodes, fence, options) =>
+        command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence, options))),
       recover,
       retarget: (dagID, input) => command(dagID)((lock) => withMailbox(dagID, undefined, retarget(lock, dagID, input))),
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>

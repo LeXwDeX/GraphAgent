@@ -47,7 +47,7 @@ The decision checkpoint was approved on 2026-09-04 with the scope locked below.
    WAL/migration write, so the first-write winner sets FULL for the database.
 4. **Existing databases: explicit conversion only.** Legacy `auto_vacuum=NONE` databases are
    never converted at startup — startup is detect-only (a warning pointing at the command). The
-   only conversion path is `opencode db vacuum --db <path>`: the target must be named
+   only conversion path is `graphagent db vacuum --db <path>`: the target must be named
    explicitly and must already exist as a regular file (vacuum never creates a database), runs
    FULL → VACUUM → `wal_checkpoint(TRUNCATE)` outside any startup path, and fails nonzero
    unless the `PRAGMA auto_vacuum` readback is exactly FULL. Exclusive access is a hard
@@ -70,7 +70,7 @@ The decision checkpoint was approved on 2026-09-04 with the scope locked below.
   lifetime waits for the next start. This is accepted because the shapes it targets are
   crash/in-flight zombies.
 - The conversion command requires exclusive access; the error guidance says to close running
-  opencode processes and retry.
+  graphagent processes and retry.
 - Replay and sync contracts are preserved by construction: only whole aggregates with no live
   read model are ever removed, and such aggregates are unreplayable anyway (FK death), so no
   consumer can observe the removal as a gap in a replayable history.

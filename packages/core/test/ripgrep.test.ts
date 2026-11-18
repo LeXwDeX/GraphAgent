@@ -296,7 +296,7 @@ describe("Ripgrep", () => {
 
   itFaulted.live("keeps the filesystem category and path when the ripgrep process cannot start", () =>
     Effect.gen(function* () {
-      const missing = path.join(os.tmpdir(), "opencode-ripgrep-spawn-fault-missing")
+      const missing = path.join(os.tmpdir(), "graphagent-ripgrep-spawn-fault-missing")
       yield* Effect.acquireUseRelease(
         Effect.sync(() => {
           spawnFault = () => Effect.fail(spawnEnoent(missing))

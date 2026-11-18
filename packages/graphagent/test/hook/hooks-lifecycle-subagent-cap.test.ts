@@ -7,7 +7,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 
-cliIt.live("real child tool work resets the consecutive SubagentStop feedback cap", ({ home, env, llm, opencode }) =>
+cliIt.live("real child tool work resets the consecutive SubagentStop feedback cap", ({ home, env, llm, graphagent }) =>
   Effect.gen(function* () {
     const script = path.join(home, "continuation-hook.ts")
     const counter = path.join(home, "continuation-count")
@@ -33,11 +33,11 @@ cliIt.live("real child tool work resets the consecutive SubagentStop feedback ca
     }
     yield* llm.text("PARENT_AFTER_ALL_CONTINUATIONS")
     const config = { ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT), permission: { "*": "allow" } }
-    const result = yield* opencode.run("delegate the child work", {
+    const result = yield* graphagent.run("delegate the child work", {
       format: "json",
       env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) },
     })
-    opencode.expectExit(result, 0)
+    graphagent.expectExit(result, 0)
     expect(yield* Effect.promise(() => fs.readFile(counter, "utf8"))).toBe("10")
     expect(result.stdout).toContain("PARENT_AFTER_ALL_CONTINUATIONS")
     expect(yield* llm.pending).toBe(0)
