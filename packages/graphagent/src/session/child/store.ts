@@ -30,9 +30,9 @@ import type {
  *
  * PR3a makes the rows the result ledger of detached runs: a detached run's
  * ending leaves `reported_at` empty and carries the result (`report`) in
- * `outcome`; the delivery to the parent writes `reported_at` in the same
- * transaction as the transcript message. `child_run_unreported` indexes
- * exactly the rows that still wait.
+ * `outcome`, with the moment the run began (`runningAt`, #1426); the delivery
+ * to the parent writes `reported_at` in the same transaction as the transcript
+ * message. `child_run_unreported` indexes exactly the rows that still wait.
  */
 
 type Db = Database.Interface["db"]
@@ -73,12 +73,30 @@ const boundedReport = (report: ChildRunReport): ChildRunReport =>
 /**
  * The JSON stored in `child_run.outcome`; an error keeps a bounded message, not
  * the whole transcript tail. The report a detached run leaves for its parent
- * rides along under `report`.
+ * rides along under `report`, and the moment the run began running (epoch
+ * milliseconds, after the wait for its slot) under `runningAt` (#1426). It is a
+ * key of the JSON, not a column: a row written before the key existed reads as a
+ * run with no recorded moment.
  */
-export const outcomeJson = (outcome: ChildRunOutcome, report?: ChildRunReport): Record<string, unknown> => ({
+export const outcomeJson = (
+  outcome: ChildRunOutcome,
+  report?: ChildRunReport,
+  runningAt?: number,
+): Record<string, unknown> => ({
   ...(outcome.type === "error" ? { type: "error", message: truncate(outcome.message) } : outcome),
+  ...(runningAt === undefined ? {} : { runningAt }),
   ...(report ? { report: boundedReport(report) } : {}),
 })
+
+/**
+ * When the run began running, as its ending recorded it. None for a row that
+ * ended before the moment was recorded, for a run that never began, and for a
+ * value that is not a time.
+ */
+export function parseRunningAt(value: Record<string, unknown> | null | undefined): number | undefined {
+  const at = value?.runningAt
+  return typeof at === "number" && Number.isFinite(at) ? at : undefined
+}
 
 /** The result a detached run left in its outcome, when it left one. */
 export function parseReport(value: Record<string, unknown> | null | undefined): ChildRunReport | undefined {
@@ -336,7 +354,9 @@ export interface EndedRun {
 /**
  * Active -> ended. One write; undefined when the row had already ended (or was
  * deleted with its session). `report` is the result a detached run leaves for
- * its parent; whether it is still owed is `reportedAtFor`.
+ * its parent; whether it is still owed is `reportedAtFor`. `runningAt` is the
+ * moment the run began, kept for the result delivered later (#1426): it rides
+ * the ending's own write, so the run's writes stay one per state change.
  */
 export const endRun = (
   db: Db,
@@ -344,12 +364,13 @@ export const endRun = (
   outcome: ChildRunOutcome,
   now: number,
   report?: ChildRunReport,
+  runningAt?: number,
 ): Effect.Effect<EndedRun | undefined> =>
   db
     .update(ChildRunTable)
     .set({
       state: "ended",
-      outcome: outcomeJson(outcome, report),
+      outcome: outcomeJson(outcome, report, runningAt),
       time_ended: now,
       reported_at: reportedAtFor(outcome, now),
     })

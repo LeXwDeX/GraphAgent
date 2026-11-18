@@ -310,9 +310,14 @@ describe("background tasks with a limit of one", () => {
       expect(firstResult).toMatchObject({ status: "completed" })
       if (!("runningAt" in firstResult) || typeof firstResult.runningAt !== "number") throw new Error("no runningAt")
       expect(firstResult.runningAt - Number(firstResult.startedAt)).toBeLessThan(30)
-      // The ledger row is what it always was: the time the run began rides on the result, not in the row.
+      // The ledger row keeps the moment the run began (#1426), the one the result carries: a result delivered by a later
+      // process is timed the same way.
       const row = yield* rowOf(second)
-      expect(row?.outcome).toEqual({ type: "completed", report: { title: "second", text: `done ${second}` } })
+      expect(row?.outcome).toEqual({
+        type: "completed",
+        runningAt: secondResult.runningAt,
+        report: { title: "second", text: `done ${second}` },
+      })
     }),
   )
 

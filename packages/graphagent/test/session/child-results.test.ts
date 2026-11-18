@@ -115,7 +115,12 @@ describe("the ledger of a detached run", () => {
       expect(row?.detached).toBe(true)
       // Not reported: the old rule (a finished run counts as reported) is gone for a detached run.
       expect(row?.reported_at).toBeNull()
-      expect(row?.outcome).toEqual({ type: "completed", report: { title: "inspect bug", text: "found the cause" } })
+      // The ending also keeps the moment the run began (#1426); the test clock stands at 0 when it does.
+      expect(row?.outcome).toEqual({
+        type: "completed",
+        runningAt: 0,
+        report: { title: "inspect bug", text: "found the cause" },
+      })
       expect(yield* ChildStore.unreportedParents(db, DIRECTORY)).toEqual([parent])
     }),
   )
@@ -200,13 +205,15 @@ describe("the ledger of a detached run", () => {
   // #1407: the result's `startedAt` is when the run was registered, queued; `runningAt` is when it began, after the wait.
   it.effect("carries the moment the run began, so a reader can leave the wait for its slot out of the run's time", () =>
     Effect.gen(function* () {
-      const { parent, delivery, scoped, newChild } = yield* setup("began")
+      const { db, parent, delivery, scoped, newChild } = yield* setup("began")
       const child = yield* newChild()
       const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
       yield* TestClock.adjust("40 millis")
       yield* run.markRunning
       yield* TestClock.adjust("25 millis")
       yield* run.settle({ type: "completed" }, { title: "inspect bug", text: "done" })
+      // The ending row keeps the moment beside the report (#1426), so a later process can say the same.
+      expect((yield* rowOf(db, run.id))?.outcome).toMatchObject({ type: "completed", runningAt: 40 })
 
       expect(yield* delivery.claim(parent)).toBe(true)
       const result = textPartOf(delivery.admitted[0])?.metadata?.backgroundResult
@@ -218,37 +225,136 @@ describe("the ledger of a detached run", () => {
     }),
   )
 
-  it.effect("has no such moment for a result delivered from the row alone, as after a restart", () =>
+  // #1426: the process that delivers a result need not be the one that saw the run end, so the row has to say it.
+  it.effect("carries the same moment when it is delivered from the row alone, as after a restart", () =>
     Effect.gen(function* () {
       const { parent, delivery, scoped, newChild } = yield* setup("restart")
+      const start = (childSessionID: SessionID) =>
+        scoped.start({ childSessionID, owner: { kind: "task" }, detached: true })
+      const seen = yield* newChild()
+      const gone = yield* newChild()
+      const seenRun = yield* start(seen)
+      const goneRun = yield* start(gone)
+      yield* TestClock.adjust("40 millis")
+      yield* seenRun.markRunning
+      yield* goneRun.markRunning
+      yield* TestClock.adjust("25 millis")
+      yield* seenRun.settle({ type: "completed" }, { title: "inspect bug", text: "done" })
+      yield* goneRun.settle({ type: "completed" }, { title: "inspect bug", text: "done" })
+      // This process saw the first run end and still has its report. The process that saw the second end is gone:
+      // the ledger row is all that is left of it.
+      ChildRegistry.dropReport(goneRun.id)
+      expect(ChildRegistry.reportOf(seenRun.id)).toBeDefined()
+      expect(ChildRegistry.reportOf(goneRun.id)).toBeUndefined()
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+      expect(delivery.admitted).toHaveLength(2)
+      const deliveredFor = (child: SessionID) => {
+        const admitted = delivery.admitted.find(
+          (entry) => textPartOf(entry)?.metadata?.backgroundResult?.childSessionID === child,
+        )
+        if (!admitted) throw new Error(`nothing was delivered for ${child}`)
+        return { turn: admitted.turn, result: textPartOf(admitted)?.metadata?.backgroundResult }
+      }
+      const fresh = deliveredFor(seen)
+      const restarted = deliveredFor(gone)
+      // The two came in differently: a turn for the result of this process, a transcript write for the row's.
+      expect(fresh.turn).toBe(true)
+      expect(restarted.turn).toBe(false)
+      expect(fresh.result).toMatchObject({ status: "completed", startedAt: 0, runningAt: 40, endedAt: 65 })
+      expect(restarted.result).toMatchObject({ status: "completed", startedAt: 0, runningAt: 40, endedAt: 65 })
+      expect(restarted.result?.runningAt).toBe(fresh.result?.runningAt)
+    }),
+  )
+
+  it.effect("carries the moment of a run its own process ended as interrupted", () =>
+    Effect.gen(function* () {
+      const { parent, delivery, scoped, newChild } = yield* setup("interrupted-began")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* TestClock.adjust("40 millis")
+      yield* run.markRunning
+      yield* TestClock.adjust("25 millis")
+      yield* run.settle({ type: "interrupted", reason: "instance-disposed" })
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+      const result = textPartOf(delivery.admitted[0])?.metadata?.backgroundResult
+      expect(result).toMatchObject({
+        childSessionID: child,
+        status: "interrupted",
+        startedAt: 0,
+        runningAt: 40,
+        endedAt: 65,
+      })
+    }),
+  )
+
+  it.effect("has no such moment for a row from before the ending kept it, and delivers it all the same", () =>
+    Effect.gen(function* () {
+      const { db, parent, delivery, scoped, newChild } = yield* setup("old-row")
       const child = yield* newChild()
       const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
       yield* TestClock.adjust("40 millis")
       yield* run.markRunning
       yield* run.settle({ type: "completed" }, { title: "inspect bug", text: "done" })
-      // The process that saw the run end is gone: the ledger row is all that is left of it.
+      // As an earlier build left it: the ending has the report and no moment.
+      yield* db
+        .update(ChildRunTable)
+        .set({ outcome: { type: "completed", report: { title: "inspect bug", text: "done" } } })
+        .where(eq(ChildRunTable.id, run.id))
+        .run()
+        .pipe(Effect.orDie)
       ChildRegistry.dropReport(run.id)
 
       expect(yield* delivery.claim(parent)).toBe(true)
+      expect(delivery.admitted).toHaveLength(1)
       const result = textPartOf(delivery.admitted[0])?.metadata?.backgroundResult
-      expect(result).toMatchObject({ childSessionID: child, status: "completed", startedAt: 0 })
+      expect(result).toMatchObject({
+        childSessionID: child,
+        status: "completed",
+        title: "inspect bug",
+        startedAt: 0,
+        endedAt: 40,
+      })
+      // A reader times the run from `startedAt`, as it always did for such a row.
       expect(Object.hasOwn(result ?? {}, "runningAt")).toBe(false)
+      expect((yield* rowOf(db, run.id))?.reported_at).not.toBeNull()
     }),
   )
 
   it.effect("has no such moment for a run that never began: nothing waits for a result it never ran", () =>
     Effect.gen(function* () {
-      const { db, scoped, newChild } = yield* setup("never")
+      const { db, parent, delivery, scoped, newChild } = yield* setup("never")
       const child = yield* newChild()
       const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
       yield* run.settle({ type: "error", message: "cancelled before it began" }, { title: "inspect bug", text: "x" })
-      // The row is what it always was; the time the run began is not written to it.
+      // There is no moment to keep: the row is what it always was.
       expect((yield* rowOf(db, run.id))?.outcome).toEqual({
         type: "error",
         message: "cancelled before it began",
         report: { title: "inspect bug", text: "x" },
       })
-      expect(ChildRegistry.reportOf(run.id)?.runningAt).toBeUndefined()
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+      const result = textPartOf(delivery.admitted[0])?.metadata?.backgroundResult
+      expect(result).toMatchObject({ childSessionID: child, status: "error", startedAt: 0 })
+      expect(Object.hasOwn(result ?? {}, "runningAt")).toBe(false)
+    }),
+  )
+
+  it.effect("reads the moment from the row only when it is a time", () =>
+    Effect.sync(() => {
+      expect(ChildStore.parseRunningAt({ type: "completed", runningAt: 40 })).toBe(40)
+      // The test clock's own start is a time too.
+      expect(ChildStore.parseRunningAt({ type: "completed", runningAt: 0 })).toBe(0)
+      expect(ChildStore.parseRunningAt({ type: "completed" })).toBeUndefined()
+      expect(ChildStore.parseRunningAt(null)).toBeUndefined()
+      expect(ChildStore.parseRunningAt(undefined)).toBeUndefined()
+      // Whatever else a hand-edited or damaged row holds is left out, not read as a time: none of these is accepted.
+      const notTimes: unknown[] = ["soon", "40", null, {}, [40], true, Number.NaN, Number.POSITIVE_INFINITY]
+      expect(
+        notTimes.filter((runningAt) => ChildStore.parseRunningAt({ type: "completed", runningAt }) !== undefined),
+      ).toEqual([])
     }),
   )
 
@@ -441,6 +547,10 @@ describe("which results enter the parent's turn, and which are only written", ()
       expect(text).toContain("interrupted")
       expect(text).toContain(`task_id="${child}"`)
       expect((yield* rowOf(db, run.id))?.reported_at).not.toBeNull()
+      // Recovery ends a run it holds no entry for, so it has no moment to write (#1426): the row carries none and a
+      // reader times the lost run from `startedAt`.
+      expect(ChildStore.parseRunningAt(recovered?.outcome)).toBeUndefined()
+      expect(Object.hasOwn(textPartOf(delivery.admitted[0])?.metadata?.backgroundResult ?? {}, "runningAt")).toBe(false)
       // Told once.
       expect(yield* delivery.claim(parent)).toBe(false)
       expect(delivery.admitted).toHaveLength(1)
@@ -478,7 +588,11 @@ describe("what is never delivered", () => {
 
       const row = yield* rowOf(db, run.id)
       expect(row?.reported_at).not.toBeNull()
-      expect(row?.outcome).toEqual({ type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_cancel" } })
+      expect(row?.outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+        runningAt: 0,
+      })
       expect(yield* ChildStore.unreportedParents(db, DIRECTORY)).toEqual([])
       expect(yield* delivery.claim(parent)).toBe(false)
       expect(delivery.admitted).toEqual([])

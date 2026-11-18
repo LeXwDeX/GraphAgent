@@ -229,7 +229,8 @@ export interface ActiveChildRun {
   /**
    * When the run left the queue and began (epoch milliseconds), set once by `ChildRegistry.begin`. Registration is
    * the run's `time_created`, so the time between the two is what the run waited for its slot (#1407). Undefined while
-   * queued, and on a run that ended without ever running.
+   * queued, and on a run that ended without ever running. A task run's ending row keeps it (`child_run.outcome`,
+   * #1426), for the result a later process delivers.
    */
   runningAt: number | undefined
   outcome: ChildRunOutcome | undefined
@@ -299,8 +300,6 @@ export interface ChildReport {
   readonly epoch: number
   /** The `ChildRuns` instance that ended the run; closing it drops the reports it left. */
   readonly owner: object
-  /** When the run began running (epoch milliseconds), after the wait for its slot; none for a run that never ran (#1407). */
-  readonly runningAt?: number
 }
 
 /**
