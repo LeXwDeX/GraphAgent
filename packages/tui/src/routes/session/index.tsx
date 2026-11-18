@@ -3329,7 +3329,8 @@ function TaskCancel(props: ToolProps) {
   const name = createMemo(() => {
     const id = target()
     if (!id) return undefined
-    return t("background.row.cancelCall", { description: sync.data.taskIndex[id]?.description ?? id })
+    // The description and the id are remote text: one line, no escapes or control characters.
+    return t("background.row.cancelCall", { description: remoteLine(sync.data.taskIndex[id]?.description ?? id) })
   })
   return (
     <InlineTool
@@ -3358,7 +3359,8 @@ function TaskRead(props: ToolProps) {
   const name = createMemo(() => {
     const id = target()
     if (!id) return undefined
-    return t("background.row.readCall", { description: sync.data.taskIndex[id]?.description ?? id })
+    // The description and the id are remote text: one line, no escapes or control characters.
+    return t("background.row.readCall", { description: remoteLine(sync.data.taskIndex[id]?.description ?? id) })
   })
   return (
     <InlineTool

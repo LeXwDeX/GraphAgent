@@ -435,6 +435,27 @@ test("a call that reads a task's log names the task it reads, in one line, not a
   }
 })
 
+test("a read call's task name is one clean line, whatever control characters the remote text carries", async () => {
+  // An id the data layer does not know is shown as it came; it may carry ANSI escapes, line breaks and C0 controls.
+  const hostile = readCall(
+    "hostile",
+    { action: "read", task_id: "ses_\u001b[31mred\u001b[0m\nforged line\u0007" },
+    { taskID: "ses_hostile" },
+  )
+  const harness = await mount({ language: "en", tasks: [hostile] })
+  try {
+    const frame = await harness.waitForFrame(
+      (value) => value.includes("read the log of task “ses_red forged line”"),
+      "the cleaned read row",
+    )
+    expect(frame).not.toContain("\u001b")
+    expect(frame).not.toContain("\u0007")
+    expect(frame.split("\n").some((line) => line.trimStart().startsWith("forged line"))).toBe(false)
+  } finally {
+    await harness.dispose()
+  }
+})
+
 test("a streamed call whose arguments arrive after it mounted becomes the read row", async () => {
   const started = task("target")
   // The part is first published with no arguments, the way a streamed tool call starts.
