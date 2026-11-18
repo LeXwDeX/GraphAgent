@@ -1,4 +1,4 @@
-import { afterEach, expect } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { createServer, type Server } from "node:http"
 import { streamText } from "ai"
 import { Effect, Layer } from "effect"
@@ -9,7 +9,7 @@ import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { testProviderConfig } from "../lib/test-provider"
 import { Env } from "@/env"
-import { Provider } from "@/provider/provider"
+import { Provider, resolveChunkTimeout } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
 
 afterEach(async () => {
@@ -77,6 +77,66 @@ it.live("chunkTimeout raises a response stream error when SSE body stalls", () =
     )
   }),
 )
+
+for (const [name, value, expected] of [
+  ["not configured", undefined, 300_000],
+  ["a positive number", 15_000, 15_000],
+  ["a fractional positive number", 0.5, 0.5],
+  ["zero", 0, 300_000],
+  ["a negative number", -1, 300_000],
+  ["infinity", Number.POSITIVE_INFINITY, 300_000],
+  ["not a number", Number.NaN, 300_000],
+  ["a numeric string", "15000", 300_000],
+  ["false", false, 300_000],
+  ["null", null, 300_000],
+] as const) {
+  test(`resolveChunkTimeout: ${name} resolves to ${expected}`, () => {
+    expect(resolveChunkTimeout(value)).toBe(expected)
+  })
+}
+
+/** Delays of every timer set while `run` executes, so the idle timeout a request armed can be read back. */
+async function timerDelays(run: () => Promise<void>) {
+  const spy = spyOn(globalThis, "setTimeout")
+  try {
+    await run()
+    return spy.mock.calls.flatMap((call) => (typeof call[1] === "number" ? [call[1]] : []))
+  } finally {
+    spy.mockRestore()
+  }
+}
+
+for (const [name, options, armed] of [
+  ["defaults to 300 seconds when chunkTimeout is not configured", {}, 300_000],
+  ["follows a configured chunkTimeout", { chunkTimeout: 123_456 }, 123_456],
+] as const) {
+  it.live(`streamed responses idle timeout ${name}`, () =>
+    Effect.gen(function* () {
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(() => delayedBodyServer(50)),
+        (server) => Effect.sync(() => server.server.close()),
+      )
+
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* Provider.Service
+            const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
+            const language = yield* provider.getLanguage(model)
+            const delays = yield* Effect.promise(() =>
+              timerDelays(async () => {
+                const result = streamText({ model: language, messages: [{ role: "user", content: "hello" }] })
+                expect(await result.text).toBe("late")
+              }),
+            )
+            expect(delays).toContain(armed)
+            if (armed !== 300_000) expect(delays).not.toContain(300_000)
+          }),
+        { config: providerConfig(server.url, options) },
+      )
+    }),
+  )
+}
 
 it.live("headerTimeout aborts when response headers do not arrive", () =>
   Effect.gen(function* () {
