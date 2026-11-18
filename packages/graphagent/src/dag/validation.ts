@@ -817,34 +817,44 @@ export interface StructuralInput {
    * strict coverage gate; only persisted/replay graphs need the node-level
    * re-check here. */
   block_compiled?: boolean
+  /** The caller knows the block compiler set `skip_ok` on this graph's review
+   * decisions in this request (a start document through Dag.create, a block
+   * fragment through replan/extend). Unlike `block_compiled` it leaves the
+   * strict re-check alone and only drops the standard advisory's `skip_ok`
+   * item; see strictReviewCoverageDiagnostics. */
+  compiler_owns_skip_ok?: boolean
 }
 
 /** Strict review-coverage diagnostics shared by create, validate, and replan.
  * The strict gate fails on a gap; the standard gate reports the same gaps as
- * warnings, except `skip_ok` on a freshly block-compiled document. A
+ * warnings, except `skip_ok` on a freshly block-compiled graph. A
  * block-compiled document already ran the block compiler's own check at the
  * strict gate, so only persisted graphs and the standard advisory pass re-run
  * it here. The compiler owns `skip_ok` on its review decisions (strict
  * compiles false, standard keeps a conditional decision skippable and
  * Dag.create normalizes an unset one) and a review block has no such field,
- * so nothing in the document could change it: that advisory is left out, and
- * persisted graphs keep the check. Hand-authored node graphs carry no block
- * marker and are grandfathered (see strictReviewCoverageErrors). */
+ * so nothing in the document could change it: the standard advisory leaves
+ * that item out when the caller says the graph is block-compiled
+ * (`block_compiled`, or `compiler_owns_skip_ok` where the strict re-check must
+ * stay). The strict gate and graphs without either marker keep every item.
+ * Hand-authored node graphs carry no block marker and are grandfathered (see
+ * strictReviewCoverageErrors). */
 function strictReviewCoverageDiagnostics(input: {
   nodes: readonly NodeConfig[]
   mode?: ExecutionMode
   review_gate?: DagBlocks.ReviewGate
   acceptance?: readonly { id: string }[]
   block_compiled?: boolean
+  compiler_owns_skip_ok?: boolean
 }): Diagnostic[] {
   const strict = input.mode === "deep" || input.review_gate === "strict"
   if (strict && input.block_compiled === true) return []
   return strictReviewCoverageErrors({
     nodes: input.nodes,
     acceptance: input.acceptance,
-    // Past the early return, a block-compiled document is the standard
-    // advisory: the compiler owns its skip_ok.
-    checkSkipOk: input.block_compiled !== true,
+    // Only the standard advisory drops the item: strict keeps it whatever the
+    // caller knows about the graph.
+    checkSkipOk: strict || (input.block_compiled !== true && input.compiler_owns_skip_ok !== true),
   }).map((error) =>
     diagnostic({
       severity: strict ? "error" : "warning",
@@ -1828,6 +1838,7 @@ export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
       review_gate: input.review_gate,
       acceptance: input.acceptance,
       block_compiled: input.block_compiled,
+      compiler_owns_skip_ok: input.compiler_owns_skip_ok,
     }),
     ...(duplicates.length === 0 ? topologyDiagnostics(input.nodes) : []),
     ...outputSchemaKeywordDiagnostics(input.nodes),
@@ -1876,6 +1887,10 @@ export interface ReplanStructuralInput {
   /** #1030 D9-g: the durable workflow-level isolation. Fragments cannot set
    * it, but they must not rebind a node away from the shared worktree. */
   isolation?: "worktree"
+  /** The request's fragment was compiled from blocks, so the compiler owns
+   * `skip_ok` on the review decisions of the merged graph: the standard
+   * advisory leaves that item out (the strict re-check is unchanged). */
+  compiler_owns_skip_ok?: boolean
 }
 
 /** Replan structural validation through the same helper functions as create —
@@ -1898,6 +1913,7 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
       mode: input.merged.mode,
       review_gate: input.merged.review_gate,
       acceptance: input.merged.acceptance,
+      compiler_owns_skip_ok: input.compiler_owns_skip_ok,
     }),
     ...duplicateIdDiagnostics(duplicates),
     ...danglingDependencyDiagnostics(input.rerunNodes, knownIds),

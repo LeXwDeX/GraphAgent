@@ -264,8 +264,9 @@ profile, by default the built-in `auditor`. A graph with writers carries 1-50
 warnings (`requireReviewCoverage` in `src/dag/blocks.ts`;
 `strictReviewCoverageErrors` in `src/dag/review-lifecycle.ts`), except `skip_ok`
 on a block-compiled review decision: the block compiler sets it itself and a
-template cannot change it, so persisted graphs keep that check and an authored
-document does not. With DAG mode on,
+template cannot change it, so a request compiled from blocks does not hear about
+it (authoring, `Dag.create`, replan and extend), while the strict gate and
+graphs without that marker keep the check. With DAG mode on,
 `workflow start` forces `strict`, overriding an authored `standard`
 (`src/tool/workflow/run.ts`). The gate is stored with the workflow and fixed at
 start: extend and replan fragments are checked against it, so a later mode

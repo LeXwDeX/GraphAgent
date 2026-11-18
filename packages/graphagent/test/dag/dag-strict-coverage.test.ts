@@ -405,9 +405,9 @@ describe("strict review coverage at authoring checkpoints", () => {
     ).toEqual([])
   })
 
-  it("still requires skip_ok: false of persisted decisions; only a fresh block compile opts out", () => {
+  it("keeps skip_ok: false for strict and unmarked graphs; only block-compiled graphs drop it from the advisory", () => {
     // A standard compile leaves the conditional decision skippable. Persisted
-    // and replay graphs reach the check without the block marker, so strict
+    // and replay graphs reach the check without a block marker, so strict
     // keeps rejecting that shape there and standard keeps advising on it.
     const nodes = DagBlocks.compileWorkflowBlocks({ objective: "Ship it", blocks: reviewed().blocks }, {})
     const skipOk = "decision: strict review decision must set skip_ok: false"
@@ -436,6 +436,37 @@ describe("strict review coverage at authoring checkpoints", () => {
     expect(skipOkDiagnostics({ review_gate: "strict", block_compiled: true })).toEqual([])
     expect(skipOkDiagnostics({ review_gate: "standard", block_compiled: true })).toEqual([])
     expect(skipOkDiagnostics({ block_compiled: true })).toEqual([])
+
+    // Dag.create and the replan/extend check know their graph came from the
+    // block compiler, but they are persisted-graph seams: the marker drops the
+    // standard advisory item only and never loosens the strict re-check.
+    expect(skipOkDiagnostics({ review_gate: "standard", compiler_owns_skip_ok: true })).toEqual([])
+    expect(skipOkDiagnostics({ compiler_owns_skip_ok: true })).toEqual([])
+    expect(skipOkDiagnostics({ review_gate: "strict", compiler_owns_skip_ok: true })).toEqual([
+      `error: Invalid review coverage: ${skipOk}`,
+    ])
+    expect(skipOkDiagnostics({ mode: "deep", compiler_owns_skip_ok: true })).toEqual([
+      `error: Invalid review coverage: ${skipOk}`,
+    ])
+    const replanSkipOkDiagnostics = (review_gate: ReviewGate, extra: { compiler_owns_skip_ok?: boolean } = {}) =>
+      DagValidation.replanStructuralDiagnostics({
+        fragmentNodes: [],
+        rerunNodes: [],
+        existingNodeIds: new Set(nodes.map((node) => node.id)),
+        existingNodeCount: nodes.length,
+        addCount: 0,
+        merged: { review_gate, nodes, acceptance },
+        config: {},
+        ...extra,
+      })
+        .filter((diagnostic) => diagnostic.message.includes("skip_ok"))
+        .map((diagnostic) => `${diagnostic.severity}: ${diagnostic.message}`)
+    expect(replanSkipOkDiagnostics("standard")).toEqual([`warning: Review coverage advisory: ${skipOk}`])
+    expect(replanSkipOkDiagnostics("standard", { compiler_owns_skip_ok: true })).toEqual([])
+    expect(replanSkipOkDiagnostics("strict")).toEqual([`error: Invalid review coverage: ${skipOk}`])
+    expect(replanSkipOkDiagnostics("strict", { compiler_owns_skip_ok: true })).toEqual([
+      `error: Invalid review coverage: ${skipOk}`,
+    ])
   })
 })
 

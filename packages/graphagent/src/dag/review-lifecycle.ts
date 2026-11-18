@@ -515,8 +515,8 @@ function fingerprintText(value: unknown): string | undefined {
  * deep workflow must stay recoverable. The non-block writer rejection lives
  * where the source shape is still known (authoring compileBlockSource).
  * `checkSkipOk: false` drops the `skip_ok: false` requirement on decisions:
- * the standard advisory on a freshly block-compiled document uses it, because
- * the compiler owns that field there (see strictReviewCoverageDiagnostics). */
+ * the standard advisory on a request compiled from blocks uses it, because the
+ * compiler owns that field there (see strictReviewCoverageDiagnostics). */
 export function strictReviewCoverageErrors(input: {
   nodes: readonly NodeConfig[]
   acceptance?: readonly { id: string }[]
