@@ -303,6 +303,56 @@ describe("provider HttpApi", () => {
     projectOptions,
   )
 
+  // #1462: a connected model reports its capability profile; the thousands of unconnected catalog models in the
+  // same response do not, or the response would grow by megabytes.
+  it.instance(
+    "serves the profile on connected models and leaves it off the unconnected catalog models",
+    Effect.gen(function* () {
+      const directory = (yield* TestInstance).directory
+      yield* setEnvScoped(
+        "GRAPHAGENT_AUTH_CONTENT",
+        JSON.stringify({
+          google: { type: "oauth", refresh: "dummy", access: "dummy", expires: 9999999999999 },
+        }),
+      )
+      const headers = { "x-graphagent-directory": directory }
+      const providerResponse = yield* request("/provider", { headers })
+      const configResponse = yield* request("/config/providers", { headers })
+      expect(providerResponse.status).toBe(200)
+      expect(configResponse.status).toBe(200)
+
+      const body = yield* providerResponse.json
+      const connected = isRecord(body) && Array.isArray(body.connected) ? body.connected : []
+      expect(connected).toContain("google")
+      const modelsOf = (input: unknown, key: "all" | "providers", id: string) => {
+        const provider = providerByID(input, key, id)
+        return isRecord(provider) && isRecord(provider.models) ? Object.values(provider.models) : []
+      }
+      const hasProfile = (model: unknown) =>
+        isRecord(model) &&
+        isRecord(model.profile) &&
+        isRecord(model.profile.sources) &&
+        Array.isArray(model.profile.missing)
+
+      const google = modelsOf(body, "all", "google")
+      expect(google.length).toBeGreaterThan(0)
+      expect(google.every(hasProfile)).toBe(true)
+      const configured = modelsOf(yield* configResponse.json, "providers", "google")
+      expect(configured.length).toBeGreaterThan(0)
+      expect(configured.every(hasProfile)).toBe(true)
+
+      const unconnected = providerList(body, "all").filter(
+        (provider) => isRecord(provider) && typeof provider.id === "string" && !connected.includes(provider.id),
+      )
+      const models = unconnected.flatMap((provider) =>
+        isRecord(provider) && isRecord(provider.models) ? Object.values(provider.models) : [],
+      )
+      expect(models.length).toBeGreaterThan(0)
+      expect(models.some((model) => isRecord(model) && "profile" in model)).toBe(false)
+    }),
+    projectOptions,
+  )
+
   it.instance(
     "keeps provider.models hook input mutations out of provider state",
     Effect.gen(function* () {
