@@ -344,6 +344,41 @@ describe("message settlement through durable DAG events", () => {
       }),
     ))
 
+  test("a stopped input snapshot refuses completion and leaves the node running", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const dag = yield* Dag.Service
+        const messages = yield* DagMessages.Service
+        const blocked = yield* associate("blocked")
+        yield* messages.markStopped(child, blocked.id, "hook_blocked")
+        const rejected = yield* dag
+          .nodeCompleted("dag_messages", "n", "result", { ...attempt, inputSnapshotID: blocked.id })
+          .pipe(Effect.flip)
+        expect(rejected.message).toBe("The node input snapshot was blocked or failed; it cannot complete")
+        expect((yield* dag.store.getNode("dag_messages", "n"))!.status).toBe("running")
+      }),
+    ))
+
+  test("a closed mailbox refuses completion as a stale attempt and failure as a terminal violation", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const dag = yield* Dag.Service
+        const messages = yield* DagMessages.Service
+        value(yield* accept("before-close"))
+        yield* messages.closeWorkflow("dag_messages", "cancelled")
+        // With and without the caller's attempt identity: the rejection reports it either way.
+        for (const settled of [attempt, undefined]) {
+          const completed = yield* dag.nodeCompleted("dag_messages", "n", "late", settled).pipe(Effect.flip)
+          expect(completed.name).toBe("StaleNodeAttemptError")
+        }
+        const failed = yield* dag.nodeFailed("dag_messages", "n", "late", "exec_failed", attempt).pipe(Effect.flip)
+        expect(failed.name).toBe("TerminalViolationError")
+        expect((yield* dag.store.getNode("dag_messages", "n"))!.status).toBe("running")
+      }),
+    ))
+
   test("permanent failure outranks pending input and records undeliverability in its event transaction", async () =>
     run(
       Effect.gen(function* () {
