@@ -25,7 +25,6 @@ import { PartID } from "@/session/schema"
 import type { Session } from "@/session/session"
 import { MCP } from "@/mcp"
 import type { Truncate } from "@/tool/truncate"
-import type { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MemorySearch } from "@/tool/memory-search"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
@@ -78,12 +77,6 @@ const ROOT_ONLY_TOOLS = new Set([
   "plan_exit",
 ])
 export { ROOT_ONLY_TOOLS }
-
-export const hookAddsInstructions = (result: TriggerResult) =>
-  (result.additionalContexts?.length ?? 0) > 0 ||
-  (result.systemMessages?.length ?? 0) > 0 ||
-  result.blocked !== undefined ||
-  result.preventContinuation === true
 
 /** Tool-result metadata marking a hook `continue:false`; the processor ends the turn on it. */
 export const hookStopMetadata = (result: TriggerResult) => ({
@@ -167,7 +160,6 @@ export type WrapInput = ToolSelection & {
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
   hooks?: SettingsHook.Interface
-  sourceLedger?: ToolSourceLedger.Interface
   /** Host decides interactive/batch eligibility before any tool executes. */
   canDefer?: (callID: string, signal?: AbortSignal) => boolean | Promise<boolean>
 }
@@ -197,7 +189,6 @@ export interface Deps {
    */
   hookDenied: (toolName: string, reason: string) => Effect.Effect<void>
   reportInterrupt: (toolName: string, args: unknown, toolUseID: string) => Effect.Effect<void>
-  recordSettlement: (entry: ToolEntry, callID: string) => Effect.Effect<void>
   recordInput: (callID: string, args: Record<string, unknown>) => Effect.Effect<void>
   rawContext: RawContextFn
   context: ContextFn
@@ -241,7 +232,6 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
     context,
     rawContext,
     recordInput,
-    recordSettlement,
     reportInterrupt,
     hookContext,
     hookDenied,
@@ -271,7 +261,6 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
               let hookConfirmed = false
               let hookAllowed = false
               // SettingsHook PreToolUse
-              let dynamicInstructions = false
               if (settingsHook) {
                 let preResult = yield* callHook(
                   settingsHook,
@@ -391,7 +380,6 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   hookConfirmed = true
                 }
                 preContexts = preResult.additionalContexts ?? []
-                dynamicInstructions ||= hookAddsInstructions(preResult)
                 // The tool's own permission checks see the effective input and the confirmation.
                 ctx = context(decision.effectiveArgs, options, hookConfirmed, decision.effectiveArgs, item.id)
                 // Execute the complete replacement, not a patch of the model input.
@@ -474,7 +462,6 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
                 )
                 yield* SettingsHook.landSystemMessages(postResult, { sessionID: ctx.sessionID })
-                dynamicInstructions ||= hookAddsInstructions(postResult)
                 const replacement = toolOutputReplacement(postResult)
                 const rewritten = replacement.present ? builtinToolOutput(replacement.value) : undefined
                 if (rewritten) {
@@ -497,19 +484,8 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   }
               }
               if (preLines.length) {
-                dynamicInstructions = true
                 output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
               }
-              dynamicInstructions ||=
-                output.output?.includes("<system-reminder>") ||
-                (isRecord(output.metadata) &&
-                  Array.isArray(output.metadata.loaded) &&
-                  output.metadata.loaded.length > 0)
-              output.metadata = {
-                ...(isRecord(output.metadata) ? output.metadata : {}),
-                contextFoldingInstructions: dynamicInstructions ? "dynamic" : "none",
-              }
-              yield* recordSettlement(entry, options.toolCallId)
               if (options.abortSignal?.aborted) {
                 yield* input.processor.completeToolCall(options.toolCallId, output)
               }
@@ -671,7 +647,6 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
     permission,
     context,
     truncate,
-    recordSettlement,
     reportInterrupt,
     hookContext,
     hookDenied,
@@ -739,7 +714,6 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               },
               output: truncated.content,
             }
-            yield* recordSettlement(listEntry, opts.toolCallId)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -803,7 +777,6 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               },
               output: truncated.content,
             }
-            yield* recordSettlement(listTemplatesEntry, opts.toolCallId)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -862,7 +835,6 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
                 messageID: input.processor.message.id,
               })),
             }
-            yield* recordSettlement(readEntry, opts.toolCallId)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -1082,19 +1054,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   deps: Deps,
   tools: Record<string, AITool>,
 ) {
-  const {
-    input,
-    run,
-    hooks,
-    permission,
-    context,
-    truncate,
-    recordSettlement,
-    reportInterrupt,
-    hookContext,
-    hookDenied,
-    entries,
-  } = deps
+  const { input, run, hooks, permission, context, truncate, reportInterrupt, hookContext, hookDenied, entries } = deps
 
   for (const entry of entries) {
     if (!isMcpEntry(entry)) continue
@@ -1347,7 +1307,6 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
             if (postResult.preventContinuation)
               output.metadata = { ...output.metadata, ...hookStopMetadata(postResult) }
           }
-          yield* recordSettlement(entry, opts.toolCallId)
           if (opts.abortSignal?.aborted) {
             yield* input.processor.completeToolCall(opts.toolCallId, output)
           }

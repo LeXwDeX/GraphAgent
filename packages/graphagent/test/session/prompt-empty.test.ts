@@ -43,7 +43,6 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Memory } from "@/memory/memory"
-import { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { Skill } from "../../src/skill"
 import { Goal } from "@/goal/goal"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -196,7 +195,6 @@ const deps = Layer.mergeAll(
   DagMessages.defaultLayer,
   DagStore.defaultLayer,
   EventV2Bridge.defaultLayer,
-  ToolSourceLedger.defaultLayer,
   AgentScheduler.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
 

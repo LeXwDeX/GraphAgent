@@ -62,7 +62,6 @@ import { SessionStatus } from "./status"
 import { Dag } from "@/dag/dag"
 import { isTerminalWorkflowStatusValue, isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
 import { landSystemMessages } from "@/hook/trigger-result"
-import { ToolSourceLedger } from "./tool-source-ledger"
 import { DagMessages } from "@graphagent/core/dag/messages"
 
 const runtime = makeRuntime(Database.Service, Database.defaultLayer)
@@ -694,7 +693,6 @@ export const layer: Layer.Layer<
     const goal = yield* Goal.Service
     const dag = yield* Dag.Service
     const automation = yield* ExclusiveRegistry.Service
-    const toolSources = Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service))
     // Optional so unit compositions keep working; Session.defaultLayer provides
     // Config, where the global `dag.mode` default for new sessions comes from.
     const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
@@ -940,7 +938,6 @@ export const layer: Layer.Layer<
           )
         // Session-row deletion (projector, inside this publish's transaction)
         // comes LAST, after every cleanup step above.
-        if (toolSources) yield* toolSources.clearSession(sessionID)
         yield* db
           .transaction(
             () =>
@@ -1594,7 +1591,6 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Goal.defaultLayer),
   Layer.provide(ExclusiveRegistry.defaultLayer),
   Layer.provide(Dag.defaultLayer),
-  Layer.provide(ToolSourceLedger.defaultLayer),
   Layer.provide(Skill.defaultLayer),
   Layer.provide(HookLifecycle.defaultLayer),
   Layer.provide(HookFileWatch.defaultLayer),

@@ -29,7 +29,6 @@ import type { SessionRunState } from "./run-state"
 import { MessageID, PartID, type SessionID } from "./schema"
 import { Session } from "./session"
 import { SessionTools } from "./tools"
-import type { ToolSourceLedger } from "./tool-source-ledger"
 import type { PrepareApi } from "./turn/prepare"
 import { dropReverted } from "./turns"
 import type { ShellInput } from "./prompt"
@@ -42,7 +41,6 @@ export interface ShellDeps {
   readonly revert: SessionRevert.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly settingsHook: SettingsHook.Interface | undefined
-  readonly toolSources: ToolSourceLedger.Interface
   readonly permission: Permission.Interface
   readonly registry: ToolRegistry.Interface
   readonly mcp: MCP.Interface
@@ -73,7 +71,6 @@ export function makeShell(deps: ShellDeps) {
     revert,
     events,
     settingsHook,
-    toolSources,
     permission,
     registry,
     mcp,
@@ -252,7 +249,6 @@ export function makeShell(deps: ShellDeps) {
               promptOps: yield* ops(),
               bypassAgentCheck: false,
               hooks: settingsHook,
-              sourceLedger: toolSources,
               directTool: definition,
               processor: {
                 message: msg,

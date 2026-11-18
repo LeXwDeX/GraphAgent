@@ -101,21 +101,6 @@ const LEGACY_ENV_ALLOW: Allow[] = [
     file: "packages/core/test/flag.test.ts",
     reason: "negative test: proves the legacy OPENCODE_ variables are not read",
   },
-  {
-    file: "docs/continuation-2026-09-20/s09/scripts/live-pair-driver.ts",
-    reason: "dated 2026-09-20 evidence bundle records the pre-rename live-pair driver environment",
-  },
-  {
-    file: "docs/continuation-2026-09-20/s09/scripts/live-pair-driver.integration.test.ts",
-    reason: "dated evidence bundle pins the pre-rename driver environment",
-  },
-]
-
-const DATED_EVIDENCE_HEADER_ALLOW: Allow[] = [
-  {
-    file: "docs/continuation-2026-09-20/s09/scripts/live-pair-driver.ts",
-    reason: "dated 2026-09-20 evidence bundle records the pre-rename request header",
-  },
 ]
 
 // #884 lands the rename in stages. A category only takes effect once its stage
@@ -216,7 +201,7 @@ const CATEGORIES: Category[] = [
     id: "internal-request-header",
     stage: 4,
     pattern: /x-opencode-/,
-    allow: DATED_EVIDENCE_HEADER_ALLOW,
+    allow: [],
   },
   {
     id: "user-agent-product",
@@ -467,10 +452,6 @@ const TERMINAL_EXTERNAL_TOKENS: { token: string; reason: string }[] = [
     token: "opencode-dag-config",
     reason: "name of the external curated workflow repository; B1 tracks the repository rename",
   },
-  {
-    token: "@lexwdex-org/opencode-dcp",
-    reason: "package identity of the external DCP plugin that context folding detects",
-  },
 ]
 
 const TERMINAL_ALLOW: TerminalAllow[] = [
@@ -480,10 +461,6 @@ const TERMINAL_ALLOW: TerminalAllow[] = [
   {
     file: "script/oc-path-priority.test.sh",
     reason: "installer path-priority tests pin the current installer names until G1",
-  },
-  {
-    file: "docs/continuation-2026-09-20/",
-    reason: "dated evidence record; its scripts replay the environment of that run",
   },
   {
     file: "README.md",

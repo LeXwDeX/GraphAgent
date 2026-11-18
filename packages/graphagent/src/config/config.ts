@@ -817,9 +817,6 @@ export const layer = Layer.effect(
         if (Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT) {
           result.compaction = { ...result.compaction, auto: false }
         }
-        if (Flag.GRAPHAGENT_DISABLE_PRUNE) {
-          result.compaction = { ...result.compaction, dynamic: false, prune: false }
-        }
 
         setAgentHookOrigins(result, agentHookOrigins)
         setSkillsSource(result, { paths: skillsPathsLayer, urls: skillsUrlsLayer })

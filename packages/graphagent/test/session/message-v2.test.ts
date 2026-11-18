@@ -1252,7 +1252,7 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
-  test("exposes one replay predicate with wire parity for context folding", async () => {
+  test("exposes one replay predicate with wire parity", async () => {
     const aborted = new SessionV1.AbortedError({
       message: "aborted",
     }).toObject() as SessionV1.Assistant["error"]

@@ -31,14 +31,8 @@ import { ThinkingReplay } from "./thinking-replay"
 import { SessionRole } from "./role"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Lane as SchedulerLane } from "./agent-scheduler-state"
-import {
-  ContextFolding,
-  type HistorySnapshot as ContextFoldingHistorySnapshot,
-  type RequestPurpose,
-} from "./context-folding"
-import { ConfigCompaction } from "@graphagent/core/config/compaction"
+import type { LLMPurpose } from "./llm/purpose"
 import { Flag } from "@graphagent/core/flag/flag"
-import { contextFoldingDiagnostic, type ContextFoldingProjectionPlan } from "@graphagent/core/session/context-folding"
 import {
   engineOrganizerCall,
   ReasoningDistillationPolicy,
@@ -180,12 +174,11 @@ export type StreamInput = {
    * `execute` waits for it, never past the request's own abort.
    */
   toolCallVerdict?: (id: string) => string | undefined | Promise<string | undefined>
-  purpose?: RequestPurpose
+  purpose?: LLMPurpose.RequestPurpose
   /** Scheduling lane; derived from purpose and parent session when omitted. */
   lane?: SchedulerLane
   /** Prompt-cache group shared by sibling child runs; computed by `stream` when omitted. */
   cacheGroup?: string
-  contextFolding?: ContextFoldingHistorySnapshot
   /** In-process safety signal for activity that can precede or outlive stream events. */
   onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
   /** The session processor owns retry timing; native runtime must not retry underneath it. */
@@ -385,20 +378,6 @@ const live: Layer.Layer<
         toolBudget,
         admitToolCall,
       })
-      const dynamicFolding = ConfigCompaction.resolveDynamic({
-        disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
-        dynamic: cfg.compaction?.dynamic,
-        prune: cfg.compaction?.prune,
-      })
-      const folding = {
-        enabled: dynamicFolding.enabled,
-        purpose: input.purpose ?? ("unknown" as const),
-        history: input.contextFolding,
-        system:
-          prepared.params.options.instructions === undefined
-            ? ({ kind: "messages" } as const)
-            : ({ kind: "instructions", value: prepared.params.options.instructions } as const),
-      }
       const bridge = yield* EffectBridge.make()
 
       const tracer = cfg.experimental?.openTelemetry
@@ -436,22 +415,12 @@ const live: Layer.Layer<
           headers: prepared.headers,
           abort: input.abort,
           sessionRetry: input.sessionRetry,
-          contextFolding: folding,
+          purpose: input.purpose,
           onThinkingInvalidated: input.onThinkingInvalidated,
           sessionID: input.sessionID,
           toolBatch: input.toolBatch,
         })
         if (native.type === "supported") {
-          yield* Effect.logInfo(
-            "context folding",
-            contextFoldingDiagnostic({
-              runtime: "native",
-              requestPurpose: folding.purpose,
-              resolution: dynamicFolding,
-              duplicatePlan: folding.history?.duplicatePlan,
-              projectionPlan: native.contextFoldingPlan,
-            }),
-          )
           yield* Effect.logInfo("llm runtime selected", {
             "llm.runtime": "native",
             "llm.provider": input.model.providerID,
@@ -600,47 +569,12 @@ const live: Layer.Layer<
                 async transformParams(args) {
                   if (args.type === "stream") {
                     const sourceOrigins = ThinkingReplay.replayOrigins(args.params.prompt)
-                    const sourceMessages = ContextFolding.copyModelMessages(args.params.prompt)
                     const transformed = ProviderTransform.message(
                       args.params.prompt,
                       input.model,
                       prepared.messageTransformOptions,
                     )
                     let outbound = transformed
-                    let projectionPlan: ContextFoldingProjectionPlan | undefined
-                    const snapshot =
-                      folding.enabled && folding.history && folding.purpose === "conversation" && sourceMessages
-                        ? ContextFolding.bindModelMessages(folding.history, sourceMessages)
-                        : undefined
-                    if (snapshot) {
-                      const projected = ContextFolding.projectAISDK({
-                        model: input.model,
-                        purpose: folding.purpose,
-                        snapshot,
-                        messages: transformed,
-                        sourceMessages: sourceMessages ?? [],
-                        messageTransformOptions: prepared.messageTransformOptions,
-                        tools: prepared.tools,
-                        toolChoice,
-                        maxOutputTokens: prepared.params.maxOutputTokens,
-                        params: prepared.params,
-                        system: folding.system,
-                      })
-                      projectionPlan = projected.plan
-                      if (projected.applied) outbound = projected.request.messages
-                    }
-                    await bridge.promise(
-                      Effect.logInfo(
-                        "context folding",
-                        contextFoldingDiagnostic({
-                          runtime: "ai-sdk",
-                          requestPurpose: folding.purpose,
-                          resolution: dynamicFolding,
-                          duplicatePlan: folding.history?.duplicatePlan,
-                          projectionPlan,
-                        }),
-                      ),
-                    )
                     {
                       const replay = ThinkingReplay.project({
                         messages: outbound,

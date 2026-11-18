@@ -29,7 +29,7 @@ Leaves own resolution, permission, and side-effect ordering. Translate only expe
 
 ## Registration
 
-Most built-ins register through `Tools.Service.register({ [name]: tool })`. The shipped context-folding built-ins (`read`, `grep`, and `glob`) use the host-internal `ContextFoldingBuiltins.Service`; this capability, rather than a tool name or public `Tool.make` option, grants `host-builtin` provenance. Ordinary `Tools.Service`, `ToolRegistry.Service.register`, and `ApplicationTools.Service` registrations remain untrusted/custom even when they shadow a built-in name or declare context-folding-safe output.
+Most built-ins register through `Tools.Service.register({ [name]: tool })`.
 
 Both are scoped:
 

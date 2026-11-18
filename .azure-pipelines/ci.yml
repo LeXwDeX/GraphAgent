@@ -147,8 +147,8 @@ jobs:
           - ${{ if eq(shard, 1) }}:
               - bash: >-
                   bun test --timeout 30000 --only-failures test/session/prompt.test.ts
-                  --test-name-pattern '^(runs builtin read/grep/glob settlement through stored history into the next (AI SDK|Native) request|automatically compacts (AI SDK|Native) folded history at the token threshold|recovers (AI SDK|Native) overflow through an unprojected summary and a continued turn|terminates (AI SDK|Native) overflow when the full compaction request is also rejected)$'
-                displayName: Run context-folding lifecycle preflight
+                  --test-name-pattern '^(automatically compacts (AI SDK|Native) history at the token threshold|recovers (AI SDK|Native) overflow through a summary and a continued turn|terminates (AI SDK|Native) overflow when the full compaction request is also rejected)$'
+                displayName: Run compaction lifecycle preflight
                 workingDirectory: packages/graphagent
                 timeoutInMinutes: 3
           # --shard splits the suite's files into disjoint subsets; --timings

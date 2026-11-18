@@ -13388,12 +13388,6 @@
               "auto": {
                 "type": "boolean"
               },
-              "dynamic": {
-                "type": "boolean"
-              },
-              "prune": {
-                "type": "boolean"
-              },
               "tail_turns": {
                 "type": "integer",
                 "minimum": 0,
