@@ -13,6 +13,7 @@ import { HistoryView } from "./history/view"
 import { MessageV2 } from "./message-v2"
 import { PartID } from "./schema"
 import type { Session } from "./session"
+import { classifyToolError } from "./tool-outcome"
 
 export type ToolCall = {
   partID: SessionV1.ToolPart["id"]
@@ -202,6 +203,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
               status: "error",
               input: match.part.state.input,
               error: errorMessage(error),
+              metadata: { outcome: classifyToolError(error) },
               time: { start: match.part.state.time.start, end: Date.now() },
             },
           })
@@ -290,7 +292,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
             ...part.state,
             status: "error",
             error: "Tool execution aborted",
-            metadata: { ...metadata, interrupted: true },
+            metadata: { ...metadata, interrupted: true, outcome: "aborted" },
             time: { start: "time" in part.state ? part.state.time.start : end, end },
           },
         })

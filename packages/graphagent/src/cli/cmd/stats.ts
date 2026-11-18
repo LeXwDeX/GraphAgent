@@ -7,6 +7,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { Project } from "@/project/project"
 import { InstanceRef } from "@/effect/instance-ref"
 import { t } from "@graphagent/tui/i18n"
+import { outcomeLimit, printOutcomes } from "./stats-outcomes"
 
 interface SessionStats {
   totalSessions: number
@@ -63,6 +64,9 @@ export const StatsCommand = effectCmd({
       .option("models", {
         describe: t("cli.stats.option.models"),
       })
+      .option("outcomes", {
+        describe: t("cli.stats.option.outcomes"),
+      })
       .option("project", {
         describe: t("cli.stats.option.project"),
         type: "string",
@@ -78,6 +82,10 @@ export const StatsCommand = effectCmd({
       modelLimit = args.models
     }
     displayStats(stats, args.tools, modelLimit)
+    const outcomes = outcomeLimit(args.outcomes)
+    if (outcomes !== undefined) {
+      yield* printOutcomes(outcomes, { days: args.days, project: args.project, currentProject: ctx.project })
+    }
   }),
 })
 

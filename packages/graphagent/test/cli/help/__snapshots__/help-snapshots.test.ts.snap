@@ -168,6 +168,11 @@ Options:
       --tools       number of tools to show (default: all)                                  [number]
       --models      show model statistics (default: hidden). Pass a number to show top N, otherwise
                     shows all
+      --outcomes    show tool call outcomes per model (default: hidden). Pass a number to show top N
+                    models, otherwise shows all. Columns are shares of the tool's calls: Val =
+                    arguments failed validation, Exec = the tool failed, Deny = denied by permission
+                    or a hook, Abrt = aborted, ArgT = arguments cut by the output limit, Corr = the
+                    harness repaired arguments or the match, OutT = output truncated
       --project     filter by project (default: all projects, empty string: current project)[string]"
 `;
 

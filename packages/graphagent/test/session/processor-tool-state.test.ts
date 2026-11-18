@@ -26,6 +26,8 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { LLMEvent } from "@graphagent/llm"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { Tool } from "../../src/tool/tool"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -452,6 +454,7 @@ abortWins.it.effect(
         if (part?.state.status === "error") {
           expect(part.state.error).toBe("Tool execution aborted")
           expect(part.state.metadata?.interrupted).toBe(true)
+          expect(part.state.metadata?.outcome).toBe("aborted")
         }
         expect(msg.error).toBeUndefined()
       }),
@@ -512,6 +515,61 @@ abortWaits.it.effect(
         expect(part?.state.status).toBe("completed")
         if (part?.state.status === "completed") expect(part.state.output).toBe("ok")
         expect(msg.error).toBeUndefined()
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: a failed call records its class in `metadata.outcome`
+// ---------------------------------------------------------------------------
+
+const failedCall = (id: string, tool: string, error: unknown): LLMEvent[] => [
+  LLMEvent.toolInputStart({ id, name: tool }),
+  LLMEvent.toolInputDelta({ id, name: tool, text: `{"query":"${id}"}` }),
+  LLMEvent.toolInputEnd({ id, name: tool }),
+  LLMEvent.toolCall({ id, name: tool, input: { query: id } }),
+  error instanceof Error
+    ? LLMEvent.toolError({ id, name: tool, message: error.message, error })
+    : LLMEvent.toolResult({ id, name: tool, result: { type: "error", value: error } }),
+]
+
+const failures = scripted([
+  [
+    LLMEvent.stepStart({ index: 0 }),
+    ...failedCall("call-invalid", "lookup", new Tool.InvalidArgumentsError({ tool: "lookup", detail: "bad" })),
+    ...failedCall("call-denied", "fetch", new PermissionV1.RejectedError()),
+    ...failedCall("call-thrown", "search", new Error("boom")),
+    ...failedCall("call-text", "grep", "plain text failure"),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ],
+])
+
+failures.it.effect(
+  "session.processor records the failure class of each failed call in metadata.outcome",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "fail four ways")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        yield* handle.process(input(chat.id, parent, mdl))
+
+        const parts = toolParts(yield* MessageV2.parts(msg.id))
+        const outcomes = Object.fromEntries(
+          parts.map((part) => [part.callID, part.state.status === "error" ? part.state.metadata : undefined]),
+        )
+        expect(outcomes).toEqual({
+          "call-invalid": { outcome: "validation_error" },
+          "call-denied": { outcome: "denied" },
+          "call-thrown": { outcome: "execution_error" },
+          "call-text": { outcome: "execution_error" },
+        })
       }),
     { config: cfg },
   ),

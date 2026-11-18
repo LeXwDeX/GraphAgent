@@ -1050,6 +1050,19 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
   }
 })
 
+/**
+ * An MCP server tool refused by a PreToolUse hook (#1473). It has the shape
+ * of a native refusal, a text `output` and `metadata.hookDenied`, plus the `content`
+ * an MCP result carries, so the stored result is the plain text the model reads
+ * and `tool_outcome` books the call as denied.
+ */
+const mcpHookDenied = (text: string) => ({
+  title: "",
+  output: text,
+  metadata: { hookDenied: true },
+  content: [{ type: "text" as const, text }],
+})
+
 export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function* (
   deps: Deps,
   tools: Record<string, AITool>,
@@ -1103,17 +1116,9 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
               }
             if (decision.deniedReason) {
               yield* hookDenied(key, decision.deniedReason)
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: withPreContext(
-                      `[Tool denied by hook] ${decision.deniedReason}`,
-                      preResult.additionalContexts,
-                    ),
-                  },
-                ],
-              }
+              return mcpHookDenied(
+                withPreContext(`[Tool denied by hook] ${decision.deniedReason}`, preResult.additionalContexts),
+              )
             }
             if (decision.stopReason) {
               const text = `[Hook stopped] ${decision.stopReason}`
@@ -1157,14 +1162,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
                 return yield* Effect.failCause(outcome.propagate as never)
               if (outcome === "denied") {
                 const reason = askReason ?? "Denied by user in hook confirmation"
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: withPreContext(`[Tool denied by hook] ${reason}`, preResult.additionalContexts),
-                    },
-                  ],
-                }
+                return mcpHookDenied(withPreContext(`[Tool denied by hook] ${reason}`, preResult.additionalContexts))
               }
               if (Exit.isSuccess(verdict)) decision = { ...decision, effectiveArgs: verdict.value.input }
               hookConfirmed = true

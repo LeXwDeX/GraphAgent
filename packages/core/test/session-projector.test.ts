@@ -13,6 +13,7 @@ import { SessionID } from "@graphagent/schema/session-id"
 import { SessionEvent } from "@graphagent/core/session/event"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
+import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
 import { testEffect } from "./lib/effect"
 
@@ -43,6 +44,41 @@ function userMessage(id: string, time: { created: number; consumed?: number } = 
     time,
   }
 }
+
+function assistantMessage(id: string) {
+  return {
+    id: SessionV1.MessageID.make(id),
+    sessionID,
+    role: "assistant" as const,
+    time: { created: 1 },
+    parentID: SessionV1.MessageID.make("msg_parent"),
+    modelID: userModel.modelID,
+    providerID: userModel.providerID,
+    mode: "build",
+    agent: "build",
+    path: { cwd: "/project", root: "/project" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+}
+
+function toolPart(id: string, messageID: string, tool: string, state: SessionV1.ToolState): SessionV1.ToolPart {
+  return {
+    id: SessionV1.PartID.make(id),
+    messageID: SessionV1.MessageID.make(messageID),
+    sessionID,
+    type: "tool",
+    callID: `call_${id}`,
+    tool,
+    state,
+  }
+}
+
+const finished = (metadata: Record<string, unknown> = {}, input: Record<string, unknown> = {}) =>
+  ({ status: "completed", input, output: "ok", title: "t", metadata, time: { start: 1, end: 2 } }) as const
+
+const failedState = (metadata?: Record<string, unknown>, input: Record<string, unknown> = {}) =>
+  ({ status: "error", input, error: "boom", metadata, time: { start: 1, end: 2 } }) as const
 
 describe("SessionProjector", () => {
   it.effect("projects created, updated, and deleted session rows", () =>
@@ -400,4 +436,176 @@ describe("SessionProjector", () => {
       })
     }),
   )
+
+  describe("tool_outcome", () => {
+    const seed = Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seedProject()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID, info: assistantMessage("msg_outcome") })
+      return { db, events }
+    })
+
+    const publishPart = (events: EventV2.Interface, part: SessionV1.ToolPart) =>
+      events.publish(SessionV1.Event.PartUpdated, { sessionID, time: 2, part })
+
+    const outcomes = (db: Database.Interface["db"]) => db.select().from(ToolOutcomeTable).all().pipe(Effect.orDie)
+
+    it.effect("books a finished tool part under the model of its assistant message", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(
+          events,
+          toolPart("prt_ok", "msg_outcome", "edit", finished({ corrections: ["fuzzy_match"] })),
+        )
+        yield* publishPart(
+          events,
+          toolPart("prt_err", "msg_outcome", "bash", failedState({ outcome: "denied", truncated: true })),
+        )
+
+        const rows = (yield* outcomes(db)).sort((a, b) => a.part_id.localeCompare(b.part_id))
+        expect(rows).toEqual([
+          {
+            part_id: SessionV1.PartID.make("prt_err"),
+            session_id: sessionID,
+            provider_id: "provider",
+            model_id: "model",
+            tool: "bash",
+            outcome: "denied",
+            corrections: [],
+            truncated: true,
+          },
+          {
+            part_id: SessionV1.PartID.make("prt_ok"),
+            session_id: sessionID,
+            provider_id: "provider",
+            model_id: "model",
+            tool: "edit",
+            outcome: "ok",
+            corrections: ["fuzzy_match"],
+            truncated: false,
+          },
+        ])
+      }),
+    )
+
+    it.effect("leaves running and pending tool parts out", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(
+          events,
+          toolPart("prt_run", "msg_outcome", "edit", { status: "running", input: {}, time: { start: 1 } }),
+        )
+        yield* publishPart(
+          events,
+          toolPart("prt_pend", "msg_outcome", "edit", { status: "pending", input: {}, raw: "" }),
+        )
+        expect(yield* outcomes(db)).toEqual([])
+      }),
+    )
+
+    it.effect("a repeated projection rewrites the row instead of adding one", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        const id = "prt_again"
+        yield* publishPart(
+          events,
+          toolPart(id, "msg_outcome", "edit", { status: "running", input: {}, time: { start: 1 } }),
+        )
+        yield* publishPart(events, toolPart(id, "msg_outcome", "edit", finished()))
+        yield* publishPart(events, toolPart(id, "msg_outcome", "edit", finished()))
+        expect(yield* outcomes(db)).toHaveLength(1)
+
+        yield* publishPart(events, toolPart(id, "msg_outcome", "edit", finished({ corrections: ["args_repaired"] })))
+        const rows = yield* outcomes(db)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({ outcome: "ok", corrections: ["args_repaired"] })
+      }),
+    )
+
+    it.effect("books a hook denial, an old invalid part and an aborted call", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, toolPart("prt_hook", "msg_outcome", "mcp_probe", finished({ hookDenied: true })))
+        yield* publishPart(
+          events,
+          toolPart("prt_invalid", "msg_outcome", "invalid", finished({}, { tool: "wrtie", error: "bad" })),
+        )
+        yield* publishPart(
+          events,
+          toolPart("prt_abort", "msg_outcome", "bash", failedState({ interrupted: true, outcome: "aborted" })),
+        )
+
+        const byPart = Object.fromEntries((yield* outcomes(db)).map((row) => [row.part_id, row]))
+        expect(byPart["prt_hook"]).toMatchObject({ tool: "mcp_probe", outcome: "denied" })
+        expect(byPart["prt_invalid"]).toMatchObject({ tool: "wrtie", outcome: "validation_error" })
+        expect(byPart["prt_abort"]).toMatchObject({ tool: "bash", outcome: "aborted" })
+      }),
+    )
+
+    it.effect("removing the part, or its message, removes the row", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, toolPart("prt_gone", "msg_outcome", "edit", finished()))
+        yield* publishPart(events, toolPart("prt_stays", "msg_outcome", "edit", finished()))
+        expect(yield* outcomes(db)).toHaveLength(2)
+
+        yield* events.publish(SessionV1.Event.PartRemoved, {
+          sessionID,
+          messageID: SessionV1.MessageID.make("msg_outcome"),
+          partID: SessionV1.PartID.make("prt_gone"),
+        })
+        expect((yield* outcomes(db)).map((row) => row.part_id)).toEqual([SessionV1.PartID.make("prt_stays")])
+
+        yield* events.publish(SessionV1.Event.MessageRemoved, {
+          sessionID,
+          messageID: SessionV1.MessageID.make("msg_outcome"),
+        })
+        expect(yield* outcomes(db)).toEqual([])
+      }),
+    )
+
+    it.effect("a tool part under a message without a model leaves no row", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID, info: userMessage("msg_user_tool") })
+        yield* publishPart(events, toolPart("prt_user", "msg_user_tool", "edit", finished()))
+        expect(yield* outcomes(db)).toEqual([])
+      }),
+    )
+
+    it.effect("a session delete removes its rows", () =>
+      Effect.gen(function* () {
+        const { db, events } = yield* seed
+        yield* publishPart(events, toolPart("prt_cascade", "msg_outcome", "edit", finished()))
+        expect(yield* outcomes(db)).toHaveLength(1)
+        yield* events.publish(SessionV1.Event.Deleted, {
+          sessionID,
+          info: {
+            id: sessionID,
+            projectID: Project.ID.global,
+            slug: "test",
+            role: "root" as const,
+            directory: "/project",
+            title: "test",
+            version: "test",
+            time: { created: 1, updated: 1 },
+          },
+        })
+        expect(yield* outcomes(db)).toEqual([])
+      }),
+    )
+  })
 })

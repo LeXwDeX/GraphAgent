@@ -1,9 +1,9 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import * as PlatformError from "effect/PlatformError"
-import { EditTool } from "../../src/tool/edit"
+import { EditTool, replace } from "../../src/tool/edit"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -758,6 +758,66 @@ describe("tool.edit", () => {
     )
   })
 
+  describe("match strategy", () => {
+    const fuzzyFile = "  const a = 1\n  const b = 2\n"
+    const fuzzyOld = "const a = 1\nconst b = 2"
+
+    it.instance("a fuzzy match is applied silently but recorded in the metadata", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "fuzzy.ts")
+        yield* put(filepath, fuzzyFile)
+
+        const result = yield* run({ filePath: filepath, oldString: fuzzyOld, newString: "const c = 3" })
+
+        expect(yield* load(filepath)).toBe("const c = 3\n")
+        expect(result.output).toContain("Edit applied successfully.")
+        expect(result.metadata).toMatchObject({ matchStrategy: "line_trimmed", corrections: ["fuzzy_match"] })
+      }),
+    )
+
+    it.instance("an exact match records neither a strategy nor a correction", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "exact.ts")
+        yield* put(filepath, "const a = 1\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "const a = 1", newString: "const a = 2" })
+
+        expect(result.metadata).not.toHaveProperty("matchStrategy")
+        expect(result.metadata).not.toHaveProperty("corrections")
+      }),
+    )
+
+    it.instance("a fuzzy match found after an argument repair carries both corrections", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "both.ts")
+        yield* put(filepath, fuzzyFile)
+
+        const result = yield* runRaw({ file_path: filepath, old_string: fuzzyOld, new_string: "const c = 3" })
+
+        expect(result.metadata).toMatchObject({
+          matchStrategy: "line_trimmed",
+          corrections: ["fuzzy_match", "args_repaired"],
+        })
+      }),
+    )
+
+    it.instance("creating a file and a failed edit leave no strategy behind", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const created = yield* run({
+          filePath: path.join(test.directory, "created.ts"),
+          oldString: "",
+          newString: "export {}\n",
+        })
+        expect(created.metadata).not.toHaveProperty("matchStrategy")
+        expect(created.metadata).not.toHaveProperty("corrections")
+      }),
+    )
+  })
+
   describe("argument repair", () => {
     it.instance("accepts legacy oldText/newText keys", () =>
       Effect.gen(function* () {
@@ -842,6 +902,18 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("keeps JSON-shaped string values when snake_case keys are repaired", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.json")
+        yield* put(filepath, '{"a":1}')
+
+        yield* runRaw({ file_path: filepath, old_string: '{"a":1}', new_string: '{"a":2}' })
+
+        expect(yield* load(filepath)).toBe('{"a":2}')
+      }),
+    )
+
     it.instance("accepts a single edit object under edits", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -913,5 +985,68 @@ describe("tool.edit", () => {
         expect(yield* load(filepath)).toBe("alpha beta")
       }),
     )
+  })
+})
+
+describe("replace()", () => {
+  test("an exact match reports its line and replaces once", () => {
+    expect(replace("a\nfoo\nb", "foo", "bar")).toEqual({ content: "a\nbar\nb", strategy: "exact", line: 2, count: 1 })
+  })
+
+  test("replaceAll replaces every exact match and counts them", () => {
+    expect(replace("foo\nx\nfoo\nfoo", "foo", "bar", true)).toEqual({
+      content: "bar\nx\nbar\nbar",
+      strategy: "exact",
+      line: 1,
+      count: 3,
+    })
+    expect(replace("x\nfoo\ny", "foo", "bar", true)).toMatchObject({ strategy: "exact", line: 2, count: 1 })
+  })
+
+  test("a repeated exact match is still ambiguous without replaceAll", () => {
+    expect(() => replace("foo\nfoo", "foo", "bar")).toThrow("Found 2 matches")
+  })
+
+  test("line_trimmed finds lines that differ only in indentation", () => {
+    expect(replace("keep\n  const a = 1\n  const b = 2\n", "const a = 1\nconst b = 2", "x")).toEqual({
+      content: "keep\nx\n",
+      strategy: "line_trimmed",
+      line: 2,
+      count: 1,
+    })
+  })
+
+  test("block_anchor finds a block by its first and last lines", () => {
+    const content = "function f() {\n  const value = compute(1)\n  return value\n}\n"
+    const old = "function f() {\n  const value = compute(2)\n  return value\n}"
+    expect(replace(content, old, "x")).toEqual({ content: "x\n", strategy: "block_anchor", line: 1, count: 1 })
+  })
+
+  test("whitespace_normalized finds text that differs in runs of whitespace", () => {
+    expect(replace("start\nfoo   bar  baz\n", "foo bar baz", "x")).toEqual({
+      content: "start\nx\n",
+      strategy: "whitespace_normalized",
+      line: 2,
+      count: 1,
+    })
+  })
+
+  test("escape_normalized finds text written with escaped quotes", () => {
+    expect(replace('say "hi"\n', 'say \\"hi\\"', "x")).toMatchObject({
+      strategy: "escape_normalized",
+      line: 1,
+      count: 1,
+    })
+  })
+
+  test("a fuzzy match replaces once even with replaceAll", () => {
+    expect(replace("  foo   bar\n", "foo bar", "x", true)).toMatchObject({
+      strategy: "whitespace_normalized",
+      count: 1,
+    })
+  })
+
+  test("a missing match still fails", () => {
+    expect(() => replace("alpha", "omega", "x")).toThrow("Could not find oldString")
   })
 })

@@ -1008,6 +1008,9 @@ describe("PreToolUse deny blocks every tool source before execution", () => {
           ),
         )
         expect(JSON.stringify(result)).toContain("BOUNDARY_DENIED")
+        // #1473: every source reports the denial as a text `output` with `metadata.hookDenied`.
+        expect(typeof Reflect.get(result, "output")).toBe("string")
+        expect(Reflect.get(Reflect.get(result, "metadata"), "hookDenied")).toBe(true)
         expect(yield* prepared.executed()).toBe(false)
       }),
     )

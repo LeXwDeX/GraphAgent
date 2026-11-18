@@ -322,6 +322,158 @@ describe("Tool.define", () => {
     }),
   )
 
+  // #1473: a call that only decodes after the harness repaired its arguments says so in its result metadata.
+  describe("args_repaired", () => {
+    const backgroundTool = (name: string, metadata: Record<string, unknown>) =>
+      Tool.define(
+        name,
+        Effect.succeed({
+          description: "test tool",
+          parameters: Schema.Struct({ background: Schema.optional(Schema.Boolean) }),
+          repairArguments(value: unknown) {
+            if (typeof value !== "object" || value === null || Reflect.get(value, "background") !== "true") return value
+            return { ...value, background: true }
+          },
+          execute() {
+            return Effect.succeed({ title: "test", output: "ok", metadata })
+          },
+        }),
+      )
+
+    it.instance("marks a repaired call, whether or not the tool reports truncation itself", () =>
+      Effect.gen(function* () {
+        const open = yield* backgroundTool("test-marks-open", { diff: "d" })
+        const closed = yield* backgroundTool("test-marks-closed", { truncated: false })
+        const openTool = yield* open.init()
+        const closedTool = yield* closed.init()
+
+        const viaTruncate = yield* executeRaw(openTool.execute)({ background: "true" }, makeCtx())
+        const early = yield* executeRaw(closedTool.execute)({ background: "true" }, makeCtx())
+
+        expect(viaTruncate.metadata).toEqual({ diff: "d", truncated: false, corrections: ["args_repaired"] })
+        expect(early.metadata).toEqual({ truncated: false, corrections: ["args_repaired"] })
+      }),
+    )
+
+    it.instance("leaves a call that decodes strictly unmarked", () =>
+      Effect.gen(function* () {
+        const info = yield* backgroundTool("test-unmarked", { diff: "d" })
+        const tool = yield* info.init()
+
+        const result = yield* executeRaw(tool.execute)({ background: true }, makeCtx())
+
+        expect(result.metadata).toEqual({ diff: "d", truncated: false })
+        expect(Object.hasOwn(result.metadata, "corrections")).toBe(false)
+      }),
+    )
+
+    it.instance("adds the mark after the kinds the tool itself recorded", () =>
+      Effect.gen(function* () {
+        const info = yield* backgroundTool("test-mark-order", { corrections: ["fuzzy_match"] })
+        const tool = yield* info.init()
+
+        const result = yield* executeRaw(tool.execute)({ background: "true" }, makeCtx())
+
+        expect(result.metadata.corrections).toEqual(["fuzzy_match", "args_repaired"])
+      }),
+    )
+
+    it.instance("marks a call repaired through the stringified-container pass", () =>
+      Effect.gen(function* () {
+        const parameters = Schema.Struct({
+          params: Schema.Union([Schema.Struct({ action: Schema.Literal("list") })]),
+        })
+        const info = yield* Tool.define(
+          "test-marks-container",
+          Effect.succeed({
+            description: "test tool",
+            parameters,
+            execute() {
+              return Effect.succeed({ title: "test", output: "ok", metadata: {} })
+            },
+          }),
+        )
+        const tool = yield* info.init()
+        const execute = executeRaw(tool.execute)
+
+        expect((yield* execute({ params: '{"action":"list"}' }, makeCtx())).metadata.corrections).toEqual([
+          "args_repaired",
+        ])
+        expect((yield* execute({ params: { action: "list" } }, makeCtx())).metadata.corrections).toBeUndefined()
+      }),
+    )
+
+    it.effect("does not mark a call whose arguments stay invalid", () =>
+      Effect.gen(function* () {
+        const info = yield* backgroundTool("test-still-invalid", {})
+        const tool = yield* info.init()
+
+        const exit = yield* executeRaw(tool.execute)({ background: "maybe" }, makeCtx()).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+      }),
+    )
+  })
+
+  // #1473: a string parameter holding JSON-shaped text must reach the tool as text. The tool's own
+  // repair runs on the raw input first, so the generic container repair never turns the text into an object.
+  it.effect("tool repair runs on the raw input and keeps JSON-shaped string values", () =>
+    Effect.gen(function* () {
+      const parameters = Schema.Struct({ filePath: Schema.String, content: Schema.String })
+      const calls: Array<Schema.Schema.Type<typeof parameters>> = []
+      const info = yield* Tool.define(
+        "test-raw-repair",
+        Effect.succeed({
+          description: "test tool",
+          parameters,
+          repairArguments(value: unknown) {
+            if (typeof value !== "object" || value === null || !Object.hasOwn(value, "file_path")) return value
+            const { file_path: filePath, ...rest } = Object.fromEntries(Object.entries(value))
+            return { ...rest, filePath }
+          },
+          execute(args: Schema.Schema.Type<typeof parameters>) {
+            calls.push(args)
+            return Effect.succeed({ title: "test", output: "ok", metadata: { truncated: false } })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const execute = executeRaw(tool.execute)
+
+      yield* execute({ file_path: "a.txt", content: '{"k":1}' }, makeCtx())
+
+      expect(calls).toEqual([{ filePath: "a.txt", content: '{"k":1}' }])
+    }),
+  )
+
+  it.effect("a failing argument does not turn a JSON-shaped string value into an object", () =>
+    Effect.gen(function* () {
+      // `content` is declared first, so a `content` turned into an object would be the first failure reported
+      // and hide the argument that is really missing.
+      const parameters = Schema.Struct({ content: Schema.String, filePath: Schema.String })
+      const info = yield* Tool.define(
+        "test-string-keep",
+        Effect.succeed({
+          description: "test tool",
+          parameters,
+          execute() {
+            return Effect.succeed({ title: "test", output: "ok", metadata: { truncated: false } })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const execute = executeRaw(tool.execute)
+
+      const exit = yield* execute({ content: '{"k":1}' }, makeCtx()).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = exit.cause.reasons.find(Cause.isDieReason)?.defect
+      if (!(error instanceof Tool.InvalidArgumentsError)) throw new Error("expected InvalidArgumentsError")
+      expect(error.message).toContain("filePath")
+      expect(error.message).not.toContain("content")
+    }),
+  )
+
   it.effect("plain string parameters that look like JSON are not re-parsed", () =>
     Effect.gen(function* () {
       const parameters = Schema.Struct({ note: Schema.String })

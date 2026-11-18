@@ -1,6 +1,7 @@
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Effect, Option, Schema } from "effect"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { addCorrections } from "@graphagent/core/session/outcome"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { SessionID, MessageID } from "../session/schema"
 import * as Truncate from "./truncate"
@@ -111,8 +112,11 @@ export interface Def<
   repairContainerFields?: readonly string[]
   /**
    * Tool-scoped compatibility repair for provider-emitted argument shapes.
-   * Runs only when strict schema decoding fails: container fields are repaired,
-   * then this hook, then the decoded value is strictly validated once.
+   * Runs only when strict schema decoding fails. It sees the raw arguments
+   * first and the result is strictly decoded; when that still fails, container
+   * fields are repaired, this hook runs once more on the repaired value, and
+   * that value is strictly validated once. A call that decodes after a repair
+   * is recorded as `args_repaired` in the result metadata.
    * Implementations must remain schema-specific and fail closed (return the
    * input unchanged when the shape is not recognized).
    */
@@ -210,10 +214,49 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
       const toolInfo = typeof init === "function" ? { ...(yield* init()) } : { ...init }
       const root = assertObjectRootedParameters(id, toolInfo as { parameters: unknown; jsonSchema?: unknown })
       const diagnosticKeys = new Set(Object.keys(root.properties ?? {}))
+      const stringKeys = stringPropertyKeys(root)
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
       const decode = Schema.decodeUnknownEffect(toolInfo.parameters, toolInfo.parseOptions)
+      const invalidArguments = (error: unknown, input: unknown) => {
+        const fallback = describeSchemaFailures(error)
+        return new InvalidArgumentsError({
+          tool: id,
+          detail: toolInfo.formatValidationError
+            ? toolInfo.formatValidationError(error, input)
+            : fallback || "the input does not match the tool schema",
+        })
+      }
+      // Only schema-owned key names are safe to include in diagnostics.
+      const logRepair = (before: unknown, after: unknown) => {
+        const changes = repairTypeChanges(before, after, diagnosticKeys)
+        return changes.length > 0
+          ? Effect.logInfo("tool arguments repaired", { "tool.name": id, "repair.changes": changes })
+          : Effect.void
+      }
+      // The strict decode failed: repair the arguments and decode once more.
+      const repairAndDecode = Effect.fnUntraced(function* (args: unknown) {
+        const repairHook = toolInfo.repairArguments
+        // The tool's own repair sees the raw input first, so a JSON-shaped string value is
+        // never turned into a container before the tool has mapped its keys.
+        if (repairHook) {
+          const direct = repairHook(args)
+          if (direct !== args) {
+            const attempt = yield* decode(direct).pipe(Effect.option)
+            if (Option.isSome(attempt)) {
+              yield* logRepair(args, direct)
+              return attempt.value
+            }
+          }
+        }
+        const base = toolInfo.repairContainerFields
+          ? repairDeclaredContainers(args, toolInfo.repairContainerFields)
+          : repairStringifiedContainers(args, stringKeys)
+        const repaired = repairHook ? repairHook(base) : base
+        if (repairHook) yield* logRepair(args, repaired)
+        return yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
+      })
       const execute = toolInfo.execute
       toolInfo.execute = (args, ctx) => {
         const attrs = {
@@ -222,40 +265,24 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           "message.id": ctx.messageID,
           ...(ctx.callID ? { "tool.call_id": ctx.callID } : {}),
         }
-        const invalidArguments = (error: unknown, input: unknown) => {
-          const fallback = describeSchemaFailures(error)
-          return new InvalidArgumentsError({
-            tool: id,
-            detail: toolInfo.formatValidationError
-              ? toolInfo.formatValidationError(error, input)
-              : fallback || "the input does not match the tool schema",
-          })
-        }
         return Effect.gen(function* () {
           // Strict decode first; the lenient retry only runs once strict
           // decoding already failed, so legitimate string arguments that look
           // like JSON are never re-parsed.
           const strict = yield* decode(args).pipe(Effect.option)
           let decoded: unknown
+          let repaired = false
           if (Option.isSome(strict)) {
             decoded = strict.value
           } else {
-            const base = toolInfo.repairContainerFields
-              ? repairDeclaredContainers(args, toolInfo.repairContainerFields)
-              : repairStringifiedContainers(args)
-            const repaired = toolInfo.repairArguments ? toolInfo.repairArguments(base) : base
-            // Only schema-owned key names are safe to include in diagnostics.
-            if (toolInfo.repairArguments) {
-              const changes = repairTypeChanges(args, repaired, diagnosticKeys)
-              if (changes.length > 0)
-                yield* Effect.logInfo("tool arguments repaired", { "tool.name": id, "repair.changes": changes })
-            }
-            decoded = yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
+            decoded = yield* repairAndDecode(args)
+            repaired = true
             // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
           }
           const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, ctx)
+          const metadata = repaired ? addCorrections(result.metadata, "args_repaired") : result.metadata
           if (result.metadata.truncated !== undefined) {
-            return result
+            return repaired ? { ...result, metadata } : result
           }
           const agent = yield* agents.get(ctx.agent)
           const truncated = yield* truncate.output(result.output, {}, agent)
@@ -263,7 +290,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
             ...result,
             output: truncated.content,
             metadata: {
-              ...result.metadata,
+              ...metadata,
               truncated: truncated.truncated,
               ...(truncated.truncated && { outputPath: truncated.outputPath }),
             },
@@ -329,16 +356,33 @@ function repairDeclaredContainers(value: unknown, fields: readonly string[]): un
   return repaired ?? value
 }
 
-function repairStringifiedContainers(value: unknown): unknown {
+/**
+ * Re-parse every string that holds a JSON container. `keep` names the top-level
+ * keys whose string value is final (the schema types them as strings), so text
+ * such as `{"a":1}` in a `content` or `oldString` argument stays text; only the
+ * top level is protected, nested values are always re-parsed.
+ */
+function repairStringifiedContainers(value: unknown, keep?: ReadonlySet<string>): unknown {
   if (typeof value === "string") {
     const parsed = parseStringifiedContainer(value)
     return parsed === undefined ? value : repairStringifiedContainers(parsed)
   }
-  if (Array.isArray(value)) return value.map(repairStringifiedContainers)
+  if (Array.isArray(value)) return value.map((item) => repairStringifiedContainers(item))
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, repairStringifiedContainers(item)]))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, keep?.has(key) ? item : repairStringifiedContainers(item)]),
+    )
   }
   return value
+}
+
+/** Top-level properties the parameter schema declares as plain strings. */
+function stringPropertyKeys(root: JSONSchema7): ReadonlySet<string> {
+  const keys = new Set<string>()
+  for (const [key, property] of Object.entries(root.properties ?? {})) {
+    if (typeof property === "object" && property.type === "string") keys.add(key)
+  }
+  return keys
 }
 
 export function define<
