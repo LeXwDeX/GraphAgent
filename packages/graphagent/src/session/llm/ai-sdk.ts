@@ -21,19 +21,29 @@ type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : neve
  * consumers treat the error conservatively (as a real execution outcome).
  */
 export class ToolInputRejectedError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  /** Why the SDK refused the call; `invalid_input` unless the adapter saw another cause. */
+  readonly rejection: InputRejection
+
+  constructor(message: string, options?: { cause?: unknown; rejection?: InputRejection }) {
     super(message, options)
     this.name = "ToolInputRejectedError"
+    this.rejection = options?.rejection ?? "invalid_input"
   }
 }
 
 /**
+ * What the SDK found wrong with a tool call it refused to run: a tool that does
+ * not exist, input that did not parse, or anything else.
+ */
+export type InputRejection = "unknown_tool" | "invalid_input" | "other"
+
+/**
  * The SDK refused the call because its input did not parse, as opposed to
- * naming a tool that does not exist. An error that carries no cause leaves the
- * input as the only thing to blame.
+ * naming a tool that does not exist. Only such a call can have lost its
+ * arguments to the output limit.
  */
 export function rejectedForInput(error: unknown): error is ToolInputRejectedError {
-  return error instanceof ToolInputRejectedError && !NoSuchToolError.isInstance(error.cause)
+  return error instanceof ToolInputRejectedError && error.rejection === "invalid_input"
 }
 
 export function adapterState() {
@@ -57,11 +67,12 @@ export function adapterState() {
     suppressedActivity: false,
     /**
      * Call IDs whose tool-call the SDK marked invalid (unexecuted input
-     * rejection), mapped to the model-facing text for that rejection. The
-     * SDK's later tool-error carries only a string, so the typed error's text
-     * is kept from the tool-call; undefined when the cause has no fixed text.
+     * rejection), mapped to the model-facing text for that rejection (undefined
+     * when the cause has no fixed text) and to what the SDK found wrong. The
+     * SDK's later tool-error carries only a string, so both are kept from the
+     * tool-call, whose error is still the typed original.
      */
-    invalidToolCalls: new Map<string, string | undefined>(),
+    invalidToolCalls: new Map<string, { readonly text: string | undefined; readonly rejection: InputRejection }>(),
   }
 }
 
@@ -101,6 +112,13 @@ function rejectedMessage(error: unknown): string | undefined {
   if (InvalidToolInputError.isInstance(error))
     return ToolError.render({ kind: "invalid_json", tool: error.toolName, length: error.toolInput.length })
   return undefined
+}
+
+/** What the SDK found wrong with an invalid tool call, read from the typed error of its tool-call event. */
+function rejectionOf(error: unknown): InputRejection {
+  if (NoSuchToolError.isInstance(error)) return "unknown_tool"
+  if (InvalidToolInputError.isInstance(error)) return "invalid_input"
+  return "other"
 }
 
 function finishReason(value: string | undefined): FinishReason {
@@ -383,7 +401,10 @@ export function toLLMEvents(
         // Track the ID so the matching tool-error can be wrapped; the set is
         // per stream (adapterState) and only widened by exactly this shape.
         if (event.invalid === true && event.providerExecuted !== true) {
-          state.invalidToolCalls.set(event.toolCallId, rejectedMessage(event.error))
+          state.invalidToolCalls.set(event.toolCallId, {
+            text: rejectedMessage(event.error),
+            rejection: rejectionOf(event.error),
+          })
         }
         return [
           LLMEvent.toolCall({
@@ -420,15 +441,17 @@ export function toLLMEvents(
         // unparseable tool call, not a real execution failure: wrap it so the
         // processor can tell the two apart. Stale IDs (no matching invalid
         // tool-call) keep the plain error and are treated conservatively.
-        const rejectedText = state.invalidToolCalls.get(event.toolCallId)
-        const rejected = state.invalidToolCalls.delete(event.toolCallId)
-        const message = rejectedText ?? errorMessage(event.error)
+        const rejected = state.invalidToolCalls.get(event.toolCallId)
+        state.invalidToolCalls.delete(event.toolCallId)
+        const message = rejected?.text ?? errorMessage(event.error)
         return [
           LLMEvent.toolError({
             id: event.toolCallId,
             name,
             message,
-            error: rejected ? new ToolInputRejectedError(message, { cause: event.error }) : event.error,
+            error: rejected
+              ? new ToolInputRejectedError(message, { cause: event.error, rejection: rejected.rejection })
+              : event.error,
             providerMetadata: providerMetadata(event.providerMetadata),
           }),
         ]

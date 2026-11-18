@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Question } from "@/question"
 import { ToolInputRejectedError } from "@/session/llm/ai-sdk"
-import { classifyToolError } from "@/session/tool-outcome"
+import { classifyToolError, endedMetadata } from "@/session/tool-outcome"
 import { Tool } from "@/tool/tool"
 
 describe("classifyToolError", () => {
@@ -44,5 +44,25 @@ describe("classifyToolError", () => {
   test("a plain object with a known tag is classified by the tag", () => {
     expect(classifyToolError({ _tag: "PermissionRejectedError" })).toBe("denied")
     expect(classifyToolError({ name: "ToolInvalidArgumentsError" })).toBe("validation_error")
+  })
+})
+
+describe("endedMetadata", () => {
+  test("keeps what a running call reported and adds how it ended", () => {
+    const running = { status: "running", input: {}, metadata: { sessionID: "ses_child" }, time: { start: 1 } } as const
+    expect(endedMetadata(running, "aborted")).toEqual({ sessionID: "ses_child", outcome: "aborted" })
+    expect(endedMetadata(running, "execution_error")).toEqual({ sessionID: "ses_child", outcome: "execution_error" })
+  })
+
+  test("a running call that reported nothing, or a pending one, has only the outcome", () => {
+    expect(endedMetadata({ status: "running", input: {}, time: { start: 1 } }, "aborted")).toEqual({
+      outcome: "aborted",
+    })
+    expect(endedMetadata({ status: "pending", input: {}, raw: "" }, "denied")).toEqual({ outcome: "denied" })
+  })
+
+  test("the outcome it records wins over one the call already carried", () => {
+    const running = { status: "running", input: {}, metadata: { outcome: "ok" }, time: { start: 1 } } as const
+    expect(endedMetadata(running, "aborted")).toEqual({ outcome: "aborted" })
   })
 })

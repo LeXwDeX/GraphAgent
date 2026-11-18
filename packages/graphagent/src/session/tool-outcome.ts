@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ToolOutcomeKind } from "@graphagent/core/session/outcome"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 
 /** Error identities (`_tag` or `name`) that map to a failure class other than `execution_error`. */
 const OUTCOME_BY_ERROR: Readonly<Record<string, ToolOutcomeKind>> = {
@@ -31,6 +32,15 @@ export function classifyToolError(error: unknown): ToolOutcomeKind {
     if (name !== undefined && Object.hasOwn(OUTCOME_BY_ERROR, name)) return OUTCOME_BY_ERROR[name]
   }
   return "execution_error"
+}
+
+/**
+ * Metadata for an error part written outside the processor, where a
+ * command-driven subtask runs its tool directly: what the call reported while it
+ * ran, plus how it ended.
+ */
+export function endedMetadata(state: SessionV1.ToolPart["state"], outcome: ToolOutcomeKind): Record<string, unknown> {
+  return { ...(state.status === "running" ? state.metadata : undefined), outcome }
 }
 
 export * as ToolOutcome from "./tool-outcome"

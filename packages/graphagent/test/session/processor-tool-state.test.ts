@@ -28,8 +28,8 @@ import { SessionProjector } from "@graphagent/core/session/projector"
 import { LLMEvent } from "@graphagent/llm"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
-import { NoSuchToolError } from "ai"
-import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
+import { InvalidToolInputError, NoSuchToolError } from "ai"
+import { LLMAISDK } from "../../src/session/llm/ai-sdk"
 import { Tool } from "../../src/tool/tool"
 
 const summary = Layer.succeed(
@@ -678,28 +678,50 @@ repairedThenAborted.it.effect(
 // #1473: a call whose rejected input was cut off by the output limit is arguments_truncated
 // ---------------------------------------------------------------------------
 
+type SDKChunk = Parameters<typeof LLMAISDK.toLLMEvents>[1]
+
+/** Runs chunks written in the AI SDK's shape through the real adapter, as a provider stream reaches the processor. */
+const adapted = (chunks: ReadonlyArray<unknown>): LLMEvent[] => {
+  const state = LLMAISDK.adapterState()
+  return Effect.runSync(
+    Effect.forEach(chunks, (chunk) =>
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the chunks are written in the SDK's shape, outside its typed surface
+      LLMAISDK.toLLMEvents(state, chunk as SDKChunk),
+    ).pipe(Effect.map((events) => events.flat())),
+  )
+}
+
 /**
- * A call the SDK rejected because its input did not parse: the error follows the
- * tool call at once and, as in a real stream, the finish reason of the step comes later.
+ * A call the SDK refused to run, in the order it emits it: an invalid tool-call that carries the typed error,
+ * then a tool-error that carries only the text. The finish reason of the step comes later.
  */
-const rejectedCall = (id: string, cause?: unknown): LLMEvent[] => [
-  LLMEvent.toolInputStart({ id, name: "lookup" }),
-  LLMEvent.toolInputDelta({ id, name: "lookup", text: '{"que' }),
-  LLMEvent.toolInputEnd({ id, name: "lookup" }),
-  LLMEvent.toolCall({ id, name: "lookup", input: '{"que' }),
-  LLMEvent.toolError({
-    id,
-    name: "lookup",
-    message: "invalid input",
-    error: new ToolInputRejectedError("invalid input", cause === undefined ? undefined : { cause }),
-  }),
+const sdkRefusal = (id: string, error: Error, input: string): unknown[] => [
+  { type: "tool-input-start", id, toolName: "lookup" },
+  { type: "tool-input-delta", id, delta: input },
+  { type: "tool-input-end", id },
+  { type: "tool-call", toolCallId: id, toolName: "lookup", input, dynamic: true, invalid: true, error },
+  { type: "tool-error", toolCallId: id, toolName: "lookup", error: error.message, dynamic: true },
 ]
 
-const step = (index: number, reason: "length" | "tool-calls" | "stop", ...body: LLMEvent[][]): LLMEvent[] => [
-  LLMEvent.stepStart({ index }),
-  ...body.flat(),
-  LLMEvent.stepFinish({ index, reason }),
+/** Input that does not parse: the SDK's InvalidToolInputError, which is what a cut-off call turns into. */
+const unparsableCall = (id: string) =>
+  sdkRefusal(
+    id,
+    new InvalidToolInputError({ toolName: "lookup", toolInput: '{"que', cause: new Error("bad json") }),
+    '{"que',
+  )
+
+/** A call to a tool that does not exist: the SDK's NoSuchToolError. */
+const unknownToolCall = (id: string) =>
+  sdkRefusal(id, new NoSuchToolError({ toolName: "nope", availableTools: ["lookup"] }), "{}")
+
+const sdkStep = (reason: "length" | "tool-calls", ...calls: unknown[][]): unknown[] => [
+  { type: "start-step", request: {}, warnings: [] },
+  ...calls.flat(),
+  { type: "finish-step", finishReason: reason, rawFinishReason: reason },
 ]
+
+const sdkFinish = (reason: "length" | "tool-calls"): unknown => ({ type: "finish", finishReason: reason })
 
 /** Runs the scripted stream and returns the failure class of each call, as its part and its projected row hold it. */
 const rejectedRun = Effect.fn("ToolStateTest.rejectedRun")(function* (dir: string) {
@@ -722,7 +744,7 @@ const rejectedRun = Effect.fn("ToolStateTest.rejectedRun")(function* (dir: strin
   }
 })
 
-const lengthCut = scripted([[...step(0, "length", rejectedCall("call-cut")), LLMEvent.finish({ reason: "length" })]])
+const lengthCut = scripted([adapted([...sdkStep("length", unparsableCall("call-cut")), sdkFinish("length")])])
 
 lengthCut.it.effect(
   "session.processor books a rejected input in a step that stopped on length as arguments_truncated",
@@ -737,9 +759,7 @@ lengthCut.it.effect(
   ),
 )
 
-const notCut = scripted([
-  [...step(0, "tool-calls", rejectedCall("call-bad")), LLMEvent.finish({ reason: "tool-calls" })],
-])
+const notCut = scripted([adapted([...sdkStep("tool-calls", unparsableCall("call-bad")), sdkFinish("tool-calls")])])
 
 notCut.it.effect(
   "session.processor keeps a rejected input in a step that did not stop on length as validation_error",
@@ -755,7 +775,7 @@ notCut.it.effect(
 )
 
 const twoRejected = scripted([
-  [...step(0, "length", rejectedCall("call-first"), rejectedCall("call-last")), LLMEvent.finish({ reason: "length" })],
+  adapted([...sdkStep("length", unparsableCall("call-first"), unparsableCall("call-last")), sdkFinish("length")]),
 ])
 
 twoRejected.it.effect(
@@ -771,31 +791,61 @@ twoRejected.it.effect(
   ),
 )
 
-const unknownTool = scripted([
-  [
-    ...step(0, "length", rejectedCall("call-unknown", new NoSuchToolError({ toolName: "nope", availableTools: [] }))),
-    LLMEvent.finish({ reason: "length" }),
-  ],
-])
+// The SDK reports a refused unknown tool as a plain string at the tool-error; the adapter keeps what it saw on the
+// tool-call, so the call stays a validation error even when its step stopped on length.
+const unknownToolCut = scripted([adapted([...sdkStep("length", unknownToolCall("call-unknown")), sdkFinish("length")])])
 
-unknownTool.it.effect(
+unknownToolCut.it.effect(
   "session.processor does not book an unknown tool name as truncated arguments",
   provideTmpdirInstance(
     (dir) =>
       Effect.gen(function* () {
         const result = yield* rejectedRun(dir)
         expect(result.parts).toEqual({ "call-unknown": "validation_error" })
+        expect(result.rows).toEqual({ "call-unknown": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unknownThenUnparsable = scripted([
+  adapted([...sdkStep("length", unknownToolCall("call-unknown"), unparsableCall("call-cut")), sdkFinish("length")]),
+])
+
+unknownThenUnparsable.it.effect(
+  "session.processor books the unparsable call of a length step as truncated and leaves an unknown tool alone",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-unknown": "validation_error", "call-cut": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unparsableThenUnknown = scripted([
+  adapted([...sdkStep("length", unparsableCall("call-cut"), unknownToolCall("call-unknown")), sdkFinish("length")]),
+])
+
+unparsableThenUnknown.it.effect(
+  "session.processor books the unparsable call as truncated even when an unknown tool call follows it",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-cut": "arguments_truncated", "call-unknown": "validation_error" })
       }),
     { config: cfg },
   ),
 )
 
 const acrossSteps = scripted([
-  [
-    ...step(0, "tool-calls", rejectedCall("call-early")),
-    ...step(1, "length", rejectedCall("call-late")),
-    LLMEvent.finish({ reason: "length" }),
-  ],
+  adapted([
+    ...sdkStep("tool-calls", unparsableCall("call-early")),
+    ...sdkStep("length", unparsableCall("call-late")),
+    sdkFinish("length"),
+  ]),
 ])
 
 acrossSteps.it.effect(
@@ -812,7 +862,7 @@ acrossSteps.it.effect(
 )
 
 const lengthWithoutRejection = scripted([
-  [...step(0, "tool-calls", rejectedCall("call-early")), ...step(1, "length"), LLMEvent.finish({ reason: "length" })],
+  adapted([...sdkStep("tool-calls", unparsableCall("call-early")), ...sdkStep("length"), sdkFinish("length")]),
 ])
 
 lengthWithoutRejection.it.effect(

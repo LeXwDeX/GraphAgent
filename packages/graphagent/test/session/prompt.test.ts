@@ -5,6 +5,7 @@ import { createHash } from "node:crypto"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
+import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/http"
@@ -6097,6 +6098,8 @@ it.instance("failed subtask preserves metadata on error tool state", () =>
     expect(tool.state.error).toContain("Tool execution failed")
     expect(tool.state.metadata).toBeDefined()
     expect(tool.state.metadata?.sessionID).toBeDefined()
+    // A command-driven subtask does not go through the processor, so it records how the call failed itself (#1473).
+    expect(tool.state.metadata?.outcome).toBe("execution_error")
     expect(tool.state.metadata?.model).toEqual({
       providerID: ProviderV2.ID.make("test"),
       modelID: ModelV2.ID.make("missing-model"),
@@ -6516,6 +6519,15 @@ noLLMServer.instance(
       expect(tool.state.status).not.toBe("running")
       expect(taskMsg.info.time.completed).toBeDefined()
       expect(taskMsg.info.finish).toBeDefined()
+
+      // The subtask runs its tool directly, outside the processor, so the cancelled part names its own outcome (#1473).
+      expect(tool.state.status).toBe("error")
+      if (tool.state.status !== "error") return
+      expect(tool.state.error).toBe("Cancelled")
+      expect(tool.state.metadata?.outcome).toBe("aborted")
+      const { db } = yield* Database.Service
+      const rows = yield* db.select().from(ToolOutcomeTable).all()
+      expect(rows.map((row) => [row.tool, row.outcome])).toEqual([["task", "aborted"]])
     }),
   { config: cfg },
   30_000,
