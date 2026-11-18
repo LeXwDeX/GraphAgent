@@ -10,6 +10,7 @@ import { backgroundElapsed, type BackgroundItem, type BackgroundItems } from "..
 import { activeRuns, backgroundLabel } from "../../shell/background-mark"
 import { DRAWER_WIDTH } from "../../shell/drawer"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
+import { contextShare, type ContextModel } from "../../util/context-window"
 import { remoteLine } from "../../util/remote-text"
 import { sessionTokenTotal } from "../../util/session-usage"
 
@@ -27,33 +28,34 @@ export const CONTEXT_ERROR_PERCENT = 95
 
 export type ContextTone = "text" | "warning" | "error"
 
-/** What the context needs of a model: its window. */
-type ModelLimit = { readonly limit: { readonly context: number } }
-
 export interface ContextUsage {
   /** Tokens of the latest assistant message that produced output. */
   readonly used: number
-  /** The model's context window, when its provider reports one. */
+  /** The window `used` is measured against, when there is one: the model's, or the default one when it declares none. */
   readonly limit?: number
   /** `used` of `limit`, rounded; undefined without a limit. */
   readonly percent?: number
+  /** Set when `limit` is the default window the model declares none of, so the figures are estimates; absent otherwise. */
+  readonly estimated?: boolean
 }
 
 /**
  * The context the session uses now: the token total of its latest assistant message with output, against the
- * model's context limit (the algorithm of the old sidebar). Undefined before the first such message.
+ * model's compaction window (the algorithm of the old sidebar, now with the profile's window). Undefined before the
+ * first such message.
  */
 export function contextUsage(
   messages: readonly Message[],
-  providers: readonly { readonly id: string; readonly models: Readonly<Record<string, ModelLimit | undefined>> }[],
+  providers: readonly { readonly id: string; readonly models: Readonly<Record<string, ContextModel | undefined>> }[],
 ): ContextUsage | undefined {
   const last = messages.findLast((item) => item.role === "assistant" && item.tokens.output > 0)
   if (last?.role !== "assistant") return undefined
   const tokens = last.tokens
   const used = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
-  const limit = providers.find((item) => item.id === last.providerID)?.models[last.modelID]?.limit.context
-  if (!limit || !Number.isFinite(limit) || limit <= 0) return { used }
-  return { used, limit, percent: Math.round((used / limit) * 100) }
+  const share = contextShare(used, providers.find((item) => item.id === last.providerID)?.models[last.modelID])
+  if (!share) return { used }
+  const usage = { used, limit: share.window, percent: share.percent }
+  return share.estimated ? { ...usage, estimated: true } : usage
 }
 
 export function contextTone(percent: number): ContextTone {

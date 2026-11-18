@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 import { Schema } from "effect"
 import {
+  compactionWindow,
   contextWindow,
   DEFAULT_CONTEXT_WINDOW,
   fromCatalogEntry,
@@ -687,6 +688,71 @@ describe("contextWindow", () => {
 
   test("names an unknown source when a hand-built profile has a window but no source", () => {
     expect(contextWindow({ context: 32_000, sources: {} })).toEqual({ tokens: 32_000, source: "unknown" })
+  })
+})
+
+describe("compactionWindow", () => {
+  const cases: ReadonlyArray<{
+    name: string
+    profile: Parameters<typeof compactionWindow>[0]
+    expected: { tokens: number; source: string }
+  }> = [
+    { name: "no declared window", profile: { sources: {} }, expected: { tokens: 128_000, source: "default" } },
+    {
+      name: "a declared window and no effective window",
+      profile: { context: 200_000, sources: { context: "config" } },
+      expected: { tokens: 200_000, source: "config" },
+    },
+    {
+      name: "an effective window below the declared one",
+      profile: { context: 200_000, effectiveContext: 100_000, sources: { context: "catalog" } },
+      expected: { tokens: 100_000, source: "config" },
+    },
+    {
+      name: "an effective window above the declared one",
+      profile: { context: 200_000, effectiveContext: 300_000, sources: { context: "catalog" } },
+      expected: { tokens: 200_000, source: "catalog" },
+    },
+    {
+      name: "an effective window equal to the declared one",
+      profile: { context: 200_000, effectiveContext: 200_000, sources: { context: "catalog" } },
+      expected: { tokens: 200_000, source: "catalog" },
+    },
+    {
+      name: "an effective window of zero",
+      profile: { context: 200_000, effectiveContext: 0, sources: { context: "catalog" } },
+      expected: { tokens: 200_000, source: "catalog" },
+    },
+    {
+      name: "an effective window that cannot be one",
+      profile: { context: 200_000, effectiveContext: Number.NaN, sources: { context: "catalog" } },
+      expected: { tokens: 200_000, source: "catalog" },
+    },
+    {
+      name: "an effective window below the default window of a model that declares none",
+      profile: { effectiveContext: 100_000, sources: {} },
+      expected: { tokens: 100_000, source: "config" },
+    },
+    {
+      name: "an effective window above the default window of a model that declares none",
+      profile: { effectiveContext: 300_000, sources: {} },
+      expected: { tokens: 128_000, source: "default" },
+    },
+  ]
+
+  for (const item of cases) {
+    test(`returns ${JSON.stringify(item.expected)} for ${item.name}`, () => {
+      expect(compactionWindow(item.profile)).toEqual(item.expected)
+    })
+  }
+
+  test("reads the effective window a resolved profile took from the configuration", () => {
+    const profile = resolveProfile({
+      ...same,
+      config: { limit: { context: 200_000 }, profile: { effective_context: 100_000 } },
+    })
+    expect(compactionWindow(profile)).toEqual({ tokens: 100_000, source: "config" })
+    expect(contextWindow(profile)).toEqual({ tokens: 200_000, source: "config" })
   })
 })
 

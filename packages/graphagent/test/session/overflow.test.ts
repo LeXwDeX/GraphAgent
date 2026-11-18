@@ -12,6 +12,7 @@ import {
   estimateRequest,
   isOverflow,
   serializedTools,
+  triggerLimit,
   usable,
   windowOf,
 } from "../../src/session/overflow"
@@ -101,11 +102,12 @@ describe("estimateOverhead", () => {
 })
 
 describe("usable output reserve", () => {
-  const model = (context: number, output: number, input?: number) =>
+  const model = (context: number, output: number, input?: number, effectiveContext?: number) =>
     ({
       id: "reasoner",
       providerID: "local",
       limit: { context, output, ...(input === undefined ? {} : { input }) },
+      profile: { context, effectiveContext, sources: {} },
     }) as any
   const cfg = (output?: number) =>
     ({
@@ -177,6 +179,86 @@ describe("usable output reserve", () => {
     const none = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
     const off = { ...cfg(), compaction: { auto: false } }
     expect(isOverflow({ cfg: off, model: model(0, 32_000), tokens: none, estimatedInputTokens: 500_000 })).toBe(false)
+  })
+
+  test("applies compaction.reserved to a model without an input cap", () => {
+    const reserved = (value: number) => ({ ...cfg(), compaction: { reserved: value } })
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000) })).toBe(168_000)
+    expect(usable({ cfg: reserved(40_000), model: model(200_000, 32_000) })).toBe(160_000)
+    expect(usable({ cfg: reserved(0), model: model(200_000, 32_000) })).toBe(200_000)
+    // A reserve at least as large as the window cannot be taken from it: keep up to the compaction buffer instead.
+    expect(usable({ cfg: reserved(200_000), model: model(200_000, 32_000) })).toBe(20_000)
+    expect(usable({ cfg: reserved(500_000), model: model(8_000, 32_000) })).toBe(8_000)
+    // The input-cap branch has always read it.
+    expect(usable({ cfg: reserved(50_000), model: model(1_050_000, 128_000, 922_000) })).toBe(872_000)
+  })
+
+  test("takes the window from profile.effective_context when it is smaller than the declared window", () => {
+    expect(windowOf(model(200_000, 32_000, undefined, 100_000))).toBe(100_000)
+    expect(windowOf(model(200_000, 32_000, undefined, 300_000))).toBe(200_000)
+    expect(windowOf(model(200_000, 32_000, undefined, 0))).toBe(200_000)
+    expect(windowOf(model(0, 32_000, undefined, 100_000))).toBe(100_000)
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000, undefined, 100_000) })).toBe(68_000)
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000, undefined, 300_000) })).toBe(168_000)
+  })
+
+  test("caps an input limit at the effective window and leaves it alone without one", () => {
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000, 180_000) })).toBe(160_000)
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000, 180_000, 100_000) })).toBe(80_000)
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000, 180_000, 300_000) })).toBe(160_000)
+    // An input limit already below the effective window stays the base.
+    expect(usable({ cfg: cfg(), model: model(200_000, 32_000, 60_000, 100_000) })).toBe(40_000)
+    // The window is unknown: the input limit is not capped at the assumed window unless a smaller one is declared.
+    expect(usable({ cfg: cfg(), model: model(0, 32_000, 200_000) })).toBe(180_000)
+    expect(usable({ cfg: cfg(), model: model(0, 32_000, 200_000, 100_000) })).toBe(80_000)
+  })
+
+  describe("compaction.trigger_ratio", () => {
+    const none = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    const ratio = (value: number | undefined, extra: Record<string, unknown> = {}) => ({
+      ...cfg(),
+      compaction: { ...(value === undefined ? {} : { trigger_ratio: value }), ...extra },
+    })
+
+    test("leaves the trigger line at the usable budget when it is not set", () => {
+      expect(triggerLimit({ cfg: ratio(undefined), model: model(200_000, 32_000) })).toBe(168_000)
+      expect(triggerLimit({ cfg: cfg(), model: model(200_000, 32_000) })).toBe(168_000)
+      expect(triggerLimit({ cfg: ratio(undefined), model: model(0, 32_000) })).toBe(96_000)
+    })
+
+    test("triggers at a share of the window, never above the usable budget", () => {
+      const window = model(200_000, 32_000)
+      expect(triggerLimit({ cfg: ratio(0.5), model: window })).toBe(100_000)
+      expect(triggerLimit({ cfg: ratio(0.1), model: window })).toBe(20_000)
+      expect(triggerLimit({ cfg: ratio(0.9), model: window })).toBe(168_000)
+      expect(triggerLimit({ cfg: ratio(1), model: window })).toBe(168_000)
+      expect(triggerLimit({ cfg: ratio(0.5), model: model(100_003, 32_000) })).toBe(50_001)
+    })
+
+    test("takes the share from the effective window and from the default window of an unknown one", () => {
+      expect(triggerLimit({ cfg: ratio(undefined), model: model(200_000, 32_000, undefined, 100_000) })).toBe(68_000)
+      expect(triggerLimit({ cfg: ratio(0.5), model: model(200_000, 32_000, undefined, 100_000) })).toBe(50_000)
+      expect(triggerLimit({ cfg: ratio(0.5), model: model(0, 32_000) })).toBe(64_000)
+    })
+
+    test("takes the share from the window, not from the input limit", () => {
+      expect(triggerLimit({ cfg: ratio(undefined), model: model(1_000_000, 128_000, 922_000) })).toBe(902_000)
+      expect(triggerLimit({ cfg: ratio(0.5), model: model(1_000_000, 128_000, 922_000) })).toBe(500_000)
+    })
+
+    test("moves the compaction boundary with the share and keeps the on/off switch authoritative", () => {
+      const window = model(200_000, 32_000)
+      const at = (config: ReturnType<typeof ratio>, estimatedInputTokens: number) =>
+        isOverflow({ cfg: config, model: window, tokens: none, estimatedInputTokens })
+      expect(at(ratio(0.5), 99_999)).toBe(false)
+      expect(at(ratio(0.5), 100_000)).toBe(true)
+      expect(at(ratio(undefined), 100_000)).toBe(false)
+      expect(at(ratio(undefined), 168_000)).toBe(true)
+      expect(at(ratio(0.5, { auto: false }), 150_000)).toBe(false)
+      const measuredOnly = { ...none, input: 100_000 }
+      expect(isOverflow({ cfg: ratio(0.5), model: window, tokens: measuredOnly })).toBe(true)
+      expect(isOverflow({ cfg: ratio(undefined), model: window, tokens: measuredOnly })).toBe(false)
+    })
   })
 })
 

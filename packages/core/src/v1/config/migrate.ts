@@ -55,6 +55,7 @@ export function migrate(info: typeof ConfigV1.Info.Type, source?: unknown) {
         tokens: info.compaction.preserve_recent_tokens,
       },
       buffer: info.compaction.reserved,
+      triggerRatio: info.compaction.trigger_ratio,
       mode: info.compaction.mode,
     },
     reasoningDistillation: info.reasoningDistillation,

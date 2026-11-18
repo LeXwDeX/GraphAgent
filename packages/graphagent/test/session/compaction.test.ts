@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { resolveProfile } from "@graphagent/core/model-profile"
 import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-distillation"
 import { Hash } from "@graphagent/core/util/hash"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -684,6 +685,72 @@ describe("session.compaction.isOverflow", () => {
         const small = { input: 60_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
         expect(yield* compact.isOverflow({ tokens: small, model })).toBe(false)
       }),
+    ),
+  )
+
+  it.live(
+    "compacts at the configured share of the window",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const model = createModel({ context: 1_000_000, output: 32_000 })
+          const tokens = { input: 499_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+          expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+          expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 500_000 }, model })).toBe(true)
+        }),
+      { config: { compaction: { trigger_ratio: 0.5 } } },
+    ),
+  )
+
+  it.live(
+    "keeps the usable limit when the configured share is above it",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const model = createModel({ context: 1_000_000, output: 32_000 })
+          const tokens = { input: 967_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+          expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+          expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 968_000 }, model })).toBe(true)
+        }),
+      { config: { compaction: { trigger_ratio: 1 } } },
+    ),
+  )
+
+  it.live(
+    "compacts at the effective window a model profile declares",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model: Provider.Model = {
+          ...createModel({ context: 1_000_000, output: 32_000 }),
+          profile: resolveProfile({
+            providerID: "test",
+            apiID: "test-model",
+            config: { limit: { context: 1_000_000 }, profile: { effective_context: 100_000 } },
+          }),
+        }
+        // The effective window of 100_000 minus the 32_000 output reserve leaves 68_000.
+        const tokens = { input: 67_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 68_000 }, model })).toBe(true)
+      }),
+    ),
+  )
+
+  it.live(
+    "applies compaction.reserved to a model without an input cap",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const model = createModel({ context: 200_000, output: 32_000 })
+          const tokens = { input: 159_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+          expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+          expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 160_000 }, model })).toBe(true)
+        }),
+      { config: { compaction: { reserved: 40_000 } } },
     ),
   )
 

@@ -69,6 +69,17 @@ const providers = {
   default: {},
 }
 
+/** The same provider with its `window` model replaced: what a model that declares no window, or an effective one, looks like. */
+const providersWith = (model: Record<string, unknown>) => ({
+  ...providers,
+  providers: [
+    {
+      ...providers.providers[0],
+      models: { window: { id: "window", name: "Window", limit: { context: 1000, output: 100 }, ...model } },
+    },
+  ],
+})
+
 const GOAL: Goal = {
   goal: "全部依赖升到最新稳定版",
   status: "paused",
@@ -103,6 +114,8 @@ type Data = {
   todo?: Record<string, readonly Todo[]>
   /** Input tokens of each session's latest answer (one output token is added), by session. */
   context?: Record<string, number>
+  /** Fields of the model the context is measured against, over the default `window` model (a 1,000-token window). */
+  model?: Record<string, unknown>
   lsp?: readonly unknown[]
   mcp?: Record<string, unknown>
   /** What the server sums for the tree, whichever session of it is asked about; nothing used without it. */
@@ -127,7 +140,7 @@ async function mountDrawer(
     ],
     usage: () => data.usage,
     handler: (url) => {
-      if (url.pathname === "/config/providers") return json(providers)
+      if (url.pathname === "/config/providers") return json(data.model ? providersWith(data.model) : providers)
       if (url.pathname === "/lsp") return json(data.lsp ?? [])
       if (url.pathname === "/mcp") return json(data.mcp ?? {})
       if (url.pathname === "/vcs") return json({ branch: "feat/upgrade" })
@@ -335,6 +348,73 @@ describe("the context bar", () => {
       }
     })
   }
+})
+
+describe("the context of a model that declares no window", () => {
+  // The model has no `limit.context`, but the server's profile reads as the default 128,000-token window: the drawer
+  // measures against it and marks the figures as an estimate. 1,009 input and 1 output tokens are 1,010 of it, 1%.
+  const UNKNOWN = { limit: { context: 0, output: 100 }, profile: { sources: {} } }
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const aw of [1, 2] as const) {
+      test(`shows the default window and the share with a ~ at 80 columns, ${language}, ambiguous_width ${aw}`, async () => {
+        setLanguage(language)
+        const harness = await mountDrawer({
+          width: 80,
+          language,
+          kv: { ambiguous_width: aw },
+          data: { context: { [ROOT]: 1_009 }, model: UNKNOWN },
+        })
+        try {
+          const lines = await column(harness, 80, has("~1%"), "the context")
+          expect(lines.some((line) => line.includes("1,010 / ~128,000 tokens"))).toBe(true)
+          for (const line of lines) expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_WIDTH)
+          const frame = await harness.waitForFrame(() => true, "the frame")
+          for (const row of rowsOf(frame)) expect(row.slice(0, 80 - DRAWER_WIDTH).trim()).toBe("")
+        } finally {
+          await harness.dispose()
+        }
+      })
+    }
+  }
+
+  test("shows a window the profile declares as it is, without a ~", async () => {
+    const harness = await mountDrawer({
+      data: {
+        context: { [ROOT]: 1_009 },
+        model: {
+          limit: { context: 200_000, output: 100 },
+          profile: { context: 200_000, sources: { context: "catalog" } },
+        },
+      },
+    })
+    try {
+      const lines = await column(harness, 120, has("1%"), "the context")
+      expect(lines.some((line) => line.includes("1,010 / 200,000 tokens"))).toBe(true)
+      expect(has("~")(lines)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("measures against the effective window the user set, without a ~", async () => {
+    const harness = await mountDrawer({
+      data: {
+        context: { [ROOT]: 49_999 },
+        model: {
+          limit: { context: 200_000, output: 100 },
+          profile: { context: 200_000, effectiveContext: 100_000, sources: { context: "catalog" } },
+        },
+      },
+    })
+    try {
+      const lines = await column(harness, 120, has("50%"), "the context")
+      expect(lines.some((line) => line.includes("50,000 / 100,000 tokens"))).toBe(true)
+      expect(has("~")(lines)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
 })
 
 describe("a sub-agent session's drawer", () => {

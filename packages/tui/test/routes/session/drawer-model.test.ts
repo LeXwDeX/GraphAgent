@@ -61,6 +61,36 @@ test("the context is the latest assistant message with output, against the model
   expect(contextUsage([assistant(10, { modelID: "other" })], providers)).toEqual({ used: 10 })
 })
 
+test("a model that declares no window is measured against the default one and marked as estimated", () => {
+  const messages = [assistant(10, { input: 1000 })]
+  const modelOf = (model: Parameters<typeof contextUsage>[1][number]["models"][string]) => [
+    { id: "test", models: { big: model } },
+  ]
+  expect(contextUsage(messages, modelOf({ limit: { context: 0 }, profile: { sources: {} } }))).toEqual({
+    used: 1010,
+    limit: 128_000,
+    percent: 1,
+    estimated: true,
+  })
+  // A window the profile declares is not an estimate: the key is absent, not false.
+  const declared = contextUsage(
+    messages,
+    modelOf({ limit: { context: 200_000 }, profile: { context: 200_000, sources: { context: "catalog" } } }),
+  )
+  expect(declared).toEqual({ used: 1010, limit: 200_000, percent: 1 })
+  expect(declared).not.toHaveProperty("estimated")
+  // The effective window the user set limits the window; it is the user's figure, not an estimate.
+  expect(
+    contextUsage(
+      messages,
+      modelOf({
+        limit: { context: 200_000 },
+        profile: { context: 200_000, effectiveContext: 100_000, sources: { context: "catalog" } },
+      }),
+    ),
+  ).toEqual({ used: 1010, limit: 100_000, percent: 1 })
+})
+
 test("the context tone turns to warning at 85% and to error at 95%", () => {
   expect(contextTone(84)).toBe("text")
   expect(contextTone(85)).toBe("warning")

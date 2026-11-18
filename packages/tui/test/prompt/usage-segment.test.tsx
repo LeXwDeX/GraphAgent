@@ -45,7 +45,25 @@ function assistant(): Message {
   } as Message
 }
 
-async function mountSegment(session: Partial<Session>, options: { language?: "zh-CN" | "en"; width?: number } = {}) {
+/** The provider of the latest answer with its `unpriced` model made of `model`: what the server reports of its window. */
+const providersWith = (model: Record<string, unknown>) => ({
+  providers: [
+    {
+      id: "test",
+      name: "Test",
+      source: "custom",
+      env: [],
+      options: {},
+      models: { unpriced: { id: "unpriced", name: "Unpriced", ...model } },
+    },
+  ],
+  default: {},
+})
+
+async function mountSegment(
+  session: Partial<Session>,
+  options: { language?: "zh-CN" | "en"; width?: number; model?: Record<string, unknown> } = {},
+) {
   const language = options.language ?? "zh-CN"
   setLanguage(language)
   const harness = await mountRoute({
@@ -57,6 +75,7 @@ async function mountSegment(session: Partial<Session>, options: { language?: "zh
     sessions: [sessionFixture(ID, session)],
     handler: (url) => {
       if (url.pathname === `/session/${ID}/message`) return json([{ info: assistant(), parts: [] }])
+      if (options.model && url.pathname === "/config/providers") return json(providersWith(options.model))
       return undefined
     },
   })
@@ -145,6 +164,59 @@ describe("the prompt's usage segment", () => {
     const harness = await mountSegment({})
     try {
       expect(segmentOf(await harness.frame())).toBe("1.2K")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  // The figures are 1,200 tokens (1,000 in, 200 out) of the model's window.
+  for (const language of ["zh-CN", "en"] as const) {
+    test(`marks the share with a ~ when the model declares no window and the default one is used, ${language}`, async () => {
+      const harness = await mountSegment(
+        { cost: 1.5, tokens: used },
+        { language, model: { limit: { context: 0, output: 100 }, profile: { sources: {} } } },
+      )
+      try {
+        expect(segmentOf(await harness.frame())).toContain("1.2K (~1%) · $1.50")
+      } finally {
+        await harness.dispose()
+      }
+    })
+  }
+
+  test("shows the share of a declared window as before, without a ~", async () => {
+    const harness = await mountSegment(
+      { cost: 1.5, tokens: used },
+      {
+        model: {
+          limit: { context: 2_400, output: 100 },
+          profile: { context: 2_400, sources: { context: "catalog" } },
+        },
+      },
+    )
+    try {
+      const segment = segmentOf(await harness.frame())
+      expect(segment).toContain("1.2K (50%) · $1.50")
+      expect(segment).not.toContain("~")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("measures against the effective window the user set, without a ~", async () => {
+    const harness = await mountSegment(
+      { cost: 1.5, tokens: used },
+      {
+        model: {
+          limit: { context: 4_800, output: 100 },
+          profile: { context: 4_800, effectiveContext: 2_400, sources: { context: "catalog" } },
+        },
+      },
+    )
+    try {
+      const segment = segmentOf(await harness.frame())
+      expect(segment).toContain("1.2K (50%) · $1.50")
+      expect(segment).not.toContain("~")
     } finally {
       await harness.dispose()
     }

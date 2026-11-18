@@ -1123,6 +1123,40 @@ describe("compaction configuration", () => {
     ),
     { config: { compaction: { auto: true } } },
   )
+
+  it.instance(
+    "keeps compaction.trigger_ratio",
+    Effect.gen(function* () {
+      const config = yield* Config.use.get()
+      expect(config.compaction?.trigger_ratio).toBe(0.5)
+    }),
+    { config: { compaction: { trigger_ratio: 0.5 } } },
+  )
+
+  it.instance("leaves compaction.trigger_ratio unset by default", () =>
+    Effect.gen(function* () {
+      const config = yield* Config.use.get()
+      expect(config.compaction?.trigger_ratio).toBeUndefined()
+    }),
+  )
+
+  for (const ratio of [0.05, 1.01, "0.5"]) {
+    it.instance(`rejects compaction.trigger_ratio ${JSON.stringify(ratio)} with its path`, () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* writeProjectConfigEffect(test.directory, { compaction: { trigger_ratio: ratio } })
+        const exit = yield* Config.use.get().pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+        expect(error).toMatchObject({
+          data: {
+            path: projectSettingsFile(test.directory),
+            issues: [{ path: ["compaction", "trigger_ratio"] }],
+          },
+        })
+      }),
+    )
+  }
 })
 
 it.instance("does not error when only custom agent is a subagent", () =>

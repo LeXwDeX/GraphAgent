@@ -17,6 +17,7 @@ import { backgroundItems } from "../../session/background"
 import { isRoot, isSubagent } from "../../session/role"
 import { isGoalShown } from "../../shell/status-band"
 import type { AmbiguousWidth } from "../../ui/width"
+import { estimateMark } from "../../util/context-window"
 import { remoteLine } from "../../util/remote-text"
 import { getScrollAcceleration } from "../../util/scroll"
 import {
@@ -119,7 +120,7 @@ function DrawerContext(props: { sessionID: string }) {
             <text fg={theme.textMuted} wrapMode="none">
               {t("drawer.context.usage", {
                 used: current().used.toLocaleString("en-US"),
-                limit: current().limit?.toLocaleString("en-US") ?? "—",
+                limit: `${estimateMark(current())}${current().limit?.toLocaleString("en-US") ?? "—"}`,
               })}
             </text>
             <Show when={current().percent !== undefined}>
@@ -128,7 +129,10 @@ function DrawerContext(props: { sessionID: string }) {
                 <span style={{ fg: theme.textDim }}>
                   {"█".repeat(CONTEXT_BAR_CELLS - contextBarCells(current().percent!))}
                 </span>{" "}
-                <span style={{ fg: tone(current().percent!) }}>{current().percent}%</span>
+                <span style={{ fg: tone(current().percent!) }}>
+                  {estimateMark(current())}
+                  {current().percent}%
+                </span>
               </text>
             </Show>
           </>

@@ -85,6 +85,7 @@ import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { FooterToastProvider, serverToastText, useToast } from "./ui/toast"
 import { TickerProvider, useTicker } from "./context/ticker-context"
+import { contextShare, estimateMark } from "./util/context-window"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
@@ -1203,10 +1204,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           last.tokens.cache.read +
           last.tokens.cache.write
         const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-        if (model?.limit.context) {
-          right.context = t("shell.topBar.context", {
-            percent: Math.round((tokens / model.limit.context) * 100),
-          })
+        const share = contextShare(tokens, model)
+        if (share) {
+          right.context = t("shell.topBar.context", { percent: `${estimateMark(share)}${share.percent}` })
         }
       }
     }

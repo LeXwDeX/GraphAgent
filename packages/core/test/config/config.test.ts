@@ -583,6 +583,32 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("decodes and migrates the compaction trigger ratio without inventing a default", () =>
+    Effect.sync(() => {
+      const decodeV1 = (compaction: Record<string, unknown> = {}) =>
+        Schema.decodeUnknownSync(ConfigV1.Info)({ compaction })
+      const decodeV2 = (compaction: Record<string, unknown> = {}) =>
+        Schema.decodeUnknownSync(Config.Info)({ compaction })
+      for (const ratio of [0.1, 0.5, 1]) {
+        expect(decodeV1({ trigger_ratio: ratio }).compaction?.trigger_ratio).toBe(ratio)
+        expect(decodeV2({ triggerRatio: ratio }).compaction?.triggerRatio).toBe(ratio)
+        expect(
+          Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(decodeV1({ trigger_ratio: ratio }))).compaction
+            ?.triggerRatio,
+        ).toBe(ratio)
+      }
+      expect(decodeV1().compaction?.trigger_ratio).toBeUndefined()
+      expect(decodeV2().compaction?.triggerRatio).toBeUndefined()
+      expect(
+        Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(decodeV1())).compaction?.triggerRatio,
+      ).toBeUndefined()
+      for (const ratio of [0.05, 1.01, 0, -0.5, "0.5", null, Number.NaN]) {
+        expect(() => decodeV1({ trigger_ratio: ratio })).toThrow()
+        expect(() => decodeV2({ triggerRatio: ratio })).toThrow()
+      }
+    }),
+  )
+
   it.effect("ignores the removed automatic compaction ceiling in v1 and v2 configuration", () =>
     Effect.sync(() => {
       const v1 = Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { max_context_tokens: 250_000 } })
