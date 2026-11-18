@@ -187,6 +187,8 @@ export const EditTool = Tool.define(
           let contentOld = ""
           let contentNew = ""
           let strategy: MatchStrategy = "exact"
+          // What the call reports through: it carries the fuzzy match from the moment the text is on disk.
+          let live = ctx
           yield* lock(filePath).withPermits(1)(
             Effect.gen(function* () {
               if (params.oldString === "") {
@@ -262,6 +264,7 @@ export const EditTool = Tool.define(
               })
 
               yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
+              if (strategy !== "exact") live = yield* Tool.markCorrection(ctx, "fuzzy_match")
               if (yield* format.file(filePath)) {
                 contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
               }
@@ -294,7 +297,7 @@ export const EditTool = Tool.define(
             deletions,
           }
 
-          yield* ctx.metadata({
+          yield* live.metadata({
             metadata: {
               diff,
               filediff,

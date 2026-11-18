@@ -480,6 +480,59 @@ describe("Tool.define", () => {
       )
     })
 
+    describe("markCorrection", () => {
+      type Update = { title?: string; metadata?: Record<string, unknown> }
+      const recording = (updates: Update[]): Tool.Context => ({
+        ...makeCtx(),
+        metadata(update: Update) {
+          return Effect.sync(() => {
+            updates.push(update)
+          })
+        },
+      })
+
+      it.effect("records a kind at once and keeps it in every later update", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const marked = yield* Tool.markCorrection(recording(updates), "fuzzy_match")
+
+          yield* marked.metadata({ title: "edit", metadata: { diff: "d" } })
+
+          expect(updates).toEqual([
+            { metadata: { corrections: ["fuzzy_match"] } },
+            { title: "edit", metadata: { diff: "d", corrections: ["fuzzy_match"] } },
+          ])
+        }),
+      )
+
+      it.effect("marks add up, the later kind first, whatever the tool reports through", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const repaired = yield* Tool.markCorrection(recording(updates), "args_repaired")
+          const both = yield* Tool.markCorrection(repaired, "fuzzy_match")
+
+          yield* both.metadata({ metadata: { diff: "d" } })
+
+          expect(updates).toEqual([
+            { metadata: { corrections: ["args_repaired"] } },
+            { metadata: { corrections: ["fuzzy_match", "args_repaired"] } },
+            { metadata: { diff: "d", corrections: ["fuzzy_match", "args_repaired"] } },
+          ])
+        }),
+      )
+
+      it.effect("a kind the tool already reported is not repeated", () =>
+        Effect.gen(function* () {
+          const updates: Update[] = []
+          const marked = yield* Tool.markCorrection(recording(updates), "fuzzy_match")
+
+          yield* marked.metadata({ metadata: { corrections: ["fuzzy_match", "clamped"] } })
+
+          expect(updates.at(-1)).toEqual({ metadata: { corrections: ["fuzzy_match", "clamped"] } })
+        }),
+      )
+    })
+
     it.effect("does not mark a call whose arguments stay invalid", () =>
       Effect.gen(function* () {
         const info = yield* backgroundTool("test-still-invalid", {})

@@ -6,7 +6,7 @@
 import { describe, expect } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Effect, Layer, Stream } from "effect"
+import { Deferred, Effect, Layer, Stream } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 import { LLMEvent } from "@graphagent/llm"
@@ -19,7 +19,7 @@ import { hookCommand } from "../fixture/claude-hook"
 import { TestInstance } from "../fixture/fixture"
 import { makeFakeProvider, textScript, toolCallScript } from "../lib/fake-provider"
 import { testEffect } from "../lib/effect"
-import { makePerfLayer, perfConfig } from "../perf/harness"
+import { makePerfLayer, perfConfig, stubLsp } from "../perf/harness"
 
 /**
  * One scripted request in which the model calls a tool and the tool fails. The
@@ -200,4 +200,138 @@ describe("a repaired tool call whose result a PostToolUse hook rewrites", () => 
     },
     { timeout: 60_000 },
   )
+})
+
+// A fuzzy edit is on disk before the harness waits for the language server. A call stopped there, while the tool is
+// still running, has to carry the match it already made: the aborted part is settled from what the call reported.
+const waiting: { reached?: Deferred.Deferred<void>; release?: Deferred.Deferred<void> } = {}
+
+/** Diagnostics that do not come until the test lets them, so the tool stays inside its wait. */
+const waitingLsp = stubLsp({
+  diagnostics: () =>
+    Effect.gen(function* () {
+      if (waiting.reached) yield* Deferred.succeed(waiting.reached, undefined)
+      if (waiting.release) yield* Deferred.await(waiting.release)
+      return {}
+    }),
+})
+
+/**
+ * One scripted request in which the model calls a tool and the stream then ends while the tool is still running:
+ * the processor does not wait for it and settles it as aborted, once the tool has reached its wait.
+ */
+function endedWhileRunning(
+  input: StreamInput,
+  call: { id: string; name: string; input: unknown },
+  running: Promise<unknown>[],
+): Stream.Stream<LLMEvent, unknown> {
+  const head = [
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.toolInputStart({ id: call.id, name: call.name }),
+    LLMEvent.toolInputDelta({ id: call.id, name: call.name, text: JSON.stringify(call.input) }),
+    LLMEvent.toolInputEnd({ id: call.id, name: call.name }),
+    LLMEvent.toolCall({ id: call.id, name: call.name, input: call.input }),
+  ]
+  const tail = Effect.gen(function* () {
+    const execute = input.tools[call.name]?.execute as
+      ((args: unknown, options: unknown) => PromiseLike<unknown>) | undefined
+    if (!execute) return yield* Effect.die(new Error(`scripted tool ${call.name} is unavailable`))
+    const reached = waiting.reached
+    if (!reached) return yield* Effect.die(new Error("the test did not set up its wait"))
+    running.push(
+      Promise.resolve(
+        execute(call.input, {
+          toolCallId: call.id,
+          messages: input.messages,
+          abortSignal: new AbortController().signal,
+        }),
+      ).catch(() => undefined),
+    )
+    yield* Deferred.await(reached)
+    return [
+      LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+      LLMEvent.finish({ reason: "tool-calls" }),
+    ] satisfies LLMEvent[]
+  })
+  return Stream.fromIterable(head).pipe(
+    Stream.concat(Stream.fromEffect(tail).pipe(Stream.flatMap((events) => Stream.fromIterable(events)))),
+  )
+}
+
+let waitingRequests = 0
+let waitingEdit: unknown
+const waitingRunning: Promise<unknown>[] = []
+const waitingFake = makeFakeProvider({
+  title: "Tool correction abort",
+  script: (input) => {
+    waitingRequests += 1
+    return waitingRequests === 1
+      ? endedWhileRunning(input, { id: "call-edit-abort", name: "edit", input: waitingEdit }, waitingRunning)
+      : textScript("done")
+  },
+})
+
+const itWaiting = testEffect(makePerfLayer(waitingFake, { lsp: waitingLsp }))
+
+describe("a fuzzy edit that is stopped while it waits for diagnostics", () => {
+  const cases = [
+    {
+      name: "reports fuzzy_match on its aborted part and in its tool_outcome row",
+      args: (file: string) => ({ filePath: file, oldString: "const a = 1\nconst b = 2", newString: "const c = 3" }),
+      corrections: ["fuzzy_match"],
+    },
+    {
+      name: "reports fuzzy_match and args_repaired when its arguments were repaired too",
+      args: (file: string) => ({ filePath: file, oldText: "const a = 1\nconst b = 2", newText: "const c = 3" }),
+      corrections: ["fuzzy_match", "args_repaired"],
+    },
+  ]
+
+  for (const variant of cases) {
+    itWaiting.instance(
+      variant.name,
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const file = path.join(test.directory, "fuzzy.ts")
+          yield* Effect.promise(() => Bun.write(file, "  const a = 1\n  const b = 2\n"))
+          waitingRequests = 0
+          waitingEdit = variant.args(file)
+          waiting.reached = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          waiting.release = release
+          const sessions = yield* Session.Service
+          const prompt = yield* SessionPrompt.Service
+          const session = yield* sessions.create({ title: "tool correction abort" })
+
+          yield* prompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "edit the file" }],
+          })
+          // Let the tool finish its wait, so nothing is left running behind the test.
+          yield* Deferred.succeed(release, undefined)
+          yield* Effect.promise(() => Promise.all(waitingRunning.splice(0)))
+
+          // The replacement reached the disk before the call was stopped.
+          expect(yield* Effect.promise(() => Bun.file(file).text())).toBe("const c = 3\n")
+          const parts = (yield* sessions.messages({ sessionID: session.id })).flatMap((message) => message.parts)
+          const edit = parts.find((part) => part.type === "tool" && part.tool === "edit")
+          if (edit?.type !== "tool" || edit.state.status !== "error") throw new Error("expected an aborted edit call")
+          expect(edit.state.error).toBe("Tool execution aborted")
+          expect(edit.state.metadata).toMatchObject({
+            corrections: variant.corrections,
+            interrupted: true,
+            outcome: "aborted",
+          })
+          expect(typeof edit.state.metadata?.diff).toBe("string")
+
+          const { db } = yield* Database.Service
+          const rows = yield* db.select().from(ToolOutcomeTable).all()
+          expect(rows).toMatchObject([{ tool: "edit", outcome: "aborted", corrections: variant.corrections }])
+        }),
+      { git: true, config: perfConfig },
+      { timeout: 60_000 },
+    )
+  }
 })

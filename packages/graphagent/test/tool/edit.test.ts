@@ -776,6 +776,50 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("a fuzzy match is on the running call as soon as the text is on disk", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "running.ts")
+        yield* put(filepath, fuzzyFile)
+        const updates: Array<{ metadata?: Record<string, unknown> }> = []
+        const recording: Tool.Context = {
+          ...ctx,
+          metadata: (update) =>
+            Effect.sync(() => {
+              updates.push(update)
+            }),
+        }
+
+        yield* run({ filePath: filepath, oldString: fuzzyOld, newString: "const c = 3" }, recording)
+
+        // The mark comes first, before the call reports the diff, and the diff update keeps it.
+        expect(updates.map((update) => update.metadata?.corrections)).toEqual([["fuzzy_match"], ["fuzzy_match"]])
+        expect(updates[0].metadata).toEqual({ corrections: ["fuzzy_match"] })
+        expect(updates[1].metadata).toMatchObject({ diff: expect.any(String), corrections: ["fuzzy_match"] })
+      }),
+    )
+
+    it.instance("an exact edit reports its running metadata without any correction", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "running-exact.ts")
+        yield* put(filepath, "const a = 1\n")
+        const updates: Array<{ metadata?: Record<string, unknown> }> = []
+        const recording: Tool.Context = {
+          ...ctx,
+          metadata: (update) =>
+            Effect.sync(() => {
+              updates.push(update)
+            }),
+        }
+
+        yield* run({ filePath: filepath, oldString: "const a = 1", newString: "const a = 2" }, recording)
+
+        expect(updates).toHaveLength(1)
+        expect(updates[0].metadata).not.toHaveProperty("corrections")
+      }),
+    )
+
     it.instance("an exact match records neither a strategy nor a correction", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance

@@ -279,7 +279,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
             repaired = true
             // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
           }
-          const toolCtx = repaired ? yield* markRepaired(ctx) : ctx
+          const toolCtx = repaired ? yield* markCorrection(ctx, "args_repaired") : ctx
           const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, toolCtx)
           const metadata = repaired ? addCorrections(result.metadata, "args_repaired") : result.metadata
           if (result.metadata.truncated !== undefined) {
@@ -378,15 +378,18 @@ function repairStringifiedContainers(value: unknown, keep?: ReadonlySet<string>)
 }
 
 /**
- * The call as the tool sees it once its arguments were repaired. The mark is
- * written to the running part at once and every later metadata update of the
- * tool keeps it, so a call that then fails or is aborted still reports
- * `args_repaired`; a call that completes carries it in its result metadata.
+ * The call as the tool sees it once the harness has corrected something for it
+ * (`kind`: a repaired argument, a fuzzy match, ...). The correction is written to
+ * the running part at once and every later metadata update of the tool keeps it,
+ * so a call that then fails or is aborted still reports it; a call that completes
+ * carries it in its result metadata. The write replaces what the call reported
+ * so far, so mark before reporting metadata of your own. Marks add up: a tool
+ * keeps reporting through the context this returns.
  */
-const markRepaired = Effect.fnUntraced(function* (ctx: Context) {
+export const markCorrection = Effect.fnUntraced(function* (ctx: Context, kind: string) {
   const marked: Context = {
     ...ctx,
-    metadata: (input) => ctx.metadata({ ...input, metadata: addCorrections(input.metadata ?? {}, "args_repaired") }),
+    metadata: (input) => ctx.metadata({ ...input, metadata: addCorrections(input.metadata ?? {}, kind) }),
   }
   yield* marked.metadata({})
   return marked
