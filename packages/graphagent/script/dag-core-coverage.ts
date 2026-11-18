@@ -98,6 +98,7 @@ export async function runDagCoreCoverageGate() {
         // #1344: a module moved out of dag.ts is held to at least dag.ts's floor (98 / 95).
         { file: "src/dag/workflow-config.ts", lines: 100, functions: 100 },
         { file: "src/dag/completion-gate.ts", lines: 100, functions: 100 },
+        { file: "src/dag/command-core.ts", lines: 100, functions: 100 },
         { file: "src/dag/control.ts", lines: 90, functions: 85 },
         { file: "src/dag/runtime/loop.ts", lines: 90, functions: 88 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },

@@ -1,6 +1,5 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import path from "path"
-import { pathToFileURL } from "url"
 import { Effect, Layer, Context, Schema } from "effect"
 import { NamedError } from "@graphagent/core/util/error"
 import type { Agent } from "@/agent/agent"
@@ -474,24 +473,58 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Global.layer),
 )
 
+/** One listed skill line, prefix included, never longer than this many code points. */
+export const SKILL_LINE_MAX = 160
+/** The whole `<available_skills>` block, tags and the not-listed line included, in UTF-8 bytes. */
+export const SKILL_LIST_MAX_BYTES = 4096
+// Room kept for the not-listed line and the closing tag when deciding whether
+// one more skill line still fits.
+const SKILL_LIST_RESERVE_BYTES = 200
+
+/**
+ * The always-on list carries "when to use", not the manual: the first line of
+ * the description, up to and including the first `。` or the first `.` that is
+ * followed by whitespace or ends the line.
+ */
+export function firstSentence(description: string) {
+  const line = description.trim().split(/\r?\n/, 1)[0] ?? ""
+  const end = /。|\.(?=\s|$)/.exec(line)
+  return end === null ? line : line.slice(0, end.index + 1)
+}
+
+/** The only place a skill's description enters the list: `- <name>: <first sentence>`, cut at SKILL_LINE_MAX code points. */
+export function skillLine(skill: Info) {
+  const line = `- ${skill.name}: ${firstSentence(skill.description ?? "")}`
+  const points = Array.from(line)
+  return points.length > SKILL_LINE_MAX ? `${points.slice(0, SKILL_LINE_MAX - 1).join("")}…` : line
+}
+
+function notListedLine(count: number) {
+  return `... and ${count} more skills are not listed. Load a skill by name with the skill tool; an unknown name returns the available skill names.`
+}
+
+// Lines are taken in name order until the next one, plus the reserve, would
+// pass SKILL_LIST_MAX_BYTES; the rest is only counted.
+function skillList(skills: readonly Info[]) {
+  const head = "<available_skills>"
+  const sorted = skills.toSorted((a, b) => a.name.localeCompare(b.name))
+  const lines: string[] = []
+  let used = Buffer.byteLength(`${head}\n`)
+  for (const skill of sorted) {
+    const line = skillLine(skill)
+    const next = used + Buffer.byteLength(`${line}\n`)
+    if (next + SKILL_LIST_RESERVE_BYTES > SKILL_LIST_MAX_BYTES) break
+    lines.push(line)
+    used = next
+  }
+  const omitted = sorted.length - lines.length
+  return [head, ...lines, ...(omitted > 0 ? [notListedLine(omitted)] : []), "</available_skills>"].join("\n")
+}
+
 export function fmt(list: Info[], opts: { verbose: boolean }) {
   const described = list.filter((skill) => skill.description !== undefined)
   if (described.length === 0) return "No skills are currently available."
-  if (opts.verbose) {
-    return [
-      "<available_skills>",
-      ...described
-        .toSorted((a, b) => a.name.localeCompare(b.name))
-        .flatMap((skill) => [
-          "  <skill>",
-          `    <name>${skill.name}</name>`,
-          `    <description>${skill.description}</description>`,
-          `    <location>${pathToFileURL(skill.location).href}</location>`,
-          "  </skill>",
-        ]),
-      "</available_skills>",
-    ].join("\n")
-  }
+  if (opts.verbose) return skillList(described)
 
   return [
     "## Available Skills",

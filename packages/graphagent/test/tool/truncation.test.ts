@@ -10,12 +10,14 @@ import { Process } from "@/util/process"
 import path from "path"
 import { testEffect } from "../lib/effect"
 import { writeFileStringScoped } from "../lib/filesystem"
+import { truncateFailingWith, unwritableTruncate } from "../lib/truncate"
 import { TestConfig } from "../fixture/config"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 const ROOT = path.resolve(import.meta.dir, "..", "..")
 
 const it = testEffect(Layer.mergeAll(Truncate.defaultLayer, NodeFileSystem.layer, FSUtil.defaultLayer))
+const unwritableIt = testEffect(unwritableTruncate)
 
 const configuredLayer = (cfg: ConfigV1.Info) =>
   Layer.mergeAll(
@@ -189,6 +191,7 @@ describe("Truncate", () => {
         expect(result.truncated).toBe(true)
         expect(result.content).not.toContain("The tool call succeeded")
         if (!result.truncated) throw new Error("expected truncated")
+        if (result.outputPath === undefined) throw new Error("expected a saved file")
         expect(result.content).toContain(
           `[truncated: showing lines 1-10 of 100. 90 lines omitted after this range. Full output: ${result.outputPath}]`,
         )
@@ -233,10 +236,83 @@ describe("Truncate", () => {
         const result = yield* svc.output(content, { maxLines: 1 }, agent)
 
         if (!result.truncated) throw new Error("expected truncated")
+        if (result.outputPath === undefined) throw new Error("expected a saved file")
         expect(result.content).toContain(`Continue: read filePath="${result.outputPath}" offset=2`)
         expect(result.content).not.toContain("Task tool")
         expect(result.content).not.toContain("Do NOT read")
         expect(yield* (yield* FSUtil.Service).readFileString(result.outputPath)).toBe(content)
+      }),
+    )
+
+    it.live("save returns the path of a file that holds the text", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const saved = yield* svc.save("kept text")
+
+        if (!("path" in saved)) throw new Error(`expected a saved file, got: ${saved.failed}`)
+        expect(path.dirname(saved.path)).toBe(Truncate.DIR)
+        expect(path.basename(saved.path).startsWith("tool_")).toBe(true)
+        expect(yield* (yield* FSUtil.Service).readFileString(saved.path)).toBe("kept text")
+      }),
+    )
+
+    unwritableIt.live("save reports the reason a write failed instead of dying", () =>
+      Effect.gen(function* () {
+        const saved = yield* (yield* Truncate.Service).save("lost text")
+
+        expect(saved).toEqual({ failed: "disk full" })
+      }),
+    )
+
+    testEffect(truncateFailingWith(`${"x".repeat(300)}\nsecond line`)).live(
+      "save keeps the first line of the reason, at most 200 characters",
+      () =>
+        Effect.gen(function* () {
+          const saved = yield* (yield* Truncate.Service).save("lost text")
+
+          expect(saved).toEqual({ failed: "x".repeat(200) })
+        }),
+    )
+
+    test("states the reason a result could not be saved and what to do about it", () => {
+      expect(Truncate.unsavedNote("disk full")).toBe(
+        "Full output could not be saved: disk full. The omitted part cannot be read back; repeat the call with a narrower scope.",
+      )
+    })
+
+    unwritableIt.live("output keeps a bounded preview and says the full text could not be saved", () =>
+      Effect.gen(function* () {
+        const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
+        const result = yield* (yield* Truncate.Service).output(lines, { maxLines: 10 })
+
+        if (!result.truncated) throw new Error("expected truncated")
+        expect(result.outputPath).toBeUndefined()
+        expect("unsaved" in result && result.unsaved).toBe("disk full")
+        expect(result.content.startsWith("line0\n")).toBe(true)
+        expect(result.content).toContain("line9")
+        expect(result.content).not.toContain("line10")
+        expect(result.content.endsWith(`\n\n[truncated: ${Truncate.unsavedNote("disk full")}]`)).toBe(true)
+        expect(result.content).not.toContain("Continue:")
+      }),
+    )
+
+    unwritableIt.live("output puts the unsaved note before a tail preview", () =>
+      Effect.gen(function* () {
+        const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
+        const result = yield* (yield* Truncate.Service).output(lines, { maxLines: 10, direction: "tail" })
+
+        if (!result.truncated) throw new Error("expected truncated")
+        expect(result.outputPath).toBeUndefined()
+        expect(result.content.startsWith(`[truncated: ${Truncate.unsavedNote("disk full")}]\n\n`)).toBe(true)
+        expect(result.content.endsWith("line99")).toBe(true)
+      }),
+    )
+
+    unwritableIt.live("output still returns an untruncated text as it was", () =>
+      Effect.gen(function* () {
+        const result = yield* (yield* Truncate.Service).output("short")
+
+        expect(result).toEqual({ content: "short", truncated: false })
       }),
     )
 

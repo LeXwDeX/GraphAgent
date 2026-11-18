@@ -2,6 +2,7 @@ import { afterEach, describe, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import * as PlatformError from "effect/PlatformError"
 import { EditTool } from "../../src/tool/edit"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
@@ -92,6 +93,27 @@ const load = Effect.fn("EditToolTest.load")(function* (p: string) {
 const loadRaw = Effect.fn("EditToolTest.loadRaw")(function* (p: string) {
   return yield* Effect.promise(() => fs.readFile(p, "utf-8"))
 })
+
+// A filesystem whose stat of one file fails with a read error, not a missing file. Portable: it never relies on chmod.
+const statFaultFS = (target: string) =>
+  Effect.map(FSUtil.Service, (fs) =>
+    Layer.succeed(FSUtil.Service, {
+      ...fs,
+      stat: (p: string) =>
+        p === target
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "PermissionDenied",
+                module: "FileSystem",
+                method: "stat",
+                pathOrDescriptor: target,
+                syscall: "stat",
+                description: "simulated EACCES",
+              }),
+            )
+          : fs.stat(p),
+    }),
+  )
 
 const makeDirectory = Effect.fn("EditToolTest.makeDirectory")(function* (p: string) {
   const fs = yield* FSUtil.Service
@@ -200,7 +222,27 @@ describe("tool.edit", () => {
         expect(
           (yield* fail({ filePath: path.join(test.directory, "nonexistent.txt"), oldString: "old", newString: "new" }))
             .message,
-        ).toContain("not found")
+        ).toContain("not found. Check the path with glob.")
+      }),
+    )
+
+    it.instance("reports a stat failure other than a missing file instead of calling the file not found", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "unreadable.txt")
+        yield* put(target, "content")
+        const faultFS = yield* statFaultFS(target)
+
+        const exit = yield* run({ filePath: target, oldString: "content", newString: "other" }).pipe(
+          Effect.provide(faultFS),
+          Effect.exit,
+        )
+        if (!Exit.isFailure(exit)) throw new Error("expected the stat failure to fail the edit")
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("PermissionDenied")
+        expect(message).not.toContain("not found")
+        expect(message).not.toContain("Check the path with glob")
+        expect(yield* load(target)).toBe("content")
       }),
     )
 

@@ -1,6 +1,6 @@
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { afterEach, describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -31,12 +31,11 @@ const ctx = {
 
 const workspaceSymbolQueries: string[] = []
 
-const lsp = Layer.succeed(
-  LSP.Service,
+const stub = (hasClients: boolean) =>
   LSP.Service.of({
     init: () => Effect.void,
     status: () => Effect.succeed([]),
-    hasClients: () => Effect.succeed(true),
+    hasClients: () => Effect.succeed(hasClients),
     touchFile: () => Effect.void,
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed([]),
@@ -52,12 +51,19 @@ const lsp = Layer.succeed(
     prepareCallHierarchy: () => Effect.succeed([]),
     incomingCalls: () => Effect.succeed([]),
     outgoingCalls: () => Effect.succeed([]),
-  }),
-)
+  })
 
-const it = testEffect(
-  Layer.mergeAll(Agent.defaultLayer, FSUtil.defaultLayer, CrossSpawnSpawner.defaultLayer, Truncate.defaultLayer, lsp),
+const lsp = Layer.succeed(LSP.Service, stub(true))
+const noServer = Layer.succeed(LSP.Service, stub(false))
+
+const base = Layer.mergeAll(
+  Agent.defaultLayer,
+  FSUtil.defaultLayer,
+  CrossSpawnSpawner.defaultLayer,
+  Truncate.defaultLayer,
 )
+const it = testEffect(Layer.mergeAll(base, lsp))
+const itNoServer = testEffect(Layer.mergeAll(base, noServer))
 
 const init = Effect.fn("LspToolTest.init")(function* () {
   const info = yield* LspTool
@@ -70,6 +76,15 @@ const run = Effect.fn("LspToolTest.run")(function* (
 ) {
   const tool = yield* init()
   return yield* tool.execute(args, next)
+})
+
+const fail = Effect.fn("LspToolTest.fail")(function* (args: Tool.InferParameters<typeof LspTool>) {
+  const exit = yield* run(args).pipe(Effect.exit)
+  if (Exit.isFailure(exit)) {
+    const err = Cause.squash(exit.cause)
+    return err instanceof Error ? err : new Error(String(err))
+  }
+  throw new Error("expected lsp to fail")
 })
 
 const put = Effect.fn("LspToolTest.put")(function* (file: string) {
@@ -174,6 +189,35 @@ describe("tool.lsp", () => {
           yield* run({ operation: "workspaceSymbol", filePath: file, line: 3, character: 7 })
 
           expect(workspaceSymbolQueries).toEqual(["TestSymbol", ""])
+        }),
+      { git: true },
+    )
+  })
+
+  describe("failures name the next step", () => {
+    it.instance(
+      "a missing file says to check the path with glob",
+      () =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = path.join(dir, "missing.ts")
+
+          const err = yield* fail({ operation: "hover", filePath: file, line: 1, character: 1 })
+          expect(err.message).toBe(`File not found: ${file}. Check the path with glob.`)
+        }),
+      { git: true },
+    )
+
+    itNoServer.instance(
+      "a file type without a language server points to grep and read",
+      () =>
+        Effect.gen(function* () {
+          const dir = (yield* TestInstance).directory
+          const file = path.join(dir, "notes.txt")
+          yield* put(file)
+
+          const err = yield* fail({ operation: "hover", filePath: file, line: 1, character: 1 })
+          expect(err.message).toBe("No LSP server available for this file type. Use grep or read instead.")
         }),
       { git: true },
     )

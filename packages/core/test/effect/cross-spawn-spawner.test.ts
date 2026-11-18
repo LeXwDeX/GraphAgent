@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Exit, Stream } from "effect"
+import { Cause, Effect, Exit, Stream } from "effect"
 import type * as PlatformError from "effect/PlatformError"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -282,6 +282,81 @@ describe("cross-spawn spawner", () => {
         yield* handle.exitCode
         const running = yield* handle.isRunning
         expect(running).toBe(false)
+      }),
+    )
+
+    fx.effect(
+      "exitCode names the signal that terminated the process",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const exit = yield* Effect.exit(
+          Effect.gen(function* () {
+            const handle = yield* js('process.kill(process.pid, "SIGKILL")')
+            return yield* handle.exitCode
+          }),
+        )
+        if (!Exit.isFailure(exit)) throw new Error("expected exitCode to fail for a signal termination")
+        expect(CrossSpawnSpawner.signalOf(Cause.squash(exit.cause))).toBe("SIGKILL")
+
+        // Anything that is not a signal termination has no signal.
+        expect(CrossSpawnSpawner.signalOf(new Error("x"))).toBeUndefined()
+        const spawnFailure = yield* Effect.exit(
+          Effect.gen(function* () {
+            const handle = yield* ChildProcess.make("nonexistent-command-12345")
+            return yield* handle.exitCode
+          }),
+        )
+        if (!Exit.isFailure(spawnFailure)) throw new Error("expected spawn to fail for a missing command")
+        expect(CrossSpawnSpawner.signalOf(Cause.squash(spawnFailure.cause))).toBeUndefined()
+      }),
+    )
+
+    fx.effect(
+      "scope exit stops what a signal-terminated process left in its group",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const file = path.join(tmp.path, "member.pid")
+        // The member keeps no stdio open, so the end of its parent is seen at
+        // once. The parent then dies of a signal and leaves the member running.
+        const parent = [
+          'const member = require("node:child_process").spawn("sleep", ["300"], { stdio: "ignore" })',
+          `require("node:fs").writeFileSync(${JSON.stringify(file)}, String(member.pid))`,
+          'process.kill(process.pid, "SIGKILL")',
+        ].join(";")
+
+        let member: number | undefined
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            // A failing run must not leave the member running.
+            if (member === undefined) return
+            try {
+              process.kill(member, "SIGKILL")
+            } catch {
+              // It already stopped, which is the expected case.
+            }
+          }),
+        )
+
+        const pid = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* js(parent)
+            const exit = yield* Effect.exit(handle.exitCode)
+            expect(Exit.isFailure(exit)).toBe(true)
+            const pid = Number(yield* Effect.promise(() => fs.readFile(file, "utf8")))
+            member = pid
+            // Its parent is gone, so only the release of this scope can stop it.
+            expect(alive(pid)).toBe(true)
+            return pid
+          }),
+        )
+
+        expect(yield* Effect.promise(() => gone(pid, 2_000))).toBe(true)
       }),
     )
   })

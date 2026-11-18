@@ -17,15 +17,7 @@ import { isOverflow, serializedTools } from "./overflow"
 import { counters, fingerprintOf, recordStep, type PrefixFingerprint } from "./step-metrics"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
-import {
-  SessionRetry,
-  EmptyResponseError,
-  EMPTY_RESPONSE_MESSAGE,
-  IncompleteResponseError,
-  INCOMPLETE_RESPONSE_MESSAGE,
-  IncompleteReasoningResponseError,
-  INCOMPLETE_REASONING_RESPONSE_MESSAGE,
-} from "./retry"
+import { SessionRetry, EmptyResponseError, IncompleteResponseError, IncompleteReasoningResponseError } from "./retry"
 import { ToolInputRejectedError } from "./llm/ai-sdk"
 import { ChildPolicy } from "./child/policy"
 import { hookToolStop } from "@/hook/trigger-result"
@@ -39,7 +31,17 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { HistoryView } from "./history/view"
 import { LLMError, Usage, type LLMEvent } from "@graphagent/llm"
 import { makeToolCalls, type ToolCall } from "./processor-tool-calls"
-import { beginAttempt, initialAttemptState, type AttemptState } from "./turn/attempt"
+import {
+  beginAttempt,
+  emptyResponse,
+  incompleteReasoning,
+  incompleteResponse,
+  initialAttemptState,
+  recordFinish,
+  startText,
+  type AttemptState,
+} from "./turn/attempt"
+import { discardFailedText } from "./processor-discard"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
@@ -116,6 +118,19 @@ interface ProcessorContext extends Input {
 }
 
 type StreamEvent = LLMEvent
+
+/**
+ * A provider error ends the attempt without a step-finish, so the usage the provider billed for the cut-off
+ * response is accumulated here; the failure itself, and so its routing, is untouched.
+ */
+function failProviderError(ctx: ProcessorContext, event: Extract<StreamEvent, { type: "provider-error" }>) {
+  if (event.usage)
+    accumulateUsage(
+      ctx.assistantMessage,
+      Session.getUsage({ model: ctx.model, usage: event.usage, metadata: event.providerMetadata }),
+    )
+  return Effect.fail(event)
+}
 
 /**
  * The verdict of every tool call of one provider request (SF-5): the processor
@@ -664,7 +679,7 @@ export const layer = Layer.effect(
           }
 
           case "provider-error":
-            yield* Effect.fail(value)
+            yield* failProviderError(ctx, value)
             return
 
           case "step-start":
@@ -696,7 +711,7 @@ export const layer = Layer.effect(
               metadata: value.providerMetadata,
             })
             ctx.assistantMessage.finish = value.reason
-            ctx.attempt.finish = value.reason
+            recordFinish(ctx.attempt, value)
             const suppressed =
               isRecord(value.providerMetadata) &&
               isRecord(value.providerMetadata[METADATA_NAMESPACE]) &&
@@ -745,21 +760,12 @@ export const layer = Layer.effect(
             return
           }
 
-          case "text-start":
-            ctx.attempt.openText = {
-              id: PartID.ascending(),
-              messageID: ctx.assistantMessage.id,
-              sessionID: ctx.assistantMessage.sessionID,
-              type: "text",
-              text: "",
-              ...(input.onTextDisplay ? { displayText: "" } : {}),
-              time: { start: Date.now() },
-              metadata: value.providerMetadata,
-            }
-            ctx.attempt.openTextID = value.id
-            if (input.onTextDisplay) displayParts.push(ctx.attempt.openText)
-            yield* session.updatePart(ctx.attempt.openText)
+          case "text-start": {
+            const part = startText(ctx.attempt, ctx.assistantMessage, value, !!input.onTextDisplay)
+            if (input.onTextDisplay) displayParts.push(part)
+            yield* session.updatePart(part)
             return
+          }
 
           case "text-delta":
             metricsFirstTokenAt ??= performance.now()
@@ -830,6 +836,9 @@ export const layer = Layer.effect(
           ctx.attempt.openTextID = undefined
         }
         yield* discardFailedReasoning()
+        yield* discardFailedText({ session, ctx, displayParts, displaySegments })
+        displayPending = ""
+        lastDisplayPart = undefined
         yield* severUnexecutedToolCalls()
       })
 
@@ -1064,7 +1073,7 @@ export const layer = Layer.effect(
               (unfinishedToolInput || ctx.attempt.admittedToolCalls > 0)
             ) {
               yield* severUnexecutedToolCalls()
-              return yield* Effect.fail(new IncompleteResponseError({ message: INCOMPLETE_RESPONSE_MESSAGE }))
+              return yield* Effect.fail(incompleteResponse(ctx.attempt))
             }
 
             // A completely empty normal-conversation attempt (no text, no
@@ -1088,7 +1097,7 @@ export const layer = Layer.effect(
               !ctx.attempt.opaqueReasoning &&
               (ctx.attempt.finish === undefined || ctx.attempt.finish === "unknown" || ctx.attempt.finish === "stop")
             ) {
-              return yield* Effect.fail(new EmptyResponseError({ message: EMPTY_RESPONSE_MESSAGE }))
+              return yield* Effect.fail(emptyResponse(ctx.attempt))
             }
 
             // An abnormal finish after reasoning alone never delivered an
@@ -1106,9 +1115,7 @@ export const layer = Layer.effect(
               ctx.attempt.reasoningActivity &&
               (ctx.attempt.finish === undefined || ctx.attempt.finish === "unknown")
             ) {
-              return yield* Effect.fail(
-                new IncompleteReasoningResponseError({ message: INCOMPLETE_REASONING_RESPONSE_MESSAGE }),
-              )
+              return yield* Effect.fail(incompleteReasoning(ctx.attempt))
             }
           }).pipe(
             Effect.onInterrupt(() =>
