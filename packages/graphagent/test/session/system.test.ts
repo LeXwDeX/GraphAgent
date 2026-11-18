@@ -122,9 +122,9 @@ describe("session.system", () => {
 
       expect(first).toBe(second)
 
-      const alpha = output.indexOf("<name>alpha-skill</name>")
-      const middle = output.indexOf("<name>middle-skill</name>")
-      const zeta = output.indexOf("<name>zeta-skill</name>")
+      const alpha = output.indexOf("- alpha-skill: ")
+      const middle = output.indexOf("- middle-skill: ")
+      const zeta = output.indexOf("- zeta-skill: ")
 
       expect(alpha).toBeGreaterThan(-1)
       expect(middle).toBeGreaterThan(alpha)
@@ -181,6 +181,35 @@ describe("session.system", () => {
       ]
       try {
         expect(yield* prompt.skills(build)).toContain("fresh-skill")
+      } finally {
+        availableSkills = skills
+      }
+    }),
+  )
+
+  it.effect("skills output is one line per skill and carries no location", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = (yield* prompt.skills(build)) ?? ""
+
+      expect(output).toContain("- alpha-skill: Alpha skill.")
+      expect(output).not.toContain("<location>")
+      expect(output).not.toContain("file://")
+      expect(output).not.toContain("/tmp/alpha-skill")
+    }),
+  )
+
+  it.effect("skills output follows a changed description", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      expect(yield* prompt.skills(build)).not.toContain("Reworded alpha.")
+      availableSkills = skills.map((item) =>
+        item.name === "alpha-skill" ? { ...item, description: "Reworded alpha." } : item,
+      )
+      try {
+        const output = (yield* prompt.skills(build)) ?? ""
+        expect(output).toContain("- alpha-skill: Reworded alpha.")
+        expect(output).not.toContain("Alpha skill.")
       } finally {
         availableSkills = skills
       }

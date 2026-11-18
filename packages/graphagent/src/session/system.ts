@@ -163,12 +163,12 @@ export const layer = Layer.effect(
             Permission.evaluate("skill", item.name, nativePermission ?? []).action !== "deny" &&
             Permission.evaluate("skill", item.name, ruleset).action !== "deny",
         )
-        // The rendered block only depends on these three fields; hashing the
+        // The rendered block only depends on these two fields; hashing the
         // full skill content would read every skill body on every request.
         const key = RequestCache.digest({
-          version: "system-skills-v1",
+          version: "system-skills-v2",
           agent: agent.name,
-          skills: list.map((item) => ({ name: item.name, description: item.description, location: item.location })),
+          skills: list.map((item) => ({ name: item.name, description: item.description })),
         })
         const cached = RequestCache.get(fragments, key)
         if (cached) return cached.text

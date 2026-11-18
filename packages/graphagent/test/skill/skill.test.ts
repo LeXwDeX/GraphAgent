@@ -1,6 +1,7 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Logger } from "effect"
 import { Skill } from "../../src/skill"
+import { BUILTIN_SKILLS } from "../../src/skill/builtin"
 import { Config } from "../../src/config/config"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Discovery } from "../../src/skill/discovery"
@@ -121,8 +122,8 @@ describe("skill", () => {
           // hidden means "no same-name slash command", not "invisible": the
           // reference skills still appear in available_skills.
           const available = Skill.fmt(yield* skill.all(), { verbose: true })
-          expect(available).toContain("<name>dag-blocks</name>")
-          expect(available).toContain("<name>dag-policy</name>")
+          expect(available).toContain("- dag-blocks: ")
+          expect(available).toContain("- dag-policy: ")
         }),
       { git: true },
     ),
@@ -805,4 +806,139 @@ description: A second skill in the .agents/skills directory.
       expect(logs.filter((line) => line.includes("duplicate skill name"))).toHaveLength(50)
     }),
   )
+})
+
+const described = (name: string, description?: string): Skill.Info => ({
+  name,
+  ...(description === undefined ? {} : { description }),
+  location: `/skills/${name}/SKILL.md`,
+  content: `# ${name}`,
+})
+
+const points = (value: string) => Array.from(value).length
+
+describe("skill list rendering", () => {
+  test("firstSentence cuts at 。, at a period before whitespace, and at the end of the first line", () => {
+    expect(Skill.firstSentence("使用时机。其余说明")).toBe("使用时机。")
+    expect(Skill.firstSentence("Use when A. Also use when B.")).toBe("Use when A.")
+    expect(Skill.firstSentence("  First line\nSecond line. More.")).toBe("First line")
+    expect(Skill.firstSentence("First line.\nSecond line.")).toBe("First line.")
+    expect(Skill.firstSentence("First line\r\nSecond line.")).toBe("First line")
+    expect(Skill.firstSentence("No punctuation here")).toBe("No punctuation here")
+  })
+
+  test("firstSentence keeps a period that is not followed by whitespace", () => {
+    expect(Skill.firstSentence("Edit graphagent.json and hooks.json now. Then stop.")).toBe(
+      "Edit graphagent.json and hooks.json now.",
+    )
+    expect(Skill.firstSentence("Version 2.0 notes")).toBe("Version 2.0 notes")
+  })
+
+  test("skillLine caps a line at 160 code points and marks the cut with an ellipsis", () => {
+    const line = Skill.skillLine(described("long-skill", "x".repeat(400)))
+    expect(points(line)).toBe(Skill.SKILL_LINE_MAX)
+    expect(line.startsWith("- long-skill: x")).toBe(true)
+    expect(line.endsWith("…")).toBe(true)
+    expect(line).toBe(`- long-skill: ${"x".repeat(160 - "- long-skill: ".length - 1)}…`)
+  })
+
+  test("skillLine counts code points, not UTF-16 units", () => {
+    const line = Skill.skillLine(described("emoji", "😀".repeat(300)))
+    expect(points(line)).toBe(Skill.SKILL_LINE_MAX)
+    expect(line.endsWith("…")).toBe(true)
+    expect(line).not.toContain("\uFFFD")
+  })
+
+  test("skillLine leaves a line of exactly 160 code points alone", () => {
+    const fill = "y".repeat(Skill.SKILL_LINE_MAX - "- exact: ".length)
+    const line = Skill.skillLine(described("exact", fill))
+    expect(line).toBe(`- exact: ${fill}`)
+    expect(points(line)).toBe(Skill.SKILL_LINE_MAX)
+    expect(line.endsWith("…")).toBe(false)
+  })
+
+  test("fmt writes one sorted line per skill, without paths", () => {
+    const output = Skill.fmt(
+      [
+        described("beta", "Use when running beta checks. Extra detail that stays out of the list."),
+        described("alpha", "Use when editing alpha files."),
+        described("hidden-description"),
+      ],
+      { verbose: true },
+    )
+    expect(output).toBe(
+      [
+        "<available_skills>",
+        "- alpha: Use when editing alpha files.",
+        "- beta: Use when running beta checks.",
+        "</available_skills>",
+      ].join("\n"),
+    )
+    expect(output).not.toContain("file://")
+    expect(output).not.toContain("<location>")
+    expect(output).not.toContain("/skills/")
+  })
+
+  test("fmt keeps 200 skills under the byte budget and says how many are not listed", () => {
+    const list = Array.from({ length: 200 }, (_, index) =>
+      described(`skill-${String(index).padStart(3, "0")}`, `Use when handling case ${index}. ${"detail ".repeat(20)}`),
+    )
+    const output = Skill.fmt(list.toReversed(), { verbose: true })
+    const lines = output.split("\n")
+    const listed = lines.filter((line) => line.startsWith("- "))
+
+    expect(Buffer.byteLength(output)).toBeLessThanOrEqual(Skill.SKILL_LIST_MAX_BYTES)
+    expect(lines[0]).toBe("<available_skills>")
+    expect(lines.at(-1)).toBe("</available_skills>")
+    expect(listed.length).toBeGreaterThan(0)
+    expect(listed.length).toBeLessThan(200)
+    // The listed skills are the ones that sort first by name.
+    expect(listed).toEqual(list.slice(0, listed.length).map((item) => Skill.skillLine(item)))
+    expect(lines.at(-2)).toBe(
+      `... and ${200 - listed.length} more skills are not listed. Load a skill by name with the skill tool; an unknown name returns the available skill names.`,
+    )
+  })
+
+  test("fmt stops once the used bytes plus the 200-byte reserve would pass the budget", () => {
+    // Every line is exactly 100 bytes with its newline: "- sNN: " is 7 bytes, 92 more fill the line.
+    const list = Array.from({ length: 50 }, (_, index) =>
+      described(`s${String(index).padStart(2, "0")}`, "d".repeat(92)),
+    )
+    expect(Buffer.byteLength(`${Skill.skillLine(list[0])}\n`)).toBe(100)
+
+    const output = Skill.fmt(list, { verbose: true })
+    const listed = output.split("\n").filter((line) => line.startsWith("- "))
+    // "<available_skills>\n" is 19 bytes: line k is kept while 19 + 100k + 200 <= 4096, so k <= 38.
+    expect(listed).toHaveLength(38)
+    expect(output).toContain("... and 12 more skills are not listed.")
+    expect(Buffer.byteLength(output)).toBeLessThanOrEqual(Skill.SKILL_LIST_MAX_BYTES)
+  })
+
+  test("fmt omits the not-listed line when every skill fits", () => {
+    const output = Skill.fmt([described("only", "Use when only one exists.")], { verbose: true })
+    expect(output).not.toContain("not listed")
+    expect(output.split("\n")).toEqual([
+      "<available_skills>",
+      "- only: Use when only one exists.",
+      "</available_skills>",
+    ])
+  })
+
+  test("every built-in skill fits on one line without being cut", () => {
+    for (const item of BUILTIN_SKILLS) {
+      const line = Skill.skillLine(described(item.name, item.description))
+      expect(points(line)).toBeLessThanOrEqual(Skill.SKILL_LINE_MAX)
+      expect(line.endsWith("…")).toBe(false)
+      expect(line.startsWith(`- ${item.name}: `)).toBe(true)
+    }
+  })
+
+  test("the built-in skills are all listed without an elision line", () => {
+    const output = Skill.fmt(
+      BUILTIN_SKILLS.map((item) => described(item.name, item.description)),
+      { verbose: true },
+    )
+    expect(output).not.toContain("not listed")
+    expect(output.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(BUILTIN_SKILLS.length)
+  })
 })
