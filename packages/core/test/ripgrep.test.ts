@@ -76,6 +76,51 @@ const failureText = (exit: Exit.Exit<unknown, unknown>): string => {
   return cause instanceof Error ? cause.message : String(cause)
 }
 
+// Runs `effect` with every ripgrep spawn answered by `fault`, and clears it afterwards.
+const withSpawnFault = <A, E, R>(fault: SpawnFault, effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      spawnFault = fault
+    }),
+    () => effect,
+    () =>
+      Effect.sync(() => {
+        spawnFault = undefined
+      }),
+  )
+
+const argsOf = (command: ChildProcess.Command): readonly string[] =>
+  command._tag === "StandardCommand" ? command.args.map(String) : []
+
+// The `--json` records of a search in which only plain.txt matched: files without a match have none.
+const plainMatch = [
+  JSON.stringify({ type: "begin", data: { path: { text: "./plain.txt" } } }),
+  JSON.stringify({
+    type: "match",
+    data: {
+      path: { text: "./plain.txt" },
+      lines: { text: "needle here\n" },
+      line_number: 1,
+      absolute_offset: 0,
+      submatches: [{ match: { text: "needle" }, start: 0, end: 6 }],
+    },
+  }),
+  JSON.stringify({
+    type: "end",
+    data: { path: { text: "./plain.txt" }, binary_offset: null, stats: { searches: 1, searches_with_match: 1 } },
+  }),
+]
+
+// The closing record. Before ripgrep 15.0.0 `searches` counted only the files that matched; later releases count every file.
+const closing = (searches: number, withMatch: number) =>
+  JSON.stringify({
+    data: {
+      elapsed_total: { secs: 0, nanos: 1, human: "0.000001s" },
+      stats: { searches, searches_with_match: withMatch },
+    },
+    type: "summary",
+  })
+
 describe("Ripgrep", () => {
   itFaulted.live("retains the built-in abort error reason", () =>
     Effect.acquireUseRelease(
@@ -549,6 +594,142 @@ describe("Ripgrep", () => {
       )
       expect(exit._tag).toBe("Failure")
       expect(failureText(exit)).toContain("Permission denied")
+    }),
+  )
+
+  // The spawn is faked in the next tests, so the summaries of both generations of ripgrep are checked
+  // whichever one is installed.
+  itFaulted.live("counts the files it searched when the summary counts only the files that matched", () =>
+    Effect.gen(function* () {
+      const spawned: (readonly string[])[] = []
+      const report = yield* withSpawnFault(
+        (command) => {
+          spawned.push(argsOf(command))
+          return Effect.succeed(
+            argsOf(command).includes("--files")
+              ? fakeHandle(["./bundle.min.js", "./other.txt", "./plain.txt"], "", 0)
+              : fakeHandle([...plainMatch, closing(1, 1)], "", 0),
+          )
+        },
+        Effect.gen(function* () {
+          return yield* (yield* Ripgrep.Service).grepReport({
+            cwd: ".",
+            pattern: "needle",
+            include: "*.txt",
+            limit: 10,
+          })
+        }),
+      )
+      expect(report.rows.map((row) => String(row.match.entry.path))).toEqual(["plain.txt"])
+      expect(report.searched).toBe(3)
+
+      // The files are listed under the filters the search used.
+      const search = spawned.find((args) => args.includes("--json"))!
+      const listing = spawned.find((args) => args.includes("--files"))!
+      expect(search.filter((arg) => arg === "--hidden" || arg.startsWith("--glob="))).toEqual(
+        listing.filter((arg) => arg === "--hidden" || arg.startsWith("--glob=")),
+      )
+      expect(listing).toContain("--glob=*.txt")
+    }),
+  )
+
+  itFaulted.live("counts the files it searched when nothing matched and the summary says none", () =>
+    Effect.gen(function* () {
+      const report = yield* withSpawnFault(
+        (command) =>
+          Effect.succeed(
+            argsOf(command).includes("--files")
+              ? fakeHandle(["./other.txt", "./plain.txt"], "", 0)
+              : fakeHandle([closing(0, 0)], "", 1),
+          ),
+        Effect.gen(function* () {
+          return yield* (yield* Ripgrep.Service).grepReport({ cwd: ".", pattern: "absent-word", limit: 10 })
+        }),
+      )
+      expect(report.rows).toEqual([])
+      expect(report.skipped).toBe(0)
+      expect(report.searched).toBe(2)
+    }),
+  )
+
+  itFaulted.live("counts the exact file it was pointed at", () =>
+    Effect.gen(function* () {
+      const spawned: (readonly string[])[] = []
+      const report = yield* withSpawnFault(
+        (command) => {
+          spawned.push(argsOf(command))
+          return Effect.succeed(
+            argsOf(command).includes("--files") ? fakeHandle(["plain.txt"], "", 0) : fakeHandle([closing(0, 0)], "", 1),
+          )
+        },
+        Effect.gen(function* () {
+          return yield* (yield* Ripgrep.Service).grepReport({
+            cwd: ".",
+            pattern: "absent-word",
+            file: "plain.txt",
+            limit: 10,
+          })
+        }),
+      )
+      expect(report.searched).toBe(1)
+      expect(spawned.find((args) => args.includes("--files"))!.slice(-2)).toEqual(["--", "plain.txt"])
+    }),
+  )
+
+  itFaulted.live("reports no file searched when the filters let none through", () =>
+    Effect.gen(function* () {
+      const report = yield* withSpawnFault(
+        (command) =>
+          Effect.succeed(
+            argsOf(command).includes("--files") ? fakeHandle([], "", 1) : fakeHandle([closing(0, 0)], "", 1),
+          ),
+        Effect.gen(function* () {
+          return yield* (yield* Ripgrep.Service).grepReport({
+            cwd: ".",
+            pattern: "needle",
+            include: "*.nomatch",
+            limit: 10,
+          })
+        }),
+      )
+      expect(report.rows).toEqual([])
+      expect(report.searched).toBe(0)
+    }),
+  )
+
+  itFaulted.live("keeps the summary's count when it covers files that did not match", () =>
+    Effect.gen(function* () {
+      const spawned: (readonly string[])[] = []
+      const report = yield* withSpawnFault(
+        (command) => {
+          spawned.push(argsOf(command))
+          return Effect.succeed(fakeHandle([...plainMatch, closing(3, 1)], "", 0))
+        },
+        Effect.gen(function* () {
+          return yield* (yield* Ripgrep.Service).grepReport({ cwd: ".", pattern: "needle", limit: 10 })
+        }),
+      )
+      expect(report.searched).toBe(3)
+      // One process: a count above the files that matched needs no second look.
+      expect(spawned).toHaveLength(1)
+    }),
+  )
+
+  itFaulted.live("does not report a count when the file listing hit traversal errors", () =>
+    Effect.gen(function* () {
+      const report = yield* withSpawnFault(
+        (command) =>
+          Effect.succeed(
+            argsOf(command).includes("--files")
+              ? fakeHandle(["./readable.txt"], "rg: locked: Permission denied (os error 13)", 2)
+              : fakeHandle([closing(0, 0)], "", 1),
+          ),
+        Effect.gen(function* () {
+          return yield* (yield* Ripgrep.Service).grepReport({ cwd: ".", pattern: "absent-word", limit: 10 })
+        }),
+      )
+      expect(report.rows).toEqual([])
+      expect(report.searched).toBeUndefined()
     }),
   )
 })
