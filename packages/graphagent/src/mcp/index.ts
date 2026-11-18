@@ -184,6 +184,24 @@ interface State {
   files: ReturnType<typeof McpConfig.cached>
 }
 
+const toolID = (server: string, tool: string) => `${server}\0${tool}`
+
+/**
+ * The model-facing key of every tool of the connected servers, by `toolID`. The keys are settled across all of them at
+ * once, so a key never depends on which server connected first (#1459); "" means the tool gets no key and is skipped.
+ * `tools()` and `instructions()` both read this, so they agree on the keys.
+ */
+function connectedKeys(s: State) {
+  const pairs = new Map<string, { server: string; tool: string }>()
+  for (const server of Object.keys(s.clients)) {
+    if (s.status[server]?.status !== "connected") continue
+    for (const def of s.defs[server] ?? []) pairs.set(toolID(server, def.name), { server, tool: def.name })
+  }
+  const known = [...pairs]
+  const keys = McpCatalog.assignToolKeys(known.map(([, pair]) => pair))
+  return new Map<string, string>(known.map(([id], index) => [id, keys[index]]))
+}
+
 export interface ServerInstructions {
   name: string
   instructions: string
@@ -713,14 +731,15 @@ export const layer = Layer.effect(
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
       const s = yield* InstanceState.get(state)
+      const keys = connectedKeys(s)
       return Object.entries(s.instructions)
         .filter(([name]) => s.status[name]?.status === "connected")
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, item]) => ({
-          name,
-          instructions: item,
-          tools: (s.defs[name] ?? []).map((tool) => McpCatalog.toolName(name, tool.name)),
-        }))
+        .map(([name, item]) => {
+          const listed = (s.defs[name] ?? []).map((tool) => keys.get(toolID(name, tool.name)) ?? "")
+          // A tool listed twice has one key, and a tool without a key is not offered.
+          return { name, instructions: item, tools: [...new Set(listed)].filter((key) => key !== "") }
+        })
     })
 
     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: McpServer) {
@@ -781,6 +800,7 @@ export const layer = Layer.effect(
         })
       }
 
+      const keys = connectedKeys(s)
       for (const [clientName, client] of Object.entries(s.clients)) {
         if (s.status[clientName]?.status !== "connected") continue
         const mcpConfig = config[clientName]
@@ -791,7 +811,23 @@ export const layer = Layer.effect(
         }
         const timeout = requestTimeout(s, clientName, mcpConfig)
         for (const mcpTool of listed) {
-          const key = McpCatalog.toolName(clientName, mcpTool.name)
+          const key = keys.get(toolID(clientName, mcpTool.name)) ?? ""
+          // A tool is never dropped silently: one with no key, or one a server lists twice, is skipped and said so.
+          if (key === "" || Object.hasOwn(result, key)) {
+            yield* Effect.logWarning("MCP tool skipped: its key is already taken", {
+              server: clientName,
+              tool: mcpTool.name,
+            })
+            continue
+          }
+          const plain = McpCatalog.sanitize(clientName) + "_" + McpCatalog.sanitize(mcpTool.name)
+          if (key !== plain) {
+            yield* Effect.logWarning("MCP tool key rewritten to stay unique and within 64 characters", {
+              server: clientName,
+              tool: mcpTool.name,
+              key,
+            })
+          }
           result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout, clientName), {
             server: clientName,
             tool: mcpTool.name,
@@ -799,6 +835,8 @@ export const layer = Layer.effect(
             source: "unknown",
             // Only the boolean `true` marks a tool; any other value is ignored.
             requiresUserInteraction: mcpTool._meta?.["anthropic/requiresUserInteraction"] === true,
+            // A rewritten key remembers the key it had, so the deny and ask rules written for that key still apply.
+            ...(key === plain ? {} : { baseKey: plain }),
           })
         }
       }

@@ -9,6 +9,7 @@ import { Client } from "@modelcontextprotocol/client"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProjectV2 } from "@graphagent/core/project"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -30,14 +31,14 @@ const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".agents")])),
 })
 
-const mcpTool = (server: string, name: string) =>
+const mcpTool = (server: string, name: string, baseKey?: string) =>
   McpCatalog.bindTool(
     dynamicTool({
       description: `remote ${name}`,
       inputSchema: jsonSchema({ type: "object", properties: { value: { type: "string" } } }),
       execute: async () => ({ content: [] }),
     }),
-    { server, tool: name, source: "fixture" },
+    { server, tool: name, source: "fixture", ...(baseKey === undefined ? {} : { baseKey }) },
   )
 
 const resourceClient = Object.assign(new Client({ name: "fixture", version: "0" }), {
@@ -210,6 +211,87 @@ describe("tool.registry MCP resolution", () => {
       expect(switchedIds).not.toContain("read")
       expect(switchedIds).not.toContain("aaa_remote")
       expect(switchedIds).toContain("zzz_remote")
+    }),
+  )
+
+  it.instance("hides a rewritten MCP key by a deny of the key it had before; an ask or another key does not", () =>
+    Effect.gen(function* () {
+      const { registry, build, directory, model } = yield* setup
+      const original = mcpTools
+      const session = sessionInfo(directory)
+      const resolveIds = (permission: PermissionV1.Ruleset) =>
+        registry
+          .resolve({ model, agent: build, session, permission })
+          .pipe(Effect.map((entries) => entries.map((e) => e.id)))
+      try {
+        // Server `mcp`'s `call` is a reserved name, so it got a hash suffix: its key was `mcp_call` before (#1459).
+        mcpTools = { ...original, mcp_call_1a2b3c4d: mcpTool("mcp", "call", "mcp_call") }
+
+        const everything = yield* resolveIds([])
+        expect(everything).toContain("mcp_call_1a2b3c4d")
+
+        // A deny written for the old key hides the tool, whatever else the rules say about the new key.
+        expect(yield* resolveIds([{ permission: "mcp_call", pattern: "*", action: "deny" }])).not.toContain(
+          "mcp_call_1a2b3c4d",
+        )
+        expect(yield* resolveIds([{ permission: "mcp_*", pattern: "*", action: "deny" }])).not.toContain(
+          "mcp_call_1a2b3c4d",
+        )
+        // The new key's own deny hides it as before; an ask, an allow and a rule about another key do not.
+        expect(yield* resolveIds([{ permission: "mcp_call_1a2b3c4d", pattern: "*", action: "deny" }])).not.toContain(
+          "mcp_call_1a2b3c4d",
+        )
+        for (const rule of [
+          { permission: "mcp_call", pattern: "*", action: "ask" as const },
+          { permission: "mcp_call", pattern: "*", action: "allow" as const },
+          { permission: "mcp_other", pattern: "*", action: "deny" as const },
+        ])
+          expect(yield* resolveIds([rule])).toContain("mcp_call_1a2b3c4d")
+        // A later allow for the old key lifts the deny, as it always did.
+        expect(
+          yield* resolveIds([
+            { permission: "mcp_call", pattern: "*", action: "deny" },
+            { permission: "mcp_call", pattern: "*", action: "allow" },
+          ]),
+        ).toContain("mcp_call_1a2b3c4d")
+        // Nothing else is hidden by the old key's deny.
+        expect(yield* resolveIds([{ permission: "mcp_call", pattern: "*", action: "deny" }])).toEqual(
+          everything.filter((id) => id !== "mcp_call_1a2b3c4d"),
+        )
+      } finally {
+        mcpTools = original
+      }
+    }),
+  )
+
+  it.instance("carries the old key only on a rewritten MCP key, and a plain key's source is unchanged", () =>
+    Effect.gen(function* () {
+      const { registry, build, directory, model } = yield* setup
+      const original = mcpTools
+      try {
+        mcpTools = { ...original, mcp_call_1a2b3c4d: mcpTool("mcp", "call", "mcp_call") }
+        const entries = yield* registry.resolve({ model, agent: build, session: sessionInfo(directory) })
+        expect(entries.find((entry) => entry.id === "mcp_call_1a2b3c4d")?.source).toEqual({
+          kind: "mcp",
+          server: "mcp",
+          tool: "call",
+          source: "fixture",
+          canonicalName: "mcp__mcp__call",
+          requiresUserInteraction: false,
+          baseKey: "mcp_call",
+        })
+        // A tool whose key never changed has exactly the source it had before: no `baseKey` at all.
+        expect(entries.find((entry) => entry.id === "aaa_remote")?.source).toEqual({
+          kind: "mcp",
+          server: "fixture",
+          tool: "aaa",
+          source: "fixture",
+          canonicalName: "mcp__fixture__aaa",
+          requiresUserInteraction: false,
+        })
+      } finally {
+        mcpTools = original
+      }
     }),
   )
 

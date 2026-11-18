@@ -96,6 +96,7 @@ export const GrepTool = Tool.define(
       description: DESCRIPTION,
       effects: "read",
       parameters: Parameters,
+      clamps: { limit: { max: MAX_LIMIT }, context: { max: MAX_CONTEXT } },
       execute: (
         params: { pattern: string; path?: string; include?: string; limit?: number; context?: number },
         ctx: Tool.Context,

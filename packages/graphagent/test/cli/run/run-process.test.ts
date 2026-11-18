@@ -42,7 +42,6 @@ describe("graphagent run (non-interactive subprocess)", () => {
         yield* llm.push(
           reply().text("  before tool  ").tool("bash", {
             command: "printf tool-output",
-            description: "Print deterministic output",
           }),
         )
         yield* llm.text("  after tool  ")
@@ -108,7 +107,6 @@ describe("graphagent run (non-interactive subprocess)", () => {
           reply().text("partial response").tool("bash", {
             command: "printf x >> tool-count; printf tool",
             workdir: home,
-            description: "Print deterministic output",
           }),
         )
         yield* llm.fail("upstream provider exploded mid-stream")
@@ -194,7 +192,6 @@ describe("graphagent run (non-interactive subprocess)", () => {
         yield* llm.push(
           reply().reason("reasoning").text("before").tool("bash", {
             command: "printf tool",
-            description: "Print deterministic output",
           }),
         )
         yield* llm.text("after")
@@ -244,7 +241,6 @@ describe("graphagent run (non-interactive subprocess)", () => {
           reply().text("partial json").tool("bash", {
             command: "printf x >> tool-count; printf tool",
             workdir: home,
-            description: "Print deterministic output",
           }),
         )
         // A clean SSE end without a finish reason is the SDK's unknown-finish

@@ -491,6 +491,21 @@ describe("tool.glob", () => {
     }),
   )
 
+  it.instance("says a limit above the maximum was capped and records clamped (#1451)", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "a.txt"), "x"))
+
+      const capped = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 5000 })
+      expect(capped.output).toEndWith("\n\nNote: limit 5000 is above the maximum 1000; 1000 was used.")
+      expect(capped.metadata).toMatchObject({ corrections: ["clamped"] })
+
+      const exact = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 1000 })
+      expect(exact.output).not.toContain("Note:")
+      expect(exact.metadata).not.toHaveProperty("corrections")
+    }),
+  )
+
   it.instance("supports relative directories and normal no-match results", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

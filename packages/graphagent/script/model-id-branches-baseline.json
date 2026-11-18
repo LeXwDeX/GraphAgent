@@ -7,8 +7,7 @@
     "packages/graphagent/src/provider/adapter/copilot/copilot.ts": 1,
     "packages/graphagent/src/provider/adapter/copilot/models.ts": 1,
     "packages/graphagent/src/provider/provider.ts": 12,
-    "packages/graphagent/src/provider/transform.ts": 90,
-    "packages/graphagent/src/session/message-v2.ts": 1,
+    "packages/graphagent/src/provider/transform.ts": 65,
     "packages/llm/src/providers/openai-options.ts": 1
   }
 }

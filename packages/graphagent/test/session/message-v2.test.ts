@@ -12,6 +12,7 @@ import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
+import { resolveProfile } from "@graphagent/core/model-profile"
 import {
   AuthenticationReason,
   HttpContext,
@@ -2773,5 +2774,124 @@ describe("session.message-v2.latest", () => {
     expect(state.user?.id).toBe(POST_WRAP_USER)
     expect(state.assistant?.id).toBe(POST_WRAP_ASSISTANT)
     expect(state.finished?.id).toBe(POST_WRAP_ASSISTANT)
+  })
+})
+
+describe("session.message-v2 tool result media follows the model profile", () => {
+  const png = "Zm9v"
+  const pdf = Buffer.from("%PDF-1.4\n").toString("base64")
+
+  // Same wire shape for every case; only the profile (or, for the rules, the npm package) differs.
+  const relayModel = (
+    media: "all" | "image" | "none" | undefined,
+    npm = "@ai-sdk/openai-compatible",
+  ): Provider.Model => ({
+    ...model,
+    id: ModelV2.ID.make("relay/vision"),
+    providerID: ProviderV2.ID.make("relay"),
+    api: { id: "vision", url: "https://relay.example.com/v1", npm },
+    capabilities: {
+      ...model.capabilities,
+      attachment: true,
+      input: { ...model.capabilities.input, image: true, pdf: true },
+    },
+    profile: resolveProfile({
+      providerID: "relay",
+      apiID: "vision",
+      npm,
+      ...(media === undefined ? {} : { config: { profile: { tool_result_media: media } } }),
+    }),
+  })
+
+  const history = (): SessionV1.WithParts[] => {
+    const userID = "m-user-media"
+    const assistantID = "m-assistant-media"
+    return [
+      {
+        info: userInfo(userID),
+        parts: [{ ...basePart(userID, "u1-media"), type: "text", text: "run tool" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1-media"),
+            type: "tool",
+            callID: "call-media-1",
+            tool: "read",
+            state: {
+              status: "completed",
+              input: { filePath: "/tmp/example" },
+              output: "read ok",
+              title: "Read",
+              metadata: {},
+              time: { start: 0, end: 1 },
+              attachments: [
+                {
+                  ...basePart(assistantID, "file-media-png"),
+                  type: "file",
+                  mime: "image/png",
+                  filename: "example.png",
+                  url: `data:image/png;base64,${png}`,
+                },
+                {
+                  ...basePart(assistantID, "file-media-pdf"),
+                  type: "file",
+                  mime: "application/pdf",
+                  filename: "example.pdf",
+                  url: `data:application/pdf;base64,${pdf}`,
+                },
+              ],
+            },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+  }
+
+  /** The media types sent inside the tool result and the ones moved into the synthetic user message. */
+  const placement = async (target: Provider.Model) => {
+    const result = await MessageV2.toModelMessages(history(), target)
+    const tool = result.find((msg) => msg.role === "tool")
+    const output =
+      Array.isArray(tool?.content) && tool.content[0]?.type === "tool-result" ? tool.content[0].output : undefined
+    const inline =
+      output?.type === "content" ? output.value.flatMap((item) => (item.type === "media" ? [item.mediaType] : [])) : []
+    const moved = result.flatMap((msg) =>
+      msg.role === "user" && Array.isArray(msg.content)
+        ? msg.content.flatMap((part) => (part.type === "file" ? [part.mediaType] : []))
+        : [],
+    )
+    return { inline, moved }
+  }
+
+  test("image keeps images in the tool result and moves the rest into a user message", async () => {
+    expect(await placement(relayModel("image"))).toEqual({ inline: ["image/png"], moved: ["application/pdf"] })
+  })
+
+  test("none moves every media attachment into a user message", async () => {
+    expect(await placement(relayModel("none"))).toEqual({ inline: [], moved: ["image/png", "application/pdf"] })
+    // the configured value wins over the rule of the npm package
+    expect(await placement(relayModel("none", "@ai-sdk/anthropic"))).toEqual({
+      inline: [],
+      moved: ["image/png", "application/pdf"],
+    })
+  })
+
+  test("all keeps every media attachment in the tool result", async () => {
+    expect(await placement(relayModel("all"))).toEqual({ inline: ["image/png", "application/pdf"], moved: [] })
+  })
+
+  test("without a configured value the built-in rules follow the npm package", async () => {
+    const all = { inline: ["image/png", "application/pdf"], moved: [] }
+    const image = { inline: ["image/png"], moved: ["application/pdf"] }
+    const none = { inline: [], moved: ["image/png", "application/pdf"] }
+    expect(await placement(relayModel(undefined, "@ai-sdk/anthropic"))).toEqual(all)
+    expect(await placement(relayModel(undefined, "@ai-sdk/openai"))).toEqual(all)
+    expect(await placement(relayModel(undefined, "@ai-sdk/google-vertex/anthropic"))).toEqual(all)
+    expect(await placement(relayModel(undefined, "@ai-sdk/amazon-bedrock"))).toEqual(image)
+    expect(await placement(relayModel(undefined, "@ai-sdk/xai"))).toEqual(image)
+    expect(await placement(relayModel(undefined, "@ai-sdk/openai-compatible"))).toEqual(none)
+    expect(await placement(relayModel(undefined, "@ai-sdk/google"))).toEqual(none)
   })
 })

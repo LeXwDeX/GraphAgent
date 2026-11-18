@@ -6,6 +6,7 @@ import { expect, mock, beforeEach, afterAll } from "bun:test"
 import { Cause, Context, Effect, Exit, Layer, Logger } from "effect"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
+import { Hash } from "@graphagent/core/util/hash"
 import { Project } from "@graphagent/core/project"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { Git } from "../../src/git"
@@ -277,6 +278,7 @@ afterAll(() => {
 const { MCP } = await import("../../src/mcp/index")
 const { McpConfig } = await import("../../src/mcp/config")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
+const { McpCatalog } = await import("../../src/mcp/catalog")
 
 const it = testEffect(MCP.defaultLayer)
 
@@ -484,6 +486,213 @@ it.instance(
         const instructions = yield* mcp.instructions()
         expect(instructions.some((item) => item.name === "temporary-server")).toBe(false)
         expect(instructions.some((item) => item.name === "blank-server")).toBe(false)
+      }),
+    ),
+  { mcp: {} },
+)
+
+// ========================================================================
+// Test: model-facing tool keys are unique and at most 64 characters (Issue #1459)
+// ========================================================================
+
+const emptyInput = { type: "object", properties: {} }
+const toolKeySuffix = (server: string, tool: string) => Hash.sha256(server + "\0" + tool).slice(0, 8)
+
+// Connect a server that lists `names` as its tools (and, if given, serves `instructions`).
+const connectWith = (mcp: MCPNS.Interface, server: string, names: string[], instructions?: string) => {
+  lastCreatedClientName = server
+  const state = getOrCreateClientState(server)
+  state.tools = names.map((name) => ({ name, description: `${server}/${name}`, inputSchema: emptyInput }))
+  state.instructions = instructions
+  return mcp.add(server, { type: "local", command: ["echo", "test"] })
+}
+
+// The (server, tool) each key of `tools()` stands for.
+const bound = (tools: Record<string, object>) =>
+  Object.fromEntries(
+    Object.entries(tools).map(([key, item]) => {
+      const binding = McpCatalog.toolBinding(item)
+      return [key, binding ? `${binding.server}/${binding.tool}` : undefined]
+    }),
+  )
+
+it.instance(
+  "tools() keeps both tools when two servers sanitize to the same key (B1)",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        yield* connectWith(mcp, "a.b", ["c"])
+        yield* connectWith(mcp, "a", ["b.c"])
+
+        const tools = yield* mcp.tools()
+        expect(Object.keys(tools).length).toBe(2)
+        expect(bound(tools)).toEqual({
+          [`a_b_c_${toolKeySuffix("a.b", "c")}`]: "a.b/c",
+          [`a_b_c_${toolKeySuffix("a", "b.c")}`]: "a/b.c",
+        })
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "tools() gives the same keys whichever server connects first",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        yield* connectWith(mcp, "a", ["b.c"])
+        yield* connectWith(mcp, "a.b", ["c"])
+
+        expect(bound(yield* mcp.tools())).toEqual({
+          [`a_b_c_${toolKeySuffix("a.b", "c")}`]: "a.b/c",
+          [`a_b_c_${toolKeySuffix("a", "b.c")}`]: "a/b.c",
+        })
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "tools() cuts a key longer than 64 characters and keeps the real tool name in the binding",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const tool = "very_long_tool_name_".repeat(5)
+        yield* connectWith(mcp, "srv", [tool, "short"])
+
+        const keys = Object.keys(yield* mcp.tools()).sort()
+        expect(keys).toHaveLength(2)
+        expect(keys.every((key) => key.length <= 64)).toBe(true)
+        expect(keys).toContain("srv_short")
+        const long = keys.find((key) => key !== "srv_short")!
+        expect(long).toBe(("srv_" + tool).slice(0, 55) + "_" + toolKeySuffix("srv", tool))
+        expect(bound(yield* mcp.tools())[long]).toBe(`srv/${tool}`)
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "tools() does not hand out the reserved mcp_describe and mcp_call keys",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        yield* connectWith(mcp, "mcp", ["describe", "call", "callable"])
+
+        const keys = Object.keys(yield* mcp.tools()).sort()
+        expect(keys).toEqual(
+          [
+            "mcp_callable",
+            `mcp_call_${toolKeySuffix("mcp", "call")}`,
+            `mcp_describe_${toolKeySuffix("mcp", "describe")}`,
+          ].sort(),
+        )
+      }),
+    ),
+  { mcp: {} },
+)
+
+// The warnings `tools()` logs while it runs.
+const warnedBy = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+  const warnings: string[] = []
+  const collector = Logger.make((entry) => {
+    if (entry.logLevel === "Warn") warnings.push(JSON.stringify(entry.message))
+  })
+  return effect.pipe(
+    Effect.provide(Logger.layer([collector])),
+    Effect.map((result) => ({ result, warnings })),
+  )
+}
+
+it.instance(
+  "tools() warns about every key it rewrote",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        yield* connectWith(mcp, "a.b", ["c"])
+        yield* connectWith(mcp, "a", ["b.c"])
+        yield* connectWith(mcp, "plain", ["y"])
+
+        const { result, warnings } = yield* warnedBy(mcp.tools())
+        expect(Object.keys(result)).toHaveLength(3)
+        expect(warnings).toHaveLength(2)
+        expect(warnings.every((message) => message.includes("rewritten"))).toBe(true)
+        expect(warnings.some((message) => message.includes("a.b") && message.includes(toolKeySuffix("a.b", "c")))).toBe(
+          true,
+        )
+        expect(warnings.some((message) => message.includes("b.c") && message.includes(toolKeySuffix("a", "b.c")))).toBe(
+          true,
+        )
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "tools() binds a rewritten key to the key the tool had before, and a plain key to nothing",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const long = "very_long_tool_name_".repeat(5)
+        yield* connectWith(mcp, "a.b", ["c"])
+        yield* connectWith(mcp, "a", ["b.c"])
+        yield* connectWith(mcp, "plain", ["y"])
+        yield* connectWith(mcp, "long", [long])
+        yield* connectWith(mcp, "mcp", ["describe"])
+
+        const tools = yield* mcp.tools()
+        const binding = (key: string) => McpCatalog.toolBinding(tools[key])
+        // Two tools that sanitize to `a_b_c`, an overlong key and a reserved name each remember the key they had.
+        expect(binding(`a_b_c_${toolKeySuffix("a.b", "c")}`)?.baseKey).toBe("a_b_c")
+        expect(binding(`a_b_c_${toolKeySuffix("a", "b.c")}`)?.baseKey).toBe("a_b_c")
+        expect(binding(("long_" + long).slice(0, 55) + "_" + toolKeySuffix("long", long))?.baseKey).toBe("long_" + long)
+        expect(binding(`mcp_describe_${toolKeySuffix("mcp", "describe")}`)?.baseKey).toBe("mcp_describe")
+        // A key that stayed as it was carries nothing: its binding is what it was before.
+        expect(binding("plain_y")).toEqual({
+          server: "plain",
+          tool: "y",
+          source: "unknown",
+          requiresUserInteraction: false,
+        })
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "tools() keeps the first of a tool a server lists twice and says it skipped the other",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        yield* connectWith(mcp, "dup", ["x", "x"])
+
+        const { result, warnings } = yield* warnedBy(mcp.tools())
+        // One tool, so it is not a collision: its key stays the plain one.
+        expect(Object.keys(result)).toEqual(["dup_x"])
+        expect(warnings).toHaveLength(1)
+        expect(warnings[0]).toContain("skipped")
+        expect(warnings[0]).toContain("dup")
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "instructions() lists the keys tools() uses, rewritten keys included, each once",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        yield* connectWith(mcp, "a.b", ["c"], "Guidance for a.b.")
+        yield* connectWith(mcp, "a", ["b.c"])
+        yield* connectWith(mcp, "dup", ["x", "x"], "Guidance for dup.")
+
+        const instructions = yield* mcp.instructions()
+        expect(instructions).toEqual([
+          { name: "a.b", instructions: "Guidance for a.b.", tools: [`a_b_c_${toolKeySuffix("a.b", "c")}`] },
+          { name: "dup", instructions: "Guidance for dup.", tools: ["dup_x"] },
+        ])
+        const keys = Object.keys(yield* mcp.tools())
+        for (const item of instructions) for (const key of item.tools) expect(keys).toContain(key)
       }),
     ),
   { mcp: {} },

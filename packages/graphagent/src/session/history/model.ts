@@ -5,6 +5,7 @@ import type { ModelMessage } from "ai"
 import type { WithParts } from "@graphagent/core/v1/session"
 import { createHash } from "node:crypto"
 import type { Provider } from "@/provider/provider"
+import { ProviderProfile } from "@/provider/profile"
 import type { MessageID, SessionID } from "../schema"
 
 /**
@@ -107,6 +108,8 @@ export function bucket(
       modelID: model.id,
       apiNpm: model.api.npm,
       apiID: model.api.id,
+      // The conversion reads it (`supportsMediaInToolResult`), and a configuration sets it per model.
+      toolResultMedia: ProviderProfile.profileOf(model).toolResultMedia,
       options: {
         stripMedia: options?.stripMedia === true,
         toolOutputMaxChars: options?.toolOutputMaxChars || undefined,
