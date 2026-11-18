@@ -88,7 +88,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import type { DagEvent } from "@graphagent/schema/dag-event"
 
 type PromptParts = SessionPrompt.PromptInput["parts"]
-type TargetFingerprint = ReturnType<typeof DagLocation.fingerprintTarget>
+type TargetFingerprint = DagEvent.TargetFingerprint
 
 /** #949: the system context a spawned node receives about its execution
  * location. The value is stable for the attempt: HEAD and the target
@@ -1024,7 +1024,7 @@ export function spawnNode(
           // nodeStarted, so the completion check has a bound reference.
           const targetFingerprint =
             (input.targetSensitive ?? isReviewWorker(input.node.workerType)) && nodeDirectory
-              ? DagLocation.fingerprintTarget(nodeDirectory)
+              ? yield* DagLocation.fingerprintTarget(nodeDirectory)
               : undefined
 
           // Register the attempt's run before the durable start: the Stop

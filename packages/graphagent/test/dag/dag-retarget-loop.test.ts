@@ -267,7 +267,7 @@ describe("Dag retarget through the live loop", () => {
           const oldReviewChild = review.sessionID
           const buildChild = build.sessionID
 
-          const fingerprint = DagLocation.fingerprintTarget(tmp.path)
+          const fingerprint = yield* DagLocation.fingerprintTarget(tmp.path)
           yield* dag.retarget(dagID, {
             reason: "tree moved",
             fingerprint: fingerprint.kind === "git" ? fingerprint.value : "none",
