@@ -423,6 +423,8 @@ export const en: Record<MessageKey, string> = {
   "dagmode.panel.mode.nodes": "node cap {max}",
   "dagmode.panel.mode.tokens": "tokens {used}/{budget}",
   "dagmode.panel.mode.tokensOpen": "tokens {used} (no budget)",
+  "dagmode.panel.usage":
+    "Usage in {input} · out {output} · reasoning {reasoning} · cache r {read} w {write} · cost {cost}",
   "dagmode.panel.quality.reviews": "reviews {n}",
   "dagmode.panel.quality.open": "open {n}",
   "dagmode.panel.quality.completeness": "complete {covered}/{total}",
