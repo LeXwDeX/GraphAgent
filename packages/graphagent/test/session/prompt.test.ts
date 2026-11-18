@@ -61,6 +61,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionInbox } from "../../src/session/inbox"
 import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
+import { StepMetricsRing } from "../../src/session/step-metrics"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -7892,6 +7893,46 @@ it.instance("an owner runtime slot adds a block without changing the system pref
     expect(JSON.stringify(inputs[1]?.tools)).toBe(JSON.stringify(inputs[0]?.tools))
     expect(JSON.stringify(inputs[0]?.messages)).not.toContain("<owner_demo>on</owner_demo>")
     expect(JSON.stringify(inputs[1]?.messages)).toContain("<owner_demo>on</owner_demo>")
+  }),
+)
+
+// Issue #1458: /goal comes and goes without touching the cached prefix. The goal section of the system prompt is the
+// constant GOAL_NOTE and the live state travels in the runtime context.
+it.instance("creating and clearing a goal leaves system and tools unchanged", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, chat } = yield* boot()
+    const goals = yield* Goal.Service
+    const ask = Effect.fn("test.ask")(function* (text: string) {
+      yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text }] })
+      yield* llm.text(`${text} done`)
+      yield* prompt.loop({ sessionID: chat.id })
+    })
+
+    yield* ask("first")
+    yield* goals.set(chat.id, "ship it")
+    yield* ask("second")
+    yield* goals.clear(chat.id)
+    yield* ask("third")
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(3)
+    // The note is part of every request, so the comparison below is not an empty one.
+    expect(requestSystem(inputs[0])).toContain(JSON.stringify(SystemPrompt.GOAL_NOTE).slice(1, -1))
+    for (const input of inputs) {
+      expect(requestSystem(input)).toBe(requestSystem(inputs[0]))
+      expect(JSON.stringify(input.tools)).toBe(JSON.stringify(inputs[0]?.tools))
+    }
+    // The live state shows up in the request that has a goal, as a runtime-context block after the unchanged prefix.
+    expect(JSON.stringify(inputs[0]?.messages)).not.toContain("## Current Goal (autonomous loop)")
+    expect(JSON.stringify(inputs[1]?.messages)).toContain("## Current Goal (autonomous loop)")
+
+    const recorded = StepMetricsRing.recent(chat.id, 3)
+    expect(recorded).toHaveLength(3)
+    const goalSections = recorded.map((metrics) => metrics.fingerprint.sections?.goal)
+    expect(goalSections[0]).toBeDefined()
+    expect(goalSections).toEqual([goalSections[0], goalSections[0], goalSections[0]])
+    StepMetricsRing.clear(chat.id)
   }),
 )
 
