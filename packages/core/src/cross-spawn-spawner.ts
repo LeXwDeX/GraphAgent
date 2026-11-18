@@ -422,7 +422,11 @@ export const make = Effect.gen(function* () {
               if (done) {
                 const [code] = yield* Deferred.await(signal)
                 if (process.platform === "win32") return yield* Effect.void
-                if (code !== 0 && Predicate.isNotNull(code)) return yield* Effect.ignore(kill(killGroup))
+                // Only a clean exit leaves its group alone. A non-zero code, or a
+                // signal (which leaves no code), can strand members of the group
+                // that nothing waits on any more. The group may already be gone,
+                // so this is best effort and a failure is ignored.
+                if (code !== 0) return yield* Effect.ignore(kill(killGroup))
                 return yield* Effect.void
               }
               const send = (s: NodeJS.Signals) =>

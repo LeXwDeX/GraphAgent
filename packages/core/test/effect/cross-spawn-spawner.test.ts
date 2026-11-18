@@ -311,6 +311,54 @@ describe("cross-spawn spawner", () => {
         expect(CrossSpawnSpawner.signalOf(Cause.squash(spawnFailure.cause))).toBeUndefined()
       }),
     )
+
+    fx.effect(
+      "scope exit stops what a signal-terminated process left in its group",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const file = path.join(tmp.path, "member.pid")
+        // The member keeps no stdio open, so the end of its parent is seen at
+        // once. The parent then dies of a signal and leaves the member running.
+        const parent = [
+          'const member = require("node:child_process").spawn("sleep", ["300"], { stdio: "ignore" })',
+          `require("node:fs").writeFileSync(${JSON.stringify(file)}, String(member.pid))`,
+          'process.kill(process.pid, "SIGKILL")',
+        ].join(";")
+
+        let member: number | undefined
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            // A failing run must not leave the member running.
+            if (member === undefined) return
+            try {
+              process.kill(member, "SIGKILL")
+            } catch {
+              // It already stopped, which is the expected case.
+            }
+          }),
+        )
+
+        const pid = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* js(parent)
+            const exit = yield* Effect.exit(handle.exitCode)
+            expect(Exit.isFailure(exit)).toBe(true)
+            const pid = Number(yield* Effect.promise(() => fs.readFile(file, "utf8")))
+            member = pid
+            // Its parent is gone, so only the release of this scope can stop it.
+            expect(alive(pid)).toBe(true)
+            return pid
+          }),
+        )
+
+        expect(yield* Effect.promise(() => gone(pid, 2_000))).toBe(true)
+      }),
+    )
   })
 
   describe("error handling", () => {
