@@ -36,6 +36,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -209,6 +210,7 @@ function guardLayer(input: {
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
@@ -216,6 +218,7 @@ function guardLayer(input: {
     Layer.provide(agent),
     Layer.provide(input.hooks ?? Layer.empty),
     Layer.provide(input.hooks ? HookLifecycle.layer : Layer.empty),
+    Layer.provide(inbox),
   )
   return Layer.merge(base, loop)
 }

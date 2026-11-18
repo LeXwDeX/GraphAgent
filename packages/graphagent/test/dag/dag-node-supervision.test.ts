@@ -30,6 +30,7 @@ import { disposeInstance } from "@/effect/instance-registry"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, SessionID } from "@/session/schema"
@@ -156,11 +157,13 @@ function supervisionLayer(input: {
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   // #343: the sweep terminalizes workflows and releases their automation
   // lease after a host-level settle — give it the real (process-level) lease

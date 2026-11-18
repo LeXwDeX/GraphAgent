@@ -6,7 +6,10 @@
 // mailbox ledgers. These probes pin the acceptance behaviors that moved there —
 // repeated drain triggers admit once, the #321 crash boundary (admission
 // committed, wake mark not) redelivers a receipt instead of a second synthetic
-// wake, and the fixed wake-before-mailbox order.
+// wake, and the fixed wake-before-mailbox order. Since #1344 delivery keeps no
+// in-flight set: most probes call the claim (`deliver`) directly and give
+// delivery an inbox that drives nothing, and the ones about serialization and
+// coalescing run it behind the real inbox.
 import { describe, expect, it } from "bun:test"
 import { and, eq } from "drizzle-orm"
 import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Stream, DateTime, type Context } from "effect"
@@ -37,6 +40,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { awaitWithTimeout, pollWithTimeout } from "../lib/effect"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { recordingInbox } from "./fixture/inbox"
 import { transactLayer } from "./fixture/transact"
 
 const DIRECTORY = process.cwd()
@@ -82,6 +86,9 @@ function baseLayers() {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const automation = ExclusiveRegistry.layer.pipe(Layer.provide(status))
+  // The real inbox, for the probes that run delivery behind it. It is not part
+  // of `all`: the other probes call the claim themselves.
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   return {
     database,
     bridge,
@@ -89,6 +96,7 @@ function baseLayers() {
     dag,
     status,
     automation,
+    inbox,
     all: Layer.mergeAll(database, events, bridge, store, projector, status, dag, automation),
   }
 }
@@ -105,7 +113,7 @@ const sessionInfo = {
   time: { created: 0, updated: 0 },
 } as never
 
-const seedWake = Effect.gen(function* () {
+const seedParentSession = Effect.gen(function* () {
   const { db } = yield* Database.Service
   yield* db
     .insert(ProjectTable)
@@ -124,6 +132,11 @@ const seedWake = Effect.gen(function* () {
     })
     .run()
     .pipe(Effect.orDie)
+})
+
+/** A completed workflow with one unreported node, for the parent session `seedParentSession` made. */
+const seedWakeRows = Effect.gen(function* () {
+  const { db } = yield* Database.Service
   yield* db
     .insert(WorkflowTable)
     .values({
@@ -161,6 +174,8 @@ const seedWake = Effect.gen(function* () {
     .pipe(Effect.orDie)
 })
 
+const seedWake = Effect.andThen(seedParentSession, seedWakeRows)
+
 const queuedMailboxMessage: DagMessages.Message = {
   id: "agent_scan_report",
   workflowID: "dag_delivery",
@@ -194,7 +209,8 @@ function startDelivery(input: {
   readonly database: Database.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly messages: DagMessages.Interface | undefined
-  readonly inbox?: SessionInbox.Interface | undefined
+  /** Defaults to an inbox that drives nothing: the probe calls `deliver` itself. */
+  readonly inbox?: SessionInbox.Interface
 }) {
   return DagDelivery.make({
     directory: DIRECTORY,
@@ -208,7 +224,7 @@ function startDelivery(input: {
     database: input.database,
     events: input.events,
     messages: input.messages,
-    inbox: input.inbox,
+    inbox: input.inbox ?? recordingInbox().inbox,
     entries: () => undefined,
     lastAssistantMessage: () => Effect.succeed(undefined),
   })
@@ -307,7 +323,7 @@ describe("DagDelivery drain", () => {
             yield* seedWake
             const deps = yield* services()
             const delivery = yield* startDelivery({ ...deps, messages: undefined })
-            for (let index = 0; index < 100; index++) yield* delivery.drain(PARENT)
+            for (let index = 0; index < 100; index++) yield* delivery.deliver(PARENT)
             expect(admissions).toBe(1)
             yield* expectReported
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
@@ -377,7 +393,7 @@ describe("DagDelivery drain", () => {
             const deps = yield* services()
             const delivery = yield* startDelivery({ ...deps, messages: undefined })
 
-            yield* delivery.drain(PARENT)
+            yield* delivery.deliver(PARENT)
             expect(admissions).toBe(0)
             expect((yield* store.getWorkflow("dag_delivery"))?.wakeReported).toBe(false)
 
@@ -388,7 +404,7 @@ describe("DagDelivery drain", () => {
               episode: { graphRev: workflow?.graphRev ?? 0, seq: workflow?.seq ?? 0 },
               timestamp: yield* DateTime.now,
             })
-            yield* delivery.drain(PARENT)
+            yield* delivery.deliver(PARENT)
             expect(admissions).toBe(1)
             yield* expectReported
 
@@ -404,7 +420,7 @@ describe("DagDelivery drain", () => {
               .set({ wake_reported: false })
               .where(eq(WorkflowNodeTable.workflow_id, "dag_delivery"))
               .run()
-            yield* delivery.drain(PARENT)
+            yield* delivery.deliver(PARENT)
             expect(admissions).toBe(1)
             yield* expectReported
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
@@ -501,7 +517,7 @@ describe("DagDelivery drain", () => {
             // First process: the transcript receipt commits, then the process
             // dies before the wake mark (the delivery fiber never returns).
             const first = yield* startDelivery({ ...deps, messages: undefined })
-            const fiber = yield* first.drain(PARENT).pipe(Effect.forkChild)
+            const fiber = yield* first.deliver(PARENT).pipe(Effect.forkChild)
             yield* Deferred.await(admitted).pipe(Effect.timeout("2 seconds"))
             yield* Fiber.interrupt(fiber)
             expect(parked).toBe(1)
@@ -511,7 +527,7 @@ describe("DagDelivery drain", () => {
             // and never create a second synthetic wake.
             mode = "count"
             const second = yield* startDelivery({ ...deps, messages: undefined })
-            yield* second.drain(PARENT)
+            yield* second.deliver(PARENT)
             expect(resumed).toBe(0)
             yield* expectReported
             const parts = yield* deps.database.db
@@ -563,25 +579,144 @@ describe("DagDelivery drain", () => {
           yield* Effect.gen(function* () {
             yield* seedWake
             const deps = yield* services()
-            const delivery = yield* startDelivery({ ...deps, messages })
-            const first = yield* delivery.deliver(PARENT).pipe(Effect.forkChild)
+            const inbox = yield* SessionInbox.Service
+            yield* startDelivery({ ...deps, messages, inbox })
+            const parent = SessionID.make(PARENT)
+            const first = yield* inbox.nudge(parent).pipe(Effect.forkChild)
             yield* Deferred.await(admitted).pipe(Effect.timeout("2 seconds"))
             expect(admissions).toBe(1)
 
-            // The wake reservation is held by the parked turn: the second
-            // claim must report "nothing consumed" and must not touch the
-            // mailbox, or wake-first would become mailbox-first.
-            expect(yield* delivery.deliver(PARENT)).toBe(false)
+            // The parked wake turn holds the session in the inbox: a second
+            // trigger only marks one more pass, so no claim runs beside it and
+            // the mailbox stays untouched; otherwise wake-first would become
+            // mailbox-first.
+            yield* inbox.nudge(parent)
             expect(receiveCalls).toBe(0)
 
             yield* Fiber.interrupt(first)
-            // The admission already marked the batch; the pending retry that
-            // the finalizer forks finds nothing left to admit.
             yield* Effect.sleep("50 millis")
             expect(admissions).toBe(1)
             expect(receiveCalls).toBe(0)
             yield* expectReported
-          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+
+            // The interrupted drain gave the session back: the next trigger
+            // runs a whole pass, the wake phase (nothing left) and then the
+            // mailbox phase.
+            yield* inbox.nudge(parent)
+            expect(admissions).toBe(1)
+            expect(receiveCalls).toBe(1)
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, base.inbox, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("admits one durable wake when the inbox is nudged one hundred times at once", async () => {
+    let admissions = 0
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = mockSessionPrompt({
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "wake handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          yield* Effect.gen(function* () {
+            yield* seedWake
+            const deps = yield* services()
+            const inbox = yield* SessionInbox.Service
+            yield* startDelivery({ ...deps, messages: undefined, inbox })
+            // The inbox folds the concurrent triggers of one session into its
+            // running drain and one more pass, so delivery needs no
+            // in-flight bookkeeping of its own to admit once.
+            yield* Effect.forEach(
+              Array.from({ length: 100 }),
+              () => inbox.nudge(SessionID.make(PARENT)),
+              { concurrency: "unbounded", discard: true },
+            )
+            expect(admissions).toBe(1)
+            yield* expectReported
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, base.inbox, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("a wake that becomes due while the claim is busy elsewhere is delivered by the next pass, without another trigger", async () => {
+    let admissions = 0
+    let receiveCalls = 0
+    const texts: string[] = []
+    const gate = Deferred.makeUnsafe<void>()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = mockSessionPrompt({
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                texts.push(input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"))
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "wake handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          // The first mailbox read parks: the claim is busy there, with no wake due yet.
+          const messages = {
+            receive: () => {
+              receiveCalls += 1
+              return receiveCalls === 1
+                ? Deferred.await(gate).pipe(Effect.as({ ok: false as const }))
+                : Effect.succeed({ ok: false as const })
+            },
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.empty,
+          } as unknown as DagMessages.Interface
+          yield* Effect.gen(function* () {
+            yield* seedParentSession
+            const deps = yield* services()
+            const inbox = yield* SessionInbox.Service
+            yield* startDelivery({ ...deps, messages, inbox })
+            const parent = SessionID.make(PARENT)
+            const first = yield* inbox.nudge(parent).pipe(Effect.forkChild)
+            yield* pollWithTimeout(Effect.sync(() => (receiveCalls === 1 ? true : undefined)), "the claim never reached the mailbox")
+
+            // A workflow ends while the claim is parked: its trigger only marks
+            // one more pass, so nothing is delivered yet.
+            yield* seedWakeRows
+            yield* inbox.nudge(parent)
+            expect(admissions).toBe(0)
+
+            // The claim ends with nothing to deliver; the pending pass reads
+            // the durable rows again and delivers the wake, with no further
+            // trigger.
+            yield* Deferred.succeed(gate, undefined)
+            yield* pollWithTimeout(Effect.sync(() => (admissions === 1 ? true : undefined)), "the trigger that arrived during the claim was lost")
+            yield* Fiber.join(first)
+            expect(texts[0]).toContain('Node "Node" completed')
+            yield* expectReported
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, base.inbox, session, prompt)))
         }),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
     )
@@ -919,7 +1054,7 @@ describe("DagDelivery drain", () => {
     )
   })
 
-  it("registers the dag.delivery source and the hint-only step source when an inbox is present", async () => {
+  it("registers the dag.delivery source and the hint-only step source", async () => {
     const sources: InboxSource[] = []
     const steps: StepSource[] = []
     const inbox = {
@@ -1002,11 +1137,11 @@ describe("DagDelivery drain", () => {
             yield* seedWake
             const deps = yield* services()
             const delivery = yield* startDelivery({ ...deps, messages })
-            yield* delivery.drain(PARENT)
+            yield* delivery.deliver(PARENT)
             expect(admissions).toBe(1)
             // The admitted wake ended this drain; the mailbox phase did not run.
             expect(receiveCalls).toBe(0)
-            yield* delivery.drain(PARENT)
+            yield* delivery.deliver(PARENT)
             // No wake remained, so the same trigger reached the mailbox phase.
             expect(receiveCalls).toBe(1)
             expect(admissions).toBe(1)
@@ -1068,20 +1203,25 @@ describe("DagDelivery drain", () => {
     )
   })
 
-  it("the startup sweep walks every mailbox ledger page and offers each recipient to the drain (#1027 D5)", async () => {
+  it("the startup sweep walks every mailbox ledger page and nudges each recipient through the inbox (#1027 D5)", async () => {
     const ledger = pagedMailboxes(pagedIDs)
+    const recording = recordingInbox()
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const deps = yield* services()
-          yield* startDelivery({ ...deps, messages: ledger.messages })
+          yield* startDelivery({ ...deps, messages: ledger.messages, inbox: recording.inbox })
           // Construction runs the sweep: the first page, then each page after
           // the previous page's last recipient, until a short page.
           expect(ledger.reads).toEqual([undefined, pagedIDs[63], pagedIDs[127]])
           yield* pollWithTimeout(
-            Effect.sync(() => (ledger.attempted.size === pagedIDs.length ? true : undefined)),
-            () => `only ${ledger.attempted.size}/${pagedIDs.length} recipients got a delivery attempt`,
+            Effect.sync(() => (new Set(recording.nudged).size === pagedIDs.length ? true : undefined)),
+            () => `only ${new Set(recording.nudged).size}/${pagedIDs.length} recipients were nudged`,
           )
+          expect([...new Set(recording.nudged)].sort()).toEqual([...pagedIDs])
+          // The nudges drive the claim, so the source is registered before the
+          // sweep runs: a drain that started without it would skip delivery.
+          expect(recording.events.slice(0, 2)).toEqual(["register dag.delivery", "registerStep dag.mailbox.step"])
         }).pipe(Effect.provide(inertGraph())),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
     )
@@ -1230,7 +1370,7 @@ describe("DagDelivery and an archived owner session (#1289)", () => {
 
           // Archived: every trigger is a no-op, and the rows stay unreported.
           expect(yield* delivery.deliver(PARENT)).toBe(false)
-          yield* delivery.drain(PARENT)
+          yield* delivery.deliver(PARENT)
           expect(turns).toEqual([])
           expect(yield* deps.store.getUnreportedWakeWorkflows(PARENT)).not.toEqual([])
           expect(yield* deps.store.getUnreportedWakeNodes(PARENT)).not.toEqual([])
