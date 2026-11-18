@@ -3,6 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
+import { createMemo, createRoot } from "solid-js"
 import type { DagWorkflowSummary, GlobalEvent, SessionDagMode } from "@graphagent/sdk"
 import { tmpdir } from "../../../fixture/fixture"
 import { probeStoreWrites } from "../../../fixture/store-write-probe"
@@ -848,6 +849,50 @@ describe("tui sync dag mode snapshot: asked for by a surface", () => {
       await wait(() => sync.data.dagMode.ses_old?.limits.concurrency === 14)
       expect(server.reads).toEqual(["ses_old"])
       expect(sync.data.dagMode.ses_old?.limits.configuredConcurrency).toBe(30)
+    })
+  })
+})
+
+// The `/config` panel finds the tree its snapshot is held under with `sync.session.root`, from a selector: it follows
+// the sessions of that one chain and does not traverse the session list (#1290).
+describe("tui sync: the root of a session's tree", () => {
+  test("is the session itself for a root, the top of the parent chain for a descendant, the id for an unknown one", async () => {
+    await withMount(TREE, async ({ sync }) => {
+      expect(sync.session.root("ses_old")).toBe("ses_old")
+      expect(sync.session.root("ses_old_child")).toBe("ses_old")
+      expect(sync.session.root("ses_new_child")).toBe("ses_new")
+      expect(sync.session.root("ses_unknown")).toBe("ses_unknown")
+    })
+  })
+
+  test("a selector on it follows a change of its own chain and ignores a change in another tree", async () => {
+    await withMount(TREE, async ({ emit, sdk, sync }) => {
+      await createRoot(async (dispose) => {
+        try {
+          const found: string[] = []
+          const root = createMemo(() => {
+            const value = sync.session.root("ses_old_child")
+            found.push(value)
+            return value
+          })
+          expect(root()).toBe("ses_old")
+          expect(found).toEqual(["ses_old"])
+
+          // A session of the other tree is renamed: the chain asked about is untouched, so the selector does not run.
+          emit(updated(row("ses_new_child", 91, { title: "renamed" }, "ses_new")))
+          sdk.frameClock.flushNow()
+          await wait(() => sync.session.get("ses_new_child")?.title === "renamed")
+          expect(found).toEqual(["ses_old"])
+
+          // The session moves under the other tree's root: the selector follows its chain.
+          emit(updated(row("ses_old_child", 41, {}, "ses_new")))
+          sdk.frameClock.flushNow()
+          await wait(() => root() === "ses_new")
+          expect(found.at(-1)).toBe("ses_new")
+        } finally {
+          dispose()
+        }
+      })
     })
   })
 })

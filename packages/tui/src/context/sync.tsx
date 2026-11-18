@@ -504,6 +504,11 @@ export const {
       return chain
     }
 
+    /** The root of the tree `sessionID` is in: the last of its parent chain, the session itself when it has no parent. */
+    function rootOf(sessionID: string) {
+      return parentChain(sessionID).at(-1) ?? sessionID
+    }
+
     function touchHydrated(sessionID: string) {
       setStore("hydrated", (current = []) => {
         const next = current.filter((id) => id !== sessionID)
@@ -2108,6 +2113,14 @@ export const {
           if (match.found) return store.session[match.index]
           return undefined
         },
+        /**
+         * The root of the tree `sessionID` is in, the key the per-tree slices (`dag`, `dagMode`) are held under (#1290).
+         * It walks the parent links one session at a time, so a selector that calls it depends on the sessions of that
+         * one chain and does not traverse the whole list.
+         */
+        root(sessionID: string) {
+          return rootOf(sessionID)
+        },
         query() {
           return sessionListQuery()
         },
@@ -2281,7 +2294,7 @@ export const {
          * read again with the others after a `dag` configuration change or a reconnect.
          */
         readMode(sessionID: string) {
-          void fetchDagMode([parentChain(sessionID).at(-1) ?? sessionID], true)
+          void fetchDagMode([rootOf(sessionID)], true)
         },
         /** The loaded node rows of a workflow, or undefined while its table is not loaded. */
         nodes(workflowID: string) {

@@ -3,7 +3,6 @@
 
 import type { UiLanguage } from "@graphagent/core/config/language"
 import { createMemo, createSignal, onMount } from "solid-js"
-import { resolveRootSessionID } from "../ask/ask-queue"
 import { useKV } from "../context/kv"
 import { useRoute } from "../context/route"
 import { useSDK } from "../context/sdk"
@@ -90,7 +89,7 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
   })
   const dagLimits = createMemo(() => {
     if (route.data.type !== "session") return undefined
-    return sync.data.dagMode[resolveRootSessionID(sync.data.session, route.data.sessionID)]?.limits
+    return sync.data.dagMode[sync.session.root(route.data.sessionID)]?.limits
   })
 
   const dagMode = (): DagMode => overrides().dagMode ?? (sync.data.config.dag?.mode === "on" ? "on" : "off")

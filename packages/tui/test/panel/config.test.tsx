@@ -9,6 +9,8 @@ import { useSDK } from "../../src/context/sdk"
 import { getLanguage, setLanguage } from "../../src/i18n"
 import { ConfigPanel } from "../../src/panel/config"
 import { PanelSurface, renderAppPanel, type AppPanelTestContext } from "./contexts"
+import { readFrame, renderUntilFrame } from "../fixture/frames"
+import { waitFor } from "../fixture/held-io"
 import { json } from "../fixture/tui-sdk"
 import { dagModeStatus } from "../routes/dag-mode-harness"
 import { shellState } from "../shell/contexts"
@@ -401,6 +403,15 @@ const dagSession = {
   dagMode: "off" as const,
 }
 
+/** A session of the same tree: the snapshot belongs to the root, not to the session the panel is opened in. */
+const dagChild = {
+  ...dagSession,
+  id: "ses_limits_child",
+  slug: "limits-child",
+  title: "Limits child",
+  parentID: dagSession.id,
+}
+
 const limits = (concurrency: number, configuredConcurrency: number | null): SessionDagMode =>
   dagModeStatus({
     mode: "off",
@@ -410,18 +421,24 @@ const limits = (concurrency: number, configuredConcurrency: number | null): Sess
 async function renderLimits(input: {
   /** `dag.concurrency` in the configuration the TUI loaded. */
   configured?: number
-  /** What the session's DAG mode read answers; absent answers nothing. */
+  /** What the DAG mode read of the tree's root answers; absent answers nothing. */
   status?: SessionDagMode
+  /** Open the panel in the child session instead of in the root. */
+  child?: boolean
   width?: number
   setup?: RenderOptions["setup"]
 }) {
+  let held: AppPanelTestContext["sync"] | undefined
   const rendered = await renderConfig({
     tab: "dag",
-    inSession: dagSession.id,
+    inSession: input.child ? dagChild.id : dagSession.id,
     width: input.width,
-    setup: input.setup,
+    setup: async (context) => {
+      held = context.sync
+      await input.setup?.(context)
+    },
     handler: (url) => {
-      if (url.pathname === "/session") return json([dagSession])
+      if (url.pathname === "/session") return json([dagSession, dagChild])
       if (url.pathname === "/config" && input.configured !== undefined) {
         return json({ dag: { concurrency: input.configured } })
       }
@@ -429,41 +446,38 @@ async function renderLimits(input: {
       return undefined
     },
   })
-  return rendered
+  /** The snapshot the sync layer holds for the tree: in the store once the panel's read has been answered. */
+  const snapshot = () => held?.data.dagMode[dagSession.id]
+  return { ...rendered, snapshot }
 }
 
-/** The line of the frame a row is drawn on. */
-const rowText = (app: Awaited<ReturnType<typeof renderAppPanel>>, label: string) =>
-  app
-    .captureCharFrame()
-    .split("\n")
-    .find((line) => line.includes(label)) ?? ""
+type Rendered = Awaited<ReturnType<typeof renderAppPanel>>
 
-/** Render until the row's line satisfies the check, or fail with the line it last showed. */
-async function untilRow(
-  app: Awaited<ReturnType<typeof renderAppPanel>>,
-  label: string,
-  check: (line: string) => boolean,
-) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    await app.renderOnce()
-    if (check(rowText(app, label))) return rowText(app, label)
-    await Bun.sleep(20)
-  }
-  throw new Error(`the row never matched: ${rowText(app, label)}`)
+/** The line of a frame a row is drawn on. */
+const lineOf = (frame: string, label: string) => frame.split("\n").find((line) => line.includes(label)) ?? ""
+
+/** The row as it is drawn now: one render, then a read that does not race the renderer. */
+async function rowNow(app: Rendered, label: string) {
+  await app.renderOnce()
+  return lineOf(await readFrame(app), label)
+}
+
+/** Render until the row's line satisfies the check and return that line; a wait that runs out reports the last frame. */
+async function untilRow(app: Rendered, label: string, check: (line: string) => boolean) {
+  const frame = await renderUntilFrame(app, (text) => check(lineOf(text, label)), `the "${label}" row`)
+  return lineOf(frame, label)
 }
 
 test("an unset concurrency shows the value the server enforces, marked as the default", async () => {
   const { app, tmp, seen } = await renderLimits({ status: limits(12, null) })
   try {
-    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("默认值"))
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("默认值 12"))
     expect(line).toContain("默认值 12")
     // The panel asked for the snapshot itself: a session with DAG mode off reads none otherwise, and it asked once.
     expect(seen.filter((path) => path === `/session/${dagSession.id}/dag-mode`)).toHaveLength(1)
 
     setLanguage("en")
-    await settle(app)
-    expect(rowText(app, "DAG concurrency cap")).toContain("Default 12")
+    expect(await untilRow(app, "DAG concurrency cap", (text) => text.includes("Default 12"))).toContain("Default 12")
   } finally {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
@@ -473,13 +487,11 @@ test("an unset concurrency shows the value the server enforces, marked as the de
 test("a configured concurrency the server cuts down shows the configured value and the one in force", async () => {
   const { app, tmp } = await renderLimits({ configured: 20, status: limits(14, 20) })
   try {
-    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("实际生效"))
-    expect(line).toContain("实际生效 14，配置值 20")
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("实际生效 14，配置值 20"))
     expect(line).not.toContain("默认值")
 
     setLanguage("en")
-    await settle(app)
-    expect(rowText(app, "DAG concurrency cap")).toContain("In force 14, configured 20")
+    await untilRow(app, "DAG concurrency cap", (text) => text.includes("In force 14, configured 20"))
   } finally {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
@@ -487,14 +499,28 @@ test("a configured concurrency the server cuts down shows the configured value a
 })
 
 test("a configured concurrency inside the limit shows no note", async () => {
-  const { app, tmp, seen } = await renderLimits({ configured: 8, status: limits(8, 8) })
+  const { app, tmp, snapshot } = await renderLimits({ configured: 8, status: limits(8, 8) })
   try {
-    await untilRow(app, "DAG 并发上限", () => seen.includes(`/session/${dagSession.id}/dag-mode`))
-    await settle(app)
-    const line = rowText(app, "DAG 并发上限")
+    // Nothing on the row says the snapshot has arrived, so wait for the store the row is drawn from, then draw it.
+    await waitFor(() => snapshot() !== undefined, "the DAG mode snapshot of the tree")
+    const line = await rowNow(app, "DAG 并发上限")
     expect(line).toContain("8")
     expect(line).not.toContain("实际生效")
     expect(line).not.toContain("默认值")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("opened in a child session, the row takes the limits of the tree's root", async () => {
+  const { app, tmp, seen } = await renderLimits({ child: true, configured: 20, status: limits(14, 20) })
+  try {
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("实际生效 14，配置值 20"))
+    expect(line).not.toContain("默认值")
+    // The read went to the root of the tree; the child has no snapshot of its own.
+    expect(seen).toContain(`/session/${dagSession.id}/dag-mode`)
+    expect(seen).not.toContain(`/session/${dagChild.id}/dag-mode`)
   } finally {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
@@ -512,7 +538,7 @@ test("a snapshot read before a write does not describe the value just written", 
     await enter(app)
     expect(updates.at(-1)).toEqual({ dag: { concurrency: 20 } })
     // The read-back has not landed: the row shows what was written and makes no claim about what is in force.
-    const line = rowText(app, "DAG 并发上限")
+    const line = await rowNow(app, "DAG 并发上限")
     expect(line).toContain("20")
     expect(line).not.toContain("默认值")
     expect(line).not.toContain("实际生效")
@@ -528,9 +554,8 @@ test("outside a session the row shows what is configured and reads no snapshot",
     handler: (url) => (url.pathname === "/config" ? json({ dag: { concurrency: 20 } }) : undefined),
   })
   try {
-    await settle(app)
-    expect(rowText(app, "DAG 并发上限")).toContain("20")
-    expect(rowText(app, "DAG 并发上限")).not.toContain("默认值")
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("20"))
+    expect(line).not.toContain("默认值")
     expect(seen.filter((path) => path.endsWith("/dag-mode"))).toEqual([])
   } finally {
     app.renderer.destroy()
@@ -541,9 +566,7 @@ test("outside a session the row shows what is configured and reads no snapshot",
 test("the unset row without a snapshot says it is not set instead of making a value up", async () => {
   const { app, tmp } = await renderConfig({ tab: "dag" })
   try {
-    await settle(app)
-    const line = rowText(app, "DAG 并发上限")
-    expect(line).toContain("未设置")
+    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("未设置"))
     expect(line).not.toMatch(/\d/)
   } finally {
     app.renderer.destroy()
@@ -568,8 +591,7 @@ for (const [language, label, note] of [
       })
       try {
         setLanguage(language)
-        const line = await untilRow(app, label, (text) => text.includes("20"))
-        expect(line).toContain(note)
+        const line = await untilRow(app, label, (text) => text.includes(note))
         // The panel border closes the line: nothing was pushed past it.
         expect(line.trimEnd().endsWith("│")).toBe(true)
       } finally {
