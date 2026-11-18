@@ -63,6 +63,20 @@ describe("resolveProjectRoot", () => {
 
     expect(root).toBe(realHome)
   })
+
+  test("does not climb past $HOME when starting from a symlinked spelling below it", async () => {
+    await using tmp = await tmpdir()
+    mkdirSync(path.join(tmp.path, ".agents"))
+    const realHome = path.join(tmp.path, "real-home")
+    mkdirSync(path.join(realHome, "proj"), { recursive: true })
+    const linkedHome = path.join(tmp.path, "linked-home")
+    symlinkSync(realHome, linkedHome)
+    const start = path.join(linkedHome, "proj")
+
+    const root = resolveProjectRoot(start, { home: realHome, isDirectory: statIsDirectory })
+
+    expect(root).toBe(start)
+  })
 })
 
 describe("assertProjectRootWritable", () => {

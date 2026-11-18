@@ -27,13 +27,16 @@ export function resolveProjectRoot(directory: string, input: ProjectRootInput): 
   const realHome = canonicalize(home)
   const toplevel = input.toplevel ? path.resolve(input.toplevel) : undefined
   const fsRoot = path.parse(start).root
-  const upper = toplevel ?? (isWithin(canonicalize(start), realHome) ? realHome : fsRoot)
+  // `upper` and every `current` are compared in canonical form: a walk that
+  // starts from a symlinked spelling of a directory below `$HOME` never meets
+  // the canonical home by string, so it would otherwise climb past it.
+  const upper = canonicalize(toplevel ?? (isWithin(canonicalize(start), realHome) ? realHome : fsRoot))
 
   let current = start
   while (true) {
-    if (canonicalize(current) !== realHome && current !== fsRoot && input.isDirectory(path.join(current, ".agents")))
-      return current
-    if (current === upper) break
+    const canonical = canonicalize(current)
+    if (canonical !== realHome && current !== fsRoot && input.isDirectory(path.join(current, ".agents"))) return current
+    if (canonical === upper) break
     const parent = path.dirname(current)
     if (parent === current) break
     current = parent
