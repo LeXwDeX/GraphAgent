@@ -26,7 +26,7 @@ import { buildGraph } from "@graphagent/core/dag/core/scheduling"
 import { CycleError } from "@graphagent/core/dag/core/graph"
 import { validateRequiredNodes } from "@graphagent/core/dag/core/required-validator"
 import type { NodeConfig } from "./dag"
-import { DEFAULT_WORKFLOW_CONFIG } from "./dag"
+import { DEFAULT_USER_MAX_TOTAL_NODES, DEFAULT_WORKFLOW_CONFIG } from "./dag"
 import { DagBlocks } from "./blocks"
 import { AdmissionInput, ExecutionMode } from "./admission"
 import { strictReviewCoverageErrors, validateReviewLifecycle } from "./review-lifecycle"
@@ -1596,11 +1596,11 @@ function bindingDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
  * The effective node ceiling: the lower of the workflow's declared cap and the
  * user's global cap (`dag.max_total_nodes`, Issue #1031 M4). The user cap is a
  * hard ceiling — a workflow may tighten it, never loosen it — and it defaults
- * to `DEFAULT_WORKFLOW_CONFIG.maxTotalNodes` when no config layer is present.
+ * to `DEFAULT_USER_MAX_TOTAL_NODES` when no config layer is present.
  */
 export function effectiveMaxTotalNodes(
   maxTotalNodes: number | undefined,
-  userMaxTotalNodes: number = DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+  userMaxTotalNodes: number = DEFAULT_USER_MAX_TOTAL_NODES,
 ) {
   return Math.min(maxTotalNodes ?? userMaxTotalNodes, userMaxTotalNodes)
 }
@@ -1617,7 +1617,7 @@ function ceilingExceeded(
   totalNodes: number,
   maxTotalNodes: number | undefined,
   action: CeilingAction = "start",
-  userMaxTotalNodes: number = DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+  userMaxTotalNodes: number = DEFAULT_USER_MAX_TOTAL_NODES,
 ): Diagnostic[] {
   const max = effectiveMaxTotalNodes(maxTotalNodes, userMaxTotalNodes)
   if (totalNodes <= max) return []

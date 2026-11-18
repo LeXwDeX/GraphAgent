@@ -66,12 +66,28 @@ describe("DAG mode status schema", () => {
     availability: "available" as const,
     unavailableReason: null,
     budget: { tokens: 1000, used: 250, usedCacheRead: 90, warnRatio: 0.8 },
-    limits: { concurrency: 5, maxTotalNodes: 100, running: 2 },
+    limits: {
+      concurrency: 12,
+      configuredConcurrency: null,
+      maxTotalNodes: 100,
+      configuredMaxTotalNodes: null,
+      running: 2,
+    },
     quality: null,
   }
 
   test("decodes the fixed Issue §9 shape", () => {
     expect(Schema.decodeUnknownSync(DagModeStatus.Status)(status)).toEqual(status)
+  })
+
+  // #1290: every limit comes as the value in force and the value configured.
+  test("carries each limit as the value in force and the configured value, null while unset", () => {
+    const configured = { ...status.limits, concurrency: 14, configuredConcurrency: 30, configuredMaxTotalNodes: 40 }
+    expect(Schema.decodeUnknownSync(DagModeStatus.Status)({ ...status, limits: configured }).limits).toEqual(configured)
+    const { configuredConcurrency: _concurrency, ...withoutConcurrency } = status.limits
+    expect(() => Schema.decodeUnknownSync(DagModeStatus.Status)({ ...status, limits: withoutConcurrency })).toThrow()
+    const { configuredMaxTotalNodes: _nodes, ...withoutNodes } = status.limits
+    expect(() => Schema.decodeUnknownSync(DagModeStatus.Status)({ ...status, limits: withoutNodes })).toThrow()
   })
 
   // #1027 D6b: the session read carries the same quality a workflow summary does.

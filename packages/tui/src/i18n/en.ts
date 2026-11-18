@@ -201,6 +201,8 @@ export const en: Record<MessageKey, string> = {
   "panel.config.dag.concurrency.invalid": "Must be an integer from 1 to 64",
   "panel.config.dag.concurrency.description":
     "Shared by all sessions; applies immediately without interrupting running nodes",
+  "panel.config.dag.concurrency.default": "Default",
+  "panel.config.dag.concurrency.capped": "In force {effective}, configured",
   "panel.config.dag.budget": "DAG token budget",
   "panel.config.dag.budget.invalid": "Must be a positive integer; leave empty for no budget",
   "panel.config.dag.budget.empty": "No budget",

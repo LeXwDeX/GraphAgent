@@ -441,7 +441,13 @@ const DAG_MODE_STATUS: SessionDagMode = {
   availability: "available",
   unavailableReason: null,
   budget: { tokens: null, used: 0, usedCacheRead: 0, warnRatio: 0.8 },
-  limits: { concurrency: 4, maxTotalNodes: 100, running: 0 },
+  limits: {
+    concurrency: 4,
+    configuredConcurrency: null,
+    maxTotalNodes: 100,
+    configuredMaxTotalNodes: null,
+    running: 0,
+  },
   quality: null,
 }
 

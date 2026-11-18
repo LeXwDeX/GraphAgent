@@ -325,6 +325,7 @@ describe("internal one-shot agents", () => {
     Effect.sync(() => {
       expect(isInternalOneShot("title")).toBe(true)
       expect(isInternalOneShot("btw")).toBe(true)
+      expect(isInternalOneShot("loop-steer")).toBe(true)
       expect(isInternalOneShot("build")).toBe(false)
       expect(isInternalOneShot("plan")).toBe(false)
     }),

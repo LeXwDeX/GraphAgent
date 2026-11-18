@@ -861,7 +861,9 @@ export type SessionDagMode = {
   }
   limits: {
     concurrency: number
+    configuredConcurrency: number | null
     maxTotalNodes: number
+    configuredMaxTotalNodes: number | null
     running: number
   }
   quality: DagWorkflowQuality | null

@@ -30,7 +30,14 @@ function snapshot(
 ) {
   return {
     budget: { tokens: 5_000_000, used: 1_200_000, usedCacheRead: 0, warnRatio: 0.8, ...extra.budget },
-    limits: { concurrency: 12, maxTotalNodes: 100, running: 3, ...extra.limits },
+    limits: {
+      concurrency: 12,
+      configuredConcurrency: null,
+      maxTotalNodes: 100,
+      configuredMaxTotalNodes: null,
+      running: 3,
+      ...extra.limits,
+    },
   } satisfies DagModeSnapshot
 }
 

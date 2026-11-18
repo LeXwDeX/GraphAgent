@@ -114,7 +114,6 @@ export interface RetargetResult {
 export const DEFAULT_WORKFLOW_CONFIG = {
   maxConcurrency: 5,
   maxNodeReplanAttempts: 5,
-  maxTotalNodes: 100,
   nodeTimeoutMs: 10 * 60 * 1000,
   nodeRequired: false,
   reportToParent: false,
@@ -122,12 +121,20 @@ export const DEFAULT_WORKFLOW_CONFIG = {
 } as const
 
 /**
+ * The user's node ceiling while `dag.max_total_nodes` is unset (Issue #1031 M4,
+ * #1290). It belongs to the user cap, not to a workflow: a workflow declares its
+ * own `max_total_nodes` (or none) and the effective ceiling is the lower of that
+ * and this cap (`DagValidation.effectiveMaxTotalNodes`). Validation, the mode
+ * announcement and the status read all fall back to this one value.
+ */
+export const DEFAULT_USER_MAX_TOTAL_NODES = 100
+
+/**
  * The user's global node ceiling (`dag.max_total_nodes`, Issue #1031 M4), read
  * from the global config layer when the caller's environment provides one. The
  * mode announcement and the scheduler read the same key, so a workflow sees one
  * ceiling everywhere. Direct service callers and unit harnesses without Config
- * keep the documented default that
- * `DagValidation.effectiveMaxTotalNodes` applies.
+ * keep the documented default (`DEFAULT_USER_MAX_TOTAL_NODES`).
  */
 const readUserMaxTotalNodes = Effect.fn("Dag.readUserMaxTotalNodes")(function* () {
   const { Config } = yield* Effect.promise(() => import("@/config/config"))

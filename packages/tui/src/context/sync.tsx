@@ -504,6 +504,11 @@ export const {
       return chain
     }
 
+    /** The root of the tree `sessionID` is in: the last of its parent chain, the session itself when it has no parent. */
+    function rootOf(sessionID: string) {
+      return parentChain(sessionID).at(-1) ?? sessionID
+    }
+
     function touchHydrated(sessionID: string) {
       setStore("hydrated", (current = []) => {
         const next = current.filter((id) => id !== sessionID)
@@ -2108,6 +2113,14 @@ export const {
           if (match.found) return store.session[match.index]
           return undefined
         },
+        /**
+         * The root of the tree `sessionID` is in, the key the per-tree slices (`dag`, `dagMode`) are held under (#1290).
+         * It walks the parent links one session at a time, so a selector that calls it depends on the sessions of that
+         * one chain and does not traverse the whole list.
+         */
+        root(sessionID: string) {
+          return rootOf(sessionID)
+        },
         query() {
           return sessionListQuery()
         },
@@ -2274,6 +2287,15 @@ export const {
       /** #1032: the node tables of the workflows the display surfaces show. */
       dag: {
         watch: watchDag,
+        /**
+         * Read the mode snapshot of the root of the tree `sessionID` is in, unless one is held or on its way. A tree
+         * with DAG mode off and no workflow never reads one by itself (see `dagMode`); the `/config` panel asks for it
+         * when it opens, because the limits in force are only known to the server (#1290). Held from then on, it is
+         * read again with the others after a `dag` configuration change or a reconnect.
+         */
+        readMode(sessionID: string) {
+          void fetchDagMode([rootOf(sessionID)], true)
+        },
         /** The loaded node rows of a workflow, or undefined while its table is not loaded. */
         nodes(workflowID: string) {
           const feed = store.dagNodes[workflowID]

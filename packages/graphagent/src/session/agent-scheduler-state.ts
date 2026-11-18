@@ -75,7 +75,10 @@ export interface SchedulerLimits {
 /**
  * Draft defaults from Issue #1021. They are deliberately centralized here so a
  * later measurement PR adjusts one place; `engine.concurrency` overrides each
- * value and `dag.concurrency` overrides the DAG-wide child layer.
+ * value and `dag.concurrency` overrides the DAG-wide child layer. The default
+ * of `dag.concurrency` has no other copy: the status read, the mode
+ * announcement and the configuration panel take the DAG layer in force from the
+ * scheduler (`AgentScheduler.capacity`) instead of keeping a default of their own.
  */
 export const DEFAULT_LIMITS: SchedulerLimits = {
   global: 24,
