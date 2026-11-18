@@ -345,17 +345,23 @@ test("undo twice and redo twice step through the user's messages only, with a re
     await pressUndo(harness)
     await waitFor(() => revertedTo(harness) === "msg_second")
     expect(harness.promptDraft()).toBe("now the second")
+    // The banner counts the second prompt, not the result that stands after it.
+    await harness.waitForFrame((value) => value.includes("1 message reverted"), "one message reverted")
     await pressUndo(harness)
     await waitFor(() => revertedTo(harness) === "msg_prompt")
     expect(harness.promptDraft()).toBe("scan everything")
-    await harness.waitForFrame((value) => !value.includes("RESULT-BODY-a"), "the first result taken away")
+    await harness.waitForFrame(
+      (value) => !value.includes("RESULT-BODY-a") && value.includes("2 message reverted"),
+      "the first result taken away, and two prompts reverted",
+    )
 
     // The first redo goes forward to the second prompt, over the result that stands before it: the first result is
     // back with the first prompt, and the second one still waits behind the second.
     await pressRedo(harness)
     await waitFor(() => revertedTo(harness) === "msg_second")
     await harness.waitForFrame(
-      (value) => value.includes("RESULT-BODY-a") && !value.includes("RESULT-BODY-b"),
+      (value) =>
+        value.includes("RESULT-BODY-a") && !value.includes("RESULT-BODY-b") && value.includes("1 message reverted"),
       "the first result, and not the second",
     )
 
@@ -365,6 +371,24 @@ test("undo twice and redo twice step through the user's messages only, with a re
     await harness.waitForFrame((value) => value.includes("RESULT-BODY-b"), "the second result")
     expect(steps(harness)).toEqual(["revert msg_second", "revert msg_prompt", "revert msg_second", "unrevert"])
     expect(harness.promptDraft()).toBe("")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("the banner of a revert counts what the user wrote: a prompt with two results after it is one message reverted", async () => {
+  const harness = await mount([
+    prompt("msg_prompt", 10, "scan everything"),
+    answer("msg_answer", "msg_prompt", 20),
+    result("a", 30),
+    result("b", 31),
+  ])
+  try {
+    await pressUndo(harness)
+    await waitFor(() => revertedTo(harness) === "msg_prompt")
+    const frame = await harness.waitForFrame((value) => value.includes("message reverted"), "the banner")
+    expect(frame).toContain("1 message reverted")
+    expect(frame).not.toContain("3 message reverted")
   } finally {
     await harness.dispose()
   }

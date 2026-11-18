@@ -345,7 +345,8 @@ export function Main() {
 
   // What the user wrote, not what the server added after a run (#1408): a background result and the text a command
   // leaves for the model are synthetic messages. One whose parts have not arrived is not known to be the user's.
-  // Undo and redo step over user messages and nothing else, so a result is never where either of them stops.
+  // Undo and redo step over user messages and nothing else, so a result is never where either of them stops, and the
+  // banner of a revert counts the same messages.
   const userWrote = (message: Message) => {
     if (message.role !== "user") return false
     const parts = sync.data.part[message.id]
@@ -357,7 +358,7 @@ export function Main() {
   const revertRevertedMessages = createMemo(() => {
     const boundary = revertBoundary()
     if (!boundary) return []
-    return messages().filter((x) => x.role === "user" && !orderedBefore(x, boundary))
+    return messages().filter((x) => userWrote(x) && !orderedBefore(x, boundary))
   })
 
   const revert = createMemo(() => {
