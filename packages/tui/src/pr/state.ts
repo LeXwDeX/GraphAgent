@@ -486,6 +486,24 @@ export function prToastFor(
   return undefined
 }
 
+/**
+ * Whether `next` is what the clock alone made of `previous` at `now`: a notice that was waiting for its three minutes
+ * (`awaiting` or `notified`, whose `nextAt` is that boundary) is `unresponsive` now that the boundary has passed, for
+ * the same outcome. That is the one move time makes by itself. A read can bring much more in the same gap (a delivery
+ * that stopped, a failed turn, another outcome, an older notice), and none of that is time passing, so none of it
+ * counts. The caller also checks that it is the same entry and the same notice (`prNoticeAt`).
+ */
+export function prClockMoved(previous: PrLineFacts | undefined, next: PrLineFacts, now: number): boolean {
+  return (
+    previous !== undefined &&
+    (previous.kind === "awaiting" || previous.kind === "notified") &&
+    previous.nextAt !== undefined &&
+    previous.nextAt <= now &&
+    next.kind === "unresponsive" &&
+    next.outcome === previous.outcome
+  )
+}
+
 /** A sticky warning on screen: the PR it is about, the watch that raised it, and when it was raised. */
 export interface PrAlert {
   readonly url: string

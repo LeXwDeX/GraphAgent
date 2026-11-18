@@ -899,6 +899,81 @@ describe("pr tracker: the unresponsive warning around its boundary", () => {
     expect(unresponsive(h)).toHaveLength(1)
   })
 
+  // A read that lands after the boundary may bring anything. Only the clock's own move of the very notice that was
+  // waiting is announced; whatever else the read changed is folded in without a word, like every read (F6 2.4).
+  const owedEntry = (over: Partial<PrWatchEntry> = {}) =>
+    entry({ phase: "delivering", outcome: "success", updatedAt: T0, delivery: { state: "pending" }, ...over })
+
+  /** A tree read with a notice owed since `T0`, and the clock past its boundary before the callback has run. */
+  function owedAndLate(over: Partial<PrWatchEntry> = {}) {
+    const h = mount()
+    h.replace(ROOT, [owedEntry(over)])
+    expect(kinds(h)).toEqual(["w1:awaiting"])
+    expect(h.clock.pending()).toEqual([BOUNDARY])
+    h.clock.passTo(BOUNDARY)
+    return h
+  }
+
+  test("a reconnect read after the boundary that replaces the entry with a stopped delivery says nothing", () => {
+    const h = owedAndLate()
+    h.replace(ROOT, [
+      delivered(T0, { delivery: { state: "delivered", deliveredAt: BOUNDARY - SECOND, noReply: true } }),
+    ])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:noReply"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read after the boundary that brings another outcome says nothing", () => {
+    const h = owedAndLate()
+    h.replace(ROOT, [owedEntry({ outcome: "failure" })])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read after the boundary that brings other CI counts says nothing", () => {
+    const h = owedAndLate({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } })
+    h.replace(ROOT, [owedEntry({ checks: { total: 6, pending: 0, failed: 0, passed: 6 } })])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read after the boundary that brings an older notice says nothing: it is another notice, not time", () => {
+    const h = mount()
+    // Delivered a minute in: its three minutes end at `T0 + 4m`.
+    h.replace(ROOT, [delivered(T0 + MINUTE)])
+    expect(h.clock.pending()).toEqual([T0 + 4 * MINUTE])
+    h.clock.passTo(T0 + 4 * MINUTE)
+    // The read says it was delivered at `T0`: those three minutes ended a minute ago.
+    h.replace(ROOT, [delivered(T0)])
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:unresponsive"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a failed turn that arrives after the boundary is not the clock either", () => {
+    const h = mount()
+    h.replace(ROOT, [delivered(T0)])
+    expect(kinds(h)).toEqual(["w1:notified"])
+    h.clock.passTo(BOUNDARY)
+    h.addMessage(assistant("msg_a", T0 + SECOND, T0 + 2 * SECOND, true))
+    h.clock.runDue()
+    expect(kinds(h)).toEqual(["w1:turnError"])
+    expect(h.toasts).toEqual([])
+  })
+
+  test("a reconnect read that only refreshes an owed notice after the boundary lets the clock say it, once", () => {
+    const h = owedAndLate()
+    // Nothing the line or its identity reads changes: the same notice, the same outcome, the same counts.
+    h.replace(ROOT, [owedEntry({ startedAt: T0 - 2 * MINUTE })])
+    expect(unresponsive(h)).toHaveLength(1)
+    h.clock.runDue()
+    expect(unresponsive(h)).toHaveLength(1)
+    expect(h.toasts).toHaveLength(1)
+  })
+
   test("a read that brings a notice in already unresponsive stays silent, whatever the clock says", () => {
     const h = mount({ start: BOUNDARY + MINUTE })
     h.replace(ROOT, [delivered(T0)])

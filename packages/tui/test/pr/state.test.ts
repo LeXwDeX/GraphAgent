@@ -11,6 +11,7 @@ import {
   PR_TAIL_BUDGET,
   PR_UNRESPONSIVE_MS,
   prAlertDismissed,
+  prClockMoved,
   prCompact,
   prLineFacts,
   prLineState,
@@ -754,6 +755,62 @@ describe("facts and words", () => {
       text: "PR #7 agent not responding",
       level: "warning",
     })
+  })
+})
+
+describe("prClockMoved", () => {
+  const BOUNDARY = T0 + PR_UNRESPONSIVE_MS
+  const facts = (e: PrWatchEntry, s: PrSession, now: number) => prLineFacts(e, s, now)
+
+  test("is the notice that waited for its three minutes, once they have passed: owed or delivered", () => {
+    for (const [make, before] of [
+      [owed, facts(owed(), idle(), T0 + SECOND)],
+      [delivered, facts(delivered(), idle(), T0 + SECOND)],
+    ] as const) {
+      expect(before.nextAt, make.name).toBe(BOUNDARY)
+      const after = facts(make(), idle(), BOUNDARY)
+      expect(after.kind).toBe("unresponsive")
+      expect(prClockMoved(before, after, BOUNDARY), make.name).toBe(true)
+      expect(prClockMoved(before, after, BOUNDARY + MINUTE), make.name).toBe(true)
+      // Before the boundary it has not happened yet, whatever the states say.
+      expect(prClockMoved(before, after, BOUNDARY - 1), make.name).toBe(false)
+    }
+  })
+
+  test("is not anything else a read can bring in the same gap", () => {
+    const before = facts(delivered(), idle(), T0 + SECOND)
+    const clock = facts(delivered(), idle(), BOUNDARY)
+    expect(prClockMoved(before, clock, BOUNDARY)).toBe(true)
+
+    for (const [what, after] of [
+      ["a stopped delivery", facts(delivered({}, T0, { noReply: true }), idle(), BOUNDARY)],
+      ["a failed turn", facts(delivered(), idle([failed(T0 + SECOND)]), BOUNDARY)],
+      ["an answer", facts(delivered(), idle([answer(T0 + SECOND)]), BOUNDARY)],
+      ["a busy session", facts(delivered(), busy(), BOUNDARY)],
+      ["another outcome", facts(delivered({ outcome: "failure" }), idle(), BOUNDARY)],
+      ["a watch that is being watched again", facts(watching(), idle(), BOUNDARY)],
+    ] as const) {
+      expect(prClockMoved(before, after, BOUNDARY), what).toBe(false)
+    }
+  })
+
+  test("only a notice waiting for its three minutes can be moved by them", () => {
+    const after = facts(delivered(), idle(), BOUNDARY)
+    const handled = facts(delivered(), idle([answer(T0 + SECOND)]), T0 + 10 * SECOND)
+    expect(handled.nextAt).toBeDefined()
+    for (const [what, before] of [
+      ["a handled line", handled],
+      ["a working line", facts(delivered(), busy(), T0 + SECOND)],
+      ["a line that is not drawn", facts(entry({ phase: "cancelled" }), idle(), T0)],
+      ["a line waiting for CI", facts(watching(), idle(), T0)],
+      ["an unresponsive line", facts(delivered(), idle(), BOUNDARY)],
+    ] as const) {
+      expect(prClockMoved(before, after, BOUNDARY + MINUTE), what).toBe(false)
+    }
+  })
+
+  test("has nothing to move without a state before it", () => {
+    expect(prClockMoved(undefined, facts(delivered(), idle(), BOUNDARY), BOUNDARY)).toBe(false)
   })
 })
 
