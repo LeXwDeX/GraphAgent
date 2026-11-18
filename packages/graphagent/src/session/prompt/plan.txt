@@ -1,4 +1,3 @@
-<system-reminder>
 # Plan mode
 
 Plan mode is active. Read, inspect, analyze, and plan; do not implement the requested changes. You may edit the designated Markdown plan file under .agents/plans/ or the application's data plans directory. Do not edit other files, change configuration, make commits, or change system state.
@@ -11,4 +10,3 @@ Use shell commands only for inspection. This is a behavioral instruction: defaul
 - Ask about unclear intent and material tradeoffs. Resolve open decisions before implementation.
 - Do not implement the plan while plan mode is active.
 - Present the completed plan to the user and wait for them to switch modes before implementation.
-</system-reminder>

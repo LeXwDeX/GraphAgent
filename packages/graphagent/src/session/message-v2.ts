@@ -180,6 +180,7 @@ function providerMeta(metadata: Record<string, any> | undefined) {
 }
 
 import { reasoningForReplay } from "@graphagent/core/session/reasoning-distillation/canonical"
+import { Injection } from "@graphagent/core/system-context/injection"
 
 // Compaction changes the signed conversation prefix. Only these native carriers
 // are known to encode Claude thinking/redacted_thinking blocks; other reasoning
@@ -303,7 +304,8 @@ function interruptionMessages(msg: WithParts): UIMessage[] {
   if (msg.info.role !== "assistant") return []
   const error = msg.info.error
   if (!error || AbortedError.isInstance(error)) return []
-  return [{ id: MessageID.ascending(), role: "user", parts: [{ type: "text", text: interruptionNote(error) }] }]
+  const text = Injection.wrap("runtime", interruptionNote(error))
+  return [{ id: MessageID.ascending(), role: "user", parts: [{ type: "text", text }] }]
 }
 
 /**

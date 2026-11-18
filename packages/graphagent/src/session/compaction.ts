@@ -36,7 +36,8 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { buildPrompt } from "@graphagent/core/session/compaction-prompt"
 import { SessionCompactionEvent } from "@graphagent/schema/session-compaction-event"
-import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult } from "@/hook"
+import { SettingsHook, isHookRewake, type TriggerResult } from "@/hook"
+import { hookBlock } from "@/hook/trigger-result"
 import { HookStartContext } from "@/hook/start-context"
 import { Memory } from "@/memory/memory"
 import { SessionStatus } from "./status"
@@ -173,13 +174,7 @@ function latestUserRequest(messages: readonly SessionV1.WithParts[]) {
     // context), not user requests.
     if (!textParts.length) continue
     // The internal rewake convention prefixes the assembled original text.
-    if (
-      textParts
-        .map((part) => part.text)
-        .join("\n")
-        .startsWith(HOOK_REWAKE_SENTINEL)
-    )
-      continue
+    if (isHookRewake(textParts.map((part) => part.text).join("\n"))) continue
     const text = textParts
       .map((part) => part.text.trim())
       .filter(Boolean)
@@ -592,11 +587,13 @@ export const layer = Layer.effect(
         for (const ctx of ssResult.additionalContexts ?? []) {
           const text = ctx.trim()
           if (!text) continue
-          const key = Hash.sha256(text)
-          if (seen.has(key)) continue
+          // The model sees the context in its hook block; an earlier turn may hold it as written before blocks existed.
+          const block = hookBlock([text])
+          const keys = [Hash.sha256(text), Hash.sha256(block)]
+          if (keys.some((key) => seen.has(key))) continue
           // A long context copied verbatim into the summary is already model-visible.
           if (compacted && text.length >= 80 && compacted.includes(text)) continue
-          seen.add(key)
+          for (const key of keys) seen.add(key)
           if (input.followUpID) {
             yield* session.updatePart({
               id: PartID.ascending(),
@@ -604,10 +601,11 @@ export const layer = Layer.effect(
               sessionID: input.sessionID,
               type: "text",
               synthetic: true,
-              text,
+              text: block,
               time: { start: Date.now(), end: Date.now() },
             })
           } else if (startContext) {
+            // The queue holds the context as the hook wrote it; admission puts it in its block.
             yield* startContext.append(input.sessionID, text)
           }
         }

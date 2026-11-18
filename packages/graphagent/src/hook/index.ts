@@ -70,7 +70,14 @@ export type { HookLayer } from "./config/chain"
 export { chainCandidates as __chainCandidates } from "./config/chain"
 export { landSystemMessages } from "./trigger-result"
 export type { TriggerResult } from "./trigger-result"
-export { HOOK_REWAKE_SENTINEL, MAX_STOP_CONTINUATIONS, sanitizeHookContext, stopHookBlockCap } from "./engine/async"
+export {
+  HOOK_REWAKE_LEGACY_SENTINEL,
+  HOOK_REWAKE_SENTINEL,
+  MAX_STOP_CONTINUATIONS,
+  isHookRewake,
+  sanitizeHookContext,
+  stopHookBlockCap,
+} from "./engine/async"
 export type { Interface } from "./service"
 export { Service, defaultLayer, layer, node } from "./service"
 

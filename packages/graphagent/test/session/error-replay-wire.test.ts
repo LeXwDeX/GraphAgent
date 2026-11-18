@@ -69,7 +69,8 @@ type Fixture = {
   readonly layout?: (body: any, path: "sdk" | "native") => void
 }
 
-const NOTE = "[runtime] The previous assistant step ended with an error (APIError, HTTP 502)."
+// The note is one block with source="runtime" (#1456): its opening tag, then the note.
+const NOTE = '<system-reminder source="runtime">\nThe previous assistant step ended with an error (APIError, HTTP 502).'
 
 const blocks = (body: any): any[] =>
   body.messages.flatMap((message: any) => (Array.isArray(message.content) ? message.content : []))
@@ -252,8 +253,10 @@ function expectReplay(target: Fixture, body: unknown) {
   const text = JSON.stringify(body)
   expect(text).not.toContain("cut-off")
   // The note comes once, after the last tool call, so the model reads the results before it.
-  expect(text.split(NOTE)).toHaveLength(2)
-  expect(text.indexOf(NOTE)).toBeGreaterThan(text.lastIndexOf("call_b"))
+  // `text` is the body as JSON, in which the note's line break and quotes are escaped.
+  const note = JSON.stringify(NOTE).slice(1, -1)
+  expect(text.split(note)).toHaveLength(2)
+  expect(text.indexOf(note)).toBeGreaterThan(text.lastIndexOf("call_b"))
   // Every tool call has a result with its id, and nothing else.
   expect(target.pairs(body)).toEqual({ calls: ["call_a", "call_b"], results: ["call_a", "call_b"] })
 }

@@ -11,16 +11,28 @@ import PROMPT_PLAN from "./prompt/plan.txt"
 import BUILD_SWITCH from "./prompt/build-switch.txt"
 import PLAN_MODE from "./prompt/plan-mode.txt"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
+import { Injection } from "@graphagent/core/system-context/injection"
+
+// Plan-mode text is an engine state reminder of kind "plan": the block says who wrote it and what it is worth.
+const planBlock = (text: string) => Injection.wrap("reminder", text.trim(), { kind: "plan" })
+const BUILD_SWITCH_TEXT = BUILD_SWITCH.trim()
+
+/** The plan agent's prompt, as it is appended to the current user message. */
+export const PLAN_REMINDER = planBlock(PROMPT_PLAN)
+/** The note on the turn that leaves plan mode. */
+export const BUILD_SWITCH_REMINDER = planBlock(BUILD_SWITCH_TEXT)
 
 export function planModePrompt(input: { plan: string; exists: boolean; tools: readonly string[] }) {
-  return PLAN_MODE.replace(
-    "${planInfo}",
-    () =>
-      `${input.exists ? "A plan file already exists" : "No plan file exists yet"} at ${input.plan}. ${GraphAgentPrompt.editingInstruction(input.tools)}`,
-  ).replace("${planExit}", () =>
-    input.tools.includes("plan_exit")
-      ? "Call plan_exit when the plan is ready for user approval."
-      : "When the plan is ready, present it to the user and wait for them to switch modes before implementation.",
+  return planBlock(
+    PLAN_MODE.replace(
+      "${planInfo}",
+      () =>
+        `${input.exists ? "A plan file already exists" : "No plan file exists yet"} at ${input.plan}. ${GraphAgentPrompt.editingInstruction(input.tools)}`,
+    ).replace("${planExit}", () =>
+      input.tools.includes("plan_exit")
+        ? "Call plan_exit when the plan is ready for user approval."
+        : "When the plan is ready, present it to the user and wait for them to switch modes before implementation.",
+    ),
   )
 }
 
@@ -78,15 +90,15 @@ export const derive = Effect.fn("SessionReminders.derive")(function* (input: {
 
   if (!flags.experimentalPlanMode) {
     let next = messages
-    if (input.agent.name === "plan") next = appendPart(next, userMessage, textReminder(userMessage, PROMPT_PLAN))
+    if (input.agent.name === "plan") next = appendPart(next, userMessage, textReminder(userMessage, PLAN_REMINDER))
     // Only the turn that leaves plan mode needs the switch. An older plan turn
     // left in history must not re-inject it on every later build step.
     const lastAssistant = messages.findLast((msg) => msg.info.role === "assistant")
     if (lastAssistant?.info.agent === "plan" && input.agent.name === "build") {
       const already = userMessage.parts.some(
-        (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH,
+        (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH_REMINDER,
       )
-      if (!already) next = appendPart(next, userMessage, textReminder(userMessage, BUILD_SWITCH))
+      if (!already) next = appendPart(next, userMessage, textReminder(userMessage, BUILD_SWITCH_REMINDER))
     }
     return next
   }
@@ -102,8 +114,10 @@ export const derive = Effect.fn("SessionReminders.derive")(function* (input: {
       sessionID: userMessage.info.sessionID,
       type: "text",
       text: exists
-        ? `${BUILD_SWITCH}\n\nA plan file exists at ${plan}. You should execute on the plan defined within it`
-        : BUILD_SWITCH,
+        ? planBlock(
+            `${BUILD_SWITCH_TEXT}\n\nA plan file exists at ${plan}. You should execute on the plan defined within it`,
+          )
+        : BUILD_SWITCH_REMINDER,
       synthetic: true,
     })
     return appendPart(messages, userMessage, part)
@@ -120,7 +134,8 @@ export const derive = Effect.fn("SessionReminders.derive")(function* (input: {
       (part): part is SessionV1.TextPart =>
         part.type === "text" &&
         part.synthetic === true &&
-        part.text.startsWith("<system-reminder>\n# Plan mode") &&
+        Injection.has(part.text) &&
+        part.text.includes("\n# Plan mode\n") &&
         part.text.includes("\n# Plan file\n"),
     ),
   )
