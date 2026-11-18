@@ -33,6 +33,7 @@ const childInput = MoveSession.Input.make({ ...input, sessionID: SessionSchema.I
 const childInfo: Session.Info = {
   id: childInput.sessionID,
   slug: "child",
+  role: "task_child",
   projectID: ProjectV2.ID.make("proj_move"),
   directory: "/source",
   parentID: SessionSchema.ID.make("ses_move_parent"),

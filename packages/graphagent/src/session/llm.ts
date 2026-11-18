@@ -28,6 +28,7 @@ import { LLMRequestPrep } from "./llm/request"
 import { CacheGroup } from "./llm/cache-group"
 import { ToolCallDeniedError, ToolRefusedError } from "./llm/refusal"
 import { ThinkingReplay } from "./thinking-replay"
+import { SessionRole } from "./role"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Lane as SchedulerLane } from "./agent-scheduler-state"
 import {
@@ -704,7 +705,11 @@ const live: Layer.Layer<
             // be 1). Scope release still covers tool-free streams.
             const lane: SchedulerLane =
               input.lane ??
-              (input.purpose === "auxiliary" ? "auxiliary" : input.parentSessionID ? "child" : "interactive")
+              (input.purpose === "auxiliary"
+                ? "auxiliary"
+                : SessionRole.isChild({ parentID: input.parentSessionID })
+                  ? "child"
+                  : "interactive")
             // The group identity deliberately comes from the caller's system
             // fragments, never from the prepared wire system: a DAG child
             // appends its node-specific execution context to `user.system`.

@@ -129,6 +129,40 @@ describe("SessionRole row tests", () => {
   )
 })
 
+describe("SessionRole.roleOfRow", () => {
+  it.effect("places a row by the owner kind read with it, and a root by nothing", () =>
+    Effect.sync(() => {
+      const child = { parentID: id("row-owner-parent") }
+      expect(SessionRole.roleOfRow({}, undefined)).toBe("root")
+      // A root never looks at a binding, whatever a join handed back.
+      expect(SessionRole.roleOfRow({ parentID: null }, "dag_node")).toBe("root")
+      expect(SessionRole.roleOfRow(child, "task")).toBe("task_child")
+      expect(SessionRole.roleOfRow(child, "dag_node")).toBe("dag_node")
+      // No binding: the least a child can be.
+      expect(SessionRole.roleOfRow(child, null)).toBe("task_child")
+      expect(SessionRole.roleOfRow(child, undefined)).toBe("task_child")
+    }),
+  )
+
+  it.effect("reports a child that was read with no binding once per session, however often it is read", () =>
+    Effect.gen(function* () {
+      const first = { id: id("report-first"), parentID: id("report-parent") }
+      const second = { id: id("report-second"), parentID: id("report-parent") }
+
+      const { warnings } = yield* withWarnings(
+        Effect.gen(function* () {
+          yield* SessionRole.reportUnbound([first, second])
+          yield* SessionRole.reportUnbound([first])
+          yield* SessionRole.reportUnbound([second, first])
+        }),
+      )
+
+      expect(warnings).toHaveLength(2)
+      expect(warnings.every((message) => message.includes("child session has no child_binding"))).toBe(true)
+    }),
+  )
+})
+
 describe("SessionRole.roleOf", () => {
   it.effect("is root for a row without a parent, at no cost", () =>
     Effect.gen(function* () {

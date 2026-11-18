@@ -724,6 +724,7 @@ const runtime = testEffect(
         Effect.succeed({
           id,
           slug: "workflow-test",
+          role: id === SessionID.make("ses_workflow_child") ? "task_child" : "root",
           projectID,
           directory: workflowSpecDirectory,
           parentID: id === SessionID.make("ses_workflow_child") ? SessionID.make("ses_workflow_parent") : undefined,
@@ -775,6 +776,7 @@ const missingModelRuntime = testEffect(
         Effect.succeed({
           id,
           slug: "workflow-test",
+          role: "root",
           projectID,
           directory: missingModelDirectory,
           title: "Workflow test",
@@ -826,6 +828,7 @@ function workflowToolAt(directory: string) {
           Effect.succeed({
             id,
             slug: "draft-test",
+            role: "root",
             projectID: draftProjectID(directory),
             directory,
             title: "Draft permissions",

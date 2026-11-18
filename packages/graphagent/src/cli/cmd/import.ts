@@ -1,6 +1,7 @@
 import type { Session as SDKSession, Message, Part } from "@graphagent/sdk"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "@/session/session"
+import type { SessionRole } from "@/session/role"
 import { MessageV2 } from "../../session/message-v2"
 import { CliError, effectCmd } from "../effect-cmd"
 import { Database } from "@graphagent/core/database/database"
@@ -27,7 +28,28 @@ export function formatImportFileError(file: string, error: FSUtil.Error) {
   return t("cli.import.invalidJson", { file, detail })
 }
 
-type ExportData = { info: SDKSession; messages: Array<{ info: Message; parts: Part[] }> }
+/** A session as an export file holds it: files written before #1288 have no `role`. */
+type ExportedSession = Omit<SDKSession, "role"> & { role?: SessionRole.Role }
+
+type ExportData = { info: ExportedSession; messages: Array<{ info: Message; parts: Part[] }> }
+
+/**
+ * The `Session.Info` an export file describes, placed in the project and directory that import it. The role is
+ * derived on read and `toRow` drops it, but `Session.Info` requires it: an export with none gets the one a child with
+ * no binding has (`SessionRole`), `task_child` when it has a parent and `root` when it has none.
+ */
+export function importedSessionInfo(
+  exported: ExportedSession,
+  place: { projectID: string; directory: string; path: string },
+): Session.Info {
+  return Schema.decodeUnknownSync(Session.Info)({
+    ...exported,
+    role: exported.role ?? (exported.parentID ? "task_child" : "root"),
+    projectID: place.projectID,
+    directory: place.directory,
+    path: place.path,
+  }) as Session.Info
+}
 
 export const ImportCommand = effectCmd({
   command: "import <file>",
@@ -53,12 +75,11 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
     .readJson(file)
     .pipe(Effect.mapError((error) => new CliError({ message: formatImportFileError(file, error) })))) as ExportData
 
-  const info = Schema.decodeUnknownSync(Session.Info)({
-    ...exportData.info,
+  const info = importedSessionInfo(exportData.info, {
     projectID: ctx.project.id,
     directory: ctx.directory,
     path: path.relative(path.resolve(ctx.worktree), ctx.directory).replaceAll("\\", "/"),
-  }) as Session.Info
+  })
   const row = Session.toRow(info)
   yield* db
     .insert(SessionTable)

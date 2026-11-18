@@ -105,6 +105,7 @@ describe("expanded children are read-only runs", () => {
           id: childID,
           parentID,
           slug: "compose-readonly",
+          role: "task_child",
           projectID: ProjectV2.ID.global,
           directory,
           title: "compose read-only child",

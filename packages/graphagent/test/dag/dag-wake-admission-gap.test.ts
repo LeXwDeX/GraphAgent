@@ -80,6 +80,7 @@ function restartLayer(filename: string, probe: Probe) {
             projectID: Project.ID.make("project-1"),
             directory: path.dirname(filename),
             slug: "parent",
+            role: "root",
             title: "Parent",
             version: "test",
             time: { created: 0, updated: 0 },

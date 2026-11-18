@@ -169,6 +169,7 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
       Effect.succeed({
         id: SessionID.make(PARENT_SESSION),
         slug: "parent",
+        role: "root",
         projectID: Project.ID.make(PROJECT_ID),
         directory: process.cwd(),
         title: "Parent",
@@ -183,6 +184,7 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
         return {
           id: SessionID.make(id),
           slug: "child",
+          role: "root",
           projectID: Project.ID.make(PROJECT_ID),
           directory: process.cwd(),
           title: value?.title ?? id,

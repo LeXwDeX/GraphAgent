@@ -90,6 +90,7 @@ describe("tool.registry agent turn cache", () => {
       const session = {
         id: SessionID.make("ses_turn_cache"),
         slug: "turn-cache",
+        role: "root",
         projectID: ProjectV2.ID.global,
         directory,
         title: "turn cache",

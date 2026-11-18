@@ -169,6 +169,7 @@ function wakeLayer(input: {
       Effect.succeed({
         id: SessionID.make("ses_parent"),
         slug: "parent",
+        role: "root",
         projectID: Project.ID.make("project-1"),
         directory: process.cwd(),
         title: "parent",
@@ -338,6 +339,7 @@ describe("DagLoop atomic wake integration", () => {
             Effect.succeed({
               id: SessionID.make("ses_parent"),
               slug: "parent",
+              role: "root",
               projectID: Project.ID.make("project-1"),
               directory: process.cwd(),
               title: "Parent",
@@ -354,6 +356,7 @@ describe("DagLoop atomic wake integration", () => {
               return {
                 id: SessionID.make(id),
                 slug: "child",
+                role: "root",
                 projectID: Project.ID.make("project-1"),
                 directory: process.cwd(),
                 title: value?.title ?? id,
@@ -1720,6 +1723,7 @@ describe("DagLoop atomic wake integration", () => {
             Effect.succeed({
               id: SessionID.make("ses_parent"),
               slug: "parent",
+              role: "root",
               projectID: Project.ID.make("project-1"),
               directory: process.cwd(),
               title: "Parent",
@@ -1736,6 +1740,7 @@ describe("DagLoop atomic wake integration", () => {
               return {
                 id: SessionID.make(id),
                 slug: "child",
+                role: "root",
                 projectID: Project.ID.make("project-1"),
                 directory: process.cwd(),
                 title: value?.title ?? id,

@@ -137,6 +137,7 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
         : Effect.succeed({
             id: SessionID.make(PARENT_SESSION),
             slug: "parent",
+            role: "root",
             projectID: Project.ID.make(PROJECT_ID),
             directory: process.cwd(),
             title: "Parent",
@@ -153,6 +154,7 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
         return {
           id: SessionID.make(id),
           slug: "child",
+          role: "root",
           projectID: Project.ID.make(PROJECT_ID),
           directory: process.cwd(),
           title: value?.title ?? id,

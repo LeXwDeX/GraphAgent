@@ -115,6 +115,7 @@ const harness = Effect.gen(function* () {
       Effect.succeed({
         id: SessionID.make("ses_parent"),
         slug: "parent",
+        role: "root",
         projectID: Project.ID.make("project-1"),
         directory: process.cwd(),
         title: "parent",

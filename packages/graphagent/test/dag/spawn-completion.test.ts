@@ -104,6 +104,7 @@ const sessionLayer = Layer.mock(Session.Service, sessionStub)
 const sessionInfo = (id: string, directory = process.cwd(), model?: Session.Info["model"]): Session.Info => ({
   id: SessionID.make(id),
   slug: id,
+  role: "root",
   projectID: Project.ID.make("p"),
   directory,
   title: id,

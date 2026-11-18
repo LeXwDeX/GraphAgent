@@ -139,6 +139,7 @@ function loopLayer(
       Effect.succeed({
         id: SessionID.make("ses_parent"),
         slug: "parent",
+        role: "root",
         projectID: Project.ID.make("project-1"),
         directory: process.cwd(),
         title: "Parent",
@@ -155,6 +156,7 @@ function loopLayer(
         return {
           id: SessionID.make(id),
           slug: "child",
+          role: "root",
           projectID: Project.ID.make("project-1"),
           directory: process.cwd(),
           title: value?.title ?? id,

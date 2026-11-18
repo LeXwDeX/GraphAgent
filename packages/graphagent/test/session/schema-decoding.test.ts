@@ -37,6 +37,7 @@ describe("Session.Info", () => {
     const input = {
       id: sessionID,
       slug: "hello",
+      role: "root" as const,
       projectID,
       directory: "/tmp/proj",
       title: "First session",
@@ -50,6 +51,7 @@ describe("Session.Info", () => {
     const input = {
       id: sessionID,
       slug: "fullshape",
+      role: "task_child" as const,
       projectID,
       workspaceID,
       directory: "/tmp/proj",
@@ -80,6 +82,7 @@ describe("Session.Info", () => {
     const input = {
       id: sessionID,
       slug: "legacy-diff",
+      role: "root" as const,
       projectID,
       directory: "/tmp/proj",
       title: "Legacy diff",
@@ -103,6 +106,21 @@ describe("Session.Info", () => {
   test("rejects missing required fields", () => {
     const bad = { id: sessionID } as unknown
     expect(() => decode(bad)).toThrow()
+  })
+
+  test("requires a known role (#1288)", () => {
+    const base = {
+      id: sessionID,
+      slug: "hello",
+      projectID,
+      directory: "/tmp/proj",
+      title: "First session",
+      version: "0.1.0",
+      time: { created: 1, updated: 2 },
+    }
+    for (const role of ["root", "task_child", "dag_node"] as const) expect(decode({ ...base, role }).role).toBe(role)
+    expect(() => decode(base)).toThrow()
+    expect(() => decode({ ...base, role: "lead" })).toThrow()
   })
 })
 

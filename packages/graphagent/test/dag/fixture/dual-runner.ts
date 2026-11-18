@@ -343,6 +343,7 @@ function sessionInfo(id: string, parentID?: string): Session.Info {
   return {
     id: SessionID.make(id),
     slug: id,
+    role: parentID ? "task_child" : "root",
     projectID: Project.ID.make(PROJECT_ID),
     directory: cwd,
     title: id,

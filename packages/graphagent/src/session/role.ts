@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Database } from "@graphagent/core/database/database"
+import { SessionRole as RoleSchema } from "@graphagent/schema/session-role"
 import { Effect, Schema } from "effect"
 import { ChildRegistry as Registry } from "./child/registry"
 import { ChildStore as Store } from "./child/store"
@@ -27,7 +28,7 @@ import type { SessionID } from "./schema"
  * delete) stays where it is; `test/policy/session-role-scan.test.ts` keeps the
  * decisions from coming back.
  */
-export const Role = Schema.Literals(["root", "task_child", "dag_node"])
+export const Role = RoleSchema
 export type Role = Schema.Schema.Type<typeof Role>
 
 /** What every answer starts from: the session and the parent its own row records. */
@@ -51,7 +52,19 @@ export const isRoot = (session: Parented): boolean => !session.parentID
 /** The complement of `isRoot`: delegated work, of whatever kind. */
 export const isChild = (session: Parented): boolean => !isRoot(session)
 
-const ofKind = (kind: ChildOwnerKind): Role => (kind === "dag_node" ? "dag_node" : "task_child")
+/** A child's role from its binding's owner kind; no binding is `task_child`, the role with no capability to spare. */
+const ofKind = (kind: ChildOwnerKind | null | undefined): Role => (kind === "dag_node" ? "dag_node" : "task_child")
+
+/**
+ * The role of a session row that was read together with its binding's owner
+ * kind (the LEFT JOIN of `Session.get`, `list` and `children`), so it needs no
+ * lookup: a row with no parent is a root, a child is `dag_node` when its binding
+ * says a DAG node owns it and `task_child` otherwise. A child with no binding
+ * (`ownerKind` null) is `task_child` as in `roleOf`; `reportUnbound` is where
+ * the read paths log it.
+ */
+export const roleOfRow = (row: Parented, ownerKind: ChildOwnerKind | null | undefined): Role =>
+  isRoot(row) ? "root" : ofKind(ownerKind)
 
 /**
  * The role this process can name without a read: a root by its row, a child by
@@ -83,6 +96,9 @@ interface Link {
   readonly parent: SessionID | undefined
 }
 
+const warnUnbound = (sessionID: SessionID, parentID: SessionID) =>
+  Effect.logWarning("child session has no child_binding; treated as task_child", { sessionID, parentID })
+
 /**
  * The place of one session: the active run of this process first, then the
  * durable binding. A child with a recorded parent and no binding is a
@@ -99,12 +115,36 @@ const link = Effect.fn("SessionRole.link")(function* (db: Db, session: Ref): Eff
     return { role: ofKind(lineage.binding.ownerKind), parent: lineage.binding.parentSessionID }
   const recorded = lineage === undefined ? session.parentID : lineage.recordedParent
   if (recorded === undefined) return { role: "root", parent: undefined }
-  yield* Effect.logWarning("child session has no child_binding; treated as task_child", {
-    sessionID: session.id,
-    parentID: recorded,
-  })
+  yield* warnUnbound(session.id, recorded)
   return { role: "task_child", parent: recorded }
 })
+
+/** Sessions already reported by `reportUnbound`, so a read that repeats does not repeat the warning. */
+const reported = new Set<string>()
+const REPORTED_LIMIT = 1024
+
+/**
+ * The warning for children whose row was read with no binding behind it, for the
+ * read paths (`Session.get`, `list`, `children`) that place a session by the
+ * joined owner kind. One warning per session and process: a list is read again
+ * and again, and `get` is a hot read, so a child that lacks its binding must not
+ * flood the log. `roleOf` and `rootOf` warn on every resolution through `link`.
+ * A child read between its creation and the write of its binding (see
+ * `Session.create`) is reported the same once, and is placed correctly by the
+ * next read.
+ */
+export const reportUnbound = (children: ReadonlyArray<{ readonly id: SessionID; readonly parentID: SessionID }>) =>
+  Effect.forEach(
+    children,
+    (child) => {
+      if (reported.has(child.id)) return Effect.void
+      // A bounded memory for an anomaly that should not occur: past the limit it starts over.
+      if (reported.size >= REPORTED_LIMIT) reported.clear()
+      reported.add(child.id)
+      return warnUnbound(child.id, child.parentID)
+    },
+    { discard: true },
+  )
 
 /** The role of a session: the live run first, then its binding. A row without a parent is a root and costs no read. */
 export const roleOf = (db: Db, session: Ref): Effect.Effect<Role> =>

@@ -32,6 +32,7 @@ import { like } from "drizzle-orm"
 import { sql } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
+import { ChildBindingTable, type ChildOwnerKind } from "@graphagent/core/session/child.sql"
 import { MessageDiffTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageV2 } from "./message-v2"
@@ -96,7 +97,47 @@ export function truncateSummaryDiffs(diffs: Snapshot.FileDiff[] | undefined) {
   return kept
 }
 
-export function fromRow(row: SessionRow): Info {
+type Db = Database.Interface["db"]
+
+/**
+ * A session row and the owner kind of its `child_binding`, read in one
+ * statement: the binding's primary key is the child session id, so the LEFT
+ * JOIN adds at most one row per session and no read per row.
+ */
+const selectWithOwner = (db: Db) =>
+  db
+    .select({ row: SessionTable, ownerKind: ChildBindingTable.owner_kind })
+    .from(SessionTable)
+    .leftJoin(ChildBindingTable, eq(ChildBindingTable.child_session_id, SessionTable.id))
+
+type RowWithOwner = { readonly row: SessionRow; readonly ownerKind: ChildOwnerKind | null }
+
+/** The children among the rows read that have no `child_binding`: #1026 invariant 3 gives every child one, so each is an anomaly. */
+const unbound = (found: ReadonlyArray<RowWithOwner>) =>
+  found.flatMap(({ row, ownerKind }) =>
+    row.parent_id !== null && ownerKind === null ? [{ id: row.id, parentID: row.parent_id }] : [],
+  )
+
+/**
+ * `Info` for what `selectWithOwner` read, and a warning for each child it read
+ * with no binding behind it (`SessionRole` treats that session as `task_child`).
+ */
+const infosOf = (found: ReadonlyArray<RowWithOwner>) =>
+  SessionRole.reportUnbound(unbound(found)).pipe(Effect.as(found.map(({ row, ownerKind }) => fromRow(row, ownerKind))))
+
+const infoOf = (found: RowWithOwner) =>
+  SessionRole.reportUnbound(unbound([found])).pipe(Effect.as(fromRow(found.row, found.ownerKind)))
+
+/**
+ * A session row as `Info`. `ownerKind` is the owner kind of the row's
+ * `child_binding` (null: none), which only a child has and which gives the
+ * `role`: `dag_node` for a DAG node's session, `task_child` for every other
+ * child, whatever the binding or the lack of it. The roots do not look at it.
+ * Reads that hand the `Info` on (`get`, `list`, `children`) select it with the
+ * row (`selectWithOwner`); a caller that reads only what a row alone holds, such
+ * as the `stats` command, passes `undefined`.
+ */
+export function fromRow(row: SessionRow, ownerKind: ChildOwnerKind | null | undefined): Info {
   const summary =
     row.summary_additions !== null || row.summary_deletions !== null || row.summary_files !== null
       ? {
@@ -121,6 +162,7 @@ export function fromRow(row: SessionRow): Info {
     directory: row.directory,
     path: row.path ?? undefined,
     parentID: row.parent_id ?? undefined,
+    role: SessionRole.roleOfRow({ parentID: row.parent_id }, ownerKind),
     title: row.title,
     agent: row.agent ?? undefined,
     model: row.model
@@ -281,6 +323,8 @@ export const Info = Schema.Struct({
   directory: Schema.String,
   path: optionalOmitUndefined(Schema.String),
   parentID: optionalOmitUndefined(SessionID),
+  /** #1288: derived on read from the parent and the child binding (`fromRow`), no column of its own. */
+  role: SessionRole.Role,
   summary: optionalOmitUndefined(Summary),
   cost: optionalOmitUndefined(Schema.Finite),
   tokens: optionalOmitUndefined(Tokens),
@@ -324,6 +368,14 @@ export type CreateInput = Types.DeepMutable<Schema.Schema.Type<typeof CreateInpu
  */
 export interface InternalCreateInput {
   parentID?: SessionID
+  /**
+   * What kind of child this is (#1288): the owner of a child session passes it so
+   * the `session.created` event already carries the right `role`, which the
+   * child's binding (written after the session) cannot yet give. Only a child
+   * has one: with no `parentID` it is a defect, and a child created without it is
+   * `task_child`, with a warning.
+   */
+  role?: Exclude<SessionRole.Role, "root">
   title?: string
   agent?: string
   model?: Schema.Schema.Type<typeof Model>
@@ -654,6 +706,7 @@ export const layer: Layer.Layer<
       agent?: string
       model?: Schema.Schema.Type<typeof Model>
       parentID?: SessionID
+      role?: Exclude<SessionRole.Role, "root">
       workspaceID?: WorkspaceV2.ID
       directory: string
       path?: string
@@ -663,6 +716,19 @@ export const layer: Layer.Layer<
       dagBudgetTokens?: number | null
       dagBudgetUnlimited?: boolean
     }) {
+      // #1288: a child's role comes from whoever creates it, because the binding
+      // that says what kind of child it is (`child_binding`) is written only after
+      // the session and its `session.created` event. Until it is written a read
+      // of the child places it as `task_child` (`SessionRole.roleOfRow` with no
+      // owner kind), so a `dag_node` child is `task_child` in a read of that one
+      // creation step and `dag_node` from the next read on.
+      if (input.role !== undefined && input.parentID === undefined)
+        return yield* Effect.die(new Error(`Session.create: the role "${input.role}" needs a parentID`))
+      if (input.parentID !== undefined && input.role === undefined)
+        yield* Effect.logWarning("child session created without a role; treated as task_child", {
+          parentID: input.parentID,
+        })
+      const role: SessionRole.Role = input.parentID === undefined ? "root" : (input.role ?? "task_child")
       const ctx = yield* InstanceState.context
       // #1031 M1: explicit creation value, then the global `dag.mode` default.
       // A child session never inherits a mode; it has no workflow budget.
@@ -678,6 +744,7 @@ export const layer: Layer.Layer<
         path: input.path,
         workspaceID: input.workspaceID,
         parentID: input.parentID,
+        role,
         title:
           input.title ?? (SessionRole.isChild(input) ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
         agent: input.agent,
@@ -706,9 +773,9 @@ export const layer: Layer.Layer<
     })
 
     const get = Effect.fn("Session.get")(function* (id: SessionID) {
-      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie)
-      if (!row) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
-      return fromRow(row)
+      const found = yield* selectWithOwner(db).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie)
+      if (!found) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
+      return yield* infoOf(found)
     })
 
     const list = Effect.fn("Session.list")(function* (input?: ListInput) {
@@ -721,13 +788,11 @@ export const layer: Layer.Layer<
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
-      const rows = yield* db
-        .select()
-        .from(SessionTable)
+      const found = yield* selectWithOwner(db)
         .where(and(eq(SessionTable.parent_id, parentID)))
         .all()
         .pipe(Effect.orDie)
-      return rows.map(fromRow)
+      return yield* infosOf(found)
     })
 
     const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
@@ -976,6 +1041,7 @@ export const layer: Layer.Layer<
       const directory = input?.directory ?? ctx.directory
       return yield* createNext({
         parentID: input?.parentID,
+        role: input?.role,
         directory,
         path: sessionPath(ctx.worktree, directory),
         title: input?.title,
@@ -1578,16 +1644,14 @@ function listByProject(
 
   const limit = input.limit ?? 100
 
-  return db
-    .select()
-    .from(SessionTable)
+  return selectWithOwner(db)
     .where(and(...conditions))
     .orderBy(desc(SessionTable.time_updated))
     .limit(limit)
     .all()
     .pipe(
       Effect.orDie,
-      Effect.map((rows) => rows.map(fromRow)),
+      Effect.flatMap((found) => infosOf(found)),
     )
 }
 

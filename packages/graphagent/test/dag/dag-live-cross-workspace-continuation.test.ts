@@ -45,6 +45,7 @@ function sessionInfo(id: SessionID, directory: string, parentID?: SessionID): Se
     id,
     projectID,
     slug: id,
+    role: parentID ? "task_child" : "root",
     directory,
     title: id,
     version: "test",

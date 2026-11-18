@@ -83,7 +83,9 @@ export const StatsCommand = effectCmd({
 
 const getAllSessions = Effect.fnUntraced(function* () {
   const { db } = yield* Database.Service
-  return (yield* db.select().from(SessionTable).all().pipe(Effect.orDie)).map((row) => Session.fromRow(row))
+  // The statistics read costs, tokens, times and the project, which a row alone holds, so the binding's owner kind
+  // is not joined: a child here is `task_child` whatever owns it, and no `Info` leaves this command.
+  return (yield* db.select().from(SessionTable).all().pipe(Effect.orDie)).map((row) => Session.fromRow(row, undefined))
 })
 
 const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
