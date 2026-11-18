@@ -73,6 +73,10 @@ jobs:
       # and session/ (300) line limits; recorded debt only ever shrinks.
       - bash: bun run check:fn-length
         displayName: Check session function length
+      # #1463: capabilities come from the model profile, not from a substring of the
+      # model id; the lines that still test one are recorded debt that only shrinks.
+      - bash: bun run check:model-id
+        displayName: Check model id branches
       - bash: bun run lint
         displayName: Run lint
       - bash: bun typecheck

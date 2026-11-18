@@ -34,12 +34,12 @@ import { SessionRole } from "@/session/role"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
+import { ProviderProfile } from "@/provider/profile"
 
 import { WebSearchTool } from "./websearch"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
-import { usesApplyPatch } from "./editing-tools"
 import { Effect, Layer, Context, Option } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
@@ -400,12 +400,14 @@ export const layer = Layer.effect(
         definition,
         registrationID: `builtin:${index}:${definition.id}`,
       }))
+      // The id may name a model that is not registered, so only the built-in rules speak here; a configured
+      // `profile.edit_tools` applies in `resolve`, which holds the model.
+      const usePatch = ProviderProfile.builtinProfileOf(input.providerID, input.modelID).editTools === "apply_patch"
       const filtered = registered.filter(({ definition: tool }) => {
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled({ exa: flags.enableExa, parallel: flags.enableParallel })
         }
 
-        const usePatch = usesApplyPatch(input.modelID)
         if (tool.id === ApplyPatchTool.id) return usePatch
         if (tool.id === EditTool.id || tool.id === WriteTool.id) return !usePatch
 
@@ -508,7 +510,7 @@ export const layer = Layer.effect(
       const workspaceWritesDenied =
         ChildRegistry.subjectOf(input.session.id)?.permission.workspaceWrites === "deny" ||
         (Option.isSome(readonlyPolicy) && readonlyPolicy.value.unattended)
-      const usePatch = usesApplyPatch(ModelV2.ID.make(model.api.id))
+      const usePatch = ProviderProfile.profileOf(model).editTools === "apply_patch"
       const entries = new Map<string, ToolEntry>()
 
       const definitionsKey = definitionKey({

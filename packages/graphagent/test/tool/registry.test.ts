@@ -22,6 +22,7 @@ import { ChildRegistry } from "@/session/child/registry"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ModelV2 } from "@graphagent/core/model"
+import { resolveProfile } from "@graphagent/core/model-profile"
 import { ProviderTest } from "../fake/provider"
 import { SystemPrompt } from "@/session/system"
 import { SessionReminders } from "@/session/reminders"
@@ -84,6 +85,90 @@ describe("tool.registry", () => {
         ).toContain("Call plan_exit")
       }),
     )
+
+  const editingIDs = (ids: ReadonlyArray<string>) => ids.filter((id) => ["apply_patch", "edit", "write"].includes(id))
+
+  const rootSession = (directory: string, name: string): Session.Info => ({
+    id: SessionID.make(`ses_registry_${name}`),
+    slug: `registry-${name}`,
+    role: "root",
+    projectID: ProjectV2.ID.global,
+    directory,
+    title: `registry ${name}`,
+    version: "1.0.0",
+    time: { created: 1, updated: 1 },
+  })
+
+  // B2 (#1463): the edit tool family follows the lowercased API id, like every other id-based decision.
+  it.instance("editing tools follow the lowercased API id", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
+      if (!build) throw new Error("build agent not found")
+      const session = rootSession(yield* InstanceState.directory, "edit_family")
+      const actual: Record<string, { tools: string[]; resolved: string[] }> = {}
+      for (const id of ["GPT-5", "gpt-5", "GPT-5-Codex", "GPT-OSS-120B", "gpt-oss-120b", "GPT-4.1", "gpt-4.1"]) {
+        const model = ProviderTest.model({ id: ModelV2.ID.make(id) })
+        const tools = yield* registry.tools({ providerID: model.providerID, modelID: model.id, agent: build })
+        const resolved = yield* registry.resolve({ model, agent: build, session })
+        actual[id] = {
+          tools: editingIDs(tools.map((tool) => tool.id)),
+          resolved: editingIDs(resolved.map((entry) => entry.id)),
+        }
+      }
+      const patch = { tools: ["apply_patch"], resolved: ["apply_patch"] }
+      const files = { tools: ["edit", "write"], resolved: ["edit", "write"] }
+      expect(actual).toEqual({
+        "GPT-5": patch,
+        "gpt-5": patch,
+        "GPT-5-Codex": patch,
+        "GPT-OSS-120B": files,
+        "gpt-oss-120b": files,
+        "GPT-4.1": files,
+        "gpt-4.1": files,
+      })
+    }),
+  )
+
+  // `profile.edit_tools` reaches `resolve` only: `tools` is asked about ids that may not be registered models.
+  it.instance("a configured profile.editTools decides the edit tool family of resolve", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
+      if (!build) throw new Error("build agent not found")
+      const session = rootSession(yield* InstanceState.directory, "edit_profile")
+      const configured = (apiID: string, editTools: "edit" | "apply_patch") =>
+        ProviderTest.model({
+          id: ModelV2.ID.make(apiID),
+          profile: resolveProfile({
+            providerID: "openai",
+            apiID,
+            config: { profile: { edit_tools: editTools } },
+          }),
+        })
+      const resolved = (model: ReturnType<typeof ProviderTest.model>) =>
+        registry.resolve({ model, agent: build, session }).pipe(Effect.map((entries) => entries.map((e) => e.id)))
+
+      const forEdit = configured("gpt-5", "edit")
+      const forPatch = configured("gpt-oss-120b", "apply_patch")
+      expect(forEdit.profile?.sources.editTools).toBe("config")
+      expect(forPatch.profile?.sources.editTools).toBe("config")
+
+      // The same `gpt-5` first without a profile (the built-in rule: apply_patch), then with one that asks for edit:
+      // only the edit tool family differs between the two resolutions, so the cached definitions must not be shared.
+      const builtin = ProviderTest.model({ id: ModelV2.ID.make("gpt-5") })
+      expect(editingIDs(yield* resolved(builtin))).toEqual(["apply_patch"])
+      expect(editingIDs(yield* resolved(forEdit))).toEqual(["edit", "write"])
+      expect(editingIDs(yield* resolved(forPatch))).toEqual(["apply_patch"])
+      expect(editingIDs(yield* resolved(builtin))).toEqual(["apply_patch"])
+
+      const tools = yield* registry.tools({ providerID: builtin.providerID, modelID: builtin.id, agent: build })
+      expect(editingIDs(tools.map((tool) => tool.id))).toEqual(["apply_patch"])
+    }),
+  )
+
   it.instance("registers agent messaging as a built-in tool", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
