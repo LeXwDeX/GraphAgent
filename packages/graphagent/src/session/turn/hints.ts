@@ -27,7 +27,7 @@ export function renderHint(kind: HintKind): string {
   return HINT_TEXT[kind]
 }
 
-const FENCED_BLOCK = /```[\s\S]*?```/g
+const FENCED_BLOCK = /```[\s\S]*?```|~~~[\s\S]*?~~~/g
 const TOOL_CALL_TAG = /<tool_call>\s*\{\s*"name"\s*:/
 const FUNCTION_CALLS_TAG = /<function_calls>\s*<invoke\s+name\s*=\s*["']/i
 
@@ -35,8 +35,8 @@ const FUNCTION_CALLS_TAG = /<function_calls>\s*<invoke\s+name\s*=\s*["']/i
  * Whether the answer text of a finished step carries a tool call the model
  * wrote as text: the complete DSML envelope, a `<tool_call>` JSON object, or a
  * `<function_calls>` invoke. A step that made a real tool call never counts, and
- * neither do fenced code blocks, a mere mention of a marker, or text the harness
- * or the user marked synthetic or ignored.
+ * neither do fenced code blocks (backtick or tilde fences), a mere mention of a
+ * marker, or text the harness or the user marked synthetic or ignored.
  */
 export function detectPseudoToolCall(parts: ReadonlyArray<SessionV1.Part>): boolean {
   if (parts.some((part) => part.type === "tool")) return false

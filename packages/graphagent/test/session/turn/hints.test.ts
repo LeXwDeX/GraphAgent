@@ -70,6 +70,10 @@ describe("Hints.detectPseudoToolCall", () => {
     ).toBe(true)
   })
 
+  test("detects a marker outside a tilde fence even when a tilde fenced block precedes it", () => {
+    expect(Hints.detectPseudoToolCall([text(`Example:\n~~~\n${jsonCall}\n~~~\nNow for real:\n${jsonCall}`)])).toBe(true)
+  })
+
   test("detects a marker in any text part of the step", () => {
     expect(Hints.detectPseudoToolCall([text("first"), reasoning("thinking"), text(jsonCall)])).toBe(true)
   })
@@ -77,6 +81,10 @@ describe("Hints.detectPseudoToolCall", () => {
   for (const [name, parts] of [
     ["a fenced code block", [text(`Calls look like this:\n\`\`\`xml\n${jsonCall}\n\`\`\``)]],
     ["a fenced DSML envelope", [text(`\`\`\`\n${dsml}\n\`\`\``)]],
+    ["a tilde fenced code block", [text(`Calls look like this:\n~~~xml\n${jsonCall}\n~~~`)]],
+    ["a tilde fenced DSML envelope", [text(`~~~\n${dsml}\n~~~`)]],
+    ["a tilde line inside a backtick fence", [text(`\`\`\`\n~~~\n${jsonCall}\n\`\`\``)]],
+    ["a backtick line inside a tilde fence", [text(`~~~\n\`\`\`\n${jsonCall}\n~~~`)]],
     [
       "a mention of a marker",
       [text("Use the <tool_call> tag, or <function_calls> and <invoke> elements, only via tools.")],
