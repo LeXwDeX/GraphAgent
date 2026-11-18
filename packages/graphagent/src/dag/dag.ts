@@ -1186,10 +1186,6 @@ export const layer = Layer.effect(
       const boundConfig: WorkflowConfig = workflowWorktree
         ? { ...bound.config, worktree: workflowWorktree }
         : bound.config
-      // #944: the target identity is captured from the bound execution
-      // directory (the owner directory when no workspace is bound). Non-git
-      // directories get the stable `none` marker.
-      const targetFingerprint = DagLocation.fingerprintTarget(bound.workspace ?? ownerDirectory)
       const durableConfig =
         boundConfig.mode === "deep" && boundConfig.admission
           ? {
@@ -1228,6 +1224,12 @@ export const layer = Layer.effect(
         yield* removeWorkflowWorktree()
       })
       return yield* Effect.gen(function* () {
+        // #944: the target identity is captured from the bound execution
+        // directory (the owner directory when no workspace is bound). Non-git
+        // directories get the stable `none` marker. #1344: it waits for git, so
+        // it runs inside the rollback scope below: an interrupt during the wait
+        // must still remove the worktree created above.
+        const targetFingerprint = yield* DagLocation.fingerprintTarget(bound.workspace ?? ownerDirectory)
         const ts = yield* DateTime.now
         const startTs = yield* DateTime.now
         // Same aggregate → one transaction with contiguous seqs (replan uses
@@ -2052,6 +2054,9 @@ export const layer = Layer.effect(
       const config = parseWorkflowConfig(workflow.config)
       if (!config) return yield* Effect.fail(new Error(`Recovery cannot read the workflow definition: ${dagID}`))
       const nodes = yield* store.getNodes(dagID)
+      // #1344: read outside the workflow mutex and the transaction, like the
+      // artifact hashing below; the sequence fences rechecked there cover it.
+      const targetFingerprint = yield* DagLocation.fingerprintTarget(workflow.executionDirectory || workflow.directory)
       const plan = yield* Effect.try({
         try: () =>
           planRecovery(
@@ -2060,7 +2065,7 @@ export const layer = Layer.effect(
             input.nodeIDs,
             workflow.graphRev + 1,
             config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
-            DagLocation.fingerprintTarget(workflow.executionDirectory || workflow.directory),
+            targetFingerprint,
           ),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
@@ -2185,6 +2190,7 @@ export const layer = Layer.effect(
       lock: WorkflowLock,
       dagID: string,
       input: { workspace?: string; fingerprint?: string; nodeIDs?: readonly string[]; reason?: string },
+      target: DagLocation.TargetObservation | undefined,
     ) {
       const workflow = yield* guardWorkflowNotTerminal(dagID, "retarget")
       const config = parseWorkflowConfig(workflow.config)
@@ -2203,20 +2209,20 @@ export const layer = Layer.effect(
       if (input.workspace === undefined && input.fingerprint === undefined) {
         return yield* Effect.fail(new Error("Retarget rejected: provide workspace or fingerprint"))
       }
-      const ownerDirectory = workflow.directory
-      let toDirectory: string | undefined
-      if (input.workspace !== undefined) {
-        const resolved = DagLocation.resolveWorkspace(input.workspace, ownerDirectory)
-        if (resolved._tag === "invalid") {
-          return yield* Effect.fail(new Error(`Retarget rejected: ${resolved.reason}`))
-        }
-        toDirectory = resolved.directory
+      // #1344: the workspace resolution and the fingerprint wait for git, so
+      // they were read before this transaction opened (ADR-0008 decision 3:
+      // a transaction body takes database work only). They apply only while
+      // the row still names the directories they were read against.
+      if (!target || !DagLocation.observationHolds(target, workflow)) {
+        return yield* Effect.fail(
+          new Error("Retarget rejected: the workflow target changed while it was being read; inspect status and retry"),
+        )
       }
+      if (target._tag === "invalid") return yield* Effect.fail(new Error(`Retarget rejected: ${target.reason}`))
       // #945: the fingerprint is always computed from the bound tree. A caller
       // that supplies an expected value gets fail-closed validation, not a
       // writable field: durable fingerprints must remain runtime-derived.
-      const executionDirectory = toDirectory ?? workflow.executionDirectory ?? workflow.directory
-      const toFingerprint = DagLocation.fingerprintTarget(executionDirectory)
+      const { toDirectory, executionDirectory, fingerprint: toFingerprint } = target
       if (input.fingerprint !== undefined) {
         const actual = toFingerprint.kind === "git" ? toFingerprint.value : "none"
         if (input.fingerprint !== actual) {
@@ -2375,13 +2381,16 @@ export const layer = Layer.effect(
       const workflow = yield* store.getWorkflow(dagID)
       // #944: recompute the target identity for a node that recorded a start
       // fingerprint. Nodes persisted before #944 and target-insensitive nodes
-      // carry none and are never stale. The computation is synchronous inside
-      // the workflow lock; it is the bounded git fingerprint from DagLocation.
+      // carry none and are never stale. The computation is the bounded git
+      // fingerprint from DagLocation (#1344: asynchronous, so the process keeps
+      // running while the workflow lock waits for git). It stays inside the lock
+      // because its directory and start fingerprint are this attempt's rows,
+      // and before the transaction below because that takes database work only.
       const startFingerprint = node.targetFingerprint ?? undefined
       const executionDirectory =
         node.directory || workflow?.executionDirectory || workflow?.directory || undefined
       const completionFingerprint =
-        startFingerprint && executionDirectory ? DagLocation.fingerprintTarget(executionDirectory) : undefined
+        startFingerprint && executionDirectory ? yield* DagLocation.fingerprintTarget(executionDirectory) : undefined
       const staleTarget = startFingerprint ? !DagLocation.sameFingerprint(startFingerprint, completionFingerprint) : false
       // #946: compare an isolated node's touched paths with the completed
       // isolated nodes already in this workflow. This is a report, never an
@@ -2912,7 +2921,16 @@ export const layer = Layer.effect(
       extend: (dagID, nodes, fence, options) =>
         command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence, options))),
       recover,
-      retarget: (dagID, input) => command(dagID)((lock) => withMailbox(dagID, undefined, retarget(lock, dagID, input))),
+      // `command`, with the reads that wait for git (#1344) between the lock and
+      // the transaction: ADR-0008 decision 3 keeps them out of the latter.
+      retarget: (dagID, input) =>
+        withWorkflowLock(dagID)((lock) =>
+          Effect.gen(function* () {
+            const row = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+            const target = row ? yield* DagLocation.observeTarget(row, input.workspace) : undefined
+            return yield* transact(dagID, withMailbox(dagID, undefined, retarget(lock, dagID, input, target)))
+          }),
+        ),
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
         command(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
       nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead, targetFingerprint, worktree) =>

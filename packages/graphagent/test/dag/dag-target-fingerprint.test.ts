@@ -32,6 +32,9 @@ const sessionID = Session.ID.make("ses_target_parent")
 const childSessionID = Session.ID.make("ses_target_child")
 const ts = (n: number) => DateTime.makeUnsafe(n)
 
+/** The fingerprint is an Effect since #1344; the plain tests only need its value. */
+const fingerprintOf = (directory: string) => Effect.runPromise(DagLocation.fingerprintTarget(directory))
+
 const reviewConfig: WorkflowConfig = {
   name: "target-fingerprint",
   nodes: [
@@ -91,7 +94,7 @@ function startReview(directory: string) {
       title: "target",
       config: reviewConfig,
     })
-    const start = DagLocation.fingerprintTarget(directory)
+    const start = yield* DagLocation.fingerprintTarget(directory)
     yield* dag.nodeStarted(
       dagID,
       "review-1",
@@ -133,8 +136,8 @@ describe("fingerprintTarget", () => {
   })
   it("keeps a clean git target stable", async () => {
     await using tmp = await tmpdir({ git: true })
-    const first = DagLocation.fingerprintTarget(tmp.path)
-    const second = DagLocation.fingerprintTarget(tmp.path)
+    const first = await fingerprintOf(tmp.path)
+    const second = await fingerprintOf(tmp.path)
     expect(first.kind).toBe("git")
     expect(second).toEqual(first)
     expect(DagLocation.sameFingerprint(first, second)).toBe(true)
@@ -149,9 +152,9 @@ describe("fingerprintTarget", () => {
         await $`git commit -m tracked`.cwd(dir).quiet()
       },
     })
-    const before = DagLocation.fingerprintTarget(tmp.path)
+    const before = await fingerprintOf(tmp.path)
     writeFileSync(path.join(tmp.path, "tracked.txt"), "two")
-    const after = DagLocation.fingerprintTarget(tmp.path)
+    const after = await fingerprintOf(tmp.path)
     expect(before.kind).toBe("git")
     expect(after.kind).toBe("git")
     if (before.kind !== "git" || after.kind !== "git") return
@@ -164,9 +167,9 @@ describe("fingerprintTarget", () => {
   it("changes the untracked hash when an untracked file changes", async () => {
     await using tmp = await tmpdir({ git: true })
     writeFileSync(path.join(tmp.path, "new.txt"), "one")
-    const before = DagLocation.fingerprintTarget(tmp.path)
+    const before = await fingerprintOf(tmp.path)
     writeFileSync(path.join(tmp.path, "new.txt"), "two")
-    const after = DagLocation.fingerprintTarget(tmp.path)
+    const after = await fingerprintOf(tmp.path)
     expect(before.kind).toBe("git")
     expect(after.kind).toBe("git")
     if (before.kind !== "git" || after.kind !== "git") return
@@ -176,7 +179,7 @@ describe("fingerprintTarget", () => {
 
   it("marks a non-git directory as none and never stale", async () => {
     await using tmp = await tmpdir()
-    const fingerprint = DagLocation.fingerprintTarget(tmp.path)
+    const fingerprint = await fingerprintOf(tmp.path)
     expect(fingerprint).toEqual({ kind: "none" })
     expect(DagLocation.sameFingerprint(fingerprint, { kind: "none" })).toBe(true)
     expect(DagLocation.sameFingerprint(fingerprint, fingerprint)).toBe(true)
@@ -206,7 +209,7 @@ describe("Dag target fingerprint lifecycle", () => {
         yield* dag.complete(dagID)
         const workflow = yield* store.getWorkflow(dagID)
         expect(workflow?.status).toBe("completed")
-        expect(workflow?.targetFingerprint).toEqual(DagLocation.fingerprintTarget(tmp.path))
+        expect(workflow?.targetFingerprint).toEqual(yield* DagLocation.fingerprintTarget(tmp.path))
       }).pipe(Effect.provide(targetLayer()), Effect.scoped),
     )
   })
@@ -283,17 +286,19 @@ describe("Dag target fingerprint lifecycle", () => {
           },
         })
         const started = (nodeID: string) =>
-          dag.nodeStarted(
-            dagID,
-            nodeID,
-            childSessionID,
-            undefined,
-            true,
-            undefined,
-            tmp.path,
-            DagLocation.gitHead(tmp.path),
-            DagLocation.fingerprintTarget(tmp.path),
-          )
+          Effect.gen(function* () {
+            yield* dag.nodeStarted(
+              dagID,
+              nodeID,
+              childSessionID,
+              undefined,
+              true,
+              undefined,
+              tmp.path,
+              DagLocation.gitHead(tmp.path),
+              yield* DagLocation.fingerprintTarget(tmp.path),
+            )
+          })
         const lane = { verdict: "ACCEPT", summary: "ok", findings: [], required_actions: [] }
 
         yield* started("gate--standards")
@@ -350,7 +355,7 @@ describe("Dag target fingerprint lifecycle", () => {
           undefined,
           tmp.path,
           DagLocation.gitHead(tmp.path),
-          DagLocation.fingerprintTarget(tmp.path),
+          yield* DagLocation.fingerprintTarget(tmp.path),
         )
         writeFileSync(path.join(tmp.path, "tracked.txt"), "two")
         yield* dag.nodeCompleted(dagID, "check", { verdict: "PASS" })
@@ -399,7 +404,7 @@ describe("Dag target fingerprint lifecycle", () => {
           undefined,
           tmp.path,
           DagLocation.gitHead(tmp.path),
-          DagLocation.fingerprintTarget(tmp.path),
+          yield* DagLocation.fingerprintTarget(tmp.path),
         )
         writeFileSync(path.join(tmp.path, "tracked.txt"), "two")
         yield* dag.nodeCompleted(dagID, "final", { summary: "done" })
@@ -449,7 +454,7 @@ describe("Dag target fingerprint lifecycle", () => {
               undefined,
               tmp.path,
               DagLocation.gitHead(tmp.path),
-              DagLocation.fingerprintTarget(tmp.path),
+              yield* DagLocation.fingerprintTarget(tmp.path),
             )
             yield* dag.nodeCompleted(dagID, node.id, outputs[node.id])
           }
