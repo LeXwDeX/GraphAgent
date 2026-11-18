@@ -19,6 +19,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@graphagent/core/fs-util"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
+import { addCorrections } from "@graphagent/core/session/outcome"
 
 export function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -142,19 +143,26 @@ function planEdit(source: { readonly text: string; readonly bom: boolean }, para
   const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
   const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
 
-  const next = Bom.split(replace(contentOld, old, replacement, params.replaceAll))
+  const replaced = replace(contentOld, old, replacement, params.replaceAll)
+  const next = Bom.split(replaced.content)
   const diff = trimDiff(
     createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(next.text)),
   )
-  return { contentOld, contentNew: next.text, bom: source.bom || next.bom, diff }
+  return { contentOld, contentNew: next.text, bom: source.bom || next.bom, diff, strategy: replaced.strategy }
 }
 
-/** The outcome of one edit; `outside` means the disk differed from the session's last record of the file. */
+/**
+ * The outcome of one edit; `outside` means the disk differed from the session's last record of the file.
+ * `strategy` is how `replace()` found the text, and `ctx` is what the call reports through afterwards: it
+ * carries the fuzzy-match correction from the moment the text is on disk.
+ */
 interface Applied {
   readonly contentOld: string
   readonly contentNew: string
   readonly diff: string
   readonly outside: boolean
+  readonly strategy: MatchStrategy
+  readonly ctx: Tool.Context
 }
 
 export const EditTool = Tool.define(
@@ -217,7 +225,7 @@ export const EditTool = Tool.define(
         Effect.gen(function* () {
           if (yield* afs.existsSafe(filePath)) throw new Error(FileState.changedWhileAskingMessage(filePath))
           const contentNew = yield* commit(ctx, filePath, next.text, next.bom, "add")
-          return { contentOld: "", contentNew, diff, outside: false } satisfies Applied
+          return { contentOld: "", contentNew, diff, outside: false, strategy: "exact", ctx } satisfies Applied
         }),
       )
     })
@@ -256,6 +264,7 @@ export const EditTool = Tool.define(
           const settled =
             current.text === source.text && current.bom === source.bom ? plan : planEdit(current, params, filePath)
           const contentNew = yield* commit(ctx, filePath, settled.contentNew, settled.bom, "change")
+          const live = settled.strategy === "exact" ? ctx : yield* Tool.markCorrection(ctx, "fuzzy_match")
           const diff = trimDiff(
             createTwoFilesPatch(
               filePath,
@@ -264,7 +273,14 @@ export const EditTool = Tool.define(
               normalizeLineEndings(contentNew),
             ),
           )
-          return { contentOld: settled.contentOld, contentNew, diff, outside } satisfies Applied
+          return {
+            contentOld: settled.contentOld,
+            contentNew,
+            diff,
+            outside,
+            strategy: settled.strategy,
+            ctx: live,
+          } satisfies Applied
         }),
       )
     })
@@ -303,7 +319,7 @@ export const EditTool = Tool.define(
           const applied = yield* (
             params.oldString === "" ? create(ctx, relative, filePath, params) : modify(ctx, relative, filePath, params)
           ).pipe(Effect.orDie)
-          const { contentOld, contentNew, diff, outside } = applied
+          const { contentOld, contentNew, diff, outside, strategy } = applied
 
           let additions = 0
           let deletions = 0
@@ -318,7 +334,7 @@ export const EditTool = Tool.define(
             deletions,
           }
 
-          yield* ctx.metadata({
+          yield* applied.ctx.metadata({
             metadata: {
               diff,
               filediff,
@@ -339,12 +355,11 @@ export const EditTool = Tool.define(
           )
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
+          const metadata = { diagnostics, diff, filediff }
           return {
-            metadata: {
-              diagnostics,
-              diff,
-              filediff,
-            },
+            // A fuzzy match is applied silently; the metadata records which strategy found the text.
+            metadata:
+              strategy === "exact" ? metadata : addCorrections({ ...metadata, matchStrategy: strategy }, "fuzzy_match"),
             title: relative,
             output,
           }
@@ -892,7 +907,34 @@ function closestMatch(content: string, oldString: string): string | undefined {
   return `Closest match at line ${best.line + 1}:\n${snippet}`
 }
 
-export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
+/** How `replace()` located `oldString`: exactly, or through one of the tolerant replacers. */
+export type MatchStrategy =
+  | "exact"
+  | "line_trimmed"
+  | "block_anchor"
+  | "whitespace_normalized"
+  | "indentation_flexible"
+  | "escape_normalized"
+  | "trimmed_boundary"
+  | "context_aware"
+
+/**
+ * `line` is the 1-based line of the first replacement; `count` is the number of
+ * replaced spots (more than one only for an exact `replaceAll`).
+ */
+export type ReplaceResult = { content: string; strategy: MatchStrategy; line: number; count: number }
+
+const FUZZY_REPLACERS: ReadonlyArray<readonly [Exclude<MatchStrategy, "exact">, Replacer]> = [
+  ["line_trimmed", LineTrimmedReplacer],
+  ["block_anchor", BlockAnchorReplacer],
+  ["whitespace_normalized", WhitespaceNormalizedReplacer],
+  ["indentation_flexible", IndentationFlexibleReplacer],
+  ["escape_normalized", EscapeNormalizedReplacer],
+  ["trimmed_boundary", TrimmedBoundaryReplacer],
+  ["context_aware", ContextAwareReplacer],
+]
+
+export function replace(content: string, oldString: string, newString: string, replaceAll = false): ReplaceResult {
   if (oldString === newString) {
     throw new Error("No changes to apply: oldString and newString are identical.")
   }
@@ -907,20 +949,25 @@ export function replace(content: string, oldString: string, newString: string, r
   // one of them.
   const exact = allOccurrences(content, oldString)
   if (exact.length > 0) {
-    if (replaceAll) return content.replaceAll(oldString, () => newString)
+    const line = lineNumber(content, exact[0].start)
+    if (replaceAll) {
+      return {
+        content: content.replaceAll(oldString, () => newString),
+        strategy: "exact",
+        line,
+        count: exact.length,
+      }
+    }
     if (exact.length > 1) throw ambiguousMatches(content, exact)
-    return content.substring(0, exact[0].start) + newString + content.substring(exact[0].end)
+    return {
+      content: content.substring(0, exact[0].start) + newString + content.substring(exact[0].end),
+      strategy: "exact",
+      line,
+      count: 1,
+    }
   }
 
-  for (const replacer of [
-    LineTrimmedReplacer,
-    BlockAnchorReplacer,
-    WhitespaceNormalizedReplacer,
-    IndentationFlexibleReplacer,
-    EscapeNormalizedReplacer,
-    TrimmedBoundaryReplacer,
-    ContextAwareReplacer,
-  ]) {
+  for (const [strategy, replacer] of FUZZY_REPLACERS) {
     const matches = collectMatches(content, replacer(content, oldString))
     if (matches.length === 0) continue
 
@@ -936,12 +983,18 @@ export function replace(content: string, oldString: string, newString: string, r
     // with replaceAll: the candidates differ from oldString, so replacing only
     // the first candidate's text would silently leave the others untouched.
     if (matches.length > 1) throw ambiguousMatches(content, matches, false)
+    const match = matches[0]
+    const line = lineNumber(content, match.start)
     if (replaceAll) {
-      return content.replaceAll(matches[0].value, () => newString)
+      return { content: content.replaceAll(match.value, () => newString), strategy, line, count: 1 }
     }
 
-    const match = matches[0]
-    return content.substring(0, match.start) + newString + content.substring(match.end)
+    return {
+      content: content.substring(0, match.start) + newString + content.substring(match.end),
+      strategy,
+      line,
+      count: 1,
+    }
   }
 
   const closest = closestMatch(content, oldString)

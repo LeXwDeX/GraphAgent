@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "afdbef23-f080-4e25-9430-b9208f12c305",
+  "id": "1e73a6c5-b8a1-4628-9bfd-3b7752f321ad",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -40,6 +40,10 @@
     },
     {
       "name": "child_run",
+      "entityType": "tables"
+    },
+    {
+      "name": "tool_outcome",
       "entityType": "tables"
     },
     {
@@ -1193,6 +1197,86 @@
       "name": "time_ended",
       "entityType": "columns",
       "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "part_id",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_id",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "model_id",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tool",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "outcome",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'[]'",
+      "generated": null,
+      "name": "corrections",
+      "entityType": "columns",
+      "table": "tool_outcome"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "truncated",
+      "entityType": "columns",
+      "table": "tool_outcome"
     },
     {
       "type": "text",
@@ -3101,6 +3185,21 @@
     },
     {
       "columns": [
+        "part_id"
+      ],
+      "tableTo": "part",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_tool_outcome_part_id_part_id_fk",
+      "entityType": "fks",
+      "table": "tool_outcome"
+    },
+    {
+      "columns": [
         "session_id"
       ],
       "tableTo": "session",
@@ -3429,6 +3528,15 @@
       "nameExplicit": false,
       "name": "child_run_pk",
       "table": "child_run",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "part_id"
+      ],
+      "nameExplicit": false,
+      "name": "tool_outcome_pk",
+      "table": "tool_outcome",
       "entityType": "pks"
     },
     {
@@ -3884,6 +3992,42 @@
       "name": "child_run_unreported",
       "entityType": "indexes",
       "table": "child_run"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "tool_outcome_session_idx",
+      "entityType": "indexes",
+      "table": "tool_outcome"
+    },
+    {
+      "columns": [
+        {
+          "value": "provider_id",
+          "isExpression": false
+        },
+        {
+          "value": "model_id",
+          "isExpression": false
+        },
+        {
+          "value": "tool",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "tool_outcome_model_idx",
+      "entityType": "indexes",
+      "table": "tool_outcome"
     },
     {
       "columns": [

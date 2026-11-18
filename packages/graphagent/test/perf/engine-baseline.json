@@ -809,5 +809,27 @@
       ]
     }
   },
-  "declared": []
+  "declared": [
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S4",
+      "delta": 20,
+      "reason": "tool_outcome 每个终态工具部件一次 upsert（20 次 read 调用）"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S6",
+      "delta": 1,
+      "reason": "tool_outcome 每个终态工具部件一次 upsert"
+    },
+    {
+      "pr": "#1473",
+      "metric": "sql.write",
+      "scenario": "S7",
+      "delta": 1,
+      "reason": "tool_outcome 每个终态工具部件一次 upsert"
+    }
+  ]
 }

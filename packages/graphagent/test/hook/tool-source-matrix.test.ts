@@ -413,7 +413,7 @@ const callTool = (prepared: PreparedSource, args: Record<string, unknown>, callI
 const field = (value: unknown, key: string): unknown =>
   value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined
 
-/** The text a model would see: builtin results expose `output`, MCP denials expose `content`. */
+/** The text a model would see: a result exposes `output`; an MCP result also carries `content`. */
 const visibleText = (result: unknown) => {
   const output = field(result, "output")
   if (typeof output === "string") return output
@@ -518,6 +518,9 @@ describe("tool source matrix", () => {
           yield* store.add(id, { event: "PreToolUse", hooks: [askHook] })
           const result = yield* Effect.promise(() => callTool(prepared, prepared.originalArgs, "matrix-ask"))
           expect(visibleText(result)).toContain("[Tool denied by hook]")
+          // #1473: a denial is a text `output` with `metadata.hookDenied` for every source.
+          expect(typeof field(result, "output")).toBe("string")
+          expect(field(field(result, "metadata"), "hookDenied")).toBe(true)
           expect(yield* prepared.executed()).toBe(false)
         }),
       )

@@ -3,7 +3,15 @@ import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import path from "path"
-import { InvalidResponseDataError, InvalidToolInputError, NoSuchToolError, tool, type ModelMessage } from "ai"
+import {
+  InvalidResponseDataError,
+  InvalidToolInputError,
+  JSONParseError,
+  NoSuchToolError,
+  TypeValidationError,
+  tool,
+  type ModelMessage,
+} from "ai"
 import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
@@ -805,7 +813,11 @@ describe("session.llm.ai-sdk adapter", () => {
         input: '{"que',
         dynamic: true,
         invalid: true,
-        error: new InvalidToolInputError({ toolName: "lookup", toolInput: '{"que', cause: new Error("bad json") }),
+        error: new InvalidToolInputError({
+          toolName: "lookup",
+          toolInput: '{"que',
+          cause: new JSONParseError({ text: '{"que', cause: new Error("bad json") }),
+        }),
       }),
       uncheckedAdapterEvent({
         type: "tool-error",
@@ -825,6 +837,9 @@ describe("session.llm.ai-sdk adapter", () => {
     if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
       expect(toolError.error.message).toContain("are not valid JSON (5 characters)")
       expect(toolError.error.cause).toBe("Invalid input for tool lookup: bad json")
+      // The SDK's tool-error carries only text; the adapter kept what the tool-call's typed error said.
+      expect(toolError.error.rejection).toBe("unparsable_input")
+      expect(LLMAISDK.rejectedUnparsable(toolError.error)).toBe(true)
     }
     expect(toolError.message).toContain("are not valid JSON (5 characters)")
     expect(toolError.message).not.toContain("bad json")
@@ -860,6 +875,8 @@ describe("session.llm.ai-sdk adapter", () => {
     if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
       expect(toolError.error.message).toBe(expected)
       expect(toolError.error.cause).toBe(sdkText)
+      expect(toolError.error.rejection).toBe("unknown_tool")
+      expect(LLMAISDK.rejectedUnparsable(toolError.error)).toBe(false)
     }
   })
 
@@ -900,6 +917,91 @@ describe("session.llm.ai-sdk adapter", () => {
     if (toolError.type !== "tool-error") throw new Error("expected tool-error")
     expect(toolError.message).toBe("sdk text")
     expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+    if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
+      expect(toolError.error.rejection).toBe("other")
+      expect(LLMAISDK.rejectedUnparsable(toolError.error)).toBe(false)
+    }
+  })
+
+  test("tells complete JSON that failed the schema from input that is not complete JSON", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-schema",
+        toolName: "lookup",
+        input: { query: 1 },
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({
+          toolName: "lookup",
+          toolInput: '{"query":1}',
+          cause: new TypeValidationError({ value: { query: 1 }, cause: new Error("query must be a string") }),
+        }),
+      }),
+      uncheckedAdapterEvent({ type: "tool-error", toolCallId: "call-schema", toolName: "lookup", error: "sdk text" }),
+    ])
+
+    const toolError = events[1]
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+    if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
+      expect(toolError.error.rejection).toBe("invalid_input")
+      expect(LLMAISDK.rejectedUnparsable(toolError.error)).toBe(false)
+    }
+  })
+
+  test("keeps the rejection of each invalid call apart when their errors arrive interleaved", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-a",
+        toolName: "no_such_tool",
+        input: {},
+        dynamic: true,
+        invalid: true,
+        error: new NoSuchToolError({ toolName: "no_such_tool", availableTools: ["lookup"] }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-b",
+        toolName: "lookup",
+        input: '{"que',
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({
+          toolName: "lookup",
+          toolInput: '{"que',
+          cause: new JSONParseError({ text: '{"que', cause: new Error("bad json") }),
+        }),
+      }),
+      uncheckedAdapterEvent({ type: "tool-error", toolCallId: "call-b", toolName: "lookup", error: "sdk text b" }),
+      uncheckedAdapterEvent({
+        type: "tool-error",
+        toolCallId: "call-a",
+        toolName: "no_such_tool",
+        error: "sdk text a",
+      }),
+    ])
+
+    const rejections = events.flatMap((event) =>
+      event.type === "tool-error" && event.error instanceof LLMAISDK.ToolInputRejectedError
+        ? [[event.id, event.error.rejection]]
+        : [],
+    )
+    expect(rejections).toEqual([
+      ["call-b", "unparsable_input"],
+      ["call-a", "unknown_tool"],
+    ])
+  })
+
+  test("an unrecorded rejection reads as invalid input, which is not taken for unparsable input", () => {
+    const bare = new LLMAISDK.ToolInputRejectedError("rejected")
+    expect(bare.rejection).toBe("invalid_input")
+    expect(LLMAISDK.rejectedUnparsable(bare)).toBe(false)
+    const unparsable = new LLMAISDK.ToolInputRejectedError("rejected", { rejection: "unparsable_input" })
+    expect(LLMAISDK.rejectedUnparsable(unparsable)).toBe(true)
+    expect(LLMAISDK.rejectedUnparsable(new Error("boom"))).toBe(false)
+    expect(LLMAISDK.rejectedUnparsable("rejected")).toBe(false)
   })
 
   test("forwards only a bounded head of an invalid call's raw input", async () => {
