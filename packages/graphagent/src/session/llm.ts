@@ -32,6 +32,7 @@ import { SessionRole } from "./role"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Lane as SchedulerLane } from "./agent-scheduler-state"
 import type { LLMPurpose } from "./llm/purpose"
+import type { SystemSection } from "./step-metrics"
 import { Flag } from "@graphagent/core/flag/flag"
 import {
   engineOrganizerCall,
@@ -148,6 +149,12 @@ export type StreamInput = {
   /** Native role rules; Permission.ask evaluates these before configured rules. */
   nativePermission?: PermissionV1.Ruleset
   system: string[]
+  /**
+   * Section of each `system` text, same length and order, so the change log can name the section that moved.
+   * Only the turn request builder sets it: the base prompt, the writing style and `user.system` that `prepare`
+   * adds afterwards are not covered, and compaction or title requests carry none.
+   */
+  systemLabels?: readonly SystemSection[]
   messages: ModelMessage[]
   small?: boolean
   tools: Record<string, Tool>

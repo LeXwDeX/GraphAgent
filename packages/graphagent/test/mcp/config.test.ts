@@ -114,3 +114,98 @@ describe("mcp.json upsert", () => {
     expect(errorMessage(() => McpConfig.upsert(file, "added", remote()))).toMatch(/removed V1 shape/)
   })
 })
+
+// Issue #1458: MCP.tools() runs on every step. A layer file is read again only when its signature changes, and a
+// file that cannot be read leaves the last valid servers in place.
+describe("mcp.json cache", () => {
+  const entry = (name: string) => ({ mcpServers: { [name]: { type: "local", command: ["echo", name] } } })
+  const counting = () => {
+    const reads = { count: 0 }
+    const files = McpConfig.cached((target) => {
+      reads.count += 1
+      return McpConfig.load(target)
+    })
+    return { reads, files }
+  }
+
+  test("reads the files once while their signature stays the same", () => {
+    write(McpConfig.globalFile(), entry("one"))
+    const { reads, files } = counting()
+
+    expect(files(root)).toEqual({ servers: { one: expect.objectContaining({ command: ["echo", "one"] }) } })
+    expect(files(root).servers).toHaveProperty("one")
+    expect(files(root).servers).toHaveProperty("one")
+
+    expect(reads.count).toBe(1)
+  })
+
+  test("reads again when a layer file changes size, or the project layer appears", () => {
+    write(McpConfig.globalFile(), entry("one"))
+    const { reads, files } = counting()
+    files(root)
+
+    write(McpConfig.globalFile(), entry("one-with-a-longer-name"))
+    expect(Object.keys(files(root).servers)).toEqual(["one-with-a-longer-name"])
+    expect(reads.count).toBe(2)
+
+    write(McpConfig.projectFile(root), entry("project"))
+    expect(Object.keys(files(root).servers).sort()).toEqual(["one-with-a-longer-name", "project"])
+    expect(reads.count).toBe(3)
+  })
+
+  test("a missing file is part of the signature", () => {
+    expect(McpConfig.signature(root)).toBe(McpConfig.signature(root))
+    const absent = McpConfig.signature(root)
+
+    write(McpConfig.globalFile(), entry("one"))
+
+    expect(McpConfig.signature(root)).not.toBe(absent)
+  })
+
+  test("keeps the last valid servers when a file becomes unreadable and reports it once", () => {
+    write(McpConfig.globalFile(), entry("one"))
+    const { reads, files } = counting()
+    files(root)
+
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    const broken = files(root)
+    expect(Object.keys(broken.servers)).toEqual(["one"])
+    expect(broken.error).toBeDefined()
+    expect(errorMessage(() => McpConfig.load(root))).toMatch(/not valid JSONC/)
+
+    const again = files(root)
+    expect(Object.keys(again.servers)).toEqual(["one"])
+    expect(again.error).toBeUndefined()
+    // One read for the valid file and one for the broken one; the same broken file is not read again.
+    expect(reads.count).toBe(2)
+
+    write(McpConfig.globalFile(), entry("two"))
+    const fixed = files(root)
+    expect(Object.keys(fixed.servers)).toEqual(["two"])
+    expect(fixed.error).toBeUndefined()
+    expect(reads.count).toBe(3)
+  })
+
+  test("a different broken file is reported again", () => {
+    write(McpConfig.globalFile(), entry("one"))
+    const { files } = counting()
+    files(root)
+
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    expect(files(root).error).toBeDefined()
+    writeFileSync(McpConfig.globalFile(), "{ still not json")
+
+    expect(files(root).error).toBeDefined()
+  })
+
+  test("has no servers to keep when the first read fails", () => {
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    const { reads, files } = counting()
+
+    const first = files(root)
+    expect(first.servers).toEqual({})
+    expect(first.error).toBeDefined()
+    expect(files(root)).toEqual({ servers: {} })
+    expect(reads.count).toBe(1)
+  })
+})
