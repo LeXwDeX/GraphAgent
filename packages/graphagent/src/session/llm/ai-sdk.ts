@@ -27,6 +27,15 @@ export class ToolInputRejectedError extends Error {
   }
 }
 
+/**
+ * The SDK refused the call because its input did not parse, as opposed to
+ * naming a tool that does not exist. An error that carries no cause leaves the
+ * input as the only thing to blame.
+ */
+export function rejectedForInput(error: unknown): error is ToolInputRejectedError {
+  return error instanceof ToolInputRejectedError && !NoSuchToolError.isInstance(error.cause)
+}
+
 export function adapterState() {
   return {
     step: 0,

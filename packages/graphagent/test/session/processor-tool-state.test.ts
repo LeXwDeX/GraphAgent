@@ -27,6 +27,9 @@ import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { LLMEvent } from "@graphagent/llm"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
+import { NoSuchToolError } from "ai"
+import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
 import { Tool } from "../../src/tool/tool"
 
 const summary = Layer.succeed(
@@ -570,6 +573,255 @@ failures.it.effect(
           "call-thrown": { outcome: "execution_error" },
           "call-text": { outcome: "execution_error" },
         })
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: corrections made before a call failed or was aborted stay on its error part
+// ---------------------------------------------------------------------------
+
+/** The running part of `call-1`, narrowed for a test that rewrites its state. */
+const runningState = Effect.fn("ToolStateTest.runningState")(function* (messageID: MessageID) {
+  const part = yield* runningPart(messageID)
+  if (part.state.status !== "running") return yield* Effect.die(new Error("expected a running call"))
+  return { part, state: part.state }
+})
+
+const repairedThenFailed = scripted([
+  [
+    ...lifecycle.slice(0, 5),
+    LLMEvent.toolError({ id: "call-1", name: "lookup", message: "boom", error: new Error("boom") }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ],
+])
+
+repairedThenFailed.it.effect(
+  "session.processor keeps the corrections of the running part when the call fails",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "fail after repair")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        // Hold the stream after the tool call, as the real tool wrapper writes its mark while the call runs.
+        const gate = yield* Deferred.make<void>()
+        repairedThenFailed.control.gate = { after: 5, wait: gate }
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        const { part, state } = yield* runningState(msg.id)
+        yield* session.updatePart({ ...part, state: { ...state, metadata: { corrections: ["args_repaired"] } } })
+        yield* Deferred.succeed(gate, undefined)
+        yield* Fiber.join(run)
+
+        const failed = toolParts(yield* MessageV2.parts(msg.id))[0]
+        expect(failed?.state.status).toBe("error")
+        if (failed?.state.status === "error") {
+          expect(failed.state.metadata).toEqual({ corrections: ["args_repaired"], outcome: "execution_error" })
+        }
+        // The projection books the same corrections under the failure class.
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(ToolOutcomeTable).all()
+        expect(rows).toMatchObject([{ tool: "lookup", outcome: "execution_error", corrections: ["args_repaired"] }])
+      }),
+    { config: cfg },
+  ),
+)
+
+const repairedThenAborted = scripted([hanging])
+
+repairedThenAborted.it.effect(
+  "session.processor keeps the corrections of the running part when the call is force-aborted",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "abort after repair")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const gate = yield* gateAtLast(repairedThenAborted.control, hanging)
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        const { part, state } = yield* runningState(msg.id)
+        yield* session.updatePart({ ...part, state: { ...state, metadata: { corrections: ["args_repaired"] } } })
+        yield* Deferred.succeed(gate, undefined)
+
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if ((yield* persistedStatus(msg.id)) === "error") break
+          yield* TestClock.adjust("300 millis")
+          yield* realYield
+        }
+        yield* Fiber.join(run)
+
+        const aborted = toolParts(yield* MessageV2.parts(msg.id))[0]
+        expect(aborted?.state.status).toBe("error")
+        if (aborted?.state.status === "error") {
+          expect(aborted.state.metadata).toEqual({
+            corrections: ["args_repaired"],
+            interrupted: true,
+            outcome: "aborted",
+          })
+        }
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// #1473: a call whose rejected input was cut off by the output limit is arguments_truncated
+// ---------------------------------------------------------------------------
+
+/**
+ * A call the SDK rejected because its input did not parse: the error follows the
+ * tool call at once and, as in a real stream, the finish reason of the step comes later.
+ */
+const rejectedCall = (id: string, cause?: unknown): LLMEvent[] => [
+  LLMEvent.toolInputStart({ id, name: "lookup" }),
+  LLMEvent.toolInputDelta({ id, name: "lookup", text: '{"que' }),
+  LLMEvent.toolInputEnd({ id, name: "lookup" }),
+  LLMEvent.toolCall({ id, name: "lookup", input: '{"que' }),
+  LLMEvent.toolError({
+    id,
+    name: "lookup",
+    message: "invalid input",
+    error: new ToolInputRejectedError("invalid input", cause === undefined ? undefined : { cause }),
+  }),
+]
+
+const step = (index: number, reason: "length" | "tool-calls" | "stop", ...body: LLMEvent[][]): LLMEvent[] => [
+  LLMEvent.stepStart({ index }),
+  ...body.flat(),
+  LLMEvent.stepFinish({ index, reason }),
+]
+
+/** Runs the scripted stream and returns the failure class of each call, as its part and its projected row hold it. */
+const rejectedRun = Effect.fn("ToolStateTest.rejectedRun")(function* (dir: string) {
+  const { processors, session, provider } = yield* boot()
+  const chat = yield* session.create({})
+  const parent = yield* user(chat.id, "rejected input")
+  const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+  const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+  const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+  yield* handle.process(input(chat.id, parent, mdl))
+  const parts = toolParts(yield* MessageV2.parts(msg.id))
+  const { db } = yield* Database.Service
+  const rows = yield* db.select().from(ToolOutcomeTable).all()
+  const calls = new Map(parts.map((part) => [part.id, part.callID]))
+  return {
+    parts: Object.fromEntries(
+      parts.map((part) => [part.callID, part.state.status === "error" ? part.state.metadata?.outcome : undefined]),
+    ),
+    rows: Object.fromEntries(rows.map((row) => [calls.get(row.part_id), row.outcome])),
+  }
+})
+
+const lengthCut = scripted([[...step(0, "length", rejectedCall("call-cut")), LLMEvent.finish({ reason: "length" })]])
+
+lengthCut.it.effect(
+  "session.processor books a rejected input in a step that stopped on length as arguments_truncated",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-cut": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-cut": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const notCut = scripted([
+  [...step(0, "tool-calls", rejectedCall("call-bad")), LLMEvent.finish({ reason: "tool-calls" })],
+])
+
+notCut.it.effect(
+  "session.processor keeps a rejected input in a step that did not stop on length as validation_error",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-bad": "validation_error" })
+        expect(result.rows).toEqual({ "call-bad": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const twoRejected = scripted([
+  [...step(0, "length", rejectedCall("call-first"), rejectedCall("call-last")), LLMEvent.finish({ reason: "length" })],
+])
+
+twoRejected.it.effect(
+  "session.processor books only the last rejected input of a length step as truncated",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-first": "validation_error", "call-last": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-first": "validation_error", "call-last": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const unknownTool = scripted([
+  [
+    ...step(0, "length", rejectedCall("call-unknown", new NoSuchToolError({ toolName: "nope", availableTools: [] }))),
+    LLMEvent.finish({ reason: "length" }),
+  ],
+])
+
+unknownTool.it.effect(
+  "session.processor does not book an unknown tool name as truncated arguments",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-unknown": "validation_error" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const acrossSteps = scripted([
+  [
+    ...step(0, "tool-calls", rejectedCall("call-early")),
+    ...step(1, "length", rejectedCall("call-late")),
+    LLMEvent.finish({ reason: "length" }),
+  ],
+])
+
+acrossSteps.it.effect(
+  "session.processor settles the rejected inputs of each step by that step's finish reason",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-early": "validation_error", "call-late": "arguments_truncated" })
+        expect(result.rows).toEqual({ "call-early": "validation_error", "call-late": "arguments_truncated" })
+      }),
+    { config: cfg },
+  ),
+)
+
+const lengthWithoutRejection = scripted([
+  [...step(0, "tool-calls", rejectedCall("call-early")), ...step(1, "length"), LLMEvent.finish({ reason: "length" })],
+])
+
+lengthWithoutRejection.it.effect(
+  "session.processor does not carry a rejected input over to a later step that stopped on length",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const result = yield* rejectedRun(dir)
+        expect(result.parts).toEqual({ "call-early": "validation_error" })
       }),
     { config: cfg },
   ),

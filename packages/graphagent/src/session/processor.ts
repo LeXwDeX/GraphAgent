@@ -458,6 +458,7 @@ export const layer = Layer.effect(
         ensureToolCall,
         forceAbortToolCall,
         severUnexecutedToolCalls,
+        takeTruncatedInputs,
       } = makeToolCalls({ session, events, ctx })
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
@@ -663,11 +664,8 @@ export const layer = Layer.effect(
             // instead of counting it as an execution signal. Real tool
             // results, errors, provider-executed outputs, and anything without
             // the adapter's sentinel always count conservatively.
-            if (value.error instanceof ToolInputRejectedError) {
-              ctx.attempt.pendingToolExecutions.delete(value.id)
-            } else {
-              ctx.attempt.anyToolCalled = true
-            }
+            if (value.error instanceof ToolInputRejectedError) ctx.attempt.pendingToolExecutions.delete(value.id)
+            else ctx.attempt.anyToolCalled = true
             // Rejected or not, a tool-error signal is tool activity in this
             // attempt; the #773 admission rules decide its retry separately.
             ctx.attempt.toolActivity = true
@@ -735,6 +733,7 @@ export const layer = Layer.effect(
                 tokens: usage.tokens,
                 cost: usage.cost,
               },
+              ...takeTruncatedInputs(value.reason),
             ]
             if (ctx.snapshot && ctx.stepToolActivity) {
               const patch = yield* snapshot.patch(ctx.snapshot)

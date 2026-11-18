@@ -279,7 +279,8 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
             repaired = true
             // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
           }
-          const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, ctx)
+          const toolCtx = repaired ? yield* markRepaired(ctx) : ctx
+          const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, toolCtx)
           const metadata = repaired ? addCorrections(result.metadata, "args_repaired") : result.metadata
           if (result.metadata.truncated !== undefined) {
             return repaired ? { ...result, metadata } : result
@@ -375,6 +376,21 @@ function repairStringifiedContainers(value: unknown, keep?: ReadonlySet<string>)
   }
   return value
 }
+
+/**
+ * The call as the tool sees it once its arguments were repaired. The mark is
+ * written to the running part at once and every later metadata update of the
+ * tool keeps it, so a call that then fails or is aborted still reports
+ * `args_repaired`; a call that completes carries it in its result metadata.
+ */
+const markRepaired = Effect.fnUntraced(function* (ctx: Context) {
+  const marked: Context = {
+    ...ctx,
+    metadata: (input) => ctx.metadata({ ...input, metadata: addCorrections(input.metadata ?? {}, "args_repaired") }),
+  }
+  yield* marked.metadata({})
+  return marked
+})
 
 /** Top-level properties the parameter schema declares as plain strings. */
 function stringPropertyKeys(root: JSONSchema7): ReadonlySet<string> {

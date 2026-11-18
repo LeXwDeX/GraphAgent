@@ -13,6 +13,8 @@ import { HistoryView } from "./history/view"
 import { MessageV2 } from "./message-v2"
 import { PartID } from "./schema"
 import type { Session } from "./session"
+import { addCorrections, correctionsOf } from "@graphagent/core/session/outcome"
+import { rejectedForInput } from "./llm/ai-sdk"
 import { classifyToolError } from "./tool-outcome"
 
 export type ToolCall = {
@@ -44,6 +46,17 @@ export interface ToolCallDeps {
   readonly ctx: ToolCallScope
 }
 
+/** Metadata of a failed call: its failure class and the corrections the harness made before it failed. */
+function failureMetadata(running: Record<string, unknown> | undefined, error: unknown) {
+  return addCorrections({ outcome: classifyToolError(error) }, ...correctionsOf(running))
+}
+
+/** An error part with its failure class replaced by `arguments_truncated`. */
+function withTruncatedArguments(part: SessionV1.ToolPart): SessionV1.ToolPart {
+  if (part.state.status !== "error") return part
+  return { ...part, state: { ...part.state, metadata: { ...part.state.metadata, outcome: "arguments_truncated" } } }
+}
+
 /**
  * Tool-call state machine of the session processor (Issue #1019, PR-b). Moved
  * verbatim out of `processor.ts`: every transition of one call's part
@@ -56,6 +69,10 @@ export function makeToolCalls(deps: ToolCallDeps) {
   // Per-call preview sequence; the TUI applies previews latest-wins within
   // a frame, and the sequence lets it discard an older frame.
   const previewSeqs = new Map<string, number>()
+
+  // Calls the SDK rejected for unparsable input since the last step finished, the newest last. Their errors
+  // arrive before the finish reason of their step, so `takeTruncatedInputs` settles them once it is known.
+  const rejectedInputs: SessionV1.ToolPart[] = []
 
   const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
     const done = ctx.toolcalls[toolCallID]?.done
@@ -203,11 +220,12 @@ export function makeToolCalls(deps: ToolCallDeps) {
               status: "error",
               input: match.part.state.input,
               error: errorMessage(error),
-              metadata: { outcome: classifyToolError(error) },
+              metadata: failureMetadata(match.part.state.metadata, error),
               time: { start: match.part.state.time.start, end: Date.now() },
             },
           })
           cacheWrittenPart(call, part, match.call.version + 1)
+          if (rejectedForInput(error)) rejectedInputs.push(part)
           if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
           }
@@ -308,7 +326,19 @@ export function makeToolCalls(deps: ToolCallDeps) {
       yield* forceAbortToolCall(toolCallID)
     }
     ctx.toolcalls = {}
+    rejectedInputs.length = 0
   })
+
+  /**
+   * The parts to rewrite as a step finishes. A step that stopped on `length` was
+   * cut off in the middle of a call: the last call whose input was rejected lost
+   * its arguments to the output limit rather than to a model mistake, so it is
+   * booked as `arguments_truncated` instead of `validation_error`.
+   */
+  const takeTruncatedInputs = (reason: string): SessionV1.ToolPart[] => {
+    const last = rejectedInputs.splice(0).at(-1)
+    return reason === "length" && last ? [withTruncatedArguments(last)] : []
+  }
 
   return {
     settleToolCall,
@@ -321,5 +351,6 @@ export function makeToolCalls(deps: ToolCallDeps) {
     ensureToolCall,
     forceAbortToolCall,
     severUnexecutedToolCalls,
+    takeTruncatedInputs,
   }
 }
