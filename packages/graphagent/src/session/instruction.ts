@@ -13,6 +13,7 @@ import { Flag } from "@graphagent/core/flag/flag"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@graphagent/core/global"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { hasProjectLayer } from "@/project/project-root"
 import { RequestCache } from "./request-cache"
 import type { MessageID } from "./schema"
@@ -272,8 +273,12 @@ export const layer: Layer.Layer<
       }
 
       return [
-        ...Array.from(paths).flatMap((item, i) => (files[i] ? [`Instructions from: ${item}\n${files[i]}`] : [])),
-        ...urls.flatMap((item, i) => (remote[i] ? [`Instructions from: ${item}\n${remote[i]}`] : [])),
+        ...Array.from(paths).flatMap((item, i) =>
+          files[i] ? [Injection.wrap("instruction-file", files[i], { path: item })] : [],
+        ),
+        ...urls.flatMap((item, i) =>
+          remote[i] ? [Injection.wrap("instruction-file", remote[i], { path: item })] : [],
+        ),
       ]
     })
 
@@ -324,7 +329,7 @@ export const layer: Layer.Layer<
         set.add(found)
         const content = yield* read(found)
         if (content) {
-          results.push({ filepath: found, content: `Instructions from: ${found}\n${content}` })
+          results.push({ filepath: found, content: Injection.wrap("instruction-file", content, { path: found }) })
           const sessionID = messages.at(-1)?.info.sessionID
           const key = `${sessionID}:${found}:${createHash("sha256").update(content).digest("hex")}`
           if (callSettings && sessionID && !s.announced.has(key)) {

@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { MessageID, PartID, SessionID } from "@/session/schema"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { HINT_LIMIT, HINT_TEXT, Hints } from "@/session/turn/hints"
 
 const sessionID = SessionID.make("ses_hints")
@@ -109,9 +110,11 @@ describe("hint table", () => {
   })
 
   test("renderHint is the single way a hint becomes message text", () => {
-    expect(Hints.renderHint("pseudo_tool_call")).toBe(HINT_TEXT.pseudo_tool_call)
-    expect(HINT_TEXT.pseudo_tool_call).toBe(
-      "[runtime] Tool calls must use the function-calling interface. The text above looks like a tool call and was not executed. Call the tool through that interface.",
+    // A hint is the engine saying what just happened: a block with source="runtime", the text carrying no prefix (#1456).
+    expect(Hints.renderHint("pseudo_tool_call")).toBe(Injection.wrap("runtime", HINT_TEXT.pseudo_tool_call))
+    expect(Hints.renderHint("pseudo_tool_call")).toBe(
+      '<system-reminder source="runtime">\nTool calls must use the function-calling interface. The text above looks like a tool call and was not executed. Call the tool through that interface.\n</system-reminder>',
     )
+    for (const text of Object.values(HINT_TEXT)) expect(text).not.toStartWith("[runtime]")
   })
 })

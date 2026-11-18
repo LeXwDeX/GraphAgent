@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { Injection } from "@graphagent/core/system-context/injection"
 import type { SessionID } from "../schema"
 import type { ChildRunOutcome, ChildRunReport } from "./types"
 
@@ -8,7 +9,8 @@ import type { ChildRunOutcome, ChildRunReport } from "./types"
  * How a task run is written down for a model (Issue #1026, PR3a): the tool
  * result of the `task` tool and the notice a background run's ending leaves in
  * its parent session share this one shape. The text is model-visible and
- * stays English.
+ * stays English. What the run wrote is generated text with no byte-for-byte use, so a tag of its own that could pass
+ * for an inserted block is escaped.
  */
 
 export type TaskState = "running" | "completed" | "error" | "cancelled"
@@ -19,7 +21,7 @@ export function renderTask(input: { sessionID: SessionID; state: TaskState; summ
     `<task id="${input.sessionID}" state="${input.state}">`,
     ...(input.summary ? [`<summary>${input.summary}</summary>`] : []),
     `<${tag}>`,
-    input.text,
+    Injection.escape(input.text),
     `</${tag}>`,
     "</task>",
   ].join("\n")

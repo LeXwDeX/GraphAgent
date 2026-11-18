@@ -12,21 +12,30 @@ afterEach(() => {
 
 const CHILD = "ses_child"
 
-/** The notice the server writes for a run that ended: `renderTask` of the server, with its summary and element. */
+/** What the server writes around a notice: a block with source="background-result" (#1456). */
+const shell = (notice: string) =>
+  ['<system-reminder source="background-result">', notice, "</system-reminder>"].join("\n")
+
+/**
+ * The notice the server writes for a run that ended: `renderTask` of the server, with its summary and element, inside
+ * its block.
+ */
 function notice(
   state: "completed" | "error",
   summary: string,
   text: string,
   tag: "task_result" | "task_error" = state === "error" ? "task_error" : "task_result",
 ) {
-  return [
-    `<task id="${CHILD}" state="${state}">`,
-    `<summary>${summary}</summary>`,
-    `<${tag}>`,
-    text,
-    `</${tag}>`,
-    "</task>",
-  ].join("\n")
+  return shell(
+    [
+      `<task id="${CHILD}" state="${state}">`,
+      `<summary>${summary}</summary>`,
+      `<${tag}>`,
+      text,
+      `</${tag}>`,
+      "</task>",
+    ].join("\n"),
+  )
 }
 
 type Metadata = Record<string, unknown>
@@ -241,6 +250,25 @@ describe("resultBody", () => {
   test("a run's text that holds the other element is still its body", () => {
     const written = "<task_error>\nnot an error\n</task_error>"
     expect(resultBody(notice("completed", "s", written))).toBe(written)
+  })
+
+  test("a notice inside its block, with or without the user's line of instruction above it, gives the same body", () => {
+    const inner = notice("completed", "Background task completed: s", "the body")
+    expect(inner.startsWith('<system-reminder source="background-result">\n<task ')).toBe(true)
+    expect(inner.endsWith("</task>\n</system-reminder>")).toBe(true)
+    expect(resultBody(inner)).toBe("the body")
+    expect(resultBody(`The user ran /review in the background and it has finished.\n\n${inner}`)).toBe("the body")
+    // The old format, without the block, still reads the same.
+    expect(resultBody(inner.split("\n").slice(1, -1).join("\n"))).toBe("the body")
+  })
+
+  test("the block around a notice that is cut off or has no element is not part of the body", () => {
+    const cut = shell('<task id="a" state="completed">\n<summary>s</summary>\n<task_result>\ncut off\n</task>')
+    expect(resultBody(cut)).toBe("cut off")
+    expect(
+      resultBody(shell('<task id="a" state="completed">\n<summary>Background task completed: x</summary>\n</task>')),
+    ).toBe("")
+    expect(resultBody(shell('<task id="a" state="completed">\nloose words\n</task>'))).toBe("loose words")
   })
 
   test("an element that is not closed runs to the end of the notice", () => {

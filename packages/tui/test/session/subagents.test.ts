@@ -720,12 +720,14 @@ describe("the first line of a report", () => {
     [
       "The user ran /review in the background and it has finished. Present its findings faithfully.",
       "",
+      '<system-reminder source="background-result">',
       `<task id="ses_child" state="completed">`,
       "<summary>Background task completed: review</summary>",
       `<${tag}>`,
       body,
       `</${tag}>`,
       "</task>",
+      "</system-reminder>",
     ].join("\n")
 
   test("is the first line of what is between the result tags, not of the notice around it", () => {

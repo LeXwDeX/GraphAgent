@@ -11,11 +11,13 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Session } from "@/session/session"
+import { Injection } from "@graphagent/core/system-context/injection"
 import { SessionReminders } from "@/session/reminders"
 import { PartID, SessionID } from "@/session/schema"
-import PROMPT_PLAN from "@/session/prompt/plan.txt"
-import BUILD_SWITCH from "@/session/prompt/build-switch.txt"
 import { testEffect } from "../lib/effect"
+
+// The three texts the plan reminders write, each in one block with source "reminder" and kind "plan" (#1456).
+const { PLAN_REMINDER, BUILD_SWITCH_REMINDER } = SessionReminders
 
 const sessionID = SessionID.make("ses_reminders")
 const session = { slug: "reminders", time: { created: 1 } } as Session.Info
@@ -125,13 +127,13 @@ function legacy(input: {
     const userMessage = messages.findLast((msg) => msg.info.role === "user")
     if (!userMessage) return messages
     if (!input.experimental) {
-      if (input.agent.name === "plan") userMessage.parts.push(textPart(String(PartID.ascending()), PROMPT_PLAN))
+      if (input.agent.name === "plan") userMessage.parts.push(textPart(String(PartID.ascending()), PLAN_REMINDER))
       const lastAssistant = messages.findLast((msg) => msg.info.role === "assistant")
       if (lastAssistant?.info.agent === "plan" && input.agent.name === "build") {
         const already = userMessage.parts.some(
-          (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH,
+          (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH_REMINDER,
         )
-        if (!already) userMessage.parts.push(textPart(String(PartID.ascending()), BUILD_SWITCH))
+        if (!already) userMessage.parts.push(textPart(String(PartID.ascending()), BUILD_SWITCH_REMINDER))
       }
       return messages
     }
@@ -143,7 +145,13 @@ function legacy(input: {
       const part = input.persist(
         textPart(
           String(PartID.ascending()),
-          exists ? `${BUILD_SWITCH}\n\nA plan file exists at ${target}. You should execute on the plan defined within it` : BUILD_SWITCH,
+          exists
+            ? Injection.wrap(
+                "reminder",
+                `${BUILD_SWITCH_REMINDER.split("\n").slice(1, -1).join("\n")}\n\nA plan file exists at ${target}. You should execute on the plan defined within it`,
+                { kind: "plan" },
+              )
+            : BUILD_SWITCH_REMINDER,
         ),
       )
       userMessage.parts.push(part)
@@ -157,7 +165,8 @@ function legacy(input: {
         (part): part is SessionV1.TextPart =>
           part.type === "text" &&
           part.synthetic === true &&
-          part.text.startsWith("<system-reminder>\n# Plan mode") &&
+          Injection.has(part.text) &&
+          part.text.includes("\n# Plan mode\n") &&
           part.text.includes("\n# Plan file\n"),
       ),
     )
@@ -170,6 +179,66 @@ function legacy(input: {
     return messages
   })
 }
+
+describe("session.reminders texts", () => {
+  const blockOf = (text: string) => {
+    const lines = text.split("\n")
+    return { open: lines[0], close: lines.at(-1), body: lines.slice(1, -1).join("\n") }
+  }
+
+  it.effect("the plan prompt and the build switch are one reminder block each, of kind plan", () =>
+    Effect.gen(function* () {
+      for (const text of [PLAN_REMINDER, BUILD_SWITCH_REMINDER]) {
+        const block = blockOf(text)
+        expect(block.open).toBe('<system-reminder source="reminder" kind="plan">')
+        expect(block.close).toBe("</system-reminder>")
+        expect(text.match(/<system-reminder/g)).toHaveLength(1)
+        expect(text.match(/<\/system-reminder>/g)).toHaveLength(1)
+        expect(Injection.has(text)).toBe(true)
+        // The tag lines are the block's own; the text under them starts and ends with words.
+        expect(block.body).toBe(block.body.trim())
+      }
+      expect(blockOf(PLAN_REMINDER).body).toStartWith("# Plan mode\n\nPlan mode is active.")
+      expect(blockOf(BUILD_SWITCH_REMINDER).body).toStartWith("Your mode has changed from plan to build.")
+    }),
+  )
+
+  it.effect("the plan-mode prompt is one reminder block with the plan file and the exit step filled in", () =>
+    Effect.gen(function* () {
+      const text = SessionReminders.planModePrompt({ plan: "/plans/x.md", exists: true, tools: ["plan_exit"] })
+      const block = blockOf(text)
+      expect(block.open).toBe('<system-reminder source="reminder" kind="plan">')
+      expect(block.close).toBe("</system-reminder>")
+      expect(text.match(/<system-reminder/g)).toHaveLength(1)
+      expect(block.body).toStartWith("# Plan mode\n\nPlan mode is active.")
+      expect(text).toContain("\n# Plan file\nA plan file already exists at /plans/x.md.")
+      expect(text).toContain("Call plan_exit when the plan is ready for user approval.")
+      expect(text).not.toContain("${")
+    }),
+  )
+
+  itPlan.instance(
+    "the plan file note of the build switch sits inside the same block",
+    () =>
+      Effect.gen(function* () {
+        const ctx = yield* InstanceState.context
+        const planPath = Session.plan(session, ctx)
+        yield* Effect.promise(() => Bun.write(planPath, "# the plan\n"))
+        const next = yield* derive(deepFreeze([user("msg_1"), assistant("msg_plan", "plan"), user("msg_2")]), build)
+        const text = next
+          .find((message) => message.info.id === "msg_2")!
+          .parts.map((part) => (part.type === "text" ? part.text : ""))[0]
+        expect(text).toStartWith(
+          '<system-reminder source="reminder" kind="plan">\nYour mode has changed from plan to build.',
+        )
+        expect(text).toEndWith(
+          `A plan file exists at ${planPath}. You should execute on the plan defined within it\n</system-reminder>`,
+        )
+        expect(text.match(/<\/system-reminder>/g)).toHaveLength(1)
+      }),
+    { git: true },
+  )
+})
 
 describe("session.reminders plan transition", () => {
   it.effect("injects the build switch once on the turn that leaves plan mode", () =>
@@ -184,7 +253,9 @@ describe("session.reminders plan transition", () => {
       for (const next of [once, twice]) {
         const switches = next
           .find((message) => message.info.id === "msg_2")!
-          .parts.filter((part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH)
+          .parts.filter(
+            (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH_REMINDER,
+          )
         expect(switches).toHaveLength(1)
         expect(next.find((message) => message.info.id === "msg_1")!.parts).toHaveLength(0)
       }
@@ -194,7 +265,7 @@ describe("session.reminders plan transition", () => {
 
   it.effect("does not re-inject the switch on later build turns", () =>
     Effect.gen(function* () {
-      const switched = user("msg_2", [textPart("prt_switch", BUILD_SWITCH)])
+      const switched = user("msg_2", [textPart("prt_switch", BUILD_SWITCH_REMINDER)])
       const current = user("msg_3")
       const messages = [user("msg_1"), assistant("msg_plan", "plan"), switched, assistant("msg_build", "build"), current]
 
@@ -224,7 +295,7 @@ describe("session.reminders plan transition", () => {
 
       const appended = next.find((message) => message.info.id === "msg_2")!.parts
       expect(appended).toHaveLength(1)
-      expect(appended[0]).toMatchObject({ type: "text", text: PROMPT_PLAN, synthetic: true })
+      expect(appended[0]).toMatchObject({ type: "text", text: PLAN_REMINDER, synthetic: true })
       expect(current.parts).toHaveLength(0)
     }),
   )
@@ -236,7 +307,11 @@ describe("session.reminders plan transition", () => {
         ["leave plan", [user("msg_1"), assistant("msg_plan", "plan"), user("msg_2")], build],
         [
           "existing switch",
-          [user("msg_1"), assistant("msg_plan", "plan"), user("msg_2", [textPart("prt_switch", BUILD_SWITCH)])],
+          [
+            user("msg_1"),
+            assistant("msg_plan", "plan"),
+            user("msg_2", [textPart("prt_switch", BUILD_SWITCH_REMINDER)]),
+          ],
           build,
         ],
         ["stale plan", [user("msg_1"), assistant("msg_plan", "plan"), assistant("msg_b", "build"), user("msg_2")], build],
@@ -262,10 +337,10 @@ describe("session.reminders experimental plan mode", () => {
         const next = yield* derive(messages)
 
         expect(persisted).toHaveLength(1)
-        expect(persisted[0]).toMatchObject({ type: "text", text: BUILD_SWITCH, synthetic: true })
+        expect(persisted[0]).toMatchObject({ type: "text", text: BUILD_SWITCH_REMINDER, synthetic: true })
         const appended = next.find((message) => message.info.id === "msg_2")!.parts
         expect(appended).toHaveLength(1)
-        expect(appended[0].type === "text" && appended[0].text).toBe(BUILD_SWITCH)
+        expect(appended[0].type === "text" && appended[0].text).toBe(BUILD_SWITCH_REMINDER)
         expect(current.parts).toHaveLength(0)
       }),
     { git: true },
@@ -297,6 +372,31 @@ describe("session.reminders experimental plan mode", () => {
           expect(part.type === "text" && part.text).toBe(
             SessionReminders.planModePrompt({ plan: planPath, exists: false, tools: ["plan_exit"] }),
           )
+      }),
+    { git: true },
+  )
+
+  itPlan.instance(
+    "refreshes a plan reminder persisted before the source attribute existed",
+    () =>
+      Effect.gen(function* () {
+        const ctx = yield* InstanceState.context
+        const planPath = Session.plan(session, ctx)
+        const legacyText =
+          "<system-reminder>\n# Plan mode\n\nold wording\n\n# Plan file\nold file note\n</system-reminder>"
+        const old = textPart("prt_legacy", legacyText, "msg_1")
+        const messages = deepFreeze([user("msg_1", [old]), assistant("msg_build", "build"), user("msg_2")])
+
+        const next = yield* derive(messages, plan, ["plan_exit"])
+
+        expect(persisted).toHaveLength(0)
+        const refreshed = next.flatMap((message) => message.parts).filter((part) => part.id === old.id)
+        expect(refreshed).toHaveLength(1)
+        expect(refreshed[0].type === "text" && refreshed[0].text).toBe(
+          SessionReminders.planModePrompt({ plan: planPath, exists: false, tools: ["plan_exit"] }),
+        )
+        // No second reminder is added next to it.
+        expect(next.find((message) => message.info.id === "msg_2")!.parts).toHaveLength(0)
       }),
     { git: true },
   )
