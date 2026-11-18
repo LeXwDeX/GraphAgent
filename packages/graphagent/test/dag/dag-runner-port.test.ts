@@ -238,6 +238,7 @@ const CLASSES = {
   pauseForArchive: "intent",
   requeueNodes: "intent",
   resume: "intent",
+  resumeIfPausedFor: "intent",
   step: "intent",
   cancel: "intent",
   complete: "intent",

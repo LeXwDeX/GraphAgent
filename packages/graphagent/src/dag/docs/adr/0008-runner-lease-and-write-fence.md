@@ -196,7 +196,7 @@ the loop pauses a workflow because recovery invented failures.
   `nodeCancelled`, `replan`, `extend`, `recover`, `extendTimeout`, and
   `retarget`, plus its parking `pause` and automatic `resume`; `create`;
   `cancel` on session removal; `pauseForArchive` on session archive; and
-  `DagBudget` (`pauseForBudget`, `requeueNodes`, `resume`), which enforces a
+  `DagBudget` (`pauseForBudget`, `requeueNodes`, `resumeIfPausedFor`), which enforces a
   limit the user set and has to take effect whichever runner holds the
   workflow. They still run in the
   transaction of decision 3, without its fence step, and a lease never refuses

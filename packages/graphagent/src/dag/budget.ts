@@ -320,8 +320,11 @@ const make = Effect.gen(function* () {
    * not this gate's to lift: in particular a workflow the owner's archive holds
    * (reason `archived`, #1289, relabeled over a budget pause too) stays paused
    * until the main agent resumes it. The relabel already requeued the nodes
-   * this gate cancelled, so nothing is left for the gate to replay. `enforce`,
-   * `init` and the `/config` scan below read the reason the same way.
+   * this gate cancelled, so nothing is left for the gate to replay. The filter
+   * below is only a first read: the resume itself re-checks the reason in its
+   * transaction (`Dag.resumeIfPausedFor`), so an archive that lands between the
+   * two is not undone. `enforce`, `init` and the `/config` scan below read the
+   * reason the same way.
    */
   const resumePaused = Effect.fn("DagBudget.resumePaused")(function* (sessionID: string, next: BudgetState) {
     if (next.budget !== null && next.used >= next.budget) return 0
@@ -356,7 +359,11 @@ const make = Effect.gen(function* () {
       // resumed workflow must not slip one step past it.
       const gate = yield* compute(sessionID)
       if (gate.budget !== null && gate.used >= gate.budget) break
-      const outcome = yield* dag.resume(workflow.id).pipe(Effect.exit)
+      // The pause is re-checked where the resume is published, under the workflow
+      // lock and inside its transaction: the filter above ran earlier, and the
+      // owner's archive may have relabeled this pause since (#1289). A pause that
+      // is no longer the budget's leaves nothing to resume and nothing to retry.
+      const outcome = yield* dag.resumeIfPausedFor(workflow.id, PAUSE_REASON_BUDGET_EXHAUSTED).pipe(Effect.exit)
       if (Exit.isFailure(outcome)) {
         if (Cause.hasInterrupts(outcome.cause)) return yield* Effect.interrupt
         yield* Effect.logWarning("DagBudget could not resume a budget-paused workflow", {
@@ -370,6 +377,7 @@ const make = Effect.gen(function* () {
         blocked = true
         continue
       }
+      if (outcome.value === "skipped") continue
       resumed++
       resumedDirectory ??= workflow.directory
     }

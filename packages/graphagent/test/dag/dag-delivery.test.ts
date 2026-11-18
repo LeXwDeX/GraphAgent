@@ -1130,3 +1130,197 @@ describe("DagDelivery drain", () => {
     )
   })
 })
+
+// #1289: an archived owner session is not woken. The two paths that admit a turn
+// for a session (the wake ledger and the agent mailbox) leave their durable rows
+// as they are, so the items wait for the session to come back; and a pause the
+// archive holds is never reminded of. Every trigger below is awaited: `deliver`
+// settles before the assertions read, so no check waits on the clock.
+describe("DagDelivery and an archived owner session (#1289)", () => {
+  /** The session slice: archived while `archived.at` is set, un-archived once the test clears it. */
+  function ownerGraph(archived: { at: number | undefined }, turns: string[]) {
+    const session = Layer.mock(Session.Service, {
+      get: () =>
+        Effect.sync(
+          () =>
+            ({
+              id: SessionID.make(PARENT),
+              projectID: Project.ID.make(PROJECT_ID),
+              directory: DIRECTORY,
+              slug: "parent",
+              title: "Parent",
+              agent: "build",
+              model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") },
+              version: "test",
+              time: { created: 0, updated: 0, ...(archived.at === undefined ? {} : { archived: archived.at }) },
+            }) as never,
+        ),
+      messages: () => Effect.succeed([]),
+      getPart: () => Effect.succeed(undefined),
+    })
+    // Every turn the delivery is allowed to admit is recorded with its text.
+    const prompt = mockSessionPrompt({
+      prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          turns.push(input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"))
+          yield* persistAdmission ?? Effect.void
+          return Option.some({
+            activate: Effect.void,
+            result: Effect.succeed(reply(input.sessionID as string, "handled")),
+            abort: Effect.void,
+          })
+        })) as never,
+    })
+    return Layer.mergeAll(baseLayers().all, session, prompt)
+  }
+
+  const seedPaused = (reason: string | null) =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.make(PROJECT_ID), worktree: AbsolutePath.make(DIRECTORY), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: SessionID.make(PARENT),
+          project_id: Project.ID.make(PROJECT_ID),
+          slug: "parent",
+          directory: AbsolutePath.make(DIRECTORY),
+          title: "Parent",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      // Paused long ago and never reminded of: the reminder is due.
+      yield* db
+        .insert(WorkflowTable)
+        .values({
+          id: "dag_paused",
+          project_id: Project.ID.make(PROJECT_ID),
+          session_id: SessionID.make(PARENT),
+          directory: AbsolutePath.make(DIRECTORY),
+          target_fingerprint: { kind: "none" },
+          title: "Paused",
+          status: "paused",
+          seq: 1,
+          config: "{}",
+          wake_reported: false,
+          pause_reason: reason,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+  const inInstance = <A, E>(effect: Effect.Effect<A, E, Scope.Scope>) =>
+    Effect.runPromise(Effect.scoped(effect).pipe(Effect.provideService(InstanceRef, instanceRef)))
+
+  it("a node result and a terminal workflow wait for an archived owner and arrive once, when it is back", async () => {
+    const archived = { at: 5 as number | undefined }
+    const turns: string[] = []
+    await inInstance(
+      Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          yield* seedWake
+          const deps = yield* services()
+          const delivery = yield* startDelivery({ ...deps, messages: undefined })
+
+          // Archived: every trigger is a no-op, and the rows stay unreported.
+          expect(yield* delivery.deliver(PARENT)).toBe(false)
+          yield* delivery.drain(PARENT)
+          expect(turns).toEqual([])
+          expect(yield* deps.store.getUnreportedWakeWorkflows(PARENT)).not.toEqual([])
+          expect(yield* deps.store.getUnreportedWakeNodes(PARENT)).not.toEqual([])
+
+          // Back: the same durable batch is admitted once, and its rows are confirmed.
+          archived.at = undefined
+          expect(yield* delivery.deliver(PARENT)).toBe(true)
+          expect(turns).toHaveLength(1)
+          expect(turns[0]).toContain('Node "Node" completed')
+          yield* expectReported
+          expect(yield* delivery.deliver(PARENT)).toBe(false)
+          expect(turns).toHaveLength(1)
+        }).pipe(Effect.provide(ownerGraph(archived, turns)))
+      }),
+    )
+  })
+
+  it("an archived owner is not reminded of a paused workflow; the reminder is delivered when it is back", async () => {
+    const archived = { at: 5 as number | undefined }
+    const turns: string[] = []
+    await inInstance(
+      Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          yield* seedPaused(null)
+          const deps = yield* services()
+          const delivery = yield* startDelivery({ ...deps, messages: undefined })
+          // The ledger lists the session as due; it is the delivery that holds it back.
+          expect(yield* delivery.scanSessions()).toEqual([PARENT])
+
+          expect(yield* delivery.deliver(PARENT)).toBe(false)
+          expect(turns).toEqual([])
+
+          archived.at = undefined
+          expect(yield* delivery.deliver(PARENT)).toBe(true)
+          expect(turns).toHaveLength(1)
+          expect(turns[0]).toContain("has remained paused for five minutes")
+        }).pipe(Effect.provide(ownerGraph(archived, turns)))
+      }),
+    )
+  })
+
+  it("a pause the archive holds is never reminded of, and the tick does not list it", async () => {
+    const archived = { at: undefined as number | undefined }
+    const turns: string[] = []
+    await inInstance(
+      Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          yield* seedPaused("archived")
+          const deps = yield* services()
+          const delivery = yield* startDelivery({ ...deps, messages: undefined })
+
+          expect(yield* delivery.scanSessions()).toEqual([])
+          // Not archived any more, and still no reminder: the workflow waits for the main agent.
+          expect(yield* delivery.deliver(PARENT)).toBe(false)
+          expect(turns).toEqual([])
+        }).pipe(Effect.provide(ownerGraph(archived, turns)))
+      }),
+    )
+  })
+
+  it("a queued mailbox message waits for an archived owner and is admitted when it is back", async () => {
+    const archived = { at: 5 as number | undefined }
+    const turns: string[] = []
+    let receives = 0
+    await inInstance(
+      Effect.gen(function* () {
+        const messages = {
+          receive: () => {
+            receives += 1
+            return Effect.succeed({ ok: true as const, value: [queuedMailboxMessage] } as const)
+          },
+          pendingRecipients: () => Effect.succeed([]),
+          changed: Stream.empty,
+        } as unknown as DagMessages.Interface
+        yield* Effect.gen(function* () {
+          const deps = yield* services()
+          const delivery = yield* startDelivery({ ...deps, messages })
+          receives = 0
+
+          // The queue is read and found non-empty; nothing is admitted for the archived owner.
+          expect(yield* delivery.deliver(PARENT)).toBe(false)
+          expect(receives).toBe(1)
+          expect(turns).toEqual([])
+
+          archived.at = undefined
+          expect(yield* delivery.deliver(PARENT)).toBe(true)
+          expect(turns).toHaveLength(1)
+          expect(turns[0]).toContain("Please review the result.")
+        }).pipe(Effect.provide(ownerGraph(archived, turns)))
+      }),
+    )
+  })
+})

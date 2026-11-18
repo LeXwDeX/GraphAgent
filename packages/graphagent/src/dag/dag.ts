@@ -730,6 +730,18 @@ export interface Interface {
     reason: string,
   ) => Effect.Effect<{ readonly requeued: readonly string[] }, Error>
   readonly resume: (dagID: string) => Effect.Effect<void, Error>
+  /**
+   * #1289: the automatic resume of one pause episode (`DagBudget`'s own, held
+   * for `budget_exhausted`). It lifts the pause only while the workflow is
+   * still paused for `reason`, checked under the workflow lock and again inside
+   * the transaction that publishes `WorkflowResumed`: a pause the owner's
+   * archive relabeled in between (or a workflow someone else already resumed or
+   * ended) is left alone and reported as `skipped`, not as an error. A resume
+   * that goes ahead consults the `ResumeGuard` like `resume`. The explicit
+   * `resume` is unchanged and lifts any pause, an archive's included: that is
+   * the main agent's decision.
+   */
+  readonly resumeIfPausedFor: (dagID: string, reason: PauseReason) => Effect.Effect<"resumed" | "skipped", Error>
   readonly step: (
     dagID: string,
   ) => Effect.Effect<{ status: "stepping"; nodeID?: string } | { status: "no_ready_nodes" }, Error>
@@ -1303,6 +1315,21 @@ export const layer = Layer.effect(
     const resume = Effect.fn("Dag.resume")(function* (lock: WorkflowLock, dagID: string) {
       yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
       yield* events.publish(DagEvent.WorkflowResumed, { dagID: dagID as ID, timestamp: yield* DateTime.now })
+    })
+    // Whether the workflow is still the pause episode the caller means to lift.
+    const stillPausedFor = (workflow: DagStore.WorkflowRow, reason: PauseReason) =>
+      workflow.status === "paused" && workflow.pauseReason === reason
+    const resumeIfPausedFor = Effect.fn("Dag.resumeIfPausedFor")(function* (
+      lock: WorkflowLock,
+      dagID: string,
+      reason: PauseReason,
+    ) {
+      // The transaction's own read: the policy check that precedes it ran outside
+      // it, and what the caller read before that may be older still.
+      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+      if (!workflow || !stillPausedFor(workflow, reason)) return "skipped" as const
+      yield* resume(lock, dagID)
+      return "resumed" as const
     })
 
     const step = Effect.fn("Dag.step")(function* (lock: WorkflowLock, dagID: string) {
@@ -2830,6 +2857,15 @@ export const layer = Layer.effect(
             const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
             yield* ResumeGuard.check(workflow)
             yield* transact(dagID, resume(lock, dagID))
+          }),
+        ),
+      resumeIfPausedFor: (dagID, reason) =>
+        withWorkflowLock(dagID)((lock) =>
+          Effect.gen(function* () {
+            const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+            if (!workflow || !stillPausedFor(workflow, reason)) return "skipped" as const
+            yield* ResumeGuard.check(workflow)
+            return yield* transact(dagID, resumeIfPausedFor(lock, dagID, reason))
           }),
         ),
       step: (dagID) =>

@@ -3,7 +3,7 @@
 
 export * as DagStore from "./store"
 
-import { and, asc, count, desc, eq, gt, inArray, lte, max, or, sql } from "drizzle-orm"
+import { and, asc, count, desc, eq, gt, inArray, isNull, lte, max, ne, or, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { Database } from "../database/database"
@@ -12,7 +12,7 @@ import { EventTable } from "../event/sql"
 import { LayerNode } from "../effect/layer-node"
 import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "./sql"
 import { SessionTable } from "../session/sql"
-import { isTerminalWorkflowStatusValue, WORKFLOW_TERMINAL_STATUS_VALUES } from "./core/types"
+import { isTerminalWorkflowStatusValue, PAUSE_REASON_ARCHIVED, WORKFLOW_TERMINAL_STATUS_VALUES } from "./core/types"
 
 // ============================================================================
 // Row → domain types
@@ -386,10 +386,12 @@ export interface Interface {
    * `getSessionsWithUnreportedWakes` lists; `paused` is the sessions of paused
    * workflows whose reminder is due: `wake_reported = 0` and
    * `time_updated <= pausedDueCutoff`. The cutoff is inclusive, matching
-   * `isPausedReminderDue`'s `now - timeUpdated >= delay`. The caller computes
-   * it from its own `Clock` (`now - delay`) and it is bound as a parameter;
-   * the SQL clock is never consulted, so a virtual clock decides what is due.
-   * Only the session ID is read, never the workflow row or its YAML config.
+   * `isPausedReminderDue`'s `now - timeUpdated >= delay`, and a pause held for
+   * the owner's archive (`pause_reason = 'archived'`) is never due. The caller
+   * computes it from its own `Clock` (`now - delay`) and it is bound as a
+   * parameter; the SQL clock is never consulted, so a virtual clock decides
+   * what is due. Only the session ID is read, never the workflow row or its
+   * YAML config.
    */
   readonly getSessionsWithDueWakes: (input: { readonly pausedDueCutoff: number }) => Effect.Effect<DueWakeSessions>
   readonly hasReportedWakeNodes: (sessionID: string) => Effect.Effect<boolean>
@@ -915,6 +917,9 @@ export const layer = Layer.effect(
                 eq(WorkflowTable.status, "paused"),
                 eq(WorkflowTable.wake_reported, false),
                 lte(WorkflowTable.time_updated, input.pausedDueCutoff),
+                // #1289: a pause the owner's archive holds is never reminded of
+                // (`isPausedReminderDue` is the same predicate in JS).
+                or(isNull(WorkflowTable.pause_reason), ne(WorkflowTable.pause_reason, PAUSE_REASON_ARCHIVED)),
               )),
           )
           .all()

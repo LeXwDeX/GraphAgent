@@ -4,7 +4,9 @@
 // #1289: the `archived` pause reason. Archiving the owner session holds its
 // workflows (`Dag.pauseForArchive`): a running or stepping workflow is paused,
 // a workflow that is already paused only has its reason changed, and the
-// projector accepts the pause event from `paused` for this reason alone.
+// projector accepts the pause event from `paused` for this reason alone. The
+// automatic resume (`Dag.resumeIfPausedFor`) re-checks the reason where it
+// publishes, so an archive that lands before it is not undone.
 import { describe, expect, test } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
 import { eq } from "drizzle-orm"
@@ -27,6 +29,7 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { Dag } from "@/dag/dag"
+import { ResumeBlockedError, ResumeGuard } from "@/dag/resume-guard"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
@@ -370,6 +373,132 @@ describe("#1289: Dag.pauseForArchive", () => {
       yield* dag.pauseForArchive(dagID)
       yield* dag.cancel(dagID)
       expect((yield* readRow).status).toBe("cancelled")
+    }),
+  )
+})
+
+describe("#1289: Dag.resumeIfPausedFor", () => {
+  it.live("resumes a workflow that is still paused for the reason", () =>
+    Effect.gen(function* () {
+      yield* createRunning
+      const dag = yield* Dag.Service
+      yield* dag.pause(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)
+      expect(yield* dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("resumed")
+      expect(yield* readState).toEqual({ status: "running", reason: null })
+    }),
+  )
+
+  it.live(
+    "skips, without an error or an event, a pause the archive relabeled; the explicit resume still lifts it",
+    () =>
+      Effect.gen(function* () {
+        yield* createRunning
+        const dag = yield* Dag.Service
+        yield* dag.pause(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)
+        expect(yield* dag.pauseForArchive(dagID)).toBe("relabeled")
+        const held = yield* readRow
+
+        expect(yield* dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("skipped")
+        const after = yield* readRow
+        expect({ status: after.status, reason: after.pause_reason, seq: after.seq }).toEqual({
+          status: "paused",
+          reason: PAUSE_REASON_ARCHIVED,
+          seq: held.seq,
+        })
+
+        // The main agent's resume is the explicit one, and it is not conditional.
+        yield* dag.resume(dagID)
+        expect(yield* readState).toEqual({ status: "running", reason: null })
+      }),
+  )
+
+  it.live("skips every other state: another reason, running, ended, pending and missing", () =>
+    Effect.gen(function* () {
+      yield* setupFKs
+      const dag = yield* Dag.Service
+      expect(yield* dag.resumeIfPausedFor("dag_missing", PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("skipped")
+
+      yield* create
+      expect(yield* dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("skipped")
+      expect((yield* readRow).status).toBe("pending")
+
+      const events = yield* EventV2.Service
+      yield* events.publish(DagEvent.WorkflowStarted, { dagID, timestamp: ts(1) })
+      expect(yield* dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("skipped")
+      expect((yield* readRow).status).toBe("running")
+
+      yield* dag.pause(dagID, PAUSE_REASON_CHECKPOINT)
+      expect(yield* dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("skipped")
+      expect(yield* readState).toEqual({ status: "paused", reason: PAUSE_REASON_CHECKPOINT })
+
+      yield* dag.cancel(dagID)
+      expect(yield* dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)).toBe("skipped")
+      expect((yield* readRow).status).toBe("cancelled")
+    }),
+  )
+
+  it.live(
+    "re-checks the reason inside the transaction: an archive committed after the policy check is not undone",
+    () =>
+      Effect.gen(function* () {
+        yield* createRunning
+        const dag = yield* Dag.Service
+        const events = yield* EventV2.Service
+        yield* dag.pause(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)
+
+        // Another process's archive: it commits after this call has read the
+        // workflow and passed the policy, and it does not hold this process's lock.
+        const archiveAfterPolicy = {
+          check: () =>
+            events
+              .publish(DagEvent.WorkflowPaused, { dagID, timestamp: ts(5), reason: PAUSE_REASON_ARCHIVED })
+              .pipe(Effect.asVoid, Effect.orDie),
+        }
+        const outcome = yield* dag
+          .resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)
+          .pipe(Effect.provideService(ResumeGuard.Service, archiveAfterPolicy))
+
+        expect(outcome).toBe("skipped")
+        expect(yield* readState).toEqual({ status: "paused", reason: PAUSE_REASON_ARCHIVED })
+      }),
+  )
+
+  it.live("a resume that goes ahead still meets the ResumeGuard, and a skip never reaches it", () =>
+    Effect.gen(function* () {
+      yield* createRunning
+      const dag = yield* Dag.Service
+      let consulted = 0
+      const guarded = <A, E, R>(effect: Effect.Effect<A, E, R>, verdict: "allow" | "veto") =>
+        effect.pipe(
+          Effect.provideService(ResumeGuard.Service, {
+            check: (workflow) =>
+              Effect.suspend(() => {
+                consulted++
+                return verdict === "veto"
+                  ? Effect.fail(
+                      new ResumeBlockedError({
+                        workflowID: workflow.id,
+                        pauseReason: workflow.pauseReason ?? undefined,
+                      }),
+                    )
+                  : Effect.void
+              }),
+          }),
+        )
+      yield* dag.pause(dagID, PAUSE_REASON_BUDGET_EXHAUSTED)
+
+      const vetoed = yield* guarded(dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED), "veto").pipe(
+        Effect.flip,
+      )
+      expect(vetoed).toBeInstanceOf(ResumeBlockedError)
+      expect(consulted).toBe(1)
+      expect(yield* readState).toEqual({ status: "paused", reason: PAUSE_REASON_BUDGET_EXHAUSTED })
+
+      // The archive takes the pause over; a vetoing guard (an exhausted budget)
+      // would have turned the budget's attempt into an error, and is not asked.
+      yield* dag.pauseForArchive(dagID)
+      expect(yield* guarded(dag.resumeIfPausedFor(dagID, PAUSE_REASON_BUDGET_EXHAUSTED), "veto")).toBe("skipped")
+      expect(consulted).toBe(1)
     }),
   )
 })

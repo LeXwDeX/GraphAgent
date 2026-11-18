@@ -7,6 +7,8 @@
 // filtering with `isPausedReminderDue`. The two must stay one predicate. This
 // drives every status, wake marker and time offset around the boundary through
 // both and requires the same sessions, so changing either side alone fails here.
+// The pause reason is part of the matrix: a pause the owner's archive holds
+// (#1289) is never due, in either.
 import { describe, expect, it } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"
@@ -21,13 +23,17 @@ const DUE_CUTOFF = NOW - PAUSED_REMINDER_DELAY_MS
 const STATUSES = ["pending", "running", "paused", "stepping", "completed", "failed", "cancelled"]
 // `time_updated` relative to the cutoff: far past, one short of it, on it (all due), then beyond it.
 const OFFSETS = [-1_000_000, -1, 0, 1, 1_000_000]
+// A manual or recovery pause carries no reason; the others are durable reasons.
+const REASONS = [null, "archived", "budget_exhausted"] as const
 
 const database = Database.layerFromPath(":memory:")
 const layer = Layer.merge(database, DagStore.layer.pipe(Layer.provide(database)))
 
 const cases = STATUSES.flatMap((status) =>
   [false, true].flatMap((wakeReported) =>
-    OFFSETS.map((offset) => ({ status, wakeReported, timeUpdated: DUE_CUTOFF + offset })),
+    OFFSETS.flatMap((offset) =>
+      REASONS.map((reason) => ({ status, wakeReported, reason, timeUpdated: DUE_CUTOFF + offset })),
+    ),
   ),
 ).map((row, index) => ({ ...row, session: `ses_${String(index).padStart(3, "0")}` }))
 
@@ -64,6 +70,7 @@ const seed = Effect.gen(function* () {
         config: "{}",
         seq: 1,
         wake_reported: row.wakeReported,
+        pause_reason: row.reason,
         directory: "/project",
         target_fingerprint: { kind: "none" as const },
         time_updated: row.timeUpdated,
@@ -91,10 +98,14 @@ describe("DagStore.getSessionsWithDueWakes against the JS predicates it replaces
         }
       }).pipe(Effect.provide(layer), Effect.scoped),
     )
-    expect(cases).toHaveLength(STATUSES.length * 2 * OFFSETS.length)
-    // The matrix reaches both outcomes: the due offsets of the one unreported paused status.
-    expect(expectedPaused).toHaveLength(3)
+    expect(cases).toHaveLength(STATUSES.length * 2 * OFFSETS.length * REASONS.length)
+    // The matrix reaches both outcomes: the due offsets of the one unreported
+    // paused status, for the two reasons that are not the archive's.
+    expect(expectedPaused).toHaveLength(3 * 2)
     expect(due.paused).toEqual(expectedPaused)
+    // A pause the archive holds is due in neither, at any offset.
+    const archived = new Set(cases.filter((row) => row.reason === "archived").map((row) => row.session))
+    expect(due.paused.filter((session) => archived.has(session))).toEqual([])
     expect(due.wake).toEqual([...unreported].sort())
   })
 })

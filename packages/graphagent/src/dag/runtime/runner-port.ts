@@ -44,7 +44,7 @@ import type { Dag } from "../dag"
  *     `nodeCancelled`, `replan`, `extend`, `recover`, `extendTimeout`,
  *     `retarget`), `create`, `cancel` on session removal, `pauseForArchive` on
  *     session archive (#1289), and `DagBudget` (`pauseForBudget`,
- *     `requeueNodes`, `resume`);
+ *     `requeueNodes`, `resumeIfPausedFor`);
  *   - durable-fact writes, no token: `failUnrecoverable`; and the writes of the
  *     host sweep, which holds no lease.
  * `pause` and `extend` appear in both lists: the runner's own use of them (the

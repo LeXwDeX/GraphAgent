@@ -228,7 +228,10 @@ describe("DagLoop and a workflow the archive paused (#1289)", () => {
           // and wakes the owner with its result, as for any paused workflow. The
           // loop handles node terminal events in order and forks that wake after
           // the handler, so the wake is the point after which a start of `b`
-          // would already have happened.
+          // would already have happened. This harness's session slice is not
+          // marked archived (the test is about the workflow's pause), so the
+          // wake is delivered; an archived owner's is withheld, which
+          // dag-delivery.test.ts covers.
           yield* Deferred.succeed((yield* promptOf("a")).release, "a finished")
           yield* pollWithTimeout(
             Effect.map(store.getNode(dagID, "a"), (row) => (row?.status === "completed" ? true : undefined)),
