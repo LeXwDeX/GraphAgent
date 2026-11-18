@@ -117,6 +117,12 @@ function summary(
     escalatedNodes: 0,
     tokens: 0,
     tokensCacheRead: 0,
+    tokensInput: 0,
+    tokensOutput: 0,
+    tokensReasoning: 0,
+    tokensCacheWrite: 0,
+    cost: 0,
+    costUnknown: false,
     checkpointPending: false,
     // The publisher enriches every emission with the D6a fixed-shape fields.
     coverageCount: 0,
@@ -696,6 +702,46 @@ describe("DagSummaryPublisher child usage routing (#1027 D6)", () => {
         expect(mine(collector)[0].summaries[0].id).toBe("dag-child")
         expect(state.childLookups.get("ses-child")).toBe(1)
         expect(state.reads.get("ses-parent")).toBe(1)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  // #1475: the itemised tokens, cost and unknown flag are store aggregates like `tokens`, so the same
+  // child usage tick that moves the total pushes them to the TUI.
+  it.instance("a child usage tick pushes the itemised tokens, the cost and the unknown flag", () => {
+    const state = control()
+    const bus = {} satisfies EventControl
+    state.summaries.set("ses-parent", [
+      {
+        ...summary("dag-child", 0),
+        tokens: 10,
+        tokensInput: 3,
+        tokensOutput: 4,
+        tokensReasoning: 1,
+        tokensCacheWrite: 2,
+        cost: 0.0042,
+        costUnknown: true,
+      },
+    ])
+    state.childOwners.set("ses-child", { workflowId: "dag-child", sessionId: "ses-parent", projectId: "global" })
+
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishChildStepFinish(bus, "ses-child", true)
+        yield* pollWithTimeout(
+          Effect.sync(() => (collector.emissions.length === 1 ? true : undefined)),
+          "child usage did not reach the parent summary",
+        )
+        expect(collector.emissions[0].summaries[0]).toMatchObject({
+          tokens: 10,
+          tokensInput: 3,
+          tokensOutput: 4,
+          tokensReasoning: 1,
+          tokensCacheWrite: 2,
+          cost: 0.0042,
+          costUnknown: true,
+        })
       }),
     ).pipe(Effect.provide(runtime(state, bus)))
   })

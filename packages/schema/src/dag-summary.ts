@@ -77,6 +77,20 @@ export const WorkflowSummary = Schema.Struct({
   tokens: Schema.optional(NonNegativeInt),
   /** Cache reads tracked separately; they are not part of the token budget. */
   tokensCacheRead: Schema.optional(NonNegativeInt),
+  // #1475: the same attempt sessions `tokens` sums, itemised and priced, for display only. `tokens` equals
+  // tokensInput + tokensCacheWrite + tokensOutput + tokensReasoning; `dag.budget` keeps reading `tokens`.
+  /** Σ input tokens across every attempt's child session. */
+  tokensInput: Schema.optional(NonNegativeInt),
+  /** Σ output tokens across every attempt's child session. */
+  tokensOutput: Schema.optional(NonNegativeInt),
+  /** Σ reasoning tokens across every attempt's child session. */
+  tokensReasoning: Schema.optional(NonNegativeInt),
+  /** Σ cache-write tokens across every attempt's child session. */
+  tokensCacheWrite: Schema.optional(NonNegativeInt),
+  /** Σ cost of the attempt sessions, in dollars; never negative. An unpriced session adds nothing (`costUnknown`). */
+  cost: Schema.optional(Schema.Finite),
+  /** An attempt session recorded tokens at zero cost, so its price is unknown and not counted in `cost`. */
+  costUnknown: Schema.optional(Schema.Boolean),
   /** DAG-wide running child slots in this process (not this workflow's). */
   concurrencyRunning: Schema.optional(NonNegativeInt),
   /** Coverage entries `inspect` lists for the workflow snapshot (skipped,
