@@ -1,6 +1,6 @@
 import { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, type ToolResultValue as ToolResultValueType } from "@graphagent/llm"
 import { Effect, Schema } from "effect"
-import { InvalidResponseDataError, InvalidToolInputError, NoSuchToolError, type streamText } from "ai"
+import { InvalidResponseDataError, InvalidToolInputError, JSONParseError, NoSuchToolError, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
 import { ToolError } from "@/tool/tool-error"
 import { ProviderError } from "@/provider/error"
@@ -33,17 +33,18 @@ export class ToolInputRejectedError extends Error {
 
 /**
  * What the SDK found wrong with a tool call it refused to run: a tool that does
- * not exist, input that did not parse, or anything else.
+ * not exist, input that is not complete JSON, input that is JSON but fails the
+ * tool's schema, or anything else.
  */
-export type InputRejection = "unknown_tool" | "invalid_input" | "other"
+export type InputRejection = "unknown_tool" | "unparsable_input" | "invalid_input" | "other"
 
 /**
- * The SDK refused the call because its input did not parse, as opposed to
- * naming a tool that does not exist. Only such a call can have lost its
- * arguments to the output limit.
+ * The SDK refused the call because its input is not complete JSON. Only such a
+ * call can have lost its arguments to the output limit: a call to a tool that
+ * does not exist, or one whose JSON failed the schema, was written out in full.
  */
-export function rejectedForInput(error: unknown): error is ToolInputRejectedError {
-  return error instanceof ToolInputRejectedError && error.rejection === "invalid_input"
+export function rejectedUnparsable(error: unknown): error is ToolInputRejectedError {
+  return error instanceof ToolInputRejectedError && error.rejection === "unparsable_input"
 }
 
 export function adapterState() {
@@ -117,7 +118,8 @@ function rejectedMessage(error: unknown): string | undefined {
 /** What the SDK found wrong with an invalid tool call, read from the typed error of its tool-call event. */
 function rejectionOf(error: unknown): InputRejection {
   if (NoSuchToolError.isInstance(error)) return "unknown_tool"
-  if (InvalidToolInputError.isInstance(error)) return "invalid_input"
+  if (InvalidToolInputError.isInstance(error))
+    return JSONParseError.isInstance(error.cause) ? "unparsable_input" : "invalid_input"
   return "other"
 }
 

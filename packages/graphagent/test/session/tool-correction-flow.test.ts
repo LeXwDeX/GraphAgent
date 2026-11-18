@@ -4,16 +4,20 @@
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- The scripted provider calls the AI SDK tool wrapper the way the SDK does, with an input the tool validates itself.
 
 import { describe, expect } from "bun:test"
+import fs from "node:fs/promises"
 import path from "node:path"
-import { Effect, Stream } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 import { LLMEvent } from "@graphagent/llm"
 import type { StreamInput } from "@/session/llm"
+import { SettingsHook } from "@/hook"
+import { SessionHooks } from "@/hook/session-hooks"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
+import { hookCommand } from "../fixture/claude-hook"
 import { TestInstance } from "../fixture/fixture"
-import { makeFakeProvider, textScript } from "../lib/fake-provider"
+import { makeFakeProvider, textScript, toolCallScript } from "../lib/fake-provider"
 import { testEffect } from "../lib/effect"
 import { makePerfLayer, perfConfig } from "../perf/harness"
 
@@ -118,6 +122,82 @@ describe("a repaired tool call that then fails", () => {
         expect(rows).toMatchObject([{ tool: "edit", outcome: "execution_error", corrections: ["args_repaired"] }])
       }),
     { git: true, config: perfConfig },
+    { timeout: 60_000 },
+  )
+})
+
+// A PostToolUse hook may replace the whole result of a call, metadata included. What the harness recorded about the
+// call before the hook ran is not the hook's to take away.
+let hookRequests = 0
+let hookTarget = ""
+const hookFake = makeFakeProvider({
+  title: "Tool correction hook",
+  script: (input) => {
+    hookRequests += 1
+    return hookRequests === 1
+      ? toolCallScript(input, {
+          id: "call-edit-hook",
+          name: "edit",
+          input: { filePath: hookTarget, oldText: "alpha", newText: "gamma" },
+        })
+      : textScript("done")
+  },
+})
+
+const rewriteOutput = hookCommand(`console.log(JSON.stringify({ hookSpecificOutput: {
+  hookEventName: "PostToolUse",
+  updatedToolOutput: { title: "redacted", output: "REPLACED_BY_HOOK", metadata: {} }
+} }))`)
+
+// SettingsHook.layer only needs SessionHooks for the command handler.
+const hooks: Layer.Layer<SettingsHook.Service> = SettingsHook.layer.pipe(Layer.provideMerge(SessionHooks.defaultLayer))
+const itHook = testEffect(makePerfLayer(hookFake, { hooks }))
+
+describe("a repaired tool call whose result a PostToolUse hook rewrites", () => {
+  itHook.instance(
+    "keeps args_repaired in its part and in its tool_outcome row",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        hookRequests = 0
+        hookTarget = path.join(test.directory, "target.txt")
+        const sessions = yield* Session.Service
+        const prompt = yield* SessionPrompt.Service
+        const session = yield* sessions.create({ title: "tool correction hook" })
+
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "edit the file" }],
+        })
+
+        expect(yield* Effect.promise(() => Bun.file(hookTarget).text())).toBe("gamma beta\n")
+        const parts = (yield* sessions.messages({ sessionID: session.id })).flatMap((message) => message.parts)
+        const edit = parts.find((part) => part.type === "tool" && part.tool === "edit")
+        if (edit?.type !== "tool" || edit.state.status !== "completed")
+          throw new Error("expected a completed edit call")
+        // The hook's result replaced the output and the metadata; the correction the harness made survives it.
+        expect(edit.state.output).toContain("REPLACED_BY_HOOK")
+        expect(edit.state.metadata).toEqual({ corrections: ["args_repaired"] })
+
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(ToolOutcomeTable).all()
+        expect(rows).toMatchObject([{ tool: "edit", outcome: "ok", corrections: ["args_repaired"] }])
+      }),
+    {
+      git: true,
+      config: perfConfig,
+      init: (directory) =>
+        Effect.promise(async () => {
+          await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
+          const hook = { type: "command", command: rewriteOutput, timeout: 10 }
+          await Bun.write(
+            path.join(directory, ".agents", "hooks.json"),
+            JSON.stringify({ PostToolUse: [{ matcher: "edit", hooks: [hook] }] }),
+          )
+          await Bun.write(path.join(directory, "target.txt"), "alpha beta\n")
+        }),
+    },
     { timeout: 60_000 },
   )
 })

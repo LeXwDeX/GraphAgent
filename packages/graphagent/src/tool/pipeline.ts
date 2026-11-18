@@ -6,6 +6,7 @@ import { type Tool as AITool, jsonSchema, tool, type ToolExecutionOptions } from
 import { Cause, Effect, Exit, type Schema } from "effect"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { addCorrections, correctionsOf } from "@graphagent/core/session/outcome"
 import { Logging } from "@graphagent/core/observability/logging"
 import type { Agent } from "@/agent/agent"
 import type { TaskOrigin } from "@/tool/task"
@@ -218,6 +219,14 @@ export function isDirectShellEntry(entry: ToolEntry): entry is DirectShellEntry 
 
 export function isMcpEntry(entry: ToolEntry): entry is McpEntry {
   return entry.source.kind === "mcp"
+}
+
+/**
+ * A PostToolUse hook may replace the metadata of a result, but not the corrections the harness made before
+ * the hook ran: they are the harness's own account of the call, kept for the statistics.
+ */
+function keepCorrections<M extends Record<string, unknown>>(replaced: M, original: unknown) {
+  return addCorrections(replaced, ...correctionsOf(original))
 }
 
 /**
@@ -498,7 +507,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                 if (rewritten) {
                   output.title = rewritten.title
                   output.output = rewritten.output
-                  output.metadata = rewritten.metadata as typeof output.metadata
+                  output.metadata = keepCorrections(rewritten.metadata, output.metadata) as typeof output.metadata
                   output.attachments = rewritten.attachments?.map((attachment) => ({
                     ...attachment,
                     id: PartID.ascending(),
