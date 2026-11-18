@@ -11,9 +11,11 @@ import {
   dagModeMarker,
   dagQualityText,
   dagUsage,
+  dagUsageText,
   dagWaitingForMainAgent,
   formatDagTokens,
   type DagModeSnapshot,
+  type DagUsageSummary,
 } from "../../src/dag/mode"
 import type { DagNodeRow } from "../../src/dag/model"
 
@@ -282,6 +284,132 @@ describe("dagQualityText: the review quality row", () => {
   test("follows the interface language", () => {
     setLanguage("en")
     expect(dagQualityText(quality())).toBe("reviews 2 · open 0 · complete 5/6")
+  })
+})
+
+describe("dagUsageText: the usage row of a workflow (#1475)", () => {
+  /** The summary of a workflow that has used something: every field the row reads, as the server sends them. */
+  const used = (extra: Partial<DagUsageSummary> = {}): DagUsageSummary => ({
+    tokensInput: 1200,
+    tokensOutput: 340,
+    tokensReasoning: 56,
+    tokensCacheRead: 98_000,
+    tokensCacheWrite: 7800,
+    cost: 0.0027,
+    costUnknown: false,
+    ...extra,
+  })
+
+  const cases: { name: string; summary: DagUsageSummary; zh: string; en: string }[] = [
+    {
+      name: "every figure, a cost under a cent in four decimals",
+      summary: used(),
+      zh: "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027",
+      en: "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost $0.0027",
+    },
+    {
+      name: "counts are written like the band writes them",
+      summary: used({ tokensInput: 1_234_567, tokensOutput: 999_999, tokensReasoning: 0, tokensCacheRead: 12_000_000 }),
+      zh: "用量 输入 1.2M · 输出 1M · 推理 0 · 缓存 读 12M 写 7.8K · 费用 $0.0027",
+      en: "Usage in 1.2M · out 1M · reasoning 0 · cache r 12M w 7.8K · cost $0.0027",
+    },
+    {
+      name: "a cost from a cent up has two decimals and grouping",
+      summary: used({ cost: 1234.5 }),
+      zh: "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $1,234.50",
+      en: "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost $1,234.50",
+    },
+    {
+      name: "a cost too small for four decimals is not written as zero",
+      summary: used({ cost: 0.00001 }),
+      zh: "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 <$0.0001",
+      en: "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost <$0.0001",
+    },
+    {
+      name: "a workflow that used nothing yet still has the row, all zero",
+      summary: used({
+        tokensInput: 0,
+        tokensOutput: 0,
+        tokensReasoning: 0,
+        tokensCacheRead: 0,
+        tokensCacheWrite: 0,
+        cost: 0,
+      }),
+      zh: "用量 输入 0 · 输出 0 · 推理 0 · 缓存 读 0 写 0 · 费用 $0.00",
+      en: "Usage in 0 · out 0 · reasoning 0 · cache r 0 w 0 · cost $0.00",
+    },
+    {
+      name: "an unpriced part is added to the known cost",
+      summary: used({ costUnknown: true }),
+      zh: "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027 + 未知",
+      en: "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost $0.0027 + unknown",
+    },
+    {
+      name: "nothing priced at all says unknown, never $0.00",
+      summary: used({ cost: 0, costUnknown: true }),
+      zh: "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 未知",
+      en: "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost unknown",
+    },
+    {
+      name: "no costUnknown field means every part had a price",
+      summary: used({ costUnknown: undefined }),
+      zh: "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027",
+      en: "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost $0.0027",
+    },
+  ]
+
+  for (const row of cases) {
+    test(`${row.name}, in each language`, () => {
+      setLanguage("zh-CN")
+      expect(dagUsageText(row.summary)).toBe(row.zh)
+      setLanguage("en")
+      expect(dagUsageText(row.summary)).toBe(row.en)
+    })
+  }
+
+  const required = [
+    "tokensInput",
+    "tokensOutput",
+    "tokensReasoning",
+    "tokensCacheRead",
+    "tokensCacheWrite",
+    "cost",
+  ] as const
+
+  for (const field of required) {
+    test(`is nothing while ${field} is missing, in each language`, () => {
+      for (const language of ["zh-CN", "en"] as const) {
+        setLanguage(language)
+        expect(dagUsageText(used({ [field]: undefined }))).toBeUndefined()
+      }
+    })
+  }
+
+  test("is nothing for a summary from a server that does not itemise usage", () => {
+    expect(dagUsageText({})).toBeUndefined()
+    // The flag alone is no figure, and a total without its parts is not enough either.
+    expect(dagUsageText({ costUnknown: true })).toBeUndefined()
+    expect(dagUsageText({ cost: 1, tokensCacheRead: 5 })).toBeUndefined()
+  })
+
+  test("reads the summary only: no other field of it matters", () => {
+    const summary: DagWorkflowSummary = {
+      id: "wf",
+      title: "t",
+      status: "running",
+      graphRev: 1,
+      nodeCount: 1,
+      completedNodes: 0,
+      runningNodes: 1,
+      failedNodes: 0,
+      skippedNodes: 0,
+      abortedNodes: 0,
+      queuedNodes: 0,
+      escalatedNodes: 0,
+      tokens: 9_000_000,
+      ...used(),
+    }
+    expect(dagUsageText(summary)).toBe("用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027")
   })
 })
 

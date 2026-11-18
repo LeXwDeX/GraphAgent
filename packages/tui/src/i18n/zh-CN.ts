@@ -415,6 +415,8 @@ export const zhCN = {
   "dagmode.panel.mode.nodes": "节点上限 {max}",
   "dagmode.panel.mode.tokens": "token {used}/{budget}",
   "dagmode.panel.mode.tokensOpen": "token {used}（未设预算）",
+  "dagmode.panel.usage":
+    "用量 输入 {input} · 输出 {output} · 推理 {reasoning} · 缓存 读 {read} 写 {write} · 费用 {cost}",
   "dagmode.panel.quality.reviews": "审核 {n} 次",
   "dagmode.panel.quality.open": "遗留 {n} 项",
   "dagmode.panel.quality.completeness": "完整性 {covered}/{total}",

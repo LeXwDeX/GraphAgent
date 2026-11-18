@@ -14,7 +14,7 @@ import { useTheme } from "../context/theme"
 import { useTicker } from "../context/ticker-context"
 import { layoutDagBar } from "../dag/bar"
 import { dagFold, type DagFoldRow } from "../dag/fold"
-import { dagCoverageEntries, dagModeLine, dagQualityText, dagUsage, type DagModePiece } from "../dag/mode"
+import { dagCoverageEntries, dagModeLine, dagQualityText, dagUsage, dagUsageText, type DagModePiece } from "../dag/mode"
 import {
   DAG_STATE_STYLE,
   dagCurrentWave,
@@ -351,6 +351,11 @@ export function DagPanel(props: { state?: DagPanelState }) {
     const root = rootID()
     const on = root !== undefined && sync.session.get(root)?.dagMode === "on"
     return fitLine(dagModeLine({ on, snapshot: snapshot(), usage: usage() }), innerWidth(), ambiguousWidth())
+  })
+  /** The shown workflow's itemised usage (#1475), read off its summary alone; none while the server sends none. */
+  const usageText = createMemo(() => {
+    const summary = active()?.summary
+    return summary === undefined ? undefined : dagUsageText(summary)
   })
   const qualityText = createMemo(() => dagQualityText(active()?.summary.quality))
   /** A workflow paused while the budget is gone: the pause is most likely the budget's, so the panel says what ends it. */
@@ -755,6 +760,13 @@ export function DagPanel(props: { state?: DagPanelState }) {
       <text fg={theme.textMuted} wrapMode="none">
         {countsText()}
       </text>
+      <Show when={usageText()}>
+        {(text) => (
+          <text fg={theme.textMuted} wrapMode="none">
+            {truncateCells(text(), innerWidth(), ambiguousWidth())}
+          </text>
+        )}
+      </Show>
       <Show when={qualityText()}>
         {(text) => (
           <text fg={theme.textMuted} wrapMode="none">

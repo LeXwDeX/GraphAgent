@@ -2343,6 +2343,231 @@ describe("the review quality row", () => {
   })
 })
 
+describe("the usage row", () => {
+  /** What the server's summary carries once it itemises the attempts' usage (#1475). */
+  const figures = {
+    tokensInput: 1_200,
+    tokensOutput: 340,
+    tokensReasoning: 56,
+    tokensCacheRead: 98_000,
+    tokensCacheWrite: 7_800,
+    cost: 0.0027,
+    costUnknown: false,
+  } satisfies Partial<DagWorkflowSummary>
+  const ZH = "用量 输入 1.2K · 输出 340 · 推理 56 · 缓存 读 98K 写 7.8K · 费用 $0.0027"
+  const EN = "Usage in 1.2K · out 340 · reasoning 56 · cache r 98K w 7.8K · cost $0.0027"
+  /** A workflow with the review quality too, so the row can be placed between the counts and the quality. */
+  const withUsage = (extra: Partial<DagWorkflowSummary> = {}, id = WF, title = "依赖升级验证") =>
+    summaryOf(id, title, "running", { ...figures, quality: quality(), ...extra })
+
+  test("sits between the counts and the review quality, and says the workflow's own figures", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withUsage()] } })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      const counts = lines.findIndex((line) => line.includes("完成 · 第"))
+      const usage = lines.findIndex((line) => line.includes(ZH))
+      const review = lines.findIndex((line) => line.includes("审核 2 次"))
+      expect(counts).toBeGreaterThan(-1)
+      expect(usage).toBe(counts + 1)
+      expect(review).toBe(usage + 1)
+      // One row, in the muted color of the counts around it.
+      expect(lines.filter((line) => line.includes("用量 输入"))).toHaveLength(1)
+      expect(colorOf(await shell.spans(), ZH)?.equals(palette().textMuted)).toBe(true)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("is there without a review decision too, under the counts", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withUsage({ quality: null })] } })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      expect(lines.findIndex((line) => line.includes(ZH))).toBe(
+        lines.findIndex((line) => line.includes("完成 · 第")) + 1,
+      )
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says an unpriced part as the drawer does", async () => {
+    const server = dagServer({
+      summaries: {
+        [ROOT]: [withUsage({ costUnknown: true }), withUsage({ cost: 0, costUnknown: true }, WF2, "文档整理")],
+      },
+      tables: { [WF]: pipeline(), [WF2]: [wire("docs", "completed", {}, WF2)] },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("缓存 读 98K 写 7.8K · 费用 $0.0027 + 未知")
+      await press(shell, "right")
+      await waitFor(() => shell.sync().dag.nodes(WF2) !== undefined)
+      await shell.settle()
+      const second = await shell.frame()
+      expect(second).toContain("缓存 读 98K 写 7.8K · 费用 未知")
+      expect(second).not.toContain("$0.00")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("is not drawn for a summary without the figures, and the rows around it stay", async () => {
+    const server = dagServer({
+      summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running", { quality: quality() })] },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).not.toContain("用量")
+      expect(frame).not.toContain("费用")
+      expect(frame).toContain("审核 2 次 · 遗留 0 项 · 完整性 5/6")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("is not drawn while any one figure is missing, and follows a pushed summary in and out", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withUsage()] } })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain(ZH)
+      for (const field of [
+        "tokensInput",
+        "tokensOutput",
+        "tokensReasoning",
+        "tokensCacheRead",
+        "tokensCacheWrite",
+        "cost",
+      ] as const) {
+        shell.events.emit(summaryPush([withUsage({ [field]: undefined })]))
+        await shell.settle()
+        const frame = await shell.frame()
+        expect({ field, drawn: frame.includes("用量 输入") }).toEqual({ field, drawn: false })
+        expect(frame).toContain("审核 2 次")
+        shell.events.emit(summaryPush([withUsage()]))
+        await shell.settle()
+        expect({ field, back: (await shell.frame()).includes(ZH) }).toEqual({ field, back: true })
+      }
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("belongs to the workflow on show: switching tabs changes it, and a pushed summary updates it", async () => {
+    const second = { tokensInput: 5_000_000, tokensOutput: 20, tokensReasoning: 0, cost: 12.5 }
+    const server = dagServer({
+      summaries: { [ROOT]: [withUsage(), withUsage(second, WF2, "文档整理")] },
+      tables: { [WF]: pipeline(), [WF2]: [wire("docs", "completed", {}, WF2)] },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain(ZH)
+
+      await press(shell, "right")
+      await waitFor(() => shell.sync().dag.nodes(WF2) !== undefined)
+      await shell.settle()
+      const other = await shell.frame()
+      expect(other).toContain("用量 输入 5M · 输出 20 · 推理 0 · 缓存 读 98K 写 7.8K · 费用 $12.50")
+      expect(other).not.toContain(ZH)
+
+      shell.events.emit(summaryPush([withUsage(), withUsage({ ...second, tokensOutput: 4_000 }, WF2, "文档整理")]))
+      await shell.settle()
+      expect(await shell.frame()).toContain("用量 输入 5M · 输出 4K · 推理 0 · 缓存 读 98K 写 7.8K · 费用 $12.50")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("says it in English", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withUsage()] } })
+    const shell = await mountDag({ server, language: "en" })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      const counts = lines.findIndex((line) => line.includes(" done · wave "))
+      expect(counts).toBeGreaterThan(-1)
+      expect(lines.findIndex((line) => line.includes(EN))).toBe(counts + 1)
+      expect(lines.findIndex((line) => line.includes("reviews 2 · open 0"))).toBe(counts + 2)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("takes its figures from the summary: nothing is read for it, and nothing is written", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withUsage()] } })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain(ZH)
+      expect(shell.requested.filter((entry) => entry.includes("/usage"))).toEqual([])
+      expect(shell.writes()).toEqual([])
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  describe("how it looks", () => {
+    async function look(options: Parameters<typeof mountDag>[0]) {
+      const server = dagServer({ summaries: { [ROOT]: [withUsage()] } })
+      const shell = await mountDag({ server, ...options })
+      try {
+        await openLoaded(shell)
+        return await shell.frame()
+      } finally {
+        await shell.dispose()
+      }
+    }
+
+    test("80 by 24, in Chinese", async () => {
+      expect(await look({ width: 80, height: 24 })).toMatchSnapshot()
+    })
+
+    test("120 by 40, in Chinese", async () => {
+      expect(await look({ width: 120, height: 40 })).toMatchSnapshot()
+    })
+
+    test("80 by 24, in English", async () => {
+      expect(await look({ width: 80, height: 24, language: "en" })).toMatchSnapshot()
+    })
+  })
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const ambiguousWidth of [1, 2] as const) {
+      test(`is cut to the width of the panel on one row, never wider, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        const lead = language === "en" ? "Usage in" : "用量 输入"
+        for (const width of [60, 80]) {
+          const server = dagServer({ summaries: { [ROOT]: [withUsage()] } })
+          const shell = await mountDag({ server, width, height: 30, language, ambiguousWidth })
+          try {
+            await openLoaded(shell)
+            const lines = rowsOf(await shell.frame()).filter((line) => line.startsWith("│") && line.endsWith("│"))
+            const rows = lines.filter((line) => line.includes(lead))
+            expect({ width, rows: rows.length }).toEqual({ width, rows: 1 })
+            // Inside the border and the padding: what the panel itself laid out.
+            const inner = rows[0].slice(1, -1).trimEnd()
+            expect({ width, fits: cellWidth(inner, ambiguousWidth) <= width - 3 }).toEqual({ width, fits: true })
+            // The 60-column panel cannot hold the whole row: it ends in the cut mark and the cost is gone.
+            if (width === 60) {
+              expect(inner.endsWith("…")).toBe(true)
+              expect(inner).not.toContain(language === "en" ? "cost" : "费用")
+            }
+          } finally {
+            await shell.dispose()
+          }
+        }
+      })
+    }
+  }
+})
+
 describe("what the work did not cover", () => {
   /** A table in which one node of each kind of gap sits among the ones that are fine. */
   function gaps(workflow = WF): DagNode[] {
