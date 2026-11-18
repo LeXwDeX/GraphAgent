@@ -483,7 +483,9 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                     ...hookStopMetadata(postResult),
                   }
               }
-              if (preLines.length) output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
+              if (preLines.length) {
+                output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
+              }
               if (options.abortSignal?.aborted) {
                 yield* input.processor.completeToolCall(options.toolCallId, output)
               }
