@@ -2235,6 +2235,87 @@ it.instance("stops after repeated automatic summaries remain above the model lim
   }),
 )
 
+it.instance("stops when the provider still rejects the request after two consecutive automatic compactions", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), compaction: { auto: true } }))
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Bounded overflow recovery" })
+    const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Error.type || !Schema.is(Session.Event.Error.data)(event.data)) return Effect.void
+      if (event.data.sessionID === chat.id && event.data.error) errors.push(event.data.error)
+      return Effect.void
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.error(413, { error: { message: "request entity too large" } })
+    yield* llm.text("s1")
+    yield* llm.error(413, { error: { message: "request entity too large" } })
+    yield* llm.text("s2")
+    yield* llm.error(413, { error: { message: "request entity too large" } })
+
+    const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
+    yield* off
+
+    expect(Exit.isFailure(result)).toBeTrue()
+    if (Exit.isFailure(result)) {
+      const error = Cause.squash(result.cause)
+      expect(SessionV1.ContextOverflowError.isInstance(error)).toBeTrue()
+      if (SessionV1.ContextOverflowError.isInstance(error)) {
+        const message = error.toObject().data.message
+        expect(message).toContain("after 2 consecutive automatic compactions")
+        expect(message).toContain("provider.test.models.test-model.limit.context")
+      }
+    }
+    expect(yield* llm.hits).toHaveLength(5)
+    // The user sees the stop reason, and the rejected request's message records it instead of a bare failure name.
+    const stop = {
+      name: "ContextOverflowError",
+      data: { message: expect.stringContaining("after 2 consecutive automatic compactions") },
+    } satisfies NonNullable<SessionV1.Assistant["error"]>
+    expect(errors).toContainEqual(stop)
+    const last = (yield* sessions.messages({ sessionID: chat.id })).at(-1)
+    expect(last?.info.role).toBe("assistant")
+    if (last?.info.role === "assistant") expect(last.info.error).toEqual(stop)
+  }),
+)
+
+it.instance("counts provider-rejected recoveries only while no step gets through in between", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), compaction: { auto: true } }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Spaced overflow recovery",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    for (let round = 0; round < 3; round++) {
+      yield* llm.error(413, { error: { message: "request entity too large" } })
+      yield* llm.text("s")
+      yield* llm.tool("glob", { pattern: "**/overflow-recovery-missing" })
+    }
+    yield* llm.text("done")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") expect(result.info.error).toBeUndefined()
+    expect(yield* llm.hits).toHaveLength(10)
+  }),
+)
+
 // Wait for a session's runner to enter a busy state. SessionStatus is flipped
 // inside Runner.startShell's serialized transition, so cancel can't no-op once
 // we observe it.

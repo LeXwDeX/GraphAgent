@@ -38,6 +38,7 @@ import type { Provider } from "@/provider/provider"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { HistoryView } from "./history/view"
 import { LLMError, Usage, type LLMEvent } from "@graphagent/llm"
 import { makeToolCalls, type ToolCall } from "./processor-tool-calls"
@@ -55,6 +56,17 @@ import { discardFailedText } from "./processor-discard"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
+
+/**
+ * The step-end compaction check with the process's output-token cap, so it reserves the same output budget as the
+ * pre-step gate (`SessionCompaction.isOverflow`); `flags` is absent where no runtime flags are provided.
+ */
+function stepOverflow(
+  flags: RuntimeFlags.Info | undefined,
+  input: Omit<Parameters<typeof isOverflow>[0], "outputTokenMax">,
+) {
+  return isOverflow({ ...input, outputTokenMax: flags?.outputTokenMax })
+}
 
 /** Accumulate one provider request's usage into the assistant message that owns both requests. */
 function accumulateUsage(message: SessionV1.Assistant, usage: ReturnType<typeof Session.getUsage>) {
@@ -308,6 +320,7 @@ export const layer = Layer.effect(
     const status = yield* SessionStatus.Service
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
+    const flags = Option.getOrUndefined(yield* Effect.serviceOption(RuntimeFlags.Service))
 
     // Doom-loop guard: ask for permission when the last three tool calls are identical.
     const checkDoomLoop = Effect.fnUntraced(function* (
@@ -772,7 +785,7 @@ export const layer = Layer.effect(
             ctx.snapshot = undefined
             if (
               !ctx.assistantMessage.summary &&
-              isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
+              stepOverflow(flags, { cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
             ) {
               ctx.needsCompaction = true
             }
@@ -1297,6 +1310,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Image.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(RuntimeFlags.defaultLayer),
   ),
 )
 
@@ -1311,6 +1325,7 @@ export const node = LayerNode.make(layer, [
   SessionStatus.node,
   Image.node,
   EventV2Bridge.node,
+  RuntimeFlags.node,
 ])
 
 export * as SessionProcessor from "./processor"

@@ -2,8 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Token } from "@/util/token"
-import { estimateOverhead, estimateRequest, isOverflow, serializedTools, usable } from "../../src/session/overflow"
+import {
+  estimateOverhead,
+  estimatePendingToolOutputTokens,
+  estimateRequest,
+  isOverflow,
+  serializedTools,
+  usable,
+  windowOf,
+} from "../../src/session/overflow"
+import { MessageID, PartID, SessionID } from "../../src/session/schema"
 
 describe("estimateRequest", () => {
   test("counts CJK text near one token per character", () => {
@@ -144,5 +156,86 @@ describe("usable output reserve", () => {
   test("reserves an environment override above the conservative default for a catalog-only limit", () => {
     expect(usable({ cfg: cfg(), model: model(1_000_000, 128_000), outputTokenMax: 64_000 })).toBe(936_000)
     expect(usable({ cfg: cfg(), model: model(1_000_000, 128_000) })).toBe(968_000)
+  })
+
+  test("sizes the trigger line from the default window when the model declares none", () => {
+    expect(windowOf(model(0, 32_000))).toBe(128_000)
+    expect(windowOf(model(200_000, 32_000))).toBe(200_000)
+    expect(usable({ cfg: cfg(), model: model(0, 32_000) })).toBe(96_000)
+    expect(usable({ cfg: cfg(), model: model(0, 8_192) })).toBe(119_808)
+    expect(usable({ cfg: cfg(), model: model(0, 32_000, 100_000) })).toBe(80_000)
+  })
+
+  test("compacts a model with an unknown window at the default window's input budget", () => {
+    const unknown = model(0, 32_000)
+    const none = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    expect(isOverflow({ cfg: cfg(), model: unknown, tokens: none, estimatedInputTokens: 95_999 })).toBe(false)
+    expect(isOverflow({ cfg: cfg(), model: unknown, tokens: none, estimatedInputTokens: 96_000 })).toBe(true)
+  })
+
+  test("keeps automatic compaction off for an unknown window when the user disabled it", () => {
+    const none = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    const off = { ...cfg(), compaction: { auto: false } }
+    expect(isOverflow({ cfg: off, model: model(0, 32_000), tokens: none, estimatedInputTokens: 500_000 })).toBe(false)
+  })
+})
+
+describe("estimatePendingToolOutputTokens", () => {
+  const sessionID = SessionID.make("ses_pending_tool_output")
+  const messageID = MessageID.make("msg_pending_tool_output")
+  const completed = (output: string, compacted?: number) =>
+    ({
+      status: "completed",
+      input: {},
+      output,
+      title: "tool",
+      metadata: {},
+      time: { start: 0, end: 1, ...(compacted === undefined ? {} : { compacted }) },
+    }) satisfies SessionV1.ToolStateCompleted
+  const failed = (error: string) =>
+    ({ status: "error", input: {}, error, time: { start: 0, end: 1 } }) satisfies SessionV1.ToolStateError
+  const turn = (...states: SessionV1.ToolPart["state"][]) =>
+    ({
+      info: {
+        id: messageID,
+        sessionID,
+        role: "assistant",
+        time: { created: 0 },
+        parentID: MessageID.make("msg_pending_tool_output_parent"),
+        modelID: ModelV2.ID.make("test-model"),
+        providerID: ProviderV2.ID.make("test"),
+        mode: "build",
+        agent: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      parts: states.map((state, index) => ({
+        id: PartID.make(`prt_pending_tool_output_${index}`),
+        sessionID,
+        messageID,
+        type: "tool" as const,
+        callID: `call_${index}`,
+        tool: "read",
+        state,
+      })),
+    }) satisfies SessionV1.WithParts
+
+  test("counts a completed tool output at the reserve rate, not length / 4", () => {
+    const messages = [turn(completed("中".repeat(4_000)))]
+    expect(Token.estimate("中".repeat(4_000))).toBeLessThan(1_200)
+    expect(estimatePendingToolOutputTokens(messages, 0)).toBeGreaterThanOrEqual(4_000)
+  })
+
+  test("counts a failed tool call by its error text", () => {
+    expect(estimatePendingToolOutputTokens([turn(failed("中".repeat(1_000)))], 0)).toBeGreaterThanOrEqual(1_000)
+  })
+
+  test("adds up every call and ignores compacted outputs, empty outputs and missing messages", () => {
+    const messages = [turn(completed("中".repeat(300)), failed("错".repeat(200)), completed("中".repeat(900), 5))]
+    expect(estimatePendingToolOutputTokens(messages, 0)).toBe(500)
+    expect(estimatePendingToolOutputTokens([turn(completed(""))], 0)).toBe(0)
+    expect(estimatePendingToolOutputTokens(messages, 1)).toBe(0)
+    expect(estimatePendingToolOutputTokens(messages, -1)).toBe(0)
   })
 })
