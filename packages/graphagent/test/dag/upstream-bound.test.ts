@@ -13,13 +13,13 @@ const it = testEffect(Truncate.defaultLayer)
 
 const FILE = "/spill/tool_recorded"
 
-/** A `write` that keeps what it was given and names one fixed file, so the pointer is predictable. */
+/** A `save` that keeps what it was given and names one fixed file, so the pointer is predictable. */
 function recorder() {
   const written: string[] = []
   const write = (text: string) =>
-    Effect.sync(() => {
+    Effect.sync((): Truncate.Saved => {
       written.push(text)
-      return FILE
+      return { path: FILE }
     })
   return { written, write }
 }
@@ -170,6 +170,22 @@ describe("UpstreamBound.bound", () => {
     }),
   )
 
+  it.live("hands a string over whole when its full text cannot be saved", () =>
+    Effect.gen(function* () {
+      const attempted: string[] = []
+      const failing = (text: string) =>
+        Effect.sync((): Truncate.Saved => {
+          attempted.push(text)
+          return { failed: "ENOSPC: no space left on device" }
+        })
+      const full = "a".repeat(20_000)
+      const bounded = yield* UpstreamBound.bound({ over: full, small: "short" }, failing)
+      // No pointer to a file that does not exist: the downstream node reads the whole text instead.
+      expect(bounded).toEqual({ over: full, small: "short" })
+      expect(attempted).toEqual([full])
+    }),
+  )
+
   it.live("returns the mapping as it is when there is nowhere to write", () =>
     Effect.gen(function* () {
       const mapping = { over: "a".repeat(20_000) }
@@ -182,7 +198,7 @@ describe("UpstreamBound.bound", () => {
     Effect.gen(function* () {
       const truncate = yield* Truncate.Service
       const full = Array.from({ length: 3_000 }, (_, index) => `row ${index}: ${"x".repeat(20)}`).join("\n")
-      const bounded = yield* UpstreamBound.bound({ report: full }, truncate.write)
+      const bounded = yield* UpstreamBound.bound({ report: full }, truncate.save)
       const value = textOf(bounded.report)
       const file = /Full output: (.+?)\]/.exec(value)?.[1]
       if (!file) throw new Error("the bounded value has no pointer")

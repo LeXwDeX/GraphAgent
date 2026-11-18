@@ -664,7 +664,7 @@ const serviceLayer = Layer.effect(
 
             // #1453: the prompt gets the head of an oversized upstream string and a pointer to the rest. The review
             // input above was judged on the whole text, and so is the fingerprint handed to the spawn below.
-            const injected = yield* UpstreamBound.bound(resolvedMapping, truncate?.write)
+            const injected = yield* UpstreamBound.bound(resolvedMapping, truncate?.save)
 
             // #943: a node workspace overrides the workflow workspace for
             // prompt assets, DAG settings and the child session.

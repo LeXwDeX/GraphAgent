@@ -12,6 +12,8 @@
  *
  * The caller runs it after the checks that judge a node's input (a review's evidence is checked on the whole
  * text) and before the template renders: what the model sees is bounded, what the engine decides on is not.
+ * A string whose full text cannot be saved is handed over whole: a bounded prompt is not worth a node that
+ * never starts, and a pointer to a file that does not exist would lose the rest.
  */
 
 import { Effect } from "effect"
@@ -26,25 +28,31 @@ function oversized(value: unknown): value is string {
   return typeof value === "string" && Buffer.byteLength(value, "utf-8") > UPSTREAM_INLINE_LIMIT_BYTES
 }
 
-/** The head of `text`, then the notice that names the file `write` put all of it in. */
-const headAndPointer = Effect.fnUntraced(function* (text: string, write: Truncate.Interface["write"]) {
+/** The head of `text`, then the notice that names the file `save` put all of it in; all of it if it could not. */
+const headAndPointer = Effect.fnUntraced(function* (text: string, save: Truncate.Interface["save"]) {
   const preview = Truncate.headPreview(text, Truncate.MAX_LINES, UPSTREAM_HEAD_BYTES)
   // A text past the inline limit always cuts, so this only narrows the type.
   if (!preview.details) return text
-  const file = yield* write(text)
-  return `${preview.text}\n\n${Truncate.notice(file, preview.details)}`
+  const saved = yield* save(text)
+  if ("failed" in saved) {
+    yield* Effect.logWarning("upstream output not bounded: its full text could not be saved", {
+      reason: saved.failed,
+    })
+    return text
+  }
+  return `${preview.text}\n\n${Truncate.notice(saved.path, preview.details)}`
 })
 
 /**
- * `mapping` with each oversized top-level string replaced by its head and a pointer; the full text is written
- * once per string. Without a `write` there is nowhere to put the rest, so the mapping comes back as it is. The
+ * `mapping` with each oversized top-level string replaced by its head and a pointer; the full text is saved
+ * once per string. Without a `save` there is nowhere to put the rest, so the mapping comes back as it is. The
  * same object comes back when nothing was oversized; the one passed in is never changed.
  */
 export const bound = Effect.fn("UpstreamBound.bound")(function* (
   mapping: Record<string, unknown>,
-  write?: Truncate.Interface["write"],
+  save?: Truncate.Interface["save"],
 ) {
-  if (write === undefined) return mapping
+  if (save === undefined) return mapping
   let cut = false
   const entries: [string, unknown][] = []
   for (const [key, value] of Object.entries(mapping)) {
@@ -52,7 +60,7 @@ export const bound = Effect.fn("UpstreamBound.bound")(function* (
       entries.push([key, value])
       continue
     }
-    entries.push([key, yield* headAndPointer(value, write)])
+    entries.push([key, yield* headAndPointer(value, save)])
     cut = true
   }
   return cut ? Object.fromEntries(entries) : mapping
