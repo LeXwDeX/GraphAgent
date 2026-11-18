@@ -7,7 +7,7 @@ import { TextRenderable, type Renderable } from "@opentui/core"
 import { createSignal } from "solid-js"
 import { produce } from "solid-js/store"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
-import type { GlobalEvent, Session, TextPart } from "@graphagent/sdk"
+import type { GlobalEvent, Session, TextPart, ToolPart } from "@graphagent/sdk"
 import { DEFAULT_THEME } from "../../../src/context/theme"
 import type { Ticker } from "../../../src/context/ticker"
 import { setLanguage } from "../../../src/i18n"
@@ -93,7 +93,7 @@ function resultPart(key: string, status: Status): TextPart {
 }
 
 let sequence = 0
-function partEvent(part: TextPart): GlobalEvent {
+function partEvent(part: TextPart | ToolPart): GlobalEvent {
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- synthetic fixture: only the fields the sync layer reads are populated.
   return {
     directory,
@@ -377,6 +377,74 @@ test("a streamed call whose arguments arrive after it mounted becomes the cancel
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the event carries a tool part; the helper is typed for text parts.
     harness.events.emit(partEvent(cancel as unknown as TextPart))
     await harness.waitForFrame((value) => value.includes("cancel background task “Scan target”"), "the cancel row")
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+const LANGUAGES: Array<"en" | "zh-CN"> = ["en", "zh-CN"]
+
+/**
+ * The call that reads a task's log, as the tool records it (#1453): the task it reads and no description, and metadata
+ * that names no session, since the call started none. `key` makes its part and the message of its row.
+ */
+function readCall(
+  key: string,
+  input: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+  status: "running" | "completed" = "completed",
+) {
+  const part = task(key)
+  part.state =
+    status === "running"
+      ? { status, input, metadata, time: { start: START } }
+      : { status, input, output: "task_id: ses", title: "Task log", metadata, time: { start: START, end: START + 1 } }
+  return part
+}
+
+test("a call that reads a task's log names the task it reads, in one line, not a run of its own", async () => {
+  const started = task("target")
+  const named = readCall("read", { action: "read", task_id: childID("target"), page: 2 }, { taskID: childID("target") })
+  // A task the data layer knows nothing of is named by its id.
+  const byID = readCall(
+    "unknown",
+    { action: "read", task_id: "ses_bgrow_elsewhere" },
+    { taskID: "ses_bgrow_elsewhere" },
+  )
+  for (const language of LANGUAGES) {
+    const harness = await mount({ language, tasks: [started, named, byID] })
+    try {
+      const forNamed = language === "en" ? "read the log of task “Scan target”" : "读取任务「Scan target」的日志"
+      const forID =
+        language === "en" ? "read the log of task “ses_bgrow_elsewhere”" : "读取任务「ses_bgrow_elsewhere」的日志"
+      const frame = await harness.waitForFrame(
+        (value) => value.includes(forNamed) && value.includes(forID),
+        "the read calls",
+      )
+      // Not the waiting state a call with no description would keep in a run's row.
+      expect(frame).not.toContain(language === "en" ? "Delegating..." : "委派中…")
+      // The started task keeps its own row: the read call did not overwrite its link.
+      expect(frame).toContain("Explore Task — Scan target")
+      // One line: no run title, no status line under it.
+      expect(rowOf(frame, forNamed, 1) ?? "").not.toStartWith("↳")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  }
+})
+
+test("a streamed call whose arguments arrive after it mounted becomes the read row", async () => {
+  const started = task("target")
+  // The part is first published with no arguments, the way a streamed tool call starts.
+  const streamed = readCall("read", {}, {}, "running")
+  const harness = await mount({ language: "en", tasks: [started, streamed] })
+  try {
+    await harness.waitForFrame((value) => value.includes("Explore Task — Scan target"), "the started task")
+    const read = readCall("read", { action: "read", task_id: childID("target") }, { taskID: childID("target") })
+    harness.events.emit(partEvent(read))
+    await harness.waitForFrame((value) => value.includes("read the log of task “Scan target”"), "the read row")
     expect(harness.writes()).toEqual([])
   } finally {
     await harness.dispose()

@@ -541,10 +541,11 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "action": {
-      "description": "resume: continue the task named by task_id with a new prompt. cancel: cancel the background task named by task_id. Omit to start a new task.",
+      "description": "resume: continue the task named by task_id with a new prompt. cancel: cancel the background task named by task_id. Omit to start a new task. read: read the log of the task named by task_id.",
       "enum": [
         "resume",
         "cancel",
+        "read",
       ],
       "type": "string",
     },
@@ -553,15 +554,21 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "boolean",
     },
     "description": {
-      "description": "A short (3-5 words) description of the task; required unless action is cancel",
+      "description": "A short (3-5 words) description of the task; required unless action is cancel or read",
       "type": "string",
     },
+    "page": {
+      "description": "With action "read": the log page, 1-based; -1 is the last. Default 1.",
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
     "prompt": {
-      "description": "The task for the agent to perform; required unless action is cancel",
+      "description": "The task for the agent to perform; required unless action is cancel or read",
       "type": "string",
     },
     "subagent_type": {
-      "description": "The type of specialized agent to use for this task; required unless action is cancel",
+      "description": "The type of specialized agent to use for this task; required unless action is cancel or read",
       "type": "string",
     },
     "task_id": {

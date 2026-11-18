@@ -3347,12 +3347,46 @@ function TaskCancel(props: ToolProps) {
   )
 }
 
+/**
+ * A call that reads a task's log (`action: "read"`, #1453) names the task it reads, in one line; it starts no run. It
+ * has no description of its own, which a run's row waits for, so it must not be drawn as one.
+ */
+function TaskRead(props: ToolProps) {
+  const sync = useSync()
+  const openSubAgent = useOpenSubAgent()
+  const target = createMemo(() => stringValue(props.input.task_id))
+  const name = createMemo(() => {
+    const id = target()
+    if (!id) return undefined
+    return t("background.row.readCall", { description: sync.data.taskIndex[id]?.description ?? id })
+  })
+  return (
+    <InlineTool
+      icon="│"
+      complete={name()}
+      pending={t("subagent.row.pending")}
+      part={props.part}
+      onClick={() => {
+        const id = target()
+        if (id) openSubAgent(id)
+      }}
+    >
+      {name()}
+    </InlineTool>
+  )
+}
+
 function Task(props: ToolProps) {
   // A streamed call mounts before its arguments arrive (`input: {}`): which row it is must follow them.
   return (
-    <Show when={props.input.action === "cancel"} fallback={<TaskRun {...props} />}>
-      <TaskCancel {...props} />
-    </Show>
+    <Switch fallback={<TaskRun {...props} />}>
+      <Match when={props.input.action === "cancel"}>
+        <TaskCancel {...props} />
+      </Match>
+      <Match when={props.input.action === "read"}>
+        <TaskRead {...props} />
+      </Match>
+    </Switch>
   )
 }
 
