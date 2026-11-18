@@ -796,22 +796,36 @@ describe("tui sync dag mode snapshot: the slots of the whole process", () => {
 // #1290: a tree with DAG mode off and no workflow reads no snapshot by itself, but the `/config` panel shows the limits in
 // force, which only the server knows, so a surface can ask for the snapshot of the tree it is in.
 describe("tui sync dag mode snapshot: asked for by a surface", () => {
-  test("a plain tree is read on request, once, at its root, whichever session of the tree is named", async () => {
+  // What these two tests check is that a read is NOT made. A request reaches the server in the order it is made, so each
+  // test follows the calls under test with the read of the other tree, and waits for that one to land: a read made
+  // earlier would already be in `reads` ahead of it, and nothing is waited for by the clock.
+  test("a plain tree is read on request, at its root, whichever session of the tree is named", async () => {
     await withMount(TREE, async ({ server, sync }) => {
+      // Entering the tree reads nothing: DAG mode is off and it has no workflow.
       await sync.session.activate("ses_old_child")
-      await Bun.sleep(40)
-      expect(server.reads).toEqual([])
+      sync.dag.readMode("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      expect(server.reads).toEqual(["ses_new"])
+      server.reads.length = 0
 
       sync.dag.readMode("ses_old_child")
       await wait(() => sync.data.dagMode.ses_old !== undefined)
       expect(server.reads).toEqual(["ses_old"])
       expect(sync.data.dagMode.ses_old).toEqual(status())
+    })
+  })
 
-      // Held, so asking again for any session of the tree costs no request.
+  test("a held snapshot is not read again by a request for any session of its tree", async () => {
+    await withMount(TREE, async ({ server, sync }) => {
+      sync.dag.readMode("ses_old_child")
+      await wait(() => sync.data.dagMode.ses_old !== undefined)
+      expect(server.reads).toEqual(["ses_old"])
+
       sync.dag.readMode("ses_old")
       sync.dag.readMode("ses_old_child")
-      await Bun.sleep(40)
-      expect(server.reads).toEqual(["ses_old"])
+      sync.dag.readMode("ses_new")
+      await wait(() => sync.data.dagMode.ses_new !== undefined)
+      expect(server.reads).toEqual(["ses_old", "ses_new"])
     })
   })
 
@@ -865,30 +879,33 @@ describe("tui sync: the root of a session's tree", () => {
     })
   })
 
-  test("a selector on it follows a change of its own chain and ignores a change in another tree", async () => {
+  test("a selector on it follows a change of its own chain and is not run again by a rename elsewhere", async () => {
     await withMount(TREE, async ({ emit, sdk, sync }) => {
       await createRoot(async (dispose) => {
         try {
-          const found: string[] = []
+          let runs = 0
           const root = createMemo(() => {
-            const value = sync.session.root("ses_old_child")
-            found.push(value)
-            return value
+            runs++
+            return sync.session.root("ses_old_child")
           })
           expect(root()).toBe("ses_old")
-          expect(found).toEqual(["ses_old"])
+          expect(runs).toBe(1)
 
-          // A session of the other tree is renamed: the chain asked about is untouched, so the selector does not run.
-          emit(updated(row("ses_new_child", 91, { title: "renamed" }, "ses_new")))
-          sdk.frameClock.flushNow()
-          await wait(() => sync.session.get("ses_new_child")?.title === "renamed")
-          expect(found).toEqual(["ses_old"])
-
-          // The session moves under the other tree's root: the selector follows its chain.
+          // The session moves under the other tree's root: a change of its own chain, which has to run the selector.
           emit(updated(row("ses_old_child", 41, {}, "ses_new")))
           sdk.frameClock.flushNow()
           await wait(() => root() === "ses_new")
-          expect(found.at(-1)).toBe("ses_new")
+          expect(runs).toBe(2)
+
+          // Two sessions outside the chain are renamed, one after the other. The selector runs inside the write that
+          // changes what it read, so a run a rename caused is counted by the time the new title can be seen.
+          emit(updated(row("ses_old", 51, { title: "renamed root" })))
+          sdk.frameClock.flushNow()
+          await wait(() => sync.session.get("ses_old")?.title === "renamed root")
+          emit(updated(row("ses_new_child", 91, { title: "renamed child" }, "ses_new")))
+          sdk.frameClock.flushNow()
+          await wait(() => sync.session.get("ses_new_child")?.title === "renamed child")
+          expect(runs).toBe(2)
         } finally {
           dispose()
         }
