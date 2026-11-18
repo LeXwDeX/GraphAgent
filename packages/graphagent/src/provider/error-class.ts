@@ -24,7 +24,13 @@ export type ErrorClass =
   "quota_exhausted" | "rate_limited" | "auth" | "content_refused" | "context_overflow" | "invalid_request" | "transient"
 
 /** What `factsOf` reads from an API error; `names` are lower-cased error codes and types. */
-export type ErrorFacts = { status?: number; names: readonly string[]; text: string }
+export type ErrorFacts = {
+  status?: number
+  names: readonly string[]
+  text: string
+  /** The text or a retry header says the limit lifts by itself: a time window, a retry hint, a rate limit. */
+  temporary: boolean
+}
 
 /** One row of the table: a class and the facts that put an error in it. */
 export interface Row {
@@ -35,6 +41,8 @@ export interface Row {
   readonly names?: readonly string[]
   /** The error text must match. */
   readonly message?: RegExp
+  /** `true`: the facts must say the limit lifts by itself; `false`: they must not. Left out, the row does not care. */
+  readonly temporary?: boolean
 }
 
 /**
@@ -61,8 +69,6 @@ export const ROWS: readonly Row[] = [
       "enforced_spend_limit_reached",
       "arrearage",
       "allocationquota.freetieronly",
-      // The native runtime's own `QuotaExceeded` tag, kept in the error metadata.
-      "quotaexceeded",
     ],
   },
   { cls: "quota_exhausted", status: [402] },
@@ -86,9 +92,35 @@ export const ROWS: readonly Row[] = [
     ],
   },
   { cls: "invalid_request", names: ["invalid_prompt"] },
+  // The native runtime tags every 429 whose body says "quota exceeded" as `QuotaExceeded` (kept in the
+  // error metadata), a spent balance and a full per-minute window alike. The tag alone proves nothing,
+  // so these two rows come last, behind every provider code that does name a spent balance, and split
+  // on whether the error says the limit lifts by itself.
+  { cls: "rate_limited", names: ["quotaexceeded"], temporary: true },
+  { cls: "quota_exhausted", names: ["quotaexceeded"], temporary: false },
 ]
 
 const TEXT_LIMIT = 4000
+
+/**
+ * Wording that says a limit lifts by itself: a time window, a retry hint, a rate limit. No bare status
+ * code belongs here, because the native runtime's message always names its own HTTP status.
+ */
+const TEMPORARY_LIMIT: readonly RegExp[] = [
+  /\bper[-\s]?(?:second|sec|minute|min|hour|hr|day)s?\b/i,
+  /\b(?:rpm|tpm|rpd|tpd)\b/i,
+  /\bretry[-_\s]?(?:in|after|delay)\b/i,
+  /\btry again (?:in|after|later)\b/i,
+  /\bwait (?:for )?\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|mins?|minutes?|hours?)\b/i,
+  /\brate\b|\brate[-_]?limit/i,
+  /\bthrottl/i,
+  /\btoo many requests\b/i,
+]
+
+/** The server says when to come back: any `retry-after` header, whatever its value. */
+function hasRetryHeader(headers: Record<string, string> | undefined): boolean {
+  return headers !== undefined && Object.keys(headers).some((name) => /^retry-after(?:-ms)?$/i.test(name))
+}
 
 function parseBody(raw: string | undefined): Record<string, unknown> | undefined {
   if (!raw) return undefined
@@ -119,6 +151,7 @@ export function factsOf(data: SessionV1.APIError["data"]): ErrorFacts {
   const body = parseBody(data.responseBody)
   const error = isRecord(body?.error) ? body.error : undefined
   const details = isRecord(error?.details) ? error.details : undefined
+  const text = `${data.message}\n${data.responseBody ?? ""}`.slice(0, TEXT_LIMIT)
   return {
     ...(data.statusCode === undefined ? {} : { status: data.statusCode }),
     names: namesOf([
@@ -131,7 +164,8 @@ export function factsOf(data: SessionV1.APIError["data"]): ErrorFacts {
       body?.code,
       body?.type,
     ]),
-    text: `${data.message}\n${data.responseBody ?? ""}`.slice(0, TEXT_LIMIT),
+    text,
+    temporary: hasRetryHeader(data.responseHeaders) || TEMPORARY_LIMIT.some((pattern) => pattern.test(text)),
   }
 }
 
@@ -139,6 +173,7 @@ export function factsOf(data: SessionV1.APIError["data"]): ErrorFacts {
 export function rowMatches(row: Row, facts: ErrorFacts): boolean {
   if (row.status && (facts.status === undefined || !row.status.includes(facts.status))) return false
   if (row.names && !row.names.some((name) => facts.names.includes(name))) return false
+  if (row.temporary !== undefined && row.temporary !== facts.temporary) return false
   return !row.message || row.message.test(facts.text)
 }
 

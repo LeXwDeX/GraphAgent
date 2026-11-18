@@ -115,14 +115,14 @@ timer limit.
 
 | Branch | Failures | Behaviour |
 | --- | --- | --- |
-| `rate_limit` | HTTP 429 and 503, rate-limit usage errors, DashScope's per-minute allocation (reported under quota names) | Retries with the base backoff, honoring `retry-after` and `retry-after-ms` when present. A 429 that reports a spent quota or balance goes to `terminal` instead. |
+| `rate_limit` | HTTP 429 and 503, rate-limit usage errors, DashScope's per-minute allocation (reported under quota names), a native `QuotaExceeded` whose message, body or headers say the limit lifts by itself | Retries with the base backoff, honoring `retry-after` and `retry-after-ms` when present. A 429 that reports a spent quota or balance goes to `terminal` instead. |
 | `auth` | HTTP 401 and 403, unless the provider error table names the answer (a 403 that reports a spent quota is not a credential failure) | One bounded retry, giving the provider's in-request auth loader a chance to refresh credentials. A second auth failure stops. A missing-API-key `AuthError` enters the dispatch table as a terminal `auth` decision instead. |
 | `compaction` | HTTP 413 and parsed context overflow, including the Moonshot, DashScope and Zhipu wordings | Never resent unchanged. The processor hands the turn to compaction. |
 | `http` | Remaining HTTP 400–599: 5xx, a 4xx the provider error table does not name, and a 400 or 422 with a transient signal | The wire policy retries with the base backoff; `retry-after` headers are not honored outside `rate_limit`. Goal recovery treats a deterministic 4xx as final and pauses visibly, while a flagged `isRetryable` or a recognised transient message/body stays recoverable. |
 | `network` | Fetch, DNS, socket, timeout and recognised provider-network errors | Retries with the base backoff. |
 | `protocol` | Incomplete, empty and reasoning-only truncated responses | Retries with the base backoff while the processor's admission gates allow it. |
 | `fallback` | Unrecognised failures | Reconnects 3s, 6s, 6s, then surfaces the error. |
-| `terminal` | User abort, missing API key, output length, structured output, content filter, rejected signed reasoning state; from the provider error table, a spent quota or balance (HTTP 402, or `insufficient_quota` and similar codes on any status or inside the stream), a content refusal reported as an API error, and a deterministic request error (a 400 or 422 coded `invalid_request_error` or similar, or `invalid_prompt`) | Never retried. A content refusal ends the turn as `content_filter`. Goal recovery treats a spent quota, a content refusal and a deterministic request error as permanent and gives up at once instead of probing again after a delay. |
+| `terminal` | User abort, missing API key, output length, structured output, content filter, rejected signed reasoning state; from the provider error table, a spent quota or balance (HTTP 402, `insufficient_quota` and similar codes on any status or inside the stream, or a native `QuotaExceeded` with no sign of a temporary limit), a content refusal reported as an API error, and a deterministic request error (a 400 or 422 coded `invalid_request_error` or similar, or `invalid_prompt`) | Never retried. A content refusal ends the turn as `content_filter`. Goal recovery treats a spent quota, a content refusal and a deterministic request error as permanent and gives up at once instead of probing again after a delay. |
 
 When a spent quota, rejected credentials or a content refusal reported as an API
 error ends the turn, the error message the session records gains one last line
@@ -142,8 +142,20 @@ the request, so this dispatch table owns retry timing and the total attempt
 count. Direct native-runtime calls that bypass the processor keep the executor's
 own bounded budget of two retries after the first attempt.
 
-The native runtime's `QuotaExceeded` and `ContentPolicy` failures read as a
-spent quota and a content refusal in the provider error table. The executor
-reports `ContentPolicy` only for 4xx answers other than 401 and 429, and matches
-`safety` as a whole word, so a `safety_settings` parameter error or a 5xx that
-mentions safety is not read as a content refusal.
+The native runtime's `ContentPolicy` failure reads as a content refusal in the
+provider error table. The executor reports it only for 4xx answers other than
+401 and 429, and matches `safety` as a whole word, so a `safety_settings`
+parameter error or a 5xx that mentions safety is not read as a content refusal.
+
+The native `QuotaExceeded` tag is weaker evidence. The executor puts it on every
+429 whose body says "quota exceeded", a spent balance and a full per-minute
+window alike, and the tag is kept in the error metadata. The table therefore
+reads it as a spent quota only after every provider code that names a spent
+balance has had its turn, and only when nothing in the message, the body or the
+response headers says the limit lifts by itself: a per-second, per-minute,
+per-hour or per-day window, a retry hint (`retry in`, `retry after`, a
+`retryDelay` detail or a `retry-after` header), a wait of a given number of
+seconds, or rate-limit or throttling wording. With such a sign it is a
+`rate_limit` and backs off; the HTTP status the native message names is not
+one. The same words on an HTTP-shaped 429 with no provider code carry no tag and
+are a plain `rate_limit`.

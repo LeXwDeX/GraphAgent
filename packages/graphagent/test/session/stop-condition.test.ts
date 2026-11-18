@@ -108,6 +108,27 @@ describe("StopCondition.failureOf", () => {
       kind: "transient",
     },
     {
+      name: "a native quota 429 that says the limit is per minute",
+      error: apiError({
+        message:
+          "Provider request failed with HTTP 429: Quota exceeded for requests per minute. Please retry in 20 seconds.",
+        statusCode: 429,
+        responseBody: "Quota exceeded for requests per minute. Please retry in 20 seconds.",
+        metadata: { code: "QuotaExceeded" },
+      }),
+      kind: "transient",
+    },
+    {
+      name: "a native quota 429 with no sign of a temporary limit",
+      error: apiError({
+        message: "Provider request failed with HTTP 429: Quota exceeded. Please top up your account.",
+        statusCode: 429,
+        responseBody: "Quota exceeded. Please top up your account.",
+        metadata: { code: "QuotaExceeded" },
+      }),
+      kind: "permanent",
+    },
+    {
       name: "a native content-policy refusal",
       error: apiError({ message: "blocked", statusCode: 400, metadata: { code: "ContentPolicy" } }),
       kind: "permanent",

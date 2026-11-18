@@ -14,7 +14,14 @@ import { SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@graphagent/core/provider"
-import { ContentPolicyReason, LLMError, QuotaExceededReason } from "@graphagent/llm"
+import {
+  ContentPolicyReason,
+  HttpContext,
+  HttpRequestDetails,
+  HttpResponseDetails,
+  LLMError,
+  QuotaExceededReason,
+} from "@graphagent/llm"
 
 const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
@@ -58,6 +65,28 @@ function providerError(init: {
       responseBody: init.responseBody === undefined ? undefined : JSON.stringify(init.responseBody),
       metadata: init.metadata,
     }).toObject(),
+  )
+}
+
+/**
+ * A native-runtime 429 the way the executor reports it for any body that says "quota exceeded": the body sits in the
+ * message and in the HTTP context, and the reason carries the `QuotaExceeded` tag whatever the body means.
+ */
+function nativeQuota(body: string, headers: Record<string, string> = {}) {
+  return MessageV2.fromError(
+    new LLMError({
+      module: "RequestExecutor",
+      method: "execute",
+      reason: new QuotaExceededReason({
+        message: `Provider request failed with HTTP 429: ${body}`,
+        http: new HttpContext({
+          request: new HttpRequestDetails({ method: "POST", url: "https://provider.test/v1/chat", headers: {} }),
+          response: new HttpResponseDetails({ status: 429, headers }),
+          body,
+        }),
+      }),
+    }),
+    { providerID },
   )
 }
 
@@ -438,6 +467,37 @@ describe("session.retry.delay", () => {
         expect(waits).toStrictEqual([])
         expect(SessionRetry.classify(error, "test")).toMatchObject({ class: "quota_exhausted", maxRetries: 0 })
       }
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
+
+  test("policy backs a native per-minute quota 429 off like a rate limit and honors its retry-after", () =>
+    Effect.gen(function* () {
+      const error = nativeQuota("Quota exceeded for requests per minute. Please retry in 20 seconds.", {
+        "retry-after": "20",
+      })
+      const waits: number[] = []
+      let calls = 0
+      const fiber = yield* Effect.suspend(() => {
+        calls++
+        return Effect.fail(error)
+      }).pipe(
+        Effect.retry(
+          SessionRetry.policy({
+            provider: "test",
+            parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+            set: (info) =>
+              Effect.gen(function* () {
+                waits.push(info.next - (yield* Clock.currentTimeMillis))
+              }),
+          }),
+        ),
+        Effect.exit,
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust("10 minutes")
+      yield* Fiber.join(fiber)
+
+      expect(calls).toBe(SessionRetry.RETRY_MAX_RETRIES + 1)
+      expect(waits).toStrictEqual(Array.from({ length: SessionRetry.RETRY_MAX_RETRIES }, () => 20_000))
     }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
 
   test("policy reconnects unrecognised failures up to three times", () =>
@@ -991,6 +1051,96 @@ describe("session.retry.classify by provider semantics", () => {
     expect(SessionRetry.classify(policy, retryProvider)).toMatchObject({ class: "content_refused", maxRetries: 0 })
   })
 
+  test("a native quota 429 that says the limit is per minute backs off instead of ending the turn", () => {
+    const error = nativeQuota("Quota exceeded for requests per minute. Please retry in 20 seconds.")
+    // The tag the table sees: the executor labels every "quota exceeded" 429 this way.
+    expect(error.name === "APIError" ? error.data.metadata?.code : undefined).toBe("QuotaExceeded")
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      status: 429,
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+    expect(SessionRetry.retryable(error, retryProvider)).toBeDefined()
+  })
+
+  test("a native quota 429 is a temporary limit when only its retry-after header says so", () => {
+    const error = nativeQuota("Quota exceeded.", { "retry-after": "20" })
+    expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+  })
+
+  test("a native quota 429 with no sign of a temporary limit is a spent balance", () => {
+    for (const body of [
+      "Quota exceeded. Your account balance is insufficient, please top up.",
+      "You exceeded your current quota, please check your plan and billing details.",
+    ]) {
+      const error = nativeQuota(body)
+      expect(SessionRetry.classify(error, retryProvider)).toMatchObject({
+        branch: "terminal",
+        class: "quota_exhausted",
+        status: 429,
+        maxRetries: 0,
+      })
+      expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+    }
+  })
+
+  test("the QuotaExceeded tag in the HTTP shape follows the same rule", () => {
+    const code = { code: "QuotaExceeded" }
+    const temporary = providerError({
+      statusCode: 429,
+      isRetryable: true,
+      message: "Quota exceeded for requests per minute. Please retry in 20 seconds.",
+      metadata: code,
+    })
+    expect(SessionRetry.classify(temporary, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+
+    const withoutStatus = providerError({
+      message: "Quota exceeded for requests per day.",
+      responseBody: { error: { code: "QuotaExceeded", message: "Quota exceeded for requests per day." } },
+    })
+    expect(SessionRetry.classify(withoutStatus, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+
+    const spent = providerError({
+      statusCode: 429,
+      isRetryable: true,
+      message: "Quota exceeded. Please top up your account.",
+      metadata: code,
+    })
+    expect(SessionRetry.classify(spent, retryProvider)).toMatchObject({
+      branch: "terminal",
+      class: "quota_exhausted",
+      maxRetries: 0,
+    })
+  })
+
+  test("a 429 with quota wording and no provider code keeps its backoff in either shape", () => {
+    const message = "Quota exceeded for quota metric 'Generate Content API requests per minute'. Please retry in 20s."
+    const wire = providerError({
+      statusCode: 429,
+      isRetryable: true,
+      message,
+      responseBody: { error: { code: 429, message, status: "RESOURCE_EXHAUSTED" } },
+    })
+    expect(SessionRetry.classify(wire, retryProvider)).toMatchObject({
+      branch: "rate_limit",
+      class: "rate_limited",
+      maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+    })
+  })
+
   test("every other branch carries its class", () => {
     const classOf = (error: ReturnType<NamedError["toObject"]>) => SessionRetry.classify(error, retryProvider).class
     expect(classOf(new SessionV1.AbortedError({ message: "Aborted" }).toObject())).toBe("invalid_request")
@@ -1060,6 +1210,15 @@ describe("session.retry.withHint", () => {
     expect(SessionRetry.withHint(error, "test").data.message).toBe(
       "Output blocked\nThe provider's content filter rejected this conversation. Rephrase the last message or start a new session.",
     )
+  })
+
+  test("gives no quota advice to a native quota 429 that says the limit is temporary", () => {
+    const temporary = nativeQuota("Quota exceeded for requests per minute. Please retry in 20 seconds.")
+    expect(SessionRetry.withHint(temporary, "zhipuai")).toBe(temporary)
+    const spent = nativeQuota("Quota exceeded. Please top up.")
+    expect(SessionRetry.withHint(spent, "zhipuai")).toMatchObject({
+      data: { message: expect.stringContaining("quota or balance used up") },
+    })
   })
 
   test("does not stack the hint when it is already there", () => {

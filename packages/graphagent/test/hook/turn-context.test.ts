@@ -138,3 +138,20 @@ test("StopFailure reports a spent quota on a 429 as billing_error, not rate_limi
   expect(HookTurnContext.failure(stored(402, "{}")).error).toBe("billing_error")
   expect(HookTurnContext.failure(stored(401, "{}")).error).toBe("authentication_failed")
 })
+
+test("StopFailure keeps a native per-minute quota 429 a rate limit and a spent one a billing error", () => {
+  const native = (body: string) => ({
+    name: "APIError",
+    data: {
+      message: `Provider request failed with HTTP 429: ${body}`,
+      isRetryable: false,
+      statusCode: 429,
+      responseBody: body,
+      metadata: { code: "QuotaExceeded" },
+    },
+  })
+  expect(
+    HookTurnContext.failure(native("Quota exceeded for requests per minute. Please retry in 20 seconds.")).error,
+  ).toBe("rate_limit")
+  expect(HookTurnContext.failure(native("Quota exceeded. Please top up your account.")).error).toBe("billing_error")
+})

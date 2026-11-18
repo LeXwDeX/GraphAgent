@@ -26,7 +26,14 @@ import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
-import { LLMEvent } from "@graphagent/llm"
+import {
+  HttpContext,
+  HttpRequestDetails,
+  HttpResponseDetails,
+  LLMError,
+  LLMEvent,
+  QuotaExceededReason,
+} from "@graphagent/llm"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -504,6 +511,83 @@ refused.it.effect(
         if (msg.error?.name === "APIError") {
           expect(msg.error.data.message.startsWith("Incorrect API key provided\n")).toBe(true)
           expect(msg.error.data.message).toContain("`graphagent providers login --provider test`")
+        }
+      }),
+    { config: cfg },
+  ),
+)
+
+/** A native-runtime 429 the way the executor reports any body that says "quota exceeded". */
+const nativeQuota = (body: string) =>
+  new LLMError({
+    module: "RequestExecutor",
+    method: "execute",
+    reason: new QuotaExceededReason({
+      message: `Provider request failed with HTTP 429: ${body}`,
+      http: new HttpContext({
+        request: new HttpRequestDetails({ method: "POST", url: "http://localhost/v1", headers: {} }),
+        response: new HttpResponseDetails({ status: 429, headers: {} }),
+        body,
+      }),
+    }),
+  })
+
+const windowed = scripted([
+  Stream.fail(nativeQuota("Quota exceeded for requests per minute. Please retry in 20 seconds.")),
+  recoveredScript,
+])
+
+windowed.it.effect(
+  "session.processor backs a native per-minute quota 429 off and recovers instead of ending the turn",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(running)
+
+        expect(result).toBe("continue")
+        expect(windowed.count()).toBe(2)
+        expect(msg.error).toBeUndefined()
+        expect(msg.finish).toBe("stop")
+      }),
+    { config: cfg },
+  ),
+)
+
+const spentNative = run(Stream.fail(nativeQuota("Quota exceeded. Please top up your account.")))
+
+spentNative.it.effect(
+  "session.processor ends the turn at once on a native quota 429 with no sign of a temporary limit",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "answer")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const running = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(running)
+
+        expect(result).toBe("stop")
+        expect(spentNative.count()).toBe(1)
+        expect(msg.error?.name).toBe("APIError")
+        if (msg.error?.name === "APIError") {
+          expect(msg.error.data.message).toContain("quota or balance used up")
+          expect(msg.error.data.metadata?.code).toBe("QuotaExceeded")
         }
       }),
     { config: cfg },

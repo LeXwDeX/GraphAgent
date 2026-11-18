@@ -4,10 +4,16 @@
 import { describe, expect, test } from "bun:test"
 import { ProviderErrorClass } from "@/provider/error-class"
 
-const facts = (input: { status?: number; names?: string[]; text?: string }): ProviderErrorClass.ErrorFacts => ({
+const facts = (input: {
+  status?: number
+  names?: string[]
+  text?: string
+  temporary?: boolean
+}): ProviderErrorClass.ErrorFacts => ({
   ...(input.status === undefined ? {} : { status: input.status }),
   names: input.names ?? [],
   text: input.text ?? "",
+  temporary: input.temporary ?? false,
 })
 
 /** Index of the first row the facts reach, ignoring the transient skip. */
@@ -15,7 +21,7 @@ const rowOf = (input: ProviderErrorClass.ErrorFacts) =>
   ProviderErrorClass.ROWS.findIndex((row) => ProviderErrorClass.rowMatches(row, input))
 
 describe("ProviderErrorClass.ROWS", () => {
-  test("has nine rows in the documented order", () => {
+  test("has eleven rows in the documented order", () => {
     expect(ProviderErrorClass.ROWS.map((row) => row.cls)).toEqual([
       "rate_limited",
       "quota_exhausted",
@@ -26,6 +32,8 @@ describe("ProviderErrorClass.ROWS", () => {
       "content_refused",
       "invalid_request",
       "invalid_request",
+      "rate_limited",
+      "quota_exhausted",
     ])
   })
 
@@ -88,6 +96,21 @@ describe("ProviderErrorClass.ROWS", () => {
       cls: "invalid_request",
       facts: facts({ names: ["invalid_prompt"], text: "Invalid prompt: your prompt was flagged." }),
     },
+    {
+      row: 10,
+      cls: "rate_limited",
+      facts: facts({
+        status: 429,
+        names: ["quotaexceeded"],
+        text: "Quota exceeded for requests per minute. Please retry in 20 seconds.",
+        temporary: true,
+      }),
+    },
+    {
+      row: 11,
+      cls: "quota_exhausted",
+      facts: facts({ status: 429, names: ["quotaexceeded"], text: "Quota exceeded. Please top up your account." }),
+    },
   ]
 
   for (const example of examples) {
@@ -120,6 +143,41 @@ describe("ProviderErrorClass.ROWS", () => {
     ).toBeUndefined()
   })
 
+  test("the native QuotaExceeded tag alone is not proof of a spent balance", () => {
+    const names = ["quotaexceeded"]
+    // The native runtime tags every "quota exceeded" 429 this way, a full per-minute window included.
+    expect(
+      ProviderErrorClass.match(
+        facts({ names, text: "Quota exceeded for requests per minute", temporary: true }),
+        false,
+      ),
+    ).toBe("rate_limited")
+    expect(ProviderErrorClass.match(facts({ names, text: "Quota exceeded" }), false)).toBe("quota_exhausted")
+    // The tag rows come last: a provider code that names a spent balance outranks the tag and the wording.
+    expect(
+      ProviderErrorClass.match(
+        facts({ names: [...names, "insufficient_quota"], text: "You exceeded your current quota", temporary: true }),
+        false,
+      ),
+    ).toBe("quota_exhausted")
+  })
+
+  test("a row that writes temporary needs the facts to agree", () => {
+    const weak = ProviderErrorClass.ROWS.filter((row) => row.names?.includes("quotaexceeded"))
+    expect(weak.map((row) => row.temporary)).toEqual([true, false])
+    const [windowed, spent] = weak
+    const open = facts({ names: ["quotaexceeded"], temporary: true })
+    const closed = facts({ names: ["quotaexceeded"], temporary: false })
+    expect(ProviderErrorClass.rowMatches(windowed, open)).toBe(true)
+    expect(ProviderErrorClass.rowMatches(windowed, closed)).toBe(false)
+    expect(ProviderErrorClass.rowMatches(spent, open)).toBe(false)
+    expect(ProviderErrorClass.rowMatches(spent, closed)).toBe(true)
+    // A row that says nothing about it ignores the fact.
+    const row = ProviderErrorClass.ROWS[1]
+    expect(row.temporary).toBeUndefined()
+    expect(ProviderErrorClass.rowMatches(row, facts({ names: ["insufficient_quota"], temporary: true }))).toBe(true)
+  })
+
   test.each([
     "insufficient_quota",
     "credit_balance_exhausted",
@@ -127,7 +185,6 @@ describe("ProviderErrorClass.ROWS", () => {
     "enforced_spend_limit_reached",
     "arrearage",
     "allocationquota.freetieronly",
-    "quotaexceeded",
   ])("row 2 recognises the name %s", (name) => {
     expect(rowOf(facts({ names: [name], text: "denied" }))).toBe(1)
   })
@@ -198,7 +255,7 @@ describe("ProviderErrorClass.factsOf", () => {
       ProviderErrorClass.factsOf(
         data({ statusCode: 429, metadata: { code: "QuotaExceeded", type: "Billing", url: "x" } }),
       ),
-    ).toEqual({ status: 429, names: ["quotaexceeded", "billing"], text: "boom\n" })
+    ).toEqual({ status: 429, names: ["quotaexceeded", "billing"], text: "boom\n", temporary: false })
   })
 
   test("reads the names a JSON body carries, lower-cased and de-duplicated", () => {
@@ -256,6 +313,79 @@ describe("ProviderErrorClass.factsOf", () => {
     const result = ProviderErrorClass.factsOf(data({ message: "m".repeat(3_000), responseBody: "b".repeat(3_000) }))
     expect(result.text).toHaveLength(4_000)
     expect(result.text.startsWith("m".repeat(3_000) + "\n")).toBe(true)
+  })
+})
+
+describe("ProviderErrorClass.factsOf temporary", () => {
+  const data = (input: Partial<Parameters<typeof ProviderErrorClass.factsOf>[0]> = {}) => ({
+    message: "boom",
+    isRetryable: false,
+    ...input,
+  })
+
+  test.each([
+    "Quota exceeded for requests per minute. Please retry in 20 seconds.",
+    "Quota exceeded for quota metric 'Generate Content API requests per minute' and limit 'request limit per minute'",
+    "Rate limit reached for gpt-4 on requests per min (RPM): Limit 3, Used 3. Please try again in 20s.",
+    "Requests have exceeded the token rate limit of your current pricing tier. Please retry after 86400 seconds.",
+    "Quota exceeded: 5 requests per day",
+    "Quota exceeded: 100 requests per hour",
+    "Quota exceeded: 2 requests per-second",
+    "Too many requests",
+    "rate_limit_exceeded",
+    "Requests are being throttled",
+    "Please wait 30 seconds before the next request",
+    "Daily TPM limit",
+    "Retry-After: 20",
+  ])("reads %s as a limit that lifts by itself", (message) => {
+    expect(ProviderErrorClass.factsOf(data({ message })).temporary).toBe(true)
+  })
+
+  test.each([
+    "Quota exceeded.",
+    "Quota exceeded. Please top up your account.",
+    "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+    "Your credit balance is too low to access the API. Please go to Plans & Billing to upgrade or purchase credits.",
+    "Provider request failed with HTTP 429: Quota exceeded",
+    "Insufficient balance, please recharge and retry",
+    "余额不足，请充值",
+    "Access denied, please make sure your account is in good standing.",
+  ])("does not read %s as a limit that lifts by itself", (message) => {
+    expect(ProviderErrorClass.factsOf(data({ message })).temporary).toBe(false)
+  })
+
+  test("reads the retry hint Google keeps in the error details", () => {
+    const responseBody = JSON.stringify({
+      error: {
+        code: 429,
+        message: "Resource has been exhausted (e.g. check quota).",
+        status: "RESOURCE_EXHAUSTED",
+        details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "20s" }],
+      },
+    })
+    expect(ProviderErrorClass.factsOf(data({ responseBody })).temporary).toBe(true)
+  })
+
+  test("reads a retry-after header as a temporary limit, whatever the wording", () => {
+    const headerSets: Array<Record<string, string>> = [
+      { "retry-after": "20" },
+      { "Retry-After": "20" },
+      { "retry-after-ms": "1500" },
+    ]
+    for (const responseHeaders of headerSets) {
+      expect(ProviderErrorClass.factsOf(data({ message: "Quota exceeded.", responseHeaders })).temporary).toBe(true)
+    }
+    const other = { "x-request-id": "req_1", "content-type": "application/json" }
+    expect(ProviderErrorClass.factsOf(data({ message: "Quota exceeded.", responseHeaders: other })).temporary).toBe(
+      false,
+    )
+  })
+
+  test("does not take the HTTP status the native message names for a retry signal", () => {
+    const message = "Provider request failed with HTTP 429: Quota exceeded"
+    expect(
+      ProviderErrorClass.factsOf(data({ message, statusCode: 429, responseBody: "Quota exceeded" })).temporary,
+    ).toBe(false)
   })
 })
 
