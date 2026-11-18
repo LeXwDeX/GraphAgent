@@ -29,6 +29,7 @@ import { DagEvent } from "@graphagent/schema/dag-event"
 import { DagLocation } from "@/dag/location"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceStore } from "@/project/instance-store"
+import type { InstanceContext } from "@/project/instance-context"
 import { InstanceRef } from "@/effect/instance-ref"
 import { Worktree } from "@/worktree"
 import { transactLayer } from "./fixture/transact"
@@ -66,6 +67,8 @@ interface WorktreeProbe {
   creates: { name?: string }[]
   removals: { directory: string; keepBranch?: boolean }[]
   created: string[]
+  /** Directories the InstanceStore was asked to switch the worktree calls into. */
+  switched: string[]
   failCreate: boolean
 }
 
@@ -92,7 +95,7 @@ function interruptAfterPublish(events: Layer.Layer<EventV2.Service>): Layer.Laye
 type BridgeLayer = Layer.Layer<EventV2Bridge.Service>
 type BridgeFactory = (events: Layer.Layer<EventV2.Service>) => BridgeLayer
 
-function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory) {
+function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory, options: { worktree?: boolean } = {}) {
   const database = Database.defaultLayer
   const events = EventV2.defaultLayer.pipe(Layer.provide(database))
   const store = DagStore.defaultLayer.pipe(Layer.provide(database))
@@ -120,8 +123,10 @@ function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory) {
       }),
   })
   const instanceStore = Layer.succeed(InstanceStore.Service, {
-    provide: (input: { directory: string }, effect: Effect.Effect<unknown>) =>
-      Effect.provideService(effect, InstanceRef, { directory: input.directory } as never),
+    provide: (input: { directory: string }, effect: Effect.Effect<unknown>) => {
+      probe.switched.push(input.directory)
+      return Effect.provideService(effect, InstanceRef, { directory: input.directory } as never)
+    },
   } as never)
   const bridgeLayer =
     typeof bridge === "function"
@@ -129,7 +134,16 @@ function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory) {
       : (bridge ?? EventV2Bridge.defaultLayer.pipe(Layer.provide(Layer.merge(database, events))))
   return Layer.provideMerge(
     Dag.layer,
-    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridgeLayer, transactLayer(database)),
+    Layer.mergeAll(
+      database,
+      events,
+      store,
+      projector,
+      options.worktree === false ? Layer.empty : worktree,
+      instanceStore,
+      bridgeLayer,
+      transactLayer(database),
+    ),
   )
 }
 
@@ -156,10 +170,25 @@ function seed(repository: string) {
   })
 }
 
+// A complete ambient instance: the event bridge reads the project from it.
+const ambientInstance = (directory: string) =>
+  ({
+    directory,
+    worktree: directory,
+    root: directory,
+    project: {
+      id: Project.ID.make("project-1"),
+      worktree: AbsolutePath.make(directory),
+      time: { created: 0, updated: 0 },
+      sandboxes: [],
+    },
+  }) satisfies InstanceContext
+
 const newProbe = (overrides: Partial<WorktreeProbe> = {}): WorktreeProbe => ({
   creates: [],
   removals: [],
   created: [],
+  switched: [],
   failCreate: false,
   ...overrides,
 })
@@ -470,6 +499,137 @@ describe("Dag.create workflow-level worktree isolation (#1030)", () => {
             .pipe(Effect.orDie)
           expect(probe.creates).toEqual([])
           expect(probe.removals).toEqual([])
+        }),
+      ).pipe(Effect.provide(baseLayer(probe))) as Effect.Effect<never>,
+    )
+  })
+
+  it("rejects a dirty owner checkout before creating a worktree", async () => {
+    const repository = repo()
+    writeFileSync(path.join(repository, "base.txt"), "uncommitted edit\n")
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const { db } = yield* Database.Service
+          const error = yield* dag
+            .create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            })
+            .pipe(Effect.flip)
+          expect(error.message).toContain("workflow worktree isolation requires a clean target")
+          expect(probe.creates).toEqual([])
+          expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
+        }),
+      ).pipe(Effect.provide(baseLayer(probe))) as Effect.Effect<never>,
+    )
+  })
+
+  it("fails closed when isolation is requested but the Worktree service is missing", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const { db } = yield* Database.Service
+          const error = yield* dag
+            .create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            })
+            .pipe(Effect.flip)
+          expect(error.message).toContain("workflow worktree isolation requires the Worktree service")
+          expect(probe.creates).toEqual([])
+          expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
+          expect(yield* db.select().from(EventTable).all()).toEqual([])
+        }),
+      ).pipe(Effect.provide(baseLayer(probe, undefined, { worktree: false }))) as Effect.Effect<never>,
+    )
+  })
+
+  it("creates the worktree in the ambient instance when it already is the owner's", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          yield* dag
+            .create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            })
+            .pipe(Effect.orDie)
+          expect(probe.creates).toHaveLength(1)
+          expect(probe.switched).toEqual([])
+        }),
+      ).pipe(
+        Effect.provideService(InstanceRef, ambientInstance(repository)),
+        Effect.provide(baseLayer(probe)),
+      ) as Effect.Effect<never>,
+    )
+  })
+
+  it("switches to the owner's instance when the ambient instance is another directory", async () => {
+    const repository = repo()
+    const elsewhere = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          yield* dag
+            .create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            })
+            .pipe(Effect.orDie)
+          expect(probe.creates).toHaveLength(1)
+          expect(probe.switched).toEqual([DagLocation.canonicalDirectory(repository)])
+        }),
+      ).pipe(
+        Effect.provideService(InstanceRef, ambientInstance(elsewhere)),
+        Effect.provide(baseLayer(probe)),
+      ) as Effect.Effect<never>,
+    )
+  })
+
+  it("rejects retargeting a workflow bound to its own worktree", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const store = yield* DagStore.Service
+          const dagID = yield* dag
+            .create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            })
+            .pipe(Effect.orDie)
+          const before = yield* store.getWorkflow(dagID)
+          const error = yield* dag.retarget(dagID, { workspace: repository }).pipe(Effect.flip)
+          expect(error.message).toContain("workflow-level worktree isolation cannot be retargeted")
+          expect(yield* store.getWorkflow(dagID)).toEqual(before)
         }),
       ).pipe(Effect.provide(baseLayer(probe))) as Effect.Effect<never>,
     )
