@@ -276,8 +276,8 @@ function normalizeMessages(
   if (profile.toolCallId.charset !== "any") msgs = mapToolCallIDs(msgs, model)
   if (profile.userAfterToolResult === "bridge") return bridgeToolResults(msgs)
 
-  // Deepseek requires all assistant messages to have reasoning on them
-  if (model.api.id.toLowerCase().includes("deepseek")) {
+  // DeepSeek requires all assistant messages to have reasoning on them; its profile asks for a placeholder
+  if (profile.reasoningMode.placeholder) {
     msgs = msgs.map((msg) => {
       if (msg.role !== "assistant") return msg
       if (Array.isArray(msg.content)) {
@@ -768,7 +768,8 @@ export function topK(model: Provider.Model) {
 
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
-const VARIANT_EFFORT_ORDER = [...OPENAI_EFFORTS, "max", "ultra"]
+// `thinking` is the on side of a none/thinking toggle (`profileVariants`); it ranks above `none`, the off side.
+const VARIANT_EFFORT_ORDER = [...OPENAI_EFFORTS, "max", "ultra", "thinking"]
 
 export function sortVariants<T>(variants: Record<string, T>): Record<string, T> {
   const rank = (name: string) => {
@@ -950,30 +951,28 @@ function googleThinkingVariants(model: Provider.Model): Record<string, Record<st
   )
 }
 
+/**
+ * The none and thinking variants of a profile that declares a thinking switch (`reasoningMode.toggle`, configured or
+ * from a built-in rule); undefined when it declares none. Controls the catalog lists do not count: they carry no
+ * request fragments, and the branches below keep producing the tiers of such a model.
+ */
+function profileVariants(model: Provider.Model): Record<string, Record<string, any>> | undefined {
+  const toggle = ProviderProfile.profileOf(model).reasoningMode.toggle
+  if (!toggle) return undefined
+  return { none: structuredClone(toggle.off), thinking: structuredClone(toggle.on) }
+}
+
 export function variants(model: Provider.Model): Record<string, Record<string, any>> {
   if (!model.capabilities.reasoning) return {}
 
-  const id = model.id.toLowerCase()
-  const glm52 = ["glm-5.2", "glm-5-2", "glm-5p2"].some(
-    (name) => id.includes(name) || model.api.id.toLowerCase().includes(name),
-  )
-  if (
-    model.api.id.toLowerCase().includes("minimax-m3") &&
-    ["@ai-sdk/anthropic", "@ai-sdk/openai-compatible"].includes(model.api.npm)
-  ) {
-    if (["nvidia", "lilac"].includes(model.providerID)) {
-      return {
-        none: { chat_template_kwargs: { thinking_mode: "disabled" } },
-        thinking: { chat_template_kwargs: { thinking_mode: "enabled" } },
-      }
-    }
-    return {
-      none: { thinking: { type: "disabled" } },
-      thinking: { thinking: { type: "adaptive" } },
-    }
-  }
-  const adaptiveThinkingOmitted = anthropicOmitsThinking(model.api.id)
-  const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
+  const toggled = profileVariants(model)
+  if (toggled) return toggled
+
+  // The family is the API id's; the configured key is only the name the user gave the model.
+  const id = model.api.id.toLowerCase()
+  const glm52 = ["glm-5.2", "glm-5-2", "glm-5p2"].some((name) => id.includes(name))
+  const adaptiveThinkingOmitted = anthropicOmitsThinking(id)
+  const adaptiveEfforts = anthropicAdaptiveEfforts(id)
   if (glm52 && model.api.npm === "@openrouter/ai-sdk-provider") {
     // OpenRouter maps xhigh to GLM-5.2's native max effort.
     return {
@@ -1024,7 +1023,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   switch (model.api.npm) {
     case "@openrouter/ai-sdk-provider":
       return Object.fromEntries(
-        (model.api.id.startsWith("openai/") || id.includes("gpt")
+        (id.startsWith("openai/") || id.includes("gpt")
           ? openaiCompatibleReasoningEfforts(model.api.id)
           : WIDELY_SUPPORTED_EFFORTS
         ).map((effort) => [effort, { reasoning: { effort } }]),
@@ -1037,7 +1036,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       // (e.g. Anthropic thinking budgets) when needed. Variants therefore stay
       // OAI-style for all upstreams, with an extended effort set for OpenAI
       // models that support it.
-      if (model.api.id.startsWith("openai/")) {
+      if (id.startsWith("openai/")) {
         const efforts = openaiReasoningEfforts(model.api.id, model.release_date)
         return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
       }
@@ -1045,7 +1044,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     }
 
     case "@ai-sdk/gateway":
-      if (model.api.id.includes("anthropic")) {
+      if (id.includes("anthropic")) {
         if (adaptiveEfforts) {
           return Object.fromEntries(
             adaptiveEfforts.map((effort) => [
@@ -1078,8 +1077,8 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
           },
         }
       }
-      if (model.api.id.includes("google")) {
-        if (model.api.id.includes("2.5")) {
+      if (id.includes("google")) {
+        if (id.includes("2.5")) {
           return {
             high: {
               thinkingConfig: {
@@ -1110,11 +1109,11 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       )
 
     case "@ai-sdk/github-copilot":
-      if (model.id.includes("gemini")) {
+      if (id.includes("gemini")) {
         // currently github copilot only returns thinking
         return {}
       }
-      if (model.id.includes("claude")) {
+      if (id.includes("claude")) {
         return Object.fromEntries(WIDELY_SUPPORTED_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
       }
       const copilotEfforts = iife(() => {
@@ -1146,11 +1145,11 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     case "venice-ai-sdk-provider":
     // https://docs.venice.ai/overview/guides/reasoning-models#reasoning-effort
     case "@ai-sdk/openai-compatible":
-      if (model.api.id.toLowerCase().includes("north-mini-code")) {
+      if (id.includes("north-mini-code")) {
         return Object.fromEntries(["none", "high"].map((effort) => [effort, { reasoningEffort: effort }]))
       }
       const efforts = [...WIDELY_SUPPORTED_EFFORTS]
-      if (model.api.id.toLowerCase().includes("deepseek-v4")) {
+      if (id.includes("deepseek-v4")) {
         efforts.push("max")
       }
       return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
@@ -1191,7 +1190,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       if (adaptiveEfforts) {
         let efforts = [...adaptiveEfforts]
         if (model.providerID === "github-copilot") {
-          if (model.api.id.includes("opus-4.7")) {
+          if (id.includes("opus-4.7")) {
             efforts = ["medium"]
           }
           // Efforts currently supported are: low, medium, high
@@ -1211,7 +1210,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         )
       }
 
-      if (["opus-4-5", "opus-4.5"].some((v) => model.api.id.includes(v))) {
+      if (["opus-4-5", "opus-4.5"].some((v) => id.includes(v))) {
         return Object.fromEntries(WIDELY_SUPPORTED_EFFORTS.map((effort) => [effort, { effort }]))
       }
 
@@ -1247,7 +1246,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         )
       }
       // For Anthropic models on Bedrock, use reasoningConfig with budgetTokens
-      if (model.api.id.includes("anthropic")) {
+      if (id.includes("anthropic")) {
         return {
           high: {
             reasoningConfig: {
@@ -1368,10 +1367,12 @@ export function options(input: {
   providerOptions?: Record<string, any>
 }): Record<string, any> {
   const result: Record<string, any> = {}
+  // A relay platform keeps the case of the vendor's id, so the family is read from the lowercased API id.
+  const modelId = input.model.api.id.toLowerCase()
 
   if (
     input.model.api.npm === "@ai-sdk/google-vertex/anthropic" ||
-    (!input.model.api.id.includes("claude") && input.model.api.npm === "@ai-sdk/anthropic")
+    (!modelId.includes("claude") && input.model.api.npm === "@ai-sdk/anthropic")
   ) {
     result["toolStreaming"] = false
   }
@@ -1395,7 +1396,7 @@ export function options(input: {
     result["usage"] = {
       include: true,
     }
-    if (input.model.api.id.includes("gemini-3")) {
+    if (modelId.includes("gemini-3")) {
       result["reasoning"] = { effort: "high" }
     }
   }
@@ -1424,13 +1425,11 @@ export function options(input: {
       result["thinkingConfig"] = {
         includeThoughts: true,
       }
-      if (input.model.api.id.includes("gemini-3")) {
+      if (modelId.includes("gemini-3")) {
         result["thinkingConfig"]["thinkingLevel"] = "high"
       }
     }
   }
-
-  const modelId = input.model.api.id.toLowerCase()
 
   // MiniMax's Anthropic interface defaults thinking off, unlike Chat Completions.
   if (modelId.includes("minimax-m3") && input.model.api.npm === "@ai-sdk/anthropic") {
@@ -1492,8 +1491,8 @@ export function options(input: {
     return result
   }
 
-  if (input.model.api.id.includes("gpt-5") && !input.model.api.id.includes("gpt-5-chat")) {
-    if (!input.model.api.id.includes("gpt-5-pro")) {
+  if (modelId.includes("gpt-5") && !modelId.includes("gpt-5-chat")) {
+    if (!modelId.includes("gpt-5-pro")) {
       if (
         input.model.api.npm === "@ai-sdk/openai" ||
         input.model.api.npm === "@ai-sdk/azure" ||
@@ -1523,7 +1522,7 @@ export function smallOptions(model: Provider.Model) {
     return mergeDeep(base, small)
   }
   if (model.providerID === "openrouter" || model.providerID === "llmgateway") {
-    if (Object.keys(small).length === 0 && model.api.id.includes("google")) {
+    if (Object.keys(small).length === 0 && model.api.id.toLowerCase().includes("google")) {
       return { reasoning: { enabled: false } }
     }
   }
