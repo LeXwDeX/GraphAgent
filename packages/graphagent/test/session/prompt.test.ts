@@ -7323,6 +7323,29 @@ unixNoLLMServer(
 )
 
 unixNoLLMServer(
+  "shell keeps the output of a command killed by a signal",
+  () =>
+    Effect.gen(function* () {
+      const { prompt, run, chat } = yield* boot()
+      const result = yield* prompt.shell({
+        sessionID: chat.id,
+        agent: "build",
+        command: "echo before; kill -KILL $$",
+      })
+
+      expect(result.info.role).toBe("assistant")
+      const tool = completedTool(result.parts)
+      if (!tool) return
+
+      expect(tool.state.output).toContain("before")
+      expect(tool.state.output).toContain("Command terminated by signal SIGKILL")
+      expect(tool.state.metadata.exit).toBe(null)
+      yield* run.assertNotBusy(chat.id)
+    }),
+  { config: cfg },
+)
+
+unixNoLLMServer(
   "shell updates running metadata before process exit",
   () =>
     withSh(() =>

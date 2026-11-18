@@ -5,9 +5,10 @@ import type { Database } from "@graphagent/core/database/database"
 import { Shell } from "@graphagent/core/shell"
 import { NamedError } from "@graphagent/core/util/error"
 import type { SessionV1 } from "@graphagent/core/v1/session"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { ulid } from "ulid"
 import { ChildProcess } from "effect/process"
-import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
+import type { ChildProcessHandle, ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { Cause, Effect, Exit, Latch, Schema, Stream } from "effect"
 import type { Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
@@ -60,6 +61,31 @@ export interface ShellDeps {
   ) => Effect.Effect<A, E, R>
   readonly state: SessionRunState.Interface
   readonly lastAssistant: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
+}
+
+/**
+ * How the command ended. A signal leaves no exit code, but the command still
+ * finished and its output is a result, so it is reported instead of failed.
+ */
+function exitOf(handle: ChildProcessHandle) {
+  return handle.exitCode.pipe(
+    Effect.map((code): { code: number | null; signal: string | undefined } => ({ code, signal: undefined })),
+    Effect.catch((error) => {
+      const signal = CrossSpawnSpawner.signalOf(error)
+      if (signal === undefined) return Effect.fail(error)
+      return Effect.succeed({ code: null, signal })
+    }),
+  )
+}
+
+/** The notes appended to the output of a command that did not end on its own. */
+function shellNotes(input: { aborted: boolean; signaled: string | undefined }): string {
+  let notes = ""
+  if (input.aborted) notes += `\n\n<metadata>\n${SHELL_ABORT_NOTE}\n</metadata>`
+  if (input.signaled !== undefined) {
+    notes += `\n\n<metadata>\nCommand terminated by signal ${input.signaled}. It did not exit normally, so there is no exit code.\n</metadata>`
+  }
+  return notes
 }
 
 export function makeShell(deps: ShellDeps) {
@@ -167,14 +193,13 @@ export function makeShell(deps: ShellDeps) {
         let args = Shell.args(sh, effectiveCommand, cwd)
         let output = ""
         let aborted = false
+        let signaled: string | undefined
         let finalMetadata: Record<string, unknown> = {}
         let finalAttachments: SessionV1.FilePart[] | undefined
 
         const finish = Effect.uninterruptible(
           Effect.gen(function* () {
-            if (aborted) {
-              output += "\n\n" + ["<metadata>", SHELL_ABORT_NOTE, "</metadata>"].join("\n")
-            }
+            output += shellNotes({ aborted, signaled })
             const completed = Date.now()
             if (!msg.time.completed) {
               msg.time.completed = completed
@@ -238,8 +263,9 @@ export function makeShell(deps: ShellDeps) {
                       }
                     }),
                   )
-                  const code = yield* handle.exitCode
-                  return { title: "", output, metadata: { output, exit: code } }
+                  const end = yield* exitOf(handle)
+                  signaled = end.signal
+                  return { title: "", output, metadata: { output, exit: end.code } }
                 }).pipe(Effect.scoped),
             }
             const tools = yield* SessionTools.resolve({
