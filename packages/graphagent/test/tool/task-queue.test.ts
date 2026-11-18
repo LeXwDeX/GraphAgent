@@ -316,7 +316,7 @@ describe("background tasks with a limit of one", () => {
       expect(row?.outcome).toEqual({
         type: "completed",
         runningAt: secondResult.runningAt,
-        report: { title: "second", text: `done ${second}` },
+        report: { title: "second", text: `done ${second}`, facts: { block: expect.stringContaining("<task_facts>") } },
       })
     }),
   )

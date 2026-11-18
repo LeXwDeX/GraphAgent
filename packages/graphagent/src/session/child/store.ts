@@ -18,6 +18,7 @@ import type {
   ChildCancelBy,
   ChildOwner,
   ChildPermissionPolicy,
+  ChildRunFacts,
   ChildRunOutcome,
   ChildRunReport,
   ChildRunView,
@@ -86,16 +87,31 @@ export function parseRunningAt(value: Record<string, unknown> | null | undefined
   return typeof at === "number" && Number.isFinite(at) ? at : undefined
 }
 
+/**
+ * The facts a report carries (#1453): a block of text, and the reason the engine cut the run short when it did. A
+ * value that is not that is no facts; a reason this build does not know is dropped and the block still reads.
+ */
+export function parseFacts(value: unknown): ChildRunFacts | undefined {
+  if (!isRecord(value) || typeof value.block !== "string") return undefined
+  const incomplete = value.incomplete
+  return {
+    block: value.block,
+    ...(incomplete === "step_limit" || incomplete === "tool_budget_exhausted" ? { incomplete } : {}),
+  }
+}
+
 /** The result a detached run left in its outcome, when it left one. */
 export function parseReport(value: Record<string, unknown> | null | undefined): ChildRunReport | undefined {
   const report = value?.report
   if (!isRecord(report)) return undefined
   if (typeof report.title !== "string" || typeof report.text !== "string") return undefined
+  const facts = parseFacts(report.facts)
   return {
     title: report.title,
     text: report.text,
     ...(report.initiator === "user" || report.initiator === "agent" ? { initiator: report.initiator } : {}),
     ...(typeof report.command === "string" ? { command: report.command } : {}),
+    ...(facts ? { facts } : {}),
   }
 }
 

@@ -745,6 +745,19 @@ describe("the first line of a report", () => {
     expect(backgroundResultLine(notice("\u001b[31mred\u001b[0m\u0007 text"))).toBe("red text")
   })
 
+  // #1453: the facts block the server writes before the result element is not the report.
+  test("is not read from the facts block written before the result element", () => {
+    const text = [
+      '<task id="ses_child" state="incomplete" reason="step_limit">',
+      "<summary>Background task completed: review</summary>",
+      "<task_facts>\nend: step_limit\nsteps: 3\nchanged_files: none\n</task_facts>",
+      "<task_result>\nFound 3 breaking changes.\n</task_result>",
+      "</task>",
+    ].join("\n")
+
+    expect(backgroundResultLine(text)).toBe("Found 3 breaking changes.")
+  })
+
   test("is nothing without the text, without the tags or with an empty body", () => {
     expect(backgroundResultLine(undefined)).toBeUndefined()
     expect(backgroundResultLine("just a sentence, no tags")).toBeUndefined()
