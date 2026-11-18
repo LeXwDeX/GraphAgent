@@ -74,6 +74,7 @@ const program = Effect.gen(function* () {
   const session = {
     id: SessionID.make("ses_registry_definition_probe"),
     slug: "registry-definition-probe",
+    role: "root",
     projectID: ProjectV2.ID.global,
     directory,
     title: "registry definition probe",

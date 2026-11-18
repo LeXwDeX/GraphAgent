@@ -96,7 +96,9 @@ function recoveryLayer(probe: {
             .pipe(
               Effect.orDie,
               Effect.flatMap((row) =>
-                row ? Effect.succeed(Session.fromRow(row)) : Effect.die(new Error("missing fixture session")),
+                row
+                  ? Effect.succeed(Session.fromRow(row, undefined))
+                  : Effect.die(new Error("missing fixture session")),
               ),
             ),
         messages: () => Effect.succeed([]),

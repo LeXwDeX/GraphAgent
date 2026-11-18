@@ -213,6 +213,7 @@ function makeSession(id: string, title: string, parentID?: string): Session {
   return {
     id,
     slug: id,
+    role: parentID ? "task_child" : "root",
     projectID: "proj_test",
     directory,
     parentID,

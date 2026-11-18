@@ -101,6 +101,7 @@ function loopLayer(input: {
   const sessionInfo = (id: SessionSchema.ID, title: string, directory: string): Session.Info => ({
     id,
     slug: title,
+    role: "root",
     projectID,
     directory,
     title,

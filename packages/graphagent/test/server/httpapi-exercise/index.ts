@@ -766,6 +766,10 @@ const scenarios: Scenario[] = [
         body.some((item) => isRecord(item) && item.id === ctx.state.id && item.title === "List me"),
         "seeded session should be listed",
       )
+      check(
+        body.every((item) => isRecord(item) && item.role === "root"),
+        "a roots listing should carry the root role on every session",
+      )
     }),
   http.protected
     .get("/session/status", "session.status")
@@ -896,6 +900,7 @@ const scenarios: Scenario[] = [
         check(body.directory === ctx.directory, "created session should use scenario directory")
         check(body.dagMode === "on", "created session should use requested dagMode")
         check(body.dagBudgetTokens === null, "created session should start without a DAG budget")
+        check(body.role === "root", "a session created through the API should be a root")
       },
       "status",
     ),
@@ -907,6 +912,7 @@ const scenarios: Scenario[] = [
       object(body)
       check(body.id === ctx.state.id, "should return requested session")
       check(body.title === "Get me", "should preserve seeded title")
+      check(body.role === "root", "should expose the role of a root session")
     }),
   http.protected
     .get("/session/{sessionID}", "session.get.missing")
@@ -1043,6 +1049,10 @@ const scenarios: Scenario[] = [
       check(
         body.some((item) => isRecord(item) && item.id === ctx.state.child.id && item.parentID === ctx.state.parent.id),
         "children should include seeded child",
+      )
+      check(
+        body.every((item) => isRecord(item) && item.role === "task_child"),
+        "children should carry their role",
       )
     }),
   http.protected
@@ -2087,6 +2097,7 @@ const scenarios: Scenario[] = [
       object(body)
       check(body.id === ctx.state.id, "a child session should be readable")
       check(typeof body.parentID === "string", "the child session should expose its parentID")
+      check(body.role === "task_child", "the child session should expose its role")
     }),
   http.protected
     .get("/session/{sessionID}/message", "session.messages.child")

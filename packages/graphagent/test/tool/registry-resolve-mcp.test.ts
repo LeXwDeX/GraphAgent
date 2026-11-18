@@ -55,6 +55,7 @@ const sessionInfo = (directory: string, overrides: Partial<Session.Info> = {}): 
   ({
     id: SessionID.make("ses_registry_mcp"),
     slug: "registry-mcp",
+    role: overrides.parentID ? "task_child" : "root",
     projectID: ProjectV2.ID.global,
     directory,
     title: "registry mcp",
@@ -126,6 +127,7 @@ describe("tool.registry MCP resolution", () => {
       const session = {
         id: SessionID.make("ses_registry_mcp"),
         slug: "registry-mcp",
+        role: "root",
         projectID: ProjectV2.ID.global,
         directory,
         title: "registry mcp",

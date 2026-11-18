@@ -49,6 +49,30 @@ describe("event encode", () => {
     expect(encodeEvent(empty)).toBe(empty)
   })
 
+  // #1288: the embedded TUI reads `role` off these events; an encode through a schema without the field would drop it.
+  test("keeps the role of the session a session event carries", () => {
+    const info = {
+      id: "ses_event_encode_child",
+      slug: "child",
+      projectID: "proj_event_encode",
+      directory: "/tmp/project",
+      parentID: "ses_event_encode",
+      role: "dag_node" as const,
+      title: "child",
+      version: "0.0.0",
+      time: { created: 1, updated: 2 },
+    }
+    const roleOf = (value: unknown) =>
+      typeof value === "object" && value !== null && "info" in value && typeof value.info === "object"
+        ? value.info !== null && "role" in value.info
+          ? value.info.role
+          : undefined
+        : undefined
+    for (const type of ["session.created", "session.updated", "session.deleted"]) {
+      expect(roleOf(encodeEventProperties(type, { sessionID: info.id, info }))).toBe("dag_node")
+    }
+  })
+
   test("falls back to the original properties when encoding fails", () => {
     const invalid = { timestamp: "not-a-date" }
     expect(encodeEventProperties("session.next.moved", invalid)).toBe(invalid)

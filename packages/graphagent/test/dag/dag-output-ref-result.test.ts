@@ -174,6 +174,7 @@ const runtime = testEffect(
         Effect.succeed({
           id,
           slug: "output-ref",
+          role: "root",
           projectID,
           directory: process.cwd(),
           parentID: undefined,

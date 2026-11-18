@@ -128,6 +128,7 @@ function harness() {
       Effect.succeed({
         id: SessionID.make(PARENT),
         slug: "parent",
+        role: "root",
         projectID: Project.ID.make(PROJECT_ID),
         directory: DIRECTORY,
         title: "parent",

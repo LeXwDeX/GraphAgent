@@ -353,6 +353,7 @@ function twoInstanceLayer(input: TwoInstanceInput) {
             info: {
               id: row?.id ?? sessionID,
               slug: row?.slug ?? "deleted",
+              role: row?.parent_id ? "task_child" : "root",
               projectID: row?.project_id ?? PROJECT_ID,
               directory: row?.directory ?? input.directoryA,
               title: row?.title ?? "Deleted session",

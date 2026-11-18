@@ -535,7 +535,13 @@ test("two results of one sub-agent inside ten seconds are one toast, refreshed b
         return () => {}
       },
     },
-    sessions: { get: (sessionID) => ({ title: sessionID, parentID: sessionID === "child" ? "root" : undefined }) },
+    sessions: {
+      get: (sessionID) => ({
+        title: sessionID,
+        role: sessionID === "child" ? "task_child" : "root",
+        parentID: sessionID === "child" ? "root" : undefined,
+      }),
+    },
     attention: { notify: async () => ({}) },
     subagent: {
       toast: toast(),

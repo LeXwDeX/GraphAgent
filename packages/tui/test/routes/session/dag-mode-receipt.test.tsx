@@ -46,6 +46,7 @@ const session = {
   id: sessionID,
   title: "Receipt render",
   slug: "receipt-render",
+  role: "root",
   projectID: "proj_test",
   time: { created: 1, updated: 2 },
   version: "test",

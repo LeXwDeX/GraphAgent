@@ -16,6 +16,7 @@ import { getLanguage, t } from "../i18n"
 import { useCommandShortcut } from "../keymap"
 import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { errorMessage } from "../util/error"
+import { isRoot } from "../session/role"
 import { Locale } from "../util/locale"
 import { createDebouncedSignal } from "../util/signal"
 import { useTicker } from "../context/ticker-context"
@@ -66,7 +67,7 @@ export function SessionListPanel() {
   // while the user moves the selection.
   const [browseOrder] = createSignal<string[]>(
     sync.data.session
-      .filter((session) => session.parentID === undefined)
+      .filter((session) => isRoot(session))
       .toSorted((left, right) => right.time.updated - left.time.updated)
       .map((session) => session.id),
   )
@@ -75,7 +76,7 @@ export function SessionListPanel() {
     () =>
       new Map(
         sessions()
-          .filter((s) => s.parentID === undefined)
+          .filter((s) => isRoot(s))
           .map((s) => [s.id, s]),
       ),
   )
@@ -85,7 +86,7 @@ export function SessionListPanel() {
     const results = searchResults()
     const ordered = results
       ? results
-          .filter((session) => session.parentID === undefined)
+          .filter((session) => isRoot(session))
           .toSorted((left, right) => right.time.updated - left.time.updated)
           .map((session) => session.id)
       : browseOrder()

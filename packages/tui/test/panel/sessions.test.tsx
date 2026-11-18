@@ -42,6 +42,7 @@ function session(id: string, title: string, updated: number, workspaceID?: strin
   return {
     id,
     slug: id,
+    role: "root",
     projectID: "proj_test",
     directory: "/repo",
     title,
@@ -112,6 +113,37 @@ test("session panel lists sessions newest first and selects one", async () => {
     await settle(app)
     expect(JSON.parse(JSON.stringify(ctx.route.data))).toEqual({ type: "session", sessionID: "beta" })
     expect(host?.depth()).toBe(0)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+// #1288: the list is of the user's own conversations, which the session's role says, and not its parent.
+test("session panel lists the root sessions only, by role", async () => {
+  await using tmp = await shellState()
+  const ready = createSignal(false)
+  const app = await renderAppPanel(
+    () => <DeferredPanel ready={ready[0]} spec={{ id: "sessions", render: () => <SessionListPanel /> }} />,
+    {
+      width: 120,
+      height: 40,
+      state: tmp.path,
+      setup: (context) => {
+        context.sync.set("session", [
+          session("alpha", "Alpha session", 1000),
+          { ...session("agent", "Agent session", 3000), role: "task_child", parentID: "alpha" },
+          { ...session("node", "Node session", 2500), role: "dag_node", parentID: "alpha" },
+        ])
+        ready[1](true)
+      },
+    },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Alpha session")
+    expect(frame).not.toContain("Agent session")
+    expect(frame).not.toContain("Node session")
   } finally {
     app.renderer.destroy()
   }

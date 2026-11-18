@@ -7,6 +7,7 @@ import { Session } from "../../src/session/session"
 const info = {
   id: SessionID.descending(),
   slug: "test-session",
+  role: "root",
   projectID: ProjectV2.ID.global,
   workspaceID: undefined,
   directory: "/tmp/graphagent",

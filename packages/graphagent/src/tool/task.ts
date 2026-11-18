@@ -530,6 +530,7 @@ export const TaskTool = Tool.define(
         session ??
         (yield* sessions.create({
           parentID: ctx.sessionID,
+          role: "task_child",
           title: description + ` (@${next.name} subagent)`,
           agent: next.name,
           permission: [

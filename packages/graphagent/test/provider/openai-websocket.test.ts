@@ -1010,6 +1010,7 @@ test("built-in openai adapter resets its Responses socket on session.compacted a
           info: {
             id: "delete:builtin",
             slug: "delete-builtin",
+            role: "root",
             projectID: "builtin-openai",
             directory: "/tmp/issue868",
             title: "Deleted",

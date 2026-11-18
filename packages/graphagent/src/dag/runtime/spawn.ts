@@ -992,6 +992,7 @@ export function spawnNode(
           // max_concurrency live sessions.
           const childSession = yield* sessions.create({
             parentID: SessionID.make(input.parentSessionID),
+            role: "dag_node",
             title: `${input.node.name} (DAG node)`,
             agent: agent.name,
             model: { id: model.modelID, providerID: model.providerID },

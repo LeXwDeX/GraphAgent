@@ -334,6 +334,7 @@ function child(id: string): SessionChild {
   return {
     id,
     slug: id,
+    role: "task_child",
     projectID: "project-1",
     directory: "/tmp",
     title: id,

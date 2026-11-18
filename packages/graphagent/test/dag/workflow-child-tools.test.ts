@@ -312,6 +312,7 @@ function session(id: SessionID, parentID?: SessionID): Session.Info {
   return {
     id,
     slug: "workflow-child-tools",
+    role: parentID ? "task_child" : "root",
     projectID: ProjectV2.ID.global,
     directory: "/tmp/graphagent",
     parentID,

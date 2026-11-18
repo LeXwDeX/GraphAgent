@@ -41,7 +41,7 @@ packages/tui/src/
                         #   interest.ts（interest 聚合器）、session-summary.ts、session-destination.tsx（首页新会话的目标目录）、
                         #   ticker.ts、sdk.tsx、route.tsx、theme.tsx …
   routes/               # home.tsx（及 home/）、session/、diff/
-                        #   session/index.tsx 的 Main 按 parentID 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
+                        #   session/index.tsx 的 Main 按 `role` 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
                         #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、result-card.ts（后台结果卡的版面纯函数）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
   session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）、
                         #   subagents.ts（子 agent 的 kind、描述、状态标记、/agents 的行模型与分组序等纯函数，顶栏、面板与同级键共用，F5、#1058）
@@ -83,7 +83,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `commands/`：内置与服务端命令的统一注册表（F3）。
 - `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
-- `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
+- `routes/`：`home`、`session`（`role` 不是 `root` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
   - Task 行（`routes/session/index.tsx` 的 `Task`，#1058）：标题行是 `{agent} Task — {描述}` 加发起者与前后台标记（读 `taskIndex[child]`，没有链接时读 Task part 的 metadata）；后台运行的状态行由 `backgroundStatus` 决定，每个状态一条固定文案和一个颜色 token，`unknown` 与前台行一样；前台行文案不变，但全部走 `t()`，键在 `subagent.row.*`，后台行的键在 `background.row.*`。已结束的行耗时是结果上报的开始运行到结束之差（没有开始运行时刻时取起止之差），不读时钟；运行中的行从服务端报的开始运行时刻起算（#1407）。
   - 后台结果卡（`routes/session/index.tsx` 的 `BackgroundResultCard`，#1058）：运行结束后服务端加进会话的那条用户消息（文本 part 带 `metadata.backgroundResult`）画成一张卡，不再随合成文本隐藏；窗口化与非窗口化两条路径都画。只有 metadata 认卡，文本里写了 `<task_result>` 不算，命令留给模型的 “Summarize…” 等没有 metadata 的合成文本仍不出行。折叠态两行（标题行带状态与耗时，首行预览加提示），`ctrl+o` 展开全文（与助手文本同一个 `AdaptiveMarkdown`），点击进入子 agent（`openSubAgent`，不发请求）；提示里的键名取 `view.expand.toggle` 的当前绑定（`ctx.shortcuts.expand`）。文案键在 `background.card.*`。这条消息仍是合成文本：消息跳转、最近用户消息、撤销与重做（只在用户写的消息之间走：撤销的目标不选它，回填也不含它的文字，重做不停在它上，一次重做把撤销带走的结果消息一并恢复，撤销横幅的“N message reverted”也只数用户写的消息；位于撤销目标之后的结果消息随服务端 revert 一并撤掉，#1408）、`panel/message`、`panel/fork`、`panel/timeline`、排队消息与 PR 跟踪继续把它排除在用户的话之外；`/copy`、`/export` 把卡写成 `### 标题` 加正文。
   - 会话路由的跳转（#1058 7）：`SessionRoute.messageID` 是一次性的跳转请求，点后台运行结果的 toast 时由 `app.tsx` 的 `openResult` 带上。`routes/session/index.tsx` 等该会话的激活结束（激活以滚到末尾收尾，跳转要排在它之后；路由带 `messageID` 时，切换会话排的 50 ms 滚到底也不排）再滚到那条消息（每次切换会话先清掉“已激活”，所以回到之前看过的会话时，跳转等的是这一次的激活）：窗口化的转录走行表（`scrollToMessageID`），未窗口化的转录按节点 id（用户消息、任务块与后台结果卡有，结果卡的 id 是它所在消息的 id）；所以点 toast 落在结果卡上。画不出来的消息（没有 `backgroundResult` 的 synthetic 文字不成行）没有位置，跳到转录末尾。滚完就把 `messageID` 从路由上摘掉（`navigate` 时不带它），所以再次请求同一条消息会再滚一次；不设定时器，由激活完成的信号和 `messageID` 的变化触发。
@@ -441,7 +441,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 只读视图的定义是：TUI 在该视图里没有任何路径产生会改变对应对象的写请求。
 
 - DAG（`/dag` 面板、状态带、抽屉）：不调用任何 `dag.*` 写接口。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn '"message"' packages/tui/src/dag` 为空。测试：在 SDK mock 下完成全部可达操作（选择、展开、`space` 折叠/展开子树、`⏎`、`i`、切标签、点击状态带、开关抽屉）后，`dag.*` 写请求与 `session.command` 均为 0。唯一的写入口是主会话视图里 `<leader>d`，它恰好发一次 `session.command`（`/dag-mode on|off`），状态以服务端为准，TUI 不自存模式状态。
-- 子 agent 视图（判定口径 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断；用户消息块不可点击（点击不打开操作列表，选中文本照常可复制）；任务块的提示词折叠时，点击只展开或收起它（视图状态，不发请求，有选中文本时不翻转）。测试：触发所有可达操作（点击消息、命令面板里每个不离开视图的命令、会话键、`←→`、滚轮、`esc`，`test/app-subagent-readonly.test.tsx`）后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
+- 子 agent 视图（判定口径 `session.role !== "root"`，由服务端按 `child_binding` 派生，见 `src/session/role.ts`；#1288 之前是 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断；用户消息块不可点击（点击不打开操作列表，选中文本照常可复制）；任务块的提示词折叠时，点击只展开或收起它（视图状态，不发请求，有选中文本时不翻转）。测试：触发所有可达操作（点击消息、命令面板里每个不离开视图的命令、会话键、`←→`、滚轮、`esc`，`test/app-subagent-readonly.test.tsx`）后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
 - PR 行：点击只调用 `open` 打开 PR URL（只放行 `http`、`https`），不复制、不产生写请求（mock 计数 0）。
 - 后台标记与后台行：点击只运行命令 `agent.subagents`（打开 `/agents` 面板），不产生写请求（mock 计数 0）；抽屉的后台任务区块里没有任何可点击的东西。
 - "请主 agent 处理"= 预填主会话输入框，不提交（见 6.7）。任何停止、取消、重试、调超时都只能这样表达。

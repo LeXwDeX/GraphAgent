@@ -12,6 +12,7 @@ import { NonNegativeInt, optionalOmitUndefined, withStatics } from "./schema"
 import { ascending } from "./identifier"
 import { SessionID } from "./session-id"
 import { DagBudgetTokens, DagMode } from "./dag-mode"
+import { SessionRole } from "./session-role"
 import { WorkspaceID } from "./workspace-id"
 
 const Timestamp = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
@@ -553,6 +554,8 @@ export const SessionInfo = Schema.Struct({
   directory: Schema.String,
   path: optionalOmitUndefined(Schema.String),
   parentID: optionalOmitUndefined(SessionID),
+  /** Derived on read from the parent and the child binding (#1288); no column of its own. */
+  role: SessionRole,
   summary: optionalOmitUndefined(SessionSummary),
   cost: optionalOmitUndefined(Schema.Finite),
   tokens: optionalOmitUndefined(SessionTokens),
@@ -576,10 +579,29 @@ export const SessionInfo = Schema.Struct({
 }).annotate({ identifier: "Session" })
 export type SessionInfo = typeof SessionInfo.Type
 
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
+
+/**
+ * Payloads of the three events that carry a `SessionInfo` and were stored before
+ * it had a `role` (#1288) get one on the way in from the durable log (replay and
+ * the stored stream; a session aggregate stopped appending the log in #1016, but
+ * the rows already written stay readable). The role is derived from the row's
+ * parent as `SessionRole` does for a child with no binding: a session with no
+ * parent is a `root`, any other a `task_child`, which holds no capability of a
+ * root. The upgrade is chosen over an optional `role` because the field is part
+ * of the public `Session` shape, which one OpenAPI component serves for both the
+ * HTTP bodies and these events; an optional key in the events alone would split it.
+ */
+const withRole = (data: unknown): unknown => {
+  if (!isRecord(data) || !isRecord(data.info) || "role" in data.info) return data
+  return { ...data, info: { ...data.info, role: data.info.parentID ? "task_child" : "root" } }
+}
+
 const events = {
   Created: define({
     type: "session.created",
     ...options,
+    upgrade: withRole,
     schema: {
       sessionID: SessionID,
       info: SessionInfo,
@@ -588,6 +610,7 @@ const events = {
   Updated: define({
     type: "session.updated",
     ...options,
+    upgrade: withRole,
     schema: {
       sessionID: SessionID,
       info: SessionInfo,
@@ -596,6 +619,7 @@ const events = {
   Deleted: define({
     type: "session.deleted",
     ...options,
+    upgrade: withRole,
     schema: {
       sessionID: SessionID,
       info: SessionInfo,

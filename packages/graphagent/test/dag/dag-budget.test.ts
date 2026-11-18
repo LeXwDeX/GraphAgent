@@ -176,6 +176,7 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
       Effect.succeed({
         id: parent,
         slug: "budget",
+        role: "root",
         projectID: Project.ID.global,
         directory: process.cwd(),
         title: "budget",
@@ -832,6 +833,7 @@ describe("DagBudget instance context", () => {
           info: {
             id: parent,
             slug: "budget",
+            role: "root",
             projectID: Project.ID.global,
             directory: process.cwd(),
             title: "budget",
@@ -979,6 +981,7 @@ describe("DagBudget instance lifecycle", () => {
           info: {
             id: parent,
             slug: "budget",
+            role: "root",
             projectID: Project.ID.global,
             directory: process.cwd(),
             title: "budget",

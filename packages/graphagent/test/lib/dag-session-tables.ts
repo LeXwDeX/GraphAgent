@@ -61,6 +61,7 @@ export function tableSession(options: TableSessionOptions = {}) {
             return {
               id: sessionID,
               slug: "parent",
+              role: "root",
               projectID: Project.ID.make("project-1"),
               directory: process.cwd(),
               title: "Parent",
@@ -79,6 +80,7 @@ export function tableSession(options: TableSessionOptions = {}) {
             return {
               id,
               slug: "child",
+              role: "root",
               projectID: Project.ID.make("project-1"),
               directory: process.cwd(),
               title: value?.title ?? id,

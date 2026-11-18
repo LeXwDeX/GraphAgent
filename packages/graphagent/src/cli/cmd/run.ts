@@ -471,7 +471,7 @@ export const RunCommand = effectCmd({
           }
         }
 
-        const base = args.continue ? (await sdk.session.list()).data?.find((item) => !item.parentID) : undefined
+        const base = args.continue ? (await sdk.session.list()).data?.find((item) => item.role === "root") : undefined
 
         if (base && args.fork) {
           const forked = await sdk.session.fork({

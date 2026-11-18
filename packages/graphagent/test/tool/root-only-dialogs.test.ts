@@ -47,6 +47,7 @@ const session = (id: SessionID, parentID?: SessionID, directory = "") =>
     id,
     ...(parentID ? { parentID } : {}),
     slug: id,
+    role: parentID ? "task_child" : "root",
     projectID: ProjectV2.ID.global,
     directory,
     title: id,

@@ -76,6 +76,7 @@ import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
 import { returnToParent, useOpenSubAgent } from "./session/navigate"
+import { isRoot, isSubagent } from "./session/role"
 import { siblingPosition } from "./session/siblings"
 import { subagentSiblings, subagentSource } from "./session/subagents"
 import { t } from "./i18n"
@@ -473,7 +474,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     return {
       ...view,
       onOpen: (sessionID: string) =>
-        sync.session.get(sessionID)?.parentID
+        isSubagent(sync.session.get(sessionID))
           ? openSubAgent(sessionID)
           : route.navigate({ type: "session", sessionID }),
     }
@@ -605,9 +606,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   createEffect(() => {
     // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"
     if (continued || sync.status === "loading" || !args.continue) return
-    const match = sync.data.session
-      .toSorted((a, b) => b.time.updated - a.time.updated)
-      .find((x) => x.parentID === undefined)?.id
+    const match = sync.data.session.toSorted((a, b) => b.time.updated - a.time.updated).find((x) => isRoot(x))?.id
     if (match) {
       continued = true
       if (args.fork) {

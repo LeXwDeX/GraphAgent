@@ -32,6 +32,7 @@ const topID = SessionID.make("ses_guard_top")
 const info = (id: SessionID, parent?: SessionID): Session.Info => ({
   id,
   slug: "guard",
+  role: parent ? "task_child" : "root",
   projectID: ProjectV2.ID.make("proj_guard"),
   directory: "/guard",
   parentID: parent,

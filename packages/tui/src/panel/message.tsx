@@ -11,6 +11,7 @@ import { t } from "../i18n"
 import type { PromptEditRequest } from "../component/prompt"
 import type { PromptInfo } from "../prompt/history"
 import { stripPromptPartIDs as strip } from "../prompt/part"
+import { isSubagent } from "../session/role"
 import { queuedMessageExpected } from "../prompt/queued-message"
 import { errorMessage } from "../util/error"
 import { useToast } from "../ui/toast"
@@ -44,7 +45,7 @@ export function MessagePanel(props: MessagePanelProps) {
 
   const message = createMemo(() => sync.data.message[props.sessionID]?.find((item) => item.id === props.messageID))
   const parts = createMemo(() => sync.data.part[props.messageID] ?? [])
-  const isSubagent = createMemo(() => Boolean(sync.session.get(props.sessionID)?.parentID))
+  const subagent = createMemo(() => isSubagent(sync.session.get(props.sessionID)))
 
   function promptFrom(input: readonly Part[], stripIDs: boolean): PromptInfo {
     return input.reduce<PromptInfo>(
@@ -145,7 +146,7 @@ export function MessagePanel(props: MessagePanelProps) {
       title: t("panel.message.copy"),
       description: t("panel.message.copy.description"),
     }
-    if (isSubagent()) return [copyItem]
+    if (subagent()) return [copyItem]
     if (props.queued) {
       return [
         {

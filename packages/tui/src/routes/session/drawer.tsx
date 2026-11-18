@@ -14,6 +14,7 @@ import { useOptionalTicker } from "../../context/ticker-context"
 import { t } from "../../i18n"
 import { useCommandShortcut } from "../../keymap"
 import { backgroundItems } from "../../session/background"
+import { isRoot } from "../../session/role"
 import { isGoalShown } from "../../shell/status-band"
 import type { AmbiguousWidth } from "../../ui/width"
 import { remoteLine } from "../../util/remote-text"
@@ -163,7 +164,7 @@ function DrawerDagMode(props: { sessionID: string }) {
   )
 
   return (
-    <Show when={session() && !session()?.parentID}>
+    <Show when={isRoot(session())}>
       <text fg={theme.textMuted} wrapMode="none">
         {text()}
       </text>

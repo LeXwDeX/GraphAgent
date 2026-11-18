@@ -49,6 +49,7 @@ export function sessionFixture(id: string, extra: Partial<Session> = {}): Sessio
   return {
     id,
     slug: id,
+    role: extra.parentID ? "task_child" : "root",
     projectID: "proj_test",
     directory,
     title: id,

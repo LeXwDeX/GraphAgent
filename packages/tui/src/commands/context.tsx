@@ -5,6 +5,7 @@ import { createMemo, type Accessor } from "solid-js"
 import { createSimpleContext } from "../context/helper"
 import { useRoute } from "../context/route"
 import { useSync } from "../context/sync"
+import { isSubagent } from "../session/role"
 import { BUILTIN_COMMANDS } from "./catalog"
 import { createCommandRegistry, type CommandRegistry, type CommandScope } from "./registry"
 
@@ -36,6 +37,6 @@ export function useCommandScope(): Accessor<CommandScope> {
     if (data.type === "home") return "home"
     const sessionID = data.type === "session" ? data.sessionID : data.params.sessionID
     const session = sessionID ? sync.session.get(sessionID) : undefined
-    return session?.parentID ? "subagent" : "session"
+    return isSubagent(session) ? "subagent" : "session"
   })
 }

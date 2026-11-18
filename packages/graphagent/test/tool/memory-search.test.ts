@@ -267,6 +267,7 @@ function session(id: SessionID, parentID?: SessionID): Session.Info {
   return {
     id,
     slug: "memory-search-tool",
+    role: parentID ? "task_child" : "root",
     projectID: ProjectV2.ID.global,
     directory: "/tmp/graphagent",
     parentID,

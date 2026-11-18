@@ -803,6 +803,7 @@ export type Session = {
   directory: string
   path?: string
   parentID?: string
+  role: "root" | "task_child" | "dag_node"
   summary?: {
     additions: number
     deletions: number

@@ -138,6 +138,7 @@ describe("message settlement through durable DAG events", () => {
     const info: Session.Info = {
       id: SessionID.make(child.sessionID),
       slug: "s",
+      role: "root",
       projectID: ProjectV2.ID.make("p"),
       directory: process.cwd(),
       title: "S",

@@ -5,6 +5,7 @@ import { createMemo, createResource, onCleanup, type Accessor } from "solid-js"
 import { useRoute } from "../../context/route"
 import { useSDK } from "../../context/sdk"
 import { useSync } from "../../context/sync"
+import { isRoot } from "../../session/role"
 import type { DagIndicatorState } from "../../shell/dag-indicator"
 import { TuiLog } from "../../util/log"
 
@@ -26,7 +27,7 @@ export function useDagIndicator(): Accessor<DagIndicatorState | undefined> {
   const session = createMemo(() => {
     if (route.data.type !== "session") return undefined
     const info = sync.session.get(route.data.sessionID)
-    return info && !info.parentID ? info : undefined
+    return isRoot(info) ? info : undefined
   })
 
   const [availability, { refetch }] = createResource(

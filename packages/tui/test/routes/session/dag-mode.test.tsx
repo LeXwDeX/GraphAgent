@@ -124,6 +124,30 @@ test("home and sub-agent views have no indicator and no lookup", async () => {
   }
 })
 
+test("the indicator follows the session's role, which the server derives, and not its parent", async () => {
+  // A DAG node has no mode switch, whatever else the row says; a root has one whatever the row records.
+  const node = await mountIndicator(
+    [sessionFixture(mainID, { dagMode: "on" }), sessionFixture(childID, { role: "dag_node", dagMode: "on" })],
+    { type: "session", sessionID: childID },
+  )
+  try {
+    expect(node.indicator()).toBeUndefined()
+    expect(node.lookups(childID)).toBe(0)
+  } finally {
+    await node.dispose()
+  }
+
+  const root = await mountIndicator([sessionFixture(mainID, { role: "root", parentID: otherID, dagMode: "off" })], {
+    type: "session",
+    sessionID: mainID,
+  })
+  try {
+    expect(root.indicator()).toBe("off")
+  } finally {
+    await root.dispose()
+  }
+})
+
 test("the server's session.updated drives the mode and a lookup runs only while it is on", async () => {
   const harness = await mountIndicator([sessionFixture(mainID, { dagMode: "off" })], {
     type: "session",
