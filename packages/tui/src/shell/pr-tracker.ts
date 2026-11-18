@@ -53,6 +53,7 @@ import {
   type PrSession,
   type PrToast,
 } from "../pr/state"
+import { isSyntheticMessage } from "../session/synthetic-message"
 import type { ToastOptions } from "../ui/toast"
 import { remoteLine } from "../util/remote-text"
 import type { PrBandItem, PrTracker, ReminderBandItem } from "./pr-tracker-context"
@@ -187,10 +188,6 @@ function openable(url: string): boolean {
   return /^https?:\/\//i.test(url)
 }
 
-function isTextPart(part: Part): part is Extract<Part, { type: "text" }> {
-  return part.type === "text"
-}
-
 export function createPrTracker(deps: PrTrackerDeps): PrTracker {
   const [tick, setTick] = createSignal(0)
   // The state each watch had when it was last folded in: what an event is compared with.
@@ -239,11 +236,7 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
       if (message.role !== "user") continue
       const parts = deps.data.part[message.id]
       if (parts === undefined) continue
-      const texts = parts.filter(isTextPart)
-      userMessages.push({
-        created: message.time.created,
-        synthetic: texts.length > 0 && texts.every((part) => part.synthetic === true),
-      })
+      userMessages.push({ created: message.time.created, synthetic: isSyntheticMessage(parts) })
     }
     const watches = Object.values(entries ?? {}).map((entry) => ({
       watchID: entry.watchID,
