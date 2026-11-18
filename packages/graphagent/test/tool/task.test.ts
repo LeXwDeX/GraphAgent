@@ -5,6 +5,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { Agent } from "../../src/agent/agent"
+import { ResultContract } from "@/agent/result-contract"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
@@ -710,6 +711,8 @@ describe("tool.task", () => {
       expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
       expect(seen?.sessionID).toBe(child.id)
       expect(seen?.variant).toBe("xhigh")
+      // The contract applies to every run of the child, as the artifact contract does (#1453).
+      expect(seen?.parts.at(-1)).toMatchObject({ type: "text", text: ResultContract.freeTextPrompt() })
     }),
   )
 
@@ -1890,8 +1893,10 @@ describe("tool.task", () => {
       expect(result.output).toContain("Background task updated")
       first.resolve()
       expect((yield* jobs.get(started.metadata.sessionID))?.status).toBe("running")
+      // Every input to the child carries the contract, as the artifact contract does (#1453).
       expect((yield* Effect.promise(() => updated.promise)).parts).toEqual([
         { type: "text", text: "also inspect cancellation" },
+        { type: "text", text: ResultContract.freeTextPrompt() },
       ])
 
       second.resolve()
@@ -3085,7 +3090,7 @@ describe("tool.task child runs", () => {
         Effect.sync(() => (prompted.length > 0 ? true : undefined)),
         "the resumed run never prompted the child",
       )
-      expect(prompted).toEqual(["follow-up question"])
+      expect(prompted).toEqual(["follow-up question", ResultContract.freeTextPrompt()])
       yield* Deferred.succeed(release, undefined)
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({
         status: "completed",
@@ -3585,5 +3590,61 @@ describe("tool.task child driving", () => {
       yield* Deferred.succeed(done, undefined)
       yield* endedRun(child)
     }),
+  )
+})
+
+// #1453: explore and general are asked for a bounded final message in three sections. The ask follows the caller's
+// request in the user message the child is prompted with; the system prompt and the task tool's definition are not
+// involved.
+describe("tool.task return contract", () => {
+  // The texts of the parts of each prompt one task call sent to its child.
+  const promptedWith = (subagent: string, extra: { background?: boolean } = {}) =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const sent: SessionPrompt.PromptInput[] = []
+      yield* def.execute(
+        { description: "inspect bug", prompt: "look into the cache key path", subagent_type: subagent, ...extra },
+        taskCtx(chat, assistant, stubOps({ onPrompt: (input) => sent.push(input) })),
+      )
+      return sent.map((input) => input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+    })
+
+  it.instance("explore and general end their task message with the return contract, after the request", () =>
+    Effect.gen(function* () {
+      for (const subagent of ["explore", "general"]) {
+        const sent = yield* promptedWith(subagent)
+        expect(sent, subagent).toHaveLength(1)
+        const texts = sent[0] ?? []
+        expect(texts, subagent).toHaveLength(2)
+        expect(texts[0], subagent).toBe("look into the cache key path")
+        expect(texts[1], subagent).toStartWith("\n\n[RETURN CONTRACT] Your final message is all the caller receives")
+        expect(texts[1], subagent).toContain("Conclusion: the answer, at most 1200 characters.")
+        expect(texts.join("\n"), subagent).not.toContain("OUTPUT CONTRACT")
+      }
+    }),
+  )
+
+  it.instance(
+    "review, auditor and a custom agent are asked nothing beyond the request",
+    () =>
+      Effect.gen(function* () {
+        // `review` declares a background run; the call asks for the foreground to see its prompt.
+        for (const subagent of ["review", "auditor", "scout"]) {
+          const sent = yield* promptedWith(subagent, { background: false })
+          expect(sent, subagent).toEqual([["look into the cache key path"]])
+        }
+      }),
+    { config: { agent: { scout: { mode: "subagent", description: "A project agent" } } } },
+  )
+
+  it.instance(
+    "a configuration that leaves the contract of general alone keeps its return contract",
+    () =>
+      Effect.gen(function* () {
+        const sent = yield* promptedWith("general")
+        expect(sent[0]?.at(-1)).toStartWith("\n\n[RETURN CONTRACT] ")
+      }),
+    { config: { agent: { general: { description: "The project's general agent" } } } },
   )
 })
