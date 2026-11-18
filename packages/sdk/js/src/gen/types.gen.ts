@@ -1545,8 +1545,6 @@ export type Config = {
   }
   compaction?: {
     auto?: boolean
-    dynamic?: boolean
-    prune?: boolean
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
