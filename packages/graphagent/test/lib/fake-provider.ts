@@ -135,8 +135,17 @@ const environmentPaths = [
   .filter((value, index, all) => value.length > 1 && all.indexOf(value) === index)
   .sort((left, right) => right.length - left.length)
 
+// The shell tool also publishes the host platform (`OS: darwin`, `OS: linux`),
+// which would give the same tool set a different hash on every operating
+// system. Replace the current platform's exact literal with a fixed placeholder
+// so one committed baseline holds on every platform.
+const environmentPlatform = `OS: ${process.platform}`
+
 function normalizeEnvironment(value: string) {
-  return environmentPaths.reduce((text, prefix) => text.split(prefix).join("<global>"), value)
+  return environmentPaths
+    .reduce((text, prefix) => text.split(prefix).join("<global>"), value)
+    .split(environmentPlatform)
+    .join("OS: <platform>")
 }
 
 function toolShape(tools: StreamInput["tools"]) {
