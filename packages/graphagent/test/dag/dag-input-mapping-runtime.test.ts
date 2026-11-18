@@ -22,6 +22,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { isManagedOutputFileRef } from "@/dag/runtime/output-ref"
 import { ReadTool } from "@/tool/read"
 import { FSUtil } from "@graphagent/core/fs-util"
+import { SessionInbox } from "@/session/inbox"
 import { Instruction } from "@/session/instruction"
 import { LSP } from "@/lsp/lsp"
 import { Truncate } from "@/tool/truncate"
@@ -202,11 +203,13 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
         hooks: {},
       }),
   })
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   return Layer.merge(base, loop)
 }

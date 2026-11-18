@@ -1808,6 +1808,7 @@ describe("DagLoop atomic wake integration", () => {
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
+        const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
         const base = Layer.mergeAll(
           database,
           events,
@@ -1868,7 +1869,12 @@ describe("DagLoop atomic wake integration", () => {
               yield* takeWithin(q1.parentPrompts, "terminal workflow did not wake the parent")
             }).pipe(
               Effect.provide(
-                DagLoop.layer.pipe(Layer.provide(session), Layer.provide(promptLayer(q1)), Layer.provide(agent)),
+                DagLoop.layer.pipe(
+                  Layer.provide(session),
+                  Layer.provide(promptLayer(q1)),
+                  Layer.provide(agent),
+                  Layer.provide(inbox),
+                ),
               ),
             ),
           )
@@ -1893,7 +1899,12 @@ describe("DagLoop atomic wake integration", () => {
               expect(Option.isNone(yield* Queue.poll(q2.parentPrompts))).toBe(true)
             }).pipe(
               Effect.provide(
-                DagLoop.layer.pipe(Layer.provide(session), Layer.provide(promptLayer(q2)), Layer.provide(agent)),
+                DagLoop.layer.pipe(
+                  Layer.provide(session),
+                  Layer.provide(promptLayer(q2)),
+                  Layer.provide(agent),
+                  Layer.provide(inbox),
+                ),
               ),
             ),
           )

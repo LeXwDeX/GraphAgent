@@ -28,6 +28,7 @@ import { isDisplayOnlyCompletion } from "@/dag/runtime/report-delivery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ExclusiveRegistry } from "@/session/engine-process"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -36,6 +37,7 @@ import { mockSessionPrompt } from "../lib/child-runs"
 import { reportPartKind, tableSession } from "../lib/dag-session-tables"
 import { pollWithTimeout } from "../lib/effect"
 import { makeNodeRow } from "./fixtures"
+import { recordingInbox } from "./fixture/inbox"
 import { transactLayer } from "./fixture/transact"
 
 const DIRECTORY = process.cwd()
@@ -246,7 +248,10 @@ const liveEntry = (nodes: readonly SchedulingNode[], port: Dag.Interface): DagDe
   port,
 })
 
-function startDelivery(entries: (dagID: string) => DagDelivery.Entry | undefined = () => undefined) {
+function startDelivery(
+  entries: (dagID: string) => DagDelivery.Entry | undefined = () => undefined,
+  inbox: SessionInbox.Interface = recordingInbox().inbox,
+) {
   return Effect.gen(function* () {
     return yield* DagDelivery.make({
       directory: DIRECTORY,
@@ -260,7 +265,7 @@ function startDelivery(entries: (dagID: string) => DagDelivery.Entry | undefined
       database: yield* Database.Service,
       events: yield* EventV2Bridge.Service,
       messages: undefined,
-      inbox: undefined,
+      inbox,
       entries,
       lastAssistantMessage: () => Effect.succeed(undefined),
     })
@@ -376,22 +381,29 @@ describe("DagDelivery reads the DAG mode at the terminal boundary", () => {
         Effect.gen(function* () {
           const store = yield* DagStore.Service
           yield* seedParent("on")
-          const delivery = yield* startDelivery()
+          const recording = recordingInbox()
+          const delivery = yield* startDelivery(undefined, recording.inbox)
 
           // The row says "on", but the one read that decides fails: the
           // report is displayed and the parent gets no turn.
           const first = yield* completedLeaf("first", true)
           control.failNextRead = failure
-          yield* delivery.drain(PARENT)
+          yield* delivery.deliver(PARENT)
           expect(control.admissions).toBe(0)
           expect(yield* answerParts).toHaveLength(1)
+          // No turn ran, so no idle event follows the report: delivery asks the
+          // inbox for another pass itself, once the attempt is over.
+          yield* pollWithTimeout(
+            Effect.sync(() => (recording.nudged.includes(PARENT) ? true : undefined)),
+            "the display-only report did not nudge the inbox",
+          )
           expect((yield* store.getWorkflow(first))?.wakeReported).toBe(true)
           expect((yield* store.getNode(first, "final"))?.wakeReported).toBe(true)
           expect(yield* unreported).toEqual({ workflows: [], nodes: [] })
 
           // The same session, read successfully, wakes as "on" does.
           yield* completedLeaf("second", true)
-          yield* delivery.drain(PARENT)
+          yield* delivery.deliver(PARENT)
           expect(control.admissions).toBe(1)
           expect(yield* answerParts).toHaveLength(2)
           expect(yield* unreported).toEqual({ workflows: [], nodes: [] })
@@ -408,7 +420,7 @@ describe("DagDelivery reads the DAG mode at the terminal boundary", () => {
         const dag = yield* Dag.Service
         yield* seedParent("on")
         const delivery = yield* startDelivery()
-        yield* delivery.drain(PARENT)
+        yield* delivery.deliver(PARENT)
         expect(control.reads).toBe(0)
 
         // A failed workflow owes a turn in either mode; the mode is not consulted.
@@ -425,11 +437,44 @@ describe("DagDelivery reads the DAG mode at the terminal boundary", () => {
         })
         yield* dag.fail(dagID, "required node failed")
         control.reads = 0
-        yield* delivery.drain(PARENT)
+        yield* delivery.deliver(PARENT)
         expect(control.admissions).toBe(1)
         // The one read is the archived-owner judgment (#1289), asked because
         // there is something to deliver; the mode is not read on top of it.
         expect(control.reads).toBe(1)
+      }),
+    )
+  })
+})
+
+describe("DagDelivery after a display-only report", () => {
+  it("asks the inbox for another pass once the attempt is over, and a failing nudge does not fail the attempt", () => {
+    const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
+    let nudges = 0
+    const failing = {
+      ...recordingInbox().inbox,
+      nudge: () => Effect.sync(() => void (nudges += 1)).pipe(Effect.andThen(Effect.die(new Error("inbox down")))),
+    } satisfies SessionInbox.Interface
+    return run(
+      control,
+      Effect.gen(function* () {
+        yield* seedParent("off")
+        const delivery = yield* startDelivery(undefined, failing)
+        yield* completedLeaf("leaf", true)
+
+        // DAG mode off: the report is displayed and no turn follows it, so no
+        // idle event will arrive on its own.
+        expect(yield* delivery.deliver(PARENT)).toBe(true)
+        expect(control.admissions).toBe(0)
+        expect(yield* answerParts).toHaveLength(1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (nudges === 1 ? true : undefined)),
+          "the display-only report did not nudge the inbox",
+        )
+        // The follow-up is best effort: it absorbed its own failure, and the
+        // attempt's work (the report and its wake mark) stands.
+        yield* Effect.sleep("20 millis")
+        expect(yield* unreported).toEqual({ workflows: [], nodes: [] })
       }),
     )
   })
@@ -461,7 +506,7 @@ describe("DagDelivery in DAG mode: a process that dies mid-delivery restarts wit
           const dagID = yield* completedLeaf("leaf", true)
 
           const first = yield* startDelivery()
-          const dying = yield* first.drain(PARENT).pipe(Effect.forkChild)
+          const dying = yield* first.deliver(PARENT).pipe(Effect.forkChild)
           yield* pollWithTimeout(
             Effect.sync(() => (control.admissions >= 1 ? true : undefined)),
             "the wake never reached the model-facing admission",
@@ -472,8 +517,8 @@ describe("DagDelivery in DAG mode: a process that dies mid-delivery restarts wit
 
           control.admission = "persist"
           const second = yield* startDelivery()
-          yield* second.drain(PARENT)
-          yield* second.drain(PARENT)
+          yield* second.deliver(PARENT)
+          yield* second.deliver(PARENT)
 
           expect(control.admissions).toBe(crash.admissionsAfterRestart)
           expect(yield* answerParts).toHaveLength(1)
@@ -510,14 +555,14 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
             liveEntry([{ id: "final", dependsOn: [], required: true, status: window.status }], dag),
           )
           expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
-          yield* delivery.drain(PARENT)
-          yield* delivery.drain(PARENT)
+          yield* delivery.deliver(PARENT)
+          yield* delivery.deliver(PARENT)
           expect(control.admissions).toBe(0)
           expect((yield* store.getNode(dagID, "final"))?.wakeReported).toBe(false)
           expect(yield* answerParts).toHaveLength(0)
 
           yield* dag.complete(dagID)
-          yield* delivery.drain(PARENT)
+          yield* delivery.deliver(PARENT)
           expect(control.admissions).toBe(1)
           expect(control.texts[0]).toContain("[DAG Workflow completed]")
           expect(control.texts[0]).toContain('Node "final" completed: leaf answer')
@@ -525,7 +570,7 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
           expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
           expect((yield* store.getNode(dagID, "final"))?.wakeReported).toBe(true)
 
-          yield* delivery.drain(PARENT)
+          yield* delivery.deliver(PARENT)
           expect(control.admissions).toBe(1)
         }),
       )
@@ -580,7 +625,7 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
             port,
           ),
         )
-        yield* delivery.drain(PARENT)
+        yield* delivery.deliver(PARENT)
 
         expect(failures).toEqual([[dagID, "orchestrator_unresponsive"]])
         expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
@@ -626,7 +671,7 @@ describe("DagDelivery while a workflow is about to complete (#1015)", () => {
             dag,
           ),
         )
-        yield* delivery.drain(PARENT)
+        yield* delivery.deliver(PARENT)
         expect(control.admissions).toBe(1)
         expect(control.texts[0]).toContain('Node "cp" completed: checkpoint verdict')
         expect((yield* store.getNode(dagID, "cp"))?.wakeReported).toBe(true)

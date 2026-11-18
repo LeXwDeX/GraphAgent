@@ -224,4 +224,32 @@ describe("Dag.Service workflow lock timeout (ADR-0004)", () => {
       }).pipe(Effect.provide(env)) as Effect.Effect<never>,
     )
   })
+
+  it("exclusive turns the lock timeout into a defect instead of a typed failure", async () => {
+    const env = lockTimeoutLayer(slowFirstGetWorkflow(JSON.stringify({ name: "lock-timeout", nodes: [] })))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        // An external critical section holds no witness, so its timeout cannot
+        // surface as a typed error the caller never declared.
+        const timedOut = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fiber = yield* dag.exclusive("wf1", Effect.sleep("40 seconds")).pipe(Effect.forkScoped)
+            yield* TestClock.adjust("45 seconds")
+            return yield* Fiber.await(fiber)
+          }),
+        )
+        expect(Exit.isFailure(timedOut)).toBe(true)
+        if (Exit.isFailure(timedOut)) {
+          expect(Cause.hasFails(timedOut.cause)).toBe(false)
+          const defect = Cause.findDefect(timedOut.cause)
+          expect(defect._tag).toBe("Success")
+          if (defect._tag === "Success") expect(Cause.isTimeoutError(defect.success)).toBe(true)
+        }
+        // The lock is released with the timeout: the next section runs.
+        expect(yield* dag.exclusive("wf1", Effect.succeed("again"))).toBe("again")
+      }).pipe(Effect.provide(env)),
+    )
+  })
 })

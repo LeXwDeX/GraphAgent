@@ -12,6 +12,7 @@ import { ExclusiveRegistry } from "@/session/engine-process"
 import { Storage } from "@/storage/storage"
 import { SessionProcessor } from "@/session/processor"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionInbox } from "@/session/inbox"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionRunState } from "@/session/run-state"
@@ -429,6 +430,8 @@ export function makeDagPerfLayer(provider: FakeProvider) {
   )
   // DagLoop.layer hard-wires ExclusiveRegistry.defaultLayer internally;
   // dagDeps uses the same layer object, so memoization yields one instance.
-  const loop = DagLoop.layer.pipe(Layer.provide(prompt))
+  // The inbox listens on the bus `status` publishes to, like the status above.
+  const inbox = SessionInbox.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provide(status))
+  const loop = DagLoop.layer.pipe(Layer.provide(prompt), Layer.provide(inbox))
   return Layer.mergeAll(prompt, loop)
 }
