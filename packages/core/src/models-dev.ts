@@ -12,6 +12,7 @@ import { InstallationChannel, InstallationVersion } from "./installation/version
 import { EventV2 } from "./event"
 import { LayerNode } from "./effect/layer-node"
 import { httpClient } from "./effect/layer-node-platform"
+import { ReasoningControl } from "./model-profile"
 
 export const CatalogModelStatus = Schema.Literals(["alpha", "beta", "deprecated"])
 export type CatalogModelStatus = typeof CatalogModelStatus.Type
@@ -57,9 +58,13 @@ export const Model = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   family: Schema.optional(Schema.String),
+  // Cross-provider canonical model name (`vendor/model`), published for most models.
+  canonical_model_id: Schema.optional(Schema.String),
   release_date: Schema.String,
   attachment: Schema.Boolean,
   reasoning: Schema.Boolean,
+  // An empty list means the model is known to have no reasoning control; an absent key means unknown.
+  reasoning_options: Schema.optional(Schema.Array(ReasoningControl)),
   temperature: Schema.Boolean,
   tool_call: Schema.Boolean,
   interleaved: Schema.optional(

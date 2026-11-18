@@ -271,6 +271,251 @@
         }
       }
     },
+    "ReasoningControl": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "toggle"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "effort"
+              ]
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "values"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "budget_tokens"
+              ]
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "ModelProfileOverride": {
+      "type": "object",
+      "properties": {
+        "vendor": {
+          "type": "string",
+          "description": "Lowercase vendor of the model, for example zhipuai. Defaults to the vendor of the matching catalog entry, then to the part of the API model id before the first slash."
+        },
+        "effective_context": {
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
+          "description": "Effective context window in tokens used for compaction. Compaction uses the smaller of this value and the context window."
+        },
+        "tool_call_id": {
+          "type": "object",
+          "properties": {
+            "charset": {
+              "type": "string",
+              "enum": [
+                "any",
+                "alnum_dash",
+                "alnum"
+              ],
+              "description": "Characters a tool call id may contain: any, alnum_dash ([A-Za-z0-9_-]) or alnum ([A-Za-z0-9])."
+            },
+            "length": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
+              "description": "Fixed length of a tool call id. Only meaningful with the alnum charset."
+            }
+          },
+          "required": [
+            "charset"
+          ],
+          "additionalProperties": true,
+          "description": "Constraint on the tool call ids the provider accepts. Default: any."
+        },
+        "user_after_tool_result": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "bridge"
+          ],
+          "description": "Whether a user message may follow a tool result directly. bridge inserts a short assistant message first. Default: allow."
+        },
+        "tool_result_media": {
+          "type": "string",
+          "enum": [
+            "all",
+            "image",
+            "none"
+          ],
+          "description": "Which tool result attachments are sent inside the tool result: all, image (only image/*) or none (sent as a synthetic user message). Default: none."
+        },
+        "cache_marker": {
+          "type": "string",
+          "enum": [
+            "explicit",
+            "none"
+          ],
+          "description": "Whether to place explicit cache breakpoints in the request: explicit or none. Default: none."
+        },
+        "reasoning_mode": {
+          "type": "object",
+          "properties": {
+            "controls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReasoningControl"
+              },
+              "description": "Reasoning controls the model exposes: toggle, effort levels or a token budget. An empty list declares that the model has none."
+            },
+            "toggle": {
+              "type": "object",
+              "properties": {
+                "on": {
+                  "type": "object"
+                },
+                "off": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "on",
+                "off"
+              ],
+              "additionalProperties": true,
+              "description": "Request body fragments merged into the request to turn thinking on and off."
+            },
+            "placeholder": {
+              "type": "boolean",
+              "description": "Add an empty reasoning string to assistant messages that carry none. Default: false."
+            },
+            "replay": {
+              "type": "string",
+              "enum": [
+                "none",
+                "field",
+                "signed",
+                "encrypted"
+              ],
+              "description": "How earlier reasoning is sent back: none, field (the field named by interleaved), signed (signed blocks as received) or encrypted (encrypted content as received). Default: none."
+            },
+            "inline_tag": {
+              "type": "string",
+              "description": "Tag name that wraps reasoning inside the message text, for example think."
+            }
+          },
+          "additionalProperties": true,
+          "description": "How the model's reasoning is controlled and replayed. Each key replaces its own source."
+        },
+        "sampling": {
+          "type": "object",
+          "properties": {
+            "temperature": {
+              "type": "number"
+            },
+            "top_p": {
+              "type": "number"
+            },
+            "top_k": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": true,
+          "description": "Default sampling values. A value left out is not sent."
+        },
+        "finish_reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "content-filter",
+              "stream_error",
+              "context_overflow"
+            ]
+          },
+          "description": "Maps a vendor finish_reason to how it is handled: content-filter, stream_error (retry as a broken stream) or context_overflow."
+        },
+        "edit_tools": {
+          "type": "string",
+          "enum": [
+            "edit",
+            "apply_patch"
+          ],
+          "description": "Edit tool family offered to the model: edit or apply_patch. Default: edit."
+        },
+        "tool_limits": {
+          "type": "object",
+          "properties": {
+            "max_tools": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0
+            },
+            "name_max_length": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0
+            },
+            "name_pattern": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true,
+          "description": "Limits on the tools sent to the model: maximum tool count, maximum function name length and the regular expression source a function name must match. Default: no limit."
+        },
+        "schema_fixes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "moonshot",
+              "gemini"
+            ]
+          },
+          "description": "Downgrade schemes applied to tool schemas: openai, moonshot or gemini. Default: none."
+        }
+      },
+      "additionalProperties": true
+    },
     "ConfigV2.Model.ReasoningDistillationEncoded": {
       "type": "object",
       "properties": {
@@ -539,10 +784,6 @@
                     "type": "number"
                   }
                 },
-                "required": [
-                  "context",
-                  "output"
-                ],
                 "additionalProperties": true
               },
               "modalities": {
@@ -576,6 +817,9 @@
                   }
                 },
                 "additionalProperties": true
+              },
+              "profile": {
+                "$ref": "#/$defs/ModelProfileOverride"
               },
               "experimental": {
                 "type": "boolean"
