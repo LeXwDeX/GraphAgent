@@ -133,9 +133,18 @@ describe("ChildRuns.start", () => {
       expect(bindings[0]).toMatchObject({ parent_session_id: parent, owner_kind: "task", owner_ref: "call_1" })
       expect(ChildRegistry.activeFor(child)?.phase).toBe("queued")
 
+      // The run has not begun: nothing says when it did (#1407).
+      expect(ChildRegistry.activeFor(child)?.runningAt).toBeUndefined()
+      expect(ChildRegistry.waiting(ChildRegistry.activeFor(child)!)).toBe(true)
+
+      yield* TestClock.adjust("75 millis")
       expect(yield* handle.markRunning).toBe(true)
       expect((yield* runRows(db, child))[0]?.state).toBe("running")
       expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      // It began after the wait, which is the run's own clock, and the row keeps only what it always did.
+      expect(ChildRegistry.activeFor(child)?.runningAt).toBe(75)
+      expect(ChildRegistry.waiting(ChildRegistry.activeFor(child)!)).toBe(false)
+      expect(Object.keys((yield* runRows(db, child))[0])).not.toContain("running_at")
 
       expect(yield* handle.settle({ type: "completed" })).toBe(true)
       const ended = (yield* runRows(db, child))[0]

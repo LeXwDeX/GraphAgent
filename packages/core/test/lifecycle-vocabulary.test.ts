@@ -27,7 +27,8 @@ import { Schema } from "effect"
 // Bidirectional type check: the vocabulary values and the owning union are identical.
 expectTypeOf<(typeof VOCABULARY.workflow.values)[number]>().toEqualTypeOf<WorkflowStatus>()
 expectTypeOf<(typeof VOCABULARY.node.values)[number]>().toEqualTypeOf<NodeStatus>()
-expectTypeOf<(typeof VOCABULARY.job.values)[number]>().toEqualTypeOf<BackgroundJob.Status>()
+// `queued` is the one lifecycle value the registry does not have: it is the wait of a task job's child run (#1407).
+expectTypeOf<(typeof VOCABULARY.job.values)[number]>().toEqualTypeOf<BackgroundJob.Status | "queued">()
 expectTypeOf<(typeof VOCABULARY.session.values)[number]>().toEqualTypeOf<SessionStatusEvent.Info["type"]>()
 expectTypeOf<(typeof VOCABULARY.goal.values)[number]>().toEqualTypeOf<Schema.Schema.Type<typeof GoalStatus>>()
 
@@ -70,7 +71,7 @@ describe("lifecycle vocabulary", () => {
 
   it("keeps the other domain values identical to their owning vocabularies", () => {
     expect(VOCABULARY.session.values).toEqual(["idle", "retry", "busy"])
-    expect(VOCABULARY.job.values).toEqual(["running", "settling", "completed", "error", "cancelled"])
+    expect(VOCABULARY.job.values).toEqual(["queued", "running", "settling", "completed", "error", "cancelled"])
     expect(VOCABULARY.goal.values).toEqual(["active", "waiting", "paused", "done"])
     expect(VOCABULARY.pr_watch.values).toEqual([
       "watching",
@@ -81,6 +82,15 @@ describe("lifecycle vocabulary", () => {
       "expired",
     ])
     expect(VOCABULARY.reminder.values).toEqual(["scheduled", "due", "delivered", "cancelled"])
+  })
+
+  it("projects a queued job onto the pending phase and keeps it live", () => {
+    // The wait for a slot has not started the work: pending, like a node that is queued (#1407).
+    expect(phaseOf("job", "queued")).toBe("pending")
+    expect(phaseOf("job", "running")).toBe("running")
+    expect(VOCABULARY.job.terminal).toEqual(["completed", "error", "cancelled"])
+    expect(isTerminalValue("job", "queued")).toBe(false)
+    expect(isSettledValue("job", "queued")).toBe(false)
   })
 
   it("projects the reminder values onto the phases the Issue names", () => {

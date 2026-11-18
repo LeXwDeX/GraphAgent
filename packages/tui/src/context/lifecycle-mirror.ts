@@ -48,6 +48,13 @@ export interface LifecycleMirrorEntry {
   reason?: string
   /** Event time for a transition, observation time for a pulled state. */
   at: number
+  /**
+   * When the owner entered `value` (epoch milliseconds), as it says it. A job's `running` carries it only on a server
+   * that tells a queued job from a running one (#1407): a pulled state's `since`, or the time of a transition into or
+   * out of `queued`. Its presence is what says the `running` is the owner's word and not a guess (`backgroundStatus`);
+   * its value is when the run began (`backgroundRunningAt`).
+   */
+  since?: number
 }
 
 export type LifecycleTransition = EventLifecycleTransitioned["properties"]
@@ -73,6 +80,11 @@ export function entryFromTransition(transition: LifecycleTransition): LifecycleM
     phase: transition.phase,
     reason: transition.reason,
     at: transition.timestamp,
+    // Only a server that reports the queue moves a job into or out of `queued`; the pull that follows the event
+    // brings its own `since` and replaces this one.
+    ...(transition.domain === "job" && (transition.from === "queued" || transition.to === "queued")
+      ? { since: transition.timestamp }
+      : {}),
   }
 }
 
@@ -89,6 +101,7 @@ export function entryFromState(state: LifecycleState, sessionID: string | undefi
     phase: state.phase,
     // The wire encodes non-finite numbers as strings; a finite time is the only useful one.
     at: typeof state.observedAt === "number" ? state.observedAt : Date.now(),
+    ...(typeof state.since === "number" && Number.isFinite(state.since) ? { since: state.since } : {}),
   }
 }
 

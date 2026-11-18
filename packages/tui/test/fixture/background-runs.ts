@@ -12,10 +12,13 @@ import type { useSync } from "../../src/context/sync"
  *
  * - `running`: the job runs and the child is busy.
  * - `queued`: the job runs and the child has not run a turn (the inference `backgroundStatus` documents).
+ * - `started`: the server reports the queue (#1407) and says the job `running`, with the moment it began, while its
+ *   child has not been busy or called a tool yet: a run that just got its slot, which the inference calls queued.
+ * - `waiting`: the server reports the queue and says the job `queued`.
  * - `completed`, `error`: the server reported the end of the run in the result message.
  * - `unknown`: nothing says how it stands (a cold start).
  */
-export type RunState = "running" | "queued" | "completed" | "error" | "unknown"
+export type RunState = "running" | "queued" | "started" | "waiting" | "completed" | "error" | "unknown"
 
 type Sync = Pick<ReturnType<typeof useSync>, "set">
 
@@ -31,6 +34,8 @@ export interface RunSeed {
   readonly background?: boolean
   /** Epoch milliseconds; later starts are newer. */
   readonly startedAt?: number
+  /** For a `started` run: the moment it got its slot. Defaults to `startedAt`, as a run that never waited. */
+  readonly runningAt?: number
 }
 
 /** The child session of a run. */
@@ -67,6 +72,28 @@ export function seedRun(sync: Sync, input: RunSeed) {
   sync.set("taskIndex", id, entry)
   if (input.state === "running" || input.state === "queued") {
     const job: LifecycleMirrorEntry = { domain: "job", id, value: "running", phase: "running", at: startedAt }
+    sync.set("lifecycle", `job:${id}`, job)
+  }
+  if (input.state === "started") {
+    const job: LifecycleMirrorEntry = {
+      domain: "job",
+      id,
+      value: "running",
+      phase: "running",
+      at: startedAt,
+      since: input.runningAt ?? startedAt,
+    }
+    sync.set("lifecycle", `job:${id}`, job)
+  }
+  if (input.state === "waiting") {
+    const job: LifecycleMirrorEntry = {
+      domain: "job",
+      id,
+      value: "queued",
+      phase: "pending",
+      at: startedAt,
+      since: startedAt,
+    }
     sync.set("lifecycle", `job:${id}`, job)
   }
   if (input.state === "running") {

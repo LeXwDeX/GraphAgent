@@ -709,6 +709,7 @@ export type LifecycleState = {
   settled: boolean
   source: "live" | "persisted" | "derived"
   observedAt: number | "Infinity" | "-Infinity" | "NaN"
+  since?: number | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type SubtaskPartInput = {

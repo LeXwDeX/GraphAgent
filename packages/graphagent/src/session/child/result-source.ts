@@ -129,7 +129,12 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
               ...(initiator === "user" && result?.command !== undefined ? { command: result.command } : {}),
               title: result?.title ?? "background task",
               status: outcome.type,
+              // The run was registered, and queued, at `time_created`; `runningAt` is when it began, after the wait
+              // for its slot. Only a result this process saw the run end in has it (the ledger row does not keep it):
+              // one delivered after a restart, or of a run lost with its process, has none, and a reader times the
+              // run from `startedAt`.
               startedAt: row.time_created,
+              ...(report?.runningAt === undefined ? {} : { runningAt: report.runningAt }),
               endedAt: row.time_ended ?? now,
             },
           },

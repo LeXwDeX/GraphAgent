@@ -16,6 +16,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Lifecycle } from "@/lifecycle/service"
 import { BackgroundJob } from "./job"
 import { readPersistedJob, type PersistedJob } from "./persist"
+import { BackgroundQueue } from "./queue"
 
 /**
  * Registers the job domain with the lifecycle service (#1069 P7).
@@ -24,7 +25,8 @@ import { readPersistedJob, type PersistedJob } from "./persist"
  * This layer only exposes it through `Lifecycle.get`, so a waiter (goal await,
  * inbox, TUI) can validate a `StateRef` against the shared contract instead of
  * keeping a private copy. Registration is a build-time side effect; every read
- * hits the live registry first.
+ * hits the live registry first. The one refinement is the queue of a task job
+ * (`BackgroundQueue`): `queued` while its child run waits for a slot.
  *
  * The registry is process-local and instance-scoped, so after a restart it no
  * longer knows the jobs of the previous process. A miss falls back to the
@@ -71,7 +73,13 @@ export const layer = Layer.effectDiscard(
       read: (id) =>
         Effect.gen(function* () {
           const job = yield* jobs.get(id)
-          if (job) return Option.some(stateOf({ ref: ref("job", id), value: job.status, source: "live" }))
+          if (job) {
+            // A task job is `queued` while its child run waits for a slot (#1407): the run's state, not the registry's.
+            const observed = BackgroundQueue.observe(job)
+            return Option.some(
+              stateOf({ ref: ref("job", id), value: observed.value, source: "live", since: observed.since }),
+            )
+          }
           const row = yield* readPersistedJob(db, id).pipe(Effect.orDie)
           if (!row || !isJobStatus(row.status)) return Option.none<LifecycleState<"job">>()
           const instance = yield* InstanceState.context

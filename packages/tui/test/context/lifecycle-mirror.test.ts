@@ -50,6 +50,30 @@ describe("entryFromTransition", () => {
     })
   })
 
+  test("a transition into or out of `queued` is stamped with its time: only a server that reports the queue makes one (#1407)", () => {
+    const base = { domain: "job", stateID: "ses_a", sessionID: "ses_a", phase: "pending", timestamp: 2_400 } as const
+    expect(entryFromTransition({ ...base, to: "queued" })).toMatchObject({ value: "queued", since: 2_400 })
+    expect(entryFromTransition({ ...base, from: "queued", to: "running", phase: "running" })).toMatchObject({
+      value: "running",
+      since: 2_400,
+    })
+    expect(entryFromTransition({ ...base, from: "queued", to: "cancelled", phase: "cancelled" }).since).toBe(2_400)
+  })
+
+  test("any other transition leaves `since` out: nothing says the owner reports the queue", () => {
+    const base = { domain: "job", stateID: "ses_a", sessionID: "ses_a", timestamp: 2_400 } as const
+    // An older server starts a job `running`, with no queue before it.
+    const started = entryFromTransition({ ...base, to: "running", phase: "running" })
+    expect(started).not.toHaveProperty("since")
+    expect(entryFromTransition({ ...base, from: "running", to: "completed", phase: "succeeded" })).not.toHaveProperty(
+      "since",
+    )
+    // Another domain's `queued` is not a job's: a node waits for its slot in the DAG's own vocabulary.
+    expect(
+      entryFromTransition({ domain: "node", stateID: "n", to: "queued", phase: "pending", timestamp: 1 }),
+    ).not.toHaveProperty("since")
+  })
+
   test("a transition without a session or reason leaves them out", () => {
     const next = entryFromTransition({
       domain: "turn",
@@ -84,6 +108,17 @@ describe("entryFromState", () => {
       phase: "paused",
       at: 900,
     })
+  })
+
+  test("carries `since` when the owner reports it, and leaves it out when it does not (#1407)", () => {
+    const job: LifecycleState = { ...state, domain: "job", value: "running", phase: "running", source: "live" }
+    expect(entryFromState({ ...job, since: 4_000 }, "ses_a")).toMatchObject({ value: "running", since: 4_000 })
+    expect(entryFromState({ ...job, since: 0 }, "ses_a")).toMatchObject({ since: 0 })
+    // An older server has no such field.
+    expect(entryFromState(job, "ses_a")).not.toHaveProperty("since")
+    // The wire encodes a non-finite number as a string: it says nothing.
+    expect(entryFromState({ ...job, since: "NaN" }, "ses_a")).not.toHaveProperty("since")
+    expect(entryFromState({ ...job, since: "Infinity" }, "ses_a")).not.toHaveProperty("since")
   })
 
   test("a non-finite observation time falls back to a finite one", () => {

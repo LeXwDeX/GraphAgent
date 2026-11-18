@@ -223,6 +223,60 @@ describe("BackgroundJob", () => {
     }),
   )
 
+  it.live("tells the sink whether a job moved while it still waited to begin, and leaves the job alone (#1407)", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const waiting = new Set(["queued_job", "explosive_job"])
+      const moves: Array<{
+        id: string
+        from: BackgroundJob.Status | null
+        to: BackgroundJob.Status
+        waiting?: boolean
+      }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        waiting: (info) => {
+          if (info.id === "explosive_job") throw new Error("the probe failed")
+          return waiting.has(info.id)
+        },
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            moves.push({
+              id: transition.id,
+              from: transition.from,
+              to: transition.to,
+              ...(transition.waiting === undefined ? {} : { waiting: transition.waiting }),
+            })
+          }),
+      }).pipe(Scope.provide(scope))
+
+      // Started waiting, cancelled before it began: both the start and the end say it was waiting.
+      yield* jobs.start({ id: "queued_job", type: "test", run: Effect.never })
+      expect((yield* jobs.get("queued_job"))?.status).toBe("running")
+      yield* jobs.cancel("queued_job")
+      // A job that does not wait says nothing of it, and neither does one that has begun by the time it ends.
+      yield* jobs.start({ id: "plain_job", type: "test", run: Effect.succeed("ok") })
+      yield* jobs.wait({ id: "plain_job" })
+      // The probe is an observation: when it fails the job still starts and ends, with nothing said of a wait.
+      yield* jobs.start({ id: "explosive_job", type: "test", run: Effect.succeed("ok") })
+      expect((yield* jobs.wait({ id: "explosive_job" })).info?.status).toBe("completed")
+
+      const of = (id: string) => moves.filter((move) => move.id === id).map(({ id: _, ...move }) => move)
+      expect(of("queued_job")).toEqual([
+        { from: null, to: "running", waiting: true },
+        { from: "running", to: "cancelled", waiting: true },
+      ])
+      expect(of("plain_job")).toEqual([
+        { from: null, to: "running" },
+        { from: "running", to: "completed" },
+      ])
+      expect(of("explosive_job")).toEqual([
+        { from: null, to: "running" },
+        { from: "running", to: "completed" },
+      ])
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
   it.live("emits exactly one terminal transition when completion, cancel and settling race", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()
