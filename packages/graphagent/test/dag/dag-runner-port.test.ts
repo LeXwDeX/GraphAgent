@@ -744,7 +744,8 @@ describe("the loop and the delivery write runner commands through the port only 
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/.*$/gm, "")
 
-  for (const file of ["loop.ts", "delivery.ts", "reconciler.ts"])
+  // #1344: `teardown.ts` holds the plain service for the failure and the settlement of a workflow, so it is held to the same rule.
+  for (const file of ["loop.ts", "teardown.ts", "delivery.ts", "reconciler.ts"])
     test(`${file} calls no runner command on the plain service`, () => {
       const plain = new RegExp(`\\bdag\\s*\\.\\s*(${RunnerPort.COMMANDS.join("|")})\\b`, "g")
 

@@ -120,6 +120,7 @@ export async function runDagCoreCoverageGate() {
         { file: "src/dag/runtime/control-handlers.ts", lines: 100, functions: 100 },
         { file: "src/dag/runtime/replan-handler.ts", lines: 96, functions: 100 },
         { file: "src/dag/runtime/message-continuation.ts", lines: 96, functions: 100 },
+        { file: "src/dag/runtime/teardown.ts", lines: 95, functions: 88 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },
         { file: "src/dag/runtime/spawn.ts", lines: 90, functions: 70 },
         { file: "src/dag/runtime/summary-publisher.ts", lines: 95, functions: 90 },
