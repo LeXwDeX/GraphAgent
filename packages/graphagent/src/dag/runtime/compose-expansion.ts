@@ -46,6 +46,11 @@ export const CAPACITY = "compose_capacity"
 /** The error class a slot fails with when its composer can no longer be used at all. */
 export const UNAVAILABLE = "compose_unavailable"
 
+/** What the expansion tells `Dag.extend` about its fragment: the nodes were compiled from blocks, so the compiler
+ * still owns `skip_ok` of the review decisions in the merged graph and the standard advisory leaves it out
+ * (#1413 did this for the model's own extend, #1556 for the engine's). */
+const BLOCK_COMPILED = { blockCompiled: true }
+
 export interface Input {
   /** The runner's writes: the entry's port, so a lost lease refuses them. */
   readonly port: Pick<Dag.Interface, "extend" | "nodeFailed">
@@ -116,7 +121,7 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     yield* giveUp(fallbackCollision)
     return
   }
-  const first = yield* port.extend(dagID, plan.nodes, fence).pipe(Effect.result)
+  const first = yield* port.extend(dagID, plan.nodes, fence, BLOCK_COMPILED).pipe(Effect.result)
   if (first._tag === "Success") {
     yield* reportDegraded(dagID, slot.id, plan)
     return
@@ -140,7 +145,7 @@ export const expand = Effect.fn("DagComposeExpansion.expand")(function* (input: 
     resolution.composer,
     `the expanded graph was rejected: ${message(first.failure)}`,
   )
-  const second = yield* port.extend(dagID, smaller.nodes, fence).pipe(Effect.result)
+  const second = yield* port.extend(dagID, smaller.nodes, fence, BLOCK_COMPILED).pipe(Effect.result)
   if (second._tag === "Success") {
     yield* reportDegraded(dagID, slot.id, smaller)
     return

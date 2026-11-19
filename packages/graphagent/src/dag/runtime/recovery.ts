@@ -32,7 +32,7 @@ import { SessionID } from "@/session/schema"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTransitionRejection } from "@graphagent/core/dag/core/types"
-import { reviewImplementationFingerprint, workspaceWritesOf } from "../review-lifecycle"
+import { reviewImplementationFingerprint, verdictEvidenceOf, workspaceWritesOf } from "../review-lifecycle"
 import { DagLocation } from "../location"
 import { InstanceRef } from "@/effect/instance-ref"
 import { resolveInputMapping } from "./eval"
@@ -1102,9 +1102,7 @@ export function recoveredSettlement(
   // Same evidence the spawn path passes: completed direct dependencies, read
   // from the node's durable edges.
   const dependsOn = rows.find((row) => row.id === nodeConfig.id)?.dependsOn ?? []
-  const evidence = rows
-    .filter((row) => dependsOn.includes(row.id) && row.status === "completed")
-    .map((row) => ({ nodeID: row.id, output: row.output }))
+  const evidence = verdictEvidenceOf(dependsOn, rows, nodeConfig.input_mapping)
   const arbitration = nodeConfig.review_arbitration
     ? {
         reviewArbitration: true as const,

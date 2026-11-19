@@ -690,11 +690,9 @@ function compileBlock(
     )
     const laneIDs = lanes.map((lane) => lane.id)
     const laneReviewMapping = Object.fromEntries(
-      descriptors.map((descriptor) => [
-        `${descriptor.suffix.replace(/-/g, "_")}_review`,
-        `${block.id}--${descriptor.suffix}.output`,
-      ]),
+      descriptors.map((descriptor) => [laneInputKey(descriptor), `${block.id}--${descriptor.suffix}.output`]),
     )
+    const hasPriorFindings = priorRound !== undefined && priorRound.findings.length > 0
     const lanesWithDecision = [
       ...lanes,
       node({
@@ -718,9 +716,10 @@ function compileBlock(
             : "Reject unsupported claims, deduplicate overlaps, and submit one structured result with verdict ACCEPT, REVISE, REJECT, or BLOCKED.",
           "Use ACCEPT only when no material required action remains: leave required_actions empty and list every required action a review lane raised in refuted as { node, index, reason } with the evidence that disproves it. The runtime rejects an ACCEPT that does neither.",
           "Whatever the verdict, submit dispositions covering every required action each lane raised ({ node, index, novelty: \"new\" or { dup_of: <prior ref> }, decision: upheld|refuted, evidence }) and resolved covering every prior finding ({ ref, how: fixed|refuted|still_open, evidence }).",
-          priorRound
+          laneNodeContract(block.id, descriptors, route !== undefined),
+          hasPriorFindings
             ? "The supplied prior findings are the previous round's unresolved and resolved items; adjudicate each one explicitly rather than restating it as new."
-            : "",
+            : 'No prior findings are supplied, so every novelty is "new" (dup_of takes the ref of a prior finding, never a finding of this round) and resolved is [].',
         ]
           .filter(Boolean)
           .join(" "),
@@ -857,6 +856,24 @@ interface ReviewLaneDescriptor {
   name: string
   contract: string
   schema: Record<string, unknown>
+}
+
+/** The `input_mapping` key a route's decision reads a lane's result under. */
+function laneInputKey(descriptor: ReviewLaneDescriptor) {
+  return `${descriptor.suffix.replace(/-/g, "_")}_review`
+}
+
+/**
+ * What the arbitration is told about the lanes its `dispositions` and `refuted` entries name (#1556). A route's
+ * decision gets the lane results under input keys and never sees a lane's node id, yet settlement checks the node
+ * id, so the prompt pairs each key with its lane. Without a route the context is keyed by node id already.
+ */
+function laneNodeContract(blockID: string, descriptors: readonly ReviewLaneDescriptor[], keyed: boolean): string {
+  const nodeOf = (descriptor: ReviewLaneDescriptor) => `${blockID}--${descriptor.suffix}`
+  const rule = "node is the lane's node id and index is the position in that lane's required_actions, counted from 0"
+  return keyed
+    ? `In dispositions and refuted, ${rule}, never the key its result arrives under in the context. Input key = lane node id: ${descriptors.map((descriptor) => `${laneInputKey(descriptor)} = ${nodeOf(descriptor)}`).join("; ")}.`
+    : `In dispositions and refuted, ${rule}. Lane node ids: ${descriptors.map(nodeOf).join(", ")}.`
 }
 
 /** One lane per lens, then one per skeptic. Skeptic angles rotate in a fixed

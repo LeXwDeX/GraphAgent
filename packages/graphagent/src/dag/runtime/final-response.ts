@@ -93,12 +93,25 @@ export function correctionPrompt(failed: { fix?: SchemaValidationFix; repairDeta
 
 /** Longest validator message a correction prompt quotes, in UTF-16 code units. */
 const REPAIR_DETAIL_MAX = 400
+/** Longest consistency error text a correction prompt quotes, in UTF-16 code units. */
+const CONSISTENCY_DETAIL_MAX = 2000
 
-/** Cut at `REPAIR_DETAIL_MAX` code units without splitting a surrogate pair. */
+/** Cut at `max` code units without splitting a surrogate pair. */
+function clipDetail(text: string, max: number): string {
+  if (text.length <= max) return text
+  const last = text.charCodeAt(max - 1)
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max)
+}
+
 function clipRepairDetail(text: string): string {
-  if (text.length <= REPAIR_DETAIL_MAX) return text
-  const last = text.charCodeAt(REPAIR_DETAIL_MAX - 1)
-  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? REPAIR_DETAIL_MAX - 1 : REPAIR_DETAIL_MAX)
+  return clipDetail(text, REPAIR_DETAIL_MAX)
+}
+
+/** The prompt of the one correction turn a block review decision earns when its dispositions contradict its lanes
+ * (#1556): the contract's own error text, so the model fixes exactly what the runtime refused. The text names every
+ * lane action it got wrong, so its bound is wider than a schema message's; the draft itself is never quoted. */
+export function consistencyCorrectionPrompt(errors: readonly string[]): string {
+  return `Your final response was rejected: ${clipDetail(errors.join("; "), CONSISTENCY_DETAIL_MAX)}. Do not redo the work. Correct exactly what is listed and resubmit the full result as exactly one JSON value, with no Markdown fence and no surrounding prose.`
 }
 
 /** Shared guarded persistence for final-response capture. */

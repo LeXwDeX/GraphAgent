@@ -23,6 +23,7 @@ import {
   reviewImplementationFingerprint,
   targetSensitiveNode,
   validateReviewExecutionInput,
+  verdictEvidenceOf,
   workspaceWritesOf,
 } from "../review-lifecycle"
 import { upstreamBlock } from "../templates/envelope"
@@ -246,12 +247,18 @@ export const make = (
           new Set(nodesSnapshot.map((candidate) => candidate.id)),
         )
         const fence = { nodeID, attempt: admissionAttempt }
-        const applied = yield* port.extend(dagID, plan.kind === "expand" ? plan.nodes : [plan.node], fence).pipe(
+        // The nodes it extends were compiled from blocks, so the compiler still owns `skip_ok` of the review
+        // decisions in the merged graph and the standard advisory leaves it out (#1413, #1556).
+        const fanOutExtend = { blockCompiled: true }
+        const planned = plan.kind === "expand" ? plan.nodes : [plan.node]
+        const applied = yield* port.extend(dagID, planned, fence, fanOutExtend).pipe(
           Effect.as(plan),
           Effect.catch((error) => {
             if (plan.kind !== "expand" || isTransitionRejection(error)) return Effect.fail(error)
             const declined = DagFanOut.declineFanOut(nodeConfig, `the expanded graph was rejected: ${error.message}`)
-            return port.extend(dagID, [declined.node], fence).pipe(Effect.as<DagFanOut.FanOutPlan>(declined))
+            return port
+              .extend(dagID, [declined.node], fence, fanOutExtend)
+              .pipe(Effect.as<DagFanOut.FanOutPlan>(declined))
           }),
           // A stale fence means the parent reshaped this writer first;
           // its WorkflowReplanned handler schedules the current graph.
@@ -547,9 +554,8 @@ export const make = (
           // #1030 D9-h: the node's effective workspace-write policy,
           // defaulted from its worker type when the spec does not say.
           workspaceWrites: workspaceWritesOf(nodeConfig, node.workerType),
-          verdictEvidence: nodesSnapshot
-            .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
-            .map((source) => ({ nodeID: source.id, output: source.output })),
+          // #1556: with the input keys the decision read each lane under, so settlement can name it by node id.
+          verdictEvidence: verdictEvidenceOf(node.dependsOn, nodesSnapshot, nodeConfig?.input_mapping),
           // #1031 M6: a block-compiled arbitration resolves prior
           // findings and, under the strict gate, may only ACCEPT when
           // every lens/skeptic lane completed.

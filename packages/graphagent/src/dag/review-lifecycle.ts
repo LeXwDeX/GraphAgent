@@ -6,7 +6,7 @@ export * as DagReviewLifecycle from "./review-lifecycle"
 import type { NodeConfig, WorkflowConfig } from "./dag"
 import type { PriorFinding } from "./blocks"
 import { isReadOnlyProfile, isReviewWorker, isWriterNode, nonWriterWorkerOverride } from "./blocks"
-import { evaluateCondition } from "./runtime/eval"
+import { evaluateCondition, parseInputMappingReference } from "./runtime/eval"
 import { normalizeOutput, verdictField } from "./runtime/verdict"
 
 /** The strict review gate. Deep mode always implies it; a standard-mode
@@ -150,6 +150,60 @@ export function validateReviewResult(output: unknown, currentFingerprint: string
 export interface VerdictEvidence {
   nodeID: string
   output: unknown
+  /** The `input_mapping` keys the node's whole output reached the decision under (`intent_review` for the lane
+   * `review--intent`). A block-compiled decision sees its lanes under these keys, never under their node ids. */
+  keys?: readonly string[]
+}
+
+/**
+ * The evidence a decision settles against: its completed direct dependencies, in row order, each with the input
+ * keys the decision read its whole output under. A key that is the node's own id (the default mapping) adds nothing.
+ */
+export function verdictEvidenceOf(
+  dependsOn: readonly string[],
+  rows: readonly { id: string; status: string; output: unknown }[],
+  inputMapping?: Readonly<Record<string, string>>,
+): VerdictEvidence[] {
+  return rows
+    .filter((row) => dependsOn.includes(row.id) && row.status === "completed")
+    .map((row) => {
+      const keys = Object.entries(inputMapping ?? {}).flatMap(([key, source]) => {
+        const reference = parseInputMappingReference(source)
+        return key !== row.id && reference.ok && reference.nodeID === row.id && reference.path.length === 0 ? [key] : []
+      })
+      return keys.length > 0 ? { nodeID: row.id, output: row.output, keys } : { nodeID: row.id, output: row.output }
+    })
+}
+
+/**
+ * A block-compiled decision reads its lanes under their input keys (`intent_review`) and the lane's node id
+ * (`review--intent`) never appears in its prompt context (#1556), so a model fills `node` of its `dispositions` and
+ * `refuted` entries with the key it was shown. Settlement rewrites such a key to the lane it names before the
+ * contract is checked and before the output is stored: quality counts and the next round's prior findings read the
+ * stored `node` as a lane node id. A lane's own node id passes unchanged, and any other value is left for the
+ * contract to report as an unknown lane.
+ */
+export function canonicalLaneNodes(output: unknown, evidence: readonly VerdictEvidence[]): unknown {
+  if (typeof output !== "object" || output === null || Array.isArray(output)) return output
+  const nodeIDs = new Set(evidence.map((item) => item.nodeID))
+  const lanes = new Map<string, string>()
+  for (const item of evidence)
+    for (const key of item.keys ?? []) if (!nodeIDs.has(key) && !lanes.has(key)) lanes.set(key, item.nodeID)
+  if (lanes.size === 0) return output
+  const rewritten: Record<string, unknown> = { ...output }
+  let changed = false
+  for (const field of ["dispositions", "refuted"]) {
+    const entries = rewritten[field]
+    if (!Array.isArray(entries)) continue
+    rewritten[field] = entries.map((entry): unknown => {
+      const node = structuredRecord(entry)?.node
+      const lane = typeof node === "string" ? lanes.get(node) : undefined
+      if (lane === undefined) return entry
+      changed = true
+      return { ...structuredRecord(entry), node: lane }
+    })
+  }
+  return changed ? rewritten : output
 }
 
 /**
