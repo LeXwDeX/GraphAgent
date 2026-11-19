@@ -28,6 +28,7 @@ export * as DagLocation from "./location"
 import { eq } from "drizzle-orm"
 import { execFileSync } from "node:child_process"
 import { realpathSync, statSync } from "node:fs"
+import { realpath, stat } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 import { Cause, Effect } from "effect"
 import { ChildProcess } from "effect/process"
@@ -49,6 +50,24 @@ import { InstanceRef } from "@/effect/instance-ref"
 export const canonicalDirectory = (directory: string): string => {
   try {
     return realpathSync(directory)
+  } catch {
+    return directory
+  }
+}
+
+/**
+ * #1583: `canonicalDirectory` that waits for the disk off the event loop, for the
+ * checks a caller that holds the workflow lock makes: the realpath when it
+ * resolves, else the raw path. `realpath` of `node:fs/promises` answers what
+ * `realpathSync` does for every path these checks hand it (a directory that
+ * exists or does not, a link, a link loop, a path too long); it differs only for
+ * the empty path and for a file followed by a separator or by `/.`, which
+ * neither the output of git nor a directory that was just found to exist can be.
+ * Never rejects.
+ */
+const canonicalDirectoryAsync = async (directory: string): Promise<string> => {
+  try {
+    return await realpath(directory)
   } catch {
     return directory
   }
@@ -145,6 +164,8 @@ const FINGERPRINT_GIT_TIMEOUT_MS = 20_000
 const FINGERPRINT_GIT_MAX_BUFFER = 64 * 1024 * 1024
 const FINGERPRINT_UNTRACKED_HASH_FILES = 200
 const FINGERPRINT_UNTRACKED_HASH_BYTES = 32 * 1024 * 1024
+// #1583: how many untracked files are looked at on the disk at once.
+const FINGERPRINT_STAT_BATCH = 64
 
 const gitOutput = (directory: string, args: string[], input?: string): string | undefined => {
   try {
@@ -206,10 +227,48 @@ export const gitHeadAsync = Effect.fn("DagLocation.gitHeadAsync")(function* (
 }, Effect.provide(AppProcess.defaultLayer))
 
 /**
+ * #1583: the metadata of the untracked paths, and the ones whose content is worth
+ * hashing, with the stats waited for off the event loop, a batch of them at a
+ * time so that a tree with many untracked files neither floods the thread pool
+ * nor takes much longer than the synchronous loop did. Every batch is decided
+ * before the next one is asked for, in the order of `paths`, as the synchronous
+ * loop decided one stat at a time, so the metadata and the hashed set are the
+ * same, and no more is held than that loop held. A path that cannot be looked at
+ * (deleted since git listed it, a link to nothing) is `missing`, as the `catch`
+ * of that loop took it. An interrupted caller no longer waits for the answer, so
+ * the batches stop at the next one instead of finishing a long listing for nobody.
+ */
+const lookAtUntracked = async (directory: string, paths: readonly string[], signal: AbortSignal) => {
+  const metadata: string[] = []
+  const hashable: string[] = []
+  let bytes = 0
+  for (let start = 0; start < paths.length && !signal.aborted; start += FINGERPRINT_STAT_BATCH) {
+    const batch = paths.slice(start, start + FINGERPRINT_STAT_BATCH)
+    const stats = await Promise.all(batch.map((path) => stat(join(directory, path)).catch(() => undefined)))
+    for (const [index, path] of batch.entries()) {
+      const info = stats[index]
+      if (!info) {
+        metadata.push(`${path}\0missing`)
+        continue
+      }
+      metadata.push(`${path}\0${info.size}\0${info.mtimeMs}\0${info.isFile() ? "file" : "other"}`)
+      if (!info.isFile() || path.includes("\n")) continue
+      if (hashable.length >= FINGERPRINT_UNTRACKED_HASH_FILES || bytes + info.size > FINGERPRINT_UNTRACKED_HASH_BYTES)
+        continue
+      bytes += info.size
+      hashable.push(path)
+    }
+  }
+  return { metadata, hashable }
+}
+
+/**
  * #944: identity of the untracked file set, respecting ignore rules.
  * Paths, sizes, and mtimes are always included; content hashes (git
  * hash-object) are added for a bounded number of files so an editor touch
  * with unchanged content does not change the value on ordinary trees.
+ *
+ * #1583: the per-file stats are waited for off the event loop (`lookAtUntracked`).
  */
 const untrackedFingerprint = Effect.fnUntraced(function* (
   directory: string,
@@ -221,22 +280,7 @@ const untrackedFingerprint = Effect.fnUntraced(function* (
     .filter((path) => path !== "")
     .sort()
   if (paths.length === 0) return "clean"
-  const metadata: string[] = []
-  const hashable: string[] = []
-  let bytes = 0
-  for (const path of paths) {
-    try {
-      const stat = statSync(join(directory, path))
-      metadata.push(`${path}\0${stat.size}\0${stat.mtimeMs}\0${stat.isFile() ? "file" : "other"}`)
-      if (!stat.isFile() || path.includes("\n")) continue
-      if (hashable.length >= FINGERPRINT_UNTRACKED_HASH_FILES || bytes + stat.size > FINGERPRINT_UNTRACKED_HASH_BYTES)
-        continue
-      bytes += stat.size
-      hashable.push(path)
-    } catch {
-      metadata.push(`${path}\0missing`)
-    }
-  }
+  const { metadata, hashable } = yield* Effect.promise((signal) => lookAtUntracked(directory, paths, signal))
   const hashed =
     hashable.length === 0
       ? undefined
@@ -312,12 +356,19 @@ export const isCleanWorktree = (directory: string): boolean => {
   return status !== undefined && status.trim() === ""
 }
 
-/** The canonical directories `git worktree list --porcelain` names, the main checkout first. */
-const worktreePaths = (text: string): string[] =>
+/** The directories `git worktree list --porcelain` names, as it spells them, the main checkout first. */
+const worktreeDirectories = (text: string): string[] =>
   text
     .split("\n")
     .filter((line) => line.startsWith("worktree "))
-    .map((line) => canonicalDirectory(line.slice("worktree ".length).trim()))
+    .map((line) => line.slice("worktree ".length).trim())
+
+/** The canonical directories `git worktree list --porcelain` names, the main checkout first. */
+const worktreePaths = (text: string): string[] => worktreeDirectories(text).map((line) => canonicalDirectory(line))
+
+/** `worktreePaths` that waits for the disk off the event loop (#1583), the directories in the same order. */
+const worktreePathsAsync = (text: string): Promise<string[]> =>
+  Promise.all(worktreeDirectories(text).map((line) => canonicalDirectoryAsync(line)))
 
 /**
  * #949: every worktree of the repository that contains `directory` (the main
@@ -359,22 +410,61 @@ const gitCommonDir = (directory: string): string | undefined => {
 
 const invalidWorkspace = (reason: string): WorkspaceResolution => ({ _tag: "invalid", reason })
 
+type WorkspaceDirectory = { readonly directory: string } | { readonly reason: string }
+
+// The three reasons a workspace is refused without git, written once for
+// `workspaceDirectory` and `workspaceDirectoryAsync` so that the two cannot drift apart.
+const workspaceNotAbsolute = (workspace: string): WorkspaceDirectory => ({
+  reason: `workspace must be an absolute path, got "${workspace}"`,
+})
+const workspaceMissing = (workspace: string): WorkspaceDirectory => ({
+  reason: `workspace does not exist: "${workspace}"`,
+})
+const workspaceNotDirectory = (workspace: string): WorkspaceDirectory => ({
+  reason: `workspace is not a directory: "${workspace}"`,
+})
+
 /**
  * The checks of `resolveWorkspace` that need no git: the path is absolute and
  * names an existing directory. Returns its realpath, or the reason it is not one.
  */
-const workspaceDirectory = (workspace: string): { readonly directory: string } | { readonly reason: string } => {
-  if (!isAbsolute(workspace)) return { reason: `workspace must be an absolute path, got "${workspace}"` }
+const workspaceDirectory = (workspace: string): WorkspaceDirectory => {
+  if (!isAbsolute(workspace)) return workspaceNotAbsolute(workspace)
   let directory: string
   try {
     directory = realpathSync(workspace)
   } catch {
-    return { reason: `workspace does not exist: "${workspace}"` }
+    return workspaceMissing(workspace)
   }
   try {
-    if (!statSync(directory).isDirectory()) return { reason: `workspace is not a directory: "${workspace}"` }
+    if (!statSync(directory).isDirectory()) return workspaceNotDirectory(workspace)
   } catch {
-    return { reason: `workspace does not exist: "${workspace}"` }
+    return workspaceMissing(workspace)
+  }
+  return { directory }
+}
+
+/**
+ * #1583: `workspaceDirectory` for a caller that holds the workflow lock: the
+ * same checks in the same order with the same reasons, the realpath and the stat
+ * waited for off the event loop. The one input answered differently is a path
+ * that names a regular file followed by a separator or by `/.`: `realpathSync`
+ * resolves it as the file ("is not a directory") where `realpath` of
+ * `node:fs/promises` refuses it ("does not exist"); either way the workspace is
+ * refused. Never rejects.
+ */
+const workspaceDirectoryAsync = async (workspace: string): Promise<WorkspaceDirectory> => {
+  if (!isAbsolute(workspace)) return workspaceNotAbsolute(workspace)
+  let directory: string
+  try {
+    directory = await realpath(workspace)
+  } catch {
+    return workspaceMissing(workspace)
+  }
+  try {
+    if (!(await stat(directory)).isDirectory()) return workspaceNotDirectory(workspace)
+  } catch {
+    return workspaceMissing(workspace)
   }
   return { directory }
 }
@@ -405,12 +495,12 @@ export const resolveWorkspace = (workspace: string, ownerDirectory: string): Wor
 
 const gitCommonDirAsync = Effect.fnUntraced(function* (directory: string) {
   const text = (yield* gitOutputAsync(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))?.trim()
-  return text ? canonicalDirectory(text) : undefined
+  return text ? yield* Effect.promise(() => canonicalDirectoryAsync(text)) : undefined
 })
 
 const gitWorktreesAsync = Effect.fnUntraced(function* (directory: string) {
   const text = yield* gitOutputAsync(directory, ["worktree", "list", "--porcelain"])
-  return text === undefined ? undefined : worktreePaths(text)
+  return text === undefined ? undefined : yield* Effect.promise(() => worktreePathsAsync(text))
 })
 
 /**
@@ -419,13 +509,15 @@ const gitWorktreesAsync = Effect.fnUntraced(function* (directory: string) {
  * synchronous version's; every command is a child process of the app's process
  * runner, so waiting for git does not block the event loop, and each one is
  * bounded by the fingerprint's limits (the synchronous commands had none).
+ * #1583: the canonical-path and stat checks wait off the event loop as well
+ * (`workspaceDirectoryAsync`, and the canonical paths of what git names).
  * Never fails; only an interruption gets through.
  */
 export const resolveWorkspaceAsync = Effect.fn("DagLocation.resolveWorkspaceAsync")(function* (
   workspace: string,
   ownerDirectory: string,
 ): Effect.fn.Return<WorkspaceResolution, never, AppProcess.Service> {
-  const checked = workspaceDirectory(workspace)
+  const checked = yield* Effect.promise(() => workspaceDirectoryAsync(workspace))
   if ("reason" in checked) return invalidWorkspace(checked.reason)
   const { directory } = checked
   const ownerCommon = yield* gitCommonDirAsync(ownerDirectory)
@@ -529,27 +621,25 @@ const invalidExecution = (directory: string, reason: string): ExecutionLocation 
  */
 type ExecutionPrecheck = ExecutionLocation | { readonly _tag: "identity"; readonly directory: string }
 
-const executionPrecheck = (row: {
-  readonly directory: string
-  readonly executionDirectory?: string | null
-}): ExecutionPrecheck => {
+/** The directory a row's execution is judged on, and whether the row binds it explicitly. */
+const executionTarget = (row: { readonly directory: string; readonly executionDirectory?: string | null }) => {
   // An explicit binding is a string (including ""); null/absent means the
   // owner fallback. The two must not share the strict identity check: a
   // non-git owner directory is a valid execution location.
   const explicit = typeof row.executionDirectory === "string"
   const target = explicit ? row.executionDirectory : row.directory
-  if (target === "")
-    return invalidExecution(
-      target,
-      explicit ? "execution directory is empty" : "workflow has no recorded execution directory",
-    )
-  try {
-    if (!statSync(target).isDirectory()) return { _tag: "missing", directory: target }
-  } catch {
-    return { _tag: "missing", directory: target }
-  }
-  if (!explicit) return { _tag: "ok", directory: target }
-  const canonical = canonicalDirectory(target)
+  return { explicit, target }
+}
+
+// What `executionPrecheck` and `executionPrecheckAsync` decide from the target and what the disk told of
+// it, written once so that the two cannot drift apart.
+const emptyExecution = (target: string, explicit: boolean): ExecutionLocation =>
+  invalidExecution(target, explicit ? "execution directory is empty" : "workflow has no recorded execution directory")
+
+const missingExecution = (target: string): ExecutionLocation => ({ _tag: "missing", directory: target })
+
+/** An explicitly bound directory that exists, given its realpath: identical to the binding, with an owner to vouch for it. */
+const boundExecution = (row: { readonly directory: string }, target: string, canonical: string): ExecutionPrecheck => {
   if (canonical !== target) {
     return invalidExecution(
       target,
@@ -560,6 +650,41 @@ const executionPrecheck = (row: {
     return invalidExecution(target, "workflow has no owner directory to validate the workspace against")
   }
   return { _tag: "identity", directory: target }
+}
+
+const executionPrecheck = (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): ExecutionPrecheck => {
+  const { explicit, target } = executionTarget(row)
+  if (target === "") return emptyExecution(target, explicit)
+  try {
+    if (!statSync(target).isDirectory()) return missingExecution(target)
+  } catch {
+    return missingExecution(target)
+  }
+  if (!explicit) return { _tag: "ok", directory: target }
+  return boundExecution(row, target, canonicalDirectory(target))
+}
+
+/**
+ * #1583: `executionPrecheck` for a caller that holds the workflow lock: the same
+ * checks in the same order with the same verdicts, the stat and the canonical
+ * path waited for off the event loop. Never rejects.
+ */
+const executionPrecheckAsync = async (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): Promise<ExecutionPrecheck> => {
+  const { explicit, target } = executionTarget(row)
+  if (target === "") return emptyExecution(target, explicit)
+  try {
+    if (!(await stat(target)).isDirectory()) return missingExecution(target)
+  } catch {
+    return missingExecution(target)
+  }
+  if (!explicit) return { _tag: "ok", directory: target }
+  return boundExecution(row, target, await canonicalDirectoryAsync(target))
 }
 
 /** Resolve whether a workflow's execution directory can still be used. */
@@ -578,13 +703,15 @@ export const resolveExecution = (row: {
  * #1344: `resolveExecution` for a caller that holds the workflow lock. The
  * identity check of an explicit binding waits for git without blocking the event
  * loop (`resolveWorkspaceAsync`); the verdicts are the synchronous version's.
+ * #1583: the stat and the canonical path of the precheck wait off the event loop
+ * too (`executionPrecheckAsync`).
  * Never fails; only an interruption gets through.
  */
 export const resolveExecutionAsync = Effect.fn("DagLocation.resolveExecutionAsync")(function* (row: {
   readonly directory: string
   readonly executionDirectory?: string | null
 }): Effect.fn.Return<ExecutionLocation> {
-  const checked = executionPrecheck(row)
+  const checked = yield* Effect.promise(() => executionPrecheckAsync(row))
   if (checked._tag !== "identity") return checked
   const resolved = yield* resolveWorkspaceAsync(checked.directory, row.directory)
   if (resolved._tag === "invalid") return invalidExecution(checked.directory, resolved.reason)
