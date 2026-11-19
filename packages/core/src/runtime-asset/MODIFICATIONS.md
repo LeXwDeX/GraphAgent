@@ -32,3 +32,8 @@ below with the affected paths and a factual summary.
   migrated the legacy binary service to the RuntimeAsset interface.
 - 2026-08-09: Added desktop prebuild preparation, package verification,
   electron-builder resource embedding, and packaged sidecar asset discovery.
+- 2026-11-20: Added the optional descriptor `system` requirement: a system
+  executable is accepted only when its version probe (`--version` by default,
+  5 s limit, bounded output) reports at least `minimum`; a too-old or unreadable
+  executable falls through to the next source. The ripgrep descriptor requires
+  0.10.0, the oldest release with the flags the engine passes.
