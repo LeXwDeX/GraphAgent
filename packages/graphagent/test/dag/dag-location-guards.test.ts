@@ -961,7 +961,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
   // called the adoption itself) would bypass the single flight that keeps two adoptions from overwriting each other.
   it("every runtime entry is created by the adoption, and the event triggers reach it through reconcileAfter", () => {
     // #1344: the handlers split out of loop.ts are part of the loop for this contract.
-    const loopSource = ["loop.ts", "control-handlers.ts"]
+    const loopSource = ["loop.ts", "control-handlers.ts", "replan-handler.ts"]
       .map((file) => readFileSync(path.join(graphagentDagSrc, "runtime", file), "utf8"))
       .join("\n")
     const code = loopSource
