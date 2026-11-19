@@ -118,10 +118,11 @@ Context:
 
 ### The latest request and the todo note
 
-The latest user request is quoted only when the summary replaced its message,
-that is, when the retained tail does not hold it: `compaction.tail_turns` is 0,
-the latest turn does not fit the tail budget, or the tail starts inside that
-turn, after the request. A request in the tail is in context exactly as the user
+The latest user request is quoted unless the retained tail holds it. It is
+quoted when `compaction.tail_turns` is 0, the latest turn does not fit the tail
+budget, the tail starts inside that turn after the request, or an earlier
+compaction of the same turn already took the request out of the conversation
+the model sees. A request in the tail is in context exactly as the user
 wrote it, so the text neither quotes it a second time nor spends budget on it:
 a child session's task prompt then has the whole budget. The opening still
 speaks of the latest user request; it means the one in the conversation.
