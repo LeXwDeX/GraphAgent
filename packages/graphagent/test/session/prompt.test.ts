@@ -61,6 +61,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionInbox } from "../../src/session/inbox"
 import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
+import { AUTO_COMPACTION_LIMIT } from "../../src/session/turn/decide"
 import { estimateOverhead } from "../../src/session/overflow"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { explainFingerprintChange, fingerprintOf, StepMetricsRing } from "../../src/session/step-metrics"
@@ -2318,6 +2319,203 @@ it.instance("counts provider-rejected recoveries only while no step gets through
     expect(result.info.role).toBe("assistant")
     if (result.info.role === "assistant") expect(result.info.error).toBeUndefined()
     expect(yield* llm.hits).toHaveLength(10)
+  }),
+)
+
+// A window whose fixed request overhead sits near the trigger line (#1551): every step the provider reports lands past
+// the trigger, while the estimate after a summary counts only the messages, so a fresh summary never reads as
+// overflowing before the next step runs. The trigger is 20 000 tokens.
+function narrowTriggerCfg(url: string) {
+  return windowedCfg(url, { context: 40_000, output: 4_000 }, { auto: true, trigger_ratio: 0.5 })
+}
+const pastNarrowTrigger = { input: 25_000, output: 10 }
+
+function windowedCfg(
+  url: string,
+  limit: { context: number; output: number },
+  compaction: { auto: boolean; trigger_ratio?: number },
+) {
+  const config = providerCfg(url)
+  return {
+    ...config,
+    compaction,
+    provider: {
+      ...config.provider,
+      test: {
+        ...config.provider.test,
+        models: {
+          ...config.provider.test.models,
+          "test-model": { ...config.provider.test.models["test-model"], limit },
+        },
+      },
+    },
+  }
+}
+
+const compactionMarkers = (messages: SessionV1.WithParts[]) =>
+  messages.filter((message) => message.parts.some((part) => part.type === "compaction")).length
+
+it.instance("ends the turn before a fourth consecutive automatic compaction", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(narrowTriggerCfg)
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Bounded compaction streak" })
+    const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Error.type || !Schema.is(Session.Event.Error.data)(event.data))
+        return Effect.void
+      if (event.data.sessionID === chat.id && event.data.error) errors.push(event.data.error)
+      return Effect.void
+    })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* user(chat.id, "a request")
+    // More cycles than the limit allows: a loop that is not bounded would run them all.
+    for (let cycle = 0; cycle < 6; cycle++) {
+      yield* llm.text(`answer ${cycle}`, { usage: pastNarrowTrigger })
+      yield* llm.text(summaryText(`summary ${cycle}`))
+    }
+
+    const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
+    yield* off
+
+    expect(Exit.isFailure(result)).toBeTrue()
+    if (Exit.isFailure(result)) expect(SessionV1.ContextOverflowError.isInstance(Cause.squash(result.cause))).toBeTrue()
+    expect(errors).toContainEqual({
+      name: "ContextOverflowError",
+      data: { message: expect.stringContaining("repeated automatic compaction") },
+    })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(compactionMarkers(messages)).toBe(AUTO_COMPACTION_LIMIT)
+    // Four steps with the three summaries between them; the fourth step is the last request.
+    expect(yield* llm.hits).toHaveLength(7)
+    // The step that asked for the refused compaction answered normally: the error belongs to the turn, not to it.
+    const last = messages.at(-1)
+    expect(last?.info.role).toBe("assistant")
+    if (last?.info.role === "assistant") expect(last.info.error).toBeUndefined()
+  }),
+)
+
+it.instance("adds compactions before and after a step to the same consecutive count", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) =>
+      windowedCfg(url, { context: 10_000, output: 1_000 }, { auto: true }),
+    )
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Mixed compaction streak" })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* user(chat.id, "a request")
+    const pastTrigger = { input: 9_500, output: 10 }
+    // 1 after the first step; 2 before the next step, because the first summary alone is past the trigger; 3 after the
+    // second step. The third step asks for a fourth.
+    yield* llm.text("first answer", { usage: pastTrigger })
+    yield* llm.text(summaryText("oversized summary ".repeat(3_000)))
+    yield* llm.text(summaryText("short summary"))
+    yield* llm.text("second answer", { usage: pastTrigger })
+    yield* llm.text(summaryText("short summary"))
+    yield* llm.text("third answer", { usage: pastTrigger })
+    yield* llm.text(summaryText("never asked for"))
+
+    const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
+
+    expect(Exit.isFailure(result)).toBeTrue()
+    if (Exit.isFailure(result)) expect(SessionV1.ContextOverflowError.isInstance(Cause.squash(result.cause))).toBeTrue()
+    expect(compactionMarkers(yield* sessions.messages({ sessionID: chat.id }))).toBe(AUTO_COMPACTION_LIMIT)
+    expect(yield* llm.hits).toHaveLength(6)
+  }),
+)
+
+it.instance("starts counting again after a step that went through without asking for compaction", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(narrowTriggerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Compaction streak ends",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* user(chat.id, "a request")
+    // Three compactions in a row are allowed, and the step after them asks for none: the count starts over, so the
+    // second round is allowed three again. Six in all, with never more than three in a row.
+    for (let round = 0; round < 2; round++) {
+      for (let cycle = 0; cycle < AUTO_COMPACTION_LIMIT; cycle++) {
+        yield* llm.text(`answer ${round}.${cycle}`, { usage: pastNarrowTrigger })
+        yield* llm.text(summaryText(`summary ${round}.${cycle}`))
+      }
+      yield* llm.tool("glob", { pattern: "**/compaction-streak-missing" })
+    }
+    yield* llm.text("done")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") expect(result.info.error).toBeUndefined()
+    expect(compactionMarkers(yield* sessions.messages({ sessionID: chat.id }))).toBe(2 * AUTO_COMPACTION_LIMIT)
+    expect(yield* llm.hits).toHaveLength(2 * (2 * AUTO_COMPACTION_LIMIT + 1) + 1)
+  }),
+)
+
+it.instance("one abort while the compaction summary is being written ends the turn for good", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(narrowTriggerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const chat = yield* sessions.create({ title: "Abort during compaction" })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* user(chat.id, "a request")
+    yield* llm.text("answer", { usage: pastNarrowTrigger })
+    yield* llm.hang
+
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    // The answer, then the summary request that never gets one.
+    yield* llm.wait(2)
+    yield* waitForBusy(chat.id)
+    expect(compactionMarkers(yield* sessions.messages({ sessionID: chat.id }))).toBe(1)
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(fiber)
+
+    expect((yield* status.get(chat.id)).type).toBe("idle")
+    const settled = yield* sessions.messages({ sessionID: chat.id })
+    // Nothing starts again behind the abort: no new request, message or compaction.
+    yield* Effect.sleep(300)
+    expect(yield* llm.hits).toHaveLength(2)
+    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(settled.length)
+    expect(compactionMarkers(settled)).toBe(1)
+    expect((yield* status.get(chat.id)).type).toBe("idle")
+  }),
+)
+
+it.instance("one abort right after a compaction finished ends the turn before the next step goes on", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(narrowTriggerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const chat = yield* sessions.create({ title: "Abort after compaction" })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* user(chat.id, "a request")
+    yield* llm.text("answer", { usage: pastNarrowTrigger })
+    yield* llm.text(summaryText("summary"))
+    yield* llm.hang
+
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    // The answer, the summary, then the step that follows the compaction and never gets an answer.
+    yield* llm.wait(3)
+    yield* waitForBusy(chat.id)
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(fiber)
+
+    expect((yield* status.get(chat.id)).type).toBe("idle")
+    const settled = yield* sessions.messages({ sessionID: chat.id })
+    yield* Effect.sleep(300)
+    expect(yield* llm.hits).toHaveLength(3)
+    expect(yield* sessions.messages({ sessionID: chat.id })).toHaveLength(settled.length)
+    expect(compactionMarkers(settled)).toBe(1)
+    expect((yield* status.get(chat.id)).type).toBe("idle")
   }),
 )
 
