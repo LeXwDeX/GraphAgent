@@ -23,9 +23,10 @@
 packages/tui/src/
   app.tsx               # provider 树与 AppFrame 装配（F1 3.3）
   shell/                # 骨架（F1）：app-frame、top-bar、footer（及 footer-status、dag-indicator、hook-progress）、
-                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行，F6 的 PR 行与提醒行）；bottom-zone（F3）；
+                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行，F6 的 PR 行与提醒行，#1618 的信任行）；bottom-zone（F3）；
                         #   subagent-path（子 agent 视图的顶栏路径与溢出折叠，F5；后台运行的标签见 6.4 的“子 agent 视图的后台标签”，#1058）；
                         #   pr-line.tsx（F6：PR 行、提醒行与状态带选行的纯布局函数）；
+                        #   trust-line.ts（#1618：状态带信任警示行的纯布局，加上它数的条数）；
                         #   background-mark.ts（#1058：状态带的后台标记与后台行的纯布局，状态带与抽屉共用其中的后台运行计数与命名）；
                         #   pr-tracker.ts、pr-tracker-context.tsx（F6：PR 与提醒的跟踪，状态带只经后者读它）
   panel/                # 面板模板与具体面板（F3）：
@@ -69,7 +70,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 
 目录职责（一句话）与落地 Issue：
 
-- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；F5 已落 `subagent-path`（子 agent 视图顶栏路径的纯布局函数，顶栏与页脚的子 agent 分支用它）；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），PR 行、提醒行与它们的纯布局 `pr-line.tsx` 已落地（F6，#1036），信任行未落地。`pr-tracker.ts` 是 PR 与提醒的跟踪（交接判断、警示保留、`ticker.at` 一次性回调、toast 都在这里），`pr-tracker-context.tsx` 是状态带读它的只读接口；状态带只排版 tracker 给出的结果。
+- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；F5 已落 `subagent-path`（子 agent 视图顶栏路径的纯布局函数，顶栏与页脚的子 agent 分支用它）；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），PR 行、提醒行与它们的纯布局 `pr-line.tsx` 已落地（F6，#1036），信任行与它的纯布局 `trust-line.ts` 已落地（#1618）。`pr-tracker.ts` 是 PR 与提醒的跟踪（交接判断、警示保留、`ticker.at` 一次性回调、toast 都在这里），`pr-tracker-context.tsx` 是状态带读它的只读接口；状态带只排版 tracker 给出的结果。
   - 输入框（`Prompt`）画在 `bottom-zone` 的输入框槽里：主区 → 状态带槽 → 输入框 → 页脚，抽屉只覆盖主区（F4 PR0，#1032）。`home`、`session` 路由在 setup 里调用 `useBottomZoneOptional()?.setComposer({ render })` 装入自己的 `Prompt`（草稿、提交、焦点的接线仍留在路由里），卸载时调用返回的撤销函数（只撤销自己装的那一份）。`render` 在槽里创建，不在路由的 provider 树里，只能读到应用级 context；路由自己提供的（会话的 `LocationProvider`，`@` 文件搜索靠它定位目录）要在 `render` 里重新提供。
   - 输入框的外形与高度（#1616）：一个圆角框，框内左边是宽 2 的 `›` 列（独立 `<text>`，shell 模式为 `$`），右边是 textarea。textarea 高 = 折行后的行数（按显示宽度），下限 1，上限 `prompt.max_height`（默认 `max(6, floor(终端高 / 3))`，随终端高度变化）；框高 = textarea 高 + 2（上下边框），空闲时 3 行。到上限后框不再增高，textarea 内部滚动；`›` 固定在框的第一行，续行与首行文字左对齐。`editing()` 的状态行画在框内最上面，另占 1 行，不计入上限（框高 = textarea 高 + 3）。`test/prompt/composer-height.test.tsx` 固定这些数字，改规则要同时改它。
   - `AppFrame` 的 `statusBand`、`bottomZone`、`drawer` 经 `Slot` 只构造一次：直接写 `<Show when={props.x}>{props.x}</Show>` 会把 prop 里的 JSX 构造两次，多出来的一份不上屏却一直在跑（面板、输入框、key layer 都会重复）。
@@ -298,9 +299,9 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 状态带（`shell/status-band.tsx`，单文件）：
 
-- 高度 0–2 行，不占用时高度为 0，不留空行（画不出内容的行同样不占行）。属于根会话；子 agent 视图显示根会话的工作流、目标、PR 与提醒；home 不显示。
-- 窄终端（< 100 列）合并为一行。行的优先级与让位顺序以 F4（#1032）方案 1 和 F6（#1036）2.2 为准：DAG 行行尾先让位的是后台标记（#1058）→ `/dag` 提示 → 预算段 → 费用 → 并发段 → 阶段名 → 计数压缩 → 标题截断；进度条与模式标记（≤ 8 列）、非警示 PR 短标记（≤ 14 列）不让位。PR 警示态一定单独占一行，窄终端单行时 PR 警示 > DAG > 目标。行的优先级与选取由 `pr-line.tsx` 的 `chooseBandRows` 统一给出，见下面“PR 行与提醒行”。
-- 只读：点击 DAG 行只打开 `/dag`；点击 PR 行只用系统浏览器打开 URL；点击后台标记或后台行只打开 `/agents`。
+- 高度 0–2 行，不占用时高度为 0，不留空行（画不出内容的行同样不占行）。属于根会话；子 agent 视图显示根会话的工作流、目标、PR 与提醒（信任行是项目级的，各视图相同）；home 不显示。
+- 窄终端（< 100 列）合并为一行。行的优先级与让位顺序以 F4（#1032）方案 1 和 F6（#1036）2.2 为准：DAG 行行尾先让位的是后台标记（#1058）→ `/dag` 提示 → 预算段 → 费用 → 并发段 → 阶段名 → 计数压缩 → 标题截断；进度条与模式标记（≤ 8 列）、非警示 PR 短标记（≤ 14 列）不让位。信任警示行（#1618）排在最前；PR 警示态一定单独占一行，窄终端单行时信任警示 > PR 警示 > DAG > 目标。行的优先级与选取由 `pr-line.tsx` 的 `chooseBandRows` 统一给出，见下面“PR 行与提醒行”与“信任行”。
+- 只读：点击 DAG 行只打开 `/dag`；点击 PR 行只用系统浏览器打开 URL；点击后台标记或后台行只打开 `/agents`；点击信任行只打开 `/trust`。
 - DAG 行（F4 PR2）：显示策略 kv `dag_band`（`auto` 默认，有活跃或未确认失败的工作流才显示；`always`；`hidden`），`always` 且没有工作流时显示一行“没有工作流”；`/dag` 面板（panel id `dag`）打开时隐藏，目标行不受影响。主工作流用 `selectMainWorkflow`，其余折叠成行尾 `+N 个`；用户在面板里选过、打开过的工作流记在 `sync.dag.focus`（面板写，状态带只读）。当前波用 `dagCurrentWave`，进度条用 `layoutDagBar`，节点表未加载时按汇总计数画。点击 DAG 行经命令注册表执行 `dag.open`。状态带由 `app.tsx` 以表达式传给 `AppFrame` 的 `statusBand`，不经 memo：槽在 `BottomZoneProvider` 里创建它，它才读得到面板栈。让位（预算为正常档时；警告与耗尽档的例外见下）：先去后台标记（#1058），再去 `/dag` 提示，再预算、tokens、并发，再 `+N 个`，再波次，再等待主 agent，再把计数压成 `n/m`，再把标题截到 12 列；这之后进度条才收窄，并取走剩余的全部宽度。颜色：行首 `◆` 用 `primary`，进度条按状态 token，说明文字 `textMuted`，分隔符与提示 `textDim`，失败数 `error`、暂停 `statusPaused`；运行中的数量不用品牌色。
 - DAG 模式的显示（F4 PR4，#1032 7；只读，数据都由数据层的现成切片派生，状态带不自己取数）：行尾自左向右依次是等待主 agent（`warning`）、模式标记、用量段、`+N 个`、`/dag` 提示。
   - 模式标记：模式取根会话自己的 `dagMode`（`session.updated` 维护）；开时 `模式开`（`text`），关而有工作流在跑（`running`、`stepping`）时暗色 `模式关`（`textDim`），其余情况没有标记；至多 8 列，不让位，只有窄到进度条也放不下时才最后去掉，不用品牌色。
@@ -316,17 +317,24 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - 提示行让位：槽行上折叠提示取代 `o` 详情提示（键本身仍可用）；窄于 120 列（`SLOT_REQUEST_HINT_WIDTH`）时 `i` 提示也让位，仍保留关闭提示。
   - 进度条、计数与当前波仍按全部节点算，不论折叠；行上的波号不重排，整波折在槽下时，摘要里的波次可能没有对应的可见行。
   - 只读：折叠与展开只改视图，`dag.*` 写请求与 `session.command` 均为 0；`test/panel/dag.test.tsx` 的 `the panel is read-only` 用例覆盖。
-- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，按下面的优先级取第一行，没有更高的行时才显示目标行；宽终端有 PR 警示行和 DAG 行时目标行让位给抽屉（`DrawerGoal` 始终显示根会话的目标）。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。缺目标文字或缺状态的目标体（`isGoalShown` 为假，含服务端把“没有目标”回成 null 的情形）不画行、不占高度，也不抛错：行布局里抛出的错误会让状态带所有行停止更新。
+- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，按下面的优先级取第一行，没有更高的行时才显示目标行；宽终端有 PR 警示行和 DAG 行时目标行让位给抽屉（`DrawerGoal` 始终显示根会话的目标）；有信任行时，信任行之外只再取排在最前的一行，所以有 DAG 行、PR 警示行或 PR 行时目标行同样让位，只有信任行加目标行时两行同在。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。缺目标文字或缺状态的目标体（`isGoalShown` 为假，含服务端把“没有目标”回成 null 的情形）不画行、不占高度，也不抛错：行布局里抛出的错误会让状态带所有行停止更新。
 - PR 行与提醒行（F6，#1036 2）：数据来自 `usePrTracker()` 的 `items(root)`、`reminder(root)`（根会话；没有 provider 时没有 PR、没有提醒）。状态带不算 PR 状态与时间，只排版 tracker 给出的结果，也不订阅任何时钟。纯布局都在 `shell/pr-line.tsx`（`layoutPrRow`、`layoutReminderRow`、`prTailText`、`prOpenUrl`、`chooseBandRows`），测试在 `test/shell/pr-line.test.ts`。
-  - 选行：优先级 PR 警示 > DAG > PR（非警示，只在没有 DAG 行时）> 目标 > 提醒，至多 2 行，窄终端（< 100 列）只取第一行；画不出内容（宽度为 0）的行不占行。有 DAG 行且 PR 都非警示时，PR 不单独成行，`prTailMark` 的短标记（≤ 14 列，`textMuted`）作为不让位的一组接在 DAG 行行尾（`/dag` 提示之后），与模式标记一样只在最后一级（超出规格的极窄终端）让位；`dag_band=always` 的“没有工作流”行同样带它。有 PR 警示且有 DAG 行时，宽终端是 PR 警示行加 DAG 行，窄终端只有 PR 警示行；被警示挤出窄状态带的工作流不再向 `sync.dag.watch` 声明。`/dag` 面板打开与 `dag_band` 只管 DAG 行，PR 行和提醒行与目标行一样不受影响。
+  - 选行：优先级 信任警示（#1618）> PR 警示 > DAG > PR（非警示，只在没有 DAG 行时）> 目标 > 提醒，至多 2 行，窄终端（< 100 列）只取第一行；画不出内容（宽度为 0）的行不占行。有 DAG 行且 PR 都非警示时，PR 不单独成行，`prTailMark` 的短标记（≤ 14 列，`textMuted`）作为不让位的一组接在 DAG 行行尾（`/dag` 提示之后），与模式标记一样只在最后一级（超出规格的极窄终端）让位；`dag_band=always` 的“没有工作流”行同样带它。有 PR 警示且有 DAG 行时，宽终端是 PR 警示行加 DAG 行，窄终端只有 PR 警示行；有信任行时它是第一行，宽终端是信任行加其余里排在最前的一行，窄终端只有信任行。被信任行或 PR 警示挤出状态带的工作流不再向 `sync.dag.watch` 声明（`SessionStatusBand` 的 `watched` 按 `dagShown()` 判定，`test/shell/status-band.test.tsx` 的“信任行”各组守着这一点）。`/dag` 面板打开与 `dag_band` 只管 DAG 行，PR 行和提醒行与目标行一样不受影响。
   - PR 行：一个 PR 写成 `PR #1035  ✓ 通过 · agent 处理中`，标签 `textMuted`、编号 `text`，结果与说明各用 `prLineState` 给的 token，分隔符 `textDim`；警示态（`tone` 为 `warning`）标签与编号用 `warning`；监视中是 `CI 4/6` 或“等待 CI”（`textMuted`）。多个 PR 压成 `PR !#1040 ~#1036 ✓#1035 +2`（`prCompact`，警示在前，有警示用 `warning`，否则 `textMuted`），放不下的计入 `+k`。放不下时从行尾截断（`truncateCells`），先截说明，再截结果；只用主题 token，不用 `primary`；`ambiguous_width` 为 1 和 2 时都不超宽。
   - 文字与语言（#1409）：tracker 保留与比较的只有事实（`pr/state.ts` 的 `PrLineFacts`：kind、outcome、标志，加上 PR 编号与 CI 计数），不保存译文；服务端条目消失后保留的常驻警示就是当时那份事实的纯拷贝。文字由 `prLineWords` 在画行时经 `t()` 生成（`layoutPrRow`），toast 在弹出时生成，所以切换界面语言后常驻警示立即换成新语言。tracker 判定时不读 `t()`，语言切换不会让它重算：不换行、不弹 toast、不改变保留与消除；`sameItem` 只比 kind、outcome 和 CI 计数。
   - 提醒行：`提醒 · {time}后 · {text}`，到期为 `提醒 · 已到期 · {text}`（`reminder.band.in`、`reminder.band.due`），`textMuted`，到期用 `warning`；提醒文字在行尾，放不下时截它（经 `remoteLine` 去转义）。不可点击。
   - 点击 PR 行：用系统浏览器（`open`）打开第一个 PR（警示的在前）的 URL，只放行 `http`、`https`，选区守卫与点击 DAG 行相同，不产生任何请求；`open` 失败时没有可显示的出口，`.catch(() => {})` 留空。
+- 信任行（#1618，登记于 F4（#1032）方案 1 与 F6（#1036）2.2 的选行规则，落实 #1032 验收 29；纯布局在 `shell/trust-line.ts` 的 `layoutTrustRow(count, width, ambiguousWidth)` 与 `trustChangeCount(entries)`，测试在 `test/shell/trust-line.test.ts`）：自上次确认后新增或被改过的项目命令（hook、MCP、formatter 等）在确认之前暂停执行，这一行把条数说出来。
+  - 显示条件：数据来自 `sync.data.trust`（`ProjectTrustEntry[]`），条数 N 是 `state === "pending"` 且 `change !== undefined` 的条目数；N 为 0 不画行、不占高度。没有 `change` 的待决条目（首次访问项目）以及已信任、已拒绝的条目不计：它们只由页脚提醒与首次打开的信任面板（`app.tsx` 的 `trustPrompted`）覆盖。home 没有状态带，同样只有页脚。信任属于项目，不属于某个会话，所以子 agent 视图里这一行与主会话相同。
+  - 版面与颜色：`⚠ 项目命令有 {n} 处变化，未确认前暂停执行`，`/trust` 提示靠右（命令名，不翻译）；文案键 `trust.band.changed.one`、`trust.band.changed.many`，英文按单复数拆键，中文两键同文。`⚠` 与正文 `warning`，提示 `textDim`，不用品牌色。让位：先去 `/trust` 提示，再用 `truncateCells` 截正文，`⚠` 恒保留，宽到放不下 `⚠` 时不画；宽度全部走 `cellWidth`、`truncateCells`，`ambiguous_width` 为 1 和 2 时都不超宽。
+  - 选行与落位：信任行是警示行，优先级最高，所以不带后台标记：标记落到它下面第一条非警示行上，只有信任行时标记与后台行都不画（`pr-line.tsx` 的 `isWarning`）。窄终端只取第一行，所以只有信任行。
+  - 点击：整行可点，经命令注册表运行 `trust.open`（`useCommands().run("trust.open", { args: "", origin: "palette" })`，与点击 DAG 行运行 `dag.open` 同一做法；面板是 `manage` 模式，列出全部条目，只列变化条目的 `changed` 模式要另有一条可见命令，不在 #1618 内），有文本选区时不触发，点击本身不产生任何写请求，写入只发生在面板里提交决定时。`clickOf` 里 `trust` 对应 `openTrust`。
+  - 与页脚提醒的关系：两者并存，分工不同。页脚 `⚠ N 条项目命令未信任 · /trust`（`shell.footer.trust`）保持原样，计数是全部待决条目（含没有变化的首次条目），在 home 与会话页都在，信任行出现时也不撤；状态带信任行只在“有变化”时出现，是醒目的那一行。
+  - 预算：`store.message`、`store.part` 写入 0；空闲、无新事件时帧数 0；不订阅 `ticker`（不读时钟）；不注册 keymap layer；没有新增 `createEffect`，只有两个 `createMemo`（数条数、排版），条数是原始值，条目状态不变的 store 写入不会让它重新排版。
 - 后台标记与后台行（#1058 4）：数据来自根会话的后台 Task（`session/background.ts` 的 `backgroundItems`，状态取值 结果 > job > 摘要；排队是服务端 job 状态的 `queued`，见下面“后台运行的排队”）。只数运行中与排队中的后台运行（`running`、`queued`）：未知、已结束的运行、前台运行，以及 watch_pr、DAG、hook 都不计入。纯布局在 `shell/background-mark.ts`，选行与落位仍由 `chooseBandRows` 统一给出；状态带不订阅任何时钟，所以不显示耗时（耗时在抽屉）。
   - 标记：`◇ 后台 n`，有排队时 `◇ 后台 n·排k`（英文 `◇ bg n`、`◇ bg n·qk`，键 `background.band.mark`、`background.band.markQueued`），数字至多 99，`textMuted`。宽度 ≤ 12 列（`ambiguous_width` 为 2 时 ≤ 14 列，`◇` 与 `·` 为 Ambiguous）：带排队的写法超出预算时退回不带排队的写法（中文在 n ≥ 10 时），所以预算对任何计数成立，`test/shell/background-mark.test.ts` 在两种语言、两种宽度下核对。
-  - 落位：接在已选中的行里第一条非警示行的行尾，排在 PR 短标记之后。警示行不带它：PR 警示行，以及预算在警告或耗尽档的 DAG 行（`dagUsageAlert`，与 `DAG_ALERT_CHAIN` 同一判断）；信任行未落地，落地时同样不带。DAG 行与 `always` 的“没有工作流”行里它是最后一组，是 `DagLevel.background`，在两条让位链的最前，早于 `/dag` 提示让位，且整行放不下就不画；目标行、PR 行、提醒行在原有排版之外接它：只在行里剩得下两格间隔加标记时才接在行尾（目标行在 `/goal` 提示之后），剩不下就不画，不占目标文字、PR、提醒的任何一列。
-  - 后台行：只在没有任何别的行被选中时出现，优先级最低（有 PR 警示行时不出现）：`◇ 后台 n · kind 描述 · kind 描述 · +k`，行尾 `/agents`（`background.band.row` 只是其中的“后台 n”）；描述经 `remoteLine`，kind 至多 12 列。放不下时先截描述（每条至少留 6 列，较长的先截），再把第二项并入 `+k`，再去第一项，最后去 `/agents`。
+  - 落位：接在已选中的行里第一条非警示行的行尾，排在 PR 短标记之后。警示行不带它：PR 警示行，以及预算在警告或耗尽档的 DAG 行（`dagUsageAlert`，与 `DAG_ALERT_CHAIN` 同一判断）；信任行（#1618）同样不带：它是第一行，也是警示行。DAG 行与 `always` 的“没有工作流”行里它是最后一组，是 `DagLevel.background`，在两条让位链的最前，早于 `/dag` 提示让位，且整行放不下就不画；目标行、PR 行、提醒行在原有排版之外接它：只在行里剩得下两格间隔加标记时才接在行尾（目标行在 `/goal` 提示之后），剩不下就不画，不占目标文字、PR、提醒的任何一列。
+  - 后台行：只在没有任何别的行被选中时出现，优先级最低（有信任行或 PR 警示行时不出现）：`◇ 后台 n · kind 描述 · kind 描述 · +k`，行尾 `/agents`（`background.band.row` 只是其中的“后台 n”）；描述经 `remoteLine`，kind 至多 12 列。放不下时先截描述（每条至少留 6 列，较长的先截），再把第二项并入 `+k`，再去第一项，最后去 `/agents`。
   - 窄终端（< 100 列）既无标记也无后台行，抽屉的“后台任务”区块列出它们。`n` 为 0 时二者都消失，状态带因此为空则高度为 0。
   - 可见性：属于根会话，子 agent 视图同样显示。`dag_band=hidden` 与 `/dag` 面板打开只去掉 DAG 行（`target()` 的门控只管 DAG 行），标记落到余下的行上，没有余下的行时用后台行。
   - 点击：标记是行里独立的一段（`BandSpan.action` 为 `agents`，`BandLine` 把它画成自己的 `<text>`），点击标记和点击后台行都经命令注册表运行 `agent.subagents`（与点击 DAG 行运行 `dag.open` 同一做法，有选区时不触发）；点标记时该行自己的点击（`/dag`、PR 页面）不再触发。不产生任何请求。
@@ -487,7 +495,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 所有用户可见文字走 `t("key", params)`，包括命令标题与描述、面板标题与按键提示、toast、页脚、状态带、询问区、空状态、预填文字。命令分类等枚举用键，不用中文字面量。
 - 不翻译：代码标识符、命令名（`/new`）、键名、`/config` 语言行的选项文字（`简体中文`、`English`）。
-- 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`、`background.row.*`、`background.card.*`、`background.band.*`、`background.drawer.*`、`background.agents.*`、`background.prefill.*`、`background.toast.*`）。
+- 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`、`background.row.*`、`background.card.*`、`background.band.*`、`background.drawer.*`、`background.agents.*`、`background.prefill.*`、`background.toast.*`、`trust.band.*`）。
 - `i18n/zh-CN.ts` 与 `i18n/en.ts` 两张表键集合必须完全相同，每个键的占位符集合相同，没有空字符串。一致性测试由 F1 提供；缺任何一个键测试失败。
 - 禁止在组件里拼接中文字符串。带变量的文案用占位符，不用字符串拼接。检查：F1 的 AST 扫描测试遍历 `packages/tui/src`（排除 `i18n/`）的字符串字面量与 JSX 文本，不得出现 CJK 字符（注释不计）。
 - 按键名放进文案时用 `{key}` 占位，由 keymap 当前绑定填入；后备文本里不含 `{key}`。
@@ -503,6 +511,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 子 agent 视图（判定口径 `session.role !== "root"`，由服务端按 `child_binding` 派生，见 `src/session/role.ts`；#1288 之前是 `session.parentID != null`）：无 `Prompt`，底区只可能是 `ask` 或 `panel`；不显示 DAG 模式开关；`esc` 不触发中断；用户消息块不可点击（点击不打开操作列表，选中文本照常可复制）；任务块的提示词折叠时，点击只展开或收起它（视图状态，不发请求，有选中文本时不翻转）。测试：触发所有可达操作（点击消息、命令面板里每个不离开视图的命令、会话键、`←→`、滚轮、`esc`，`test/app-subagent-readonly.test.tsx`）后，SDK mock 的 `session.prompt`、`session.command`、`session.shell`、`session.abort`、`session.revert`、`session.fork`、`session.summarize`、`session.update` 调用次数均为 0。
 - PR 行：点击只调用 `open` 打开 PR URL（只放行 `http`、`https`），不复制、不产生写请求（mock 计数 0）。
 - 后台标记与后台行：点击只运行命令 `agent.subagents`（打开 `/agents` 面板），不产生写请求（mock 计数 0）；抽屉的后台任务区块里没有任何可点击的东西。
+- 信任行：点击只运行命令 `trust.open`（打开 `/trust` 面板），点击本身不产生写请求（mock 计数 0）；信任决定只在面板里提交时才写。
 - "请主 agent 处理"= 预填主会话输入框，不提交（见 6.7）。任何停止、取消、重试、调超时都只能这样表达。
 - 询问区例外：对已存在的待决请求作选择（`permission.reply`、`question.reply`）不算向子 agent 发送对话内容，回复使用请求自己的 `sessionID`。子会话来源的请求只有选项，没有自由文本。TUI 不识别也不过滤 DAG 节点的请求，自动裁决只在服务端做一次，`ask/` 下不得出现 DAG 相关分支：`grep -rniE "dag" packages/tui/src/ask` 为空。
 - 远端字符串（PR 检查名、标题、review 文本、服务端错误等）显示前去掉控制字符与 ANSI 转义。F6 现状更严：PR 行不拉取也不显示 PR 标题和检查名称，review 文本服务端用 `safeReview` 净化后，TUI 渲染前再去一次。以后若加标题，必须先去转义。测试：含控制字符的 fixture 经净化后输出无转义序列。

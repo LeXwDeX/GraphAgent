@@ -168,8 +168,14 @@ export function layoutReminderRow(
 
 // ── Which rows the band draws ────────────────────────────────────────────────
 
-/** What a row of the band is about; the band picks the click by it. `background` is the row of the runs alone. */
-export type BandRowKind = "pr" | "dag" | "goal" | "reminder" | "background"
+/**
+ * What a row of the band is about; the band picks the click by it. `trust` is the project-trust row (#1618) and
+ * `background` the row of the runs alone.
+ */
+export type BandRowKind = "trust" | "pr" | "dag" | "goal" | "reminder" | "background"
+
+/** The rows that can carry the background mark: the ones that are neither a warning by kind nor the runs' own. */
+export type MarkedRowKind = Exclude<BandRowKind, "trust" | "background">
 
 export interface BandChoice {
   readonly kind: BandRowKind
@@ -178,6 +184,11 @@ export interface BandChoice {
 
 /** The rows the band could draw; each is absent when there is nothing to say. */
 export interface BandCandidates {
+  /**
+   * The project-trust row (#1618): commands that changed since the last decision wait for a new one. A warning row by
+   * kind, and the first of all, so it takes no background mark.
+   */
+  readonly trust?: BandRow
   /** The PR row, and whether one of the PRs holds a sticky warning. */
   readonly pr?: { readonly row: BandRow; readonly warning: boolean }
   readonly dag?: BandRow
@@ -191,21 +202,21 @@ export interface BandCandidates {
    * the runs alone.
    */
   readonly background?: {
-    readonly marked: (kind: Exclude<BandRowKind, "background">) => BandRow | undefined
+    readonly marked: (kind: MarkedRowKind) => BandRow | undefined
     readonly own: () => BandRow | undefined
   }
 }
 
 /**
- * The rows the band draws, top to bottom (F6 2.2). By priority: a PR warning, the workflow, a quiet PR, the goal,
- * the reminder. A quiet PR has a row of its own only while there is no workflow row: with one, it rides at that
- * row's tail (`DagRowInput.pr`). The band draws two rows at most and one when `narrow`, so the first of that list
- * is what a narrow terminal keeps; the goal that a warning pushes out is left to the drawer, which always shows it.
- * A row with nothing to draw takes no line.
+ * The rows the band draws, top to bottom (F6 2.2, #1618). By priority: the project-trust warning, a PR warning, the
+ * workflow, a quiet PR, the goal, the reminder. A quiet PR has a row of its own only while there is no workflow row:
+ * with one, it rides at that row's tail (`DagRowInput.pr`). The band draws two rows at most and one when `narrow`, so
+ * the first of that list is what a narrow terminal keeps; the goal that a warning pushes out is left to the drawer,
+ * which always shows it. A row with nothing to draw takes no line.
  *
  * The background runs (#1058 4) come after that choice and change none of it: their mark rides at the tail of the
- * first row drawn that is not a warning row (a PR warning, a workflow whose budget is at its warning or exhausted
- * band), and they have a row of their own only when no row is drawn at all. Below the narrow limit they have
+ * first row drawn that is not a warning row (the trust row, a PR warning, a workflow whose budget is at its warning or
+ * exhausted band), and they have a row of their own only when no row is drawn at all. Below the narrow limit they have
  * neither: the drawer lists them.
  */
 export function chooseBandRows(candidates: BandCandidates, narrow: boolean): BandChoice[] {
@@ -214,6 +225,7 @@ export function chooseBandRows(candidates: BandCandidates, narrow: boolean): Ban
     if (row !== undefined && row.spans.length > 0) chosen.push({ kind, row })
   }
   const { pr, background } = candidates
+  add("trust", candidates.trust)
   if (pr?.warning) add("pr", pr.row)
   add("dag", candidates.dag)
   if (pr && !pr.warning && !chosen.some((choice) => choice.kind === "dag")) add("pr", pr.row)
@@ -223,12 +235,13 @@ export function chooseBandRows(candidates: BandCandidates, narrow: boolean): Ban
   if (narrow || background === undefined) return rows
 
   const isWarning = (kind: BandRowKind) =>
-    (kind === "pr" && pr?.warning === true) || (kind === "dag" && candidates.dagAlert === true)
+    kind === "trust" || (kind === "pr" && pr?.warning === true) || (kind === "dag" && candidates.dagAlert === true)
   const target = rows.findIndex((choice) => !isWarning(choice.kind))
   if (target >= 0) {
     const { kind } = rows[target]
-    // The rows chosen above are the four kinds with a layout of their own; the runs' row is added only below.
-    const marked = kind === "background" ? undefined : background.marked(kind)
+    // The rows chosen above are the kinds with a layout of their own; the runs' row is added only below, and the trust
+    // row is a warning row, so neither is the row that takes the mark.
+    const marked = kind === "background" || kind === "trust" ? undefined : background.marked(kind)
     if (marked !== undefined && marked.spans.length > 0) rows[target] = { kind, row: marked }
   } else if (rows.length === 0) {
     const own = background.own()

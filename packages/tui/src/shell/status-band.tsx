@@ -55,6 +55,7 @@ import {
   type BandRowKind,
 } from "./pr-line"
 import { usePrTracker } from "./pr-tracker-context"
+import { layoutTrustRow, trustChangeCount } from "./trust-line"
 
 /** Status band slot: zero to two lines above the bottom zone (F4). */
 export function StatusBand(props: ParentProps) {
@@ -685,9 +686,11 @@ function BandLine(props: { row: BandRow; onClick?: () => void; onAgents?: () => 
 /**
  * The band's content on a session route: the rows of the root session's tree, whichever view of the tree is on
  * screen: the PR row, the workflow row, the goal row and the reminder row (F4 1, F6 2), and the background runs (#1058
- * 4): a mark at the tail of the first quiet row, or a row of their own when there is no other. Which rows are drawn
- * is `chooseBandRows`. Read-only: a click on the workflow row only opens `/dag`, a click on the PR row only opens the
- * pull request in the system browser, a click on the background mark or its row only opens `/agents`.
+ * 4): a mark at the tail of the first quiet row, or a row of their own when there is no other. The project-trust row
+ * (#1618) is the exception to "the root session's": project trust belongs to the project, so the row is the same in
+ * every view and ahead of all the others. Which rows are drawn is `chooseBandRows`. Read-only: a click on the
+ * workflow row only opens `/dag`, a click on the PR row only opens the pull request in the system browser, a click on
+ * the background mark or its row only opens `/agents`, a click on the trust row only opens `/trust`.
  *
  * It shows what `sync.data` and the PR tracker hold and keeps no state of its own; it subscribes to no clock, all
  * the timing of PRs and reminders being the tracker's, and the background runs show no time at all. The one thing it
@@ -872,15 +875,25 @@ export function SessionStatusBand() {
   }
   const reminderRow = createMemo(() => reminderRowWith())
 
-  // At most two rows, one below the narrow limit: a PR warning, the workflow, a quiet PR (only when there is no
-  // workflow row), the goal, the reminder, in that order. The background mark rides on the first of them that is not
-  // a warning row; the runs have a row of their own only while there is none (neither is drawn below the narrow limit).
+  // The project commands that changed since the last decision and wait for a new one (#1618): the count is all the row
+  // needs, so a store write that changes no entry's state or change flag lays nothing out again. Zero draws no row.
+  const trustChanged = createMemo(() => trustChangeCount(sync.data.trust))
+  const trustRow = createMemo(() => {
+    const count = trustChanged()
+    return count > 0 ? layoutTrustRow(count, width(), aw()) : undefined
+  })
+
+  // At most two rows, one below the narrow limit: the trust warning, a PR warning, the workflow, a quiet PR (only when
+  // there is no workflow row), the goal, the reminder, in that order. The background mark rides on the first of them
+  // that is not a warning row; the runs have a row of their own only while there is none (neither is drawn below the
+  // narrow limit).
   const chosen = createMemo(() => {
     const pr = prRow()
     const band = background()
     const mark = backgroundText()
     return chooseBandRows(
       {
+        trust: trustRow(),
         pr: pr === undefined ? undefined : { row: pr, warning: prWarning() },
         dag: dagRow(),
         dagAlert: dagAlert(),
@@ -902,7 +915,8 @@ export function SessionStatusBand() {
 
   const watched = createMemo<readonly DagWatch[]>(() => {
     const shown = target()
-    // A workflow whose row a PR warning pushed out of a narrow band is not on screen, so it is not declared.
+    // A workflow whose row a warning (the trust row, a PR warning) pushed out of a narrow band is not on screen, so it
+    // is not declared.
     return shown === undefined || shown === "empty" || !dagShown()
       ? []
       : [{ workflowID: shown.entry.summary.id, sessionID: shown.entry.sessionID }]
@@ -942,6 +956,16 @@ export function SessionStatusBand() {
     })
   }
 
+  function openTrust() {
+    // A drag that ended on the row selected text; it is not a click.
+    if (renderer.getSelection()?.getSelectedText()) return
+    // The project-trust panel, as `/trust` opens it from the palette: it lists every entry and writes nothing until a
+    // decision is submitted there, so the click itself sends no request.
+    void commands.run("trust.open", { args: "", origin: "palette" }).catch((error) => {
+      TuiLog.write("error", "Command failed", error)
+    })
+  }
+
   function openPr() {
     // A drag that ended on the row selected text; it is not a click.
     if (renderer.getSelection()?.getSelectedText()) return
@@ -953,7 +977,15 @@ export function SessionStatusBand() {
   }
 
   const clickOf = (kind: BandRowKind) =>
-    kind === "dag" ? openDag : kind === "pr" ? openPr : kind === "background" ? openAgents : undefined
+    kind === "dag"
+      ? openDag
+      : kind === "pr"
+        ? openPr
+        : kind === "background"
+          ? openAgents
+          : kind === "trust"
+            ? openTrust
+            : undefined
 
   return (
     <box flexDirection="column" flexShrink={0}>

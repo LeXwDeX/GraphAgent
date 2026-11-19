@@ -551,6 +551,8 @@ export const en: Record<MessageKey, string> = {
   "panel.mcp.disabled": "Disabled",
   "panel.mcp.loading": "Toggling",
   "panel.mcp.status.failed": "Failed",
+  "trust.band.changed.one": "{n} project command changed · paused until confirmed",
+  "trust.band.changed.many": "{n} project commands changed · paused until confirmed",
   "trust.title.first": "Check what this project will run",
   "trust.title.changed": "Project commands changed",
   "trust.title.imported": "Imported project commands",
