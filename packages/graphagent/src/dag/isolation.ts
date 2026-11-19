@@ -17,7 +17,7 @@ import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { access, mkdir, writeFile } from "node:fs/promises"
-import { join, normalize, sep } from "node:path"
+import { join, normalize, resolve, sep } from "node:path"
 import { Cause, Effect } from "effect"
 import { ChildProcess } from "effect/process"
 import { AppProcess } from "@graphagent/core/process"
@@ -309,12 +309,49 @@ export function writePatchArtifact(
   return { path, sha256: createHash("sha256").update(patch).digest("hex") }
 }
 
+/** For every file with a write that has not ended: the end of the last write asked for, which never rejects. */
+const writeTails = new Map<string, Promise<void>>()
+
+/**
+ * #1583: run `write`, a write to `file`, once every write to that file that was asked for before it has ended, whether
+ * it succeeded, failed, or lost its caller. The synchronous write could not outlive the critical section that asked for
+ * it; an asynchronous one can. A caller that is interrupted (the cap of the workflow lock) stops waiting, but the write
+ * it started runs to its end, and by then a recovery may have reopened the workflow and a later settlement written the
+ * same file: without this order the old write would land over the newer one, and the checksum recorded for the file
+ * would not be the file's. The order is by the absolute path of the file, within this process.
+ *
+ * The wait for the earlier writes is part of the caller's wait, so an interruption ends it and the cap bounds it. A
+ * write whose caller was interrupted before its turn (`signal` aborted) is not started: it would only be overwritten
+ * and nobody records it. A write that has started is never cut. The entry of a file leaves the table when its last
+ * write has ended.
+ */
+export function writeInOrder<A>(file: string, write: () => Promise<A>, signal?: AbortSignal): Promise<A> {
+  const key = resolve(file)
+  const turn = (writeTails.get(key) ?? Promise.resolve()).then(() => {
+    if (signal?.aborted) throw new Error(`write to ${key} not started: its caller was interrupted before its turn`)
+    return write()
+  })
+  const ended = turn.then(
+    () => undefined,
+    () => undefined,
+  )
+  writeTails.set(key, ended)
+  void ended.then(() => {
+    if (writeTails.get(key) === ended) writeTails.delete(key)
+  })
+  return turn
+}
+
+/** The files with a write that has not ended: waiting for its turn, or running although its caller was interrupted. */
+export const pendingWritePaths = (): string[] => [...writeTails.keys()]
+
 /**
  * #1583: `writePatchArtifact` that waits for the disk off the event loop: the same checks of the identifiers, the
  * same file and checksum, and the same errors (what the synchronous version throws is the failure of this effect),
  * with the directory and the patch written through `node:fs/promises`. Like the synchronous version it writes the
  * patch in place: the path and the checksum are recorded only after this has returned, and a completion cut short is
- * redone from the committed range.
+ * redone from the committed range. The write takes its turn behind the earlier writes to the same file
+ * (`writeInOrder`), so one that outlived an interrupted settlement cannot land over the patch of a later one.
  */
 export const writePatchArtifactAsync = Effect.fn("DagIsolation.writePatchArtifactAsync")(function* (
   reportsArea: string,
@@ -323,12 +360,20 @@ export const writePatchArtifactAsync = Effect.fn("DagIsolation.writePatchArtifac
   patch: string,
 ): Effect.fn.Return<{ path: string; sha256: string }, Error> {
   return yield* Effect.tryPromise({
-    try: async () => {
+    try: async (signal) => {
       const directory = join(reportsArea, safePathComponent(dagID, "workflow ID"))
-      await mkdir(directory, { recursive: true })
-      const path = join(directory, `${safePathComponent(nodeID, "node ID")}.patch`)
-      await writeFile(path, patch)
-      return { path, sha256: createHash("sha256").update(patch).digest("hex") }
+      // Queued under the file it is for. A node ID that is no file name fails inside the turn, after the directory
+      // was made, as in the synchronous version.
+      return await writeInOrder(
+        join(directory, `${nodeID}.patch`),
+        async () => {
+          await mkdir(directory, { recursive: true })
+          const path = join(directory, `${safePathComponent(nodeID, "node ID")}.patch`)
+          await writeFile(path, patch)
+          return { path, sha256: createHash("sha256").update(patch).digest("hex") }
+        },
+        signal,
+      )
     },
     catch: (error) => (error instanceof Error ? error : new Error(String(error))),
   })
