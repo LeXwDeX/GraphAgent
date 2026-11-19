@@ -299,6 +299,13 @@ export const isCleanWorktree = (directory: string): boolean => {
   return status !== undefined && status.trim() === ""
 }
 
+/** The canonical directories `git worktree list --porcelain` names, the main checkout first. */
+const worktreePaths = (text: string): string[] =>
+  text
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => canonicalDirectory(line.slice("worktree ".length).trim()))
+
 /**
  * #949: every worktree of the repository that contains `directory` (the main
  * checkout first). Returns undefined outside git so callers skip the check
@@ -310,10 +317,7 @@ export const gitWorktrees = (directory: string): string[] | undefined => {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     })
-    return text
-      .split("\n")
-      .filter((line) => line.startsWith("worktree "))
-      .map((line) => canonicalDirectory(line.slice("worktree ".length).trim()))
+    return worktreePaths(text)
   } catch {
     return undefined
   }
@@ -340,37 +344,96 @@ const gitCommonDir = (directory: string): string | undefined => {
   }
 }
 
-export const resolveWorkspace = (workspace: string, ownerDirectory: string): WorkspaceResolution => {
-  const invalid = (reason: string): WorkspaceResolution => ({ _tag: "invalid", reason })
-  if (!isAbsolute(workspace)) return invalid(`workspace must be an absolute path, got "${workspace}"`)
+const invalidWorkspace = (reason: string): WorkspaceResolution => ({ _tag: "invalid", reason })
+
+/**
+ * The checks of `resolveWorkspace` that need no git: the path is absolute and
+ * names an existing directory. Returns its realpath, or the reason it is not one.
+ */
+const workspaceDirectory = (workspace: string): { readonly directory: string } | { readonly reason: string } => {
+  if (!isAbsolute(workspace)) return { reason: `workspace must be an absolute path, got "${workspace}"` }
   let directory: string
   try {
     directory = realpathSync(workspace)
   } catch {
-    return invalid(`workspace does not exist: "${workspace}"`)
+    return { reason: `workspace does not exist: "${workspace}"` }
   }
   try {
-    if (!statSync(directory).isDirectory()) return invalid(`workspace is not a directory: "${workspace}"`)
+    if (!statSync(directory).isDirectory()) return { reason: `workspace is not a directory: "${workspace}"` }
   } catch {
-    return invalid(`workspace does not exist: "${workspace}"`)
+    return { reason: `workspace does not exist: "${workspace}"` }
   }
+  return { directory }
+}
+
+export const resolveWorkspace = (workspace: string, ownerDirectory: string): WorkspaceResolution => {
+  const checked = workspaceDirectory(workspace)
+  if ("reason" in checked) return invalidWorkspace(checked.reason)
+  const { directory } = checked
   const ownerCommon = gitCommonDir(ownerDirectory)
   if (!ownerCommon) {
-    return invalid(`workspace requires the workflow owner to be a git project: "${ownerDirectory}"`)
+    return invalidWorkspace(`workspace requires the workflow owner to be a git project: "${ownerDirectory}"`)
   }
   const workspaceCommon = gitCommonDir(directory)
   if (!workspaceCommon) {
-    return invalid(`workspace is not part of a git project: "${workspace}"`)
+    return invalidWorkspace(`workspace is not part of a git project: "${workspace}"`)
   }
   if (workspaceCommon !== ownerCommon) {
-    return invalid(`workspace belongs to a different project: "${workspace}"`)
+    return invalidWorkspace(`workspace belongs to a different project: "${workspace}"`)
   }
   const worktrees = gitWorktrees(ownerDirectory)
   if (!worktrees?.includes(directory)) {
-    return invalid(`workspace is not a linked worktree of this project (see git worktree list): "${workspace}"`)
+    return invalidWorkspace(
+      `workspace is not a linked worktree of this project (see git worktree list): "${workspace}"`,
+    )
   }
   return { _tag: "ok", directory }
 }
+
+const gitCommonDirAsync = Effect.fnUntraced(function* (directory: string) {
+  const text = (yield* gitOutputAsync(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))?.trim()
+  return text ? canonicalDirectory(text) : undefined
+})
+
+const gitWorktreesAsync = Effect.fnUntraced(function* (directory: string) {
+  const text = yield* gitOutputAsync(directory, ["worktree", "list", "--porcelain"])
+  return text === undefined ? undefined : worktreePaths(text)
+})
+
+/**
+ * #1344: `resolveWorkspace` for a caller that holds the workflow lock. The
+ * verdicts, their reasons, and the order of the git commands are the
+ * synchronous version's; every command is a child process of the app's process
+ * runner, so waiting for git does not block the event loop, and each one is
+ * bounded by the fingerprint's limits (the synchronous commands had none).
+ * Never fails; only an interruption gets through.
+ */
+export const resolveWorkspaceAsync = Effect.fn("DagLocation.resolveWorkspaceAsync")(function* (
+  workspace: string,
+  ownerDirectory: string,
+): Effect.fn.Return<WorkspaceResolution, never, AppProcess.Service> {
+  const checked = workspaceDirectory(workspace)
+  if ("reason" in checked) return invalidWorkspace(checked.reason)
+  const { directory } = checked
+  const ownerCommon = yield* gitCommonDirAsync(ownerDirectory)
+  if (!ownerCommon) {
+    return invalidWorkspace(`workspace requires the workflow owner to be a git project: "${ownerDirectory}"`)
+  }
+  const workspaceCommon = yield* gitCommonDirAsync(directory)
+  if (!workspaceCommon) {
+    return invalidWorkspace(`workspace is not part of a git project: "${workspace}"`)
+  }
+  if (workspaceCommon !== ownerCommon) {
+    return invalidWorkspace(`workspace belongs to a different project: "${workspace}"`)
+  }
+  const worktrees = yield* gitWorktreesAsync(ownerDirectory)
+  if (!worktrees?.includes(directory)) {
+    return invalidWorkspace(
+      `workspace is not a linked worktree of this project (see git worktree list): "${workspace}"`,
+    )
+  }
+  return { _tag: "ok", directory }
+}, Effect.provide(AppProcess.defaultLayer))
 
 /**
  * #1344: what `retarget` reads from git and the disk. It is taken before the
@@ -404,7 +467,7 @@ export const observeTarget = Effect.fn("DagLocation.observeTarget")(function* (
   workspace: string | undefined,
 ): Effect.fn.Return<TargetObservation> {
   const ownerDirectory = row.directory
-  const resolved = workspace === undefined ? undefined : resolveWorkspace(workspace, ownerDirectory)
+  const resolved = workspace === undefined ? undefined : yield* resolveWorkspaceAsync(workspace, ownerDirectory)
   if (resolved?._tag === "invalid") return { _tag: "invalid", ownerDirectory, reason: resolved.reason }
   const toDirectory = resolved?.directory
   const executionDirectory = toDirectory ?? row.executionDirectory ?? row.directory
