@@ -194,7 +194,10 @@ export function hintFor(state: TurnState, signals: Signals): HintKind | undefine
   return undefined
 }
 
-/** Post-step auto-compaction gate. Called after the step counter advanced and tasks were handled. */
+/**
+ * Auto-compaction gate for the pre-step check, called after the step counter advanced and tasks were handled, and for
+ * the compaction a finished step asks for (`overflow` is then always true). Both count against one limit.
+ */
 export function decideOverflow(state: TurnState, signals: { readonly overflow: boolean }): Transition {
   if (!signals.overflow) return { kind: "step" }
   if (state.compactions >= AUTO_COMPACTION_LIMIT) return { kind: "finish", outcome: { type: "context_overflow" } }

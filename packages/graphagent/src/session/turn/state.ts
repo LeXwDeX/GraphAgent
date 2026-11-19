@@ -56,7 +56,10 @@ export interface TurnState {
   readonly stopped: boolean
   readonly agentInput: AgentInputState
   readonly stop: StopState
-  /** Consecutive automatic compactions; the fourth is refused. */
+  /**
+   * Consecutive automatic compactions, whether the pre-step gate or a finished step started them; the fourth is
+   * refused. Only a model step that went through without asking for compaction ends the streak.
+   */
   readonly compactions: number
   /** Consecutive automatic compactions that answered the provider rejecting a request as too large. */
   readonly overflowRecoveries: number

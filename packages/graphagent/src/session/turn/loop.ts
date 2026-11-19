@@ -385,10 +385,22 @@ function makeTaskRunner(deps: LoopDeps) {
   })
 }
 
+/**
+ * The consecutive automatic compaction limit is spent (`Decide.AUTO_COMPACTION_LIMIT`): the user is told, and the turn
+ * ends with `context_overflow`. The pre-step gate and a compaction a finished step asks for end it the same way.
+ */
+const stopAtCompactionLimit = Effect.fnUntraced(function* (deps: LoopDeps, sessionID: SessionID) {
+  const error = new SessionV1.ContextOverflowError({
+    message: "Context still exceeds the model limit after repeated automatic compaction",
+  })
+  yield* deps.events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
+  throw error
+})
+
 type OverflowGateResult = { readonly kind: "none" | "continue"; readonly state: TurnState }
 
 function makeOverflowGate(deps: LoopDeps) {
-  const { compaction, events, reasoningDistillationEnabled } = deps
+  const { compaction, reasoningDistillationEnabled } = deps
   return Effect.fnUntraced(function* (input: {
     sessionID: SessionID
     state: TurnState
@@ -469,14 +481,10 @@ function makeOverflowGate(deps: LoopDeps) {
       })
       return { kind: "continue", state }
     }
-    if (transition.kind === "finish") {
-      const error = new SessionV1.ContextOverflowError({
-        message: "Context still exceeds the model limit after repeated automatic compaction",
-      })
-      yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-      throw error
-    }
-    return { kind: "none", state: State.resetAutoCompactions(input.state) }
+    if (transition.kind === "finish") return yield* stopAtCompactionLimit(deps, input.sessionID)
+    // Not past the limit does not end the streak: after a summary only the messages are estimated, so the next step may
+    // still be past it. Only a step that goes through without asking for compaction ends it (`makeModelStep`).
+    return { kind: "none", state: input.state }
   })
 }
 
@@ -547,7 +555,7 @@ function makeModelStep(deps: LoopDeps) {
     let state = State.clearStructured(input.state)
     let structured: unknown
     let toolRefused = false
-    const outcome: "break" | "continue" = yield* Effect.gen(function* () {
+    const attempt = yield* Effect.gen(function* () {
       const format = input.lastUser.format ?? { type: "text" as const }
       const { processInput } = yield* prepareFns.buildTurnRequest({
         sessionID: input.sessionID,
@@ -598,13 +606,20 @@ function makeModelStep(deps: LoopDeps) {
         agentInputBlocked: state.agentInput === "blocked",
         agentSnapshot: input.agentSnapshot,
         identity: input.identity,
+        state,
       })
       if (settled.resetStopContinuations) state = State.resetStopContinuations(state)
       if (settled.agentInputBlocked) state = State.blockAgentInput(state)
-      return settled.outcome
+      // Every automatic compaction counts, whether the pre-step gate or a finished step started it. A request that went
+      // through and asked for none is the only thing that ends the streak.
+      if (settled.compaction === "started") state = State.recordAutoCompaction(state)
+      else if (result !== "compact") state = State.resetAutoCompactions(state)
+      return settled
     }).pipe(Effect.ensuring(instruction.clear(input.handle.message.id)), Effect.onError(input.finalizeFailedAssistant))
+    // Outside the failure finalizer: the step itself went through, so its message does not take the turn's error.
+    if (attempt.compaction === "refused") return yield* stopAtCompactionLimit(deps, input.sessionID)
     state = structured === undefined ? State.clearStructured(state) : State.setStructured(state, structured)
-    return { state, outcome, toolRefused }
+    return { state, outcome: attempt.outcome, toolRefused }
   })
 }
 

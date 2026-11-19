@@ -16,7 +16,9 @@ import { MessageV2 } from "../message-v2"
 import type { Handle as ProcessorHandle, Result as ProcessorResult } from "../processor"
 import { PartID, type MessageID, type SessionID } from "../schema"
 import { Session } from "../session"
+import { Decide } from "./decide"
 import type { FinalPolicy } from "./final-policy"
+import type { TurnState } from "./state"
 
 /** A turn interrupted only by disposal is still an interrupt for finalization;
  * a mixed cause keeps its real failure and must take the error path. */
@@ -64,12 +66,20 @@ export interface SettleAttemptInput {
   readonly agentInputBlocked: boolean
   readonly agentSnapshot: DagMessages.Snapshot | undefined
   readonly identity: DagMessages.Caller
+  /** Turn state before this attempt settled; only the consecutive automatic compaction count is read from it. */
+  readonly state: TurnState
 }
 
 export interface SettleAttemptResult {
   readonly outcome: "break" | "continue"
   readonly agentInputBlocked: boolean
   readonly resetStopContinuations: boolean
+  /**
+   * What became of the automatic compaction this attempt asked for: `started` once its task exists (the loop counts
+   * it), `refused` when the consecutive limit is spent (the loop ends the turn). Absent when the attempt asked for
+   * none, or ended before it could use one.
+   */
+  readonly compaction?: "started" | "refused"
 }
 
 function makePostToolBatch(deps: SettleDeps) {
@@ -275,6 +285,10 @@ function makeSettleAttempt(deps: SettleDeps, postToolBatch: ReturnType<typeof ma
     if (finalPolicy !== "normal" || result === "stop")
       return { outcome: "break" as const, agentInputBlocked, resetStopContinuations }
     if (result === "compact") {
+      // The step ended past the trigger, or the provider rejected the request as too large. As at the pre-step gate,
+      // this compaction answers to the consecutive limit; the count itself is the loop's (`TurnState.compactions`).
+      if (Decide.decideOverflow(input.state, { overflow: true }).kind === "finish")
+        return { outcome: "break" as const, agentInputBlocked, resetStopContinuations, compaction: "refused" as const }
       yield* compaction.create({
         sessionID,
         agent: lastUser.agent,
@@ -282,6 +296,7 @@ function makeSettleAttempt(deps: SettleDeps, postToolBatch: ReturnType<typeof ma
         auto: true,
         overflow: !handle.message.finish,
       })
+      return { outcome: "continue" as const, agentInputBlocked, resetStopContinuations, compaction: "started" as const }
     }
     return { outcome: "continue" as const, agentInputBlocked, resetStopContinuations }
   })
