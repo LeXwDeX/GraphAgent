@@ -609,11 +609,42 @@ test("a web search names its provider and the query, and says how many results i
   ])
   try {
     const frame = await harness.waitForFrame((text) => text.includes("no count"), "the rows")
-    expect(blockOf(frame, "⏺ WebSearch Exa")).toEqual(['⏺ WebSearch Exa Web Search "bun 1.4 release"', "  ⎿ 8 条结果"])
+    expect(blockOf(frame, "⏺ WebSearch Exa")).toEqual(['⏺ WebSearch Exa "bun 1.4 release"', "  ⎿ 8 条结果"])
     // No result count in the metadata: the row says the call is done, and makes up no number.
-    expect(blockOf(frame, "⏺ WebSearch Parallel")).toEqual(['⏺ WebSearch Parallel Web Search "no count"', "  ⎿ 完成"])
+    expect(blockOf(frame, "⏺ WebSearch Parallel")).toEqual(['⏺ WebSearch Parallel "no count"', "  ⎿ 完成"])
   } finally {
     await harness.dispose()
+  }
+})
+
+test("the name of the tool is on the row of a web search once, whichever provider it went through", async () => {
+  for (const [language, results] of [
+    ["zh-CN", "3 条结果"],
+    ["en", "3 results"],
+  ] as const) {
+    const harness = await mount(
+      [
+        call("websearch", completed({ query: "a" }, "…", { provider: "exa", numResults: 3 })),
+        call("websearch", completed({ query: "b" }, "…", { provider: "parallel", numResults: 3 })),
+        // A provider this build does not know is not named, and the query stands right after the tool.
+        call("websearch", completed({ query: "c" }, "…", { provider: "other", numResults: 3 })),
+        call("websearch", completed({ query: "d" }, "…", { numResults: 3 })),
+      ],
+      { language },
+    )
+    try {
+      const frame = await harness.waitForFrame((text) => text.includes('"d"'), "the rows")
+      expect(blockOf(frame, '⏺ WebSearch Exa "a"')).toEqual(['⏺ WebSearch Exa "a"', `  ⎿ ${results}`])
+      expect(blockOf(frame, '⏺ WebSearch Parallel "b"')).toEqual(['⏺ WebSearch Parallel "b"', `  ⎿ ${results}`])
+      expect(blockOf(frame, '⏺ WebSearch "c"')).toEqual(['⏺ WebSearch "c"', `  ⎿ ${results}`])
+      expect(blockOf(frame, '⏺ WebSearch "d"')).toEqual(['⏺ WebSearch "d"', `  ⎿ ${results}`])
+      // However the tool is called, its name is not said a second time on the row: no "Web Search" after "WebSearch".
+      for (const row of rowsOf(frame).filter((line) => line.includes("⏺ WebSearch"))) {
+        expect(row.match(/web ?search/gi)).toHaveLength(1)
+      }
+    } finally {
+      await harness.dispose()
+    }
   }
 })
 
@@ -699,6 +730,530 @@ test("a call that was blocked says why, in the color of an error, and has the do
   }
 })
 
+/** The diff of an edit that changed one line of a function: four rows, the context above and below the change. */
+const DIFF = [
+  "Index: src/answer.ts",
+  "===================================================================",
+  "--- src/answer.ts",
+  "+++ src/answer.ts",
+  "@@ -1,3 +1,3 @@",
+  " export function value() {",
+  "-  const answer = 41",
+  "+  const answer = 42",
+  " }",
+  "",
+].join("\n")
+
+/** The diff of a file a patch created. */
+const ADDED = [
+  "Index: src/b.ts",
+  "===",
+  "--- src/b.ts",
+  "+++ src/b.ts",
+  "@@ -0,0 +1,2 @@",
+  "+export const a = 1",
+  "+export const b = 2",
+  "",
+].join("\n")
+
+const ANSWER = `${directory}/src/answer.ts`
+
+/** What the server records of an edit that completed: the diff, and the lines it added and removed. */
+const edited = (
+  additions: number,
+  deletions: number,
+  metadata: Record<string, unknown> = {},
+  input: Record<string, unknown> = {},
+) =>
+  completed({ filePath: ANSWER, oldString: "41", newString: "42", ...input }, "Edit applied successfully.", {
+    diff: DIFF,
+    filediff: { file: ANSWER, patch: DIFF, additions, deletions },
+    diagnostics: {},
+    ...metadata,
+  })
+
+/** An error of the language server in `file`, at the first column of `line`. */
+const lspError = (message: string, line = 0, severity = 1) => ({
+  severity,
+  message,
+  range: { start: { line, character: 3 }, end: { line, character: 5 } },
+})
+
+/** The spans of the first row that holds `row`, whatever it is split into. */
+function spansOf(spans: Awaited<ReturnType<Harness["spans"]>>, row: string) {
+  return (
+    spans.lines.find((line) =>
+      line.spans
+        .map((item) => item.text)
+        .join("")
+        .includes(row),
+    )?.spans ?? []
+  )
+}
+
+/** The color behind `token` on the row that holds `row`: how the diff paints a line it added or removed. */
+const backgroundOf = (spans: Awaited<ReturnType<Harness["spans"]>>, row: string, token: string) =>
+  spansOf(spans, row).find((item) => item.text.includes(token))?.bg
+
+test("an edit says what it added and what it removed, in the colors of success and of error, and shows no diff", async () => {
+  for (const [language, hint] of [
+    ["zh-CN", "… 还有 4 行 · ctrl+o 展开"],
+    ["en", "… 4 more lines · ctrl+o expand"],
+  ] as const) {
+    const harness = await mount([call("edit", edited(6, 4))], { language })
+    try {
+      const frame = await frameWith(harness, "⏺ Edit")
+      // The minus sign is U+2212, not a hyphen.
+      expect(blockOf(frame, "⏺ Edit")).toEqual(["⏺ Edit src/answer.ts", "  ⎿ +6 −4", `    ${hint}`])
+      // The diff is not drawn: none of its rows is on screen, and the hint under the summary is what opens it.
+      expect(frame).not.toContain("const answer")
+      expect(frame).not.toContain("export function value")
+
+      const spans = await harness.spans()
+      expect(colorOf(spans, "+6")?.equals(palette().success)).toBe(true)
+      expect(colorOf(spans, "−4")?.equals(palette().error)).toBe(true)
+      expect(colorOf(spans, "⎿")?.equals(palette().textDim)).toBe(true)
+      expect(colorOf(spans, hint)?.equals(palette().textDim)).toBe(true)
+      expect(colorOf(spans, "⏺")?.equals(palette().success)).toBe(true)
+      expect(colorOf(spans, "Edit")?.equals(palette().text)).toBe(true)
+      expect(colorOf(spans, "src/answer.ts")?.equals(palette().textMuted)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  }
+})
+
+test("an edit that added nothing says +0, and one the server gave no counts for says it is done and still opens", async () => {
+  const harness = await mount([
+    call("edit", edited(0, 3, {}, { replaceAll: true })),
+    call("edit", completed({ filePath: `${directory}/src/other.ts` }, "ok", { diff: DIFF, diagnostics: {} })),
+  ])
+  try {
+    const frame = await harness.waitForFrame((text) => text.includes("other.ts"), "the rows")
+    // The flag the call was made with stays on the row, as it did before.
+    expect(blockOf(frame, "⏺ Edit src/answer.ts")[0]).toBe("⏺ Edit src/answer.ts [replaceAll=true]")
+    expect(blockOf(frame, "⏺ Edit src/answer.ts")[1]).toBe("  ⎿ +0 −3")
+    // No counts, and none made up from the diff: the row says so, and its hint opens the diff all the same.
+    expect(blockOf(frame, "⏺ Edit src/other.ts")).toEqual([
+      "⏺ Edit src/other.ts",
+      "  ⎿ 完成",
+      "    … 还有 4 行 · ctrl+o 展开",
+    ])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("the key opens the diff of an edit under its summary, with the backgrounds of the diff, and the key closes it", async () => {
+  const harness = await mount([call("edit", edited(1, 1))])
+  try {
+    await frameWith(harness, "⏺ Edit")
+    press(harness)
+    const opened = await harness.waitForFrame((text) => text.includes("const answer = 42"), "the open diff")
+    const block = blockOf(opened, "⏺ Edit")
+    expect(block[0]).toBe("⏺ Edit src/answer.ts")
+    expect(block[1]).toBe("  ⎿ +1 −1")
+    // The rows of the diff are indented under the summary, and the hint that closes it is the last row.
+    expect(block.slice(2).map((row) => row.replace(/\s+/g, " ").trim())).toEqual([
+      "1 export function value() {",
+      "2 - const answer = 41",
+      "2 + const answer = 42",
+      "3 }",
+      "ctrl+o 收起",
+    ])
+    expect(block[2].startsWith("     ")).toBe(true)
+
+    // The colors are the ones the diff has always had: the removed line on the removed background, the added on the added.
+    const spans = await harness.spans()
+    expect(backgroundOf(spans, "const answer = 41", "41")?.equals(palette().diffRemovedBg)).toBe(true)
+    expect(backgroundOf(spans, "const answer = 42", "42")?.equals(palette().diffAddedBg)).toBe(true)
+    // A line the edit did not touch is on the background of the context, whichever it is, and not on one of the two.
+    expect(backgroundOf(spans, "export function value", "export")?.equals(palette().diffContextBg)).toBe(true)
+
+    press(harness)
+    const closed = await harness.waitForFrame((text) => !text.includes("const answer = 42"), "the closed diff")
+    expect(blockOf(closed, "⏺ Edit")).toEqual(["⏺ Edit src/answer.ts", "  ⎿ +1 −1", "    … 还有 4 行 · ctrl+o 展开"])
+    // Opening and closing is view state: no request.
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a click on an edit opens its diff, and a click on the hint under it closes the diff", async () => {
+  const harness = await mount([call("edit", edited(1, 1))], { language: "en" })
+  try {
+    await frameWith(harness, "⏺ Edit")
+    await clickOn(harness, "+1")
+    const opened = await harness.waitForFrame(
+      (text) => text.includes("const answer = 42"),
+      "the diff opened by a click",
+    )
+    const spans = await harness.spans()
+    expect(backgroundOf(spans, "const answer = 42", "42")?.equals(palette().diffAddedBg)).toBe(true)
+    expect(blockOf(opened, "⏺ Edit").at(-1)).toBe("    ctrl+o collapse")
+
+    await clickOn(harness, "ctrl+o collapse")
+    await harness.waitForFrame((text) => !text.includes("const answer = 42"), "the diff closed by a click")
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("an edit counts the errors the language server found in its file, and lists the first three when it is open", async () => {
+  const errors = [lspError("first"), lspError("second", 1), lspError("third", 2), lspError("fourth", 3)]
+  const diagnostics = {
+    [ANSWER]: [...errors, lspError("a warning", 4, 2)],
+    [`${directory}/src/elsewhere.ts`]: [lspError("not this file")],
+  }
+  for (const [language, says] of [
+    ["zh-CN", "+1 −1 · 4 个诊断错误"],
+    ["en", "+1 −1 · 4 diagnostic errors"],
+  ] as const) {
+    const harness = await mount([call("edit", edited(1, 1, { diagnostics }))], { language })
+    try {
+      const frame = await frameWith(harness, "⏺ Edit")
+      expect(blockOf(frame, "⏺ Edit")[1]).toBe(`  ⎿ ${says}`)
+      const spans = await harness.spans()
+      // The counts keep their own colors, and what follows them is one color, the one of an error.
+      expect(colorOf(spans, "+1")?.equals(palette().success)).toBe(true)
+      expect(colorOf(spans, language === "en" ? "4 diagnostic errors" : "4 个诊断错误")?.equals(palette().error)).toBe(
+        true,
+      )
+      expect(frame).not.toContain("Error [")
+
+      press(harness)
+      const opened = await harness.waitForFrame((text) => text.includes("Error ["), "the diagnostics")
+      const listed = rowsOf(opened).filter((row) => row.includes("Error ["))
+      expect(listed.map((row) => row.trim())).toEqual(["Error [1:4] first", "Error [2:4] second", "Error [3:4] third"])
+      expect(opened).not.toContain("fourth")
+      expect(opened).not.toContain("a warning")
+      expect(opened).not.toContain("not this file")
+    } finally {
+      await harness.dispose()
+    }
+  }
+})
+
+test("one error is said in the singular", async () => {
+  const harness = await mount([call("edit", edited(1, 1, { diagnostics: { [ANSWER]: [lspError("only")] } }))], {
+    language: "en",
+  })
+  try {
+    const frame = await frameWith(harness, "⏺ Edit")
+    expect(blockOf(frame, "⏺ Edit")[1]).toBe("  ⎿ +1 −1 · 1 diagnostic error")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("an edit is one row until it completes: getting ready, running, and then its summary", async () => {
+  const harness = await mount([
+    call("edit", pending()),
+    call("edit", running({ filePath: `${directory}/src/running.ts` }, { diff: DIFF })),
+  ])
+  try {
+    const frame = await harness.waitForFrame((text) => text.includes("running.ts"), "the rows")
+    expect(blockOf(frame, "⏺ Edit")).toEqual(["⏺ Edit", "  ⎿ 准备中…"])
+    // A running edit has the diff in its metadata already; its row says it runs and offers nothing to open. The glyph
+    // of its dot is the frame the spinner is at, whichever it is.
+    const glyph = [
+      ...rowsOf(frame)
+        .find((row) => row.includes("Edit src/running.ts"))!
+        .trim(),
+    ][0]
+    expect(SPINNER_FRAMES).toContain(glyph)
+    expect(blockOf(frame, glyph)).toEqual([`${glyph} Edit src/running.ts`, "  ⎿ 运行中"])
+    expect(frame).not.toContain("const answer")
+    // Nothing of the two folds: the key opens nothing. The spinner moves on, so the frame is read for what it holds.
+    press(harness)
+    await harness.settle()
+    const after = await harness.frame()
+    expect(after).not.toContain("const answer")
+    expect(after).not.toContain("ctrl+o")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("an edit that failed says why, and opens its error and not a diff; one that was turned down says so", async () => {
+  const error = "The text to replace was not found\nsecond line of the error"
+  const harness = await mount([
+    call("edit", failed({ filePath: ANSWER }, error, { diff: DIFF })),
+    call(
+      "edit",
+      failed(
+        { filePath: `${directory}/src/denied.ts` },
+        "The user rejected permission to use this specific tool call.",
+      ),
+    ),
+  ])
+  try {
+    const frame = await harness.waitForFrame((text) => text.includes("denied.ts"), "the rows")
+    expect(blockOf(frame, "⏺ Edit src/answer.ts")).toEqual([
+      "⏺ Edit src/answer.ts",
+      "  ⎿ 失败 · The text to replace was not found",
+    ])
+    expect(blockOf(frame, "⏺ Edit src/denied.ts")).toEqual(["⏺ Edit src/denied.ts", "  ⎿ 已拒绝"])
+    const spans = await harness.spans()
+    expect(colorOf(spans, "失败 · The text")?.equals(palette().error)).toBe(true)
+    expect(colorOf(spans, "已拒绝")?.equals(palette().error)).toBe(true)
+
+    // The key opens the error of the one that failed: a call that was turned down has none to open.
+    press(harness)
+    const opened = await harness.waitForFrame((text) => text.includes("second line of the error"), "the error")
+    expect(opened).not.toContain("const answer")
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a write says how many lines it wrote and folds the file under that, which the key opens", async () => {
+  const path = `${directory}/src/new.ts`
+  const diagnostics = { [path]: [lspError("boom")] }
+  for (const [language, says, hint, close] of [
+    ["zh-CN", "写入 2 行 · 1 个诊断错误", "… 还有 2 行 · ctrl+o 展开", "ctrl+o 收起"],
+    ["en", "Wrote 2 lines · 1 diagnostic error", "… 2 more lines · ctrl+o expand", "ctrl+o collapse"],
+  ] as const) {
+    const harness = await mount(
+      [
+        call(
+          "write",
+          completed({ filePath: path, content: "export const a = 1\nexport const b = 2\n" }, "ok", { diagnostics }),
+        ),
+      ],
+      { language },
+    )
+    try {
+      const frame = await frameWith(harness, "⏺ Write")
+      expect(blockOf(frame, "⏺ Write")).toEqual(["⏺ Write src/new.ts", `  ⎿ ${says}`, `    ${hint}`])
+      expect(frame).not.toContain("export const a")
+      const spans = await harness.spans()
+      expect(colorOf(spans, language === "en" ? "1 diagnostic error" : "1 个诊断错误")?.equals(palette().error)).toBe(
+        true,
+      )
+      expect(
+        colorOf(spans, "Wrote 2 lines")?.equals(palette().text) ?? colorOf(spans, "写入 2 行")?.equals(palette().text),
+      ).toBe(true)
+
+      press(harness)
+      const opened = await harness.waitForFrame((text) => text.includes("export const b"), "the written file")
+      // The code block is the file, numbered, and the line break that ends it does not start a third line.
+      expect(
+        blockOf(opened, "⏺ Write")
+          .slice(2)
+          .map((row) => row.replace(/\s+/g, " ").trim()),
+      ).toEqual(["1 export const a = 1", "2 export const b = 2", "Error [1:4] boom", close])
+      press(harness)
+      await harness.waitForFrame((text) => !text.includes("export const b"), "the closed file")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  }
+})
+
+test("a write of one line is said in the singular, and one of no lines has nothing to open", async () => {
+  const one = `${directory}/one.txt`
+  const none = `${directory}/none.txt`
+  const harness = await mount(
+    [
+      call("write", completed({ filePath: one, content: "x" }, "ok", { diagnostics: {} })),
+      call("write", completed({ filePath: none, content: "" }, "ok", { diagnostics: {} })),
+    ],
+    { language: "en" },
+  )
+  try {
+    const frame = await harness.waitForFrame((text) => text.includes("none.txt"), "the rows")
+    expect(blockOf(frame, "⏺ Write one.txt")).toEqual([
+      "⏺ Write one.txt",
+      "  ⎿ Wrote 1 line",
+      "    … 1 more line · ctrl+o expand",
+    ])
+    expect(blockOf(frame, "⏺ Write none.txt")).toEqual(["⏺ Write none.txt", "  ⎿ Wrote 0 lines"])
+    // The key goes to the one that has something to open, and the click on the other does nothing.
+    await clickOn(harness, "Wrote 0 lines")
+    await harness.settle()
+    expect(await harness.frame()).toBe(frame)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+/** A patch of four files: one changed, one created, one deleted and one moved. */
+const patchFiles = [
+  {
+    filePath: `${directory}/src/a.ts`,
+    relativePath: "src/a.ts",
+    type: "update",
+    patch: DIFF,
+    additions: 3,
+    deletions: 1,
+  },
+  {
+    filePath: `${directory}/src/b.ts`,
+    relativePath: "src/b.ts",
+    type: "add",
+    patch: ADDED,
+    additions: 25,
+    deletions: 0,
+  },
+  {
+    filePath: `${directory}/src/gone.ts`,
+    relativePath: "src/gone.ts",
+    type: "delete",
+    patch: "",
+    additions: 0,
+    deletions: 14,
+  },
+  {
+    filePath: `${directory}/src/old.ts`,
+    relativePath: "src/new.ts",
+    type: "move",
+    patch: DIFF,
+    additions: 2,
+    deletions: 2,
+    movePath: `${directory}/src/new.ts`,
+  },
+]
+
+const patched = (files: Record<string, unknown>[], metadata: Record<string, unknown> = {}) =>
+  completed({ patchText: "*** Begin Patch" }, "Success. Updated the following files", {
+    diff: DIFF,
+    files,
+    diagnostics: {},
+    ...metadata,
+  })
+
+test("a patch has a row for each file: what the patch did to it, and what it added and removed", async () => {
+  for (const [language, created, deleted, moved, hint] of [
+    ["zh-CN", "新增", "删除", "移动", "… 还有 4 行 · ctrl+o 展开"],
+    ["en", "Created", "Deleted", "Moved", "… 4 more lines · ctrl+o expand"],
+  ] as const) {
+    const harness = await mount([call("apply_patch", patched(patchFiles))], { language, height: 50 })
+    try {
+      const frame = await frameWith(harness, "⏺ Patch")
+      expect(blockOf(frame, "⏺ Patch src/a.ts")).toEqual(["⏺ Patch src/a.ts", "  ⎿ +3 −1", `    ${hint}`])
+      expect(blockOf(frame, `⏺ Patch ${created}`)).toEqual([
+        `⏺ Patch ${created} src/b.ts`,
+        "  ⎿ +25 −0",
+        `    ${language === "en" ? "… 2 more lines · ctrl+o expand" : "… 还有 2 行 · ctrl+o 展开"}`,
+      ])
+      // A file the patch deleted has no diff to open: two rows, and no hint.
+      expect(blockOf(frame, `⏺ Patch ${deleted}`)).toEqual([`⏺ Patch ${deleted} src/gone.ts`, "  ⎿ +0 −14"])
+      expect(blockOf(frame, `⏺ Patch ${moved}`)).toEqual([
+        `⏺ Patch ${moved} src/old.ts → src/new.ts`,
+        "  ⎿ +2 −2",
+        `    ${hint}`,
+      ])
+      expect(frame).not.toContain("const answer")
+      const spans = await harness.spans()
+      expect(colorOf(spans, "+25")?.equals(palette().success)).toBe(true)
+      expect(colorOf(spans, "−14")?.equals(palette().error)).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  }
+})
+
+test("the key opens the diff of every file of a patch at once, and a file it deleted stays as it was", async () => {
+  const harness = await mount([call("apply_patch", patched(patchFiles))], { height: 60 })
+  try {
+    await frameWith(harness, "⏺ Patch")
+    press(harness)
+    const opened = await harness.waitForFrame((text) => text.includes("export const b = 2"), "the open diffs")
+    expect(
+      blockOf(opened, "⏺ Patch src/a.ts")
+        .slice(2)
+        .map((row) => row.replace(/\s+/g, " ").trim()),
+    ).toEqual(["1 export function value() {", "2 - const answer = 41", "2 + const answer = 42", "3 }", "ctrl+o 收起"])
+    expect(
+      blockOf(opened, "⏺ Patch 新增")
+        .slice(2)
+        .map((row) => row.replace(/\s+/g, " ").trim()),
+    ).toEqual(["1 + export const a = 1", "2 + export const b = 2", "ctrl+o 收起"])
+    expect(blockOf(opened, "⏺ Patch 删除")).toEqual(["⏺ Patch 删除 src/gone.ts", "  ⎿ +0 −14"])
+    expect(blockOf(opened, "⏺ Patch 移动").some((row) => row.includes("const answer = 42"))).toBe(true)
+
+    const spans = await harness.spans()
+    expect(backgroundOf(spans, "export const a = 1", "export")?.equals(palette().diffAddedBg)).toBe(true)
+    expect(backgroundOf(spans, "const answer = 41", "41")?.equals(palette().diffRemovedBg)).toBe(true)
+    expect(backgroundOf(spans, "const answer = 42", "42")?.equals(palette().diffAddedBg)).toBe(true)
+
+    // A click on any file of the call closes all of them: the call is what folds.
+    await clickOn(harness, "新增 src/b.ts")
+    const closed = await harness.waitForFrame((text) => !text.includes("export const b = 2"), "the closed diffs")
+    expect(closed).not.toContain("const answer")
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a patch that deleted files and nothing else has nothing to open, and the key leaves it alone", async () => {
+  const harness = await mount([call("apply_patch", patched([patchFiles[2]]))])
+  try {
+    const frame = await frameWith(harness, "⏺ Patch")
+    expect(blockOf(frame, "⏺ Patch")).toEqual(["⏺ Patch 删除 src/gone.ts", "  ⎿ +0 −14"])
+    press(harness)
+    await harness.settle()
+    expect(await harness.frame()).toBe(frame)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a patch the server did not count the added lines of says only what it removed", async () => {
+  const { additions: _, ...uncounted } = patchFiles[0]
+  const harness = await mount([call("apply_patch", patched([uncounted]))])
+  try {
+    const frame = await frameWith(harness, "⏺ Patch")
+    expect(blockOf(frame, "⏺ Patch")[1]).toBe("  ⎿ −1")
+    expect(colorOf(await harness.spans(), "−1")?.equals(palette().error)).toBe(true)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a patch counts the errors of each file by the file, and the destination of a move is the file it counts for", async () => {
+  const diagnostics = {
+    [`${directory}/src/a.ts`]: [lspError("in a"), lspError("in a again", 1)],
+    // The errors of a moved file are those of the place it moved to, not the one it left.
+    [`${directory}/src/new.ts`]: [lspError("in the new place")],
+    [`${directory}/src/old.ts`]: [lspError("in the old place"), lspError("and again", 1), lspError("and once more", 2)],
+  }
+  const harness = await mount([call("apply_patch", patched([patchFiles[0], patchFiles[3]], { diagnostics }))], {
+    language: "en",
+  })
+  try {
+    const frame = await frameWith(harness, "⏺ Patch")
+    expect(blockOf(frame, "⏺ Patch src/a.ts")[1]).toBe("  ⎿ +3 −1 · 2 diagnostic errors")
+    expect(blockOf(frame, "⏺ Patch Moved")[1]).toBe("  ⎿ +2 −2 · 1 diagnostic error")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a patch is one row until it completes, and one row again when it failed", async () => {
+  const harness = await mount([
+    call("apply_patch", pending()),
+    call("apply_patch", failed({ patchText: "x" }, "apply_patch verification failed: no such file\nsecond line")),
+  ])
+  try {
+    const frame = await harness.waitForFrame((text) => text.includes("verification failed"), "the rows")
+    expect(blockOf(frame, "⏺ Patch")).toEqual(["⏺ Patch", "  ⎿ 准备中…"])
+    expect(frame).toContain("⎿ 失败 · apply_patch verification failed: no such file")
+    expect(frame).not.toContain("second line")
+    press(harness)
+    await harness.waitForFrame((text) => text.includes("second line"), "the error")
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
 for (const width of [80, 120]) {
   for (const ambiguousWidth of [1, 2] as const) {
     test(`no row of a call is wider than ${width} columns at ambiguous_width ${ambiguousWidth}`, async () => {
@@ -733,6 +1288,80 @@ for (const width of [80, 120]) {
         }
       } finally {
         await harness.dispose()
+      }
+    })
+  }
+}
+
+for (const width of [80, 120]) {
+  for (const ambiguousWidth of [1, 2] as const) {
+    test(`no row of an edit, a write or a patch is wider than ${width} columns at ambiguous_width ${ambiguousWidth}, in both languages`, async () => {
+      const long = `${directory}/${"很长的目录 · a long directory… ".repeat(5)}answer.ts`
+      const moved = `${directory}/${"另一个目录 · another place… ".repeat(5)}moved.ts`
+      const diagnostics = {
+        // The message is the language server's own text, which the open row wraps as it comes.
+        [long]: Array.from({ length: 12 }, (_, line) => lspError(`${"a long error message ".repeat(8)}${line}`, line)),
+        [moved]: [lspError("x")],
+      }
+      const calls = () => [
+        call(
+          "edit",
+          completed({ filePath: long }, "ok", {
+            diff: DIFF,
+            filediff: { additions: 123456, deletions: 654321 },
+            diagnostics,
+          }),
+        ),
+        call(
+          "write",
+          completed({ filePath: long, content: lines(9, "很长的一行 · a long line…") }, "ok", { diagnostics }),
+        ),
+        call(
+          "apply_patch",
+          patched(
+            [
+              {
+                filePath: long,
+                relativePath: moved.slice(directory.length + 1),
+                type: "move",
+                patch: DIFF,
+                additions: 123456,
+                deletions: 654321,
+                movePath: moved,
+              },
+            ],
+            { diagnostics },
+          ),
+        ),
+      ]
+      for (const [language, close] of [
+        ["zh-CN", "ctrl+o 收起"],
+        ["en", "ctrl+o collapse"],
+      ] as const) {
+        const harness = await mount(calls(), { width, ambiguousWidth, height: 80, language })
+        try {
+          const folded = await harness.waitForFrame((text) => text.includes("⏺ Patch"), "the rows")
+          // Each is its call, its summary and the hint under it: a row that wrapped would add one.
+          for (const lead of ["⏺ Edit", "⏺ Write", "⏺ Patch"]) {
+            const block = blockOf(folded, lead, { indent: true })
+            expect(block).toHaveLength(3)
+            expect(block.filter((row) => cellWidth(row, ambiguousWidth) > width)).toEqual([])
+          }
+
+          // Open, the call and its summary are still one row each, and nothing the diff or the file adds is too wide.
+          press(harness)
+          press(harness)
+          press(harness)
+          const opened = await harness.waitForFrame((text) => text.split(close).length === 4, "the open rows")
+          for (const lead of ["⏺ Edit", "⏺ Write", "⏺ Patch"]) {
+            const block = blockOf(opened, lead, { indent: true })
+            expect(block[0].trimStart().startsWith(lead)).toBe(true)
+            expect(block[1].trimStart().startsWith("⎿")).toBe(true)
+            expect(block.filter((row) => cellWidth(row, ambiguousWidth) > width)).toEqual([])
+          }
+        } finally {
+          await harness.dispose()
+        }
       }
     })
   }

@@ -35,7 +35,7 @@ const DOT_CELLS = 2
 const RESULT_MARK = "  ⎿ "
 const RESULT_INDENT = 4
 /** What the muted tail of a result line is set off with. */
-const DETAIL_SEPARATOR = " · "
+export const DETAIL_SEPARATOR = " · "
 
 export interface ToolRowProps {
   state: ToolRowState
