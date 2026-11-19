@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { children, createMemo, createSignal, Match, Show, Switch, type Accessor } from "solid-js"
+import { children, createMemo, createSignal, For, Match, Show, Switch, type Accessor } from "solid-js"
 import { BoxRenderable, type RGBA } from "@opentui/core"
 import { useRenderer, type JSX } from "@opentui/solid"
 import type { ToolPart } from "@graphagent/sdk"
 import { Spinner } from "../../component/spinner"
 import { useKV } from "../../context/kv"
 import { useTheme } from "../../context/theme"
+import { t } from "../../i18n"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { alwaysSeparate, setPreLayoutSiblingMargin } from "../../util/layout"
 import { remoteLine } from "../../util/remote-text"
@@ -270,5 +271,35 @@ export function ToolRow(props: ToolRowProps) {
         </box>
       </Show>
     </box>
+  )
+}
+
+/** The errors a call's diagnostics hold for one file, in words. */
+export const diagnosticCount = (errors: number) =>
+  t(errors === 1 ? "tool.row.diagnostics.one" : "tool.row.diagnostics.other", { n: errors })
+
+/**
+ * What a change did to a file, the line under the call of an edit or of a file of a patch: the lines it added and the
+ * lines it removed, in the colors of success and of error, and how many errors the language server found in the file.
+ * A count the server did not give is left out, and the others stand as they are.
+ */
+export function ChangeSummary(props: { additions?: number; deletions?: number; errors: number }) {
+  const { theme } = useTheme()
+  const counts = createMemo(() => {
+    const list: Array<{ text: string; fg: RGBA }> = []
+    if (props.additions !== undefined) list.push({ text: "+" + props.additions, fg: theme.success })
+    // U+2212, the minus sign, and not the hyphen of a flag.
+    if (props.deletions !== undefined) list.push({ text: "\u2212" + props.deletions, fg: theme.error })
+    return list
+  })
+  return (
+    <text fg={theme.text} wrapMode="none">
+      <For each={counts()}>
+        {(count, index) => <span style={{ fg: count.fg }}>{(index() ? " " : "") + count.text}</span>}
+      </For>
+      <Show when={props.errors > 0}>
+        <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(props.errors)}</span>
+      </Show>
+    </text>
   )
 }

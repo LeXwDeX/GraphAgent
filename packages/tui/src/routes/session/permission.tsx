@@ -1,8 +1,8 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createEffect, createMemo, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { Portal, useTerminalDimensions } from "@opentui/solid"
-import type { TextareaRenderable } from "@opentui/core"
+import type { BoxRenderable, DiffRenderable, TextareaRenderable } from "@opentui/core"
 import { useTheme } from "../../context/theme"
 import type { PermissionRequest } from "@graphagent/sdk"
 import { useSDK, locationHeaders } from "../../context/sdk"
@@ -15,20 +15,50 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiConfig } from "../../config"
 import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
-import { PanelShell, type PanelHint } from "../../panel/shell"
+import { PanelShell, panelMaxRows, type PanelHint } from "../../panel/shell"
 import { t, type MessageKey } from "../../i18n"
 import { askSourceLabel } from "../../ask/ask-queue"
 import { diffView } from "./diff-view"
+import { diffChanges } from "./fold"
+import { ChangeSummary } from "./tool-row"
 
 type PermissionStage = "options" | "reject"
 type PermissionChoice = "once" | "always" | "reject" | "relay"
 
-function EditBody(props: { request: PermissionRequest }) {
+/** The rows of a diff an ask keeps at the least; with fewer to give it, the diff folds to the count of its changes. */
+const MIN_DIFF_ROWS = 3
+/** The blank rows that set the diff apart from the lines above it and the options under it. */
+const DIFF_GAPS = 2
+
+/** What an ask that has a diff draws of it, and whether blank rows set it apart from the parts around it. */
+export interface DiffFit {
+  show: "diff" | "count" | "none"
+  gap: 0 | 1
+}
+
+/**
+ * How the rows of an ask that has a diff are divided (#1651). `budget` is the rows the panel gives its content and `fixed`
+ * the rows that always stand: the lines above the diff and the options. The diff takes what they leave after the blank
+ * rows around it and scrolls inside it. With under `MIN_DIFF_ROWS` left it folds to one line of counts; with less room
+ * still the blank rows go first, then the counts: the options and the hint row stay in view at any terminal height.
+ */
+export function fitDiff(budget: number, fixed: number): DiffFit {
+  const spare = budget - fixed - DIFF_GAPS
+  if (spare >= MIN_DIFF_ROWS) return { show: "diff", gap: 1 }
+  if (spare >= 1) return { show: "count", gap: 1 }
+  return { show: budget - fixed >= 1 ? "count" : "none", gap: 0 }
+}
+
+function EditBody(props: { request: PermissionRequest; show: DiffFit["show"] }) {
   const themeState = useTheme()
   const theme = themeState.theme
   const syntax = themeState.syntax
   const config = useTuiConfig()
   const dimensions = useTerminalDimensions()
+  // The rows the diff takes at this width. A scroll area does not hug what it holds: left alone it fills the room it is
+  // given and leaves blank rows under a short diff. They are its flex basis, which the panel shrinks to the rows left
+  // when the diff is longer (`optionsContent`); a fixed `height` would not shrink.
+  const [natural, setNatural] = createSignal<number>()
 
   const filepath = createMemo(() => {
     const value = props.request.metadata?.filepath
@@ -38,6 +68,8 @@ function EditBody(props: { request: PermissionRequest }) {
     const value = props.request.metadata?.diff
     return typeof value === "string" ? value : ""
   })
+  // The request carries the diff but not the `filediff` the completed edit has, so the counts come from the diff.
+  const changes = createMemo(() => diffChanges(diff()))
 
   // The permission diff sits in the bottom zone, which spans the terminal; it keeps the shared threshold.
   const view = createMemo(() => diffView(config.diff_style, dimensions().width))
@@ -47,9 +79,11 @@ function EditBody(props: { request: PermissionRequest }) {
 
   return (
     <box flexDirection="column" gap={1}>
-      <Show when={diff()}>
+      <Show when={diff() && props.show === "diff"}>
         <scrollbox
-          height="100%"
+          flexBasis={natural()}
+          flexGrow={0}
+          flexShrink={1}
           scrollAcceleration={scrollAcceleration()}
           verticalScrollbarOptions={{
             trackOptions: {
@@ -59,6 +93,9 @@ function EditBody(props: { request: PermissionRequest }) {
           }}
         >
           <diff
+            onSizeChange={function (this: DiffRenderable) {
+              if (this.height > 0) setNatural(this.height)
+            }}
             diff={diff()}
             view={view()}
             filetype={ft()}
@@ -78,6 +115,11 @@ function EditBody(props: { request: PermissionRequest }) {
             removedLineNumberBg={theme.diffRemovedLineNumberBg}
           />
         </scrollbox>
+      </Show>
+      <Show when={diff() && props.show === "count"}>
+        <box paddingLeft={1}>
+          <ChangeSummary additions={changes().additions} deletions={changes().deletions} errors={0} />
+        </box>
       </Show>
       <Show when={!diff()}>
         <text fg={theme.textMuted}>{t("ask.permission.noDiff")}</text>
@@ -103,6 +145,8 @@ interface PermissionView {
   note?: string
   /** What sits under the block: a diff, the patterns of a directory, the input of a call a hook asked about. */
   body?: JSX.Element
+  /** The body is the diff of an edit: it takes the rows the panel has left and scrolls inside them (#1651). */
+  diff?: boolean
 }
 
 /** The name the title leads with, by permission: the tool's own name, the same in every language. */
@@ -201,6 +245,13 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     const diff = props.request.metadata?.diff
     return typeof diff === "string" && diff.length > 0
   })
+  // The rows of content the panel has: the diff of an edit is cut to what the lines above it and the options leave.
+  const budget = createMemo(() =>
+    Math.max(1, store.expanded ? dimensions().height - 6 : panelMaxRows(dimensions().height)),
+  )
+  // The rows of the lines above the diff, as the layout gave them: the path of an edit takes one unless it wraps.
+  const [above, setAbove] = createSignal(1)
+  const fit = createMemo(() => fitDiff(budget(), above() + choices().length))
 
   const session = createMemo(() => sync.data.session.find((item) => item.id === props.request.sessionID))
   const directory = () => props.directory ?? session()?.directory
@@ -409,7 +460,8 @@ export function PermissionPrompt(props: PermissionPromptProps) {
       return {
         tool,
         object: field("ask.permission.path", pathFormatter.format(str(props.request.metadata?.filepath))),
-        body: <EditBody request={props.request} />,
+        body: <EditBody request={props.request} show={fit().show} />,
+        diff: hasDiff(),
       }
     }
 
@@ -498,21 +550,33 @@ export function PermissionPrompt(props: PermissionPromptProps) {
 
   const optionsContent = () => {
     const current = info()
+    // The diff of an edit is the one part that gives way (#1651). The content is held to the rows the panel has, the
+    // lines above the diff and the options keep theirs, and the flex layout shrinks the diff's scroll area to the rest;
+    // any other body keeps the height it asks for, as it did before.
+    const gap = () => (current.diff ? fit().gap : 1)
     return (
-      <box flexDirection="column">
-        <Show when={hookReason()}>
-          <text fg={theme.warning}>{t("ask.permission.hook", { reason: hookReason() })}</text>
-        </Show>
-        <Show when={current.object}>{(object) => <ObjectBlock lead={object().lead} text={object().text} />}</Show>
-        <Show when={current.note}>
-          <text fg={theme.textMuted}>{current.note}</text>
-        </Show>
+      <box flexDirection="column" maxHeight={current.diff ? budget() : undefined}>
+        <box
+          flexDirection="column"
+          flexShrink={0}
+          onSizeChange={function (this: BoxRenderable) {
+            setAbove(this.height)
+          }}
+        >
+          <Show when={hookReason()}>
+            <text fg={theme.warning}>{t("ask.permission.hook", { reason: hookReason() })}</text>
+          </Show>
+          <Show when={current.object}>{(object) => <ObjectBlock lead={object().lead} text={object().text} />}</Show>
+          <Show when={current.note}>
+            <text fg={theme.textMuted}>{current.note}</text>
+          </Show>
+        </box>
         <Show when={current.body}>
-          <box flexDirection="column" paddingTop={1}>
+          <box flexDirection="column" paddingTop={gap()}>
             {current.body}
           </box>
         </Show>
-        <box flexDirection="column" paddingTop={1}>
+        <box flexDirection="column" flexShrink={0} paddingTop={gap()}>
           <For each={choices()}>
             {(choice, index) => {
               const selected = () => index() === store.selected
@@ -569,13 +633,13 @@ export function PermissionPrompt(props: PermissionPromptProps) {
 
   const content = () => (store.stage === "reject" ? rejectContent() : optionsContent())
 
-  const surface = (expanded: boolean) => (
+  const surface = () => (
     <PanelShell
       title={title()}
       command={props.total > 1 ? `${props.position}/${props.total}` : undefined}
       tone="warning"
       hints={hints()}
-      maxRows={expanded ? Math.max(1, dimensions().height - 6) : undefined}
+      maxRows={budget()}
     >
       {content()}
     </PanelShell>
@@ -587,12 +651,12 @@ export function PermissionPrompt(props: PermissionPromptProps) {
       fallback={
         <Portal>
           <box position="absolute" top={0} left={0} right={0} bottom={0} backgroundColor={theme.background}>
-            {surface(true)}
+            {surface()}
           </box>
         </Portal>
       }
     >
-      {surface(false)}
+      {surface()}
     </Show>
   )
 }
