@@ -895,6 +895,9 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
 
     const loopFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/loop.ts"))
     expect(loopFile).toBeDefined()
+    // #1344: the adoption is split out of loop.ts.
+    const recoverFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/recover-workflow.ts"))
+    expect(recoverFile).toBeDefined()
     const deliveryFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/delivery.ts"))
     expect(deliveryFile).toBeDefined()
     const reconcilerFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/reconciler.ts"))
@@ -909,9 +912,9 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     const regions: Array<{ name: string; source: string; from: string; to: string }> = [
       {
         name: "recoverWorkflow (startup recovery adoption)",
-        source: loopFile!.source,
+        source: recoverFile!.source,
         from: "const recoverWorkflow = Effect.fn(",
-        to: "yield* DagLoopControlHandlers.subscribeStarted(",
+        to: "return recoverWorkflow",
       },
       {
         // The reconciler decides from this observation (adoption, orphan disposal, eviction) for every trigger,
@@ -975,12 +978,12 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
 
     // Exactly one `runtimes.set(`, and it lies inside `recoverWorkflow`.
     expect(code.match(/runtimes\.set\(/g) ?? []).toHaveLength(1)
-    const loop = codeOf("loop.ts")
-    const adoption = loop.slice(
-      loop.indexOf("const recoverWorkflow = Effect.fn("),
-      loop.indexOf("DagReconciler.movedEvictor("),
-    )
-    expect(adoption).toContain("runtimes.set(")
+    const recovery = codeOf("recover-workflow.ts")
+    const adoptionStart = recovery.indexOf("const recoverWorkflow = Effect.fn(")
+    const adoptionEnd = recovery.indexOf("return recoverWorkflow", adoptionStart)
+    expect(adoptionStart).toBeGreaterThan(-1)
+    expect(adoptionEnd).toBeGreaterThan(adoptionStart)
+    expect(recovery.slice(adoptionStart, adoptionEnd)).toContain("runtimes.set(")
     // `recoverWorkflow` is called by the reconciler's `adopt`, and nowhere else.
     expect(code.match(/\brecoverWorkflow\(/g) ?? []).toHaveLength(1)
 

@@ -4,6 +4,7 @@
 export * as DagLoopContext from "./context"
 
 import type { Context as ServiceContext, Effect, Scope } from "effect"
+import type { DagLease } from "@graphagent/core/dag/lease"
 import type { DagMessages } from "@graphagent/core/dag/messages"
 import type { DagStore } from "@graphagent/core/dag/store"
 import type { Agent } from "@/agent/agent"
@@ -23,10 +24,11 @@ import type { DagLoopTeardown } from "./teardown"
 /**
  * What the modules split out of the DagLoop instance closure share (#1344): the
  * services the layer read, the instance's context and scope, the table of its
- * runtime entries, the runner leases, and the trigger of
- * delivery. Every module takes the fields it reads (`Pick<Context, ...>`), so its
- * dependencies are on its signature. Each field is the very object the closure
- * held, so a module and the closure see the same table and the same scope.
+ * runtime entries, the runner leases and the ports of the runner writes, and the
+ * trigger of delivery. Every module takes the fields it reads
+ * (`Pick<Context, ...>`), so its dependencies are on its signature. Each field is
+ * the very object the closure held, so a module and the closure see the same
+ * table and the same scope.
  *
  * Operations of the closure that a module calls (`spawnReady`, `abortChild`, the
  * reconciler's `reconcileAfter`) are not fields: they are bound where they are
@@ -35,7 +37,7 @@ import type { DagLoopTeardown } from "./teardown"
 export interface Context {
   readonly events: ServiceContext.Service.Shape<typeof EventV2Bridge.Service>
   readonly store: DagStore.Interface
-  /** The plain `Dag` service: its reads, and the writes that carry no lease token. */
+  /** The plain `Dag` service: its reads, and the writes that carry no lease token. A runner write goes through the port of `portFor`. */
   readonly dag: Dag.Interface
   readonly messageSvc: DagMessages.Interface | undefined
   readonly agentSvc: Agent.Interface
@@ -55,6 +57,8 @@ export interface Context {
   readonly runtimes: Map<string, WorkflowEntry>
   /** The runner leases of the instance (ADR-0008): a workflow is claimed before it is driven, and confirmed before its entry is published. */
   readonly runnerLease: RunnerLease.Interface<WorkflowEntry>
+  /** ADR-0008 decision 5: the port that the runner writes of a workflow go through, bound to the token of its claim or of its entry. */
+  readonly portFor: (dagID: string, token: DagLease.Token) => Dag.Interface
   /** The trigger of a session's delivery: forked, so a handler never waits for one. */
   readonly nudge: (sessionID: string) => Effect.Effect<void>
 }
