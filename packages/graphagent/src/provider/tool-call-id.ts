@@ -62,13 +62,48 @@ export function plan(ids: readonly string[], c: Constraint): Map<string, string>
       mapped.set(id, id)
       continue
     }
-    let n = 0
-    let candidate = render(id, c, n)
-    while (taken.has(candidate)) candidate = render(id, c, ++n)
+    const candidate = free(id, c, taken)
     taken.add(candidate)
     mapped.set(id, candidate)
   }
   return mapped
+}
+
+/** Numbered digest candidates tried before the deterministic enumeration takes over. */
+const HASHED_TRIES = 64
+const ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+/** `i` written in base 62 over the whole alphanumeric alphabet, padded to `length`. Distinct for `i < 62^length`. */
+function enumerated(i: number, length: number): string {
+  let out = ""
+  for (let k = 0; k < length; k++) {
+    out = ALNUM[i % ALNUM.length] + out
+    i = Math.floor(i / ALNUM.length)
+  }
+  return out
+}
+
+/**
+ * The first candidate for `id` that no result holds. The digest candidates come first; when they all collide, the
+ * `taken.size + 1` enumerated candidates are distinct, so one of them is free. A fixed length whose whole alphabet is
+ * already taken has no free id, which is an error rather than an endless search.
+ */
+function free(id: string, c: Constraint, taken: ReadonlySet<string>): string {
+  for (let n = 0; n < HASHED_TRIES; n++) {
+    const candidate = render(id, c, n)
+    if (!taken.has(candidate)) return candidate
+  }
+  const length = c.charset === "alnum" ? lengthOf(c) : undefined
+  if (length !== undefined && taken.size >= ALNUM.length ** length)
+    throw new Error(
+      `Tool call ids do not fit the model profile: ${taken.size + 1} ids need distinct ${length}-character alphanumeric ids, and only ${ALNUM.length ** length} exist`,
+    )
+  const base = render(id, c, 0)
+  for (let i = 0; i <= taken.size; i++) {
+    const candidate = length !== undefined ? enumerated(i, length) : `${base}${i}`
+    if (!taken.has(candidate)) return candidate
+  }
+  throw new Error("unreachable: one of taken.size + 1 distinct candidates is free")
 }
 
 /** The parts that name a tool call: the call and the result. */

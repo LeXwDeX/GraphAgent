@@ -185,6 +185,31 @@ describe("ToolCallId.plan", () => {
   })
 })
 
+describe("ToolCallId.plan with a small id space", () => {
+  const one = { charset: "alnum", length: 1 } as const
+
+  test("ids beyond the 16 hex digits still get distinct one-character ids from the whole alphabet", () => {
+    const ids = Array.from({ length: 62 }, (_, i) => `call_${i}`)
+    const mapped = ToolCallId.plan(ids, one)
+    const results = ids.map((id) => mapped.get(id)!)
+    expect(new Set(results).size).toBe(62)
+    for (const r of results) expect(ToolCallId.compliant(r, one)).toBe(true)
+  })
+
+  test("more ids than the id space holds is an error, not an endless search", () => {
+    const ids = Array.from({ length: 63 }, (_, i) => `call_${i}`)
+    expect(() => ToolCallId.plan(ids, one)).toThrow("only 62 exist")
+  })
+
+  test("compliant ids count against the space", () => {
+    const ids = [
+      ...Array.from({ length: 62 }, (_, i) => "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"[i]),
+      "call_x",
+    ]
+    expect(() => ToolCallId.plan(ids, one)).toThrow("only 62 exist")
+  })
+})
+
 describe("ToolCallId.remap", () => {
   const call = (id: string, name = "read") => ({
     type: "tool-call" as const,
