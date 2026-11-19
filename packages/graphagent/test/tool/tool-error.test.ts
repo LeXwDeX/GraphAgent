@@ -25,10 +25,19 @@ describe("ToolError.render", () => {
     )
   })
 
-  test("unknown_tool says when nothing is available and cuts the requested name to 64 code points", () => {
+  test("unknown_tool says the step opens no tool calls when no tool is available, and does not claim a name is wrong", () => {
+    const text = ToolError.render({ kind: "unknown_tool", requested: "bash", available: [] })
+    expect(text).toBe(
+      'Tool calls are not available on this step, so "bash" did not run. Reply with your final answer in text.',
+    )
+    expect(text).not.toContain("Unknown tool")
+    expect(text).not.toContain("(none)")
+  })
+
+  test("unknown_tool cuts the requested name to 64 code points when no tool is available", () => {
     const requested = "😀".repeat(80)
     expect(ToolError.render({ kind: "unknown_tool", requested, available: [] })).toBe(
-      `Unknown tool "${"😀".repeat(64)}". Available tools: (none). Use one of them.`,
+      `Tool calls are not available on this step, so "${"😀".repeat(64)}" did not run. Reply with your final answer in text.`,
     )
   })
 

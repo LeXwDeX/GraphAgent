@@ -28,6 +28,7 @@ import { Filesystem } from "@/util/filesystem"
 import { createClient, type Client, type TextPart, type ToolPart } from "@graphagent/sdk"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { readPipedInput, resolveRunInput } from "./run/piped-input"
 import { DagHold } from "./run/dag-hold"
 import { interactiveMarkable, nonInteractiveMarkable, type LocalFetchMark } from "./run/authorization"
 import { askedPermission, locationHeaders, permissionAnswerer } from "./run/permission-answer"
@@ -44,18 +45,6 @@ function pick(value: string | undefined): ModelInput | undefined {
     providerID,
     modelID: rest.join("/"),
   } as ModelInput
-}
-
-function resolveRunInput(value?: string, piped?: string): string | undefined {
-  if (!value) {
-    return piped
-  }
-
-  if (!piped) {
-    return value
-  }
-
-  return value + "\n" + piped
 }
 
 type FilePart = {
@@ -400,7 +389,10 @@ export const RunCommand = effectCmd({
         }
       }
 
-      const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
+      // With a message on the command line, a pipe that stays silent is not waited for (#1546).
+      const piped = process.stdin.isTTY
+        ? undefined
+        : await readPipedInput({ stream: Bun.stdin.stream(), hasMessage: message !== "" })
       message = resolveRunInput(message, piped) ?? ""
       const initialInput = resolveRunInput(rawMessage, piped)
 
