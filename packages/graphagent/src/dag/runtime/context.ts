@@ -45,3 +45,6 @@ export interface Context {
   /** The trigger of a session's delivery: forked, so a handler never waits for one. */
   readonly nudge: (sessionID: string) => Effect.Effect<void>
 }
+
+/** One scheduling round of a workflow (`spawnReady` of the loop): the dispatch every event that can ready a node runs. */
+export type SpawnReady = (dagID: string) => Effect.Effect<void, Error, Scope.Scope>
