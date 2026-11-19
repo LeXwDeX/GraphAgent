@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { costLabel, unpriced } from "@graphagent/core/util/cost"
-import type { Goal, LspStatus, Message, Session, SessionUsage, Todo } from "@graphagent/sdk"
+import type { Goal, LspStatus, Message, Session, SessionOverhead, SessionUsage, Todo } from "@graphagent/sdk"
 import { formatDagTokens } from "../../dag/mode"
 import { formatDagDuration } from "../../dag/model"
 import { t, type MessageKey } from "../../i18n"
@@ -10,7 +10,7 @@ import { backgroundElapsed, type BackgroundItem, type BackgroundItems } from "..
 import { activeRuns, backgroundLabel } from "../../shell/background-mark"
 import { DRAWER_WIDTH } from "../../shell/drawer"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
-import { contextShare, type ContextModel } from "../../util/context-window"
+import { contextShare, estimateMark, type ContextModel } from "../../util/context-window"
 import { remoteLine } from "../../util/remote-text"
 import { sessionTokenTotal } from "../../util/session-usage"
 
@@ -107,6 +107,46 @@ export function usageLines(
     }
   }
   return lines.map((line) => truncateCells(line, DRAWER_TEXT_CELLS, ambiguousWidth))
+}
+
+// ── The fixed-overhead section (#1461) ──────────────────────────────────────────
+
+/** How many of the largest sources the fixed-overhead section lists. */
+export const OVERHEAD_ROWS_MAX = 5
+
+export interface OverheadSection {
+  /** `≈{tokens} tokens · {percent}%` of the whole fixed overhead; the share has a `~` when the window is assumed. */
+  readonly total: string
+  /** The largest sources, largest first: `≈<tokens> <source> <label>`, each cut to the drawer's text width. */
+  readonly rows: readonly string[]
+}
+
+/**
+ * The fixed-overhead section (#1461), display only: what every request of the session carries besides its messages,
+ * as one total with its share of the model's window and the largest sources under it. Undefined, and so hidden, until
+ * the server reports an overhead (nothing is reported before the session's first request). A share that rests on the
+ * assumed window, which the model does not declare, is marked `~`, as the context's is (`estimateMark`). A source's
+ * label, the file an instructions section was read from, is remote text and goes through `remoteLine`.
+ */
+export function overheadSection(
+  info: SessionOverhead | undefined,
+  ambiguousWidth: AmbiguousWidth = 1,
+): OverheadSection | undefined {
+  if (info === undefined || info.tokens === 0) return undefined
+  const percent = Math.round((info.ratio ?? 0) * 100)
+  const total = t("drawer.overhead.total", {
+    tokens: info.tokens.toLocaleString("en-US"),
+    percent: `${estimateMark({ estimated: info.windowSource === "default" })}${percent}`,
+  })
+  const rows = info.sources
+    .toSorted((a, b) => b.tokens - a.tokens)
+    .slice(0, OVERHEAD_ROWS_MAX)
+    .map((item) => {
+      const label = item.label === undefined ? "" : remoteLine(item.label)
+      const line = `≈${item.tokens.toLocaleString("en-US")} ${item.source}${label === "" ? "" : ` ${label}`}`
+      return truncateCells(line, DRAWER_TEXT_CELLS, ambiguousWidth)
+    })
+  return { total: truncateCells(total, DRAWER_TEXT_CELLS, ambiguousWidth), rows }
 }
 
 const GOAL_STATUS: Readonly<Record<string, MessageKey>> = {
