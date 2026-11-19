@@ -24,8 +24,9 @@ export interface RunRecord {
   readonly failures: readonly string[]
   readonly attempts: number
   readonly durationMs: number
-  /** Input, output and reasoning tokens of the run. */
+  /** Tokens of every attempt of the run, the cached input included. */
   readonly tokens: number
+  /** Calls of every attempt of the run. */
   readonly calls: number
   /** Calls by their `Call.outcome`. */
   readonly outcomes: Readonly<Record<string, number>>
@@ -60,7 +61,8 @@ export interface Report {
 }
 
 export function recordOf(result: RunResult): RunRecord {
-  const calls = result.view?.calls ?? []
+  const attempts = result.earlier ? [result.earlier, result] : [result]
+  const calls = attempts.flatMap((item) => item.view?.calls ?? [])
   const outcomes: Record<string, number> = {}
   for (const call of calls) outcomes[call.outcome] = (outcomes[call.outcome] ?? 0) + 1
   return {
@@ -68,7 +70,7 @@ export function recordOf(result: RunResult): RunRecord {
     failures: result.failures,
     attempts: result.attempts,
     durationMs: result.durationMs,
-    tokens: result.tokens,
+    tokens: attempts.reduce((sum, item) => sum + item.tokens, 0),
     calls: calls.length,
     outcomes,
   }

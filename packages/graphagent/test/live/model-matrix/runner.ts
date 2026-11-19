@@ -62,6 +62,8 @@ export interface RunResult {
   readonly tokens: number
   readonly durationMs: number
   readonly attempts: number
+  /** The first attempt when the run was tried again: its tokens and calls count, its verdict does not. */
+  readonly earlier?: RunResult
 }
 
 /** The marker key of a script: the scenario id, and `<id>:apply_patch` for the apply_patch family. */
@@ -232,5 +234,7 @@ async function attempt(
 /** Runs a scenario; a run that is an `error` (not one the model failed) is tried once more. */
 export async function runScenario(ctx: MatrixContext, scenario: Scenario, family: ScriptFamily): Promise<RunResult> {
   const first = await attempt(ctx, scenario, family, 1)
-  return first.status === "error" ? attempt(ctx, scenario, family, 2) : first
+  if (first.status !== "error") return first
+  // The verdict is the retry's; the first attempt stays for its usage and its evidence.
+  return { ...(await attempt(ctx, scenario, family, 2)), earlier: first }
 }

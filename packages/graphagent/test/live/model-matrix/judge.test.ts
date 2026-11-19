@@ -362,6 +362,28 @@ describe("verdicts and regressions", () => {
     expect(record.tokens).toBe(7)
   })
 
+  test("a retried run keeps the tokens and the calls of its first attempt; the verdict is the retry's", () => {
+    const earlier = {
+      status: "error" as const,
+      failures: ["provider error"],
+      view: { ...EMPTY, calls: [done("read"), failed("grep")] },
+      tokens: 40,
+      durationMs: 5,
+      attempts: 1,
+    }
+    const record = recordOf({
+      status: "pass",
+      failures: [],
+      view: { ...EMPTY, calls: [done("read")] },
+      tokens: 7,
+      durationMs: 3,
+      attempts: 2,
+      earlier,
+    })
+    expect(record).toMatchObject({ status: "pass", failures: [], attempts: 2, tokens: 47, calls: 3 })
+    expect(record.outcomes).toEqual({ ok: 2, execution_error: 1 })
+  })
+
   test("the profile is cut down to what the report shows", () => {
     const response = {
       all: [
@@ -787,6 +809,7 @@ describe("the host the matrix builds on", () => {
       )
       expect(result).toMatchObject({ status: "error", attempts: 2, failures: ["redacted: true"], tokens: 0 })
       expect(result.view).toBeUndefined()
+      expect(result.earlier).toMatchObject({ status: "error", attempts: 1, failures: ["redacted: true"] })
     } finally {
       script.stop()
     }
