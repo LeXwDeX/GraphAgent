@@ -30,6 +30,10 @@ export type RequestInput = {
   readonly temperature?: number
   readonly topP?: number
   readonly topK?: number
+  /**
+   * The cap the session resolved, in the AI SDK's meaning: the room for the answer. An Anthropic request with an
+   * enabled thinking budget gets the budget added on top (see `maxTokens`).
+   */
   readonly maxOutputTokens?: number
   readonly providerOptions?: LLMRequest["providerOptions"]
   readonly headers?: Record<string, string>
@@ -163,12 +167,37 @@ const tools = (input: Record<string, ToolInput> | undefined): ToolDefinition[] =
     }),
   )
 
+/** The `thinking.budgetTokens` the Anthropic Messages lowering sends: an enabled thinking block that carries one. */
+const thinkingBudget = (options: RequestInput["providerOptions"]) => {
+  const thinking = options?.anthropic?.thinking
+  if (!isRecord(thinking) || thinking.type !== "enabled") return undefined
+  const budget = typeof thinking.budgetTokens === "number" ? thinking.budgetTokens : thinking.budget_tokens
+  return typeof budget === "number" && Number.isFinite(budget) ? budget : undefined
+}
+
+/**
+ * The Messages API counts thinking tokens in `max_tokens` and wants `budget_tokens` below it. The session works in
+ * the AI SDK's terms (`ProviderTransform.fitReasoningBudget`): `maxOutputTokens` is the room for the answer, and the
+ * AI SDK adds the budget on top and cuts the sum to the output limit of the model. Lower the same sum, so both
+ * runtimes send the request the session worked out: within the output limit when it is known. An unknown limit leaves
+ * no proof that more than the cap is accepted, so the cap stays the whole `max_tokens` while it holds the budget.
+ */
+const maxTokens = (input: RequestInput) => {
+  const answer = input.maxOutputTokens
+  if (answer === undefined || input.model.api.npm !== "@ai-sdk/anthropic") return answer
+  const budget = thinkingBudget(input.providerOptions)
+  if (budget === undefined) return answer
+  const limit = input.model.limit.output
+  if (limit > 0) return Math.min(answer + budget, limit)
+  return budget < answer ? answer : answer + budget
+}
+
 const generation = (input: RequestInput) => {
   const result = {
     temperature: input.temperature,
     topP: input.topP,
     topK: input.topK,
-    maxTokens: input.maxOutputTokens,
+    maxTokens: maxTokens(input),
   }
   return Object.values(result).some((value) => value !== undefined) ? result : undefined
 }

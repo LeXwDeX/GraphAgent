@@ -54,6 +54,10 @@ export type Prepared = {
     readonly temperature?: number
     readonly topP?: number
     readonly topK?: number
+    /**
+     * The AI SDK's meaning: the room for the answer. A thinking budget in `options` comes on top of it, as the AI SDK
+     * provider adds it; the native lowering (`native-request.ts`) turns the sum into the `max_tokens` it sends.
+     */
     readonly maxOutputTokens?: number
     readonly options: Record<string, any>
   }
@@ -64,7 +68,10 @@ export type Prepared = {
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
 
-/** Keeps the reasoning budget of the request inside what the model can emit, so it does not squeeze out the answer. */
+/**
+ * Keeps the reasoning budget of the request inside what the model can emit, so it does not squeeze out the answer.
+ * It works in the terms of `params` (see `Prepared`), whichever runtime sends the request.
+ */
 const fitReasoning = Effect.fnUntraced(function* (model: Provider.Model, params: ChatParams, sessionID: string) {
   const fitted = ProviderTransform.fitReasoningBudget(model, params.options, params.maxOutputTokens)
   if (!fitted) return
