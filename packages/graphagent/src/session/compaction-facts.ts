@@ -186,4 +186,17 @@ export function summaryItems(summary: string | undefined, heading: string) {
   return items
 }
 
+// The sections the continuation text reads. A summary without any of them is not the template's output.
+const REQUIRED_HEADINGS = ["## Goal", "### In Progress", "## Next Steps"] as const
+
+/**
+ * Whether `text` has the summary template's shape: each section the continuation reads on a line of its own, and at least
+ * one goal. Everything else of the template may be missing; a summary is only checked for what the continuation needs.
+ */
+export function validateSummary(text: string | undefined): boolean {
+  if (!text) return false
+  const lines = new Set(text.split("\n").map((line) => line.trim()))
+  return REQUIRED_HEADINGS.every((heading) => lines.has(heading)) && summaryItems(text, "## Goal").length > 0
+}
+
 export * as CompactionFacts from "./compaction-facts"

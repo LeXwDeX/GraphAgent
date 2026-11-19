@@ -336,7 +336,7 @@ export const Info = Schema.Struct({
       }),
       mode: Schema.optional(Schema.Literals(["small", "shared", "auto"])).annotate({
         description:
-          "Compaction request shape: 'small' sends a stripped request, 'shared' reuses the main request's cached system+tools prefix, and 'auto' picks the cheaper shape from model prices (default: small)",
+          "Compaction request shape: 'small' sends a stripped request and tries the small model first, 'shared' reuses the main request's cached system+tools prefix, and 'auto' picks the cheaper shape from model prices. With no mode set, a stripped request is tried on the agent.compaction model, then the conversation's model, then the small model",
       }),
     }),
   ),
