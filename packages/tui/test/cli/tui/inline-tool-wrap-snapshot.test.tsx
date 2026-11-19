@@ -223,10 +223,11 @@ function StickyScrollFixture(props: { separated: boolean; scroll: (scroll: Scrol
   )
 }
 
+// The call site of a todo update, which is still a one-line row of its own: a patch is a row of `ToolRow` since #1614.
 function FailedPendingToolFixture() {
   return (
-    <InlineToolRow icon="%" complete={false} pending="Preparing patch..." failed={true} failure="Patch failed">
-      Patch
+    <InlineToolRow icon="⚙" complete={false} pending="Updating todos..." failed={true} failure="Todo update failed">
+      Updating todos...
     </InlineToolRow>
   )
 }
@@ -268,8 +269,8 @@ describe("TUI inline tool wrapping", () => {
 
   test("replaces pending copy when a tool fails before completion", async () => {
     const frame = await renderFrame(() => <FailedPendingToolFixture />, { width: 72, height: 3 })
-    expect(frame).toContain("Patch failed")
-    expect(frame).not.toContain("Preparing patch")
+    expect(frame).toContain("Todo update failed")
+    expect(frame).not.toContain("Updating todos")
   })
 
   test("preserves useful completed copy when a tool fails", async () => {
@@ -286,7 +287,15 @@ describe("TUI inline tool wrapping", () => {
         { type: "add", relativePath: "a.ts", filePath: "a.ts", patch: "diff", deletions: 0 },
       ]),
     ).toEqual([
-      { type: "add", relativePath: "a.ts", filePath: "a.ts", patch: "diff", deletions: 0, movePath: undefined },
+      {
+        type: "add",
+        relativePath: "a.ts",
+        filePath: "a.ts",
+        patch: "diff",
+        additions: undefined,
+        deletions: 0,
+        movePath: undefined,
+      },
     ])
     expect(parseTodos([null, { status: "pending" }, { status: "pending", content: "Safe" }])).toEqual([
       { status: "pending", content: "Safe" },

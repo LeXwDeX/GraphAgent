@@ -48,6 +48,7 @@ import { createSessionAttention } from "@graphagent/sdk/attention"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import {
+  DIAGNOSTIC_LINES,
   numberValue,
   parseApplyPatchFiles,
   parseDiagnostics,
@@ -58,7 +59,7 @@ import {
   stringValue,
   toolDisplay,
   toolRowName,
-  webSearchProviderLabel,
+  webSearchProviderName,
 } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, locationHeaders } from "../../context/sdk"
@@ -164,7 +165,7 @@ import { diffView, sessionContentWidth } from "./diff-view"
 import {
   completedOutput,
   delegationFolds,
-  editShowsBlock,
+  editRows,
   errorDenied,
   errorLine,
   firstLine,
@@ -173,16 +174,17 @@ import {
   genericRowOutput,
   lastLine,
   outputCharCap,
+  patchFileRows,
   resultCardFolds,
   shellOutput,
   toolError,
   toolFailed,
   toolMetadata,
-  writeShowsBlock,
+  writtenLines,
   type FoldEnv,
   type FoldSource,
 } from "./fold"
-import { ToolRow, toolRowState, type ToolRowState } from "./tool-row"
+import { DETAIL_SEPARATOR, ToolRow, toolRowState, type ToolRowState } from "./tool-row"
 
 // The tool data readers live in `util/tool-display`, where `./fold` reads them too; the tests import them from here.
 export {
@@ -2900,7 +2902,12 @@ function ToolCall(props: {
   progress?: string
   /** The lines the row leaves out of the output of a call that completed, when that output folds. */
   folds?: number
-  /** The whole output of a call that folds. */
+  /**
+   * A call that completed has a `body` to open under its summary, and its row says nothing of it: no hint under the
+   * summary, open or closed. The click and `view.expand.toggle` open it all the same (an edit, a write, a patch).
+   */
+  opens?: boolean
+  /** The whole output of a call that folds, or what the open row of a call that `opens` draws. */
   body?: JSX.Element
   /** A call that completed without doing what it was asked: its dot is that of a call that failed. */
   blocked?: boolean
@@ -2923,7 +2930,7 @@ function ToolCall(props: {
     const current = toolRowState(props.part.state, waiting())
     return current === "done" && props.blocked ? "failed" : current
   })
-  const folded = () => completed() && props.folds !== undefined
+  const folded = () => completed() && (props.folds !== undefined || Boolean(props.opens))
   const expanded = () => ctx.view.get(props.part.id, "expanded")
   const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
 
@@ -3255,40 +3262,76 @@ function Shell(props: ToolProps) {
   )
 }
 
+/** The errors a call's diagnostics hold for one file, in words. */
+const diagnosticCount = (errors: number) =>
+  t(errors === 1 ? "tool.row.diagnostics.one" : "tool.row.diagnostics.other", { n: errors })
+
+/**
+ * What a change did to a file, the line under the call of an edit or of a file of a patch: the lines it added and the
+ * lines it removed, in the colors of success and of error, and how many errors the language server found in the file.
+ * A count the server did not give is left out, and the others stand as they are.
+ */
+function ChangeSummary(props: { additions?: number; deletions?: number; errors: number }) {
+  const { theme } = useTheme()
+  const counts = createMemo(() => {
+    const list: Array<{ text: string; fg: RGBA }> = []
+    if (props.additions !== undefined) list.push({ text: "+" + props.additions, fg: theme.success })
+    // U+2212, the minus sign, and not the hyphen of a flag.
+    if (props.deletions !== undefined) list.push({ text: "\u2212" + props.deletions, fg: theme.error })
+    return list
+  })
+  return (
+    <text fg={theme.text} wrapMode="none">
+      <For each={counts()}>
+        {(count, index) => <span style={{ fg: count.fg }}>{(index() ? " " : "") + count.text}</span>}
+      </For>
+      <Show when={props.errors > 0}>
+        <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(props.errors)}</span>
+      </Show>
+    </text>
+  )
+}
+
 function Write(props: ToolProps) {
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
-  const code = createMemo(() => {
-    return stringValue(props.input.content) ?? ""
-  })
+  const filePath = createMemo(() => stringValue(props.input.filePath))
+  const code = createMemo(() => stringValue(props.input.content) ?? "")
+  // The code block numbers the lines the file has, which the line break that ends the last one does not start.
+  const shown = createMemo(() => code().replace(/\n$/, ""))
+  const lines = createMemo(() => writtenLines(code()))
+  const errors = useDiagnosticErrors(() => props.metadata.diagnostics, filePath)
 
   return (
-    <Switch>
-      <Match when={writeShowsBlock(props.metadata)}>
-        <BlockTool title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={pathFormatter.format(filePath())}
+      // What a write has under its summary is the file it wrote, which is always folded and opened with no hint.
+      opens={lines() > 0}
+      done={
+        <text fg={theme.text} wrapMode="none">
+          {t(lines() === 1 ? "tool.row.written.one" : "tool.row.written.other", { n: lines() })}
+          <Show when={errors().length > 0}>
+            <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(errors().length)}</span>
+          </Show>
+        </text>
+      }
+      body={
+        <box flexDirection="column">
           <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
             <code
               conceal={false}
               fg={theme.text}
-              filetype={filetype(stringValue(props.input.filePath))}
+              filetype={filetype(filePath())}
               syntaxStyle={syntax()}
-              content={code()}
+              content={shown()}
             />
           </line_number>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool
-          icon="←"
-          pending="Preparing write..."
-          complete={stringValue(props.input.filePath)}
-          part={props.part}
-        >
-          Write {pathFormatter.format(stringValue(props.input.filePath))}
-        </InlineTool>
-      </Match>
-    </Switch>
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={filePath() ?? ""} />
+        </box>
+      }
+    />
   )
 }
 
@@ -3399,7 +3442,8 @@ function WebSearch(props: ToolProps) {
     <ToolCall
       part={props.part}
       name={toolRowName(props.tool)}
-      arg={query() === undefined ? undefined : `${webSearchProviderLabel(props.metadata.provider)} "${query()}"`}
+      // The row leads with the tool's name: the provider goes after it by its own name, with no second "Web Search".
+      arg={query() === undefined ? undefined : words(webSearchProviderName(props.metadata.provider), `"${query()}"`)}
       done={
         results() === undefined
           ? undefined
@@ -3747,125 +3791,117 @@ export function backgroundReason(error: string | undefined, width: number, ambig
   return undefined
 }
 
-function Edit(props: ToolProps) {
+/** The diff of one file, as an open row draws it under its summary; the colors of the diff are its own. */
+function DiffBlock(props: { diff: string; filePath: string | undefined }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const pathFormatter = usePathFormatter()
-
   const view = createMemo(() => diffView(ctx.tui.diff_style, ctx.width))
+  return (
+    <PatchDiff
+      scroll={ctx.scroll}
+      diff={props.diff}
+      view={view()}
+      filetype={filetype(props.filePath)}
+      syntaxStyle={syntax()}
+      showLineNumbers={true}
+      width="100%"
+      wrapMode={ctx.diffWrapMode()}
+      fg={theme.text}
+      addedBg={theme.diffAddedBg}
+      removedBg={theme.diffRemovedBg}
+      contextBg={theme.diffContextBg}
+      addedSignColor={theme.diffHighlightAdded}
+      removedSignColor={theme.diffHighlightRemoved}
+      lineNumberFg={theme.diffLineNumber}
+      lineNumberBg={theme.diffContextBg}
+      addedLineNumberBg={theme.diffAddedLineNumberBg}
+      removedLineNumberBg={theme.diffRemovedLineNumberBg}
+    />
+  )
+}
 
-  const ft = createMemo(() => filetype(stringValue(props.input.filePath)))
-
-  const diffContent = createMemo(() => stringValue(props.metadata.diff) ?? "")
+function Edit(props: ToolProps) {
+  const pathFormatter = usePathFormatter()
+  const filePath = createMemo(() => stringValue(props.input.filePath))
+  const rows = createMemo(() => editRows(props.metadata))
+  // What the edit added and removed is counted by the server (`filediff`); a call that has no count says it is done.
+  const filediff = createMemo(() => recordValue(props.metadata.filediff))
+  const additions = createMemo(() => numberValue(filediff()?.additions))
+  const deletions = createMemo(() => numberValue(filediff()?.deletions))
+  const errors = useDiagnosticErrors(() => props.metadata.diagnostics, filePath)
 
   return (
-    <Switch>
-      <Match when={editShowsBlock(props.metadata)}>
-        <BlockTool title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
-          <box paddingLeft={1}>
-            <PatchDiff
-              scroll={ctx.scroll}
-              diff={diffContent()}
-              view={view()}
-              filetype={ft()}
-              syntaxStyle={syntax()}
-              showLineNumbers={true}
-              width="100%"
-              wrapMode={ctx.diffWrapMode()}
-              fg={theme.text}
-              addedBg={theme.diffAddedBg}
-              removedBg={theme.diffRemovedBg}
-              contextBg={theme.diffContextBg}
-              addedSignColor={theme.diffHighlightAdded}
-              removedSignColor={theme.diffHighlightRemoved}
-              lineNumberFg={theme.diffLineNumber}
-              lineNumberBg={theme.diffContextBg}
-              addedLineNumberBg={theme.diffAddedLineNumberBg}
-              removedLineNumberBg={theme.diffRemovedLineNumberBg}
-            />
-          </box>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={stringValue(props.input.filePath)} part={props.part}>
-          Edit {pathFormatter.format(stringValue(props.input.filePath))} {input({ replaceAll: props.input.replaceAll })}
-        </InlineTool>
-      </Match>
-    </Switch>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={words(pathFormatter.format(filePath()), input({ replaceAll: props.input.replaceAll }))}
+      // What an edit has under its summary is its diff, which is always folded and opened with no hint.
+      opens={rows() > 0}
+      done={
+        additions() === undefined && deletions() === undefined ? undefined : (
+          <ChangeSummary additions={additions()} deletions={deletions()} errors={errors().length} />
+        )
+      }
+      body={
+        <box flexDirection="column">
+          <DiffBlock diff={stringValue(props.metadata.diff) ?? ""} filePath={filePath()} />
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={filePath() ?? ""} />
+        </box>
+      }
+    />
+  )
+}
+
+type PatchFileInfo = ReturnType<typeof parseApplyPatchFiles>[number]
+
+/** One file of a patch: a row of its own, which opens to the diff of the file. */
+function PatchFile(props: ToolProps & { file: PatchFileInfo }) {
+  const pathFormatter = usePathFormatter()
+  const rows = createMemo(() => patchFileRows(props.file))
+  const errors = useDiagnosticErrors(
+    () => props.metadata.diagnostics,
+    () => props.file.movePath ?? props.file.filePath,
+  )
+  // What the patch did to the file, said as the tool does: a file it deleted, created or moved is named so.
+  const arg = createMemo(() => {
+    const file = props.file
+    if (file.type === "delete") return t("tool.row.patch.deleted", { path: file.relativePath })
+    if (file.type === "add") return t("tool.row.patch.created", { path: file.relativePath })
+    if (file.type === "move") {
+      return t("tool.row.patch.moved", { from: pathFormatter.format(file.filePath), to: file.relativePath })
+    }
+    return file.relativePath
+  })
+
+  return (
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={arg()}
+      opens={rows() > 0}
+      done={
+        <ChangeSummary additions={props.file.additions} deletions={props.file.deletions} errors={errors().length} />
+      }
+      body={
+        <box flexDirection="column">
+          <DiffBlock diff={props.file.patch} filePath={props.file.filePath} />
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={props.file.movePath ?? props.file.filePath} />
+        </box>
+      }
+    />
   )
 }
 
 function ApplyPatch(props: ToolProps) {
-  const ctx = use()
-  const { theme, syntax } = useTheme()
-  const pathFormatter = usePathFormatter()
-
   const files = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
-  const view = createMemo(() => diffView(ctx.tui.diff_style, ctx.width))
-
-  function Diff(p: { diff: string; filePath: string }) {
-    return (
-      <box paddingLeft={1}>
-        <PatchDiff
-          scroll={ctx.scroll}
-          diff={p.diff}
-          view={view()}
-          filetype={filetype(p.filePath)}
-          syntaxStyle={syntax()}
-          showLineNumbers={true}
-          width="100%"
-          wrapMode={ctx.diffWrapMode()}
-          fg={theme.text}
-          addedBg={theme.diffAddedBg}
-          removedBg={theme.diffRemovedBg}
-          contextBg={theme.diffContextBg}
-          addedSignColor={theme.diffHighlightAdded}
-          removedSignColor={theme.diffHighlightRemoved}
-          lineNumberFg={theme.diffLineNumber}
-          lineNumberBg={theme.diffContextBg}
-          addedLineNumberBg={theme.diffAddedLineNumberBg}
-          removedLineNumberBg={theme.diffRemovedLineNumberBg}
-        />
-      </box>
-    )
-  }
-
-  function title(file: { type: string; relativePath: string; filePath: string; deletions: number }) {
-    if (file.type === "delete") return "# Deleted " + file.relativePath
-    if (file.type === "add") return "# Created " + file.relativePath
-    if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " → " + file.relativePath
-    return "← Patched " + file.relativePath
-  }
-
   return (
-    <Switch>
-      <Match when={files().length > 0}>
-        <For each={files()}>
-          {(file) => (
-            <BlockTool title={title(file)} part={props.part}>
-              <Show
-                when={file.type !== "delete"}
-                fallback={
-                  <text fg={theme.diffRemoved}>
-                    -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
-                  </text>
-                }
-              >
-                <Diff diff={file.patch} filePath={file.filePath} />
-                <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
-              </Show>
-            </BlockTool>
-          )}
-        </For>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." failure="Patch failed" complete={false} part={props.part}>
-          Patch
-        </InlineTool>
-      </Match>
-    </Switch>
+    <Show
+      when={props.part.state.status === "completed" && files().length > 0}
+      fallback={<ToolCall part={props.part} name={toolRowName(props.tool)} />}
+    >
+      <For each={files()}>{(file) => <PatchFile {...props} file={file} />}</For>
+    </Show>
   )
 }
 
@@ -3938,21 +3974,25 @@ function Skill(props: ToolProps) {
   )
 }
 
+/** The errors the language server found in `filePath`, all of them, from the diagnostics a call recorded. */
+function useDiagnosticErrors(diagnostics: () => unknown, filePath: () => string | undefined) {
+  const terminalEnvironment = useTuiTerminalEnvironment()
+  return createMemo(() =>
+    parseDiagnostics(diagnostics(), normalizePath(filePath() ?? "", terminalEnvironment.platform), Infinity),
+  )
+}
+
 function Diagnostics(props: { diagnostics: unknown; filePath: string }) {
   const { theme } = useTheme()
-  const terminalEnvironment = useTuiTerminalEnvironment()
-  const errors = createMemo(() => {
-    const normalized = normalizePath(
-      typeof props.filePath === "string" ? props.filePath : "",
-      terminalEnvironment.platform,
-    )
-    return parseDiagnostics(props.diagnostics, normalized)
-  })
+  const errors = useDiagnosticErrors(
+    () => props.diagnostics,
+    () => props.filePath,
+  )
 
   return (
     <Show when={errors().length}>
       <box>
-        <For each={errors()}>
+        <For each={errors().slice(0, DIAGNOSTIC_LINES)}>
           {(diagnostic) => (
             <text fg={theme.error}>
               Error [{diagnostic.range.start.line + 1}:{diagnostic.range.start.character + 1}] {diagnostic.message}

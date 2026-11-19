@@ -8,6 +8,8 @@ import { setLanguage } from "../../../src/i18n"
 import {
   completedOutput,
   delegationFolds,
+  diffRows,
+  editRows,
   errorDenied,
   errorLine,
   firstLine,
@@ -18,12 +20,16 @@ import {
   lastLine,
   openToolLines,
   outputCharCap,
+  patchFileRows,
+  patchFolds,
   reasoningFolds,
   resultCardFolds,
   shellOutput,
   TOOL_FOLD_LINES,
   toolFailed,
   toolMetadata,
+  writeRows,
+  writtenLines,
   type FoldEnv,
   type FoldSource,
 } from "../../../src/routes/session/fold"
@@ -198,15 +204,21 @@ test("a failed bash call is one line whatever it printed: its error folds, with 
   expect(flag(tool("bash", failed("aborted", { output: "short" })))).toBe("errorExpanded")
 })
 
+test("a failed write, edit or patch is a row like any other: its error folds, whatever its metadata holds", () => {
+  const file = { type: "update", relativePath: "a.ts", filePath: "/a.ts", patch: "@@ -1 +1 @@\n-a\n+b", deletions: 1 }
+  for (const [name, metadata] of [
+    ["write", { diagnostics: {} }],
+    ["edit", { diff: "@@ -1 +1 @@\n-a\n+b" }],
+    ["apply_patch", { files: [file] }],
+  ] as const) {
+    expect(flag(tool(name, failed("boom")))).toBe("errorExpanded")
+    expect(flag(tool(name, failed("boom", metadata)))).toBe("errorExpanded")
+  }
+  // One the user turned down has no error to open.
+  expect(flag(tool("edit", failed("The user rejected permission to use this specific tool call.")))).toBeUndefined()
+})
+
 test("a failed call of a tool that draws a fixed block has no folded error", () => {
-  expect(flag(tool("write", failed("boom")))).toBe("errorExpanded")
-  expect(flag(tool("write", failed("boom", { diagnostics: {} })))).toBeUndefined()
-  expect(flag(tool("edit", failed("boom")))).toBe("errorExpanded")
-  expect(flag(tool("edit", failed("boom", { diff: "@@ -1 +1 @@" })))).toBeUndefined()
-  expect(flag(tool("apply_patch", failed("boom")))).toBe("errorExpanded")
-  const file = { type: "update", relativePath: "a.ts", filePath: "/a.ts", patch: "@@", deletions: 0 }
-  expect(flag(tool("apply_patch", failed("boom", { files: [file] })))).toBeUndefined()
-  expect(flag(tool("apply_patch", failed("boom", { files: [{ type: "update" }] })))).toBe("errorExpanded")
   expect(flag(tool("todowrite", failed("boom")))).toBe("errorExpanded")
   expect(flag(tool("todowrite", failed("boom", { todos: [{ status: "pending", content: "x" }] })))).toBeUndefined()
   expect(flag(tool("question", failed("boom")))).toBe("errorExpanded")
@@ -247,6 +259,102 @@ test("the output a generic tool row draws is the one the reader asked for, and n
   expect(genericRowOutput(undefined, "", true)).toBe("")
 })
 
+const DIFF = [
+  "Index: src/a.ts",
+  "===================================================================",
+  "--- src/a.ts",
+  "+++ src/a.ts",
+  "@@ -1,3 +1,3 @@",
+  " export function value() {",
+  "-  const answer = 41",
+  "+  const answer = 42",
+  " }",
+  "@@ -10,2 +10,3 @@",
+  " const tail = 1",
+  "+const more = 2",
+  "\\ No newline at end of file",
+  "",
+].join("\n")
+
+/** The rows of `DIFF`: four in its first hunk and two in its second, and not the marker of the missing final newline. */
+const DIFF_ROWS = 6
+
+test("the rows of a diff are the context, added and removed lines of its hunks, and nothing above the first one", () => {
+  expect(diffRows(DIFF)).toBe(DIFF_ROWS)
+  expect(diffRows("")).toBe(0)
+  expect(diffRows("Index: a\n===\n--- a\n+++ a\n")).toBe(0)
+  expect(diffRows("@@ -1 +1 @@\n-a\n+b")).toBe(2)
+  // A removed line that begins with dashes, as a SQL comment does, is a row of the hunk and not a header.
+  expect(diffRows("@@ -1,2 +1,1 @@\n--- a comment\n+x\n")).toBe(2)
+  // A diff the server shortened to nothing has no rows.
+  expect(diffRows("@@ -1 +1 @@")).toBe(0)
+})
+
+test("a write put in its file the lines of its content, not the line break that ends the last of them", () => {
+  expect(writtenLines(undefined)).toBe(0)
+  expect(writtenLines("")).toBe(0)
+  expect(writtenLines("a")).toBe(1)
+  expect(writtenLines("a\n")).toBe(1)
+  expect(writtenLines("a\nb")).toBe(2)
+  expect(writtenLines("a\r\nb\r\n")).toBe(2)
+  expect(writtenLines("\n")).toBe(1)
+  expect(writtenLines("a\n\n")).toBe(2)
+})
+
+test("what an edit, a write and a file of a patch have to open is counted from their own data", () => {
+  expect(editRows({ diff: DIFF })).toBe(DIFF_ROWS)
+  expect(editRows({})).toBe(0)
+  expect(writeRows({ content: "a\nb\n" })).toBe(2)
+  expect(writeRows({})).toBe(0)
+  expect(patchFileRows({ type: "update", patch: DIFF })).toBe(DIFF_ROWS)
+  expect(patchFileRows({ type: "add", patch: DIFF })).toBe(DIFF_ROWS)
+  // A file the patch deleted is not drawn as a diff of everything it held.
+  expect(patchFileRows({ type: "delete", patch: DIFF })).toBe(0)
+})
+
+const patchFile = (type: string, patch = DIFF) => ({
+  type,
+  relativePath: "a.ts",
+  filePath: "/w/a.ts",
+  patch,
+  additions: 1,
+  deletions: 1,
+})
+
+test("a completed edit folds its diff under expanded, which the key and a click open", () => {
+  expect(flag(tool("edit", completed("ok", { diff: DIFF })))).toBe("expanded")
+  expect(flag(tool("edit", completed("ok", { diff: DIFF, filediff: { additions: 1, deletions: 1 } })))).toBe("expanded")
+  // Without a diff there is nothing to open, and the metadata of a call that has not completed is not an answer.
+  expect(flag(tool("edit", completed("ok", {})))).toBeUndefined()
+  expect(flag(tool("edit", completed("ok", { diff: "" })))).toBeUndefined()
+  expect(flag(tool("edit", { status: "running", input: {}, metadata: { diff: DIFF }, time: { start: 1 } }))).toBe(
+    undefined,
+  )
+  expect(flag(tool("edit", { status: "pending", input: {}, raw: "" }))).toBeUndefined()
+})
+
+test("a completed write folds the file it wrote, unless it wrote nothing", () => {
+  const write = (content: unknown) => ({ ...completed("ok", { diagnostics: {} }), input: { content } })
+  expect(flag(tool("write", write("one\ntwo\n")))).toBe("expanded")
+  expect(flag(tool("write", write("one")))).toBe("expanded")
+  expect(flag(tool("write", write("")))).toBeUndefined()
+  expect(flag(tool("write", write(undefined)))).toBeUndefined()
+  expect(flag(tool("write", { status: "running", input: { content: "x" }, time: { start: 1 } }))).toBeUndefined()
+})
+
+test("a completed patch folds when one of its files has a diff, and not when it only deleted files", () => {
+  expect(flag(tool("apply_patch", completed("ok", { files: [patchFile("update")] })))).toBe("expanded")
+  expect(flag(tool("apply_patch", completed("ok", { files: [patchFile("delete"), patchFile("add")] })))).toBe(
+    "expanded",
+  )
+  expect(flag(tool("apply_patch", completed("ok", { files: [patchFile("delete")] })))).toBeUndefined()
+  expect(flag(tool("apply_patch", completed("ok", { files: [patchFile("update", "")] })))).toBeUndefined()
+  expect(flag(tool("apply_patch", completed("ok", { files: [] })))).toBeUndefined()
+  expect(flag(tool("apply_patch", completed("ok", {})))).toBeUndefined()
+  expect(patchFolds({ files: [patchFile("update")] })).toBe(true)
+  expect(patchFolds({ files: [patchFile("delete")] })).toBe(false)
+})
+
 test("the open row of a call draws as many lines under its result as the output has, or its error and output", () => {
   expect(openToolLines(tool("bash", completed("", { output: lines(30) })))).toBe(30)
   expect(openToolLines(tool("bash", completed("", {})))).toBe(0)
@@ -256,6 +364,26 @@ test("the open row of a call draws as many lines under its result as the output 
   // The error of a call that failed, and the blank line and the output a bash call printed before it did.
   expect(openToolLines(tool("read", failed("one\ntwo\nthree")))).toBe(3)
   expect(openToolLines(tool("bash", failed("aborted", { output: lines(4) })))).toBe(1 + 1 + 4)
+})
+
+test("the open row of an edit or a write draws its diff or the lines it wrote, and a patch one row per file", () => {
+  // The estimate of a tool row adds three lines to what is under the result: the call, the result and the hint that
+  // closes the row. An edit, a write and a patch have no hint, so the lines they count are one fewer than they draw.
+  expect(openToolLines(tool("edit", completed("Edit applied.\n\nLSP check: ok", { diff: DIFF })))).toBe(DIFF_ROWS - 1)
+  expect(
+    openToolLines(tool("write", { ...completed("ok", { diagnostics: {} }), input: { content: "a\nb\nc\n" } })),
+  ).toBe(3 - 1)
+  expect(openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update")] })))).toBe(DIFF_ROWS - 1)
+  // Each further file adds its two lines and its diff, and the blank line between it and the one above.
+  expect(
+    openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update"), patchFile("update")] }))),
+  ).toBe(DIFF_ROWS + 2 + 1 + DIFF_ROWS + 2 - 3)
+  // A deleted file is two lines and no diff.
+  expect(
+    openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update"), patchFile("delete")] }))),
+  ).toBe(DIFF_ROWS + 2 + 1 + 2 - 3)
+  // The error of a call that failed, which its row opens, as for any tool.
+  expect(openToolLines(tool("edit", failed("one\ntwo")))).toBe(2)
 })
 
 test("the prompt of a task block folds past its lines, and past the characters those lines take", () => {

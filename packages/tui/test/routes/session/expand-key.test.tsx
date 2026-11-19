@@ -124,12 +124,12 @@ test("the shortcut panel lists the command with a title and a note in both langu
   }
   expect(await listed("zh-CN")).toEqual({
     title: "展开或折叠最近的输出",
-    note: "作用于最近一个可折叠的推理、工具输出、工具错误或子 agent 任务块",
+    note: "作用于最近一个可折叠的推理、工具输出、工具错误、文件改动（diff）或子 agent 任务块",
     hidden: false,
   })
   expect(await listed("en")).toEqual({
     title: "Expand or collapse the latest output",
-    note: "Acts on the latest foldable reasoning, tool output, tool error or sub-agent task block",
+    note: "Acts on the latest foldable reasoning, tool output, tool error, file change (diff) or sub-agent task block",
     hidden: false,
   })
 })
