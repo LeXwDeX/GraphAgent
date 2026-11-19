@@ -3,21 +3,7 @@
 
 export * as DagLoop from "./loop"
 
-import {
-  Cause,
-  Effect,
-  Layer,
-  Context,
-  Stream,
-  Semaphore,
-  Fiber,
-  Option,
-  DateTime,
-  Clock,
-  Scope,
-  Exit,
-  Deferred,
-} from "effect"
+import { Cause, Effect, Layer, Context, Stream, Semaphore, Fiber, Option, DateTime, Scope } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { InstanceState } from "@/effect/instance-state"
@@ -31,13 +17,11 @@ import { Database } from "@graphagent/core/database/database"
 import { DagLocation } from "../location"
 import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
 import {
-  isNodeTerminalStatus,
   isTransitionRejection,
   isWorkflowTerminalStatus,
   isTerminalWorkflowStatusValue,
-  PAUSE_REASON_BUDGET_EXHAUSTED,
 } from "@graphagent/core/dag/core/types"
-import { Dag, type WorkflowConfig, parseWorkflowConfig } from "../dag"
+import { Dag, parseWorkflowConfig } from "../dag"
 import { staleUpstreamNodes, staleUpstreamNote } from "../recovery-plan"
 import { DagFanOut } from "../fan-out"
 import { projectBriefForNode } from "../admission"
@@ -52,7 +36,6 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
-import { SessionRole } from "@/session/role"
 import { SessionStatus } from "@/session/status"
 import { SessionInbox } from "@/session/inbox"
 import { ExclusiveRegistry } from "@/session/engine-process"
@@ -61,14 +44,13 @@ import { renderTemplate } from "../templates/resolve"
 import { upstreamBlock } from "../templates/envelope"
 import { DagConfig } from "../config"
 import { DagSection } from "@/config/dag-section"
-import { spawnNode, makeDeadlineWatcher } from "./spawn"
+import { spawnNode } from "./spawn"
 import { DagComposeExpansion } from "./compose-expansion"
 import { UpstreamBound } from "./upstream-bound"
 import { collectChangeFacts, renderChangeFacts } from "./change-facts"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
-  continueRecoveredMessageNode,
   makeSessionStatusChecker,
   makeLastAssistantTextReader,
   makeLastAssistantMessageReader,
@@ -90,72 +72,26 @@ import { RunnerPort } from "./runner-port"
 import { DagReconciler } from "./reconciler"
 import { settleTerminalWorkflowWorktree, workflowWorktreeSettlementPending } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
+import {
+  allowedVerdictHint,
+  guarded,
+  makeForkWakeAfter,
+  settledWithoutOutputPlaceholder,
+  type WorkflowEntry,
+} from "./entry"
+import type { DagLoopContext } from "./context"
+import { DagLoopControlHandlers } from "./control-handlers"
+import { DagLoopGates } from "./gates"
+import { DagLoopMessageContinuation } from "./message-continuation"
+import { DagLoopReplanHandler } from "./replan-handler"
 
 export { PAUSED_REMINDER_DELAY_MS, isPausedReminderDue, wakeBatchIdentity } from "./delivery"
 
-/** State the schema's enum values at the end of the output contract so the
- * runtime answer wins over conflicting verdict wording in the instruction. */
-function allowedVerdictHint(schema: Record<string, unknown>): string {
-  const properties = schema.properties
-  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) return ""
-  const allowed = Object.entries(properties).flatMap(([field, value]) => {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return []
-    const values = (value as Record<string, unknown>).enum
-    if (!Array.isArray(values) || !values.every((item) => typeof item === "string")) return []
-    return [`${field} in ${JSON.stringify(values)}`]
-  })
-  return allowed.length === 0
-    ? ""
-    : ` Allowed values: ${allowed.join("; ")}. This output contract overrides any conflicting verdict wording in the instruction or objective.`
-}
-
-/** Explicit input text for a dependency that settled without output. */
-function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
-  if (node?.status === "failed") return `Dependency "${node.id}" failed: ${node.errorReason ?? "unknown error"}`
-  if (node?.status === "skipped") return `Dependency "${node.id}" skipped: ${node.errorReason ?? "no output"}`
-  if (node?.status === "aborted") return `Dependency "${node.id}" aborted`
-  return undefined
-}
 export interface Interface {
   readonly init: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/DagLoop") {}
-
-interface WorkflowEntry {
-  /** ADR-0008: the runner lease this entry drives the workflow under. Renewed every period; losing it evicts the entry. */
-  token: DagLease.Token
-  /** ADR-0008 decision 5: `Dag` with this entry's runner writes bound to `token`. The entry's runner writes go through it. */
-  port: Dag.Interface
-  runtime: WorkflowRuntime
-  /** Per-workflow child-run cap, enforced by the process-level scheduler. */
-  concurrency: number
-  evalLock: Semaphore.Semaphore
-  parentSessionID: string
-  config: WorkflowConfig | undefined
-  /** #943: bound workspace where children run; undefined means the owner directory. */
-  executionDirectory?: string
-  /** Durable graph revision paired with config and the scheduling runtime. */
-  graphRev: number
-  fibers: Map<string, Fiber.Fiber<unknown, unknown>>
-  watchers: Map<string, Fiber.Fiber<unknown, unknown>>
-  /** ADR-0008: the child session each fiber of `fibers` drives, recorded by its own attempt where the fiber is registered. Eviction cancels these (`RunnerLease.Evictable`). */
-  attemptChild: WeakMap<Fiber.Fiber<unknown, unknown>, () => string | undefined>
-  /** Accepted messages preserve an existing running attempt through recovery. */
-  messageContinuations: Set<string>
-  /** DAG-03/F2: a replan-verdict veto whose durable pause could not be
-   * persisted. While set, the in-memory paused flag survives the durable-row
-   * re-syncs performed by node terminal events and refreshControlFlags, so
-   * no stimulus spawns the vetoed direction before the parent acts. Released
-   * by the parent's explicit control events — replan and step are reachable
-   * from every hold state; resume only when the durable row is not running
-   * (paused/stepping — a held row reads "running" and resume is an invalid
-   * transition there until a durable pause lands; control(replan) is the
-   * disposition the verdict asked for). This is only the process-local
-   * fallback: restart reconstruction re-evaluates the durable checkpoint and
-   * its later control-event sequence before scheduling or completion. */
-  vetoHold: boolean
-}
 
 const serviceLayer = Layer.effect(
   Service,
@@ -214,99 +150,25 @@ const serviceLayer = Layer.effect(
         // never waits for a delivery.
         const nudge = DagDelivery.nudger(inbox, stateScope)
 
-        const checkpointDisposition = Effect.fn("DagLoop.checkpointDisposition")(function* (
-          dagID: string,
-          checkpoint: Checkpoint.ReplanCheckpoint,
-          port: Dag.Interface,
-        ) {
-          const attempt = port
-            .pauseForCheckpoint(dagID, checkpoint.seq)
-            .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void)))
-          const first = yield* attempt
-          if (first) return first
-          const second = yield* attempt
-          if (second) return second
+        // #1344: what the modules split out of this closure share (DagLoopContext).
+        const loop: DagLoopContext.Context = {
+          events,
+          store,
+          messageSvc,
+          agentSvc,
+          sessionSvc,
+          promptSvc,
+          permissionSvc,
+          scheduler,
+          ctx,
+          stateScope,
+          runtimes,
+          nudge,
+        }
+        const { checkpointDisposition, enforceCheckpointGate, convergeSkippedNodes, checkCompletion } =
+          DagLoopGates.make(loop)
 
-          const workflow = yield* store.getWorkflow(dagID).pipe(Effect.catchCause(() => Effect.void))
-          if (
-            !workflow ||
-            workflow.status === "completed" ||
-            workflow.status === "failed" ||
-            workflow.status === "cancelled"
-          )
-            return "inactive" as const
-          if (workflow.status === "paused") return "paused" as const
-          yield* Effect.logError(
-            "DagLoop checkpoint pause failed after retries — holding scheduling in memory (fail-closed)",
-            { dagID, nodeID: checkpoint.id, checkpointSeq: checkpoint.seq, durableStatus: workflow.status },
-          )
-          return "held" as const
-        })
-
-        const enforceCheckpointGate = Effect.fn("DagLoop.enforceCheckpointGate")(function* (
-          dagID: string,
-          entry: WorkflowEntry,
-          nodes?: readonly DagStore.NodeRow[],
-        ) {
-          const checkpoint = Checkpoint.latestReplanCheckpoint(
-            entry.config,
-            nodes ?? (yield* store.getCurrentNodes(dagID)),
-          )
-          if (!checkpoint) return false
-
-          const disposition = yield* checkpointDisposition(dagID, checkpoint, entry.port)
-          if (disposition === "paused" || disposition === "held") {
-            entry.vetoHold = disposition === "held"
-            entry.runtime.setPaused(true)
-            return true
-          }
-
-          // A newer resume/replan/step disposed of the verdict while this
-          // event waited for the loop lock. Re-read the current control state:
-          // an even newer manual pause still wins, while a running workflow
-          // may continue converging normally.
-          entry.vetoHold = false
-          const workflow = yield* store.getWorkflow(dagID)
-          entry.runtime.setPaused(workflow?.status === "paused")
-          entry.runtime.setStepMode(workflow?.status === "stepping")
-          return false
-        })
-
-        const convergeSkippedNodes = Effect.fn("DagLoop.convergeSkippedNodes")(function* (
-          dagID: string,
-          entry: WorkflowEntry,
-        ) {
-          // D13: settle cascade-skips before spawning. A node whose dependencies
-          // are all skipped can never receive a real input; publish a durable
-          // NodeSkipped(orphan_cascade) wave by wave until a fixpoint so gated
-          // subtrees terminalize instead of running on placeholder inputs.
-          // Eagerly markSkipped so the fixpoint advances synchronously; the
-          // NodeSkipped handler's isActive guard then no-ops on these events.
-          for (;;) {
-            const cascade = entry.runtime.getCascadeSkipNodes()
-            if (cascade.length === 0) return
-            for (const nodeID of cascade) {
-              const node = yield* store.getNode(dagID, nodeID)
-              if (!node) return
-              const attempt = {
-                replanAttempts: node.replanAttempts,
-                nodeSeq: node.seq,
-                graphRev: entry.graphRev,
-              }
-              const skipped = yield* entry.port.nodeSkipped(dagID, nodeID, "orphan_cascade", attempt).pipe(
-                Effect.as(true),
-                Effect.catchIf(isTransitionRejection, () => Effect.succeed(false)),
-              )
-              // A replan can replace this row between the read and publish.
-              // Only advance the old runtime after the durable guarded write
-              // succeeds; its WorkflowReplanned handler will rebuild later.
-              if (!skipped) return
-              entry.runtime.markSkipped(nodeID)
-            }
-          }
-        })
-
-        let startMessageContinuations: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
+        const startMessageContinuations = DagLoopMessageContinuation.make(loop)
         // Forward reference for the condition-skip rescan inside spawnReady.
         let rescanReady: (dagID: string) => Effect.Effect<void, Error, Scope.Scope> = () => Effect.void
 
@@ -876,66 +738,6 @@ const serviceLayer = Layer.effect(
         })
         rescanReady = spawnReady
 
-        const checkCompletion = Effect.fn("DagLoop.checkCompletion")(function* (dagID: string) {
-          const entry = runtimes.get(dagID)
-          if (!entry) return
-          if (!entry.runtime.isComplete()) return
-          // Graph-generation fence: a replan commits its NodeCancelled rows and
-          // WorkflowReplanned (graph_rev + 1) in one durable batch, but the two
-          // event types are consumed by independent handlers. When the
-          // cancellation handler wins, it evaluates the OBSOLETE runtime graph:
-          // a cancelled required node cascades its old dependents to
-          // unsatisfied, so the stale graph looks complete with a required
-          // failure even though the new revision rewired them. Only the
-          // runtime paired with the durable revision may terminalize the
-          // workflow; the WorkflowReplanned handler rebuilds and re-checks.
-          const current = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-          if (current && current.graphRev !== entry.graphRev) return
-          // A reporting leaf checkpoint is already runtime-complete. Recover
-          // and enforce its veto before publishing WorkflowCompleted.
-          if (yield* enforceCheckpointGate(dagID, entry)) return
-          // Replan registers replacement nodes before cancelling nodes from the
-          // old runtime graph. Event types are consumed independently, so the
-          // cancellation handler can reach this point before WorkflowReplanned
-          // rebuilds the in-memory graph. Durable active nodes prove that the
-          // apparent completion belongs to an obsolete graph generation.
-          // Rev-view (v1.0.15 Train A): the guard read filters to the current
-          // revision — superseded rows are terminal and never trip the guard,
-          // and the review-outcome input below must judge only current nodes.
-          const nodes = yield* store.getCurrentNodes(dagID)
-          const hasUnseenActiveNode = nodes.some(
-            (node) => !isNodeTerminalStatus(node.status as never) && !entry.runtime.containsNode(node.id),
-          )
-          if (hasUnseenActiveNode) return
-          // R6 identity revalidation: the ownership predicate re-reads the
-          // durable row on every check. A workflow whose durable identity was
-          // repainted (identity migration) or whose location moved away no
-          // longer belongs to this in-memory entry — the stale entry must not
-          // publish a workflow transition (complete/fail) for it.
-          if (!(yield* DagLocation.ownsWorkflow(dagID, ctx.directory))) return
-          const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-          if (wf && isWorkflowTerminalStatus(wf.status as never)) return
-          // paused → completed/failed is not a legal transition: a node that
-          // settles while the workflow is paused leaves the graph complete but
-          // parked. Completion is re-checked when the workflow leaves pause
-          // (WorkflowResumed / WorkflowStepped / replan) or when it is
-          // cancelled; attempting it here would only fail the handler.
-          if (wf?.status === "paused") return
-          // A required-node failure is a workflow FAILURE, not a cancellation —
-          // "cancelled" is reserved for explicit user/agent cancels so the
-          // terminal status attributes the outcome correctly (P2-1). Required
-          // verdict/skip gaps are evaluated from the current durable revision.
-          // settleCompletion holds the workflow lock across the decision and
-          // the terminal transition; expectedGraphRev prevents a stale runtime
-          // snapshot from failing a graph that recover/replan already replaced.
-          yield* entry.port.settleCompletion(dagID, {
-            expectedGraphRev: entry.graphRev,
-            owner: { projectID: ctx.project.id, directory: ctx.directory },
-            skipReviewGate: true,
-            allowAcceptedSkips: true,
-          })
-        })
-
         const checkSessionStatus = makeSessionStatusChecker(sessionSvc)
         // #345: schemaless recovered nodes settle with the child's last
         // assistant text, mirroring the live spawn path.
@@ -990,121 +792,7 @@ const serviceLayer = Layer.effect(
             automation.unregister(SessionID.make(entry.parentSessionID), { kind: "dag", id: dagID }),
         })
 
-        // Subscription handlers must never die. dag.ts guards and checkCompletion
-        // use orDie, whose defects punch straight through Effect.ignore (it only
-        // absorbs the error channel) and would kill the forked runForEach fiber —
-        // leaving that event type permanently unhandled for the rest of the
-        // process. catchCause absorbs failures AND defects at the boundary.
-        const guarded =
-          (event: string) =>
-          <A, E, R>(self: Effect.Effect<A, E, R>) =>
-            self.pipe(Effect.catchCause((cause) => Effect.logWarning("DagLoop handler failed", { event, cause })))
-        // Node-terminal handlers fork the parent wake drain after their
-        // evalLock body even when that body fails or dies (e.g. a rejected
-        // workflow transition): the durable node row is already terminal and
-        // unreported, so the parent must still be woken. Interruption (scope
-        // teardown) skips the fork.
-        const forkWakeAfter =
-          (sessionID: string) =>
-          <A, E>(exit: Exit.Exit<A, E>) =>
-            Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? Effect.void : nudge(sessionID)
-
-        startMessageContinuations = Effect.fn("DagLoop.startMessageContinuations")(function* (
-          dagID: string,
-          entry: WorkflowEntry,
-        ) {
-          if (entry.runtime.isPaused() || entry.messageContinuations.size === 0) return
-          const workflow = yield* store.getWorkflow(dagID)
-          if (!workflow || !["running", "stepping"].includes(workflow.status)) return
-          for (const nodeID of entry.messageContinuations) {
-            const node = yield* store.getNode(dagID, nodeID)
-            if (!node || node.status !== "running" || !node.childSessionId) {
-              entry.messageContinuations.delete(nodeID)
-              continue
-            }
-            if (entry.fibers.has(nodeID)) continue
-            const registered = yield* Deferred.make<void>()
-            let ownedFiber: Fiber.Fiber<unknown, unknown> | undefined
-            // #943: the continuation must run where this node was bound.
-            // Ownership/mailbox stays on the owner directory; prompt, report
-            // and artifact authorization follow the execution workspace.
-            const nodeConfig = entry.config?.nodes.find((candidate) => candidate.id === nodeID)
-            const executionDirectory = nodeConfig?.workspace ?? entry.executionDirectory ?? ctx.directory
-            // A non-git owner has worktree "/", which would make every absolute
-            // path "inside" the boundary. Derive the boundary from the instance
-            // directory instead so external sources still require approval.
-            const { worktree, boundary } = artifactPermissionBase(ctx.directory, ctx.worktree, executionDirectory)
-            const continuation = Effect.scoped(
-              Effect.gen(function* () {
-                yield* scheduler.childSlot({ kind: "workflow", workflowID: dagID }, entry.concurrency, {
-                  rootSessionID: SessionRole.liveRootOf(SessionID.make(entry.parentSessionID)),
-                })
-                return yield* Deferred.await(registered).pipe(
-                  Effect.andThen(
-                    continueRecoveredMessageNode(
-                      dagID,
-                      nodeID,
-                      entry.config ?? null,
-                      workflow.directory,
-                      makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary),
-                      executionDirectory,
-                    ),
-                  ),
-                )
-              }),
-            ).pipe(
-              Effect.provideService(Dag.Service, entry.port),
-              Effect.provideService(SessionPrompt.Service, promptSvc),
-              (self) => (messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self),
-              Effect.onExit((exit) =>
-                Effect.gen(function* () {
-                  // A finished or interrupted helper must relinquish its own
-                  // reservation before any DB read or exit classification. Never
-                  // delete a replacement attempt's fiber installed under this ID.
-                  if (ownedFiber && entry.fibers.get(nodeID) === ownedFiber) entry.fibers.delete(nodeID)
-                  if (!Exit.isSuccess(exit) || runtimes.get(dagID) !== entry) return
-                  const current = yield* store.getNode(dagID, nodeID)
-                  if (current?.childSessionId !== node.childSessionId || current.replanAttempts !== node.replanAttempts)
-                    return
-                  if (current.status !== "running") return
-                  const phase = yield* store.getWorkflow(dagID)
-                  if (!phase || !["running", "stepping", "paused"].includes(phase.status)) return
-                  // Pause may win after the loop reserved this attempt but before
-                  // the helper's first phase read. Keep it resumable; if resume
-                  // raced this cleanup, the scoped retry rechecks the phase.
-                  entry.messageContinuations.add(nodeID)
-                  yield* entry.evalLock
-                    .withPermits(1)(startMessageContinuations(dagID, entry))
-                    .pipe(guarded("RecoveredAgentMessageRearm"), Effect.forkIn(stateScope))
-                }),
-              ),
-              guarded("RecoveredAgentMessageContinuation"),
-            )
-            const fiber = yield* continuation.pipe(Effect.forkIn(stateScope))
-            ownedFiber = fiber
-            entry.fibers.set(nodeID, fiber)
-            // It continues the child session this attempt already runs in; that is the one eviction cancels.
-            entry.attemptChild.set(fiber, RunnerLease.attached(node.childSessionId))
-            const watcher =
-              entry.watchers.get(nodeID) ??
-              (yield* makeDeadlineWatcher({
-                dagID,
-                nodeID,
-                attempt: { replanAttempts: node.replanAttempts, childSessionID: node.childSessionId },
-                timeoutMs: nodeConfig?.worker_config?.timeout_ms,
-                maxTimeoutExtensions:
-                  entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
-                scope: stateScope,
-              }).pipe(
-                Effect.provideService(Dag.Service, entry.port),
-                Effect.provideService(SessionPrompt.Service, promptSvc),
-                Effect.forkIn(stateScope),
-              ))
-            entry.watchers.set(nodeID, watcher)
-            entry.messageContinuations.delete(nodeID)
-            yield* Deferred.succeed(registered, undefined)
-          }
-        })
+        const forkWakeAfter = makeForkWakeAfter(nudge)
 
         // The `adopt` action of the reconciler (decision 6, row 10) and the one place that creates a runtime entry.
         // `observed` is older than the claim: the adoption works from the row it reads once it holds the claim.
@@ -1455,15 +1143,7 @@ const serviceLayer = Layer.effect(
         })
         const { reconcileAfter } = reconciler
 
-        // A first wave is the reconciler's like any other adoption (decision 6). `reconcileAfter`: an evaluation
-        // under way may have looked before the workflow existed, and the orphan path publishes this very event from
-        // inside its own evaluation, which the call waits for and then finds the workflow failed.
-        yield* events.subscribe(DagEvent.WorkflowStarted).pipe(
-          Stream.runForEach((evt) =>
-            reconcileAfter(evt.data.dagID as string).pipe(Effect.asVoid, guarded("WorkflowStarted")),
-          ),
-          Effect.forkScoped({ startImmediately: true }),
-        )
+        yield* DagLoopControlHandlers.subscribeStarted(loop, { reconcileAfter })
 
         for (const def of [DagEvent.NodeCompleted, DagEvent.NodeSkipped, DagEvent.NodeAborted]) {
           // A completed node is an output-producing success; a skipped node is a
@@ -1761,336 +1441,9 @@ const serviceLayer = Layer.effect(
           Effect.forkScoped({ startImmediately: true }),
         )
 
-        // Workflow-control handlers cross-check the durable row under the
-        // evalLock before mutating runtime flags: projection is transactional
-        // with publish, so the row reflects this event or a later one — never
-        // an earlier one. Applying the event's implied flags blindly lets a
-        // cross-stream ordering (pause/resume/step race) clobber a newer
-        // control decision. Mirrors the node handlers' DB arbitration.
-        const refreshControlFlags = Effect.fnUntraced(function* (dagID: string, entry: WorkflowEntry) {
-          const workflow = yield* store.getWorkflow(dagID)
-          if (!workflow || isWorkflowTerminalStatus(workflow.status as never)) return undefined
-          // F2: honor the veto hold — see WorkflowEntry.vetoHold.
-          entry.runtime.setPaused(workflow.status === "paused" || entry.vetoHold)
-          entry.runtime.setStepMode(workflow.status === "stepping")
-          return workflow
-        })
+        yield* DagLoopControlHandlers.subscribeControl(loop, { spawnReady, convergeSkippedNodes, checkCompletion })
 
-        yield* events.subscribe(DagEvent.WorkflowPaused).pipe(
-          Stream.filter((e) => runtimes.has(e.data.dagID as string)),
-          Stream.runForEach((evt) =>
-            Effect.gen(function* () {
-              const dagID = evt.data.dagID as string
-              const entry = runtimes.get(dagID)
-              if (!entry) return
-              const workflow = yield* entry.evalLock.withPermits(1)(refreshControlFlags(dagID, entry))
-              // #1031 M5: a budget pause is an immediate report boundary, not a
-              // five-minute reminder. Nudge now; the wake table's
-              // budget-paused predicate makes the batch deliverable, and the
-              // durable wake receipt keeps it to exactly one turn.
-              if (workflow?.status === "paused" && workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED) {
-                yield* nudge(entry.parentSessionID)
-              }
-            }).pipe(guarded("WorkflowPaused")),
-          ),
-          Effect.forkScoped({ startImmediately: true }),
-        )
-
-        yield* events.subscribe(DagEvent.WorkflowStepped).pipe(
-          Stream.filter((e) => runtimes.has(e.data.dagID as string)),
-          Stream.runForEach((evt) =>
-            Effect.gen(function* () {
-              const dagID = evt.data.dagID as string
-              const entry = runtimes.get(dagID)
-              if (!entry) return
-              yield* entry.evalLock.withPermits(1)(
-                Effect.gen(function* () {
-                  // F2 (DAG-03): resume/step is the parent's explicit control —
-                  // release the fail-closed veto hold before the flag re-sync.
-                  entry.vetoHold = false
-                  const workflow = yield* refreshControlFlags(dagID, entry)
-                  if (workflow?.status !== "stepping") return
-                  // Dag.step validated "no in-flight node" on a DB snapshot
-                  // taken outside this evalLock; a terminal-event handler can
-                  // spawn in between (its DB status read predated the stepped
-                  // projection). Spawning now would put a second node in
-                  // flight under stepping — leave advancement to the next
-                  // explicit step command instead.
-                  if (entry.runtime.hasRunning()) return
-                  yield* spawnReady(dagID)
-                  // spawnReady may have paused on a durable checkpoint. Only
-                  // converge and terminalize when that scheduling gate stayed
-                  // open. These operations dispatch no additional child.
-                  if (entry.runtime.isPaused()) return
-                  yield* convergeSkippedNodes(dagID, entry)
-                  yield* checkCompletion(dagID)
-                }),
-              )
-            }).pipe(guarded("WorkflowStepped")),
-          ),
-          Effect.forkScoped({ startImmediately: true }),
-        )
-
-        yield* events.subscribe(DagEvent.WorkflowResumed).pipe(
-          Stream.filter((e) => runtimes.has(e.data.dagID as string)),
-          Stream.runForEach((evt) =>
-            Effect.gen(function* () {
-              const dagID = evt.data.dagID as string
-              const entry = runtimes.get(dagID)
-              if (!entry) return
-              yield* entry.evalLock.withPermits(1)(
-                Effect.gen(function* () {
-                  // F2 (DAG-03): resume/step is the parent's explicit control —
-                  // release the fail-closed veto hold before the flag re-sync.
-                  entry.vetoHold = false
-                  const workflow = yield* refreshControlFlags(dagID, entry)
-                  if (workflow?.status === "running") yield* spawnReady(dagID)
-                  // A workflow can be resumed with every node already settled
-                  // (e.g. recovery-pause on a single lost node). Without this,
-                  // nothing else re-runs completion and the workflow hangs in
-                  // running forever.
-                  yield* checkCompletion(dagID)
-                }),
-              )
-            }).pipe(guarded("WorkflowResumed")),
-          ),
-          Effect.forkScoped({ startImmediately: true }),
-        )
-
-        yield* events.subscribe(DagEvent.WorkflowReplanned).pipe(
-          Stream.runForEach((evt) =>
-            Effect.gen(function* () {
-              const dagID = evt.data.dagID as string
-              const entry = runtimes.get(dagID)
-              if (!entry) {
-                // No entry: the reconciler adopts it (or leaves it to its holder). `reconcileAfter`, because an
-                // evaluation under way (a tick's, a first wave's) may have looked before this replan committed.
-                yield* reconcileAfter(dagID)
-                return
-              }
-              const handled = yield* entry.evalLock.withPermits(1)(
-                Effect.gen(function* () {
-                  // A stale terminal event for the run this replan reopened can
-                  // drop the runtime entry while this handler waits for the
-                  // evalLock. Scheduling against that dead entry would silently
-                  // do nothing; recovery owns the new revision instead.
-                  if (runtimes.get(dagID) !== entry) return false
-                  const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-                  // F2 (DAG-03): a replan is the parent's explicit disposition
-                  // of the verdict — release the fail-closed veto hold and
-                  // re-sync the control flags from the durable row (this
-                  // handler never refreshed them, so a hold set by the verdict
-                  // gate would otherwise silence the trailing spawnReady
-                  // forever and the corrective nodes would never run).
-                  entry.vetoHold = false
-                  entry.runtime.setPaused(wf?.status === "paused")
-                  entry.runtime.setStepMode(wf?.status === "stepping")
-                  const oldConfig = entry.config
-                  if (wf) {
-                    entry.config = parseWorkflowConfig(wf.config)
-                    entry.graphRev = wf.graphRev
-                    // #945: a retarget rebinds the workflow workspace. New
-                    // attempts must spawn in the durable execution directory.
-                    entry.executionDirectory = wf.executionDirectory ?? wf.directory
-                  }
-                  // Rev-view (v1.0.15 Train A): THE aggregation filter point.
-                  // The rebuild input is the CURRENT graph revision only —
-                  // superseded rows (cancelled via replan, or terminal
-                  // failures the fragment bypassed) must not re-seed as
-                  // required-unsatisfied, or the wake-up bug fails a workflow
-                  // on its replaced segment despite the new path succeeding.
-                  // The re-time loop below only sees running rows (superseded
-                  // rows are terminal), so the filter changes nothing there.
-                  const nodes = yield* store.getCurrentNodes(dagID)
-                  entry.runtime.rebuildGraph(toSchedulingNodes(nodes))
-                  // Timeout extension (Q6): a running node gets a recomputed
-                  // deadline (now + new timeout) ONLY when the replan carries a
-                  // NEW worker_config.timeout_ms for it (§3.7) AND the node
-                  // actually needs re-timing (deadline elapsed or escalation
-                  // pending — see the gate below). Restarted nodes are pending
-                  // here — their new attempt spawns a fresh watcher via
-                  // spawnReady.
-                  const newConfig = entry.config
-                  for (const node of nodes) {
-                    if (node.status !== "running") continue
-                    const frag = newConfig?.nodes.find((candidate) => candidate.id === node.id)
-                    if (!frag) continue
-                    const oldTimeoutMs =
-                      oldConfig?.nodes.find((candidate) => candidate.id === node.id)?.worker_config?.timeout_ms ??
-                      oldConfig?.node_defaults?.worker_config?.timeout_ms ??
-                      Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
-                    const fragTimeoutMs =
-                      frag.worker_config?.timeout_ms ??
-                      newConfig?.node_defaults?.worker_config?.timeout_ms ??
-                      Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
-                    // §3.7: re-time only when the replan carries a NEW
-                    // timeout_ms. The persisted config behind WorkflowReplanned
-                    // is the MERGED config — every non-cancel survivor keeps its
-                    // definition — so a node the fragment never mentioned, or
-                    // re-specified with an unchanged/omitted timeout_ms,
-                    // matches here with its OLD timeout.
-                    if (fragTimeoutMs == null || fragTimeoutMs === oldTimeoutMs) continue
-                    const now = yield* Clock.currentTimeMillis
-                    // Cap gate (A1) + delivery gate (Q2): both are SKIP
-                    // conjuncts on this re-time path. The watchdog never
-                    // re-times — it only proposes escalations. The other
-                    // caller of nodeExtendTimeout, Dag.extendTimeout, applies
-                    // the same two gates (A1 in its own body, Q2 inside the
-                    // command).
-                    //   A1: a changed timeout alone must not move a healthy
-                    //   deadline forward. An agent replanning BEFORE each
-                    //   deadline with cycling values (10m→20m→10m…) would push
-                    //   the deadline away forever without a single escalation
-                    //   firing, so the extension count never climbs and the
-                    //   ≈21× cap is bypassed. Re-time only when the current
-                    //   deadline already elapsed or an escalation awaits
-                    //   adjudication; a gated-off node keeps its deadline and
-                    //   the self-renewing watcher escalates it the moment it
-                    //   passes. A null deadline is treated as elapsed —
-                    //   re-timing is what re-establishes supervision.
-                    //   Q2: an escalated node whose wake has NOT been delivered
-                    //   (escalationPending ∧ ¬wakeReported) is skipped too.
-                    //   Adjudication must follow delivery — otherwise the
-                    //   re-time below would call nodeExtendTimeout, which clears
-                    //   escalation_pending and marks wake_reported, silently
-                    //   adjudicating an escalation the main agent never saw
-                    //   (D2). The node keeps its elapsed deadline and the
-                    //   self-renewing watcher re-escalates toward the cap; the
-                    //   wake is delivered normally. This is a SKIP conjunct, not
-                    //   a pass-through disjunct — the disjunct form is swamped
-                    //   by the deadlineElapsed case on the public path and is a
-                    //   no-op there (cons-F1).
-                    if (
-                      (!node.escalationPending && node.deadlineMs != null && node.deadlineMs > now) ||
-                      (node.escalationPending && !node.wakeReported)
-                    )
-                      continue
-                    // N1: write the new deadline FIRST. nodeExtendTimeout
-                    // acquires the workflow lock and can fail or block; if the
-                    // write never lands, the old watcher must keep supervising
-                    // the old deadline — interrupting it beforehand would leave
-                    // a RUNNING node with no watcher, no escalation, and a
-                    // defeated cap backstop (§5-5).
-                    // D1: one node's failed extend must not abort the rest of
-                    // the handler — an uncaught failure propagates to
-                    // guarded("WorkflowReplanned") and skips the stale-fiber
-                    // sweep below plus spawnReady/checkCompletion, leaving
-                    // restarted nodes pending with nobody to schedule them.
-                    // A failed write also leaves the deadline unmoved, so the
-                    // old watcher keeps supervising (N1) — this path must not
-                    // touch it. Interruption still propagates: hasInterrupts is
-                    // a structural check, whereas Cause.interruptors collects
-                    // only DEFINED fiber IDs and ignores interrupt reasons
-                    // carrying none — those would be swallowed as errors here.
-                    const written = yield* entry.port
-                      .nodeExtendTimeout(dagID, node.id, now + fragTimeoutMs, {
-                        replanAttempts: node.replanAttempts,
-                        ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
-                      })
-                      .pipe(
-                        Effect.catchCause((cause) =>
-                          Cause.hasInterrupts(cause)
-                            ? Effect.failCause(cause)
-                            : Effect.logWarning(
-                                "DagLoop replan re-time failed; keeping the old watcher and continuing the batch",
-                                { dagID, nodeID: node.id, cause },
-                              ).pipe(Effect.as(-1)),
-                        ),
-                      )
-                    // Negative verdict: -1 (write failure, mapped above), -2
-                    // (Q2 delivery-gate rejection), or -3 (cumulative timeout
-                    // cap exhausted). In every case no deadline was written
-                    // and the node remains running, so the old watcher
-                    // must keep supervising the elapsed deadline and re-escalating
-                    // toward the cap (N1: a running node is never left without a
-                    // watcher). Clearing the watcher here would orphan the node and
-                    // defeat the cap backstop.
-                    if (written < 0) continue
-                    if (written === 0) {
-                      // 0 = TERMINAL rejection: the status='running' guard rejected
-                      // the write — the node terminalized between the getNodes read
-                      // and this command. Only THIS meaning reaches the branch now
-                      // (C1 split the Q2 case into -2 above). No deadline was
-                      // written; stop the old watcher and do not install one for a
-                      // row the command refused to touch.
-                      const deadWatcher = entry.watchers.get(node.id)
-                      if (deadWatcher) yield* Fiber.interrupt(deadWatcher).pipe(Effect.ignore)
-                      entry.watchers.delete(node.id)
-                      yield* Effect.logWarning("DagLoop replan re-time skipped — node no longer running", {
-                        dagID,
-                        nodeID: node.id,
-                      })
-                      continue
-                    }
-                    // Write committed: install the re-armed watcher BEFORE
-                    // interrupting the old one so supervision is never absent.
-                    // F8's original race is benign in this order — the old
-                    // watcher's next read sees the future deadline and sleeps;
-                    // an escalation already in flight (lock-serialized behind
-                    // this write) only adds a counted extension toward the cap,
-                    // it never removes supervision. Its sole residue is re-setting
-                    // escalation_pending on the now-extended node, which costs one
-                    // redundant wake and permits one extra re-time via the gate
-                    // above — cosmetic; the cap accounting still holds because the
-                    // count did climb.
-                    const newWatcher = yield* makeDeadlineWatcher({
-                      dagID,
-                      nodeID: node.id,
-                      attempt: {
-                        replanAttempts: node.replanAttempts,
-                        ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
-                      },
-                      timeoutMs: fragTimeoutMs,
-                      maxTimeoutExtensions:
-                        newConfig?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
-                      scope: stateScope,
-                    }).pipe(
-                      Effect.provideService(Dag.Service, entry.port),
-                      Effect.provideService(SessionPrompt.Service, promptSvc),
-                      Effect.forkScoped,
-                    )
-                    const oldWatcher = entry.watchers.get(node.id)
-                    entry.watchers.set(node.id, newWatcher)
-                    if (oldWatcher) yield* Fiber.interrupt(oldWatcher).pipe(Effect.ignore)
-                    yield* Effect.logInfo("DagLoop extended node deadline via replan", {
-                      dagID,
-                      nodeID: node.id,
-                      newDeadlineMs: now + fragTimeoutMs,
-                    })
-                  }
-                  // Replan resets restarted nodes to pending. Old fibers of nodes
-                  // that are no longer running/queued must be interrupted here:
-                  // nothing else will (there is no NodeRestarted subscriber), and
-                  // a leftover fiber's timeout path publishes NodeFailed — a legal
-                  // pending→failed transition guardNode cannot reject — poisoning
-                  // the new generation. Mirrors the workflow-terminal sweep.
-                  for (const [nodeID, fiber] of [...entry.fibers]) {
-                    const node = nodes.find((n) => n.id === nodeID)
-                    if (node && (node.status === "running" || node.status === "queued")) continue
-                    yield* abortChild(
-                      dagID,
-                      nodeID,
-                      node?.childSessionId ?? null,
-                      "dag.loop.replan.cleanup",
-                      childAbort("replan", "dag-replan"),
-                    ).pipe(Effect.ignore)
-                    yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
-                    const watcher = entry.watchers.get(nodeID)
-                    if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
-                    entry.fibers.delete(nodeID)
-                    entry.watchers.delete(nodeID)
-                  }
-                  yield* spawnReady(dagID)
-                  yield* checkCompletion(dagID)
-                  return true
-                }),
-              )
-              // Outside the lock: the evaluation takes the entry's lock itself (an eviction, an adoption).
-              if (!handled) yield* reconcileAfter(dagID)
-            }).pipe(guarded("WorkflowReplanned")),
-          ),
-          Effect.forkScoped({ startImmediately: true }),
-        )
+        yield* DagLoopReplanHandler.subscribe(loop, { abortChild, spawnReady, checkCompletion, reconcileAfter })
 
         for (const def of [DagEvent.WorkflowCompleted, DagEvent.WorkflowFailed, DagEvent.WorkflowCancelled]) {
           // Deliberately NO runtimes.has filter: a workflow terminalized by a
