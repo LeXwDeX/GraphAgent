@@ -14,6 +14,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Database } from "@graphagent/core/database/database"
 import { ChildPolicy } from "@/session/child/policy"
 import { AskAdjudicator } from "./ask-adjudicator"
+import { jsonMetadata } from "./metadata"
 import { userAllowsMcpTool } from "./mcp-allow"
 import { SafetyGuard } from "./safety-guard"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -592,7 +593,8 @@ export const layer = Layer.effect(
         sessionID: request.sessionID,
         permission: request.permission,
         patterns: request.patterns,
-        metadata: request.metadata,
+        // The pending list is served as strict JSON: a value a tool left `undefined` must not make it unreadable.
+        metadata: jsonMetadata(request.metadata),
         always: request.always,
         tool: request.tool,
       }

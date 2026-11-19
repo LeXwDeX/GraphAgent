@@ -2,6 +2,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { NamedError } from "@graphagent/core/util/error"
 import { describe, expect } from "bun:test"
 import { ConfigErrorV1 } from "@graphagent/core/v1/config/error"
+import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
@@ -136,6 +137,64 @@ describe("HttpApi error middleware", () => {
       expect(body).toMatchObject({
         name: "ProviderNoModelsError",
         data: { message: error.message },
+      })
+    }),
+  )
+
+  // #1557: a model that does not exist is a wrong request, not a server fault. The body names the model and its
+  // suggestions under the tag the CLI error formatter reads, so `graphagent run` can print it.
+  it.live("returns a model-not-found defect as a named client error with the model and its suggestions", () =>
+    Effect.gen(function* () {
+      const error = new Provider.ModelNotFoundError({
+        providerID: ProviderV2.ID.make("local-proxy-openai"),
+        modelID: ModelV2.ID.make("gpt-nope"),
+        suggestions: ["gpt-5", "gpt-5-mini"],
+      })
+      yield* HttpRouter.add("GET", "/no-model", Effect.die(error)).pipe(
+        Layer.provide(errorLayer),
+        HttpRouter.serve,
+        Layer.build,
+      )
+
+      const response = yield* HttpClientRequest.get("/no-model").pipe(HttpClient.execute)
+      const body = yield* response.json
+
+      expect(response.status).toBe(400)
+      expect(body).toEqual({
+        name: "ProviderModelNotFoundError",
+        data: {
+          message: "Model not found: local-proxy-openai/gpt-nope. Did you mean: gpt-5, gpt-5-mini?",
+          providerID: "local-proxy-openai",
+          modelID: "gpt-nope",
+          suggestions: ["gpt-5", "gpt-5-mini"],
+        },
+      })
+    }),
+  )
+
+  it.live("returns a model-not-found defect without suggestions as an empty suggestion list", () =>
+    Effect.gen(function* () {
+      const error = new Provider.ModelNotFoundError({
+        providerID: ProviderV2.ID.make("local-proxy-openai"),
+        modelID: ModelV2.ID.make("gpt-nope"),
+      })
+      yield* HttpRouter.add("GET", "/no-model-hint", Effect.die(error)).pipe(
+        Layer.provide(errorLayer),
+        HttpRouter.serve,
+        Layer.build,
+      )
+
+      const response = yield* HttpClientRequest.get("/no-model-hint").pipe(HttpClient.execute)
+
+      expect(response.status).toBe(400)
+      expect(yield* response.json).toEqual({
+        name: "ProviderModelNotFoundError",
+        data: {
+          message: "Model not found: local-proxy-openai/gpt-nope.",
+          providerID: "local-proxy-openai",
+          modelID: "gpt-nope",
+          suggestions: [],
+        },
       })
     }),
   )

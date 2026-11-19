@@ -297,7 +297,8 @@ export const ApplyPatchTool = Tool.define(
         patch: change.diff,
         additions: change.additions,
         deletions: change.deletions,
-        movePath: change.movePath,
+        // Only a move has a destination. The key is left out otherwise: an `undefined` value cannot be encoded as JSON.
+        ...(change.movePath ? { movePath: change.movePath } : {}),
       }))
 
       // Check permissions if needed

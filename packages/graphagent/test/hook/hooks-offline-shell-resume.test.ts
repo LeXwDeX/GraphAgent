@@ -70,7 +70,12 @@ cliIt.live(
         model: { providerID: "removed-provider", modelID: "still-unavailable" },
         parts: [{ type: "text", text: "Reject an explicitly unavailable new model" }],
       })
-      expect(unavailable.status).toBe(500)
+      // A model that does not exist is the caller's mistake (#1557): 400, and the body names the model.
+      expect(unavailable.status).toBe(400)
+      expect(decodeRecord(yield* Effect.promise(() => unavailable.json()))).toMatchObject({
+        name: "ProviderModelNotFoundError",
+        data: { providerID: "removed-provider", modelID: "still-unavailable" },
+      })
       expect(yield* llm.calls).toBe(1)
     }),
 )
