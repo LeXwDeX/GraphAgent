@@ -72,6 +72,51 @@ describe("Goal lease follows durable authority across delayed registration", () 
     }),
   )
 
+  it.live("a Goal layer built in a forked MemoMap and one built in its parent share one authority", () =>
+    Effect.gen(function* () {
+      // HttpRouter.serve builds its app graph in a forked MemoMap: the registry
+      // and database the parent already built are shared, while Goal, built
+      // first by whichever side asks first, is private to that side. Both
+      // orders happen (the order follows layer-build timing, so any unrelated
+      // change to how long a layer takes can flip it); here the fork asks first.
+      const root = yield* Layer.makeMemoMap
+      const fork = Layer.forkMemoMapUnsafe(root)
+      const outer = yield* Scope.Scope
+      const sharedContext = yield* Layer.buildWithMemoMap(
+        Layer.mergeAll(ExclusiveRegistry.defaultLayer, Database.defaultLayer),
+        root,
+        outer,
+      )
+      const lease = Context.get(sharedContext, ExclusiveRegistry.Service)
+      const forkScope = yield* Scope.make()
+      const rootScope = yield* Scope.make()
+      yield* Effect.addFinalizer(() =>
+        Scope.close(forkScope, Exit.void).pipe(Effect.andThen(Scope.close(rootScope, Exit.void))),
+      )
+      const forkGoal = Context.get(yield* Layer.buildWithMemoMap(Goal.defaultLayer, fork, forkScope), Goal.Service)
+      const rootGoal = Context.get(yield* Layer.buildWithMemoMap(Goal.defaultLayer, root, rootScope), Goal.Service)
+      expect(rootGoal).not.toBe(forkGoal)
+
+      const sid = SessionID.descending()
+      const active = yield* rootGoal.set(sid, "original goal")
+      const owner = { kind: "goal" as const, id: active.goal_id! }
+      expect(Option.isSome(yield* lease.claim(sid, owner))).toBe(true)
+      const stale = { kind: "goal" as const, id: "obsolete-observation" }
+
+      // The layer that installed first closing must leave the authority to the other.
+      yield* Scope.close(forkScope, Exit.void)
+      yield* lease.register(sid, stale)
+      expect(Option.isNone(yield* lease.claim(sid, stale))).toBe(true)
+      expect(Option.isSome(yield* lease.claim(sid, owner))).toBe(true)
+
+      // The last one closing removes it.
+      yield* Scope.close(rootScope, Exit.void)
+      expect(Option.isNone(yield* lease.claim(sid, owner))).toBe(true)
+      yield* lease.register(sid, { kind: "goal", id: "fixture-goal" })
+      expect(Option.isSome(yield* lease.claim(sid, { kind: "goal", id: "fixture-goal" }))).toBe(true)
+    }),
+  )
+
   it.live("pause and resume of the same Goal id never revive its old lease token", () =>
     Effect.gen(function* () {
       const test = yield* fixture

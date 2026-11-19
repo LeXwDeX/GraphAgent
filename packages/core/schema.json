@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "0f3cc717-0424-42de-8a82-33616b390e50",
+  "id": "4f02823d-3644-47b1-bf97-a46ae74cfa9c",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -92,6 +92,18 @@
     },
     {
       "name": "goal_state",
+      "entityType": "tables"
+    },
+    {
+      "name": "loop_analysis",
+      "entityType": "tables"
+    },
+    {
+      "name": "loop_outcome",
+      "entityType": "tables"
+    },
+    {
+      "name": "loop_state",
       "entityType": "tables"
     },
     {
@@ -2538,6 +2550,236 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "loop_id",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "seq",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "round",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "boundary",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "verdict",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "reason",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "intent_revision",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "change_summary",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "change_basis_message_id",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "prompt",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "input_tokens",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "output_tokens",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "reasoning_tokens",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "elapsed_ms",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "loop_analysis"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "loop_id",
+      "entityType": "columns",
+      "table": "loop_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "loop_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload",
+      "entityType": "columns",
+      "table": "loop_outcome"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "completed_at",
+      "entityType": "columns",
+      "table": "loop_outcome"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "loop_state"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload",
+      "entityType": "columns",
+      "table": "loop_state"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "loop_state"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "project_id",
       "entityType": "columns",
       "table": "project_directory"
@@ -3550,6 +3792,16 @@
     },
     {
       "columns": [
+        "loop_id",
+        "seq"
+      ],
+      "nameExplicit": false,
+      "name": "loop_analysis_pk",
+      "entityType": "pks",
+      "table": "loop_analysis"
+    },
+    {
+      "columns": [
         "project_id",
         "directory"
       ],
@@ -3746,6 +3998,24 @@
       "nameExplicit": false,
       "name": "goal_state_pk",
       "table": "goal_state",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "loop_id"
+      ],
+      "nameExplicit": false,
+      "name": "loop_outcome_pk",
+      "table": "loop_outcome",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "nameExplicit": false,
+      "name": "loop_state_pk",
+      "table": "loop_state",
       "entityType": "pks"
     },
     {
@@ -4452,6 +4722,52 @@
       "name": "goal_state_updated_at_idx",
       "entityType": "indexes",
       "table": "goal_state"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "loop_analysis_session_idx",
+      "entityType": "indexes",
+      "table": "loop_analysis"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "completed_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "loop_outcome_session_completed_idx",
+      "entityType": "indexes",
+      "table": "loop_outcome"
+    },
+    {
+      "columns": [
+        {
+          "value": "updated_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "loop_state_updated_at_idx",
+      "entityType": "indexes",
+      "table": "loop_state"
     },
     {
       "columns": [

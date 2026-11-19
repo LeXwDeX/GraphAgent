@@ -88,6 +88,8 @@ describe("worker and client event scope tables against the shared specification"
         "question.timed_out",
         "goal.updated",
         "goal.cleared",
+        "loop.updated",
+        "loop.cleared",
         "dag.workflow.summary.updated",
         "pr.watch.updated",
       ],

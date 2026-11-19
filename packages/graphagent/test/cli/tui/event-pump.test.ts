@@ -68,6 +68,8 @@ describe("event scope", () => {
     expect(eventScope("permission.asked")).toBe("session-summary")
     expect(eventScope("question.v2.asked")).toBe("session-summary")
     expect(eventScope("goal.updated")).toBe("session-summary")
+    expect(eventScope("loop.updated")).toBe("session-summary")
+    expect(eventScope("loop.cleared")).toBe("session-summary")
     expect(eventScope("dag.workflow.summary.updated")).toBe("session-summary")
     expect(eventScope("lifecycle.transitioned")).toBe("session-summary")
     expect(eventScope("pr.watch.updated")).toBe("session-summary")
