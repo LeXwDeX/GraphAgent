@@ -19,7 +19,7 @@ import { cellWidth } from "../../src/ui/width"
 import { PanelSurface, renderAppPanel, type AppPanelTestContext } from "./contexts"
 import { readFrame, renderUntilFrame } from "../fixture/frames"
 import { waitFor } from "../fixture/held-io"
-import { PROMPT_MARK, runApp, waitForFrame, type Setup } from "../fixture/run-app"
+import { promptShown, runApp, waitForFrame, type Setup } from "../fixture/run-app"
 import { json } from "../fixture/tui-sdk"
 import { dagModeStatus, sessionFixture } from "../routes/dag-mode-harness"
 import { shellState } from "../shell/contexts"
@@ -1532,7 +1532,7 @@ function textareasOf(setup: Setup) {
 test("/config opens on the interface tab and /permissions on the permissions tab, and the model row opens /model", async () => {
   const app = await runApp({ sessions: [], args: {}, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     // Another test file of the same process can leave a draft in the prompt: what is typed here goes after nothing.
     for (const input of textareasOf(app.setup)) if (!input.isDestroyed) input.setText("")
     await app.setup.mockInput.typeText("/config")
@@ -1552,7 +1552,7 @@ test("/config opens on the interface tab and /permissions on the permissions tab
     app.setup.mockInput.pressEscape()
     await waitForFrame(app.setup, (value) => value.includes("[模型]"), "the settings panel again")
     app.setup.mockInput.pressEscape()
-    await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the prompt again")
+    await waitForFrame(app.setup, promptShown, "the prompt again")
 
     await app.setup.mockInput.typeText("/permissions")
     await waitForFrame(app.setup, (value) => value.includes("打开设置中的权限标签"), "the command popup")
