@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url"
 import { expect, mock, beforeEach, afterAll } from "bun:test"
 import { Cause, Context, Effect, Exit, Layer, Logger } from "effect"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { EventV2 } from "@graphagent/core/event"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Hash } from "@graphagent/core/util/hash"
 import { Project } from "@graphagent/core/project"
@@ -13,6 +14,7 @@ import { Git } from "../../src/git"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import type { InstanceContext } from "../../src/project/instance-context"
 import { ProjectTrust } from "../../src/project/trust"
+import { TuiEvent } from "../../src/server/tui-event"
 import { McpAuth } from "../../src/mcp/auth"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -281,6 +283,37 @@ const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
 const { McpCatalog } = await import("../../src/mcp/catalog")
 
 const it = testEffect(MCP.defaultLayer)
+
+// The toasts the service publishes, in order. A test that reads them starts from an empty list.
+type Toast = { title?: string; message: string; variant: string; duration?: number }
+const toasts: Toast[] = []
+
+const isToast = (data: unknown): data is Toast =>
+  typeof data === "object" && data !== null && "message" in data && "variant" in data
+
+// The real bridge, except that it keeps what is published as a toast.
+const capturingBridge = Layer.effect(
+  EventV2Bridge.Service,
+  Effect.gen(function* () {
+    const original = yield* EventV2Bridge.Service
+    const publish: EventV2.Interface["publish"] = (definition, data, options) => {
+      if (definition.type === TuiEvent.ToastShow.type && isToast(data)) toasts.push(data)
+      return original.publish(definition, data, options)
+    }
+    return EventV2Bridge.Service.of({ ...original, publish })
+  }),
+).pipe(Layer.provide(EventV2Bridge.defaultLayer))
+
+// `MCP.defaultLayer` with that bridge.
+const toastIt = testEffect(
+  MCP.layer.pipe(
+    Layer.provide(McpAuth.defaultLayer),
+    Layer.provide(capturingBridge),
+    Layer.provide(ProjectTrust.defaultLayer),
+    Layer.provide(CrossSpawnSpawner.defaultLayer),
+    Layer.provide(FSUtil.defaultLayer),
+  ),
+)
 
 /**
  * The real MCP service with an isolated ProjectTrust store so project-layer
@@ -737,6 +770,170 @@ it.instance(
       forced: { type: "local", command: ["echo", "test"], deferred: true },
     },
   },
+)
+
+// ========================================================================
+// Test: large definitions of the servers that are not deferred are told about once (Issue #1459)
+// ========================================================================
+
+const WARN_BYTES = 16 * 1024
+const EMPTY_SCHEMA_BYTES = Buffer.byteLength(JSON.stringify(emptyInput))
+const LARGE_TITLE = "MCP tool definitions are large"
+const largeMessage = (kb: number) => `set "deferred": true in mcp.json (about ${kb} KB per request)`
+
+// Connect a server with one tool for each size in `sizes`: its definition (description and schema) is that many bytes.
+const connectSized = (mcp: MCPNS.Interface, server: string, sizes: number[], deferred = false) => {
+  lastCreatedClientName = server
+  getOrCreateClientState(server).tools = sizes.map((bytes, index) => ({
+    name: `t${index}`,
+    description: "x".repeat(bytes - EMPTY_SCHEMA_BYTES),
+    inputSchema: emptyInput,
+  }))
+  return mcp.add(server, { type: "local", command: ["echo", "test"], ...(deferred ? { deferred } : {}) })
+}
+
+toastIt.instance(
+  "tools() tells once that the definitions of the servers that are not deferred are large",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        yield* connectSized(mcp, "big", [10_000, WARN_BYTES - 10_000 + 1])
+        // The warning is `tools()`'s: connecting a server says nothing.
+        expect(toasts).toEqual([])
+
+        yield* mcp.tools()
+        expect(toasts).toEqual([{ title: LARGE_TITLE, message: largeMessage(17), variant: "warning", duration: 8000 }])
+        // Later requests do not say it again.
+        yield* mcp.tools()
+        yield* mcp.tools()
+        expect(toasts).toHaveLength(1)
+      }),
+    ),
+  { mcp: {} },
+)
+
+toastIt.instance(
+  "tools() does not tell at exactly 16384 bytes, and does once a tool takes the total over",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        yield* connectSized(mcp, "edge", [WARN_BYTES])
+        yield* mcp.tools()
+        expect(toasts).toEqual([])
+
+        // A tool with no description and an empty schema is 2 bytes.
+        lastCreatedClientName = "extra"
+        getOrCreateClientState("extra").tools = [{ name: "tiny", inputSchema: {} }]
+        yield* mcp.add("extra", { type: "local", command: ["echo", "test"] })
+        yield* mcp.tools()
+        expect(toasts.map((toast) => toast.message)).toEqual([largeMessage(17)])
+      }),
+    ),
+  { mcp: {} },
+)
+
+toastIt.instance(
+  "tools() leaves a deferred server out of the total",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        yield* connectSized(mcp, "lazy", [WARN_BYTES, WARN_BYTES], true)
+        yield* connectSized(mcp, "small", [1000])
+        yield* mcp.tools()
+        expect(toasts).toEqual([])
+
+        // What is said later counts the servers that are not deferred: 18000 bytes, not 50 KB.
+        yield* connectSized(mcp, "eager", [17_000])
+        yield* mcp.tools()
+        expect(toasts.map((toast) => toast.message)).toEqual([largeMessage(18)])
+      }),
+    ),
+  { mcp: {} },
+)
+
+toastIt.instance(
+  "tools() adds up the servers, and tells when a later one takes the total over",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        yield* connectSized(mcp, "one", [9000])
+        yield* mcp.tools()
+        expect(toasts).toEqual([])
+
+        yield* connectSized(mcp, "two", [9000])
+        yield* mcp.tools()
+        expect(toasts.map((toast) => toast.message)).toEqual([largeMessage(18)])
+      }),
+    ),
+  { mcp: {} },
+)
+
+toastIt.instance(
+  "tools() counts a definition in bytes, not in characters",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        // Two descriptions of 5000 characters and 10000 bytes each: 10066 characters in all, 20066 bytes.
+        lastCreatedClientName = "wide"
+        getOrCreateClientState("wide").tools = ["a", "b"].map((name) => ({
+          name,
+          description: "\u00e9".repeat(5000),
+          inputSchema: emptyInput,
+        }))
+        yield* mcp.add("wide", { type: "local", command: ["echo", "test"] })
+        yield* mcp.tools()
+        expect(toasts.map((toast) => toast.message)).toEqual([largeMessage(20)])
+      }),
+    ),
+  { mcp: {} },
+)
+
+toastIt.instance(
+  "tools() tells about a list_changed refresh that makes the definitions large, and the refresh says nothing",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        lastCreatedClientName = "growing"
+        const serverState = getOrCreateClientState("growing")
+        serverState.tools = [{ name: "small", description: "small", inputSchema: emptyInput }]
+        yield* mcp.add("growing", { type: "local", command: ["echo", "test"] })
+        yield* mcp.tools()
+        expect(toasts).toEqual([])
+
+        serverState.tools = [{ name: "large", description: "x".repeat(WARN_BYTES), inputSchema: emptyInput }]
+        const handler = serverState.notificationHandlers.get("notifications/tools/list_changed")
+        yield* Effect.promise(() => handler?.())
+        expect(toasts).toEqual([])
+
+        yield* mcp.tools()
+        expect(toasts).toHaveLength(1)
+      }),
+    ),
+  { mcp: {} },
+)
+
+toastIt.instance(
+  "tools() tells about a server that connected at startup",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        toasts.length = 0
+        // The server is in mcp.json, so the first call to the service connects it; its mock state is set first.
+        lastCreatedClientName = "filed-big"
+        getOrCreateClientState("filed-big").tools = [
+          { name: "t0", description: "x".repeat(WARN_BYTES), inputSchema: emptyInput },
+        ]
+        expect(Object.keys(yield* mcp.tools())).toEqual(["filed-big_t0"])
+        expect(toasts.map((toast) => toast.message)).toEqual([largeMessage(17)])
+      }),
+    ),
+  { mcp: { "filed-big": { type: "local", command: ["echo", "test"] } } },
 )
 
 it.instance(

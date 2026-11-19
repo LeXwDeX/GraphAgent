@@ -7,7 +7,9 @@ import { Effect, Layer, Logger, Schema } from "effect"
 import { dynamicTool, jsonSchema } from "ai"
 import { Client } from "@modelcontextprotocol/client"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { EventV2 } from "@graphagent/core/event"
 import { ModelV2 } from "@graphagent/core/model"
+import type { ModelProfile } from "@graphagent/core/model-profile"
 import { ProjectV2 } from "@graphagent/core/project"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -15,8 +17,11 @@ import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
+import { ProviderProfile } from "@/provider/profile"
+import { TuiEvent } from "@/server/tui-event"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { MCP_DEFERRED_TOOLS } from "@/tool/mcp-deferred"
@@ -102,11 +107,32 @@ const mcpLayer = Layer.mock(MCP.Service, {
   readResource: () => Effect.succeed(undefined),
 })
 
+// The toasts the registry publishes, in order. A test that reads them starts from an empty list.
+type Toast = { title?: string; message: string; variant: string; duration?: number }
+const toasts: Toast[] = []
+
+const isToast = (data: unknown): data is Toast =>
+  typeof data === "object" && data !== null && "message" in data && "variant" in data
+
+// The real bridge, except that it keeps what is published as a toast.
+const capturingBridge = Layer.effect(
+  EventV2Bridge.Service,
+  Effect.gen(function* () {
+    const original = yield* EventV2Bridge.Service
+    const publish: EventV2.Interface["publish"] = (definition, data, options) => {
+      if (definition.type === TuiEvent.ToastShow.type && isToast(data)) toasts.push(data)
+      return original.publish(definition, data, options)
+    }
+    return EventV2Bridge.Service.of({ ...original, publish })
+  }),
+).pipe(Layer.provide(EventV2Bridge.layer))
+
 const root = LayerNode.group([ToolRegistry.node, Agent.node])
 const replacements = [
   LayerNode.replace(Config.node, configLayer),
   LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer()),
   LayerNode.replace(MCP.node, mcpLayer),
+  LayerNode.replaceWithNode(EventV2Bridge.node, LayerNode.make(capturingBridge, [EventV2.node])),
 ]
 const it = testEffect(LayerNode.buildLayer(root, { replacements }))
 
@@ -551,6 +577,393 @@ describe("tool.registry MCP resolution", () => {
         } finally {
           mcpTools = original
         }
+      }),
+    )
+  })
+
+  describe("tool limits of the model (#1459)", () => {
+    const DESCRIBE = MCP_DEFERRED_TOOLS.describe
+    const CALL = MCP_DEFERRED_TOOLS.call
+    type Entry = ToolRegistry.ToolEntry
+    const isDeferred = (entry: Entry) => entry.source.kind === "mcp" && entry.source.deferred === true
+    const deferredIds = (entries: ReadonlyArray<Entry>) => entries.filter(isDeferred).map((entry) => entry.id)
+    // What the model is sent as tools: not a deferred tool, and not `invalid`, which no request carries.
+    const sent = (entries: ReadonlyArray<Entry>) =>
+      entries.filter((entry) => !isDeferred(entry) && entry.id !== "invalid")
+    const sentMcp = (entries: ReadonlyArray<Entry>) =>
+      sent(entries)
+        .filter((entry) => entry.source.kind === "mcp")
+        .map((entry) => entry.id)
+    // The tools that are neither MCP tools, nor the two helpers, nor `invalid`: what a count limit leaves room for.
+    const nativeCount = (entries: ReadonlyArray<Entry>) =>
+      entries.filter(
+        (entry) => entry.source.kind !== "mcp" && entry.source.kind !== "mcp-deferred" && entry.id !== "invalid",
+      ).length
+    const catalogOf = (entries: ReadonlyArray<Entry>) =>
+      (entries.find((entry) => entry.id === DESCRIBE)?.description ?? "")
+        .split("\n")
+        .filter((line) => line.startsWith("- "))
+        .map((line) => line.slice(2, line.indexOf(":")))
+    // A model whose profile carries `toolLimits`, as the provider layer hands it over.
+    const limited = (toolLimits: ModelProfile["toolLimits"], id = "test-model") => {
+      const model = ProviderTest.model({ providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make(id) })
+      return { ...model, profile: { ...ProviderProfile.profileOf(model), toolLimits } }
+    }
+    const plain = (...keys: string[]) => Object.fromEntries(keys.map((key) => [key, mcpTool("srv", key)]))
+    // Runs `body` with `tools` as the MCP tools, and puts the suite's own back.
+    const withTools = <A, E, R>(tools: Record<string, ReturnType<typeof mcpTool>>, body: Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        const original = mcpTools
+        mcpTools = tools
+        toasts.length = 0
+        return body.pipe(Effect.ensuring(Effect.sync(() => (mcpTools = original))))
+      })
+
+    it.instance("moves the MCP tools whose key is longer than nameMaxLength into the catalog", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory } = yield* setup
+        yield* withTools(
+          plain("ab", "abcdef", "abcdefg", "abcdefgh"),
+          Effect.gen(function* () {
+            const entries = yield* registry.resolve({
+              model: limited({ nameMaxLength: 6 }),
+              agent: build,
+              session: sessionInfo(directory),
+            })
+            // A key of exactly the length stays; the longer ones stay as entries, marked, and are in the catalog.
+            expect(sentMcp(entries)).toEqual(["ab", "abcdef"])
+            expect(deferredIds(entries)).toEqual(["abcdefg", "abcdefgh"])
+            expect(catalogOf(entries)).toEqual(["abcdefg", "abcdefgh"])
+            const ids = entries.map((entry) => entry.id)
+            expect(ids.slice(-2)).toEqual([DESCRIBE, CALL])
+            // Each tool is one of the two things only: a model-facing tool or a catalog line.
+            expect(sentMcp(entries)).not.toContain("abcdefg")
+          }),
+        )
+      }),
+    )
+
+    it.instance("moves the MCP tools whose key does not match namePattern", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory } = yield* setup
+        yield* withTools(
+          plain("alpha", "beta", "gam_ma", "Delta"),
+          Effect.gen(function* () {
+            const entries = yield* registry.resolve({
+              model: limited({ namePattern: "^[a-z]+$" }),
+              agent: build,
+              session: sessionInfo(directory),
+            })
+            expect(sentMcp(entries)).toEqual(["alpha", "beta"])
+            expect(deferredIds(entries)).toEqual(["Delta", "gam_ma"])
+            expect(catalogOf(entries)).toEqual(["Delta", "gam_ma"])
+          }),
+        )
+      }),
+    )
+
+    it.instance("applies nameMaxLength and namePattern together, each only when declared", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory } = yield* setup
+        yield* withTools(
+          plain("ab", "abcdefg", "Q1", "Q123456"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const both = yield* registry.resolve({
+              model: limited({ nameMaxLength: 6, namePattern: "^[a-z]+$" }),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(both)).toEqual(["ab"])
+            const lengthOnly = yield* registry.resolve({
+              model: limited({ nameMaxLength: 6 }, "other-model"),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(lengthOnly)).toEqual(["ab", "Q1"])
+            const patternOnly = yield* registry.resolve({
+              model: limited({ namePattern: "^[a-z]+$" }, "third-model"),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(patternOnly)).toEqual(["ab", "abcdefg"])
+          }),
+        )
+      }),
+    )
+
+    it.instance("takes a namePattern that does not compile as not declared, and does not throw", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory } = yield* setup
+        yield* withTools(
+          plain("ab", "abcdefg"),
+          Effect.gen(function* () {
+            const entries = yield* registry.resolve({
+              model: limited({ namePattern: "(" }),
+              agent: build,
+              session: sessionInfo(directory),
+            })
+            expect(sentMcp(entries)).toEqual(["ab", "abcdefg"])
+            expect(deferredIds(entries)).toEqual([])
+            expect(entries.map((entry) => entry.id)).not.toContain(DESCRIBE)
+            expect(toasts).toEqual([])
+          }),
+        )
+      }),
+    )
+
+    it.instance("keeps only as many MCP tools as maxTools leaves room for, in key order, and counts the helpers", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          // Registered out of order: the first by key is the one that stays.
+          plain("d4", "a1", "c3", "b2"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const native = nativeCount(yield* registry.resolve({ model, agent: build, session }))
+            // `invalid` is one of the entries, and no request carries it.
+            expect((yield* registry.resolve({ model, agent: build, session })).map((entry) => entry.id)).toContain(
+              "invalid",
+            )
+
+            // Room for three tools beyond the native ones: the two helpers and one MCP tool.
+            const entries = yield* registry.resolve({
+              model: limited({ maxTools: native + 3 }),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(entries)).toEqual(["a1"])
+            expect(deferredIds(entries)).toEqual(["b2", "c3", "d4"])
+            expect(catalogOf(entries)).toEqual(["b2", "c3", "d4"])
+            expect(entries.map((entry) => entry.id).slice(-2)).toEqual([DESCRIBE, CALL])
+            // What the model is sent is exactly the limit.
+            expect(sent(entries)).toHaveLength(native + 3)
+          }),
+        )
+      }),
+    )
+
+    it.instance("moves nothing while the tool count is within maxTools, and moves from one over it", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          plain("a1", "b2", "c3", "d4"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const baseline = yield* registry.resolve({ model, agent: build, session })
+            const native = nativeCount(baseline)
+            const atLimit = yield* registry.resolve({
+              model: limited({ maxTools: native + 4 }, "at-limit"),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(atLimit)).toEqual(["a1", "b2", "c3", "d4"])
+            expect(atLimit.map((entry) => entry.id)).toEqual(baseline.map((entry) => entry.id))
+            expect(toasts).toEqual([])
+
+            const over = yield* registry.resolve({
+              model: limited({ maxTools: native + 3 }, "over-limit"),
+              agent: build,
+              session,
+            })
+            expect(deferredIds(over)).toEqual(["b2", "c3", "d4"])
+          }),
+        )
+      }),
+    )
+
+    it.instance(
+      "counts the two helpers once a tool is deferred already, and leaves none of its own room when short",
+      () =>
+        Effect.gen(function* () {
+          const { registry, build, directory, model } = yield* setup
+          yield* withTools(
+            {
+              ...plain("a1", "b2", "c3"),
+              z9: mcpTool("srv", "z9", undefined, true),
+            },
+            Effect.gen(function* () {
+              const session = sessionInfo(directory)
+              const native = nativeCount(yield* registry.resolve({ model, agent: build, session }))
+              // One tool is deferred by its server, so the helpers are in already: three live tools and two helpers
+              // do not fit native + 4, and the room is native + 4 - native - 2 = 2 tools.
+              const entries = yield* registry.resolve({
+                model: limited({ maxTools: native + 4 }),
+                agent: build,
+                session,
+              })
+              expect(sentMcp(entries)).toEqual(["a1", "b2"])
+              expect(deferredIds(entries)).toEqual(["c3", "z9"])
+              expect(sent(entries)).toHaveLength(native + 4)
+
+              // A limit below what the helpers need leaves no MCP tool live, and does not go negative.
+              const short = yield* registry.resolve({
+                model: limited({ maxTools: native + 1 }, "short-model"),
+                agent: build,
+                session,
+              })
+              expect(sentMcp(short)).toEqual([])
+              expect(deferredIds(short)).toEqual(["a1", "b2", "c3", "z9"])
+            }),
+          )
+        }),
+    )
+
+    it.instance("moves by name first, so a tool moved by name does not count against maxTools", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          plain("a1", "b2", "longname1", "longname2"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const native = nativeCount(yield* registry.resolve({ model, agent: build, session }))
+            // The names move two tools; a1, b2 and the helpers then make native + 4 against a limit of native + 4.
+            const fits = yield* registry.resolve({
+              model: limited({ nameMaxLength: 4, maxTools: native + 4 }),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(fits)).toEqual(["a1", "b2"])
+            expect(deferredIds(fits)).toEqual(["longname1", "longname2"])
+            // One short of that: the count moves one more, the later key.
+            const tighter = yield* registry.resolve({
+              model: limited({ nameMaxLength: 4, maxTools: native + 3 }, "tighter-model"),
+              agent: build,
+              session,
+            })
+            expect(sentMcp(tighter)).toEqual(["a1"])
+            expect(deferredIds(tighter)).toEqual(["b2", "longname1", "longname2"])
+          }),
+        )
+      }),
+    )
+
+    it.instance("changes nothing while toolLimits declares nothing", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          { ...plain("a1", "abcdefghij"), z9: mcpTool("srv", "z9", undefined, true) },
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const shape = (entries: ReadonlyArray<Entry>) =>
+              JSON.stringify(
+                entries.map((entry) => [entry.id, entry.source, entry.description, entry.jsonSchema, entry.effects]),
+              )
+            const baseline = shape(yield* registry.resolve({ model, agent: build, session }))
+            expect(shape(yield* registry.resolve({ model: limited({}, "empty-limits"), agent: build, session }))).toBe(
+              baseline,
+            )
+            expect(toasts).toEqual([])
+          }),
+        )
+      }),
+    )
+
+    it.instance("moves nothing when a rule or a switch hides either helper, so the tools stay where they were", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory } = yield* setup
+        yield* withTools(
+          plain("a1", "longname1", "longname2"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const model = limited({ nameMaxLength: 4, maxTools: 1 })
+            const extras: Array<{ permission?: PermissionV1.Ruleset; user?: { tools: Record<string, boolean> } }> = [
+              { permission: [{ permission: CALL, pattern: "*", action: "deny" }] },
+              { permission: [{ permission: DESCRIBE, pattern: "*", action: "deny" }] },
+              { user: { tools: { [CALL]: false } } },
+            ]
+            for (const extra of extras) {
+              const entries = yield* registry.resolve({ model, agent: build, session, ...extra })
+              expect(sentMcp(entries)).toEqual(["a1", "longname1", "longname2"])
+              expect(deferredIds(entries)).toEqual([])
+            }
+            expect(toasts).toEqual([])
+          }),
+        )
+      }),
+    )
+
+    it.instance("announces the tools it moved once for each model, whatever the number of resolutions", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory } = yield* setup
+        yield* withTools(
+          plain("a1", "b2", "longname1", "longname2"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const first = limited({ nameMaxLength: 4, maxTools: 1000 })
+            yield* registry.resolve({ model: first, agent: build, session })
+            yield* registry.resolve({ model: first, agent: build, session })
+            yield* registry.resolve({
+              model: first,
+              agent: build,
+              session: sessionInfo(directory, { id: SessionID.make("ses_other") }),
+            })
+            expect(toasts).toEqual([
+              {
+                title: "MCP tools moved to the deferred catalog",
+                message: "2 tools do not fit the limits of test/test-model",
+                variant: "warning",
+                duration: 8000,
+              },
+            ])
+
+            // Another model is announced once as well, with its own count.
+            const second = limited({ nameMaxLength: 2 }, "other-model")
+            yield* registry.resolve({ model: second, agent: build, session })
+            yield* registry.resolve({ model: second, agent: build, session })
+            expect(toasts.map((toast) => toast.message)).toEqual([
+              "2 tools do not fit the limits of test/test-model",
+              "2 tools do not fit the limits of test/other-model",
+            ])
+          }),
+        )
+      }),
+    )
+
+    it.instance("announces the number moved by both rules together, and one tool in the singular", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          plain("a1", "b2", "longname1", "longname2"),
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            const native = nativeCount(yield* registry.resolve({ model, agent: build, session }))
+            // Two tools by their names and one by the count.
+            yield* registry.resolve({
+              model: limited({ nameMaxLength: 4, maxTools: native + 3 }, "both"),
+              agent: build,
+              session,
+            })
+            expect(toasts.map((toast) => toast.message)).toEqual(["3 tools do not fit the limits of test/both"])
+          }),
+        )
+        yield* withTools(
+          plain("a1", "longname1"),
+          Effect.gen(function* () {
+            yield* registry.resolve({
+              model: limited({ nameMaxLength: 4 }, "single"),
+              agent: build,
+              session: sessionInfo(directory),
+            })
+            expect(toasts.map((toast) => toast.message)).toEqual(["1 tool does not fit the limits of test/single"])
+          }),
+        )
+      }),
+    )
+
+    it.instance("says nothing when no tool was moved, and a tool deferred by its server does not count as moved", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          { ...plain("a1"), longname9: mcpTool("srv", "longname9", undefined, true) },
+          Effect.gen(function* () {
+            const session = sessionInfo(directory)
+            // The limits fit every live tool, and the long key is in the catalog already.
+            yield* registry.resolve({ model: limited({ nameMaxLength: 4, maxTools: 1000 }), agent: build, session })
+            yield* registry.resolve({ model, agent: build, session })
+            expect(toasts).toEqual([])
+          }),
+        )
       }),
     )
   })
