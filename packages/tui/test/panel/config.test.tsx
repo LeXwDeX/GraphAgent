@@ -1029,7 +1029,9 @@ for (const [language, label, none] of [
       expect(line).toContain(none)
       // No hint to change, and no way to: not offered on the hint row, and key and click do nothing.
       expect(line).not.toMatch(/换一个|change \(/)
-      for (const verb of ["修改", "选择", "Change", "Select"]) expect(hintsOf(frame)).not.toContain(verb)
+      // "选择"/"Select" is the move hint (up/down) since #1619; what must be absent is the enter action.
+      for (const verb of ["修改", "Change"]) expect(hintsOf(frame)).not.toContain(verb)
+      expect(hintsOf(frame)).not.toMatch(/(?:enter|⏎) /)
       await enter(app)
       expect(context.local.model.variant.current()).toBeUndefined()
       const lines = (await readFrame(app)).split("\n")
@@ -1260,7 +1262,8 @@ test("every shortcut row is read-only: enter and click write nothing, and no row
       const frame = await renderUntilFrame(app, (text) => selectedLineOf(text) !== "", "the selection")
       // No hint to change the value, and the hint row offers neither a change nor a selection.
       expect(selectedLineOf(frame)).not.toContain("换一个")
-      for (const verb of ["修改", "选择", "编辑", "提交"]) expect(hintsOf(frame)).not.toContain(verb)
+      for (const verb of ["修改", "编辑", "提交"]) expect(hintsOf(frame)).not.toContain(verb)
+      expect(hintsOf(frame)).not.toMatch(/(?:enter|⏎) /)
 
       await enter(app)
       const lines = (await readFrame(app)).split("\n")
