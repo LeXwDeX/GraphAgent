@@ -432,6 +432,9 @@ export const zhCN = {
   "dagmode.panel.mode.nodes": "节点上限 {max}",
   "dagmode.panel.mode.tokens": "token {used}/{budget}",
   "dagmode.panel.mode.tokensOpen": "token {used}（未设预算）",
+  "dagmode.panel.worktree": "工作目录 {path} · 分支 {branch}",
+  "dagmode.panel.worktree.noBranch": "工作目录 {path}",
+  "dagmode.panel.worktree.removed": "分支 {branch} · 目录已清理",
   "dagmode.panel.usage":
     "用量 输入 {input} · 输出 {output} · 推理 {reasoning} · 缓存 读 {read} 写 {write} · 费用 {cost}",
   "dagmode.panel.quality.reviews": "审核 {n} 次",

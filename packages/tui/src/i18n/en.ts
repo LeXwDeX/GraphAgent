@@ -440,6 +440,9 @@ export const en: Record<MessageKey, string> = {
   "dagmode.panel.mode.nodes": "node cap {max}",
   "dagmode.panel.mode.tokens": "tokens {used}/{budget}",
   "dagmode.panel.mode.tokensOpen": "tokens {used} (no budget)",
+  "dagmode.panel.worktree": "Worktree {path} · branch {branch}",
+  "dagmode.panel.worktree.noBranch": "Worktree {path}",
+  "dagmode.panel.worktree.removed": "branch {branch} · directory cleaned up",
   "dagmode.panel.usage":
     "Usage in {input} · out {output} · reasoning {reasoning} · cache r {read} w {write} · cost {cost}",
   "dagmode.panel.quality.reviews": "reviews {n}",
