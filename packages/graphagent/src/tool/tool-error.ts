@@ -48,6 +48,9 @@ export function render(fault: Fault): string {
     case "invalid_arguments":
       return `The ${fault.tool} tool was called with invalid arguments: ${fault.detail.endsWith(".") ? fault.detail : `${fault.detail}.`} Fix them and call ${fault.tool} again.`
     case "unknown_tool":
+      // An empty set is a step that opens no tool calls (the closing step of a turn), not a name the model got wrong.
+      if (fault.available.length === 0)
+        return `Tool calls are not available on this step, so "${clipName(fault.requested)}" did not run. Reply with your final answer in text.`
       return `Unknown tool "${clipName(fault.requested)}". Available tools: ${nameList(fault.available)}. Use one of them.`
     case "invalid_json":
       return `The arguments for ${fault.tool} are not valid JSON (${fault.length} characters). If the output limit cut the call off, split the work into smaller ${fault.tool} calls; otherwise resend one complete JSON object.`
