@@ -302,8 +302,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     }
     const result: PanelHint[] = []
     if (choices().length > 1) {
-      result.push({ key: "ask.permission.previous", label: t("ask.hint.previous") })
-      result.push({ key: "ask.permission.next", label: t("ask.hint.next") })
+      result.push({ key: "ask.permission.previous", also: "ask.permission.next", label: t("ask.hint.pick") })
     }
     result.push({ key: "ask.permission.select", label: t("ask.hint.confirm") })
     result.push({ key: "ask.permission.reject", label: t("ask.hint.reject") })

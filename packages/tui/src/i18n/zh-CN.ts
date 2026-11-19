@@ -199,6 +199,7 @@ export const zhCN = {
   "ask.question.confirm": "确认",
   "ask.hint.previous": "上一项",
   "ask.hint.next": "下一项",
+  "ask.hint.pick": "或数字键选择",
   "ask.hint.select": "选择",
   "ask.hint.toggle": "勾选",
   "ask.hint.tab": "切换问题",

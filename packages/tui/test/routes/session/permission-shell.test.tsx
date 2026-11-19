@@ -614,18 +614,20 @@ describe("the queue position", () => {
 })
 
 describe("the hint row", () => {
-  test("names the keys of the options, confirm and reject, in both languages", async () => {
+  test("names the keys of the options as one pair, confirm and reject, in both languages", async () => {
     for (const [language, labels] of [
-      ["zh-CN", ["上一项", "下一项", "确认", "拒绝"]],
-      ["en", ["Previous", "Next", "Confirm", "Reject"]],
+      ["zh-CN", ["或数字键选择", "确认", "拒绝"]],
+      ["en", ["or number keys to pick", "Confirm", "Reject"]],
     ] as const) {
       await withPrompt({ scene: scenes()[0], language }, async (app) => {
         const lines = panelLines(await stable(app))
         const hints = inside(lines[lines.length - 2]).trim()
-        // `<keys> <label>` pairs, in this order; the key names are whatever the keymap shows for them.
+        // `<keys> <label>` pairs, in this order; the key names are whatever the keymap shows for them. Up and down are one
+        // entry (`PanelHint.also`), so the separate previous and next labels are gone.
         const pattern = labels.map((label) => `\\S+ ${label}`).join(" · ")
         expect(hints).toMatch(new RegExp(`^${pattern}$`))
-        expect(hints).not.toContain(language === "zh-CN" ? "选择" : "Select")
+        for (const gone of language === "zh-CN" ? ["上一项", "下一项", "确认选择"] : ["Previous", "Next", "Select"])
+          expect(hints).not.toContain(gone)
       })
     }
   })

@@ -204,6 +204,7 @@ export const en: Record<MessageKey, string> = {
   "ask.question.confirm": "Confirm",
   "ask.hint.previous": "Previous",
   "ask.hint.next": "Next",
+  "ask.hint.pick": "or number keys to pick",
   "ask.hint.select": "Select",
   "ask.hint.toggle": "Toggle",
   "ask.hint.tab": "Switch question",
