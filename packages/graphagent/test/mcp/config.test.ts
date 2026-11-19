@@ -209,3 +209,35 @@ describe("mcp.json cache", () => {
     expect(reads.count).toBe(1)
   })
 })
+
+// Issue #1459: `deferred` keeps a server's tool definitions out of the tool list and in a one-line catalog.
+describe("mcp.json deferred", () => {
+  test("accepts a boolean deferred on a local and on a remote entry, and leaves it unset by default", () => {
+    const servers = McpConfig.decodeDocument(
+      JSON.stringify({
+        mcpServers: {
+          local: { type: "local", command: ["echo", "test"], deferred: true },
+          remote: { type: "remote", url: "https://example.com/mcp", deferred: false },
+          plain: { type: "local", command: ["echo", "plain"] },
+        },
+      }),
+      "mcp.json",
+    )
+    expect(servers.local.deferred).toBe(true)
+    expect(servers.remote.deferred).toBe(false)
+    expect(servers.plain.deferred).toBeUndefined()
+  })
+
+  test("rejects a deferred that is not a boolean, and names the server", () => {
+    for (const entry of [
+      { type: "local", command: ["echo", "test"], deferred: "yes" },
+      { type: "remote", url: "https://example.com/mcp", deferred: 1 },
+    ]) {
+      const message = errorMessage(() =>
+        McpConfig.decodeDocument(JSON.stringify({ mcpServers: { server: entry } }), "mcp.json"),
+      )
+      expect(message).toContain('mcpServers["server"] is not a valid MCP server entry')
+      expect(message).toContain("Expected boolean")
+    }
+  })
+})

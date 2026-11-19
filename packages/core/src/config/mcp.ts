@@ -13,6 +13,15 @@ export class Timeout extends Schema.Class<Timeout>("ConfigMCP.Timeout")({
   }),
 }) {}
 
+/**
+ * Keep this server's tool definitions out of every request: the model sees one catalog line per tool and loads a
+ * schema on demand (#1459). The same field for both server types.
+ */
+const Deferred = Schema.Boolean.pipe(Schema.optional).annotate({
+  description:
+    "Keep this server's tools out of the tool list: the model sees one catalog line per tool, loads a schema with mcp_describe and calls the tool with mcp_call (default: false).",
+})
+
 export class Local extends Schema.Class<Local>("ConfigMCP.Local")({
   type: Schema.Literal("local"),
   command: Schema.String.pipe(Schema.Array),
@@ -21,6 +30,7 @@ export class Local extends Schema.Class<Local>("ConfigMCP.Local")({
   }),
   environment: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
   disabled: Schema.Boolean.pipe(Schema.optional),
+  deferred: Deferred,
   timeout: Timeout.pipe(Schema.optional),
 }) {}
 
@@ -38,6 +48,7 @@ export class Remote extends Schema.Class<Remote>("ConfigMCP.Remote")({
   headers: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
   oauth: Schema.Union([OAuth, Schema.Literal(false)]).pipe(Schema.optional),
   disabled: Schema.Boolean.pipe(Schema.optional),
+  deferred: Deferred,
   timeout: Timeout.pipe(Schema.optional),
 }) {}
 

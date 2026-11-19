@@ -47,7 +47,7 @@ export function rejectedUnparsable(error: unknown): error is ToolInputRejectedEr
   return error instanceof ToolInputRejectedError && error.rejection === "unparsable_input"
 }
 
-export function adapterState() {
+export function adapterState(finishReasons?: Readonly<Record<string, FinishReasonRules.FinishTarget>>) {
   return {
     step: 0,
     text: 0,
@@ -57,6 +57,11 @@ export function adapterState() {
     toolNames: {} as Record<string, string>,
     copilotTotalNanoAiu: undefined as number | undefined,
     missingFinishReason: false,
+    /**
+     * The model's own vendor finish_reason table (`ModelProfile.finishReasons`), read before the shared
+     * `FinishReasonRules`. It belongs to the stream's model, so the reset at `finish` keeps it.
+     */
+    finishReasons,
     /**
      * A suppressed (non-session-visible) AI SDK chunk — file, source, abort,
      * tool-approval-request, tool-output-denied — was seen in this stream.
@@ -231,7 +236,7 @@ function finishStep(
   state: ReturnType<typeof adapterState>,
   event: FinishStepEvent,
 ): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
-  const target = FinishReasonRules.ruleOf(event.rawFinishReason)
+  const target = FinishReasonRules.ruleOf(event.rawFinishReason, state.finishReasons)
   if (target === "stream_error")
     return Effect.fail(new ProviderError.ResponseStreamError(finishReasonMessage(event.rawFinishReason)))
   // No step-finish follows this error, so the provider-error carries what the cut-off response was billed.
@@ -296,7 +301,7 @@ export function toLLMEvents(
         ]
         // Reset so the adapter can be reused for a follow-up stream without leaking
         // counters or block IDs. adapterState() is the single source of truth for shape.
-        Object.assign(state, adapterState())
+        Object.assign(state, adapterState(state.finishReasons))
         return events
       })
 

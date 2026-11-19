@@ -698,6 +698,47 @@ it.instance(
   { mcp: {} },
 )
 
+// Issue #1459: a server marked `deferred` binds its tools as deferred; the runtime entry wins over the file's.
+it.instance(
+  "tools() binds deferred from the server's config, and only on a tool of a deferred server",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "lazy"
+        getOrCreateClientState("lazy").tools = [{ name: "a", description: "lazy/a", inputSchema: emptyInput }]
+        yield* mcp.add("lazy", { type: "local", command: ["echo", "test"], deferred: true })
+        yield* connectWith(mcp, "eager", ["b"])
+        // A file entry marks the server deferred; a runtime add that says nothing keeps that.
+        lastCreatedClientName = "filed"
+        getOrCreateClientState("filed").tools = [{ name: "c", description: "filed/c", inputSchema: emptyInput }]
+        yield* mcp.add("filed", { type: "local", command: ["echo", "test"] })
+        // A runtime entry that says `deferred: false` wins over the file's `true`.
+        lastCreatedClientName = "forced"
+        getOrCreateClientState("forced").tools = [{ name: "d", description: "forced/d", inputSchema: emptyInput }]
+        yield* mcp.add("forced", { type: "local", command: ["echo", "test"], deferred: false })
+
+        const tools = yield* mcp.tools()
+        const binding = (key: string) => McpCatalog.toolBinding(tools[key])
+        expect(binding("lazy_a")?.deferred).toBe(true)
+        expect(binding("filed_c")?.deferred).toBe(true)
+        // Nothing else carries the field: an eager tool's binding is what it was before.
+        expect(binding("eager_b")).toEqual({
+          server: "eager",
+          tool: "b",
+          source: "unknown",
+          requiresUserInteraction: false,
+        })
+        expect(binding("forced_d")?.deferred).toBeUndefined()
+      }),
+    ),
+  {
+    mcp: {
+      filed: { type: "local", command: ["echo", "test"], deferred: true },
+      forced: { type: "local", command: ["echo", "test"], deferred: true },
+    },
+  },
+)
+
 it.instance(
   "follows cursors when listing tools, prompts, and resources",
   () =>

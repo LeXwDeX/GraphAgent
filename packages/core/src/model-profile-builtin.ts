@@ -94,6 +94,16 @@ function toolResultMediaOf(input: RuleInput): ModelProfile["toolResultMedia"] | 
   return undefined
 }
 
+/** The downgrades the tool schemas of this model need, in the order `schema()` applies them; empty when none. */
+function schemaFixesOf(input: RuleInput): ModelProfile["schemaFixes"] {
+  const id = input.apiID.toLowerCase()
+  const fixes: ModelProfile["schemaFixes"] = []
+  if (input.npm === "@ai-sdk/openai" || input.npm === "@ai-sdk/azure") fixes.push("openai")
+  if (input.providerID === "moonshotai" || id.includes("kimi")) fixes.push("moonshot")
+  if (input.providerID === "google" || id.includes("gemini")) fixes.push("gemini")
+  return fixes
+}
+
 /**
  * Built-in profile rules, the last source before the defaults.
  *
@@ -215,5 +225,13 @@ export const BUILTIN_RULES: ReadonlyArray<BuiltinRule> = [
         toggle: { on: { thinking: { type: "adaptive" } }, off: { thinking: { type: "disabled" } } },
       },
     }),
+  },
+  {
+    // OpenAI, Moonshot and Gemini endpoints each reject another part of a tool schema. The three tests are independent,
+    // so one model can need several downgrades; a model none of them names keeps its schemas as they are.
+    name: "schema-fixes",
+    source: "296a1a5d0:packages/graphagent/src/provider/transform.ts:1803,1808,1827",
+    match: (input) => schemaFixesOf(input).length > 0,
+    set: (input) => ({ schemaFixes: schemaFixesOf(input) }),
   },
 ]

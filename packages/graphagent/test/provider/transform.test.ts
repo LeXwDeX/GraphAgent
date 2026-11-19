@@ -10,6 +10,7 @@ import type { Provider } from "@/provider/provider"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { ModelV2 } from "@graphagent/core/model"
 import { ModelsDev } from "@graphagent/core/models-dev"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { generateText, jsonSchema, type ModelMessage } from "ai"
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
@@ -6561,6 +6562,19 @@ describe("ProviderTransform case-insensitive family", () => {
       reasoning: { enabled: false },
     })
   })
+
+  test("gemini schema", () => {
+    // Gemini-2.5-Pro behind a relay gets the Gemini downgrade (integer enums become string enums), as gemini-2.5-pro does
+    const integers = () => ({ type: "integer" as const, enum: [1, 2] })
+    expect(ProviderTransform.schema(relayModel("Gemini-2.5-Pro"), integers())).toEqual({
+      type: "string",
+      enum: ["1", "2"],
+    })
+    expect(ProviderTransform.schema(relayModel("gemini-2.5-pro"), integers())).toEqual({
+      type: "string",
+      enum: ["1", "2"],
+    })
+  })
 })
 
 describe("ProviderTransform.message - request shaping follows the model profile", () => {
@@ -7021,5 +7035,91 @@ describe("ProviderTransform.message - reasoning placeholder follows the model pr
     // the bridge ends normalizeMessages first, so even a configured placeholder is not reached
     const model = relayModel("mistral-large-latest", { profile: { reasoning_mode: { placeholder: true } } })
     expect(reasoningOf(ProviderTransform.message(history(), model, {}))).toEqual([[], [], ["kept"]])
+  })
+})
+
+describe("ProviderTransform.schema - downgrades follow the model profile", () => {
+  // one schema each downgrade changes: the OpenAI subset drops `format` and the length bounds, Moonshot keeps only the
+  // $ref of a referencing node, Gemini turns an integer enum into a string enum
+  const bounded = () => ({ type: "string" as const, format: "uri", minLength: 1 })
+  const referencing = () => ({
+    type: "object" as const,
+    properties: { item: { $ref: "#/$defs/Item", description: "one item" } },
+  })
+  const integers = () => ({ type: "integer" as const, enum: [1, 2] })
+  const referenced: JSONSchema7 = { type: "object", properties: { item: { $ref: "#/$defs/Item" } } }
+  const stringEnum: JSONSchema7 = { type: "string", enum: ["1", "2"] }
+
+  test("a model a test of the rule names gets that downgrade, by provider, package or API id in any case", () => {
+    const openai = relayModel("gpt-4.1", { providerID: "openai", npm: "@ai-sdk/openai" })
+    expect(ProviderTransform.schema(openai, bounded())).toEqual({ type: "string" })
+    const azure = relayModel("my-deployment", { providerID: "azure", npm: "@ai-sdk/azure" })
+    expect(ProviderTransform.schema(azure, bounded())).toEqual({ type: "string" })
+
+    for (const model of [relayModel("any-model", { providerID: "moonshotai" }), relayModel("Kimi-K2")]) {
+      expect(ProviderTransform.schema(model, referencing())).toEqual(referenced)
+    }
+    for (const model of [relayModel("any-model", { providerID: "google" }), relayModel("Gemini-2.5-Pro")]) {
+      expect(ProviderTransform.schema(model, integers())).toEqual(stringEnum)
+    }
+    expect(ProviderProfile.profileOf(openai).sources.schemaFixes).toBe("builtin:schema-fixes")
+  })
+
+  test("a model no test names keeps its schema as it is", () => {
+    const plain = relayModel("qwen3-max")
+    expect(ProviderTransform.schema(plain, bounded())).toEqual(bounded())
+    expect(ProviderTransform.schema(plain, referencing())).toEqual(referencing())
+    expect(ProviderTransform.schema(plain, integers())).toEqual(integers())
+    expect(ProviderProfile.profileOf(plain).schemaFixes).toEqual([])
+    expect(ProviderProfile.profileOf(plain).sources.schemaFixes).toBeUndefined()
+    // another package of the same vendor is not the OpenAI package
+    expect(ProviderTransform.schema(relayModel("gpt-4.1", { providerID: "openai" }), bounded())).toEqual(bounded())
+  })
+
+  test("one model takes every downgrade its tests name, in the order the three ran before", () => {
+    const all = relayModel("Kimi-Gemini", { providerID: "google", npm: "@ai-sdk/openai" })
+    expect(ProviderProfile.profileOf(all).schemaFixes).toEqual(["openai", "moonshot", "gemini"])
+    const sample = () => ({
+      type: "object" as const,
+      properties: {
+        count: { type: "integer" as const, enum: [1, 2], format: "int32" },
+        item: { $ref: "#/$defs/Item", description: "one item" },
+      },
+    })
+    const only = (fix: "openai" | "moonshot" | "gemini") =>
+      relayModel("qwen3-max", { profile: { schema_fixes: [fix] } })
+    const stepwise = ProviderTransform.schema(
+      only("gemini"),
+      ProviderTransform.schema(only("moonshot"), ProviderTransform.schema(only("openai"), sample())),
+    )
+    expect(ProviderTransform.schema(all, sample())).toEqual(stepwise)
+    // each of the three acted: format dropped, a $ref kept alone, the values of an integer enum turned into strings
+    expect(stepwise).toMatchObject({ properties: { count: { enum: ["1", "2"] }, item: { $ref: "#/$defs/Item" } } })
+    expect(JSON.stringify(stepwise)).not.toContain("format")
+    expect(JSON.stringify(stepwise)).not.toContain("one item")
+    // the order is fixed (openai before gemini keeps the integer type of the enum), so the list of a configuration
+    // does not reorder them
+    const reversed = relayModel("qwen3-max", { profile: { schema_fixes: ["gemini", "moonshot", "openai"] } })
+    expect(ProviderTransform.schema(reversed, sample())).toEqual(stepwise)
+  })
+
+  test("the downgrades come from the profile: configured on for any model, configured empty switches the rule off", () => {
+    const configured = relayModel("qwen3-max", { profile: { schema_fixes: ["gemini"] } })
+    expect(ProviderTransform.schema(configured, integers())).toEqual(stringEnum)
+    expect(ProviderTransform.schema(configured, bounded())).toEqual(bounded())
+    expect(ProviderProfile.profileOf(configured).sources.schemaFixes).toBe("config")
+
+    const off = relayModel("Gemini-2.5-Pro", { providerID: "google", profile: { schema_fixes: [] } })
+    expect(ProviderTransform.schema(off, integers())).toEqual(integers())
+    expect(ProviderProfile.profileOf(off).sources.schemaFixes).toBe("config")
+  })
+
+  test("a fixture that has only the fields schema reads does not make the profile throw", () => {
+    // what a fixture leaves out is absent at run time, as in the partial models other tests pass in
+    const fixture = relayModel("Gemini-3-Pro", { providerID: "relay" })
+    for (const key of ["name", "capabilities", "cost", "limit", "status", "options", "headers", "release_date"]) {
+      Reflect.deleteProperty(fixture, key)
+    }
+    expect(ProviderTransform.schema(fixture, integers())).toEqual(stringEnum)
   })
 })

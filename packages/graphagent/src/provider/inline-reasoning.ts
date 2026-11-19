@@ -3,6 +3,8 @@
 
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { extractReasoningMiddleware, wrapLanguageModel } from "ai"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderProfile } from "./profile"
 import type { Model } from "./provider"
 
 /**
@@ -14,11 +16,17 @@ import type { Model } from "./provider"
  */
 export const INLINE_REASONING_TAGS: ReadonlyArray<{ providerID: string; apiID: string; tag: string }> = []
 
-/** The tag name (`think` for `<think>…</think>`) this model uses, or undefined when it has none. */
+/**
+ * The tag name (`think` for `<think>…</think>`) this model uses, or undefined when it has none. The tag the model's
+ * profile declares (`reasoningMode.inlineTag`) comes first; the table is the fallback.
+ */
 export function inlineReasoningTag(
-  model: Pick<Model, "providerID" | "api">,
+  model: Pick<Model, "providerID" | "api"> & Partial<Model>,
   table: typeof INLINE_REASONING_TAGS = INLINE_REASONING_TAGS,
 ): string | undefined {
+  // profileOf reads the API id of `api`; the id it asks for is only what a model without `api` falls back to.
+  const declared = ProviderProfile.profileOf({ id: ModelV2.ID.make(model.api.id), ...model }).reasoningMode.inlineTag
+  if (declared) return declared
   return table.find((rule) => rule.providerID === model.providerID && rule.apiID === model.api.id)?.tag
 }
 

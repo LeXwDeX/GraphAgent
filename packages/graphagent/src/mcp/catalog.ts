@@ -213,6 +213,11 @@ export interface ToolBinding {
    * A deny or ask rule written for that key still applies to the tool.
    */
   readonly baseKey?: string
+  /**
+   * The server is configured `deferred` (#1459): its tools stay out of the tool list and are listed in a catalog; set
+   * only on such a tool.
+   */
+  readonly deferred?: boolean
 }
 
 const bindings = new WeakMap<object, ToolBinding>()

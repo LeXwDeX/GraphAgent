@@ -9,6 +9,7 @@ import { TaskTool } from "@/tool/task"
 import { WorkflowTool } from "@/tool/workflow"
 import { Truncate } from "@/tool/truncate"
 import { ToolPipeline, toRecord } from "@/tool/pipeline"
+import { recordedInput } from "@/tool/mcp-deferred"
 import type { DirectToolContext, WrapInput } from "@/tool/pipeline"
 import { SettingsHook } from "@/hook"
 import { ToolInputUpdated } from "@/permission/hook-control"
@@ -44,6 +45,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     ToolExecutionOptions,
     { confirmed: boolean; allowed: boolean; name: string; original: Record<string, unknown> }
   >()
+  // The calls `mcp_call` forwards to a deferred tool, by the key of that tool (#1459).
+  const proxiedCalls = new WeakMap<ToolExecutionOptions, string>()
   const hooks = input.hooks ?? Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
 
   // Definition-stage rewrites (availability, permissions, descriptions, schemas) happen in
@@ -231,7 +234,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
           Effect.flatMap((result) =>
             result?.updatedInput
               ? Effect.die(new ToolInputUpdated(result.updatedInput))
-              : recordInput(options.toolCallId, args),
+              : recordInput(options.toolCallId, recordedInput(proxiedCalls, options, args)),
           ),
         ),
   })
@@ -260,11 +263,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     entries,
     truncate,
     resourceHookState,
+    deferredTools: new Map<string, AITool>(),
+    proxiedCalls,
   }
   yield* ToolPipeline.builtinTools(pipelineDeps, tools)
   yield* ToolPipeline.mcpResourceTools(pipelineDeps, tools)
 
   yield* ToolPipeline.mcpServerTools(pipelineDeps, tools)
+  yield* ToolPipeline.mcpDeferredTools(pipelineDeps, tools)
 
   const serialized = serializedTools(tools)
   const strict = Object.entries(tools)
