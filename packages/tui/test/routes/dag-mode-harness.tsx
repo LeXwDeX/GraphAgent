@@ -4,7 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { GlobalEvent, Session, SessionDagMode, SessionUsage } from "@graphagent/sdk"
+import type { GlobalEvent, Session, SessionDagMode, SessionOverhead, SessionUsage } from "@graphagent/sdk"
 import { onCleanup, type JSX } from "solid-js"
 import { unwrap } from "solid-js/store"
 import { TuiConfigProvider } from "../../src/config"
@@ -39,6 +39,7 @@ import { RouteFrame } from "../fixture/route-frame"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
+import { spyOverheadReads, type OverheadReads } from "../fixture/overhead-reads"
 import { spyUsageReads, type UsageReads } from "../fixture/usage-reads"
 
 export type Sent = { method: string; path: string; body: unknown }
@@ -91,6 +92,11 @@ export function usageFixture(rootID: string, extra: Partial<SessionUsage> = {}):
   }
 }
 
+/** What the server reports of a session's fixed overhead (`GET /session/:id/overhead`); nothing before its first request. */
+export function overheadFixture(extra: Partial<SessionOverhead> = {}): SessionOverhead {
+  return { bytes: 0, tokens: 0, sources: [], ...extra }
+}
+
 /** The top of `sessionID`'s parent chain among `sessions`: the root the usage endpoint answers for any session of a tree. */
 function rootOfFixture(sessions: readonly Session[], sessionID: string) {
   const byID = new Map(sessions.map((item) => [item.id, item]))
@@ -139,6 +145,13 @@ export type MountOptions = {
    * answers for any session of a tree with its root's total, so the default names the root, not the session asked.
    */
   usage?: (sessionID: string) => Response | SessionUsage | undefined | Promise<Response | SessionUsage | undefined>
+  /**
+   * Reply to `GET /session/:id/overhead`; defaults to nothing reported (zeros, which the drawer does not show). The
+   * real endpoint answers for the session asked, whatever its place in a tree.
+   */
+  overhead?: (
+    sessionID: string,
+  ) => Response | SessionOverhead | undefined | Promise<Response | SessionOverhead | undefined>
   /** Reply to `POST /session/:id/command`. */
   command?: (body: unknown) => Response
   /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
@@ -196,6 +209,10 @@ export async function mountRoute(options: MountOptions) {
         const reply = (await options.usage?.(item.id)) ?? usageFixture(rootOfFixture(sessions, item.id))
         return reply instanceof Response ? reply : json(reply)
       }
+      if (url.pathname === `/session/${item.id}/overhead`) {
+        const reply = (await options.overhead?.(item.id)) ?? overheadFixture()
+        return reply instanceof Response ? reply : json(reply)
+      }
       if (url.pathname === `/session/${item.id}/command`) {
         return options.command?.(sent.at(-1)?.body) ?? json({ info: {}, parts: [] })
       }
@@ -209,6 +226,7 @@ export async function mountRoute(options: MountOptions) {
   let sync!: ReturnType<typeof useSync>
   let sdk!: ReturnType<typeof useSDK>
   let usageReads: UsageReads | undefined
+  let overheadReads: OverheadReads | undefined
   let kv!: ReturnType<typeof useKV>
   let promptRef!: ReturnType<typeof usePromptRef>
   let registry!: ReturnType<typeof useCommands>
@@ -222,6 +240,7 @@ export async function mountRoute(options: MountOptions) {
     // Ahead of the view's own effects, so a read the first render asks for is counted too; once, though the subtree
     // may be built again.
     usageReads ??= spyUsageReads(sdk)
+    overheadReads ??= spyOverheadReads(sdk)
     kv = useKV()
     promptRef = usePromptRef()
     registry = useCommands()
@@ -319,6 +338,11 @@ export async function mountRoute(options: MountOptions) {
     usageReads: {
       asked: () => usageReads!.asked(),
       answered: () => usageReads!.answered(),
+    },
+    /** The reads of the fixed-overhead endpoint the sync layer asks for, counted at the SDK call, as `usageReads`. */
+    overheadReads: {
+      asked: () => overheadReads!.asked(),
+      answered: () => overheadReads!.answered(),
     },
     /** Emit an event and run the frame that carries it now: the handlers have run when this returns. */
     deliver(event: GlobalEvent) {
