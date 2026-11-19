@@ -53,8 +53,12 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { it } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMEvent } from "@graphagent/llm"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Stream } from "effect"
-import { HINT_TEXT } from "../../src/session/turn/hints"
+import { TuiEvent } from "@graphagent/schema/tui-event"
+import { ChildRegistry } from "../../src/session/child/registry"
+import { HINT_TEXT, renderHint } from "../../src/session/turn/hints"
+import { ToolError } from "../../src/tool/tool-error"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -428,3 +432,317 @@ for (const hookMode of ["interactive", "noninteractive", undefined] as const) {
     { config: cfg },
   )
 }
+
+// ---------------------------------------------------------------------------
+// Output cut off by the output limit (#1464)
+// ---------------------------------------------------------------------------
+
+/** What the model requests receive: each request takes the next script, the last one repeats. */
+const scriptedLLM = (scripts: ReadonlyArray<ReadonlyArray<LLMEvent>>) => {
+  const requests: LLM.StreamInput["messages"][] = []
+  const layer = Layer.succeed(
+    LLM.Service,
+    LLM.Service.of({
+      organizer: () => Effect.succeed(undefined),
+      stream: (input) => {
+        const script = scripts[Math.min(requests.length, scripts.length - 1)]
+        requests.push(input.messages)
+        return Stream.fromIterable(script)
+      },
+    }),
+  )
+  return { requests, layer }
+}
+
+const textsOf = (parts: ReadonlyArray<SessionV1.Part>) =>
+  parts.flatMap((part) => (part.type === "text" ? [part.text] : []))
+
+const cutText: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.textStart({ id: "text-1" }),
+  LLMEvent.textDelta({ id: "text-1", text: "The report begins with" }),
+  LLMEvent.textEnd({ id: "text-1" }),
+  LLMEvent.stepFinish({ index: 0, reason: "length" }),
+  LLMEvent.finish({ reason: "length" }),
+]
+
+it.instance(
+  "session.prompt loop continues a text cut off by the output limit with one runtime hint and a second request",
+  () =>
+    Effect.gen(function* () {
+      const { requests, layer } = scriptedLLM([cutText, validScript])
+      yield* Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Cut text" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "write the report" }],
+        })
+
+        const looped = yield* prompt.loop({ sessionID: chat.id })
+
+        expect(requests).toHaveLength(2)
+        expect(looped.info.role).toBe("assistant")
+        if (looped.info.role !== "assistant") throw new Error("expected an assistant reply")
+        // The turn returns the last assistant message, which holds only what was written after the cut.
+        expect(looped.info.finish).toBe("stop")
+        expect(looped.info.error).toBeUndefined()
+        expect(textsOf(looped.parts)).toEqual(["done"])
+
+        // user, the cut-off reply, the runtime hint, the continuation.
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        expect(messages.map((message) => message.info.role)).toEqual(["user", "assistant", "user", "assistant"])
+        // The cut-off message keeps its text and its finish.
+        const cut = messages[1]
+        expect(cut?.info.role === "assistant" ? cut.info.finish : undefined).toBe("length")
+        expect(textsOf(cut?.parts ?? [])).toEqual(["The report begins with"])
+        // The hint is one synthetic text part, rendered by renderHint.
+        const hint = messages[2]
+        expect(hint?.parts).toHaveLength(1)
+        expect(hint?.parts[0]).toMatchObject({ type: "text", text: renderHint("output_truncated"), synthetic: true })
+
+        // The second request ends with the hint after the cut-off reply; the first did not carry it.
+        expect(messageText(requests[0]?.at(-1))).not.toContain(HINT_TEXT.output_truncated)
+        const lastOfSecond = requests[1]?.at(-1)
+        expect(lastOfSecond?.role).toBe("user")
+        expect(messageText(lastOfSecond)).toContain(renderHint("output_truncated"))
+        expect(JSON.stringify(requests[1])).toContain("The report begins with")
+      }).pipe(Effect.provide(makePrompt(layer)))
+    }),
+  { config: cfg },
+)
+
+it.instance(
+  "session.prompt loop stops after three continuations, ends on length and tells the user once",
+  () =>
+    Effect.gen(function* () {
+      const { requests, layer } = scriptedLLM([cutText])
+      yield* Effect.gen(function* () {
+        const events = yield* EventV2Bridge.Service
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const toasts: unknown[] = []
+        const off = yield* events.listen((event) => {
+          if (event.type === TuiEvent.ToastShow.type) toasts.push(event.data)
+          return Effect.void
+        })
+        const chat = yield* sessions.create({ title: "Always cut" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "write the report" }],
+        })
+
+        const looped = yield* prompt.loop({ sessionID: chat.id })
+        yield* off
+
+        // The first request and three continuations; the fourth reply is still cut off and no fifth request follows.
+        expect(requests).toHaveLength(4)
+        expect(looped.info.role).toBe("assistant")
+        if (looped.info.role !== "assistant") throw new Error("expected an assistant reply")
+        expect(looped.info.finish).toBe("length")
+        expect(looped.info.error).toBeUndefined()
+
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        expect(messages.map((message) => message.info.role)).toEqual([
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+        ])
+        const hints = messages.filter((message, index) => message.info.role === "user" && index > 0)
+        expect(hints).toHaveLength(3)
+        for (const hint of hints) expect(textsOf(hint.parts)).toEqual([renderHint("output_truncated")])
+
+        // The user hears about it once: a warning toast titled Output limit.
+        expect(toasts).toEqual([expect.objectContaining({ title: "Output limit", variant: "warning" })])
+      }).pipe(Effect.provide(makePrompt(layer)))
+    }),
+  { config: cfg },
+)
+
+it.instance(
+  "session.prompt loop does not continue a cut-off reply of a child session",
+  () =>
+    Effect.gen(function* () {
+      const { requests, layer } = scriptedLLM([cutText, validScript])
+      yield* Effect.gen(function* () {
+        const events = yield* EventV2Bridge.Service
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const toasts: unknown[] = []
+        const off = yield* events.listen((event) => {
+          if (event.type === TuiEvent.ToastShow.type) toasts.push(event.data)
+          return Effect.void
+        })
+        const parent = yield* sessions.create({ title: "Parent" })
+        const child = yield* sessions.create({ parentID: parent.id, title: "Child" })
+        const run = yield* (yield* prompt.children).start({
+          parentSessionID: parent.id,
+          childSessionID: child.id,
+          owner: { kind: "task", toolCallID: "call_1" },
+          detached: false,
+        })
+        yield* prompt.prompt(
+          {
+            sessionID: child.id,
+            agent: "build",
+            noReply: true,
+            parts: [{ type: "text", text: "write the report" }],
+          },
+          undefined,
+          { credential: ChildRegistry.credentialOf(child.id) },
+        )
+
+        const looped = yield* prompt.loop({ sessionID: child.id })
+        yield* off
+        yield* run.settle({ type: "completed" })
+
+        // The owner of a child session decides what to do with a cut-off result.
+        expect(requests).toHaveLength(1)
+        expect(looped.info.role === "assistant" ? looped.info.finish : undefined).toBe("length")
+        const messages = yield* sessions.messages({ sessionID: child.id })
+        expect(messages.map((message) => message.info.role)).toEqual(["user", "assistant"])
+        expect(toasts).toEqual([])
+      }).pipe(Effect.provide(makePrompt(layer)))
+    }),
+  { config: cfg },
+)
+
+it.instance(
+  "session.prompt loop does not continue a length finish that wrote no answer text",
+  () =>
+    Effect.gen(function* () {
+      const { requests, layer } = scriptedLLM([
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.reasoningStart({ id: "reason-1" }),
+          LLMEvent.reasoningDelta({ id: "reason-1", text: "thinking without end" }),
+          LLMEvent.reasoningEnd({ id: "reason-1" }),
+          LLMEvent.stepFinish({ index: 0, reason: "length" }),
+          LLMEvent.finish({ reason: "length" }),
+        ],
+        validScript,
+      ])
+      yield* Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Reasoning only" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "think hard" }],
+        })
+
+        const looped = yield* prompt.loop({ sessionID: chat.id })
+
+        expect(requests).toHaveLength(1)
+        expect(looped.info.role === "assistant" ? looped.info.finish : undefined).toBe("length")
+      }).pipe(Effect.provide(makePrompt(layer)))
+    }),
+  { config: cfg },
+)
+
+const cutWriteInput = '{"filePath":"a.ts","content":"const a'
+
+const cutWrite: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.toolInputStart({ id: "call-1", name: "write" }),
+  LLMEvent.toolInputDelta({ id: "call-1", name: "write", text: cutWriteInput }),
+  LLMEvent.stepFinish({ index: 0, reason: "length" }),
+  LLMEvent.finish({ reason: "length" }),
+]
+
+const toolPartsOf = (parts: ReadonlyArray<SessionV1.Part>) =>
+  parts.flatMap((part) => (part.type === "tool" ? [part] : []))
+
+it.instance(
+  "session.prompt loop answers a tool call cut off by the output limit with an error and a second request",
+  () =>
+    Effect.gen(function* () {
+      const { requests, layer } = scriptedLLM([cutWrite, validScript])
+      yield* Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Cut write" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "write the file" }],
+        })
+
+        const looped = yield* prompt.loop({ sessionID: chat.id })
+
+        expect(requests).toHaveLength(2)
+        expect(looped.info.role === "assistant" ? looped.info.finish : undefined).toBe("stop")
+        expect(textsOf(looped.parts)).toEqual(["done"])
+
+        // No hint message: the error of the call is what the next request carries.
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        expect(messages.map((message) => message.info.role)).toEqual(["user", "assistant", "assistant"])
+        const calls = toolPartsOf(messages[1]?.parts ?? [])
+        expect(calls).toHaveLength(1)
+        const cut = calls[0]
+        expect(cut?.state.status).toBe("error")
+        if (cut?.state.status === "error") {
+          expect(cut.state.error).toBe(
+            ToolError.render({ kind: "truncated_arguments", tool: "write", length: cutWriteInput.length }),
+          )
+          expect(cut.state.metadata?.argumentsTruncated).toBe(true)
+          expect(cut.state.metadata?.outcome).toBe("arguments_truncated")
+          expect(cut.state.metadata?.interrupted).toBeUndefined()
+        }
+        expect(JSON.stringify(requests[1])).toContain("were cut off at character")
+      }).pipe(Effect.provide(makePrompt(layer)))
+    }),
+  { config: cfg },
+)
+
+it.instance(
+  "session.prompt loop answers a cut-off tool call with its error, not with a text continuation hint",
+  () =>
+    Effect.gen(function* () {
+      const { requests, layer } = scriptedLLM([
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-1" }),
+          LLMEvent.textDelta({ id: "text-1", text: "Writing the file now." }),
+          LLMEvent.textEnd({ id: "text-1" }),
+          LLMEvent.toolInputStart({ id: "call-1", name: "write" }),
+          LLMEvent.toolInputDelta({ id: "call-1", name: "write", text: cutWriteInput }),
+          LLMEvent.stepFinish({ index: 0, reason: "length" }),
+          LLMEvent.finish({ reason: "length" }),
+        ],
+        validScript,
+      ])
+      yield* Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Text and cut write" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "write the file" }],
+        })
+
+        yield* prompt.loop({ sessionID: chat.id })
+
+        expect(requests).toHaveLength(2)
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        expect(messages.map((message) => message.info.role)).toEqual(["user", "assistant", "assistant"])
+        expect(JSON.stringify(requests[1])).not.toContain(HINT_TEXT.output_truncated)
+      }).pipe(Effect.provide(makePrompt(layer)))
+    }),
+  { config: cfg },
+)

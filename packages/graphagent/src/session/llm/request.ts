@@ -64,6 +64,21 @@ export type Prepared = {
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
 
+/** Keeps the reasoning budget of the request inside what the model can emit, so it does not squeeze out the answer. */
+const fitReasoning = Effect.fnUntraced(function* (model: Provider.Model, params: ChatParams, sessionID: string) {
+  const fitted = ProviderTransform.fitReasoningBudget(model, params.options, params.maxOutputTokens)
+  if (!fitted) return
+  yield* Effect.logInfo("reasoning budget fitted", {
+    "session.id": sessionID,
+    providerID: model.providerID,
+    modelID: model.id,
+    budgetTokens: { from: fitted.budgetBefore, to: fitted.budgetAfter },
+    maxOutputTokens: { from: params.maxOutputTokens, to: fitted.maxOutputTokens },
+  })
+  params.options = fitted.options
+  params.maxOutputTokens = fitted.maxOutputTokens
+})
+
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const adapters =
     input.adapters ??
@@ -137,7 +152,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
         : undefined,
       topP: input.agent.topP ?? ProviderTransform.topP(input.model),
       topK: ProviderTransform.topK(input.model),
-      maxOutputTokens: ProviderTransform.maxOutputTokens(
+      maxOutputTokens: ProviderTransform.requestOutputCap(
         input.model,
         input.flags.outputTokenMax,
         ProviderTransform.configuredOutputLimit(input.cfg, input.model),
@@ -151,6 +166,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
         ? input.maxOutputTokens
         : Math.min(params.maxOutputTokens, input.maxOutputTokens)
   }
+  yield* fitReasoning(input.model, params, input.sessionID)
 
   const headers = yield* adapters.chatHeaders(
     {
