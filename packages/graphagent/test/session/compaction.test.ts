@@ -3430,6 +3430,7 @@ describe("session.compaction.process", () => {
           "each explicit user constraint, preference or spec as its own bullet, in the user's words",
         )
         expect(captured).toContain("List every explicit user constraint as its own bullet; never merge or drop one.")
+        expect(captured).toContain("Keep the section headings exactly as written above, in English")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },

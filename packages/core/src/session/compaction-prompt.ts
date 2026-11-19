@@ -39,7 +39,8 @@ Rules:
 - Use terse bullets, not prose paragraphs.
 - Preserve exact file paths, commands, error strings, and identifiers when known.
 - Do not mention the summary process or that context was compacted.
-- List every explicit user constraint as its own bullet; never merge or drop one.`
+- List every explicit user constraint as its own bullet; never merge or drop one.
+- Keep the section headings exactly as written above, in English; write the bullets in the conversation's language.`
 
 export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) =>
   [
