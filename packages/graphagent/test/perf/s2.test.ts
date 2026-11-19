@@ -3,17 +3,14 @@
 
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import type { Counters } from "../lib/engine-probe"
 import { testEffect } from "../lib/effect"
+import { expectBytesWithinTolerance, withoutBytes } from "./determinism"
 import { s2Scenario } from "./scenarios/s2"
 
 const MESSAGES = 500
 
 const scenario = s2Scenario()
 const it = testEffect(scenario.layer)
-
-const withoutBytes = (counts: Counters) =>
-  Object.fromEntries(Object.entries(counts).filter(([key]) => key !== "json.encodeBytes" && key !== "sha256Bytes"))
 
 describe("S2 session with two compactions", () => {
   it.instance(
@@ -34,10 +31,14 @@ describe("S2 session with two compactions", () => {
         expect(result.second.compactionRequests).toBe(2)
         expect(result.second.conversationRequests).toBe(1)
         expect(result.second.compactionMessages).toBe(2)
+        // The measured turn writes three step-finish parts (two compactions and
+        // the answer), each with whole-millisecond `metrics` durations that the
+        // later history reads parse again (13, 7 and 3 times). A duration
+        // crossing a digit boundary moves `json.parseBytes` by that many bytes
+        // (determinism.ts has the full account), so the byte counters only need
+        // to stay in the same small band; the rest is exact.
         expect(withoutBytes(result.second.counts)).toEqual(withoutBytes(result.first.counts))
-        expect(
-          Math.abs(result.second.counts["json.encodeBytes"] - result.first.counts["json.encodeBytes"]),
-        ).toBeLessThanOrEqual(64)
+        expectBytesWithinTolerance(result.second.counts, result.first.counts)
       }),
     scenario.instance,
     { timeout: scenario.timeout },
