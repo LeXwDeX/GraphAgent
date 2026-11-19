@@ -1,7 +1,7 @@
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { test, expect } from "bun:test"
 import os from "os"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Database } from "@graphagent/core/database/database"
@@ -1130,6 +1130,40 @@ it.instance(
       }).pipe(Effect.forkScoped)
 
       expect(yield* waitForPending(1)).toHaveLength(1)
+      yield* rejectAll()
+      yield* Fiber.await(fiber)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - keeps a request whose metadata holds undefined leaves listable as JSON (#1557)",
+  () =>
+    Effect.gen(function* () {
+      // apply_patch used to write `movePath: undefined` for a file it does not move, and webfetch, grep and glob
+      // copy an omitted optional argument into their metadata the same way.
+      const fiber = yield* ask({
+        sessionID: SessionID.make("session_test"),
+        permission: "edit",
+        patterns: ["a.txt"],
+        metadata: {
+          filepath: "a.txt",
+          timeout: undefined,
+          files: [{ filePath: "a.txt", type: "update", patch: "p", movePath: undefined }],
+        },
+        always: ["*"],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      const items = yield* waitForPending(1)
+      expect(items[0]?.metadata).toStrictEqual({
+        filepath: "a.txt",
+        files: [{ filePath: "a.txt", type: "update", patch: "p" }],
+      })
+      // GET /permission encodes the whole list with the strict JSON codec, so one bad request used to fail them all.
+      const encodeList = Schema.encodeUnknownSync(Schema.toCodecJson(Schema.Array(PermissionV1.Request)))
+      expect(() => encodeList(items)).not.toThrow()
+
       yield* rejectAll()
       yield* Fiber.await(fiber)
     }),

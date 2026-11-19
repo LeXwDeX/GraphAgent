@@ -2,6 +2,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { NamedError } from "@graphagent/core/util/error"
 import { describe, expect } from "bun:test"
 import { ConfigErrorV1 } from "@graphagent/core/v1/config/error"
+import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
@@ -137,6 +138,30 @@ describe("HttpApi error middleware", () => {
         name: "ProviderNoModelsError",
         data: { message: error.message },
       })
+    }),
+  )
+
+  // #1557: a missing model is answered by the handlers that resolve one, with an error their endpoint declares. The
+  // boundary does not make up an undeclared client error for it: a defect that no handler translated stays a safe 500.
+  it.live("does not map a model-not-found defect to an undeclared client error", () =>
+    Effect.gen(function* () {
+      const error = new Provider.ModelNotFoundError({
+        providerID: ProviderV2.ID.make("local-proxy-openai"),
+        modelID: ModelV2.ID.make("gpt-nope"),
+        suggestions: ["gpt-5"],
+      })
+      yield* HttpRouter.add("GET", "/no-model", Effect.die(error)).pipe(
+        Layer.provide(errorLayer),
+        HttpRouter.serve,
+        Layer.build,
+      )
+
+      const response = yield* HttpClientRequest.get("/no-model").pipe(HttpClient.execute)
+      const body = yield* response.json
+
+      expect(response.status).toBe(500)
+      expectUnknownErrorBody(body)
+      expect(JSON.stringify(body)).not.toContain("gpt-nope")
     }),
   )
 })

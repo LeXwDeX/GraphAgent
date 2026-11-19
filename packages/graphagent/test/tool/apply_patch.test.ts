@@ -122,6 +122,15 @@ const expectFailure = <A, E, R>(effect: Effect.Effect<A, E, R>, message?: string
 
 const expectReadFailure = (filepath: string) => expectFailure(readText(filepath))
 
+// The path of every `undefined` leaf in a value. GET /permission encodes a pending request's metadata with the strict
+// JSON codec, which rejects one anywhere in it (#1557).
+const undefinedLeaves = (value: unknown, at = "metadata"): string[] =>
+  value === undefined
+    ? [at]
+    : typeof value === "object" && value !== null
+      ? Object.entries(value).flatMap(([key, item]) => undefinedLeaves(item, `${at}.${key}`))
+      : []
+
 describe("tool.apply_patch freeform", () => {
   it.live("requires patchText", () =>
     Effect.gen(function* () {
@@ -185,6 +194,12 @@ describe("tool.apply_patch freeform", () => {
         expect(updateFile?.patch).toContain("-line2")
         expect(updateFile?.patch).toContain("+changed")
 
+        // Only a move carries a `movePath` key. A `movePath: undefined` here made GET /permission fail to encode the
+        // pending request, and with it the list of every session (#1557).
+        for (const file of permissionCall.metadata.files) expect(Object.hasOwn(file, "movePath")).toBe(false)
+        expect(undefinedLeaves(permissionCall.metadata)).toEqual([])
+        expect(undefinedLeaves(result.metadata.files)).toEqual([])
+
         expect(yield* readText(path.join(test.directory, "nested", "new.txt"))).toBe("created\n")
         expect(yield* readText(modifyPath)).toBe("line1\nchanged\n")
         yield* expectReadFailure(deletePath)
@@ -217,6 +232,7 @@ describe("tool.apply_patch freeform", () => {
         expect(moveFile.movePath).toBe(path.join(test.directory, "renamed/dir/name.txt"))
         expect(moveFile.patch).toContain("-old content")
         expect(moveFile.patch).toContain("+new content")
+        expect(undefinedLeaves(permissionCall.metadata)).toEqual([])
       }),
     { git: true },
   )

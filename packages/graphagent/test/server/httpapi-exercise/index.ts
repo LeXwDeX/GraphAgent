@@ -99,6 +99,25 @@ const refusedForChild = (
       }),
     )
 
+// #1557: a request that names a model the catalog does not have (`test-modle`, a typo of the fake provider's
+// `test-model`) is answered by its endpoint's declared 400 error, which names the model and suggests the close one.
+const unknownModel = { providerID: "test", modelID: "test-modle" }
+
+const unknownModelBody = (body: unknown) => {
+  object(body)
+  check(body.name === "ProviderModelNotFoundError", "an unknown model should be answered by its declared error")
+  object(body.data)
+  check(
+    body.data.providerID === unknownModel.providerID && body.data.modelID === unknownModel.modelID,
+    "the error should name the model that was asked for",
+  )
+  check(
+    Array.isArray(body.data.suggestions) && body.data.suggestions.includes("test-model"),
+    "the error should suggest the model the catalog does have",
+  )
+  check(typeof body.data.message === "string", "the error should carry a message")
+}
+
 const scenarios: Scenario[] = [
   http.protected
     .get("/global/health", "global.health")
@@ -2032,6 +2051,119 @@ const scenarios: Scenario[] = [
         }),
       "status",
     ),
+  // #1557: every endpoint that resolves a model declares the 400 it answers when the model is not in the catalog.
+  http.protected
+    .post("/session/{sessionID}/message", "session.prompt.unknownModel")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) => ctx.session({ title: "Prompt names an unknown model" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/message", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { agent: "build", model: unknownModel, parts: [{ type: "text", text: "hello llm" }] },
+    }))
+    .json(400, unknownModelBody),
+  http.protected
+    .post("/session/{sessionID}/command", "session.command.unknownModel")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) => ctx.session({ title: "Command names an unknown model" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/command", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { command: "init", arguments: "", model: "test/test-modle" },
+    }))
+    .json(400, unknownModelBody),
+  http.protected
+    .post("/session/{sessionID}/init", "session.init.unknownModel")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Init names an unknown model" })
+        const message = yield* ctx.message(session.id, { text: "initialize" })
+        return { session, message }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/init", { sessionID: ctx.state.session.id }),
+      headers: ctx.headers(),
+      body: { ...unknownModel, messageID: ctx.state.message.info.id },
+    }))
+    .json(400, unknownModelBody),
+  http.protected
+    .post("/session/{sessionID}/summarize", "session.summarize.unknownModel")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Summarize names an unknown model" })
+        yield* ctx.message(session.id, { text: "summarize this work" })
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/summarize", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { ...unknownModel, auto: false },
+    }))
+    .json(400, unknownModelBody),
+  http.protected
+    .post("/session/{sessionID}/model", "session.setModel.unknownModel")
+    .withLlm()
+    .seeded((ctx) => ctx.session({ title: "Model selection names an unknown model" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/model", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { model: unknownModel, source: "sdk" },
+    }))
+    .json(400, unknownModelBody),
+  http.protected
+    .post("/session/{sessionID}/resume", "session.resume.unknownModel")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Saved followup names an unknown model" })
+        // Resume runs a followup a hook saved only after a finished assistant message, so one turn runs first.
+        yield* ctx.llmText("fake assistant")
+        yield* ctx.llmText("fake assistant")
+        const turn = yield* ctx.request({
+          method: "POST",
+          path: route("/session/{sessionID}/message", { sessionID: session.id }),
+          headers: ctx.headers(),
+          body: {
+            agent: "build",
+            model: { providerID: "test", modelID: "test-model" },
+            parts: [{ type: "text", text: "first turn" }],
+          },
+        })
+        check(turn.status === 200, `the first turn should complete, got ${turn.status}: ${turn.text}`)
+        const saved = yield* ctx.request({
+          method: "PATCH",
+          path: route("/session/{sessionID}", { sessionID: session.id }),
+          headers: ctx.headers(),
+          body: {
+            metadata: {
+              hookPendingInput: {
+                version: 1,
+                messageID: "msg_httpapi_saved_followup",
+                phase: "pending",
+                input: { kind: "prompt", model: unknownModel, parts: [{ type: "text", text: "saved followup" }] },
+              },
+            },
+          },
+        })
+        check(saved.status === 200, `saving the followup should succeed, got ${saved.status}: ${saved.text}`)
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/resume", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: {},
+    }))
+    .json(400, unknownModelBody),
   http.protected
     .post("/session/{sessionID}/revert", "session.revert")
     .mutating()

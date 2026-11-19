@@ -2117,6 +2117,16 @@ export type ProviderAuthMethod = {
   >
 }
 
+export type ProviderModelNotFoundError = {
+  name: "ProviderModelNotFoundError"
+  data: {
+    providerID: string
+    modelID: string
+    suggestions: Array<string>
+    message: string
+  }
+}
+
 export type QuestionNotFoundError = {
   name: "QuestionNotFoundError"
   data: {
@@ -5758,9 +5768,9 @@ export type SessionPromptData = {
 
 export type SessionPromptErrors = {
   /**
-   * InvalidRequestError | BadRequest
+   * InvalidRequestError | ProviderModelNotFoundError | BadRequest
    */
-  400: InvalidRequestError | BadRequestError
+  400: InvalidRequestError | ProviderModelNotFoundError | BadRequestError
   /**
    * NotFoundError
    */
@@ -6039,9 +6049,9 @@ export type SessionInitData = {
 
 export type SessionInitErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * BadRequest | ProviderModelNotFoundError | InvalidRequestError
    */
-  400: BadRequestError | InvalidRequestError
+  400: BadRequestError | ProviderModelNotFoundError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -6078,9 +6088,9 @@ export type SessionSummarizeData = {
 
 export type SessionSummarizeErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * BadRequest | ProviderModelNotFoundError | InvalidRequestError
    */
-  400: BadRequestError | InvalidRequestError
+  400: BadRequestError | ProviderModelNotFoundError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -6121,9 +6131,9 @@ export type SessionSetModelData = {
 
 export type SessionSetModelErrors = {
   /**
-   * InvalidRequestError | BadRequest
+   * InvalidRequestError | ProviderModelNotFoundError | BadRequest
    */
-  400: InvalidRequestError | BadRequestError
+  400: InvalidRequestError | ProviderModelNotFoundError | BadRequestError
   /**
    * NotFoundError
    */
@@ -6243,9 +6253,9 @@ export type SessionResumeData = {
 
 export type SessionResumeErrors = {
   /**
-   * InvalidRequestError | BadRequest
+   * InvalidRequestError | ProviderModelNotFoundError | BadRequest
    */
-  400: InvalidRequestError | BadRequestError
+  400: InvalidRequestError | ProviderModelNotFoundError | BadRequestError
   /**
    * NotFoundError
    */
@@ -6348,9 +6358,9 @@ export type SessionCommandData = {
 
 export type SessionCommandErrors = {
   /**
-   * InvalidRequestError | BadRequest
+   * InvalidRequestError | ProviderModelNotFoundError | BadRequest
    */
-  400: InvalidRequestError | BadRequestError
+  400: InvalidRequestError | ProviderModelNotFoundError | BadRequestError
   /**
    * NotFoundError
    */

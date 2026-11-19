@@ -95,6 +95,41 @@ describe("graphagent run (non-interactive subprocess)", () => {
     60_000,
   )
 
+  // #1557: the same mistake used to come back as a 500 "Unexpected server error", so the user saw neither the model nor
+  // a hint. It is a 400 now, and `graphagent run` prints what the body carries: the model, the closest names, where
+  // to list the models.
+  cliIt.concurrent(
+    "names the unknown model and its closest matches on stderr",
+    ({ graphagent }) =>
+      Effect.gen(function* () {
+        const result = yield* graphagent.run("say hi", { model: "test/test-modle", timeoutMs: 30_000 })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stdout).toBe("")
+        expect(result.stderr).toContain("Model not found: test/test-modle")
+        expect(result.stderr).toContain("Did you mean: test-model")
+        expect(result.stderr).toContain("graphagent models")
+        expect(result.stderr).not.toContain("Unexpected server error")
+      }),
+    60_000,
+  )
+
+  // The same body reaches a machine reader: with --format json the error event keeps the model, not an opaque 500.
+  cliIt.concurrent(
+    "--format json reports the unknown model as a structured error event",
+    ({ graphagent }) =>
+      Effect.gen(function* () {
+        const result = yield* graphagent.run("say hi", { model: "test/test-modle", format: "json", timeoutMs: 30_000 })
+        expect(result.exitCode).not.toBe(0)
+        const errors = graphagent.parseJsonEvents(result.stdout).filter((event) => event.type === "error")
+        expect(errors).toHaveLength(1)
+        expect(errors[0]?.error).toMatchObject({
+          name: "ProviderModelNotFoundError",
+          data: { providerID: "test", modelID: "test-modle", suggestions: expect.arrayContaining(["test-model"]) },
+        })
+      }),
+    60_000,
+  )
+
   // The tool completes in the first request. The next request's response body
   // fails mid-stream, which the AI SDK reports as a retryable provider error;
   // that tool-free request retries. Its input must retain the completed tool
