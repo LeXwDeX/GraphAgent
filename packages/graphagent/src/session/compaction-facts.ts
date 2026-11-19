@@ -79,14 +79,15 @@ export function requestsOf(input: { messages: readonly SessionV1.WithParts[]; ch
 }
 
 /**
- * The requests the continuation text has to quote. The retained tail is in context word for word, so the latest
- * request is left out unless its message is one of `head`, the messages the summary replaces: a second copy would only
- * take room. A child's first request is its task prompt and is always quoted.
+ * The requests the continuation text has to quote. The retained `tail` is in context word for word, so the latest
+ * request is left out when its message is one of the tail's: a second copy would only take room. Any other request is
+ * quoted, the one this summary replaced and the one an earlier compaction already took out of the history the model
+ * reads. A child's first request is its task prompt and is always quoted.
  */
-export function quotedRequests(requests: Requests, head: readonly SessionV1.WithParts[]): Requests {
+export function quotedRequests(requests: Requests, tail: readonly SessionV1.WithParts[]): Requests {
   const { latest, ...rest } = requests
-  if (!latest || head.some((message) => message.info.id === latest.messageID)) return requests
-  return rest
+  if (latest && tail.some((message) => message.info.id === latest.messageID)) return rest
+  return requests
 }
 
 const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff

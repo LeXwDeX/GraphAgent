@@ -195,32 +195,37 @@ describe("CompactionFacts.requestsOf", () => {
 })
 
 describe("CompactionFacts.quotedRequests", () => {
-  // The head is what the summary replaces; the messages after it are the retained tail.
+  // The tail is what the compaction retains: the messages that stay in context as they were written.
   const turns = [user(text("older request")), user(text("latest request"))]
   const [older, latest] = turns
   const requests = CompactionFacts.requestsOf({ messages: turns, child: true })
-
-  test("quotes the latest request when the summary replaces its message", () => {
-    expect(requests.latest?.messageID).toBe(latest.info.id)
-    expect(CompactionFacts.quotedRequests(requests, turns)).toBe(requests)
-  })
+  const root = CompactionFacts.requestsOf({ messages: turns, child: false })
 
   test("leaves the latest request out while its message is in the retained tail", () => {
-    expect(CompactionFacts.quotedRequests(requests, [older])).toEqual({ first: requests.first })
-    expect(CompactionFacts.quotedRequests(requests, [])).toEqual({ first: requests.first })
+    expect(requests.latest?.messageID).toBe(latest.info.id)
+    expect(CompactionFacts.quotedRequests(requests, [latest])).toEqual({ first: requests.first })
+    expect(CompactionFacts.quotedRequests(requests, turns)).toEqual({ first: requests.first })
     // A root session has no first request: nothing is quoted.
-    const root = CompactionFacts.requestsOf({ messages: turns, child: false })
-    expect(CompactionFacts.quotedRequests(root, [older])).toEqual({})
+    expect(CompactionFacts.quotedRequests(root, [latest])).toEqual({})
+  })
+
+  test("quotes the latest request when the tail does not hold its message", () => {
+    // No tail at all, or a tail of other messages: the summary replaced the request, or an earlier compaction did.
+    expect(CompactionFacts.quotedRequests(requests, [])).toBe(requests)
+    expect(CompactionFacts.quotedRequests(requests, [older])).toBe(requests)
+    expect(CompactionFacts.quotedRequests(root, [])).toBe(root)
   })
 
   test("keeps the first request of a child whether or not the tail holds it", () => {
-    expect(CompactionFacts.quotedRequests(requests, [older]).first).toEqual(requests.first)
+    expect(CompactionFacts.quotedRequests(requests, [latest]).first).toEqual(requests.first)
     expect(CompactionFacts.quotedRequests(requests, []).first).toEqual(requests.first)
   })
 
-  test("finds the message by its id, not by its place", () => {
+  test("finds the message by its id, not by its place or its words", () => {
     const copy = { ...latest, parts: [] }
-    expect(CompactionFacts.quotedRequests(requests, [older, copy])).toBe(requests)
+    expect(CompactionFacts.quotedRequests(requests, [older, copy])).toEqual({ first: requests.first })
+    // Another message with the same words is another message.
+    expect(CompactionFacts.quotedRequests(requests, [user(text("latest request"))])).toBe(requests)
   })
 
   test("has nothing to leave out without a latest request", () => {

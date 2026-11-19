@@ -159,8 +159,8 @@ const pathLines = (label: string, paths: readonly string[], omitted: number) =>
 
 // What the model resumes from after an automatic compaction. The requests, the task state and the files are facts the
 // harness read; the summary lines after them are narrative and may be stale, so the latest request outranks them. That
-// request is quoted only when the summary replaced it: the retained tail already holds it as the user wrote it. The
-// last line says where the compacted messages can be read in full.
+// request is quoted unless the retained tail holds it: there it is in context as the user wrote it. The last line says
+// where the compacted messages can be read in full.
 function continuationText(input: {
   summary: string | undefined
   requests: CompactionFacts.Requests
@@ -315,6 +315,14 @@ function splitTurn(input: {
     }
     return undefined
   })
+}
+
+// The messages a compaction keeps in context as they were written: `messages` from the tail's first message on. A
+// compaction without `tail_start_id` keeps none. `messages` is the history `select` chose the tail from.
+function retainedTail(messages: readonly SessionV1.WithParts[], tailStartID: MessageID | undefined) {
+  if (tailStartID === undefined) return []
+  const start = messages.findIndex((message) => message.info.id === tailStartID)
+  return start < 0 ? [] : messages.slice(start)
 }
 
 type UserTurn = {
@@ -727,7 +735,10 @@ export const layer = Layer.effect(
       replay: Replay | undefined
       overflow: boolean
       summary: string | undefined
+      /** The messages the summary replaces. */
       head: readonly SessionV1.WithParts[]
+      /** The messages the compaction keeps in context as they were written; empty without a retained tail. */
+      tail: readonly SessionV1.WithParts[]
       /** Tokens the quoted requests may take: what the retained tail may take. */
       budget: number
     }) {
@@ -784,8 +795,9 @@ export const layer = Layer.effect(
       const body = continuationText({
         summary: input.summary,
         // A latest request the retained tail holds is in context as it was written: quoting it again would show the
-        // model two copies, and the second one would take room from the budget.
-        requests: CompactionFacts.fitRequests(CompactionFacts.quotedRequests(requests, input.head), input.budget),
+        // model two copies, and the second one would take room from the budget. A request the tail does not hold is
+        // quoted, also when an earlier compaction replaced it: it is not in the history the model reads.
+        requests: CompactionFacts.fitRequests(CompactionFacts.quotedRequests(requests, input.tail), input.budget),
         todos,
         workflows,
         files: CompactionFacts.sessionFiles({ messages: history, directory: ctx.directory }),
@@ -1094,6 +1106,7 @@ export const layer = Layer.effect(
               overflow: input.overflow === true,
               summary,
               head: selected.head,
+              tail: retainedTail(filteredHistory, selected.tail_start_id),
               budget: preserveRecentBudget({ cfg, model: conversationModel }),
             })
           : undefined

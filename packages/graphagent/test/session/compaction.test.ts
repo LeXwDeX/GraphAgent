@@ -4621,6 +4621,20 @@ describe("session.compaction continuation text", () => {
       })
     })
 
+  // `compactAuto` on the history the prompt loop hands over: what the model reads, from the latest completed
+  // compaction on, so the messages an earlier summary replaced are not in it.
+  const compactVisible = (sessionID: SessionID) =>
+    Effect.gen(function* () {
+      const stored = yield* SessionNs.use.messages({ sessionID })
+      const messages = MessageV2.filterCompacted([...stored].reverse())
+      return yield* SessionCompaction.use.process({
+        parentID: messages.at(-1)!.info.id,
+        messages,
+        sessionID,
+        auto: true,
+      })
+    })
+
   const toolPart = (
     sessionID: SessionID,
     messageID: MessageID,
@@ -4950,6 +4964,54 @@ describe("session.compaction continuation text", () => {
     },
     { git: true },
   )
+
+  // A long turn is compacted a second time. The first summary replaced the request and the model reads from it on, so
+  // the second compaction finds the request neither in the messages it replaces nor in the tail it retains: the text
+  // has to quote it, or the model is left with a summary that may be stale.
+  for (const [name, compaction, tailed] of [
+    ["the config keeps no tail", { tail_turns: 0 }, false],
+    ["the tail holds only the last step of the turn", { tail_turns: 1, preserve_recent_tokens: 300 }, true],
+  ] as const)
+    itCompaction.instance(
+      `a second compaction still quotes the latest request the first one replaced: ${name}`,
+      () => {
+        const stub = llm()
+        stub.push(reply(validSummary()))
+        stub.push(reply(validSummary()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const ctx = yield* InstanceState.context
+          const session = yield* ssn.create({})
+          yield* createUserMessage(session.id, "older request")
+          const request = yield* createUserMessage(session.id, "migrate the schema")
+          const answer = yield* createAssistantMessage(session.id, request.id, ctx.directory)
+          yield* textPart(session.id, answer.id, "long answer ".repeat(200))
+          yield* createSummaryCompaction(session.id)
+
+          // The first compaction keeps no tail, so its summary replaces the request and the text quotes it.
+          expect(yield* compactAuto(session.id)).toBe("continue")
+          expect(yield* continuation(session.id)).toContain("Latest user request:\nmigrate the schema\n")
+
+          // The turn goes on after that message, with a long step and a short one.
+          const resumed = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+          const longStep = yield* createAssistantMessage(session.id, resumed.info.id, ctx.directory)
+          yield* textPart(session.id, longStep.id, "long step ".repeat(500))
+          const lastStep = yield* createAssistantMessage(session.id, resumed.info.id, ctx.directory)
+          yield* textPart(session.id, lastStep.id, "short step")
+          yield* createSummaryCompaction(session.id)
+
+          expect(yield* compactVisible(session.id)).toBe("continue")
+
+          // The tail of the second compaction, if it has one, starts after the request: the request is not in it.
+          const tails = (yield* ssn.messages({ sessionID: session.id }))
+            .flatMap((message) => message.parts)
+            .flatMap((part) => (part.type === "compaction" ? [part.tail_start_id] : []))
+          expect(tails).toEqual([undefined, tailed ? lastStep.id : undefined])
+          expect(yield* continuation(session.id)).toContain("Latest user request:\nmigrate the schema\n")
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg(compaction) }))
+      },
+      { git: true },
+    )
 
   itCompaction.instance(
     "a child session keeps its whole task prompt and leaves the latest request to the tail that holds it",
