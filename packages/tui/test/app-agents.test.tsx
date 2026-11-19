@@ -6,7 +6,7 @@ import { TextareaRenderable, type Renderable } from "@opentui/core"
 import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk"
 import { setLanguage } from "../src/i18n"
 import { cellWidth } from "../src/ui/width"
-import { PROMPT_MARK, captureFrame, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
+import { captureFrame, promptShown, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
 import { assistantMessage, textPart, userMessage } from "./fixture/session-records"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
@@ -40,7 +40,6 @@ const assistant: AssistantMessage = {
   sessionID: rootID,
   parentID: "msg_agents_user",
   role: "assistant",
-  // Not `build`: the transcript then does not say `Build · Test model`, which only the input does.
   agent: "plan",
   mode: "plan",
   modelID: "test-model",
@@ -293,7 +292,7 @@ test("/agents lists the sub-agents of the main session in the order of its group
     handler: fake.handler,
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     await openByCommand(app.setup, "查看子会话与子 agent")
 
@@ -302,7 +301,7 @@ test("/agents lists the sub-agents of the main session in the order of its group
       (value) => listed(value, "explore · Inspect charlie"),
       "the sub-agent list",
     )
-    expect(frame).not.toContain(PROMPT_MARK)
+    expect(promptShown(frame)).toBe(false)
     // The two background runs first, newest start first (they began together: the id settles it), then the other.
     // (The transcript above the list names them too, in the order of the calls: the list is below it, so its own rows
     // are the last ones.)
@@ -321,7 +320,7 @@ test("/agents lists the sub-agents of the main session in the order of its group
     expect(fake.childReads()).toEqual([])
 
     app.setup.mockInput.pressEscape()
-    await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the input again")
+    await waitForFrame(app.setup, promptShown, "the input again")
     expect(fake.childReads()).toEqual([])
     expect(app.writes()).toEqual([])
   } finally {
@@ -340,7 +339,7 @@ test("enter in the list goes into the chosen sub-agent, which only then is loade
     handler: fake.handler,
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     await openByCommand(app.setup, "查看子会话与子 agent")
     await waitForFrame(app.setup, (value) => listed(value, "explore · Inspect bravo"), "the sub-agent list")
@@ -352,11 +351,11 @@ test("enter in the list goes into the chosen sub-agent, which only then is loade
     await waitFor(() => fake.childReads().includes(charlieID))
     const frame = await waitForFrame(
       app.setup,
-      (value) => !value.includes(PROMPT_MARK) && !value.includes("筛选…"),
+      (value) => !promptShown(value) && !value.includes("筛选…"),
       "the sub-agent view",
     )
     // A sub-agent view has no input; the one the user chose is the only session that was loaded.
-    expect(frame).not.toContain(PROMPT_MARK)
+    expect(promptShown(frame)).toBe(false)
     expect(fake.childReads()).toEqual([charlieID])
     expect(app.writes()).toEqual([])
   } finally {
@@ -375,7 +374,7 @@ test("asking the main agent adds to the draft instead of replacing it, and submi
     handler: english(fake.handler),
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     await app.setup.mockInput.typeText("first, release notes")
     await openByPalette(app.setup)
@@ -386,7 +385,7 @@ test("asking the main agent adds to the draft instead of replacing it, and submi
     app.setup.mockInput.pressKey("r", { ctrl: true })
     const frame = await waitForFrame(
       app.setup,
-      (value) => value.includes(PROMPT_MARK) && value.includes("Please handle the subagent"),
+      (value) => promptShown(value) && value.includes("Please handle the subagent"),
       "the input with the request",
     )
     expect(frame).toContain("first, release notes")
@@ -423,12 +422,12 @@ test("the list opens in a sub-agent view too, and asking from there ends in the 
       "the sub-agent list in a sub-agent view",
     )
     expect(listed).toContain("explore · Inspect alpha")
-    expect(listed).not.toContain(PROMPT_MARK)
+    expect(promptShown(listed)).toBe(false)
 
     app.setup.mockInput.pressKey("r", { ctrl: true })
     await waitForFrame(
       app.setup,
-      (value) => value.includes(PROMPT_MARK) && value.includes("Please handle the subagent"),
+      (value) => promptShown(value) && value.includes("Please handle the subagent"),
       "the main session's input",
     )
     const [input] = textareas(app.setup)
@@ -460,7 +459,7 @@ test("a background run that ends while the user is in the main session leaves a 
     handler: fake.handler,
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
 
@@ -478,7 +477,7 @@ test("a background run that ends while the user is in the main session leaves a 
     const { row, column } = locate(frame, "explore 已完成 · 点击查看")
     await app.setup.mockMouse.click(column + 2, row)
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
-    expect(await captureFrame(app.setup)).toContain(PROMPT_MARK)
+    expect(promptShown(await captureFrame(app.setup))).toBe(true)
     expect(fake.childReads()).toEqual([])
     expect(app.writes()).toEqual([])
   } finally {
@@ -497,7 +496,7 @@ test("a click on the toast takes the main session's transcript to the report's c
     handler: fake.handler,
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     await waitForFrame(app.setup, (frame) => frame.includes(TAIL_TEXT), "the end of the transcript")
 
@@ -556,11 +555,11 @@ test("from a sub-agent view a click on the toast goes to the main session, in bo
       app.events.emit(resultEvent(bravoID, "error"))
       const text = language === "en" ? "explore did not finish · click to view" : "explore 未完成 · 点击查看"
       const frame = await waitForFrame(app.setup, (value) => value.includes(text), "the reminder")
-      expect(frame).not.toContain(PROMPT_MARK)
+      expect(promptShown(frame)).toBe(false)
 
       const { row, column } = locate(frame, text)
       await app.setup.mockMouse.click(column + 2, row)
-      await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the main session")
+      await waitForFrame(app.setup, promptShown, "the main session")
       expect(app.writes()).toEqual([])
     } finally {
       clearDrafts(app.setup)
@@ -579,7 +578,7 @@ test("what a load or a reconnect brings is no event: a result already in the tra
     handler: fake.handler,
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     for (let pass = 0; pass < 10; pass++) await app.setup.renderOnce()
     // Loaded with the transcript: the data layer knows the run is over, and nobody says so in the footer.
@@ -624,7 +623,7 @@ test("a sub-agent that is waited for, or a DAG node, leaves no toast when it fin
     handler: fake.handler,
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
 
@@ -663,7 +662,7 @@ test("a sub-agent that asks for permission leaves a toast too, in English as wel
     handler: english(fake.handler),
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     for (let pass = 0; pass < 5; pass++) await app.setup.renderOnce()
 

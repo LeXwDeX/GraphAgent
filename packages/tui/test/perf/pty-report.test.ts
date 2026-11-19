@@ -161,8 +161,8 @@ test("the committed baseline is one the nightly can compare against", async () =
   expect(committed.samples.length).toBeGreaterThanOrEqual(3)
   expect(committed.machine?.platform).toBeTruthy()
   expect(committed.commit).toMatch(/^[0-9a-f]{40}$/)
-  // It is what `pty.ts` reports, with the placeholder it waits for.
-  expect(committed.expected).toBe("Ask anything")
+  // It is what `pty.ts` reports, with the prompt mark it waits for.
+  expect(committed.expected).toBe("›")
 })
 
 test("CLI: exit 0 for a clean table, 3 with warnings, 2 for unusable input", async () => {

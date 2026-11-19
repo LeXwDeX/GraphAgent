@@ -156,8 +156,13 @@ test("a route that names a message scrolls to it, takes the request off the rout
     await harness.waitForFrame((frame) => frame.includes(TAIL), "the end of the transcript")
 
     harness.route().navigate({ type: "session", sessionID: ROOT, messageID: MID_ID })
-    await harness.waitForFrame(atMiddle, "the message in the middle")
+    const jumped = await harness.waitForFrame(atMiddle, "the message in the middle")
     expect(plain(harness)).toEqual({ type: "session", sessionID: ROOT })
+    // What it landed on is the user's line, `›` and all, and it is the first row of the transcript (#1615).
+    const rows = jumped.split("\n")
+    const landed = rows.findIndex((row) => row.includes(MID))
+    expect(rows[landed]).toContain(`› ${MID}`)
+    expect(rows.slice(1, landed).every((row) => row.trim() === "")).toBe(true)
 
     toEnd(harness)
     await harness.waitForFrame(atEnd, "the end again")

@@ -19,7 +19,7 @@ import { cellWidth } from "../../src/ui/width"
 import { PanelSurface, renderAppPanel, type AppPanelTestContext } from "./contexts"
 import { readFrame, renderUntilFrame } from "../fixture/frames"
 import { waitFor } from "../fixture/held-io"
-import { PROMPT_MARK, runApp, waitForFrame, type Setup } from "../fixture/run-app"
+import { promptShown, runApp, waitForFrame, type Setup } from "../fixture/run-app"
 import { json } from "../fixture/tui-sdk"
 import { dagModeStatus, sessionFixture } from "../routes/dag-mode-harness"
 import { shellState } from "../shell/contexts"
@@ -1029,7 +1029,9 @@ for (const [language, label, none] of [
       expect(line).toContain(none)
       // No hint to change, and no way to: not offered on the hint row, and key and click do nothing.
       expect(line).not.toMatch(/换一个|change \(/)
-      for (const verb of ["修改", "选择", "Change", "Select"]) expect(hintsOf(frame)).not.toContain(verb)
+      // "选择"/"Select" is the move hint (up/down) since #1619; what must be absent is the enter action.
+      for (const verb of ["修改", "Change"]) expect(hintsOf(frame)).not.toContain(verb)
+      expect(hintsOf(frame)).not.toMatch(/(?:enter|⏎) /)
       await enter(app)
       expect(context.local.model.variant.current()).toBeUndefined()
       const lines = (await readFrame(app)).split("\n")
@@ -1260,7 +1262,8 @@ test("every shortcut row is read-only: enter and click write nothing, and no row
       const frame = await renderUntilFrame(app, (text) => selectedLineOf(text) !== "", "the selection")
       // No hint to change the value, and the hint row offers neither a change nor a selection.
       expect(selectedLineOf(frame)).not.toContain("换一个")
-      for (const verb of ["修改", "选择", "编辑", "提交"]) expect(hintsOf(frame)).not.toContain(verb)
+      for (const verb of ["修改", "编辑", "提交"]) expect(hintsOf(frame)).not.toContain(verb)
+      expect(hintsOf(frame)).not.toMatch(/(?:enter|⏎) /)
 
       await enter(app)
       const lines = (await readFrame(app)).split("\n")
@@ -1532,7 +1535,7 @@ function textareasOf(setup: Setup) {
 test("/config opens on the interface tab and /permissions on the permissions tab, and the model row opens /model", async () => {
   const app = await runApp({ sessions: [], args: {}, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     // Another test file of the same process can leave a draft in the prompt: what is typed here goes after nothing.
     for (const input of textareasOf(app.setup)) if (!input.isDestroyed) input.setText("")
     await app.setup.mockInput.typeText("/config")
@@ -1552,7 +1555,7 @@ test("/config opens on the interface tab and /permissions on the permissions tab
     app.setup.mockInput.pressEscape()
     await waitForFrame(app.setup, (value) => value.includes("[模型]"), "the settings panel again")
     app.setup.mockInput.pressEscape()
-    await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the prompt again")
+    await waitForFrame(app.setup, promptShown, "the prompt again")
 
     await app.setup.mockInput.typeText("/permissions")
     await waitForFrame(app.setup, (value) => value.includes("打开设置中的权限标签"), "the command popup")

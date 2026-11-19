@@ -6,7 +6,7 @@
  * projector services; same idiom as dag-isolation-worktree.test.ts. */
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, Layer } from "effect"
@@ -26,7 +26,7 @@ import type { WorkflowConfig } from "@/dag/dag"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Worktree } from "@/worktree"
-import { workflowArtifactsRoot } from "@/dag/runtime/output-ref"
+import { workflowArtifactsRoot, workflowReportsArea } from "@/dag/runtime/output-ref"
 import { settleTerminalWorkflowWorktree, settleWorkflowWorktree } from "@/dag/runtime/worktree-completion"
 import { workflowWorktreeText } from "@/dag/runtime/report-delivery"
 import { renderStatus } from "@/tool/workflow/render"
@@ -79,6 +79,8 @@ function settle(input: {
   /** Runs before the projection fold, so a test can commit a recovery while
    * the settlement is in flight. */
   beforePublish?: () => void
+  /** Runs when the settlement asks for the checkout to be removed, before it is. */
+  beforeRemove?: () => void
 }) {
   const harness: Harness = { published: [], episodes: [], removals: [] }
   let failPublish = input.failPublish === true
@@ -102,6 +104,7 @@ function settle(input: {
       projectID: "proj-settle",
       remove: (directory, options) =>
         Effect.sync(() => {
+          input.beforeRemove?.()
           harness.removals.push({ directory, ...options })
           if (input.failRemoval) return false
           execFileSync("git", ["-C", input.repository, "worktree", "remove", "--force", directory])
@@ -393,6 +396,180 @@ describe("workflow-level worktree settlement (#1030)", () => {
 
     expect(await Effect.runPromise(effect)).toBe("not_isolated")
     expect(harness.published).toEqual([])
+  })
+})
+
+// #1583: what the settlement reads and writes on the disk under the workflow lock — the evidence of a settlement
+// that was cut short, the patch, and the evidence of this one — waits off the event loop and keeps the behavior it
+// had when it was synchronous: what is published, the reasons of a failure, and no half-written file.
+describe("workflow worktree settlement evidence on disk (#1583)", () => {
+  const evidenceDirectory = (dagID: string) => path.join(workflowReportsArea("proj-settle"), dagID)
+  const evidenceFile = (dagID: string) => path.join(evidenceDirectory(dagID), "_workflow.settlement.json")
+  const temporaryFiles = (dagID: string) =>
+    readdirSync(evidenceDirectory(dagID)).filter((name) => name.includes(".tmp-"))
+
+  /** What an earlier settlement persisted for `pointer`, before it removed the checkout. */
+  const persisted = (pointer: ReturnType<typeof worktree>): DagEvent.WorkflowWorktree => ({
+    directory: pointer.directory,
+    branch: pointer.branch,
+    baseHead: pointer.baseHead,
+    head: "f".repeat(40),
+    patchPath: path.join(workflowReportsArea("proj-settle"), "dag", "_workflow.patch"),
+    patchSha256: "e".repeat(64),
+    touchedPaths: ["a.txt", "b/c.txt"],
+    state: "kept",
+    reason: "persisted before the crash",
+  })
+
+  const write = (dagID: string, content: string) => {
+    mkdirSync(evidenceDirectory(dagID), { recursive: true })
+    writeFileSync(evidenceFile(dagID), content)
+  }
+
+  afterEach(() => {
+    rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
+  })
+
+  it("publishes the evidence of a settlement that was cut short as removed, whatever state the file records", async () => {
+    const repository = repo()
+    const dagID = "dag_evidence_state"
+    const { config: cfg, pointer } = config(repository, dagID)
+    rmSync(pointer.directory, { recursive: true, force: true })
+    const evidence = persisted(pointer)
+    write(dagID, JSON.stringify(evidence))
+    const { harness, effect } = settle({ repository, dagID, status: "completed", config: cfg })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    expect(harness.published).toEqual([{ ...evidence, state: "removed" }])
+  })
+
+  it("does not publish evidence that belongs to another worktree", async () => {
+    const repository = repo()
+    const dagID = "dag_evidence_foreign"
+    const { config: cfg, pointer } = config(repository, dagID)
+    rmSync(pointer.directory, { recursive: true, force: true })
+    write(dagID, JSON.stringify({ ...persisted(pointer), directory: `${pointer.directory}-another` }))
+    const { harness, effect } = settle({ repository, dagID, status: "completed", config: cfg })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    expect(harness.published).toHaveLength(1)
+    expect(harness.published[0]).toEqual(
+      expect.objectContaining({ state: "removed", reason: "worktree directory is missing" }),
+    )
+    expect(harness.published[0]?.head).toBeUndefined()
+  })
+
+  const unreadable: ReadonlyArray<readonly [string, (pointer: ReturnType<typeof worktree>) => string]> = [
+    ["an empty file", () => ""],
+    ["a torn write", (pointer) => JSON.stringify(persisted(pointer)).slice(0, 40)],
+    ["something that is not an object", () => "null"],
+    ["an object that is no worktree", () => JSON.stringify({ directory: 7, touchedPaths: [], state: "removed" })],
+    ["a state that does not exist", (pointer) => JSON.stringify({ ...persisted(pointer), state: "vanished" })],
+  ]
+  for (const [name, content] of unreadable)
+    it(`falls back to the reason-bearing tombstone for evidence that is ${name}`, async () => {
+      const repository = repo()
+      const dagID = `dag_evidence_unreadable_${name.replaceAll(" ", "_")}`
+      const { config: cfg, pointer } = config(repository, dagID)
+      rmSync(pointer.directory, { recursive: true, force: true })
+      write(dagID, content(pointer))
+      const { harness, effect } = settle({ repository, dagID, status: "completed", config: cfg })
+
+      expect(await Effect.runPromise(effect)).toBe("settled")
+
+      expect(harness.published).toHaveLength(1)
+      expect(harness.published[0]).toEqual(
+        expect.objectContaining({ state: "removed", reason: "worktree directory is missing" }),
+      )
+      expect(harness.published[0]?.head).toBeUndefined()
+    })
+
+  it("persists the evidence as one complete file before the checkout is removed", async () => {
+    const repository = repo()
+    const dagID = "dag_evidence_persist"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "fix.txt"), "fixed\n")
+    let onDiskWhenRemoved: unknown
+    const { harness, effect } = settle({
+      repository,
+      dagID,
+      status: "completed",
+      config: cfg,
+      beforeRemove: () => {
+        onDiskWhenRemoved = JSON.parse(readFileSync(evidenceFile(dagID), "utf8"))
+      },
+    })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    // What was on the disk when the checkout went is what was published, and the temporary file was renamed away.
+    expect(onDiskWhenRemoved).toEqual(harness.published[0])
+    expect(harness.published[0]).toEqual(expect.objectContaining({ state: "removed", touchedPaths: ["fix.txt"] }))
+    expect(readdirSync(evidenceDirectory(dagID)).sort()).toEqual(["_workflow.patch", "_workflow.settlement.json"])
+  })
+
+  it("keeps the worktree and says why when the evidence cannot be put in place, leaving no temporary file", async () => {
+    const repository = repo()
+    const dagID = "dag_evidence_rename_fails"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "fix.txt"), "fixed\n")
+    // A directory where the evidence file belongs: the temporary file is written, and the rename onto it fails.
+    mkdirSync(evidenceFile(dagID), { recursive: true })
+    const { harness, effect } = settle({ repository, dagID, status: "completed", config: cfg })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    const settled = harness.published[0]
+    expect(settled).toEqual(expect.objectContaining({ state: "kept", touchedPaths: ["fix.txt"] }))
+    expect(settled?.reason).toContain("rename")
+    expect(settled?.patchPath).toBeDefined()
+    expect(harness.removals).toEqual([])
+    expect(existsSync(pointer.directory)).toBe(true)
+    expect(temporaryFiles(dagID)).toEqual([])
+    expect(statSync(evidenceFile(dagID)).isDirectory()).toBe(true)
+  })
+
+  it("keeps the worktree and says why when the patch cannot be written", async () => {
+    const repository = repo()
+    const dagID = "dag_evidence_patch_fails"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "fix.txt"), "fixed\n")
+    // A file where the report directory of the workflow belongs.
+    mkdirSync(workflowReportsArea("proj-settle"), { recursive: true })
+    writeFileSync(evidenceDirectory(dagID), "not a directory")
+    const { harness, effect } = settle({ repository, dagID, status: "completed", config: cfg })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    const settled = harness.published[0]
+    expect(settled).toEqual(expect.objectContaining({ state: "kept", touchedPaths: ["fix.txt"] }))
+    expect(settled?.reason).toContain("EEXIST")
+    expect(settled?.head).toBeDefined()
+    expect(settled?.patchPath).toBeUndefined()
+    expect(harness.removals).toEqual([])
+    expect(existsSync(pointer.directory)).toBe(true)
+  })
+
+  it("keeps the worktree when the workflow ID cannot name a directory for the evidence", async () => {
+    const repository = repo()
+    const dagID = "dag/evidence"
+    const { config: cfg, pointer } = config(repository, dagID)
+    // Nothing to commit: no patch is written, so the evidence is what fails.
+    const { harness, effect } = settle({ repository, dagID, status: "completed", config: cfg })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    expect(harness.published).toHaveLength(1)
+    expect(harness.published[0]).toEqual(
+      expect.objectContaining({
+        state: "kept",
+        reason: `invalid workflow ID for settlement evidence: ${JSON.stringify(dagID)}`,
+      }),
+    )
+    expect(harness.removals).toEqual([])
+    expect(existsSync(pointer.directory)).toBe(true)
   })
 })
 

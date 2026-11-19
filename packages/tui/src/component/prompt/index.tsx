@@ -3,6 +3,7 @@ import {
   TextareaRenderable,
   MouseEvent,
   PasteEvent,
+  RenderableEvents,
   decodePasteBytes,
   type KeyEvent,
   type Renderable,
@@ -16,7 +17,6 @@ import { Flag } from "@graphagent/core/flag/flag"
 import { costLabel, unpriced } from "@graphagent/core/util/cost"
 import { Identifier } from "@graphagent/core/id/id"
 import { useTheme } from "../../context/theme"
-import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { cursorWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
@@ -68,12 +68,7 @@ export type PromptProps = {
   onSubmit?: () => void
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
-  right?: JSX.Element
   showPlaceholder?: boolean
-  placeholders?: {
-    normal?: string[]
-    shell?: string[]
-  }
 }
 
 function pastedFilepath(value: string, platform: string) {
@@ -116,11 +111,6 @@ export type PromptEditRequest = {
 }
 
 const DRAFT_RETENTION_MIN_CHARS = 20
-
-function randomIndex(count: number) {
-  if (count <= 0) return 0
-  return Math.floor(Math.random() * count)
-}
 
 /** Same first-token rule as `resolveSlashInput`, used before scope filtering. */
 function isBtwCommandInput(input: string) {
@@ -225,8 +215,6 @@ export function Prompt(props: PromptProps) {
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const ticker = useTicker()
-  const list = createMemo(() => props.placeholders?.normal ?? [])
-  const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
   const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
   const editorContext = createMemo(() => {
@@ -262,8 +250,6 @@ export function Prompt(props: PromptProps) {
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const workspace = usePromptWorkspace(props.sessionID)
   const move = usePromptMove({ projectID: project.project, sessionID: () => props.sessionID })
-  const currentProviderLabel = createMemo(() => local.model.parsed().provider)
-  const hasRightContent = createMemo(() => Boolean(props.right))
 
   function promptModelWarning() {
     toast.show({
@@ -287,8 +273,26 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.disabled) input.cursorColor = theme.backgroundElement
+    if (props.disabled) input.cursorColor = theme.background
     if (!props.disabled) input.cursorColor = theme.text
+  })
+
+  // The frame's border follows the textarea's focus (the prototype's `.composer:focus-within`). The textarea
+  // announces focus and blur itself, so nothing polls: the signal moves only when a focus change happens.
+  const [focused, setFocused] = createSignal(false)
+  createEffect(() => {
+    const target = inputTarget()
+    if (!target || target.isDestroyed) return
+    setFocused(target.focused)
+    const gained = () => setFocused(true)
+    const lost = () => setFocused(false)
+    target.on(RenderableEvents.FOCUSED, gained)
+    target.on(RenderableEvents.BLURRED, lost)
+    onCleanup(() => {
+      target.off(RenderableEvents.FOCUSED, gained)
+      target.off(RenderableEvents.BLURRED, lost)
+      setFocused(false)
+    })
   })
 
   const lastUserMessage = createMemo(() => {
@@ -327,9 +331,7 @@ export function Prompt(props: PromptProps) {
     mode: "normal" | "shell"
     extmarkToPartIndex: Map<number, number>
     interrupt: number
-    placeholder: number
   }>({
-    placeholder: randomIndex(list().length),
     prompt: {
       input: "",
       parts: [],
@@ -343,7 +345,6 @@ export function Prompt(props: PromptProps) {
     on(
       () => props.sessionID,
       () => {
-        setStore("placeholder", randomIndex(list().length))
         setStore("interrupt", 0)
         interruptCancel?.()
         interruptCancel = undefined
@@ -1043,7 +1044,6 @@ export function Prompt(props: PromptProps) {
           desc: "Shell mode",
           group: "Prompt",
           cmd: () => {
-            setStore("placeholder", randomIndex(shell().length))
             setStore("mode", "shell")
           },
         },
@@ -1687,32 +1687,10 @@ export function Prompt(props: PromptProps) {
     setStore("extmarkToPartIndex", new Map())
   }
 
-  const highlight = createMemo(() => {
-    if (leader()) return theme.border
-    if (store.mode === "shell") return theme.primary
-    const agent = local.agent.current()
-    if (!agent) return theme.border
-    return local.agent.color(agent.name)
-  })
-
-  const showVariant = createMemo(() => {
-    const variants = local.model.variant.list()
-    if (variants.length === 0) return false
-    const current = local.model.variant.current()
-    return !!current
-  })
-
-  const borderHighlight = highlight
-
+  // The same text in the home view and in a session; the shell mode has its own (#1616).
   const placeholderText = createMemo(() => {
     if (props.showPlaceholder === false) return undefined
-    if (store.mode === "shell") {
-      if (!shell().length) return undefined
-      const example = shell()[store.placeholder % shell().length]
-      return `Run a command... "${example}"`
-    }
-    if (!list().length) return undefined
-    return `Ask anything... "${list()[store.placeholder % list().length]}"`
+    return store.mode === "shell" ? t("prompt.placeholder.shell") : t("prompt.placeholder")
   })
 
   const spinnerColor = createMemo(() => {
@@ -1730,35 +1708,36 @@ export function Prompt(props: PromptProps) {
   return (
     <>
       <box ref={(r: BoxRenderable) => (anchor = r)} visible={composerShown()} width="100%">
+        {/* One rounded frame holds the `›` column and the textarea side by side. The mark is a `<text>` of its own,
+            never part of the textarea's content, so it cannot reach the input's text or cursor coordinates (#1616).
+            The border is lit while the textarea has the focus. */}
         <box
           width="100%"
-          border={["left"]}
-          borderColor={borderHighlight()}
-          customBorderChars={{
-            ...SplitBorder.customBorderChars,
-            bottomLeft: "╹",
-          }}
+          flexShrink={0}
+          borderStyle="rounded"
+          border={["top", "right", "bottom", "left"]}
+          borderColor={focused() ? theme.textDim : theme.border}
+          backgroundColor={theme.background}
+          paddingLeft={1}
+          paddingRight={1}
         >
-          <box
-            paddingLeft={2}
-            paddingRight={2}
-            paddingTop={1}
-            flexShrink={0}
-            backgroundColor={theme.backgroundElement}
-            flexGrow={1}
-            width="100%"
-          >
-            <Show when={editing()}>
-              {(current) => (
-                <text fg={theme.textMuted} wrapMode="none">
-                  {t("prompt.edit.status", { label: current().request.label })}
-                </text>
-              )}
-            </Show>
+          <Show when={editing()}>
+            {(current) => (
+              <text fg={theme.textMuted} wrapMode="none">
+                {t("prompt.edit.status", { label: current().request.label })}
+              </text>
+            )}
+          </Show>
+          <box flexDirection="row" flexShrink={0} alignItems="flex-start">
+            <box width={2} flexShrink={0}>
+              <text fg={theme.primary} wrapMode="none">
+                {store.mode === "shell" ? "$" : "›"}
+              </text>
+            </box>
             <textarea
-              width="100%"
+              flexGrow={1}
               placeholder={placeholderText()}
-              placeholderColor={theme.textMuted}
+              placeholderColor={theme.textDim}
               textColor={leader() ? theme.textMuted : theme.text}
               focusedTextColor={leader() ? theme.textMuted : theme.text}
               minHeight={1}
@@ -1823,69 +1802,12 @@ export function Prompt(props: PromptProps) {
                 })
               }}
               onMouseDown={(r: MouseEvent) => r.target?.focus()}
-              focusedBackgroundColor={theme.backgroundElement}
-              cursorColor={props.disabled ? theme.backgroundElement : theme.text}
+              focusedBackgroundColor={theme.background}
+              cursorColor={props.disabled ? theme.background : theme.text}
               cursorStyle={{ style: "block", blinking: false }}
               syntaxStyle={syntax()}
             />
-            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
-              <box flexDirection="row" gap={1}>
-                <Show when={local.agent.current()} fallback={<box height={1} />}>
-                  {(agent) => (
-                    <>
-                      <text fg={highlight()}>{store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}</text>
-                      <Show when={store.mode === "normal"}>
-                        <box flexDirection="row" gap={1}>
-                          <text fg={theme.textMuted}>·</text>
-                          <text flexShrink={0} fg={leader() ? theme.textMuted : theme.text}>
-                            {local.model.parsed().model}
-                          </text>
-                          <text fg={theme.textMuted}>{currentProviderLabel()}</text>
-                          <Show when={showVariant()}>
-                            <text fg={theme.textMuted}>·</text>
-                            <text>
-                              <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
-                            </text>
-                          </Show>
-                        </box>
-                      </Show>
-                    </>
-                  )}
-                </Show>
-              </box>
-              <Show when={hasRightContent()}>
-                <box flexDirection="row" gap={1} alignItems="center">
-                  {props.right}
-                </box>
-              </Show>
-            </box>
           </box>
-        </box>
-        <box
-          height={1}
-          border={["left"]}
-          borderColor={borderHighlight()}
-          customBorderChars={{
-            ...EmptyBorder,
-            vertical: theme.backgroundElement.a !== 0 ? "╹" : " ",
-          }}
-        >
-          <box
-            height={1}
-            border={["bottom"]}
-            borderColor={theme.backgroundElement}
-            customBorderChars={
-              theme.backgroundElement.a !== 0
-                ? {
-                    ...EmptyBorder,
-                    horizontal: "▀",
-                  }
-                : {
-                    ...EmptyBorder,
-                    horizontal: " ",
-                  }
-            }
-          />
         </box>
         {/* The status row keeps its line when it has nothing to show, so the prompt does not change height. */}
         <box width="100%" minHeight={1} flexDirection="row" justifyContent="space-between">

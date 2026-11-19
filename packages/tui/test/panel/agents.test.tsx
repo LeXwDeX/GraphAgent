@@ -844,6 +844,24 @@ describe("how it looks", () => {
     expect(await look({ width: 120, height: 40, language: "en" })).toMatchSnapshot()
   })
 
+  // The list has a filter box, so it has no tab keys on the arrows: the pair of row keys is the only pair in the row.
+  const HINT_ROWS = {
+    "zh-CN": "up/down 选择 · enter 确认 · ctrl+r 请主 agent 处理 · escape 关闭",
+    en: "up/down Select · enter Confirm · ctrl+r Ask main agent · escape Close",
+  } as const
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const ambiguousWidth of [1, 2] as const) {
+      test(`the hint row pairs the arrow keys and is whole at 80 columns, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        const lines = linesOf(await look({ width: 80, height: 24, language, ambiguousWidth }))
+        const row = lines[lines.findIndex((line) => line.includes("╰")) - 1].slice(1, -1).trim()
+        expect(row).toBe(HINT_ROWS[language])
+        expect(row).not.toMatch(/left|right|←|→/)
+        expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(80 - 4)
+      })
+    }
+  }
+
   test("a cold start, 80 by 24", async () => {
     expect(await look({ width: 80, height: 24, seed: (ctx) => coldStart(ctx) })).toMatchSnapshot()
   })

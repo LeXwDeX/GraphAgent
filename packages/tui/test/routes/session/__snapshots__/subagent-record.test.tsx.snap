@@ -18,7 +18,7 @@ exports[`the record at 80x24 in zh-CN 1`] = `
      ⏺ Read CHANGELOG.md                                                        
        ⎿ 完成                                                                   
                                                                                 
-     找到 2 处破坏性变更。                                                      
+     ⏺ 找到 2 处破坏性变更。                                                    
                                                                                 
      ▣  Explore · test-model · 1.0s                                             
                                                                                 
@@ -46,7 +46,7 @@ exports[`the record at 80x24 in en 1`] = `
      ⏺ Read CHANGELOG.md                                                        
        ⎿ Done                                                                   
                                                                                 
-     找到 2 处破坏性变更。                                                      
+     ⏺ 找到 2 处破坏性变更。                                                    
                                                                                 
      ▣  Explore · test-model · 1.0s                                             
                                                                                 

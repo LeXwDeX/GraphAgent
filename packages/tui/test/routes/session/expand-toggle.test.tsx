@@ -26,6 +26,9 @@ const BEYOND_THE_CAP = "output line 25"
 const FOLDED = "more lines · ctrl+o expand"
 const OPEN = "ctrl+o collapse"
 const REASONING_BODY = "Reasoning step 8"
+/** The header of the reasoning while it is folded (the thought of the fixture lasts a millisecond), and what is left of it open. */
+const THOUGHT_FOLDED = "∴ Thought for 0s · collapsed"
+const THOUGHT_OPEN = "∴ Thought for 0s"
 
 /** The fixture with the assistant messages that hold `parts` and the user message, in order. */
 function transcript(parts: readonly number[], edit?: (fixture: PerfFixture) => void) {
@@ -90,7 +93,7 @@ test("ctrl+o opens the most recent folded block, then the one before it, and clo
   const harness = await mountHarness(transcript([1, 5, 8]))
   try {
     const before = await until(harness, holds(FOLDED), "held the folded output")
-    expect(before).toContain("+ Thought")
+    expect(before).toContain(THOUGHT_FOLDED)
     expect(before).not.toContain(REASONING_BODY)
     expect(before).not.toContain(BEYOND_THE_CAP)
 
@@ -104,7 +107,8 @@ test("ctrl+o opens the most recent folded block, then the one before it, and clo
       storePartWrites: 0,
       registerLayer: 0,
     })
-    expect(first).toContain("- Thought")
+    expect(first).toContain(THOUGHT_OPEN)
+    expect(first).not.toContain(THOUGHT_FOLDED)
     expect(first).toContain(FOLDED)
     expect(first).not.toContain(BEYOND_THE_CAP)
 
@@ -117,7 +121,7 @@ test("ctrl+o opens the most recent folded block, then the one before it, and clo
     // Everything is open: the key closes the most recent block and leaves the other one.
     pressExpand(harness)
     const third = await until(harness, lacks(REASONING_BODY), "closed the reasoning")
-    expect(third).toContain("+ Thought")
+    expect(third).toContain(THOUGHT_FOLDED)
     expect(third).toContain(BEYOND_THE_CAP)
     expect(third).toContain(OPEN)
   } finally {
@@ -155,7 +159,8 @@ test("with thinking shown the reasoning has nothing to fold and the key goes to 
     // The default folds reasoning; this switches the mode to show.
     harness.command("session.toggle.thinking")
     const shown = await until(harness, holds(REASONING_BODY), "showed the reasoning")
-    expect(shown).not.toContain("+ Thought")
+    expect(shown).toContain(THOUGHT_OPEN)
+    expect(shown).not.toContain(THOUGHT_FOLDED)
 
     pressExpand(harness)
     const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
@@ -303,12 +308,12 @@ test("a reasoning that has only a title has nothing to open, so the key goes pas
   )
   try {
     const before = await until(harness, holds(FOLDED), "held the folded output")
-    expect(before).toContain("+ Thought: Planning the change")
+    expect(before).toContain("∴ Planning the change · Thought for 0s · collapsed")
 
     pressExpand(harness)
     const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
     // The reasoning is the later block, and it stayed folded: under its header there is nothing.
-    expect(opened).toContain("+ Thought: Planning the change")
+    expect(opened).toContain("∴ Planning the change · Thought for 0s · collapsed")
   } finally {
     await harness.dispose()
   }

@@ -229,10 +229,11 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     const result: PanelHint[] = []
     if (!props.input) {
       if (selectableRows().length > 1) {
-        result.push({ key: "panel.previous", label: t("panel.hint.previous") })
-        result.push({ key: "panel.next", label: t("panel.hint.next") })
+        result.push({ key: "panel.previous", also: "panel.next", label: t("panel.hint.move") })
       }
-      if (tabs().length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
+      if (tabs().length > 1) {
+        result.push({ key: "panel.tab.previous", also: "panel.tab.next", label: t("panel.hint.tab") })
+      }
       const row = selectedRow()
       if (props.onToggle && row && (checkLead(row.lead) || row.toggleLabel !== undefined)) {
         result.push({ key: "panel.toggle", label: row.toggleLabel ?? t("panel.hint.toggle") })

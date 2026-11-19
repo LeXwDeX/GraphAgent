@@ -3,6 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
+import { t } from "../../../src/i18n"
 import { createFixture, type PerfFixture } from "../../perf/fixtures"
 import { mountHarness, type PerfHarness } from "../../perf/harness"
 
@@ -54,7 +55,7 @@ async function leaveAndReturn(fixture: PerfFixture) {
     harness.navigate({ type: "home" })
     await waitForFrameGone(harness, "Deterministic answer 23")
     // Home is the app's other route, not an empty frame.
-    expect(await captureFrame(harness)).toContain("Ask anything")
+    expect(await captureFrame(harness)).toContain(t("prompt.placeholder"))
 
     expect(() => harness.navigate({ type: "session", sessionID: fixture.session.id })).not.toThrow()
     await waitForFrame(harness, "Deterministic answer 23")
