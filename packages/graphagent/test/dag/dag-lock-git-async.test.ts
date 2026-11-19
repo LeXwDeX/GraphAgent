@@ -6,7 +6,9 @@ import { $ } from "bun"
 import { eq } from "drizzle-orm"
 import { Effect, Fiber } from "effect"
 import path from "node:path"
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import os from "node:os"
 import { Database } from "@graphagent/core/database/database"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -14,10 +16,15 @@ import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
+import type { DagEvent } from "@graphagent/schema/dag-event"
 import { Session } from "@graphagent/schema/session"
 import { Dag, parseWorkflowConfig, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
+import { DagIsolation } from "@/dag/isolation"
 import { DagLocation } from "@/dag/location"
+import { workflowArtifactsRoot } from "@/dag/runtime/output-ref"
+import { settleWorkflowWorktree } from "@/dag/runtime/worktree-completion"
 import { tmpdir } from "../fixture/fixture"
+import { makeWorkflowRow } from "./fixtures"
 import { installGitGate, withoutGit } from "./fixture/git-shim"
 import { spiedLayer, watchGit } from "./fixture/git-watch"
 
@@ -464,4 +471,222 @@ describe("replan and extend resolve node workspaces before their transaction", (
       }
     },
   )
+})
+
+describe("gitHeadAsync gives the answer of gitHead", () => {
+  it("names HEAD, and nothing without one", async () => {
+    await using repo = await tmpdir({ git: true })
+    await using unborn = await tmpdir()
+    await $`git init`.cwd(unborn.path).quiet()
+    await using plain = await tmpdir()
+    for (const directory of [repo.path, unborn.path, plain.path])
+      expect(await Effect.runPromise(DagLocation.gitHeadAsync(directory))).toBe(DagLocation.gitHead(directory))
+    expect(DagLocation.gitHead(repo.path)).toMatch(/^[0-9a-f]{40}$/)
+    expect(DagLocation.gitHead(unborn.path)).toBeUndefined()
+  })
+
+  posixIt("is undefined when git cannot be spawned", async () => {
+    await using repo = await tmpdir({ git: true })
+    await withoutGit(async () => {
+      expect(await Effect.runPromise(DagLocation.gitHeadAsync(repo.path))).toBeUndefined()
+    })
+  })
+})
+
+describe("commitWorktreeAsync gives the results of commitWorktree", () => {
+  // A pinned identity and clock make a commit a function of its tree, its parent
+  // and its message, so two copies of one repository commit the same hash.
+  const PINNED = {
+    GIT_AUTHOR_NAME: "Pinned",
+    GIT_AUTHOR_EMAIL: "pinned@example.test",
+    GIT_AUTHOR_DATE: "2026-01-02T03:04:05Z",
+    GIT_COMMITTER_NAME: "Pinned",
+    GIT_COMMITTER_EMAIL: "pinned@example.test",
+    GIT_COMMITTER_DATE: "2026-01-02T03:04:05Z",
+  }
+  const git = (directory: string, ...args: string[]) =>
+    execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim()
+
+  /** Runs `body` with the pinned identity in the environment that git inherits. */
+  const pinned = async <A>(body: () => Promise<A>) => {
+    const previous = Object.entries(PINNED).map(([key]) => [key, process.env[key]] as const)
+    Object.assign(process.env, PINNED)
+    try {
+      return await body()
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key)
+        else process.env[key] = value
+      }
+    }
+  }
+
+  /** What both runners answer on two copies of one repository after `setup`, the directory made comparable. */
+  const both = async (setup: (directory: string) => void) =>
+    pinned(async () => {
+      const original = mkdtempSync(path.join(os.tmpdir(), "graphagent-commit-a-"))
+      const copy = mkdtempSync(path.join(os.tmpdir(), "graphagent-commit-b-"))
+      try {
+        git(original, "init", "-q")
+        git(original, "config", "commit.gpgsign", "false")
+        git(original, "config", "core.fsmonitor", "false")
+        writeFileSync(path.join(original, "tracked.txt"), "one\n")
+        git(original, "add", "-A")
+        git(original, "commit", "-q", "-m", "base")
+        const baseHead = git(original, "rev-parse", "HEAD")
+        setup(original)
+        cpSync(original, copy, { recursive: true })
+        const synchronous = DagIsolation.commitWorktree(original, baseHead, "dag: test")
+        const asynchronous = await Effect.runPromise(DagIsolation.commitWorktreeAsync(copy, baseHead, "dag: test"))
+        const comparable = (result: unknown, directory: string) =>
+          JSON.parse(JSON.stringify(result).replaceAll(JSON.stringify(directory).slice(1, -1), "<dir>"))
+        expect(comparable(asynchronous, copy)).toEqual(comparable(synchronous, original))
+        return asynchronous
+      } finally {
+        rmSync(original, { recursive: true, force: true })
+        rmSync(copy, { recursive: true, force: true })
+      }
+    })
+
+  it("commits nothing for a clean tree, and carries the range of an earlier commit", async () => {
+    expect(await both(() => {})).toEqual({ ok: true })
+    expect(
+      await both((directory) => {
+        writeFileSync(path.join(directory, "tracked.txt"), "two\n")
+        git(directory, "commit", "-aq", "-m", "ahead")
+      }),
+    ).toMatchObject({ ok: true, change: { touchedPaths: ["tracked.txt"] } })
+  })
+
+  it("commits a dirty tree with text, binary, and untracked changes", async () => {
+    const result = await both((directory) => {
+      writeFileSync(path.join(directory, "tracked.txt"), "changed\n")
+      writeFileSync(path.join(directory, "untracked.txt"), "new\n")
+      writeFileSync(path.join(directory, "binary.bin"), Buffer.from([0, 1, 2, 255, 0]))
+    })
+    expect(result).toMatchObject({
+      ok: true,
+      change: {
+        touchedPaths: ["binary.bin", "tracked.txt", "untracked.txt"],
+        patch: expect.stringContaining("GIT binary patch"),
+      },
+    })
+  })
+
+  posixIt("reports the git failure that stopped the commit", async () => {
+    const result = await both((directory) => {
+      writeFileSync(path.join(directory, "tracked.txt"), "changed\n")
+      const hook = path.join(directory, ".git", "hooks", "pre-commit")
+      writeFileSync(hook, "#!/bin/sh\necho no commits today >&2\nexit 1\n")
+      chmodSync(hook, 0o755)
+    })
+    expect(result.ok).toBe(false)
+    const reason = result.ok ? "" : result.reason
+    expect(reason).toContain("git commit failed")
+    expect(reason).toContain("no commits today")
+  })
+
+  it("reports a directory that is no repository, with the reason the synchronous call gave", async () => {
+    await using plain = await tmpdir()
+    const synchronous = DagIsolation.commitWorktree(plain.path, "", "dag: test")
+    expect(await Effect.runPromise(DagIsolation.commitWorktreeAsync(plain.path, "", "dag: test"))).toEqual(synchronous)
+    expect(synchronous).toMatchObject({ ok: false, reason: expect.stringContaining("git status failed") })
+  })
+
+  posixIt("reports a git that cannot be spawned", async () => {
+    await using plain = await tmpdir()
+    await withoutGit(async () => {
+      const asynchronous = await Effect.runPromise(DagIsolation.commitWorktreeAsync(plain.path, "", "dag: test"))
+      expect(asynchronous).toMatchObject({ ok: false, reason: expect.stringContaining("git status failed") })
+    })
+  })
+})
+
+describe("workflow worktree settlement waits for git under the lock without blocking the event loop", () => {
+  const projectID = "proj-lock-git-settle"
+
+  /** Settles a failed isolated workflow under a lock that keeps the watch marker, with every git command slowed. */
+  const settle = async (dirty: boolean) => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = path.join(tmp.path, "settle-tree")
+    await $`git worktree add -b lock-git-settle ${linked}`.cwd(tmp.path).quiet()
+    const baseHead = (await $`git rev-parse HEAD`.cwd(linked).text()).trim()
+    if (dirty) writeFileSync(path.join(linked, "change.txt"), "dirty\n")
+    const config: WorkflowConfig = {
+      name: "settle",
+      isolation: "worktree",
+      worktree: { directory: linked, branch: "lock-git-settle", baseHead },
+      nodes: [],
+    }
+    const row = makeWorkflowRow({
+      id: "wf-lock-git-settle",
+      projectId: projectID,
+      status: "failed",
+      directory: tmp.path,
+      config: JSON.stringify(config),
+      worktree: null,
+    })
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- a store with the one method settlement reads
+    const store = { getWorkflow: () => Effect.succeed(row) } as unknown as DagStore.Interface
+    const published: DagEvent.WorkflowWorktree[] = []
+    const watch = watchGit()
+    const critical = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => writeFileSync(watch.marker, "")),
+        () => effect,
+        () => Effect.sync(() => rmSync(watch.marker, { force: true })),
+      )
+    const installed = await watch.install("*")
+    try {
+      const result = await measured(() =>
+        Effect.runPromise(
+          settleWorkflowWorktree({
+            dagID: row.id,
+            status: "failed",
+            config,
+            store,
+            projectID,
+            remove: () => Effect.succeed(true),
+            publish: (worktree) =>
+              Effect.sync(() => {
+                published.push(worktree)
+              }),
+            exclusive: critical,
+          }),
+        ),
+      )
+      const head = execFileSync("git", ["-C", linked, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+      return { result, published, ranUnderTheLock: watch.insideTransaction(), baseHead, linked, head }
+    } finally {
+      await installed.dispose()
+      watch.dispose()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  }
+
+  posixIt("commits a dirty worktree with timers firing, inside the critical section", async () => {
+    const { result, published, ranUnderTheLock, linked, head } = await settle(true)
+    expect(result.value).toBe("settled")
+    // status, add, commit, status, rev-parse, then the committed range twice.
+    expectUnblocked(result, 7)
+    // The shim names a command by its first word after `-C <directory>`: `-c core.quotePath=false status` is `-c`.
+    expect(ranUnderTheLock).toEqual(expect.arrayContaining(["-c", "add", "commit", "rev-parse", "diff"]))
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({
+      directory: linked,
+      branch: "lock-git-settle",
+      state: "kept",
+      touchedPaths: ["change.txt"],
+      head,
+    })
+  })
+
+  posixIt("reads the head of a clean worktree with timers firing, inside the critical section", async () => {
+    const { result, published, ranUnderTheLock, baseHead } = await settle(false)
+    expect(result.value).toBe("settled")
+    // status, rev-parse HEAD against the base, then the head for the evidence.
+    expectUnblocked(result, 3)
+    expect(ranUnderTheLock).toEqual(["-c", "rev-parse", "rev-parse"])
+    expect(published[0]).toMatchObject({ state: "kept", head: baseHead, touchedPaths: [] })
+  })
 })

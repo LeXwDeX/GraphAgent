@@ -193,6 +193,19 @@ const gitOutputAsync = Effect.fnUntraced(
 )
 
 /**
+ * #1344: `gitHead` for a caller that holds the workflow lock: the same command
+ * and the same degradation to `undefined`, waiting for git without blocking the
+ * event loop and bounded by the limits of the fingerprint's git commands (the
+ * synchronous call had none). Never fails; only an interruption gets through.
+ */
+export const gitHeadAsync = Effect.fn("DagLocation.gitHeadAsync")(function* (
+  directory: string,
+): Effect.fn.Return<string | undefined, never, AppProcess.Service> {
+  const text = (yield* gitOutputAsync(directory, ["rev-parse", "--verify", "HEAD"]))?.trim()
+  return text || undefined
+}, Effect.provide(AppProcess.defaultLayer))
+
+/**
  * #944: identity of the untracked file set, respecting ignore rules.
  * Paths, sizes, and mtimes are always included; content hashes (git
  * hash-object) are added for a bounded number of files so an editor touch
