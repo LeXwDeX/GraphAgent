@@ -168,7 +168,7 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
               FSUtil.defaultLayer,
               Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
               FileState.defaultLayer,
-              Layer.mock(LSP.Service, { touchFile: () => Effect.void }),
+              Layer.mock(LSP.Service, { touchFile: () => Effect.succeed<LSP.Diagnostic.CheckStatus>("checked") }),
               Layer.mock(Truncate.Service, {
                 output: (content) => Effect.succeed({ content, truncated: false }),
                 limits: () => Effect.succeed({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES }),

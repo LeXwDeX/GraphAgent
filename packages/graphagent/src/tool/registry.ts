@@ -67,6 +67,7 @@ import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { ProviderTransform } from "@/provider/transform"
 import { ToolJsonSchema } from "./json-schema"
+import { MCP_DEFERRED_IDS, settle } from "./mcp-deferred"
 import { MCP_RESOURCE_DEFINITIONS, MCP_RESOURCE_ORDER, type McpResourceOp } from "./mcp-resource"
 import { ROOT_ONLY_TOOLS, type DirectTool } from "./pipeline"
 import { RequestCache } from "../session/request-cache"
@@ -205,9 +206,16 @@ export type McpSource = Readonly<{
   requiresUserInteraction: boolean
   /** The key before it was shortened or made unique (#1459); only such a key has one. Its deny and ask rules apply. */
   baseKey?: string
+  /**
+   * The server is `deferred` (#1459); only such a tool has it. The entry stays for the catalog and for `mcp_call`, and
+   * the tool is not one of the model's tools.
+   */
+  deferred?: boolean
 }>
 export type McpResourceSource = Readonly<{ kind: "mcp-resource"; op: McpResourceOp; registrationID: string }>
-export type ToolSource = BuiltinSource | DirectShellSource | McpSource | McpResourceSource
+/** `mcp_describe` and `mcp_call`, which stand in for the tools of deferred servers. */
+export type McpDeferredSource = Readonly<{ kind: "mcp-deferred"; op: "describe" | "call"; registrationID: string }>
+export type ToolSource = BuiltinSource | DirectShellSource | McpSource | McpResourceSource | McpDeferredSource
 
 type ToolEntryBase = Readonly<{
   id: string
@@ -227,6 +235,7 @@ export type ToolEntry =
   | (ToolEntryBase & { source: DirectShellSource; definition: DirectTool })
   | (ToolEntryBase & { source: McpSource; tool: AITool })
   | (ToolEntryBase & { source: McpResourceSource })
+  | (ToolEntryBase & { source: McpDeferredSource })
 
 export type ResolveInput = (
   { directTool: DirectTool; model?: Provider.Model } | { directTool?: undefined; model: Provider.Model }
@@ -636,6 +645,7 @@ RequestCache.set(
             canonicalName: McpCatalog.canonicalToolName(binding),
             requiresUserInteraction: binding.requiresUserInteraction === true,
             ...(binding.baseKey === undefined ? {} : { baseKey: binding.baseKey }),
+            ...(binding.deferred === true ? { deferred: true } : {}),
           },
           effects: "unknown",
           description: item.description ?? "",
@@ -662,16 +672,19 @@ RequestCache.set(
       }
 
       const disabled = Permission.disabledTools(
-        [...entries].map(([id, entry]) => ({
-          id,
-          alias: entry.source.kind === "mcp" ? entry.source.baseKey : undefined,
-        })),
+        [
+          ...[...entries].map(([id, entry]) => ({
+            id,
+            alias: entry.source.kind === "mcp" ? entry.source.baseKey : undefined,
+          })),
+          // The deferred-tool helpers are tools too: a rule that denies them hides them, a read-only agent included.
+          ...MCP_DEFERRED_IDS.map((id) => ({ id })),
+        ],
         nativePermission,
         configuredPermission,
       )
-      const resolved = [...entries.values()].filter(
-        (entry) => input.user?.tools?.[entry.id] !== false && !disabled.has(entry.id),
-      )
+      const visible = (id: string) => input.user?.tools?.[id] !== false && !disabled.has(id)
+      const resolved = settle({ entries: entries.values(), visible, transform })
       Object.defineProperty(resolved, RESOLVE_KEY, { value: definitionsKey })
       return resolved
     })

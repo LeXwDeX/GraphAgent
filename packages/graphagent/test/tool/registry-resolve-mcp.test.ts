@@ -19,6 +19,7 @@ import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { MCP_DEFERRED_TOOLS } from "@/tool/mcp-deferred"
 import { MCP_RESOURCE_ORDER, MCP_RESOURCE_TOOLS } from "@/tool/mcp-resource"
 import { ROOT_ONLY_TOOLS, type DirectTool } from "@/tool/pipeline"
 import { ToolRegistry } from "@/tool/registry"
@@ -31,14 +32,20 @@ const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".agents")])),
 })
 
-const mcpTool = (server: string, name: string, baseKey?: string) =>
+const mcpTool = (server: string, name: string, baseKey?: string, deferred?: boolean, description?: string) =>
   McpCatalog.bindTool(
     dynamicTool({
-      description: `remote ${name}`,
+      description: description ?? `remote ${name}`,
       inputSchema: jsonSchema({ type: "object", properties: { value: { type: "string" } } }),
       execute: async () => ({ content: [] }),
     }),
-    { server, tool: name, source: "fixture", ...(baseKey === undefined ? {} : { baseKey }) },
+    {
+      server,
+      tool: name,
+      source: "fixture",
+      ...(baseKey === undefined ? {} : { baseKey }),
+      ...(deferred === true ? { deferred } : {}),
+    },
   )
 
 const resourceClient = Object.assign(new Client({ name: "fixture", version: "0" }), {
@@ -294,6 +301,259 @@ describe("tool.registry MCP resolution", () => {
       }
     }),
   )
+
+  describe("deferred servers (#1459)", () => {
+    const DESCRIBE = MCP_DEFERRED_TOOLS.describe
+    const CALL = MCP_DEFERRED_TOOLS.call
+    const LONG =
+      "A very long first sentence that keeps going and going without any stop so the line has to be cut " +
+      "x".repeat(60)
+    // Two deferred tools and one that is not, beside the suite's eager ones.
+    const withDeferred = () => ({
+      ...mcpTools,
+      zdef_remote: mcpTool("fixture", "zdef", undefined, true, "Zed does it. Then something else."),
+      adef_remote: mcpTool("fixture", "adef", undefined, true, "Alpha\ndoes it. Second line."),
+      long_remote: mcpTool("fixture", "long", undefined, true, LONG),
+      blank_remote: mcpTool("fixture", "blank", undefined, true, ""),
+    })
+    const idsOf = (entries: ReadonlyArray<{ id: string }>) => entries.map((entry) => entry.id)
+
+    it.instance("keeps deferred tools among the entries and adds the two helpers last, with a one-line catalog", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        const original = mcpTools
+        try {
+          mcpTools = withDeferred()
+          const entries = yield* registry.resolve({ model, agent: build, session: sessionInfo(directory) })
+          const ids = idsOf(entries)
+
+          // A deferred tool is still an entry, marked so; an eager one has no mark at all.
+          for (const id of ["zdef_remote", "adef_remote", "long_remote", "blank_remote"]) {
+            expect(entries.find((entry) => entry.id === id)?.source).toMatchObject({ kind: "mcp", deferred: true })
+          }
+          expect(entries.find((entry) => entry.id === "aaa_remote")?.source).not.toHaveProperty("deferred")
+
+          // The helpers come after every other entry, the resource helpers included: describe, then call.
+          expect(ids.slice(-2)).toEqual([DESCRIBE, CALL])
+          const describe = entries.find((entry) => entry.id === DESCRIBE)
+          const call = entries.find((entry) => entry.id === CALL)
+          expect(describe?.source).toEqual({
+            kind: "mcp-deferred",
+            op: "describe",
+            registrationID: `mcp-deferred:${DESCRIBE}`,
+          })
+          expect(call?.source).toEqual({ kind: "mcp-deferred", op: "call", registrationID: `mcp-deferred:${CALL}` })
+          expect(describe?.effects).toBe("read")
+          expect(call?.effects).toBe("unknown")
+          expect(call?.description).toBe("Call a deferred MCP tool by its catalog name.")
+
+          // The catalog is the description of mcp_describe: one line per deferred tool, by key, first sentence only.
+          const lines = (describe?.description ?? "").split("\n")
+          expect(lines.slice(0, 2)).toEqual([
+            "Read the input schema of deferred MCP tools before calling them with mcp_call.",
+            "Deferred tools:",
+          ])
+          expect(lines.slice(2)).toEqual([
+            "- adef_remote: Alpha",
+            "- blank_remote: (no description)",
+            `- long_remote: ${Array.from(LONG)
+              .slice(0, 120 - "- long_remote: ".length - 1)
+              .join("")}…`,
+            "- zdef_remote: Zed does it.",
+          ])
+          for (const line of lines.slice(2)) expect(Array.from(line).length).toBeLessThanOrEqual(120)
+
+          // Both helpers take an object with required fields and refuse anything else. The test model is an OpenAI one,
+          // whose schemas lose `minItems` and `maxItems` in the provider's rewrite, like every other tool's.
+          expect(describe?.jsonSchema).toMatchObject({
+            type: "object",
+            required: ["tools"],
+            additionalProperties: false,
+            properties: { tools: { type: "array", items: { type: "string" } } },
+          })
+          expect(call?.jsonSchema).toMatchObject({
+            type: "object",
+            required: ["tool"],
+            additionalProperties: false,
+            properties: { tool: { type: "string" }, arguments: { type: "object" } },
+          })
+        } finally {
+          mcpTools = original
+        }
+      }),
+    )
+
+    it.instance(
+      "puts the helpers' schemas through the provider's rewrite, and keeps their bounds where it keeps them",
+      () =>
+        Effect.gen(function* () {
+          const { registry, build, directory } = yield* setup
+          const original = mcpTools
+          const other = ProviderTest.model({
+            providerID: ProviderV2.ID.make("test"),
+            id: ModelV2.ID.make("test-model"),
+            api: { id: "test-model", url: "https://example.com", npm: "@ai-sdk/anthropic" },
+          })
+          try {
+            mcpTools = withDeferred()
+            const entries = yield* registry.resolve({ model: other, agent: build, session: sessionInfo(directory) })
+            expect(entries.find((entry) => entry.id === DESCRIBE)?.jsonSchema).toMatchObject({
+              properties: { tools: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 } },
+            })
+          } finally {
+            mcpTools = original
+          }
+        }),
+    )
+
+    it.instance("adds no helper and changes nothing while no server is deferred", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        const ids = idsOf(yield* registry.resolve({ model, agent: build, session: sessionInfo(directory) }))
+        expect(ids).not.toContain(DESCRIBE)
+        expect(ids).not.toContain(CALL)
+        // The eager tools and the resource helpers end the list, as before.
+        expect(ids.slice(-MCP_RESOURCE_ORDER.length)).toEqual(MCP_RESOURCE_ORDER.map((op) => MCP_RESOURCE_TOOLS[op]))
+      }),
+    )
+
+    it.instance("lists only the deferred tools the agent may use and the user left on", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        const original = mcpTools
+        const catalogOf = (entries: ReadonlyArray<{ id: string; description: string }>) =>
+          (entries.find((entry) => entry.id === DESCRIBE)?.description ?? "")
+            .split("\n")
+            .filter((line) => line.startsWith("- "))
+            .map((line) => line.slice(2, line.indexOf(":")))
+        try {
+          mcpTools = withDeferred()
+          const session = sessionInfo(directory)
+          // A deny hides the tool from the catalog; so does a per-message switch.
+          const denied = yield* registry.resolve({
+            model,
+            agent: build,
+            session,
+            permission: [{ permission: "zdef_remote", pattern: "*", action: "deny" }],
+          })
+          expect(catalogOf(denied)).toEqual(["adef_remote", "blank_remote", "long_remote"])
+          expect(idsOf(denied)).not.toContain("zdef_remote")
+          const switched = yield* registry.resolve({
+            model,
+            agent: build,
+            session,
+            user: { tools: { adef_remote: false, blank_remote: false, long_remote: false } },
+          })
+          expect(catalogOf(switched)).toEqual(["zdef_remote"])
+
+          // With no deferred tool left there is no catalog, so no helper.
+          const none = yield* registry.resolve({
+            model,
+            agent: build,
+            session,
+            user: { tools: { zdef_remote: false, adef_remote: false, blank_remote: false, long_remote: false } },
+          })
+          expect(idsOf(none)).not.toContain(DESCRIBE)
+          expect(idsOf(none)).not.toContain(CALL)
+        } finally {
+          mcpTools = original
+        }
+      }),
+    )
+
+    it.instance("hides both helpers when a rule or a switch removes either; the deferred entries stay", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        const original = mcpTools
+        try {
+          mcpTools = withDeferred()
+          const session = sessionInfo(directory)
+          const resolveIds = (extra: {
+            permission?: PermissionV1.Ruleset
+            user?: { tools: Record<string, boolean> }
+          }) => registry.resolve({ model, agent: build, session, ...extra }).pipe(Effect.map(idsOf))
+          const present = yield* resolveIds({})
+          expect(present).toContain(DESCRIBE)
+          expect(present).toContain(CALL)
+
+          const hiding: Array<{ permission?: PermissionV1.Ruleset; user?: { tools: Record<string, boolean> } }> = [
+            { permission: [{ permission: CALL, pattern: "*", action: "deny" }] },
+            { permission: [{ permission: DESCRIBE, pattern: "*", action: "deny" }] },
+            { permission: [{ permission: "mcp_*", pattern: "*", action: "deny" }] },
+            { user: { tools: { [DESCRIBE]: false } } },
+            { user: { tools: { [CALL]: false } } },
+          ]
+          for (const extra of hiding) {
+            const ids = yield* resolveIds(extra)
+            expect(ids).not.toContain(DESCRIBE)
+            expect(ids).not.toContain(CALL)
+            // The deferred tools themselves are untouched by a rule about the helpers.
+            expect(ids).toContain("zdef_remote")
+            expect(ids).toContain("adef_remote")
+          }
+          // An ask or an allow for the helpers hides nothing.
+          const asked = yield* resolveIds({
+            permission: [
+              { permission: CALL, pattern: "*", action: "ask" },
+              { permission: DESCRIBE, pattern: "*", action: "allow" },
+            ],
+          })
+          expect(asked).toEqual(present)
+        } finally {
+          mcpTools = original
+        }
+      }),
+    )
+
+    it.instance("hides the helpers from a read-only agent whose rules start with a deny of everything", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        const original = mcpTools
+        try {
+          mcpTools = withDeferred()
+          const entries = yield* registry.resolve({
+            model,
+            agent: {
+              ...build,
+              permission: [
+                { permission: "*", pattern: "*", action: "deny" },
+                { permission: "grep", pattern: "*", action: "allow" },
+              ],
+            },
+            session: sessionInfo(directory),
+          })
+          const ids = idsOf(entries)
+          expect(ids).toContain("grep")
+          expect(ids).not.toContain("zdef_remote")
+          expect(ids).not.toContain(DESCRIBE)
+          expect(ids).not.toContain(CALL)
+        } finally {
+          mcpTools = original
+        }
+      }),
+    )
+
+    it.instance("keeps the tools in the same order across resolutions and registration orders", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        const original = mcpTools
+        try {
+          mcpTools = withDeferred()
+          const baseline = idsOf(yield* registry.resolve({ model, agent: build, session: sessionInfo(directory) }))
+          const keys = Object.keys(mcpTools)
+          for (let attempt = 1; attempt <= 10; attempt++) {
+            const shuffled = shuffledKeys(keys, attempt * 7919)
+            const source = mcpTools
+            mcpTools = Object.fromEntries(shuffled.map((key) => [key, source[key]]))
+            const ids = idsOf(yield* registry.resolve({ model, agent: build, session: sessionInfo(directory) }))
+            expect(ids).toEqual(baseline)
+          }
+        } finally {
+          mcpTools = original
+        }
+      }),
+    )
+  })
 
   it.instance("drops root-only tools in child sessions", () =>
     Effect.gen(function* () {

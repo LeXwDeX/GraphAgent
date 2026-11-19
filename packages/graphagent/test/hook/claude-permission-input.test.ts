@@ -42,7 +42,10 @@ const toolDependencies = Layer.mergeAll(
   EventV2Bridge.defaultLayer,
   FileState.defaultLayer,
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
-  Layer.mock(LSP.Service, { touchFile: () => Effect.void, diagnostics: () => Effect.succeed({}) }),
+  Layer.mock(LSP.Service, {
+    touchFile: () => Effect.succeed<LSP.Diagnostic.CheckStatus>("checked"),
+    diagnostics: () => Effect.succeed({}),
+  }),
   Layer.mock(Format.Service, { file: () => Effect.succeed(false) }),
   Layer.mock(Agent.Service, {
     permissionPolicy: () => Effect.succeed({ native: [], rules: [] }),

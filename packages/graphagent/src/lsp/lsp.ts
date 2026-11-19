@@ -2,6 +2,7 @@ import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import * as LSPClient from "./client"
+import type { CheckStatus } from "./diagnostic"
 import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
 import * as LSPServer from "./server"
@@ -111,6 +112,8 @@ const filterExperimentalServers = (servers: Record<string, LSPServer.Info>, flag
 type LocInput = { file: string; line: number; character: number }
 
 interface State {
+  /** False when `lsp` is unset or off: no server is looked for or started. */
+  enabled: boolean
   clients: LSPClient.Info[]
   servers: Record<string, LSPServer.Info>
   broken: Set<string>
@@ -121,7 +124,11 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
-  readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
+  /**
+   * Opens the file on its language servers and, when `diagnostics` is given, waits for their answer. The result says
+   * whether the file was checked, and when it was not, why.
+   */
+  readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<CheckStatus>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
@@ -190,6 +197,7 @@ export const layer = Layer.effect(
         }
 
         const s: State = {
+          enabled: Boolean(cfg.lsp),
           clients: [],
           servers,
           broken: new Set(),
@@ -356,15 +364,22 @@ export const layer = Layer.effect(
       })
     })
 
-    const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
+    const touchFile = Effect.fn("LSP.touchFile")(function* (
+      input: string,
+      diagnostics?: "document" | "full",
+    ): Effect.fn.Return<CheckStatus> {
       yield* Effect.logInfo("touching file", { file: input })
+      yield* ready()
+      const s = yield* InstanceState.get(state)
+      if (!s.enabled) return "disabled"
       const clients = yield* getClients(input)
-      yield* Effect.promise(() =>
+      if (clients.length === 0) return "no_server"
+      const answered = yield* Effect.promise(() =>
         Promise.all(
           clients.map(async (client) => {
             const after = Date.now()
             const version = await client.notify.open({ path: input })
-            if (!diagnostics) return
+            if (!diagnostics) return true
             return client.waitForDiagnostics({
               path: input,
               version,
@@ -372,8 +387,11 @@ export const layer = Layer.effect(
               after,
             })
           }),
-        ).catch(() => {}),
+        ).catch(() => undefined),
       )
+      // A server that could not open the file did not check it, the same as no server at all.
+      if (!answered) return "no_server"
+      return answered.every(Boolean) ? "checked" : "timed_out"
     })
 
     const diagnostics = Effect.fn("LSP.diagnostics")(function* () {

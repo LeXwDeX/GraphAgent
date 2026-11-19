@@ -1726,12 +1726,15 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
   }
   */
 
-  if (model.api.npm === "@ai-sdk/openai" || model.api.npm === "@ai-sdk/azure") {
+  // The downgrades come from the model profile; they run in this order whatever the order of the list.
+  const fixes = ProviderProfile.profileOf(model).schemaFixes
+
+  if (fixes.includes("openai")) {
     schema = sanitizeOpenAISchema(schema) as JSONSchema7
     // Codex also applies lossy compaction above 4 KB; defer that until GraphAgent needs the same schema budget.
   }
 
-  if (model.providerID === "moonshotai" || model.api.id.toLowerCase().includes("kimi")) {
+  if (fixes.includes("moonshot")) {
     const sanitizeMoonshot = (obj: unknown): unknown => {
       if (obj === null || typeof obj !== "object") return obj
       if (Array.isArray(obj)) return obj.map(sanitizeMoonshot)
@@ -1750,7 +1753,7 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
   }
 
   // Convert integer enums to string enums for Google/Gemini
-  if (model.providerID === "google" || model.api.id.includes("gemini")) {
+  if (fixes.includes("gemini")) {
     const isPlainObject = (node: unknown): node is Record<string, any> =>
       typeof node === "object" && node !== null && !Array.isArray(node)
     const hasCombiner = (node: unknown) =>

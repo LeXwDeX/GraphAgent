@@ -496,6 +496,7 @@ export async function create(input: {
     })
   }
 
+  /** Whether the server answered for the file within the wait: false means the wait ran out with no diagnostics. */
   async function waitForDocumentDiagnostics(request: { path: string; version: number; after?: number }) {
     const startedAt = request.after ?? Date.now()
     const pushWait = waitForFreshPush({
@@ -507,17 +508,19 @@ export async function create(input: {
 
     while (Date.now() - startedAt < DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS) {
       const result = await requestDocumentDiagnostics(request.path)
-      if (result.matched) return
+      if (result.matched) return true
       const remaining = DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
-      if (remaining <= 0) return
+      if (remaining <= 0) return false
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
       ])
-      if (next !== "registration") return
+      if (next !== "registration") return next === "push"
     }
+    return false
   }
 
+  /** Same answer as the document wait, for a wait that also takes workspace diagnostics. */
   async function waitForFullDiagnostics(request: { path: string; version: number; after?: number }) {
     const startedAt = request.after ?? Date.now()
     const pushWait = waitForFreshPush({
@@ -529,15 +532,16 @@ export async function create(input: {
 
     while (Date.now() - startedAt < DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS) {
       const result = await requestFullDiagnostics(request.path)
-      if (result.handled || result.matched) return
+      if (result.handled || result.matched) return true
       const remaining = DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
-      if (remaining <= 0) return
+      if (remaining <= 0) return false
       const next = await Promise.race([
         pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
         waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
       ])
-      if (next !== "registration") return
+      if (next !== "registration") return next === "push"
     }
+    return false
   }
 
   // --- Public API ---
@@ -627,15 +631,15 @@ export async function create(input: {
       }
       return result
     },
+    /** True when the server answered for the file within the wait, false when the wait ran out. */
     async waitForDiagnostics(request: { path: string; version: number; mode?: "document" | "full"; after?: number }) {
       const normalizedPath = Filesystem.normalizePath(
         path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
       )
       if (request.mode === "document") {
-        await waitForDocumentDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
-        return
+        return waitForDocumentDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
       }
-      await waitForFullDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
+      return waitForFullDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
     },
     async shutdown() {
       connection.end()

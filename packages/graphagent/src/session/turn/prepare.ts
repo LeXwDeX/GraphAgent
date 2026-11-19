@@ -60,9 +60,11 @@ import { RuntimeContext } from "../runtime-context"
 import { MAX_STEPS_PROMPT } from "../max-steps"
 import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
 import { SystemSections } from "./system-sections"
+import { Overhead } from "./overhead"
 import { TaskTool, type TaskOrigin, type TaskPromptOps } from "@/tool/task"
 import { decodeDataUrl } from "@/util/data-url"
 import { estimateOverhead } from "../overflow"
+import { LLMRequestPrep } from "../llm/request"
 import type { Handle as ProcessorHandle } from "../processor"
 import type { ToolBatch as HookToolBatchState } from "@/hook/tool-batch"
 import type { Interface, PromptError, PromptInput, SetModelInput } from "../prompt"
@@ -527,7 +529,7 @@ function rememberRequestPrefix(
       permission: session.permission,
       nativePermission: processInput.nativePermission,
       prefixTokens: estimateOverhead({
-        system: [...prefixSystem, ...(lastUser.system ? [lastUser.system] : [])],
+        system: LLMRequestPrep.requestSystem(processInput),
         tools: processInput.tools,
         toolsJson,
       }),
@@ -1788,7 +1790,6 @@ export function makePrepare(deps: PrepareDeps) {
       identity,
       agentSnapshot,
       prepareStage,
-      requestOverheads: requestOverheadBySession,
       runtimeContexts: runtimeContextBySession,
       onStructured,
     } = input
@@ -1942,16 +1943,7 @@ export function makePrepare(deps: PrepareDeps) {
       legacyToolsDisabled || lastUser.format?.type === "json_schema"
         ? undefined
         : SessionTools.serializedFragment(processInput.tools)
-    // Record what this request carries besides its messages. The next limit check runs before the
-    // next request is prepared, when system text and tool schemas are not available yet.
-    requestOverheadBySession.set(
-      sessionID,
-      estimateOverhead({
-        system: [...processInput.system, ...runtime.ledger.map((entry) => entry.content)],
-        tools: processInput.tools,
-        toolsJson,
-      }),
-    )
+    yield* Overhead.record(input, { processInput, toolsJson, ledger: runtime.ledger })
     rememberRequestPrefix(input, { directory: ctx.directory, processInput, toolsJson })
     return { processInput }
   })

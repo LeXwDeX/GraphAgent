@@ -13,6 +13,7 @@ import { InvalidToolInputError, streamText, wrapLanguageModel, type ModelMessage
 import { type LLMEvent } from "@graphagent/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
 import type { LLMClientService } from "@graphagent/llm/route"
+import { ProviderProfile } from "@/provider/profile"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
@@ -689,7 +690,7 @@ const live: Layer.Layer<
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
-            const state = LLMAISDK.adapterState()
+            const state = LLMAISDK.adapterState(ProviderProfile.profileOf(input.model).finishReasons)
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(

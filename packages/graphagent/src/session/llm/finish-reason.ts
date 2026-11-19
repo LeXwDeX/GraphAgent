@@ -26,9 +26,17 @@ export const FINISH_RULES: Readonly<Record<string, FinishTarget>> = {
   model_context_window_exceeded: "context_overflow",
 }
 
-/** Exact match on the raw value, independent of the provider. */
-export function ruleOf(raw: string | undefined): FinishTarget | undefined {
-  if (raw === undefined || !Object.hasOwn(FINISH_RULES, raw)) return undefined
+/**
+ * Exact match on the raw value. `overrides` is the table of the model's profile (`finishReasons`): it is read first,
+ * then `FINISH_RULES`, which holds for every provider.
+ */
+export function ruleOf(
+  raw: string | undefined,
+  overrides?: Readonly<Record<string, FinishTarget>>,
+): FinishTarget | undefined {
+  if (raw === undefined) return undefined
+  if (overrides !== undefined && Object.hasOwn(overrides, raw)) return overrides[raw]
+  if (!Object.hasOwn(FINISH_RULES, raw)) return undefined
   return FINISH_RULES[raw]
 }
 
