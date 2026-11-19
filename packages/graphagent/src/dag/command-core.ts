@@ -98,6 +98,7 @@ export interface Core extends Pick<Environment, "events" | "store" | "mailboxSer
   ) => <A, E, R>(
     body: (lock: WorkflowLock) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | DagTransact.StaleRunnerError | Cause.TimeoutError, R>
+  readonly exclusive: <A, E, R>(dagID: string, body: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly guardWorkflow: (
     dagID: string,
     target: WorkflowStatus,
@@ -158,6 +159,13 @@ export const make = (environment: Environment) =>
       (dagID: string) =>
       <A, E, R>(body: (lock: WorkflowLock) => Effect.Effect<A, E, R>) =>
         withWorkflowLock(dagID)((lock) => transact(dagID, body(lock)))
+    // The witness convention exists to type-proof internal guarded calls;
+    // external critical sections (worktree settlement) cannot hold a witness,
+    // so the timeout is folded into a defect here instead.
+    const exclusive = <A, E, R>(dagID: string, body: Effect.Effect<A, E, R>) =>
+      withWorkflowLock(dagID)(() => body).pipe(
+        Effect.catchTag("TimeoutError", (error) => Effect.die(error)),
+      )
 
     const guardWorkflow = Effect.fn("Dag.guardWorkflow")(function* (dagID: string, target: WorkflowStatus) {
       const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
@@ -228,6 +236,7 @@ export const make = (environment: Environment) =>
       withWorkflowLock,
       transact,
       command,
+      exclusive,
       guardWorkflow,
       guardWorkflowNotTerminal,
       guardNodeAttempt,

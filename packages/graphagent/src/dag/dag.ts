@@ -476,7 +476,7 @@ export const layer = Layer.effect(
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
     const transactService = yield* DagTransact.Service
     const core = yield* DagCommandCore.make({ events, store, mailboxService, transactService })
-    const { withMailbox, withWorkflowLock, command } = core
+    const { withMailbox, withWorkflowLock, command, exclusive } = core
 
     const { create } = yield* DagWorkflowCreate.make(core)
 
@@ -539,13 +539,7 @@ export const layer = Layer.effect(
           ),
         ),
       settleCompletion: (dagID, options) => command(dagID)((lock) => settleCompletion(lock, dagID, options)),
-      // The witness convention exists to type-proof internal guarded calls;
-      // external critical sections (worktree settlement) cannot hold a witness,
-      // so the timeout is folded into a defect here instead.
-      exclusive: (dagID, body) =>
-        withWorkflowLock(dagID)(() => body).pipe(
-          Effect.catchTag("TimeoutError", (error) => Effect.die(error)),
-        ),
+      exclusive,
       replan: (dagID, fragment) =>
         command(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
       extend: (dagID, nodes, fence, options) =>
