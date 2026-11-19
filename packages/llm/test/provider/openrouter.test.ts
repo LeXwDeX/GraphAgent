@@ -53,4 +53,22 @@ describe("OpenRouter", () => {
       })
     }),
   )
+
+  // The shared Chat lowering now reads `providerOptions.openai.promptCacheKey`; OpenRouter's own key still wins.
+  it.effect("prefers the OpenRouter prompt cache key over the OpenAI one", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model: OpenRouter.configure({ apiKey: "test-key" }).model("openai/gpt-4o-mini"),
+          prompt: "cache me",
+          providerOptions: {
+            openai: { promptCacheKey: "openai_key" },
+            openrouter: { promptCacheKey: "openrouter_key" },
+          },
+        }),
+      )
+
+      expect(prepared.body).toMatchObject({ prompt_cache_key: "openrouter_key" })
+    }),
+  )
 })
