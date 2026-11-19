@@ -13785,8 +13785,7 @@
                 "interleaved": {
                   "anyOf": [
                     {
-                      "type": "boolean",
-                      "enum": [true]
+                      "type": "boolean"
                     },
                     {
                       "type": "object",
@@ -13799,7 +13798,8 @@
                       "required": ["field"],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "description": "How earlier reasoning is sent back inside assistant messages. An object names the message field it goes under; false sends no such field, which also turns off the field DeepSeek models on OpenAI-compatible endpoints get by default."
                 },
                 "cost": {
                   "type": "object",

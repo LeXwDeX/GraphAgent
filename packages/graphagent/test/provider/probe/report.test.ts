@@ -107,8 +107,8 @@ describe("ProbeReport.snippet", () => {
     }
   })
 
-  // The configuration has no `interleaved: false` (it takes `true` or `{ field }`), so a rejected replay can only
-  // say `replay: none`; writing `false` would make the pasted snippet fail to load.
+  // The configuration accepts `interleaved: false`, but the snippet only reports what the endpoint answered: a rejected
+  // replay says `replay: none` and leaves the model's own `interleaved` alone.
   test("only a required replay writes interleaved, and never interleaved: false", () => {
     const others: ProbeFindings.Findings["replay"][] = ["accepted", "rejected", "inconclusive", "failed", "skipped"]
     for (const value of others) {

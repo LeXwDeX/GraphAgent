@@ -2417,6 +2417,48 @@ describe("ProviderTransform.message - DeepSeek reasoning content", () => {
     expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBe("Let me think about this...")
   })
 
+  test("a DeepSeek model configured with interleaved false sends no reasoning_content field", () => {
+    const msgs: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "Let me think about this..." },
+          { type: "tool-call", toolCallId: "test", toolName: "bash", input: { command: "echo hello" } },
+        ],
+      },
+    ]
+    const deepseek = (interleaved: Provider.Model["capabilities"]["interleaved"]): Provider.Model => ({
+      id: ModelV2.ID.make("deepseek-r1"),
+      providerID: ProviderV2.ID.make("custom"),
+      api: { id: "deepseek-r1", url: "https://api.custom.com/v1", npm: "@ai-sdk/openai-compatible" },
+      name: "DeepSeek R1",
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: false,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved,
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 128000, output: 8192 },
+      status: "active",
+      options: {},
+      headers: {},
+      release_date: "2025-01-20",
+    })
+
+    const field = ProviderTransform.message(msgs, deepseek({ field: "reasoning_content" }), {})
+    expect(field[0].providerOptions?.openaiCompatible?.reasoning_content).toBe("Let me think about this...")
+
+    const off = ProviderTransform.message(msgs, deepseek(false), {})
+    expect(off).toHaveLength(1)
+    expect(off[0].providerOptions?.openaiCompatible).toBeUndefined()
+    // Without the field the reasoning part stays where it was, in the content.
+    expect(off[0].content).toEqual(msgs[0].content)
+  })
+
   test("Non-DeepSeek providers leave reasoning content unchanged", () => {
     const msgs = [
       {

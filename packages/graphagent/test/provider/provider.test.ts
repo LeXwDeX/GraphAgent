@@ -312,6 +312,35 @@ it.instance(
 )
 
 it.instance(
+  "configured interleaved false switches the DeepSeek default off, and true stays a plain flag",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const provider = providers[ProviderV2.ID.make("custom-provider")]
+    expect(provider.models["deepseek-r1"].capabilities.interleaved).toBe(false)
+    expect(provider.models["deepseek-flag"].capabilities.interleaved).toBe(true)
+    // A model that names no interleaved keeps the default of its own id.
+    expect(provider.models["deepseek-chat"].capabilities.interleaved).toEqual({ field: "reasoning_content" })
+  }),
+  {
+    config: {
+      provider: {
+        "custom-provider": {
+          name: "Custom Provider",
+          npm: "@ai-sdk/openai-compatible",
+          api: "https://api.custom.com/v1",
+          models: {
+            "deepseek-r1": { name: "DeepSeek R1", interleaved: false },
+            "deepseek-flag": { name: "DeepSeek Flag", interleaved: true },
+            "deepseek-chat": { name: "DeepSeek Chat" },
+          },
+          options: { apiKey: "custom-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
   "env variable takes precedence, config merges options",
   Effect.gen(function* () {
     yield* setProcessEnv("ANTHROPIC_API_KEY", "env-api-key")
