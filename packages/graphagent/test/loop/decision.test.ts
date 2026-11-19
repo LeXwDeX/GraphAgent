@@ -10,6 +10,7 @@ import { intent, progress } from "./fixture"
 
 const boundary = (overrides: Partial<LoopHost.Boundary> = {}): LoopHost.Boundary => ({
   message: "msg_2",
+  endedAt: 1_000,
   turn: { type: "completed" },
   humanTurn: false,
   userRejected: false,
@@ -61,6 +62,28 @@ describe("LoopDecision failure chain", () => {
       boundary: "msg_7",
     })
     expect(LoopDecision.recoveryAfter(chain, { type: "retry" }, boundary({ message: undefined }), 0).boundary).toBe("")
+  })
+})
+
+describe("LoopDecision older boundaries", () => {
+  const origin = { message_id: "msg_5", created_at: 10_000 }
+
+  test("a closing message that is not newer than the loop's first message is an older boundary", () => {
+    expect(LoopDecision.precedesLoop(origin, boundary({ message: "msg_4" }))).toBe(true)
+    expect(LoopDecision.precedesLoop(origin, boundary({ message: "msg_5" }))).toBe(true)
+    expect(LoopDecision.precedesLoop(origin, boundary({ message: "msg_6" }))).toBe(false)
+  })
+
+  test("a turn that left no message is told by when it ended: before the loop began it is older, from then on it is the loop's", () => {
+    expect(LoopDecision.precedesLoop(origin, boundary({ message: undefined, endedAt: 9_999 }))).toBe(true)
+    expect(LoopDecision.precedesLoop(origin, boundary({ message: undefined, endedAt: 10_000 }))).toBe(false)
+    expect(LoopDecision.precedesLoop(origin, boundary({ message: undefined, endedAt: 20_000 }))).toBe(false)
+  })
+
+  test("a migrated loop has no first message and holds no boundary back", () => {
+    const migrated = { created_at: 10_000 }
+    expect(LoopDecision.precedesLoop(migrated, boundary({ message: "msg_1" }))).toBe(false)
+    expect(LoopDecision.precedesLoop(migrated, boundary({ message: undefined, endedAt: 1 }))).toBe(false)
   })
 })
 

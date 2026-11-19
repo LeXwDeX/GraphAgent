@@ -31,13 +31,18 @@ export class FakeSession {
   /** The accepted ones. */
   readonly sent: LoopHost.Request[] = []
   nudges = 0
-  waitable: LoopState.Wait | undefined
+  /** What a running watch or task would register as, or a function of the clock like the real host's deadline rule. */
+  waitable: LoopState.Wait | ((now: number) => LoopState.Wait | undefined) | undefined
+  /** How often the runtime asked for it. */
+  waitableCalls = 0
   /** Waits whose object is gone, by `wait_id`, with the reason. */
   readonly gone = new Map<string, string>()
   /** The answer to the next dispatch, without running `commit`. */
   answer: LoopHost.Dispatched | undefined
   /** Makes the next dispatch die. */
   die = false
+  /** Held inside the dispatch before anything is decided, so a test can end the run while the admission is pending. */
+  gate: Effect.Effect<void> | undefined
   private counter = 0
 
   next() {
@@ -66,6 +71,7 @@ export class FakeSession {
       turn: { type: "completed" },
       humanTurn: false,
       userRejected: false,
+      endedAt: Date.now(),
       ...boundary,
     }
     return message
@@ -113,6 +119,7 @@ export class FakeHost {
       const session = this.session(sessionID)
       return Effect.gen(function* () {
         session.requests.push(request)
+        if (session.gate !== undefined) yield* session.gate
         if (session.die) return yield* Effect.die(new Error("the session write failed"))
         if (session.answer !== undefined) return session.answer
         if (!session.idle || session.preempted) return "refused" as const
@@ -129,7 +136,12 @@ export class FakeHost {
         const reason = this.session(sessionID).gone.get(wait.wait_id)
         return reason === undefined ? { alive: true as const } : { alive: false as const, reason }
       }),
-    waitable: (sessionID) => Effect.sync(() => this.session(sessionID).waitable),
+    waitable: (sessionID, now) =>
+      Effect.sync(() => {
+        const session = this.session(sessionID)
+        session.waitableCalls += 1
+        return typeof session.waitable === "function" ? session.waitable(now) : session.waitable
+      }),
     epoch: (sessionID) => Effect.sync(() => this.session(sessionID).epoch),
     nudge: (sessionID) =>
       Effect.sync(() => {

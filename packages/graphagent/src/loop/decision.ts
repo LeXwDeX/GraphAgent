@@ -30,6 +30,21 @@ export function isOkTurn(turn: TurnOutcome): boolean {
 export const keyOf = (boundary: LoopHost.Boundary) => boundary.message ?? ""
 
 /**
+ * Whether the boundary was there before the loop began. A loop just started or replaced has not run its first round,
+ * so the boundary in front of the session is an older one and says nothing about it. Message ids sort by creation:
+ * a closing message that is not newer than the message that started the loop is older. A turn that left no message
+ * has no id, and is told by when it ended. A migrated loop has no starting message and holds nothing back.
+ */
+export function precedesLoop(
+  origin: Pick<LoopState.Origin, "message_id" | "created_at">,
+  boundary: Pick<LoopHost.Boundary, "message" | "endedAt">,
+): boolean {
+  if (origin.message_id === undefined) return false
+  if (boundary.message !== undefined) return boundary.message <= origin.message_id
+  return boundary.endedAt < origin.created_at
+}
+
+/**
  * The failure chain the next decision is made with: the counts the state records, unless a turn has worked
  * since the failure the chain started at. The same boundary again (the analysis of a boundary whose turn
  * worked, failing a second time) is still the same chain.

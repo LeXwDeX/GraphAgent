@@ -23,8 +23,9 @@
  * - One decision per session runs at a time. A trigger that arrives meanwhile runs one more decision after
  *   it, so a boundary that appears while another is being finished is never missed.
  * - Every write carries the identity (`loop_id`, `revision`) the decision was made against; a write that no
- *   longer matches is dropped. A dispatch writes inside the admission of its message (`Request.commit`), so
- *   a refused message never counts a round.
+ *   longer matches is dropped. A dispatch or a wake writes inside the admission of its message
+ *   (`Request.commit`), so a refused message never counts a round, and a process that dies before the
+ *   admission leaves the loop as it was.
  * - An analysis commits only if the loop and the boundary are still the ones it started at. A discarded
  *   result re-triggers the boundary through the host at once.
  * - A human message never pauses the loop. It waits for its reply (`Observation.preempted`), and the
@@ -107,8 +108,11 @@ export interface Interface {
   readonly resume: (sessionID: SessionID, input?: ResumeInput) => Effect.Effect<Resumed, never, Scope.Scope>
   /**
    * An event for the object a waiting loop waits for. Counts a round, ends the wait and, unless
-   * `evaluate` is `false`, starts a wake turn; an exhausted round budget stops the loop instead. Resolves to
-   * whether the event matched the wait.
+   * `evaluate` is `false`, starts a wake turn, all in the admission of the turn's message; an exhausted
+   * round budget stops the loop instead. A wake the session refuses (a turn is running, a human message is
+   * waiting for its reply) changes nothing: the loop keeps waiting, and the next decision finds the object over
+   * (`LoopHost.health`) and reviews it, or the object's next event wakes it again. Resolves to whether the
+   * event matched the wait.
    */
   readonly wake: (
     sessionID: SessionID,
@@ -195,12 +199,6 @@ export const layer = Layer.effect(
     const masked = new Set<SessionID>()
 
     const abortAnalysis = (sessionID: SessionID) => Effect.sync(() => works.get(sessionID)?.analysis?.abort())
-
-    /** A write that holds only while the loop is still the revision the caller saw. */
-    const unchanged = (sessionID: SessionID, state: LoopState.Info) =>
-      loops.load(sessionID).pipe(
-        Effect.map((current) => current !== undefined && current.loop_id === state.loop_id && current.revision === state.revision),
-      )
 
     // ── stopping ────────────────────────────────────────────────
 
@@ -508,13 +506,13 @@ export const layer = Layer.effect(
 
     /**
      * A waiting loop with `probe_at` decides nothing but this. A turn that worked since the failure ends the
-     * chain and returns the loop to an ordinary boundary; one that failed leaves the plan as it is, and
-     * spends no probe. When the probe is due it redoes the failed step without asking `evaluate`.
+     * chain and returns the loop to an ordinary boundary. One that failed leaves the plan as it is, spends no
+     * probe and does not cancel one: the probe is still due at `probe_at`, and then redoes the failed step
+     * without asking `evaluate`, at the latest boundary, whichever turn that was.
      */
     const probe = Effect.fnUntraced(function* (ctx: Ctx, recovery: LoopState.Recovery & { readonly probe_at: number }) {
       const { sessionID, state, boundary } = ctx
-      if (LoopDecision.keyOf(boundary) !== recovery.boundary) {
-        if (!LoopDecision.isOkTurn(boundary.turn)) return undefined satisfies Next
+      if (LoopDecision.keyOf(boundary) !== recovery.boundary && LoopDecision.isOkTurn(boundary.turn)) {
         const active = yield* loops.update(sessionID, LoopState.expected(state), { status: "active", recovery: undefined })
         return active === undefined ? (undefined satisfies Next) : ({ kind: "retry" } satisfies Next)
       }
@@ -523,8 +521,10 @@ export const layer = Layer.effect(
       const active = yield* loops.update(sessionID, LoopState.expected(state), { status: "active", recovery: next })
       if (active === undefined) return undefined satisfies Next
       const woken = { ...ctx, state: active }
-      // The step that failed was the round when its turn ended on an error, and the analysis otherwise.
-      return boundary.turn.type === "error" ? yield* redispatch(woken, next, false) : yield* analyze(woken)
+      // The step that failed was the round when its turn ended on an error or left nothing to analyse; else the analysis.
+      return boundary.turn.type === "error" || boundary.message === undefined
+        ? yield* redispatch(woken, next, false)
+        : yield* analyze(woken)
     })
 
     // ── one decision ────────────────────────────────────────────
@@ -563,9 +563,8 @@ export const layer = Layer.effect(
       const boundary = observation.boundary
       // Only an idle boundary is decided, and not while a human message waits for its reply.
       if (!observation.idle || boundary === undefined || observation.preempted) return undefined
-      // A loop replaced just now has not run its first round: the boundary in front is the old one's.
-      const origin = state.origin.message_id
-      if (origin !== undefined && (boundary.message === undefined || boundary.message <= origin)) return undefined
+      // A loop started or replaced just now has not run its first round: the boundary in front is an older one.
+      if (LoopDecision.precedesLoop(state.origin, boundary)) return undefined
       const ctx: Ctx = { sessionID, work, epoch, now, state, observation, boundary }
 
       const recovery = state.recovery
@@ -582,7 +581,11 @@ export const layer = Layer.effect(
         const stored = yield* committed(state, boundary.message)
         // A continue whose prompt was already sent is waiting for its turn's boundary, not for another dispatch.
         if (stored?.type === "continue" && state.next_prompt === undefined) return undefined
-        result = stored
+        // A blocked analysis is carried out once. When it put the loop into a wait, the wait decides from then on:
+        // replaying the verdict would set the wait afresh at every scan, so it would never expire, and would stop a
+        // loop whose object is over for a question it has already turned into a wait, instead of reviewing it.
+        const carriedOut = stored?.type === "blocked" && state.status === "waiting" && state.wait !== undefined
+        result = carriedOut ? undefined : stored
       }
       // Only a blocked analysis asks whether something running may still unblock the work.
       const waitable = result?.type === "blocked" ? yield* host.waitable(sessionID, now) : undefined
@@ -790,7 +793,8 @@ export const layer = Layer.effect(
         yield* stopLoop(sessionID, LoopState.expected(state), { reason: "budget_exhausted" })
         return true
       }
-      const flipped = yield* loops.update(sessionID, LoopState.expected(state), {
+      // The round, the end of the wait and the prompt it replaces change in one write.
+      const flip = loops.update(sessionID, LoopState.expected(state), {
         round: state.round + 1,
         status: "active",
         wait: undefined,
@@ -799,26 +803,34 @@ export const layer = Layer.effect(
         analyzing: undefined,
         recovery: undefined,
       })
-      if (flipped === undefined) return false
-      if (options?.evaluate === false) return true
+      if (options?.evaluate === false) return (yield* flip) !== undefined
+      // The write rides in the admission of the wake's message, like a dispatched round's: a message the host refuses
+      // changes nothing, and a process that dies first leaves the loop as it was, with the prompt it still has to send.
+      let moved = false
       yield* send({
         sessionID,
-        state: flipped,
+        state,
         kind: "wake",
-        round: flipped.round,
+        round: state.round + 1,
         text: LoopMessage.render({
           kind: "wake",
-          round: flipped.round,
-          maxRounds: flipped.max_rounds,
+          round: state.round + 1,
+          maxRounds: state.max_rounds,
           note: payload ?? `${wait.source}:${wait.ref?.id ?? wait.wait_id} finished.`,
           ...(state.next_prompt !== undefined ? { prompt: state.next_prompt } : {}),
-          origin: flipped.origin.prompt,
-          ...(flipped.intent !== undefined ? { intent: flipped.intent } : {}),
+          origin: state.origin.prompt,
+          ...(state.intent !== undefined ? { intent: state.intent } : {}),
         }),
         epoch,
-        commit: unchanged(sessionID, flipped),
+        commit: flip.pipe(
+          Effect.map((written) => {
+            moved = written === undefined
+            return !moved
+          }),
+        ),
       })
-      return true
+      // The loop was written to between reading it and the admission: the event no longer matches this wait.
+      return !moved
     })
 
     const turnStarted = Effect.fn("LoopRuntime.turnStarted")(function* (sessionID: SessionID) {

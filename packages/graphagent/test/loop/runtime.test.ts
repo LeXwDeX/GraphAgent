@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { Clock, Deferred, Effect, Layer } from "effect"
+import { Clock, Deferred, Effect, Fiber, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import type { StopReason } from "@graphagent/schema/stop-reason"
@@ -500,25 +500,90 @@ describe("LoopRuntime waiting", () => {
     }),
   )
 
-  it.effect("keeps a wake that lands while a turn runs, and leaves the turn to the next boundary", () =>
+  it.effect(
+    "changes nothing for a wake the session refuses, and ends the wait at the next boundary once its object is over",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* boot()
+        yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+        yield* t.end()
+        // A user turn is running when the job finishes.
+        t.session.human("meanwhile, a question")
+        t.session.begin()
+        expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "job_1 finished")).toBe(
+          true,
+        )
+
+        // The message was never admitted, so no round was counted and the wait was not cleared.
+        let state = yield* t.current()
+        expect([state.status, state.round, state.wait?.wait_id]).toEqual(["waiting", 1, "job_1"])
+        expect(t.session.sent).toHaveLength(0)
+
+        // The user's turn ends. The job is over and so is the wait: the analysis sends the next round.
+        t.session.gone.set("job_1", "job_1 finished")
+        yield* round(t, ok(result({ next_prompt: "Use the finished job." })), { humanTurn: true })
+        state = yield* t.current()
+        expect([state.status, state.round, state.wait]).toEqual(["active", 2, undefined])
+        expect(t.session.sent).toHaveLength(1)
+        expect(t.session.sent[0].marker.kind).toBe("next")
+        expect(t.session.sent[0].text).toContain("Use the finished job.")
+      }),
+  )
+
+  it.effect("leaves a waiting loop as it was when the process dies between a wake and its admission", () =>
     Effect.gen(function* () {
       const t = yield* boot()
       yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
       yield* t.end()
-      // A user turn is running when the job finishes.
-      t.session.human("meanwhile, a question")
+      // A user turn in the waiting loop: the analysis says continue, and its prompt waits for the job to end.
+      t.session.human("also mind the changelog")
       t.session.begin()
-      expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "job_1 finished")).toBe(true)
+      t.script(ok(result({ next_prompt: "Mind the changelog." })))
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+      const before = yield* t.current()
+      expect([before.status, before.round, before.next_prompt]).toEqual(["waiting", 1, "Mind the changelog."])
 
-      let state = yield* t.current()
-      expect([state.status, state.round, state.wait]).toEqual(["active", 2, undefined])
+      // The job ends and wakes the loop; the process dies while the host has not yet admitted the message.
+      const entered = yield* Deferred.make<void>()
+      t.session.gate = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
+      const waking = yield* t.runtime
+        .wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "job_1 finished")
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(entered)
+      yield* Fiber.interrupt(waking)
+
+      const after = yield* t.current()
+      expect(after).toEqual(before)
       expect(t.session.sent).toHaveLength(0)
 
-      yield* round(t, ok(result({ next_prompt: "Use the finished job." })), { humanTurn: true })
-      state = yield* t.current()
-      expect(state.round).toBe(3)
+      // After the restart the job is over: startup decides the boundary again and sends the kept prompt.
+      t.session.gate = undefined
+      t.session.gone.set("job_1", "job_1 finished while the process was down.")
+      host.liveSessions.splice(0, host.liveSessions.length, { sessionID: t.sessionID, status: "waiting" })
+      yield* t.runtime.init("/repo")
+      yield* t.runtime.settled(t.sessionID)
+
       expect(t.session.sent).toHaveLength(1)
-      expect(t.session.sent[0].text).toContain("Use the finished job.")
+      expect(t.session.sent[0].text).toContain("Mind the changelog.")
+      expect((yield* t.current()).round).toBe(2)
+    }),
+  )
+
+  it.effect("does not take a wake for a loop that was written to between reading it and the admission", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      // A command changes the loop while the host is admitting the wake's message.
+      t.session.gate = t.loops.update(t.sessionID, undefined, { max_rounds: 30 }).pipe(Effect.asVoid)
+      expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "job_1 finished")).toBe(
+        false,
+      )
+
+      const state = yield* t.current()
+      expect([state.status, state.round, state.max_rounds, state.wait?.wait_id]).toEqual(["waiting", 1, 30, "job_1"])
+      expect(t.session.sent).toHaveLength(0)
     }),
   )
 
@@ -624,6 +689,73 @@ describe("LoopRuntime waiting", () => {
       expect(state.status).toBe("stopped")
       expect(state.stop).toMatchObject({ reason: "needs_user", detail: { code: "open_question" } })
     }),
+  )
+
+  it.effect("leaves the wait a blocked analysis created on its own deadline, and reviews it once it is over", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      // Like the real host, a wait is registered with a deadline counted from the moment it is asked for.
+      t.session.waitable = (now) =>
+        waitFor({
+          source: "watch_pr",
+          wait_id: "watch_1",
+          ref: { domain: "pr_watch", id: "watch_1" },
+          deadline: now + 60_000,
+        })
+      yield* round(t, ok(result({ verdict: "blocked", next_prompt: undefined })))
+      let state = yield* t.current()
+      expect(state.status).toBe("waiting")
+      expect(state.wait?.deadline).toBe(60_000)
+      expect(t.session.waitableCalls).toBe(1)
+
+      // The periodic scan sees the same boundary and the same wait: there is nothing to decide again.
+      yield* TestClock.adjust(30_000)
+      yield* t.tick
+      state = yield* t.current()
+      expect(state.wait?.deadline).toBe(60_000)
+      expect(t.session.waitableCalls).toBe(1)
+      expect(t.session.requests).toHaveLength(0)
+
+      // The deadline passes with the object still running: the wait ends in the review round, not in another wait.
+      yield* TestClock.adjust(30_000)
+      yield* t.tick
+      state = yield* t.current()
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].marker).toEqual({ loopID: state.loop_id, round: 2, kind: "review" })
+      expect(state.status).toBe("active")
+      expect(state.wait?.reviewed).toBe(true)
+
+      // A review that moves nothing ends the loop for the wait, as it does for any other wait.
+      yield* round(t, ok(stalled))
+      expect((yield* t.current()).stop?.reason).toBe("wait_expired")
+    }),
+  )
+
+  it.effect(
+    "reviews the wait a blocked analysis created once its object is gone, instead of stopping for the question again",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* boot()
+        t.session.waitable = waitFor({
+          source: "watch_pr",
+          wait_id: "watch_1",
+          ref: { domain: "pr_watch", id: "watch_1" },
+        })
+        yield* round(t, ok(result({ verdict: "blocked", next_prompt: undefined })))
+        expect((yield* t.current()).status).toBe("waiting")
+
+        // The watch is closed and nothing else is running.
+        t.session.waitable = undefined
+        t.session.gone.set("watch_1", "The PR watch watch_1 was closed.")
+        yield* t.tick
+
+        const state = yield* t.current()
+        expect(state.stop).toBeUndefined()
+        expect(state.status).toBe("active")
+        expect(t.session.sent).toHaveLength(1)
+        expect(t.session.sent[0].marker.kind).toBe("review")
+        expect(t.session.sent[0].text).toContain("The PR watch watch_1 was closed.")
+      }),
   )
 
   it.effect("analyses a user turn in a waiting loop and keeps waiting when it says continue", () =>
@@ -914,6 +1046,60 @@ describe("LoopRuntime failures", () => {
     }),
   )
 
+  it.effect("classifies a failed round that left no assistant message, and sends it again", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      // The turn died before it wrote a message: the boundary has none, but it is this loop's own.
+      t.session.fail(providerError(503), { message: undefined })
+      yield* t.tick
+
+      let state = yield* t.current()
+      expect(t.session.sent.map((sent) => sent.marker.kind)).toEqual(["next", "recovery"])
+      expect(t.session.sent[1].boundary).toBeUndefined()
+      expect(state.recovery).toMatchObject({ attempts: 1, boundary: "" })
+      expect(state.round).toBe(2)
+
+      // The retried turn works: its message ends the chain and the loop goes on.
+      yield* round(t, ok(result({ next_prompt: "Next after the retry." })))
+      state = yield* t.current()
+      expect(state.recovery).toBeUndefined()
+      expect(state.round).toBe(3)
+    }),
+  )
+
+  it.effect("stops on a turn that left no message and no provider error, instead of staying active", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      t.session.finish({ message: undefined, turn: { type: "error", code: "UnknownError", retryable: false } })
+      yield* t.tick
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop).toMatchObject({ reason: "internal_error", detail: { code: "UnknownError" } })
+    }),
+  )
+
+  it.effect("still ignores a boundary that left no message and ended before the loop began", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      // The old loop's last turn died without a message, before the user started a new loop.
+      t.session.finish({
+        message: undefined,
+        turn: { type: "error", code: "UnknownError", retryable: false },
+        endedAt: Date.now() - 60_000,
+      })
+      yield* t.runtime.start(t.sessionID, { prompt: "A new goal.", messageID: "msg_9999" })
+      yield* t.tick
+      yield* t.tick
+
+      const state = yield* t.current()
+      expect(state.status).toBe("active")
+      expect(state.stop).toBeUndefined()
+      expect(t.calls()).toHaveLength(1)
+      expect(t.session.requests).toHaveLength(1)
+    }),
+  )
+
   it.effect("starts a new chain for an analysis that fails after the turn recovered", () =>
     Effect.gen(function* () {
       const t = yield* atRound2
@@ -996,6 +1182,59 @@ describe("LoopRuntime failures", () => {
       expect(after.recovery).toEqual(before.recovery)
       expect(after.status).toBe("waiting")
       expect(t.session.sent).toHaveLength(sent)
+    }),
+  )
+
+  it.effect("probes when it comes due although another turn failed meanwhile", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      expect((yield* t.current()).recovery?.probe_at).toBe(60_000)
+
+      // The user writes while the provider is down, and their turn fails too: the plan stays as it is.
+      t.session.human("hello?")
+      t.session.begin()
+      t.session.fail(providerError(503), { humanTurn: true })
+      yield* t.tick
+      const sent = t.session.sent.length
+      expect((yield* t.current()).recovery?.probe_at).toBe(60_000)
+
+      // It is still due at probe_at, and it redoes the failed step.
+      yield* TestClock.adjust(59_999)
+      yield* t.tick
+      expect(t.session.sent).toHaveLength(sent)
+      yield* TestClock.adjust(1)
+      yield* t.tick
+
+      const state = yield* t.current()
+      expect(t.session.sent).toHaveLength(sent + 1)
+      expect(t.session.sent.at(-1)?.marker).toEqual({ loopID: state.loop_id, round: 2, kind: "recovery" })
+      expect(state.status).toBe("active")
+      expect(state.recovery).toMatchObject({ attempts: 2, probes: 1 })
+      expect(state.recovery?.probe_at).toBeUndefined()
+      expect(state.round).toBe(2)
+    }),
+  )
+
+  it.effect("probes by sending the round again when the latest boundary left no message to analyse", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      const sent = t.session.sent.length
+      // Another turn was cut off before it wrote anything: its boundary has no message, so there is nothing to analyse there.
+      t.session.finish({ message: undefined, turn: { type: "cancelled", reason: undefined } })
+      yield* TestClock.adjust(60_000)
+      yield* t.tick
+
+      expect(t.session.sent).toHaveLength(sent + 1)
+      expect(t.session.sent.at(-1)?.marker.kind).toBe("recovery")
+      expect((yield* t.current()).status).toBe("active")
     }),
   )
 

@@ -34,10 +34,24 @@ export interface Marker {
 
 /** How the turn that closed the latest boundary ended, as the session recorded it. */
 export interface Boundary {
-  /** The closing assistant message; a compaction summary is never one. Absent when the turn left none. */
+  /**
+   * The closing assistant message; a compaction summary is never one. Absent when the turn left none, because it
+   * ended before it wrote one.
+   */
   readonly message?: string
+  /**
+   * When the turn ended, in epoch milliseconds on the clock that stamps `LoopState`'s `origin.created_at`. A turn
+   * that left no message has no id to put in order with the loop's first message, so this is what tells it from
+   * the boundary that was in front of the loop before it began: one that ended earlier is that boundary, and says
+   * nothing about the loop. Every boundary has it, whether it has a closing message or not.
+   */
+  readonly endedAt: number
   readonly turn: TurnOutcome
-  /** The error the closing assistant message carries, for `StopCondition.failureOf`. Absent for a defect. */
+  /**
+   * The error the closing assistant message carries, for `StopCondition.failureOf`; for a turn that left no
+   * message, the one the host recorded for it. Absent for a defect, and then a failed turn stops the loop
+   * (`internal_error`) instead of being retried.
+   */
   readonly error?: { readonly error: SessionRetry.Err; readonly provider: string }
   /** A human message started the turn. A human message merged into a running automatic turn does not make it one. */
   readonly humanTurn: boolean
@@ -84,7 +98,7 @@ export interface Request {
   /**
    * Runs inside the admission, once, right before the message is committed, and settles it: `false` refuses
    * the admission and nothing is written. The state write that counts the round goes here, so a round and its
-   * message commit together or not at all.
+   * message commit together or not at all. That holds for every message the loop starts, a wake's included.
    */
   readonly commit: Effect.Effect<boolean>
 }
@@ -106,7 +120,11 @@ export interface Interface {
   readonly observe: (sessionID: SessionID, query: Query) => Effect.Effect<Observation>
   /** Admits one loop message and starts its turn. Defects propagate: the runtime stops the loop on them. */
   readonly dispatch: (sessionID: SessionID, request: Request) => Effect.Effect<Dispatched>
-  /** Whether the object `wait` names is still alive. A wait without a reference is. */
+  /**
+   * Whether the object `wait` names is still alive. A wait without a reference is. An object that has finished is
+   * not: a wake the session refused (a turn is running) leaves its wait in place, and the next decision finds the
+   * object over and reviews it.
+   */
   readonly health: (sessionID: SessionID, wait: LoopState.Wait) => Effect.Effect<Health>
   /**
    * A running PR watch (first) or background task (the latest registered) that may still unblock the work,
