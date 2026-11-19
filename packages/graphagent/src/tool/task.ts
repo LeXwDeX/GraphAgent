@@ -4,6 +4,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundQueue } from "@/background/queue"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DELEGATION_CRITERIA } from "@graphagent/core/plugin/delegation-criteria"
 import { Session } from "@/session/session"
 import { SessionRole } from "@/session/role"
 import { SessionID, MessageID } from "../session/schema"
@@ -88,6 +89,8 @@ function taskOriginOf(extra: { readonly [key: string]: unknown } | undefined): T
 }
 
 const id = "task"
+// task.txt carries `{{delegation_criteria}}`; the tiers are defined once in delegation-criteria.ts (#1454).
+const TASK_DESCRIPTION = DESCRIPTION.replace("{{delegation_criteria}}", () => DELEGATION_CRITERIA)
 const CANCEL_DESCRIPTION = [
   'Cancellation: call with action="cancel" and the background task_id to stop one of this session\'s background tasks.',
   "Only background tasks can be cancelled this way; a foreground task is cancelled from the parent session, and a task from another session is refused.",
@@ -1335,7 +1338,7 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: [DESCRIPTION, CANCEL_DESCRIPTION, READ_DESCRIPTION].join("\n\n"),
+      description: [TASK_DESCRIPTION, CANCEL_DESCRIPTION, READ_DESCRIPTION].join("\n\n"),
       effects: "unknown",
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,

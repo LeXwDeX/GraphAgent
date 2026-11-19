@@ -109,6 +109,15 @@ const SKIPPED_LINE =
   "[skipped: 1 matching line over 64 KB not shown. Preview them with the shell tool: rg -n -M 200 --max-columns-preview -e <pattern> <path>]"
 
 describe("tool.grep", () => {
+  // #1454: a subagent reads this description and has no `task` tool, so it is not told to delegate.
+  it.effect("description names no delegation", () =>
+    Effect.gen(function* () {
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      expect(grep.description).not.toMatch(/delegate/i)
+    }),
+  )
+
   rooted.live("basic search", () =>
     Effect.gen(function* () {
       const info = yield* GrepTool

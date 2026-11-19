@@ -11,6 +11,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Ripgrep } from "@graphagent/core/ripgrep"
+import { DELEGATION_CRITERIA } from "@graphagent/core/plugin/delegation-criteria"
 import { Session } from "@/session/session"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -433,6 +434,10 @@ describe("tool.task", () => {
         const second = yield* get()
 
         expect(first).toBe(second)
+
+        // #1454: the three tiers are the shared constant, inlined once; the placeholder never reaches the model.
+        expect(first.split(DELEGATION_CRITERIA)).toHaveLength(2)
+        expect(first).not.toContain("{{delegation_criteria}}")
 
         const alpha = first.indexOf("- alpha: Alpha agent")
         const explore = first.indexOf("- explore:")

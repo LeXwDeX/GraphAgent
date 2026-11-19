@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { BUILTIN_SKILLS } from "@/skill/builtin"
+import { DELEGATION_CRITERIA } from "@graphagent/core/plugin/delegation-criteria"
 
 // The dag-* skills replaced the removed workflow guide topics. These tests pin
 // the behavioral contracts that used to live in workflow.md,
@@ -446,10 +447,20 @@ describe("DAG mode guidance", () => {
     expect(auto).toContain("## DAG mode")
     expect(auto).toContain("a substantive request defaults to orchestration")
     expect(auto).toContain("`/dag-auto` always orchestrates")
-    expect(auto).toContain("the user asked to work directly for this request")
+    // The exceptions to the default belong to the `dag_mode` block (#1031); the skill does not repeat them (#1454).
+    expect(auto).not.toContain("Work directly only for")
     expect(auto).toContain("When the block says OFF or is absent")
     expect(auto).not.toContain("If orchestration adds little value")
     expect(auto).not.toContain("offer direct execution")
+  })
+
+  test("dag-auto takes its delegation criteria from the shared constant, once, under the shape heading (#1454)", () => {
+    const raw = content("dag-auto")
+    expect(raw.split(DELEGATION_CRITERIA)).toHaveLength(2)
+    expect(raw.indexOf("## Choose a useful shape")).toBeLessThan(raw.indexOf(DELEGATION_CRITERIA))
+    expect(raw.indexOf(DELEGATION_CRITERIA)).toBeLessThan(raw.indexOf("Saved workflows are optional references"))
+    // The placeholder is replaced at build time; no skill ships it.
+    for (const name of DAG_SKILLS) expect(content(name)).not.toContain("{{delegation_criteria}}")
   })
 
   test("dag-policy conditions its economy guidance on the mode", () => {

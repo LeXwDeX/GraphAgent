@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { JSONSchema7 } from "@ai-sdk/provider"
+import type { ModelProfile } from "@graphagent/core/model-profile"
 import { Ajv } from "@modelcontextprotocol/client/validators/ajv"
 import type { ToolExecutionOptions } from "ai"
+import { InvalidTool } from "./invalid"
 import type { ToolEntry } from "./registry"
 import { ToolError } from "./tool-error"
 
@@ -211,24 +213,92 @@ export function makeChecker(): (schema: JSONSchema7, value: unknown) => string |
 
 type McpEntry = Extract<ToolEntry, { source: { kind: "mcp" } }>
 
-const isDeferred = (entry: ToolEntry): entry is McpEntry =>
-  entry.source.kind === "mcp" && entry.source.deferred === true
+const isMcp = (entry: ToolEntry): entry is McpEntry => entry.source.kind === "mcp"
+const isDeferred = (entry: ToolEntry): entry is McpEntry => isMcp(entry) && entry.source.deferred === true
+const isLive = (entry: ToolEntry): entry is McpEntry => isMcp(entry) && entry.source.deferred !== true
+
+/** The same tool, out of the tool list and in the catalog. */
+const defer = (entry: McpEntry): McpEntry => ({ ...entry, source: { ...entry.source, deferred: true } })
+
+const byKey = (left: ToolEntry, right: ToolEntry) => left.id.localeCompare(right.id)
+
+/** The limits a model's profile puts on the tools it is sent. Each is checked only when it is declared. */
+export type ToolLimits = ModelProfile["toolLimits"]
+
+/** How many MCP tools `settle` moved into the catalog for a limit of the model: by the count of tools, by a name. */
+export type Moved = Readonly<{ byCount: number; byName: number }>
+
+/** A pattern as a `RegExp`; one that is absent or does not compile is no pattern. */
+function patternOf(source: string | undefined): RegExp | undefined {
+  if (source === undefined) return undefined
+  try {
+    return new RegExp(source)
+  } catch {
+    return undefined
+  }
+}
 
 /**
- * The entries a request resolves to. The ones `visible` stay, in order, the deferred MCP tools among them: the
- * pipeline needs them to run a call through `mcp_call`, and the model never sees them as tools. While at least one
- * deferred tool is left and both helper names are visible (a rule or a switch can hide either), the two helpers
- * follow, and their description is the catalog of those tools by key.
+ * The entries with the MCP tools that a limit of the model leaves no room for moved into the catalog. First by name:
+ * a tool whose key is longer than `nameMaxLength`, or does not match `namePattern`, moves. Then by count: the model
+ * is sent the tools that are neither MCP tools nor `invalid` (which no request carries), the MCP tools that stay, and
+ * the two helpers while there is a catalog. Over `maxTools`, only as many MCP tools stay as the limit leaves room for
+ * after the others, the first by key, and the rest move.
+ */
+function fit(kept: ToolEntry[], limits: ToolLimits): { entries: ToolEntry[]; moved: Moved } {
+  const longest = limits.nameMaxLength
+  const pattern = patternOf(limits.namePattern)
+  let byName = 0
+  const named = kept.map((entry) => {
+    if (!isLive(entry)) return entry
+    if ((longest === undefined || entry.id.length <= longest) && (pattern === undefined || pattern.test(entry.id)))
+      return entry
+    byName++
+    return defer(entry)
+  })
+
+  const native = named.filter((entry) => !isMcp(entry) && entry.id !== InvalidTool.id).length
+  const live = named.filter(isLive).toSorted(byKey)
+  const helpers = named.some(isDeferred) ? MCP_DEFERRED_IDS.length : 0
+  const most = limits.maxTools
+  if (most === undefined || native + live.length + helpers <= most)
+    return { entries: named, moved: { byCount: 0, byName } }
+
+  const over = new Set(live.slice(Math.max(0, most - native - MCP_DEFERRED_IDS.length)).map((entry) => entry.id))
+  return {
+    entries: named.map((entry) => (isLive(entry) && over.has(entry.id) ? defer(entry) : entry)),
+    moved: { byCount: over.size, byName },
+  }
+}
+
+/**
+ * The entries a request resolves to, and how many MCP tools were moved into the catalog for a limit of the model. The
+ * ones `visible` stay, in order, the deferred MCP tools among them: the pipeline needs them to run a call through
+ * `mcp_call`, and the model never sees them as tools. While both helper names are visible (a rule or a switch can hide
+ * either) the tools that break `limits` are moved into the catalog (`fit`), as there is a way to reach them; where
+ * either is hidden nothing is moved. While at least one deferred tool is left and both helpers are visible, the two
+ * helpers follow, and their description is the catalog of those tools by key.
  */
 export function settle(input: {
   entries: Iterable<ToolEntry>
   visible: (id: string) => boolean
   transform: (schema: JSONSchema7) => JSONSchema7
-}): ToolEntry[] {
+  limits: ToolLimits
+}): { entries: ToolEntry[]; moved: Moved } {
   const kept = [...input.entries].filter((entry) => input.visible(entry.id))
-  const catalog = kept.filter(isDeferred).toSorted((left, right) => left.id.localeCompare(right.id))
-  if (catalog.length === 0 || !MCP_DEFERRED_IDS.every((id) => input.visible(id))) return kept
-  return [...kept, ...helperEntries(catalog, input.transform)]
+  if (!MCP_DEFERRED_IDS.every((id) => input.visible(id))) return { entries: kept, moved: { byCount: 0, byName: 0 } }
+  const { entries, moved } = fit(kept, input.limits)
+  const catalog = entries.filter(isDeferred).toSorted(byKey)
+  if (catalog.length === 0) return { entries, moved }
+  return { entries: [...entries, ...helperEntries(catalog, input.transform)], moved }
+}
+
+/** The toast for tools moved into the catalog for the limits of `model`, written `<provider>/<id>`. */
+export function movedNotice(count: number, model: string): { title: string; message: string } {
+  return {
+    title: "MCP tools moved to the deferred catalog",
+    message: `${count} ${count === 1 ? "tool does" : "tools do"} not fit the limits of ${model}`,
+  }
 }
 
 /**

@@ -358,7 +358,12 @@ optional `$schema`:
   server with many tools. The model then sees one catalog line per tool in the
   description of `mcp_describe`, loads a tool's schema with `mcp_describe`, and
   calls the tool with `mcp_call`. Permission rules and hooks name the tool itself,
-  not `mcp_call`. The default is `false`: every tool is loaded.
+  not `mcp_call`. The default is `false`: every tool is loaded, and a warning
+  appears once when the definitions of those tools pass 16 KB; no server is
+  deferred for you.
+- A model whose profile sets `tool_limits` (`max_tools`, `name_max_length`,
+  `name_pattern`, under `provider.<id>.models.<id>.profile`) gets the MCP tools
+  that break them in that same catalog, with a warning once.
 - `protocol` is rejected; protocol negotiation is automatic. The removed
   `experimental.mcp_timeout` is replaced by per-server `timeout.request`.
 - MCP entries are not interpolated: `{env:VAR}`, `{file:path}`, and `${VAR}`

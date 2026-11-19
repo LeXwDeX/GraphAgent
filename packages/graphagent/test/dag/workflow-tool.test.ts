@@ -13,6 +13,7 @@ import { DagValidation } from "@/dag/validation"
 import { Agent } from "@/agent/agent"
 import { Skill } from "@/skill"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { DELEGATION_CRITERIA } from "@graphagent/core/plugin/delegation-criteria"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1185,7 +1186,9 @@ describe("workflow tool execution", () => {
       expect(workflow.description).not.toContain("**start** creates")
       expect(workflow.description).not.toContain("**result** reads")
       expect(workflow.description).toContain("parameter schema")
-      expect(workflow.description).toContain("not a task-category rule")
+      // #1454: the three tiers are the shared constant, stated once.
+      expect(workflow.description).toContain(DELEGATION_CRITERIA)
+      expect(workflow.description).not.toContain("{{delegation_criteria}}")
       expect(workflow.description).toContain("Explicit user instructions take precedence")
       expect(workflow.description).not.toMatch(/even one project\s+file/)
       expect(workflow.description).not.toContain("$ARGUMENTS")
