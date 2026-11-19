@@ -1220,6 +1220,132 @@ describe("shipped reasoning rules", () => {
   })
 })
 
+describe("shipped rule schema-fixes", () => {
+  // The three tests the rule replaces, as they stood at 296a1a5d0 (transform.ts:1803, :1808 and :1827) with the id
+  // lookups lowercased, in the order `schema()` ran them.
+  const replaced = (providerID: string, apiID: string, npm?: string): ModelProfile["schemaFixes"] => {
+    const id = apiID.toLowerCase()
+    const fixes: ModelProfile["schemaFixes"] = []
+    if (npm === "@ai-sdk/openai" || npm === "@ai-sdk/azure") fixes.push("openai")
+    if (providerID === "moonshotai" || id.includes("kimi")) fixes.push("moonshot")
+    if (providerID === "google" || id.includes("gemini")) fixes.push("gemini")
+    return fixes
+  }
+  const PROVIDERS = [
+    "relay",
+    "openai",
+    "azure",
+    "moonshotai",
+    "google",
+    "GOOGLE",
+    "MoonshotAI",
+    "google-vertex",
+    "mistral",
+  ]
+  const NPMS = [
+    undefined,
+    "@ai-sdk/openai",
+    "@ai-sdk/azure",
+    "@ai-sdk/openai-compatible",
+    "@ai-sdk/google",
+    "@ai-sdk/google-vertex",
+    "@ai-sdk/anthropic",
+    "@openrouter/ai-sdk-provider",
+  ]
+  const IDS = [
+    "",
+    "m",
+    "kimi-k2",
+    "Kimi-K2.5",
+    "KIMI-K2-THINKING",
+    "moonshotai/kimi-k2",
+    "kim",
+    "gemini-2.5-pro",
+    "Gemini-3-Pro",
+    "GEMINI-2.5-FLASH",
+    "google/gemini-2.5-pro",
+    "gemma-3",
+    "gemin",
+    "kimi-gemini",
+    "gpt-5",
+    "qwen3-max",
+    "claude-sonnet-4",
+    "glm-5.2",
+  ]
+  const resolved = (providerID: string, apiID: string, npm?: string, config?: ProfileConfig) =>
+    resolveProfile({
+      providerID,
+      apiID,
+      ...(npm === undefined ? {} : { npm }),
+      ...(config === undefined ? {} : { config }),
+    })
+  const rule = BUILTIN_RULES.find((item) => item.name === "schema-fixes")
+
+  test("is shipped once, after the reasoning rules, and cites the code it replaces", () => {
+    const names = BUILTIN_RULES.map((item) => item.name)
+    expect(names.slice(9, 10)).toEqual(["schema-fixes"])
+    expect(names.filter((item) => item === "schema-fixes")).toHaveLength(1)
+    expect(rule?.source).toBe("296a1a5d0:packages/graphagent/src/provider/transform.ts:1803,1808,1827")
+  })
+
+  test("a rule reads only the API id as a string; provider and npm are compared, never taken apart", () => {
+    const noProvider: RuleInput = { providerID: "relay", apiID: "X" }
+    Reflect.deleteProperty(noProvider, "providerID")
+    expect(() => rule?.match(noProvider)).not.toThrow()
+    expect(() => rule?.match({ providerID: "relay", apiID: "X" })).not.toThrow()
+    expect(() => rule?.match({ providerID: "relay", apiID: "", npm: "" })).not.toThrow()
+    expect(rule?.match({ providerID: "relay", apiID: "m" })).toBe(false)
+  })
+
+  test("lists exactly the downgrades of the replaced tests, for every provider, npm and id", () => {
+    for (const providerID of PROVIDERS) {
+      for (const npm of NPMS) {
+        for (const id of IDS) {
+          const profile = resolved(providerID, id, npm)
+          const expected = replaced(providerID, id, npm)
+          expect({ providerID, npm, id, fixes: profile.schemaFixes }).toEqual({ providerID, npm, id, fixes: expected })
+          expect<string | undefined>(profile.sources.schemaFixes).toBe(
+            expected.length > 0 ? "builtin:schema-fixes" : undefined,
+          )
+        }
+      }
+    }
+  })
+
+  test("a model that several tests name gets every downgrade, in the order the replaced code ran them", () => {
+    expect(resolved("google", "Kimi-Gemini", "@ai-sdk/openai").schemaFixes).toEqual(["openai", "moonshot", "gemini"])
+    expect(resolved("moonshotai", "gemini-2.5-pro").schemaFixes).toEqual(["moonshot", "gemini"])
+    expect(resolved("azure", "my-gpt", "@ai-sdk/azure").schemaFixes).toEqual(["openai"])
+  })
+
+  test("the provider ids compare exactly and the npm package is compared whole", () => {
+    expect(resolved("GOOGLE", "m").schemaFixes).toEqual([])
+    expect(resolved("google-vertex", "m").schemaFixes).toEqual([])
+    expect(resolved("relay", "m", "@ai-sdk/openai-compatible").schemaFixes).toEqual([])
+    expect(resolved("relay", "m", "@ai-sdk/google").schemaFixes).toEqual([])
+  })
+
+  test("a configured list replaces the rule as a whole, an empty one switches it off", () => {
+    const configured = resolved("google", "gemini-2.5-pro", undefined, { profile: { schema_fixes: ["openai"] } })
+    expect(configured.schemaFixes).toEqual(["openai"])
+    expect(configured.sources.schemaFixes).toBe("config")
+    const off = resolved("google", "gemini-2.5-pro", undefined, { profile: { schema_fixes: [] } })
+    expect(off.schemaFixes).toEqual([])
+    expect(off.sources.schemaFixes).toBe("config")
+    const added = resolved("relay", "qwen3-max", undefined, { profile: { schema_fixes: ["moonshot"] } })
+    expect(added.schemaFixes).toEqual(["moonshot"])
+  })
+
+  test("the list of a profile shares nothing with the rule", () => {
+    const first = resolved("google", "gemini-2.5-pro")
+    const second = resolved("google", "gemini-2.5-pro")
+    expect(first.schemaFixes).toEqual(second.schemaFixes)
+    expect(first.schemaFixes).not.toBe(second.schemaFixes)
+    first.schemaFixes.push("openai")
+    expect(resolved("google", "gemini-2.5-pro").schemaFixes).toEqual(["gemini"])
+  })
+})
+
 describe("resolveProfile isolation", () => {
   const deepFreeze = <T>(value: T): T => {
     if (typeof value === "object" && value !== null) {

@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import type { LanguageModelV3, LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import { resolveProfile } from "@graphagent/core/model-profile"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { streamText } from "ai"
 import { MockLanguageModelV3 } from "ai/test"
@@ -84,5 +85,43 @@ describe("inline reasoning tags", () => {
       reasoning: "a",
       answer: "b",
     })
+  })
+})
+
+describe("inline reasoning tags follow the model profile", () => {
+  /** A model whose configuration declares `inline_tag`; without `inlineTag` the configuration declares none. */
+  const profiled = (providerID: string, apiID: string, inlineTag?: string) => ({
+    ...model(providerID, apiID),
+    profile: resolveProfile({
+      providerID,
+      apiID,
+      npm: "@ai-sdk/openai-compatible",
+      config: inlineTag === undefined ? undefined : { profile: { reasoning_mode: { inline_tag: inlineTag } } },
+    }),
+  })
+
+  test("the tag the profile declares is returned without a table", () => {
+    expect(inlineReasoningTag(profiled("custom", "local-think", "think"))).toBe("think")
+    expect(inlineReasoningTag(profiled("anything", "any-model", "reasoning"))).toBe("reasoning")
+  })
+
+  test("splits <think> into reasoning and text for a model whose profile declares the tag", async () => {
+    const tag = inlineReasoningTag(profiled("custom", "local-think", "think"))
+    expect(await collect(wrapInlineReasoning(answering("<think>a</think>b"), tag))).toEqual({
+      reasoning: "a",
+      answer: "b",
+    })
+  })
+
+  test("the profile is read before the table, and the table still serves a profile without a tag", () => {
+    expect(inlineReasoningTag(profiled("custom", "local-think", "reasoning"), table)).toBe("reasoning")
+    expect(inlineReasoningTag(profiled("custom", "local-think"), table)).toBe("think")
+    expect(inlineReasoningTag(profiled("custom", "other-model"), table)).toBeUndefined()
+    expect(inlineReasoningTag(profiled("custom", "local-think"))).toBeUndefined()
+  })
+
+  test("an empty tag in the profile counts as none", () => {
+    expect(inlineReasoningTag(profiled("custom", "local-think", ""))).toBeUndefined()
+    expect(inlineReasoningTag(profiled("custom", "local-think", ""), table)).toBe("think")
   })
 })
