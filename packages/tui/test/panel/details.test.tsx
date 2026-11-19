@@ -13,6 +13,7 @@ import { createPanelHost, PanelHost, PanelHostProvider, type PanelHostApi } from
 import { showExportOptions, type ExportOptions } from "../../src/panel/export"
 import { StatusPanel } from "../../src/panel/status"
 import { WorkspaceFileChangesPanel } from "../../src/panel/workspace-file-changes"
+import { cellWidth } from "../../src/ui/width"
 import { shellState } from "../shell/contexts"
 import { PanelSurface, renderAppPanel, renderPanel } from "./contexts"
 
@@ -264,6 +265,47 @@ test("export panel toggles options and submits the export action", async () => {
     })
     expect(host?.depth()).toBe(0)
     expect(app.captureCharFrame()).not.toContain("导出选项")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("export panel shares the settings layout: values after the names, where a toggle stands, no note line", async () => {
+  await using tmp = await shellState()
+  const app = await renderPanel(() => <ExportHarness onReady={() => {}} />, {
+    width: 120,
+    height: 40,
+    state: tmp.path,
+  })
+  const lines = () =>
+    app
+      .captureCharFrame()
+      .split("\n")
+      .map((line) => line.trimEnd())
+  const row = (label: string) => lines().find((line) => line.includes(label)) ?? ""
+  /** The cell the text starts at: the border and padding, the selection mark, and the 22 cells of the name column. */
+  const column = (line: string, text: string) => cellWidth(line.slice(0, line.indexOf(text)))
+
+  try {
+    // The filename is the first row and is selected: a text row has no hint to cycle.
+    expect(column(row("文件名"), "transcript.md")).toBe(26)
+    expect(row("文件名")).not.toContain("换一个")
+    // The toggles: thinking is off, the second of its two values; tool details are on, the first.
+    expect(column(row("包含思考过程"), "关")).toBe(26)
+    expect(column(row("包含工具详情"), "开")).toBe(26)
+    app.mockInput.pressArrow("down")
+    await settle(app)
+    expect(row("包含思考过程")).toContain("换一个（2/2）")
+    app.mockInput.pressArrow("down")
+    await settle(app)
+    expect(row("包含工具详情")).toContain("换一个（1/2）")
+    expect(row("包含思考过程")).not.toContain("换一个")
+
+    // No row explains itself, so the panel has no line for a note: the hints follow the last row at once.
+    const all = lines()
+    const bottom = all.findIndex((line) => line.includes("╰"))
+    expect(all[bottom - 2]).toContain("导出")
+    expect(all[bottom - 1]).toContain("关闭")
   } finally {
     app.renderer.destroy()
   }

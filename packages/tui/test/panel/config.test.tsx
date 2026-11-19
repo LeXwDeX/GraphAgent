@@ -471,13 +471,14 @@ async function untilRow(app: Rendered, label: string, check: (line: string) => b
 test("an unset concurrency shows the value the server enforces, marked as the default", async () => {
   const { app, tmp, seen } = await renderLimits({ status: limits(12, null) })
   try {
-    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("默认值 12"))
-    expect(line).toContain("默认值 12")
+    // The value comes first and the note after it.
+    const line = await untilRow(app, "DAG 并发上限", (text) => /12\s+默认值/.test(text))
+    expect(line).toMatch(/12\s+默认值/)
     // The panel asked for the snapshot itself: a session with DAG mode off reads none otherwise, and it asked once.
     expect(seen.filter((path) => path === `/session/${dagSession.id}/dag-mode`)).toHaveLength(1)
 
     setLanguage("en")
-    expect(await untilRow(app, "DAG concurrency cap", (text) => text.includes("Default 12"))).toContain("Default 12")
+    expect(await untilRow(app, "DAG concurrency cap", (text) => /12\s+Default/.test(text))).toMatch(/12\s+Default/)
   } finally {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
@@ -487,11 +488,11 @@ test("an unset concurrency shows the value the server enforces, marked as the de
 test("a configured concurrency the server cuts down shows the configured value and the one in force", async () => {
   const { app, tmp } = await renderLimits({ configured: 20, status: limits(14, 20) })
   try {
-    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("实际生效 14，配置值 20"))
+    const line = await untilRow(app, "DAG 并发上限", (text) => /20\s+实际生效 14/.test(text))
     expect(line).not.toContain("默认值")
 
     setLanguage("en")
-    await untilRow(app, "DAG concurrency cap", (text) => text.includes("In force 14, configured 20"))
+    await untilRow(app, "DAG concurrency cap", (text) => /20\s+In force 14/.test(text))
   } finally {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
@@ -516,7 +517,7 @@ test("a configured concurrency inside the limit shows no note", async () => {
 test("opened in a child session, the row takes the limits of the tree's root", async () => {
   const { app, tmp, seen } = await renderLimits({ child: true, configured: 20, status: limits(14, 20) })
   try {
-    const line = await untilRow(app, "DAG 并发上限", (text) => text.includes("实际生效 14，配置值 20"))
+    const line = await untilRow(app, "DAG 并发上限", (text) => /20\s+实际生效 14/.test(text))
     expect(line).not.toContain("默认值")
     // The read went to the root of the tree; the child has no snapshot of its own.
     expect(seen).toContain(`/session/${dagSession.id}/dag-mode`)
@@ -530,7 +531,7 @@ test("opened in a child session, the row takes the limits of the tree's root", a
 test("a snapshot read before a write does not describe the value just written", async () => {
   const { app, tmp, updates } = await renderLimits({ status: limits(12, null) })
   try {
-    await untilRow(app, "DAG 并发上限", (text) => text.includes("默认值 12"))
+    await untilRow(app, "DAG 并发上限", (text) => /12\s+默认值/.test(text))
     await down(app)
     await enter(app)
     await backspace(app, 2)
@@ -575,8 +576,8 @@ test("the unset row without a snapshot says it is not set instead of making a va
 })
 
 for (const [language, label, note] of [
-  ["zh-CN", "DAG 并发上限", "实际生效 14，配置值 20"],
-  ["en", "DAG concurrency cap", "In force 14, configured 20"],
+  ["zh-CN", "DAG 并发上限", /20\s+实际生效 14/],
+  ["en", "DAG concurrency cap", /20\s+In force 14/],
 ] as const) {
   for (const width of [1, 2] as const) {
     test(`the cut-down note fits 80 columns in ${language} with ambiguous width ${width}`, async () => {
@@ -591,7 +592,7 @@ for (const [language, label, note] of [
       })
       try {
         setLanguage(language)
-        const line = await untilRow(app, label, (text) => text.includes(note))
+        const line = await untilRow(app, label, (text) => note.test(text))
         // The panel border closes the line: nothing was pushed past it.
         expect(line.trimEnd().endsWith("│")).toBe(true)
       } finally {
