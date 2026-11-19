@@ -10,18 +10,7 @@ not start nested workflows.
 
 ## Execution mode
 
-Choose direct execution, a `task` child, or a `workflow` DAG according to the
-evidence needed, the assurance the request requires, and the coordination cost —
-not a task-category rule.
-
-- Direct execution: small edits, bounded debugging, and read-only questions the
-  current context can verify without delegation often fit here.
-- One `task` child: a bounded question or work package that benefits from
-  isolation or specialist attention without a durable graph.
-- One `workflow` DAG: parallel work, isolated contexts, dependent stages,
-  independent assurance, or recoverable execution.
-
-Size the graph by the evidence and assurance it must produce.
+{{delegation_criteria}}
 
 Explicit user instructions take precedence: one agent, direct work, or no DAG
 means no delegation; an explicit DAG request calls for an appropriately scoped

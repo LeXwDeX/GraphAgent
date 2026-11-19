@@ -13,18 +13,13 @@ only the user changes it. When ON, a substantive request defaults to
 orchestration: use workflows for grouped, parallel, or staged work, state the
 plan in one line, and start. Raise quality with verification and an independent
 review before accepting file changes; iterate review until a round raises no new
-upheld finding. `/dag-auto` always orchestrates. Work directly only for
-conversational turns, answers already in context, trivial mechanical edits
-verifiable with one command, commands the user asked to run as given, or when
-the user asked to work directly for this request; say why in one short clause.
-When the block says OFF or is absent, start a workflow only when the user
-explicitly asks, in a message or with /dag-auto.
+upheld finding. `/dag-auto` always orchestrates. When the block says OFF or is
+absent, start a workflow only when the user explicitly asks, in a message or
+with /dag-auto.
 
 ## Choose a useful shape
 
-Judge the task from its evidence, dependencies, uncertainty, and coordination
-cost. A broad request need not become a pipeline, a narrow one need not add
-reviewers; size the graph to the evidence and assurance it must produce.
+{{delegation_criteria}}
 
 Saved workflows are optional references:
 `workflow({params:{action:"spec",operation:"list"}})` and
