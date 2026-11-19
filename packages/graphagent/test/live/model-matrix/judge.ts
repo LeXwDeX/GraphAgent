@@ -35,6 +35,39 @@ export function replyHas(run: RunView, needle: Needle): string[] {
   return holds(run.reply, needle) ? [] : [`reply: missing ${describeNeedle(needle)}`]
 }
 
+/** The workspace file holds exactly `expected`, apart from the whitespace around it. */
+export function fileIs(run: RunView, file: string, expected: string): string[] {
+  if (!Object.hasOwn(run.files, file)) return [`files: ${file} missing`]
+  return run.files[file]?.trim() === expected ? [] : [`files: ${file} is not ${describeNeedle(expected)}`]
+}
+
+/** The workspace file has exactly these lines; a line ending of either kind and the end of the file do not count. */
+export function fileLinesAre(run: RunView, file: string, expected: readonly string[]): string[] {
+  if (!Object.hasOwn(run.files, file)) return [`files: ${file} missing`]
+  const lines = (run.files[file] ?? "").replaceAll("\r\n", "\n").trimEnd().split("\n")
+  const same = lines.length === expected.length && lines.every((line, index) => line === expected[index])
+  return same ? [] : [`files: ${file} lines ${JSON.stringify(lines)}, expected ${JSON.stringify(expected)}`]
+}
+
+/** The todo list is exactly `expected` (content to status), in any order, each item once; the priority is not looked at. */
+export function todosAre(run: RunView, expected: Readonly<Record<string, string>>): string[] {
+  const failures = Object.entries(expected).flatMap(([content, status]): string[] => {
+    const listed = run.todos.filter((todo) => todo.content === content)
+    const [first] = listed
+    if (!first) return [`todos: missing ${describeNeedle(content)}`]
+    if (listed.length > 1) return [`todos: ${describeNeedle(content)} is listed ${listed.length} times`]
+    return first.status === status ? [] : [`todos: ${describeNeedle(content)} is ${first.status}, expected ${status}`]
+  })
+  const unexpected = run.todos.filter((todo) => !Object.hasOwn(expected, todo.content))
+  return [...failures, ...unexpected.map((todo) => `todos: unexpected ${describeNeedle(todo.content)}`)]
+}
+
+/** The compaction summary holds every fact; each one it lacks is a line of its own. */
+export function summaryHas(run: RunView, facts: readonly string[]): string[] {
+  const summary = run.summary ?? ""
+  return facts.filter((fact) => !summary.includes(fact)).map((fact) => `summary: missing ${describeNeedle(fact)}`)
+}
+
 /** The distinct `src/...` paths the reply names, sorted. */
 export function replyPaths(run: RunView): string[] {
   return [...new Set(run.reply.match(/src\/[\w.-]+/g) ?? [])].sort()

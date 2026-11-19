@@ -28,6 +28,7 @@ import type { Call, RunView, Scenario, Script, ScriptFamily } from "./types"
 const FILE_CAP = 20_000
 
 type ModelPick = Pick<ModelRef, "providerID" | "modelID">
+type Api = ReturnType<typeof client>
 
 /** The replay tier's models: `gpt-` in the ID makes the runtime offer apply_patch instead of edit and write. */
 export const REPLAY_MODELS: Readonly<Record<ScriptFamily, ModelPick>> = {
@@ -171,11 +172,33 @@ function todosOf(value: unknown): RunView["todos"] {
   )
 }
 
+/**
+ * The text of the compaction summary in a message list as the API returns it: the text parts of the assistant
+ * messages marked `summary` (the session's own `summary: true`), as the runtime reads them back, or nothing when
+ * the compaction wrote none. `readMessages` does not keep the mark, so this reads the response itself.
+ */
+export function summaryOf(json: unknown): string | undefined {
+  if (!Array.isArray(json)) return undefined
+  const texts = json.flatMap((item): string[] => {
+    if (!isRecord(item) || !isRecord(item.info)) return []
+    if (item.info.role !== "assistant" || item.info.summary !== true || !Array.isArray(item.parts)) return []
+    const text = item.parts
+      .flatMap((part): string[] =>
+        isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text.trim()] : [],
+      )
+      .filter((value) => value !== "")
+      .join("\n\n")
+    return text === "" ? [] : [text]
+  })
+  return texts.length === 0 ? undefined : texts.join("\n\n")
+}
+
 async function viewOf(
-  api: ReturnType<typeof client>,
+  api: Api,
   dir: string,
   sessionID: string,
   messages: readonly MessageView[],
+  summary: string | undefined,
 ): Promise<RunView> {
   const [todos, children] = await Promise.all([
     api(`/session/${sessionID}/todo`),
@@ -187,7 +210,60 @@ async function viewOf(
     reply: lastReply(messages),
     todos: todosOf(todos),
     children: Array.isArray(children) ? children.length : 0,
+    ...(summary === undefined ? {} : { summary }),
   }
+}
+
+/**
+ * What the script server has to know before a run. The replay tier gets the whole script, and the subagent's under
+ * `<id>.child`. The live tier asks the model under test, which needs no script, except for the setup turns of a
+ * compaction scenario: the script still answers those, so every model is summarizing the same history.
+ */
+function registerScripts(ctx: MatrixContext, scenario: Scenario, family: ScriptFamily): void {
+  const key = caseKey(scenario.id, family)
+  if (ctx.mode === "live") {
+    if (scenario.setup) ctx.script.register(key, scriptOf(scenario, family).replies.slice(0, scenario.setup.length))
+    return
+  }
+  ctx.script.register(key, scriptOf(scenario, family).replies)
+  if (scenario.child) ctx.script.register(`${scenario.id}.child`, scenario.child)
+}
+
+/**
+ * Plays the conversation of a run. A plain scenario sends its prompt to the model; a compaction scenario sends its
+ * setup messages to the scripted model (which answers `noted`), the first one carrying the case marker, and then
+ * asks the model under test to summarize the session.
+ */
+async function converse(
+  ctx: MatrixContext,
+  run: {
+    readonly api: Api
+    readonly sessionID: string
+    readonly scenario: Scenario
+    readonly key: string
+    readonly model: ModelPick
+  },
+): Promise<void> {
+  const { api, sessionID, scenario, key, model } = run
+  const send = async (to: ModelPick, text: string) => {
+    await api(`/session/${sessionID}/message`, {
+      body: { model: { providerID: to.providerID, modelID: to.modelID }, parts: [{ type: "text", text }] },
+      timeoutMs: ctx.timeoutMs,
+    })
+    await settle(api, sessionID, ctx.timeoutMs)
+  }
+  if (!scenario.setup) {
+    await send(model, ctx.mode === "replay" ? `${scenario.prompt}\n[case ${key}]` : scenario.prompt)
+    return
+  }
+  for (const [index, text] of scenario.setup.entries()) {
+    await send(REPLAY_MODELS.default, index === 0 ? `${text}\n[case ${key}]` : text)
+  }
+  await api(`/session/${sessionID}/summarize`, {
+    body: { providerID: model.providerID, modelID: model.modelID },
+    timeoutMs: ctx.timeoutMs,
+  })
+  await settle(api, sessionID, ctx.timeoutMs)
 }
 
 async function attempt(
@@ -204,22 +280,17 @@ async function attempt(
   })
   try {
     const key = caseKey(scenario.id, family)
-    const replay = ctx.mode === "replay"
-    if (replay) ctx.script.register(key, scriptOf(scenario, family).replies)
-    const model = replay ? REPLAY_MODELS[family] : ctx.model
+    registerScripts(ctx, scenario, family)
+    const model = ctx.mode === "replay" ? REPLAY_MODELS[family] : ctx.model
     const dir = await buildWorkspace(ctx, scenario)
     const api = client(ctx.host, dir)
     const session = await api("/session", { body: { title: scenario.id, permission: sessionPermission(ctx.home) } })
     const sessionID = isRecord(session) && typeof session.id === "string" ? session.id : undefined
     if (!sessionID) throw new Error("the session was not created")
-    const text = replay ? `${scenario.prompt}\n[case ${key}]` : scenario.prompt
-    await api(`/session/${sessionID}/message`, {
-      body: { model: { providerID: model.providerID, modelID: model.modelID }, parts: [{ type: "text", text }] },
-      timeoutMs: ctx.timeoutMs,
-    })
-    await settle(api, sessionID, ctx.timeoutMs)
-    const messages = readMessages(await api(`/session/${sessionID}/message`))
-    const view = await viewOf(api, dir, sessionID, messages)
+    await converse(ctx, { api, sessionID, scenario, key, model })
+    const stored = await api(`/session/${sessionID}/message`)
+    const messages = readMessages(stored)
+    const view = await viewOf(api, dir, sessionID, messages, scenario.setup ? summaryOf(stored) : undefined)
     const tokens = tokensOf(messages)
     const failure = messages.find((message) => message.error)?.error
     if (failure) return done({ status: "error", failures: [ctx.redact(failure)], view, tokens })

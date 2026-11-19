@@ -36,6 +36,7 @@ const results = new Map<string, RunResult>()
 let root = ""
 let script: ScriptServer | undefined
 let host: Host | undefined
+let ctx: MatrixContext | undefined
 
 beforeAll(async () => {
   root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "gm-")))
@@ -51,7 +52,7 @@ beforeAll(async () => {
     home,
   })
   host = await startHost({ env: matrixHostEnv({ home, config, passthrough: {} }), cwd: home })
-  const ctx: MatrixContext = {
+  const replay: MatrixContext = {
     mode: "replay",
     host,
     script,
@@ -67,9 +68,10 @@ beforeAll(async () => {
       (value) => value,
     ),
   }
+  ctx = replay
   const runs = SCENARIOS.flatMap((scenario) => familiesOf(scenario).map((family) => ({ scenario, family })))
   await pool(runs, CONCURRENCY, async ({ scenario, family }) => {
-    results.set(caseKey(scenario.id, family), await runScenario(ctx, scenario, family))
+    results.set(caseKey(scenario.id, family), await runScenario(replay, scenario, family))
   })
 }, 600_000)
 
@@ -94,4 +96,21 @@ describe("replay of the scenarios", () => {
       })
     }
   }
+})
+
+describe("a live compaction run", () => {
+  test("is answered by the script for its setup turns only, and the summary comes from the model under test", async () => {
+    const scenario = SCENARIOS.find((item) => item.id === "compaction.todo")
+    if (!ctx || !scenario) throw new Error("the replay host did not start")
+    // The script server stands in for the model under test here too. A live run registers the setup replies and
+    // nothing more, so it has no summary to give and says `done`; the summary the replay run registered under the
+    // same key before is gone, which is what the facts it lacks show.
+    const result = await runScenario({ ...ctx, mode: "live", model: REPLAY_MODELS.apply_patch }, scenario, "default")
+    expect(result.status).toBe("fail")
+    expect(result.view?.summary).toBe("done")
+    expect(result.failures).toEqual([
+      'summary: missing "add retry to the uploader"',
+      'summary: missing "write the migration notes"',
+    ])
+  })
 })
