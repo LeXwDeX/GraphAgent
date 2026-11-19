@@ -37,12 +37,15 @@ export const Model = Schema.Struct({
   }),
   interleaved: Schema.optional(
     Schema.Union([
-      Schema.Literal(true),
+      Schema.Boolean,
       Schema.Struct({
         field: Schema.Literals(["reasoning", "reasoning_content", "reasoning_details"]),
       }),
     ]),
-  ),
+  ).annotate({
+    description:
+      "How earlier reasoning is sent back inside assistant messages. An object names the message field it goes under; false sends no such field, which also turns off the field DeepSeek models on OpenAI-compatible endpoints get by default.",
+  }),
   cost: Schema.optional(
     Schema.Struct({
       input: Schema.Finite,

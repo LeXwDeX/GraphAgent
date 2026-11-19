@@ -124,17 +124,21 @@ export const ModelProfileOverride = Schema.Struct({
         description: "Fixed length of a tool call id. Only meaningful with the alnum charset.",
       }),
     }),
-  ).annotate({ description: "Constraint on the tool call ids the provider accepts. Default: any." }),
+  ).annotate({
+    description:
+      "Constraint on the tool call ids the provider accepts. Default: any; built-in rules give alnum_dash to Claude models and alnum of length 9 to Mistral models.",
+  }),
   user_after_tool_result: Schema.optional(UserAfterToolResult).annotate({
     description:
-      "Whether a user message may follow a tool result directly. bridge inserts a short assistant message first. Default: allow.",
+      "Whether a user message may follow a tool result directly. bridge inserts a short assistant message first. Default: allow; a built-in rule gives bridge to Mistral models.",
   }),
   tool_result_media: Schema.optional(ToolResultMedia).annotate({
     description:
-      "Which tool result attachments are sent inside the tool result: all, image (only image/*) or none (sent as a synthetic user message). Default: none.",
+      "Which tool result attachments are sent inside the tool result: all, image (only image/*) or none (sent as a synthetic user message). Default: none; built-in rules give all or image to models served through some provider SDK packages, such as Anthropic and OpenAI.",
   }),
   cache_marker: Schema.optional(CacheMarker).annotate({
-    description: "Whether to place explicit cache breakpoints in the request: explicit or none. Default: none.",
+    description:
+      "Whether to place explicit cache breakpoints in the request: explicit or none. Default: none; built-in rules give explicit to Anthropic and Claude models and to models served through the Anthropic or Alibaba SDK packages.",
   }),
   reasoning_mode: Schema.optional(
     Schema.Struct({
@@ -151,14 +155,16 @@ export const ModelProfileOverride = Schema.Struct({
         description: "Request body fragments merged into the request to turn thinking on and off.",
       }),
       placeholder: Schema.optional(Schema.Boolean).annotate({
-        description: "Add an empty reasoning string to assistant messages that carry none. Default: false.",
+        description:
+          "Add an empty reasoning string to assistant messages that carry none. Default: false; a built-in rule gives true to DeepSeek models.",
       }),
       replay: Schema.optional(ReasoningReplay).annotate({
         description:
           "How earlier reasoning is sent back: none, field (the field named by interleaved), signed (signed blocks as received) or encrypted (encrypted content as received). Default: none.",
       }),
       inline_tag: Schema.optional(Schema.String).annotate({
-        description: "Tag name that wraps reasoning inside the message text, for example think.",
+        description:
+          "Tag name that wraps reasoning inside the message text, for example think. Default: none, unless a built-in rule names one for the model; an empty string turns it off even then.",
       }),
     }),
   ).annotate({
@@ -170,13 +176,17 @@ export const ModelProfileOverride = Schema.Struct({
       top_p: Schema.optional(Schema.Finite),
       top_k: Schema.optional(Schema.Finite),
     }),
-  ).annotate({ description: "Default sampling values. A value left out is not sent." }),
+  ).annotate({
+    description:
+      "Default sampling values for the model. This block replaces the built-in values as a whole, so a value left out of it is not sent. Without the block, built-in rules give some models the values their vendor recommends; the others have no default.",
+  }),
   finish_reasons: Schema.optional(Schema.Record(Schema.String, FinishReason)).annotate({
     description:
       "Maps a vendor finish_reason to how it is handled: content-filter, stream_error (retry as a broken stream) or context_overflow.",
   }),
   edit_tools: Schema.optional(EditTools).annotate({
-    description: "Edit tool family offered to the model: edit or apply_patch. Default: edit.",
+    description:
+      "Edit tool family offered to the model: edit or apply_patch. Default: edit; a built-in rule gives apply_patch to GPT models other than gpt-4 and gpt-oss.",
   }),
   tool_limits: Schema.optional(
     Schema.Struct({
@@ -189,7 +199,8 @@ export const ModelProfileOverride = Schema.Struct({
       "Limits on the tools sent to the model: maximum tool count, maximum function name length and the regular expression source a function name must match. Default: no limit.",
   }),
   schema_fixes: Schema.optional(Schema.mutable(Schema.Array(SchemaFix))).annotate({
-    description: "Downgrade schemes applied to tool schemas: openai, moonshot or gemini. Default: none.",
+    description:
+      "Downgrade schemes applied to tool schemas: openai, moonshot or gemini. Default: none; built-in rules give openai to the OpenAI and Azure SDK packages, moonshot to Moonshot and Kimi models and gemini to Google and Gemini models. An empty list switches them all off.",
   }),
 }).annotate({ identifier: "ModelProfileOverride" })
 export type ModelProfileOverride = typeof ModelProfileOverride.Type
