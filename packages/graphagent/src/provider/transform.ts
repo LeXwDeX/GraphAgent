@@ -306,6 +306,13 @@ function normalizeMessages(
   return msgs
 }
 
+/**
+ * Marks the cache breakpoints. The messages it is given are not changed: a message that takes a breakpoint comes back
+ * as a copy (for a part-level breakpoint, with its content array and that part copied too), and every other message
+ * comes back as the same object in a new array. The messages can be the caller's own history, and a breakpoint written
+ * into it would still be there when the next request lays the breakpoints out again, on top of the new ones and past
+ * the four-breakpoint cap (#1578).
+ */
 function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
   const providerOptions = {
     anthropic: {
@@ -366,20 +373,48 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   // A tool result directly before a synthetic attachment is merged into that
   // user message by Anthropic/Bedrock. A breakpoint there would land on the
   // attachment, so leave the boundary on the preceding persisted user instead.
-  const mergedIntoSynthetic = (msg: ModelMessage) => {
-    if (msg.role !== "tool") return false
-    const index = msgs.indexOf(msg)
+  const mergedIntoSynthetic = (index: number) => {
+    if (msgs[index]?.role !== "tool") return false
     const next = msgs[index + 1]
-    return index >= 0 && next !== undefined && syntheticAttachment(next)
+    return next !== undefined && syntheticAttachment(next)
   }
-  const cacheable = (msg: ModelMessage) =>
-    !uncachedMessage(msg) && !syntheticAttachment(msg) && !mergedIntoSynthetic(msg) && hasStablePart(msg)
+  // This and `walkBack` take and give positions in `msgs`, not messages: the breakpoints are written into a copy of the
+  // array by position, and one message object can sit at two positions of the history.
+  const cacheable = (index: number) => {
+    const msg = msgs[index]
+    return (
+      msg !== undefined &&
+      !uncachedMessage(msg) &&
+      !syntheticAttachment(msg) &&
+      !mergedIntoSynthetic(index) &&
+      hasStablePart(msg)
+    )
+  }
+  // The position of the nearest cacheable non-system message at or before `from`, or -1.
   const walkBack = (from: number) => {
     for (let index = from; index >= 0; index--) {
       const msg = msgs[index]
-      if (msg && msg.role !== "system" && cacheable(msg)) return msg
+      if (msg && msg.role !== "system" && cacheable(index)) return index
     }
-    return undefined
+    return -1
+  }
+  // `parts` with the breakpoint on the part at `position`: a new array that holds a copy of that part.
+  const markAt = <P extends object>(parts: P[], position: number): P[] =>
+    parts.map((part, index) => {
+      if (index !== position) return part
+      const options = "providerOptions" in part && isRecord(part.providerOptions) ? part.providerOptions : {}
+      return { ...part, providerOptions: mergeDeep(options, providerOptions) }
+    })
+  // `msg` with the breakpoint on its part at `position`: the message, its content array and that part are copies.
+  const markPartOf = (msg: ModelMessage, position: number): ModelMessage => {
+    if (msg.role === "tool") return { ...msg, content: markAt(msg.content, position) }
+    if (msg.role === "user" && typeof msg.content !== "string") {
+      return { ...msg, content: markAt(msg.content, position) }
+    }
+    if (msg.role === "assistant" && typeof msg.content !== "string") {
+      return { ...msg, content: markAt(msg.content, position) }
+    }
+    return msg
   }
   // Three semantic boundaries, each at most once:
   // - system_end: the last system message. Anthropic serializes tools before
@@ -393,7 +428,7 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   //   the boundary and the walk-back then anchors an earlier cacheable message.
   // - current_end: the newest cacheable message, which becomes the next
   //   request's hit prefix.
-  const systemEnd = msgs.findLast((msg) => msg.role === "system" && cacheable(msg))
+  const systemEnd = msgs.findLastIndex((msg, index) => msg.role === "system" && cacheable(index))
   const currentEnd = walkBack(msgs.length - 1)
   // Request-only messages (the final-step instruction, a runtime context, a
   // synthetic attachment) do not belong to the persisted history, so they must
@@ -402,7 +437,7 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   const last = msgs.findLast((msg) => !uncachedMessage(msg))
   const previousEnd =
     assistantIndex < 0
-      ? undefined
+      ? -1
       : last && (last.role === "user" || last.role === "assistant")
         ? walkBack(assistantIndex)
         : walkBack(assistantIndex - 1)
@@ -411,14 +446,16 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   // persisted part so it never enters a cached prefix; newest first so the
   // four-breakpoint cap keeps the useful tail.
   const ephemeralMessages = msgs
-    .filter((msg) => Array.isArray(msg.content) && msg.content.some(ephemeral) && cacheable(msg))
+    .flatMap((msg, index) =>
+      Array.isArray(msg.content) && msg.content.some(ephemeral) && cacheable(index) ? [index] : [],
+    )
     .reverse()
   // Providers cap breakpoints at four. Keep the semantic boundaries first so
   // the system breakpoint is never the one dropped.
-  const targets = unique(
-    [systemEnd, previousEnd, currentEnd, ...ephemeralMessages].filter((msg): msg is ModelMessage => msg !== undefined),
-  )
-  for (const msg of targets.slice(0, 4)) {
+  const targets = unique([systemEnd, previousEnd, currentEnd, ...ephemeralMessages].filter((index) => index >= 0))
+  const marked = [...msgs]
+  for (const index of targets.slice(0, 4)) {
+    const msg = msgs[index]
     const useMessageLevelOptions =
       model.providerID === "anthropic" ||
       model.providerID.includes("bedrock") ||
@@ -436,16 +473,16 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
         lastContent.type !== "tool-approval-request" &&
         lastContent.type !== "tool-approval-response"
       ) {
-        lastContent.providerOptions = mergeDeep(lastContent.providerOptions ?? {}, providerOptions)
+        marked[index] = markPartOf(msg, lastStable)
         continue
       }
     }
 
     if (hasEphemeral || unstableTail) continue
-    msg.providerOptions = mergeDeep(msg.providerOptions ?? {}, providerOptions)
+    marked[index] = { ...msg, providerOptions: mergeDeep(msg.providerOptions ?? {}, providerOptions) }
   }
 
-  return msgs
+  return marked
 }
 
 const textValue = (value: unknown) => {
