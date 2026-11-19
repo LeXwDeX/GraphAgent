@@ -7613,14 +7613,45 @@ describe("ProviderTransform.schema - downgrades follow the model profile", () =>
       ProviderTransform.schema(only("moonshot"), ProviderTransform.schema(only("openai"), sample())),
     )
     expect(ProviderTransform.schema(all, sample())).toEqual(stepwise)
-    // each of the three acted: format dropped, a $ref kept alone, the values of an integer enum turned into strings
-    expect(stepwise).toMatchObject({ properties: { count: { enum: ["1", "2"] }, item: { $ref: "#/$defs/Item" } } })
+    // each of the three acted: format dropped, a $ref kept alone, an integer enum turned into a string enum whose type
+    // is a string too
+    expect(stepwise.properties?.count).toEqual({ type: "string", enum: ["1", "2"] })
+    expect(stepwise).toMatchObject({ properties: { item: { $ref: "#/$defs/Item" } } })
     expect(JSON.stringify(stepwise)).not.toContain("format")
     expect(JSON.stringify(stepwise)).not.toContain("one item")
-    // the order is fixed (openai before gemini keeps the integer type of the enum), so the list of a configuration
-    // does not reorder them
+    // the order is fixed (openai, moonshot, gemini), so the list of a configuration does not reorder them
     const reversed = relayModel("qwen3-max", { profile: { schema_fixes: ["gemini", "moonshot", "openai"] } })
     expect(ProviderTransform.schema(reversed, sample())).toEqual(stepwise)
+  })
+
+  test("a numeric enum becomes a string enum with a string type, whichever of the two keys is written first", () => {
+    // the type used to follow the values only where `type` was written before `enum`
+    const gemini = relayModel("Gemini-2.5-Pro", { providerID: "google" })
+    for (const type of ["integer", "number"] as const) {
+      expect(ProviderTransform.schema(gemini, { type, enum: [1, 2] })).toEqual(stringEnum)
+      expect(ProviderTransform.schema(gemini, { enum: [1, 2], type })).toEqual(stringEnum)
+      // below the root as well: in a property, and in the items of an array
+      expect(
+        ProviderTransform.schema(gemini, {
+          type: "object",
+          properties: { picked: { enum: [1, 2], type }, many: { type: "array", items: { enum: [1, 2], type } } },
+        }),
+      ).toEqual({ type: "object", properties: { picked: stringEnum, many: { type: "array", items: stringEnum } } })
+    }
+  })
+
+  test("a model with the OpenAI and the Gemini downgrade gets a string type for a numeric enum too", () => {
+    // the OpenAI subset writes `enum` before `type`: the order Gemini's step has to cope with
+    const openaiOnly = relayModel("qwen3-max", { profile: { schema_fixes: ["openai"] } })
+    expect(Object.keys(ProviderTransform.schema(openaiOnly, integers()))).toEqual(["enum", "type"])
+
+    const both = relayModel("qwen3-max", { profile: { schema_fixes: ["openai", "gemini"] } })
+    for (const type of ["integer", "number"] as const) {
+      expect(ProviderTransform.schema(both, { type, enum: [1, 2] })).toEqual(stringEnum)
+      expect(ProviderTransform.schema(both, { enum: [1, 2], type })).toEqual(stringEnum)
+    }
+    // an enum with no type is a string enum to begin with, and stays one
+    expect(ProviderTransform.schema(both, { enum: [1, 2] })).toEqual(stringEnum)
   })
 
   test("the downgrades come from the profile: configured on for any model, configured empty switches the rule off", () => {
