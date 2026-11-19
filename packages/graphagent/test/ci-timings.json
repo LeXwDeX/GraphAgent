@@ -365,7 +365,6 @@
     "test/plugin/github-copilot-models.test.ts": 3,
     "test/plugin/shared.test.ts": 3,
     "test/session/reasoning-distillation-quality.test.ts": 3,
-    "test/session/todo-reminders.test.ts": 3,
     "test/tool/parameters.test.ts": 3,
     "test/util/wildcard.test.ts": 3,
     "test/acp/directory.test.ts": 2,

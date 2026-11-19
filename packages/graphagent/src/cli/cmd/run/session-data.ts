@@ -64,6 +64,8 @@ type SessionCommit = StreamCommit
 // - end:    part IDs whose time.end has arrived (part is finished)
 // - managed: text part IDs whose displayText is set (even ""), meaning hooks own
 //            the visible text; `text` then holds displayText and raw deltas are ignored
+// - synthetic: text part IDs the server wrote (`synthetic: true`), kept until the part is
+//            done, so a part that arrived before its message's role is still known for one
 // - done:   assistant message IDs whose time.completed/error has arrived; hook-managed
 //           parts finish only then, because the final display batch lands after text-end
 // - echo:   message ID → bash outputs to strip from the next assistant chunk
@@ -83,6 +85,7 @@ export type SessionData = {
   visible: Map<string, string>
   end: Set<string>
   managed: Set<string>
+  synthetic: Set<string>
   done: Set<string>
   echo: Map<string, Set<string>>
 }
@@ -122,6 +125,7 @@ export function createSessionData(
     visible: new Map(),
     end: new Set(),
     managed: new Set(),
+    synthetic: new Set(),
     done: new Set(),
     echo: new Map(),
   }
@@ -413,12 +417,20 @@ function toolStatus(part: ToolPart): string {
   return "running task"
 }
 
+// Whether a text part of a user message stays out of the output: the one place that says so. The main view shows none
+// of them. The sub-agent view (`includeUserText`) shows what the user wrote and not what the server added for the
+// model (`synthetic`: state reminders, notices), as the TUI's main view does.
+function userTextHidden(data: SessionData, partID: string): boolean {
+  return !data.includeUserText || data.synthetic.has(partID)
+}
+
 // Returns true if we can flush this part's text to scrollback.
 //
 // We gate on the message role being "assistant" because user-role messages
 // also contain text parts (the user's own input) which we don't want to
-// echo. If we haven't received the message.updated event yet, we return
-// false and the text stays buffered until replay() flushes it.
+// echo, except in the sub-agent view, which shows what the user wrote. If we
+// haven't received the message.updated event yet, we return false and the
+// text stays buffered until replay() flushes it.
 function ready(data: SessionData, partID: string): boolean {
   const msg = data.msg.get(partID)
   if (!msg) {
@@ -434,7 +446,7 @@ function ready(data: SessionData, partID: string): boolean {
     return true
   }
 
-  return data.includeUserText && role === "user"
+  return role === "user" && !userTextHidden(data, partID)
 }
 
 function syncText(data: SessionData, partID: string, next: string) {
@@ -570,6 +582,7 @@ function drop(data: SessionData, partID: string) {
   data.msg.delete(partID)
   data.end.delete(partID)
   data.managed.delete(partID)
+  data.synthetic.delete(partID)
 }
 
 // Hook-managed parts (displayText present, even "") receive their final display
@@ -585,14 +598,14 @@ function settled(data: SessionData, partID: string): boolean {
 
 // Called when we learn a message's role (from message.updated). Flushes any
 // buffered text parts that were waiting on role confirmation. User-role
-// parts are silently dropped.
+// parts are silently dropped, unless the view shows what the user wrote.
 function replay(data: SessionData, commits: SessionCommit[], messageID: string, role: MessageRole, thinking: boolean) {
   for (const [partID, msg] of data.msg.entries()) {
     if (msg !== messageID || data.ids.has(partID)) {
       continue
     }
 
-    if (role === "user" && !data.includeUserText) {
+    if (role === "user" && userTextHidden(data, partID)) {
       data.ids.add(partID)
       drop(data, partID)
       continue
@@ -674,7 +687,7 @@ export function flushInterrupted(data: SessionData, commits: SessionCommit[]) {
     }
 
     const msg = data.msg.get(partID)
-    if (msg && data.role.get(msg) === "user" && !data.includeUserText) {
+    if (msg && data.role.get(msg) === "user" && userTextHidden(data, partID)) {
       data.ids.add(partID)
       drop(data, partID)
       continue
@@ -892,9 +905,13 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
       data.msg.set(part.id, part.messageID)
     }
 
+    if (part.type === "text" && part.synthetic === true) {
+      data.synthetic.add(part.id)
+    }
+
     const msg = part.messageID
     const role = msg ? data.role.get(msg) : undefined
-    if (role === "user" && part.type === "text" && !data.includeUserText) {
+    if (role === "user" && part.type === "text" && userTextHidden(data, part.id)) {
       data.ids.add(part.id)
       drop(data, part.id)
       return out(data, commits)

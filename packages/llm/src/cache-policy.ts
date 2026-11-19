@@ -74,7 +74,7 @@ const markMessageAt = (messages: ReadonlyArray<Message>, index: number, hint: Ca
   if (index < 0 || index >= messages.length) return messages
   const target = messages[index]!
   if (target.content.length === 0 || uncached(target)) return messages
-  // Request-only parts (such as the todo reminder) opt out with
+  // Request-only parts (such as the runtime context) opt out with
   // `metadata.cache = "none"`; keep the breakpoint on the persisted part.
   const lastTextIndex = target.content.findLastIndex((part) => part.type === "text" && !uncachedPart(part))
   const markAt = lastTextIndex >= 0 ? lastTextIndex : target.content.findLastIndex((part) => !uncachedPart(part))

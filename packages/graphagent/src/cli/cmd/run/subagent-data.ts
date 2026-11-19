@@ -550,6 +550,7 @@ function compactDetail(detail: DetailState) {
   next.text = copyMap(detail.data.text, activePartIDs)
   next.sent = copyMap(detail.data.sent, activePartIDs)
   next.end = new Set([...detail.data.end].filter((item) => activePartIDs.has(item)))
+  next.synthetic = new Set([...detail.data.synthetic].filter((item) => activePartIDs.has(item)))
   next.echo = compactEchoMap(detail.data, messageIDs)
   detail.data = next
 }

@@ -48,7 +48,13 @@ function user(id: string) {
   }
 }
 
-function text(input: { id: string; messageID: string; text: string; time?: Record<string, number> }) {
+function text(input: {
+  id: string
+  messageID: string
+  text: string
+  time?: Record<string, number>
+  synthetic?: boolean
+}) {
   return {
     type: "message.part.updated",
     properties: {
@@ -59,6 +65,7 @@ function text(input: { id: string; messageID: string; text: string; time?: Recor
         type: "text",
         text: input.text,
         ...(input.time ? { time: input.time } : {}),
+        ...(input.synthetic ? { synthetic: true } : {}),
       },
     },
   }
@@ -132,6 +139,104 @@ function managedText(input: {
     },
   }
 }
+
+// The text the server adds to a user message for the model (a state reminder, a notice) is a synthetic part. The
+// sub-agent view (`includeUserText`) shows what the user wrote, and not that, as the main TUI view does.
+describe("run session data user text of the sub-agent view", () => {
+  const REMINDER =
+    '<system-reminder source="reminder" kind="todo">\n[todo reminder] 1 uncompleted todo item:\n- in_progress: ship\n</system-reminder>'
+  const view = () => createSessionData({ includeUserText: true })
+
+  test("shows the text the user wrote and not the synthetic part next to it", () => {
+    let data = reduce(view(), user("msg-user-1")).data
+    const plain = reduce(
+      data,
+      text({ id: "txt-1", messageID: "msg-user-1", text: "Inspect footer tabs", time: { end: 1 } }),
+    )
+    data = plain.data
+    const note = reduce(
+      data,
+      text({ id: "txt-2", messageID: "msg-user-1", text: REMINDER, synthetic: true, time: { end: 1 } }),
+    )
+
+    expect(plain.commits).toEqual([
+      expect.objectContaining({ kind: "user", text: "Inspect footer tabs", partID: "txt-1" }),
+    ])
+    expect(note.commits).toEqual([])
+    expect(note.data.ids.has("txt-2")).toBe(true)
+    expect(note.data.part.has("txt-2")).toBe(false)
+    // Nothing of the part is kept once it is dealt with, the mark included.
+    expect(note.data.synthetic.has("txt-2")).toBe(false)
+  })
+
+  test("drops a synthetic part that arrived before its message's role, and flushes the plain one", () => {
+    let data = view()
+    data = reduce(
+      data,
+      text({ id: "txt-1", messageID: "msg-user-1", text: "Inspect footer tabs", time: { end: 1 } }),
+    ).data
+    data = reduce(
+      data,
+      text({ id: "txt-2", messageID: "msg-user-1", text: REMINDER, synthetic: true, time: { end: 1 } }),
+    ).data
+
+    const out = reduce(data, user("msg-user-1"))
+
+    expect(out.commits).toEqual([
+      expect.objectContaining({ kind: "user", text: "Inspect footer tabs", partID: "txt-1" }),
+    ])
+    expect(out.data.ids.has("txt-2")).toBe(true)
+    expect(out.data.part.has("txt-2")).toBe(false)
+    expect(out.data.synthetic.has("txt-2")).toBe(false)
+  })
+
+  test("a delta of a synthetic part adds nothing, whether or not the role was known", () => {
+    let data = reduce(view(), user("msg-user-1")).data
+    data = reduce(data, text({ id: "txt-2", messageID: "msg-user-1", text: "", synthetic: true })).data
+    expect(reduce(data, delta("msg-user-1", "txt-2", REMINDER)).commits).toEqual([])
+
+    // The part comes first and its delta after it, the role last: the part stays out all the same.
+    let late = view()
+    late = reduce(late, text({ id: "txt-3", messageID: "msg-user-2", text: "", synthetic: true })).data
+    late = reduce(late, delta("msg-user-2", "txt-3", REMINDER)).data
+    expect(reduce(late, user("msg-user-2")).commits).toEqual([])
+  })
+
+  test("shows the plain text that arrives through deltas", () => {
+    let data = reduce(view(), user("msg-user-1")).data
+    data = reduce(data, text({ id: "txt-1", messageID: "msg-user-1", text: "" })).data
+    expect(reduce(data, delta("msg-user-1", "txt-1", "Inspect")).commits).toEqual([
+      expect.objectContaining({ kind: "user", text: "Inspect", partID: "txt-1" }),
+    ])
+  })
+
+  test("the main view shows no user text, plain or synthetic", () => {
+    let data = reduce(createSessionData(), user("msg-user-1")).data
+    const plain = reduce(
+      data,
+      text({ id: "txt-1", messageID: "msg-user-1", text: "Inspect footer tabs", time: { end: 1 } }),
+    )
+    const note = reduce(
+      plain.data,
+      text({ id: "txt-2", messageID: "msg-user-1", text: REMINDER, synthetic: true, time: { end: 1 } }),
+    )
+
+    expect(plain.commits).toEqual([])
+    expect(note.commits).toEqual([])
+    expect(note.data.ids.has("txt-1")).toBe(true)
+    expect(note.data.ids.has("txt-2")).toBe(true)
+  })
+
+  test("a synthetic text part of an assistant message is still shown", () => {
+    let data = reduce(view(), assistant("msg-1")).data
+    const out = reduce(
+      data,
+      text({ id: "txt-1", messageID: "msg-1", text: "from the model", synthetic: true, time: { end: 1 } }),
+    )
+
+    expect(out.commits).toEqual([expect.objectContaining({ kind: "assistant", text: "from the model" })])
+  })
+})
 
 describe("run session data hook-managed text", () => {
   test("renders only displayText, merges the final display before completing, and never leaks raw deltas", () => {

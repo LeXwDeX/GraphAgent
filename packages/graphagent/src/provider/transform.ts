@@ -353,7 +353,7 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     },
   }
 
-  // A request-only part (for example the todo reminder) opts out of cache
+  // A request-only part (for example the runtime context) opts out of cache
   // coverage with `providerOptions.graphagent.cache = "none"`. Put the breakpoint
   // on the last persisted part instead; a message-level marker would otherwise
   // land on the ephemeral tail after the SDK projects it.
@@ -431,10 +431,10 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
       : last && (last.role === "user" || last.role === "assistant")
         ? walkBack(assistantIndex)
         : walkBack(assistantIndex - 1)
-  // A request-only part can live outside those boundaries (for example the
-  // todo reminder in the user turn of a long tool loop). Keep a stable
-  // breakpoint on its persisted part so the reminder never enters a cached
-  // prefix; newest first so the four-breakpoint cap keeps the useful tail.
+  // A request-only part can live outside those boundaries (for example one
+  // in the user turn of a long tool loop). Keep a stable breakpoint on its
+  // persisted part so it never enters a cached prefix; newest first so the
+  // four-breakpoint cap keeps the useful tail.
   const ephemeralMessages = msgs
     .filter((msg) => Array.isArray(msg.content) && msg.content.some(ephemeral) && cacheable(msg))
     .reverse()

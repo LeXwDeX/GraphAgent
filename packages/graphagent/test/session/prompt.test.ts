@@ -44,8 +44,6 @@ import { Image } from "../../src/image/image"
 
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
-import { TodoReminders } from "../../src/session/todo-reminders"
-import { DagModeReminder } from "../../src/session/dag-mode-reminder"
 import { Session } from "@/session/session"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
@@ -62,7 +60,8 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionInbox } from "../../src/session/inbox"
 import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
-import { StepMetricsRing } from "../../src/session/step-metrics"
+import { explainFingerprintChange, fingerprintOf, StepMetricsRing } from "../../src/session/step-metrics"
+import { ReminderState } from "../../src/session/reminder-state"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -470,8 +469,6 @@ function makePrompt(input?: PromptLayerOptions) {
     input?.dagMessagesLayer ?? DagMessages.defaultLayer,
     DagStore.defaultLayer,
     EventV2Bridge.defaultLayer,
-    TodoReminders.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
-    DagModeReminder.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
     AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
@@ -4326,6 +4323,16 @@ it.instance("loop continues when finish is tool-calls", () =>
   }),
 )
 
+// The state reminder of the turn is one synthetic part of that turn's user message, and of no other message.
+const expectReminderOnlyOn = Effect.fnUntraced(function* (sessions: Session.Interface, sessionID: SessionID, prompt: string) {
+  const stored = yield* sessions.messages({ sessionID })
+  const holders = stored.filter((message) => JSON.stringify(message.parts).includes("[todo reminder]"))
+  expect(holders).toHaveLength(1)
+  expect(holders[0].info.role).toBe("user")
+  expect(JSON.stringify(holders[0].parts)).toContain(prompt)
+  expect(holders[0].parts.filter((part) => part.type === "text" && part.synthetic === true)).toHaveLength(1)
+})
+
 it.instance("injects the todo reminder into model requests, not stored tool output (#953)", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
@@ -4368,19 +4375,19 @@ it.instance("injects the todo reminder into model requests, not stored tool outp
     // Steps 1 and 2 have unchanged todos, so the second request extends the cached prefix.
     expect(requests[1].conversation.slice(0, requests[0].conversation.length)).toEqual(requests[0].conversation)
     // todowrite changes the list after this turn was assembled; the same turn
-    // keeps the frozen reminder and the next user turn picks up the update.
+    // keeps the reminder it has and the next user turn picks up the update.
     const reminderTexts = (conversation: unknown[]) =>
       conversation.flatMap((message) => {
         const content =
           typeof message === "object" && message !== null && "content" in message ? message.content : undefined
-        if (typeof content === "string") return content.startsWith("[todo reminder]") ? [content] : []
+        if (typeof content === "string") return content.includes("[todo reminder]") ? [content] : []
         if (!Array.isArray(content)) return []
         return content.flatMap((part) =>
           typeof part === "object" &&
           part !== null &&
           "text" in part &&
           typeof part.text === "string" &&
-          part.text.startsWith("[todo reminder]")
+          part.text.includes("[todo reminder]")
             ? [part.text]
             : [],
         )
@@ -4401,19 +4408,79 @@ it.instance("injects the todo reminder into model requests, not stored tool outp
 
     const after = (yield* llm.hits).map((hit) => requestMessages(hit.body))
     expect(after).toHaveLength(5)
-    // Exactly one reminder per request: the previous turn's reminder is replaced,
-    // not retained as historical context.
-    expect(reminderTexts(after[4].conversation)).toHaveLength(1)
-    expect(reminderTexts(after[4].conversation)[0]).toContain("updated item")
-    expect(reminderTexts(after[4].conversation)[0]).not.toContain("keep the request prefix")
+    // The state changed, so the new turn adds one more reminder after the first turn's, which stays in the history.
+    expect(reminderTexts(after[4].conversation)).toHaveLength(2)
+    expect(reminderTexts(after[4].conversation)[0]).toContain("keep the request prefix")
+    expect(reminderTexts(after[4].conversation)[1]).toContain("updated item")
+    expect(reminderTexts(after[4].conversation)[1]).not.toContain("keep the request prefix")
+    expect(after[4].conversation.slice(0, requests[3].conversation.length)).toEqual(requests[3].conversation)
 
+    // The reminders are parts of the two user messages; the tool output never carries one.
     const stored = yield* sessions.messages({ sessionID: chat.id })
-    expect(JSON.stringify(stored)).not.toContain("[todo reminder]")
+    const storedReminders = stored.flatMap((message) =>
+      message.parts.filter((part) => part.type === "text" && part.text.includes("[todo reminder]")),
+    )
+    expect(storedReminders).toHaveLength(2)
+    expect(stored.filter((message) => JSON.stringify(message.parts).includes("[todo reminder]"))).toHaveLength(2)
+    expect(
+      stored
+        .filter((message) => message.info.role === "assistant")
+        .every((message) => !JSON.stringify(message.parts).includes("[todo reminder]")),
+    ).toBe(true)
     const toolParts = stored
       .flatMap((message) => message.parts)
       .filter((part): part is SessionV1.ToolPart => part.type === "tool")
     expect(toolParts).toHaveLength(3)
     expect(toolParts.every((part) => !JSON.stringify(part.state).includes("[todo reminder]"))).toBe(true)
+  }),
+)
+
+it.instance("keeps an unchanged todo reminder in the request prefix across user turns (#1456)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const chat = yield* sessions.create({
+      title: "Reminder prefix",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "keep the request prefix", status: "in_progress", priority: "high" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "first turn" }],
+    })
+    yield* llm.tool("glob", { pattern: "**/reminder-prefix-missing" })
+    yield* llm.text("done")
+    yield* prompt.loop({ sessionID: chat.id })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "second turn" }],
+    })
+    yield* llm.text("done again")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(3)
+    const fingerprint = (body: { messages?: unknown; tools?: unknown }) => {
+      const request = requestMessages(body)
+      return fingerprintOf({ tools: body.tools, system: [request.system], messages: request.conversation })
+    }
+    // The first request of the second turn extends the last request of the first one: the todos did not change,
+    // so no part of the earlier history may be rewritten.
+    expect(explainFingerprintChange(fingerprint(hits[1].body), fingerprint(hits[2].body))).not.toContain("prefix")
+    // Unchanged state adds nothing: the one reminder was written into the first user message, and stays there.
+    const marked = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) =>
+      message.parts.filter((part) => part.type === "text" && part.metadata?.[ReminderState.KEY] !== undefined),
+    )
+    expect(marked).toHaveLength(1)
   }),
 )
 
@@ -4548,7 +4615,12 @@ for (const [runtime, runner] of [
       expect(requests).toHaveLength(2)
       for (const request of requests)
         expect(JSON.stringify(request.conversation).match(/\[todo reminder\]/g)).toHaveLength(1)
-      expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+      // The one reminder is a part of the first user message; the second turn, with the same todos, adds none.
+      const stored = yield* sessions.messages({ sessionID: chat.id })
+      const holders = stored.filter((message) => JSON.stringify(message.parts).includes("[todo reminder]"))
+      expect(holders.map((message) => message.info.role)).toEqual(["user"])
+      expect(holders[0].parts.filter((part) => part.type === "text" && part.synthetic)).toHaveLength(1)
+      expect(requests[1].conversation[0]).toEqual(requests[0].conversation[0])
     }),
   )
 }
@@ -4641,7 +4713,7 @@ for (const [runtime, runner] of [
       const context = messages.filter((message) => JSON.stringify(message).includes("project-memory-probe")).at(-1)
       expect(context).toBeDefined()
       expect(JSON.stringify(context)).not.toContain("[todo reminder]")
-      expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+      yield* expectReminderOnlyOn(sessions, chat.id, "second turn")
     }),
   )
 }
@@ -4688,7 +4760,7 @@ for (const [runtime, runner] of [
       const context = messages.filter((message) => JSON.stringify(message).includes("project-memory-probe")).at(-1)
       expect(context).toBeDefined()
       expect(JSON.stringify(context)).not.toContain("[todo reminder]")
-      expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+      yield* expectReminderOnlyOn(sessions, chat.id, "after attachment groups")
     }),
   )
 }
@@ -4728,7 +4800,7 @@ withMemoryContext.instance("does not target provider-executed tool attachment me
     for (const message of synthetic) expect(JSON.stringify(message)).not.toContain("[todo reminder]")
     const context = messages.filter((message) => JSON.stringify(message).includes("project-memory-probe")).at(-1)
     expect(context).toBeDefined()
-    expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+    yield* expectReminderOnlyOn(sessions, chat.id, "after provider attachment")
   }),
 )
 
@@ -4769,50 +4841,8 @@ it.instance("keeps the reminder on a final step that retains tools (#953)", () =
     expect(bodies[1]).not.toContain("Tools are disabled until next user input")
     for (const body of bodies) expect(body.match(/\[todo reminder\]/g)).toHaveLength(1)
     expect(bodies[1]).toContain("stable last step")
-    const stored = yield* sessions.messages({ sessionID: chat.id })
-    expect(JSON.stringify(stored)).not.toContain("[todo reminder]")
+    yield* expectReminderOnlyOn(sessions, chat.id, "act, then hit the step limit")
   }),
-)
-
-it.instance(
-  "clears the todo reminder ledger when the session is deleted (#953)",
-  () =>
-    Effect.gen(function* () {
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const todo = yield* Todo.Service
-      const reminders = yield* TodoReminders.Service
-      const chat = yield* sessions.create({
-        title: "Deleted reminder",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* todo.update({
-        sessionID: chat.id,
-        todos: [{ content: "delete cleanup", status: "in_progress", priority: "high" }],
-      })
-      yield* prompt.prompt({
-        sessionID: chat.id,
-        agent: "build",
-        noReply: true,
-        parts: [{ type: "text", text: "create a reminder before deletion" }],
-      })
-      const messages = yield* sessions.messages({ sessionID: chat.id })
-      const before = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
-      expect(before).toContain("[todo reminder]")
-
-      yield* sessions.remove(chat.id)
-
-      expect(
-        yield* pollWithTimeout(
-          Effect.gen(function* () {
-            const current = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
-            return current?.includes("[todo reminder]") ? undefined : true
-          }),
-          "todo reminder ledger was not cleared after session deletion",
-        ),
-      ).toBe(true)
-    }),
-  { config: cfg },
 )
 
 it.instance(

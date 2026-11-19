@@ -2,17 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * #953 provider wire boundary: the request-only reminder is a part of the
- * persisted user message, and positional cache markers stay on the persisted
- * part before it. These tests exercise installed provider SDK lowering, not
- * only the intermediate ModelMessage array.
+ * #953 provider wire boundary: a request-only part (`cache: "none"`) rides in
+ * the persisted user message, and positional cache markers stay on the
+ * persisted part before it. The todo reminder was such a part; since #1456 it is
+ * persisted, and the runtime context and the synthetic attachment remain. The
+ * part is built here, with the todo reminder's text. These tests exercise
+ * installed provider SDK lowering, not only the intermediate ModelMessage array.
  */
 import { describe, expect, test } from "bun:test"
 import type { LanguageModelV3Message, LanguageModelV3Prompt } from "@ai-sdk/provider"
 import type { ModelMessage } from "ai"
 import { ProviderTransform } from "@/provider/transform"
 import { RuntimeContext } from "@/session/runtime-context"
-import { TodoReminders } from "@/session/todo-reminders"
 import type { Provider } from "@/provider/provider"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
@@ -38,6 +39,19 @@ const model = (input: { id: string; providerID: string; npm: string; url: string
   headers: {},
   release_date: "",
 })
+
+// Appends the request-only part to the persisted user message: the first user message that is not the runtime context.
+const withRequestOnlyPart = (messages: ModelMessage[], text: string): ModelMessage[] => {
+  const at = messages.findIndex((message) => message.role === "user" && !RuntimeContext.isMessage(message))
+  const target = messages[at]
+  if (target?.role !== "user" || !Array.isArray(target.content)) return messages
+  const next = [...messages]
+  next[at] = {
+    ...target,
+    content: [...target.content, { type: "text", text, providerOptions: { graphagent: { cache: "none" } } }],
+  }
+  return next
+}
 
 const cacheMessages = (): ModelMessage[] => {
   const messages: ModelMessage[] = [
@@ -68,7 +82,7 @@ const cacheMessages = (): ModelMessage[] => {
       ],
     },
   ]
-  return TodoReminders.append(messages, "[todo reminder] ephemeral")
+  return withRequestOnlyPart(messages, "[todo reminder] ephemeral")
 }
 
 const cacheBlocks = (value: unknown) => {

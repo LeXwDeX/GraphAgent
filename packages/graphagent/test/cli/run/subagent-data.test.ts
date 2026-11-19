@@ -484,6 +484,139 @@ describe("run subagent data", () => {
     ])
   })
 
+  test("leaves the synthetic parts of a child's user message out of the inspector", () => {
+    const data = createSubagentData()
+    const reminder =
+      '<system-reminder source="reminder" kind="todo">\n[todo reminder] 1 uncompleted todo item:\n- in_progress: ship\n</system-reminder>'
+
+    bootstrapSubagentData({
+      data,
+      messages: [taskMessage("child-1", "completed")],
+      children: [{ id: "child-1" }],
+      permissions: [],
+      questions: [],
+    })
+
+    expect(
+      bootstrapSubagentCalls({
+        data,
+        sessionID: "child-1",
+        messages: [
+          childMessage({
+            messageID: "msg-user-1",
+            sessionID: "child-1",
+            role: "user",
+            parts: [
+              {
+                id: "txt-user-1",
+                messageID: "msg-user-1",
+                sessionID: "child-1",
+                type: "text",
+                text: "Inspect footer tabs",
+                time: { start: 1, end: 1 },
+              },
+              {
+                id: "txt-user-2",
+                messageID: "msg-user-1",
+                sessionID: "child-1",
+                type: "text",
+                text: reminder,
+                synthetic: true,
+              },
+            ],
+          }),
+          childMessage({
+            messageID: "msg-assistant-1",
+            sessionID: "child-1",
+            role: "assistant",
+            parts: [
+              {
+                id: "txt-1",
+                messageID: "msg-assistant-1",
+                sessionID: "child-1",
+                type: "text",
+                text: "hello world",
+                time: { start: 2, end: 3 },
+              },
+            ],
+          }),
+        ],
+        thinking: true,
+        limits: {},
+      }),
+    ).toBe(true)
+
+    expect(visible(snapshotSubagentData(data).details["child-1"]?.commits ?? [])).toEqual([
+      "› Inspect footer tabs",
+      "hello world",
+    ])
+  })
+
+  test("keeps a synthetic user part out when it arrives before its message's role", () => {
+    const data = createSubagentData()
+    const reminder =
+      '<system-reminder source="reminder" kind="dag">\n[Follow the latest dag_mode context]\n</system-reminder>'
+
+    bootstrapSubagentData({
+      data,
+      messages: [taskMessage("child-1", "running")],
+      children: [{ id: "child-1" }],
+      permissions: [],
+      questions: [],
+    })
+
+    // Both parts come first, the role last: the synthetic mark has to survive every event in between.
+    reduce(data, {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "txt-user-1",
+          messageID: "msg-user-1",
+          sessionID: "child-1",
+          type: "text",
+          text: "Inspect footer tabs",
+          time: { start: 1, end: 1 },
+        },
+      },
+    })
+    reduce(data, {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "txt-user-2",
+          messageID: "msg-user-1",
+          sessionID: "child-1",
+          type: "text",
+          text: reminder,
+          synthetic: true,
+          time: { start: 1, end: 1 },
+        },
+      },
+    })
+    reduce(data, {
+      type: "message.part.delta",
+      properties: {
+        sessionID: "child-1",
+        messageID: "msg-user-1",
+        partID: "txt-user-2",
+        field: "text",
+        delta: " more",
+      },
+    })
+    reduce(data, {
+      type: "message.updated",
+      properties: {
+        sessionID: "child-1",
+        info: {
+          id: "msg-user-1",
+          role: "user",
+        },
+      },
+    })
+
+    expect(visible(snapshotSubagentData(data).details["child-1"]?.commits ?? [])).toEqual(["› Inspect footer tabs"])
+  })
+
   test("marks a running tab cancelled when the child session aborts", () => {
     const data = createSubagentData()
 
