@@ -116,6 +116,7 @@ export async function runDagCoreCoverageGate() {
         { file: "src/dag/runtime/loop.ts", lines: 90, functions: 88 },
         // #1344: a module moved out of loop.ts is held to at least loop.ts's floor (90 / 88).
         { file: "src/dag/runtime/entry.ts", lines: 92, functions: 100 },
+        { file: "src/dag/runtime/gates.ts", lines: 100, functions: 100 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },
         { file: "src/dag/runtime/spawn.ts", lines: 90, functions: 70 },
         { file: "src/dag/runtime/summary-publisher.ts", lines: 95, functions: 90 },
