@@ -197,7 +197,7 @@ export const zhCN = {
   "panel.config.width.wide": "宽（2）",
   "panel.config.language.auto": "自动",
   "panel.config.language.description": "未配置时按系统语言推断；切换后界面立即生效",
-  "panel.config.dag.defaultOn": "新会话默认开启 DAG 模式",
+  "panel.config.dag.defaultOn": "新会话默认 DAG 模式",
   "panel.config.dag.default.description": "只影响之后新建的会话",
   "panel.config.dag.session": "本会话：{state}",
   "panel.config.dag.concurrency": "DAG 并发上限",
