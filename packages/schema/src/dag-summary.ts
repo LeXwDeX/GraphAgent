@@ -7,7 +7,7 @@ import { Schema } from "effect"
 import { define, inventory } from "./event"
 import { SessionID } from "./session-id"
 import { NonNegativeInt } from "./schema"
-import { NodeSafetyDenials } from "./dag-event"
+import { NodeSafetyDenials, WorktreeState } from "./dag-event"
 
 /** #1027 D6: review-quality counters for the `/dag` panel, computed by the
  * same function as the `review_quality` block of the workflow inspection
@@ -103,6 +103,16 @@ export const WorkflowSummary = Schema.Struct({
   checkpointPending: Schema.optional(Schema.Boolean),
   /** Review quality; null outside the strict review gate or without a review decision. */
   quality: Schema.optional(Schema.NullOr(WorkflowQuality)),
+  /** #1618: the workflow-level worktree of `config.isolation: "worktree"`; absent for a workflow without one and
+   * from an older server. `state` is `active` while the live pointer in the persisted config is all there is, and
+   * the settlement's own state (`removed` or `kept`) once the terminal settlement was written. */
+  worktree: Schema.optional(
+    Schema.Struct({
+      directory: Schema.String,
+      branch: Schema.optional(Schema.String),
+      state: WorktreeState,
+    }),
+  ),
 }).annotate({ identifier: "DagWorkflowSummary" })
 export type WorkflowSummary = typeof WorkflowSummary.Type
 

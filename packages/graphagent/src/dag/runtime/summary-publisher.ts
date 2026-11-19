@@ -35,6 +35,11 @@ import { DagSummaryDerived } from "../summary-derived"
  * keeps the values derived at that marker, so usage ticks and finished
  * workflows cost one marker read instead of a config parse.
  *
+ * #1618: the workflow's `worktree` is derived there too (the settled row, else
+ * the config's live pointer). The settlement moves neither seq nor update
+ * time, so the marker carries a settled flag of its own and
+ * `WorkflowWorktreeSettled` is a trigger.
+ *
  * Invariants (enforced by the "stateless derived view" contract):
  * - No cached summary is ever served; every emission re-reads the aggregates
  *   from DagStore, and a memoised derived value is valid only for the exact
@@ -47,7 +52,7 @@ import { DagSummaryDerived } from "../summary-derived"
  */
 
 // The events that can change a workflow's visible progress or topology.
-// WorkflowCreated/Started/Replanned/ConfigUpdated/Paused/Resumed/Stepped/Completed/Failed/Cancelled
+// WorkflowCreated/Started/Replanned/ConfigUpdated/Paused/Resumed/Stepped/Completed/Failed/Cancelled/WorktreeSettled
 // and every Node* event can all alter the aggregated summary.
 const SUMMARY_TRIGGER_EVENTS = [
   DagEvent.WorkflowCreated,
@@ -61,6 +66,9 @@ const SUMMARY_TRIGGER_EVENTS = [
   DagEvent.WorkflowCancelled,
   DagEvent.WorkflowReplanned,
   DagEvent.WorkflowConfigUpdated,
+  // #1618: the settlement is written after the terminal transition and moves neither the workflow's seq nor its
+  // update time, so nothing else announces that summary.worktree went from the live pointer to the settled state.
+  DagEvent.WorkflowWorktreeSettled,
   DagEvent.NodeRegistered,
   // pending → queued raises summary.queuedNodes.
   DagEvent.NodeQueued,

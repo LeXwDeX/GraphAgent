@@ -16,6 +16,7 @@ type OpenApiSchema = {
   readonly type?: string
   readonly properties?: Record<string, OpenApiSchema>
   readonly required?: readonly string[]
+  readonly enum?: readonly string[]
 }
 
 const schemas = () =>
@@ -59,5 +60,18 @@ describe("public OpenAPI review quality (#1027 D6b)", () => {
         "completeness",
       ]),
     )
+  })
+})
+
+describe("public OpenAPI workflow worktree (#1618)", () => {
+  // The field is optional, so a server without it and a client from before it keep decoding each other's summaries.
+  test("a workflow summary may carry a worktree of directory, an optional branch and a state", () => {
+    const summary = schemas().DagWorkflowSummary
+    expect(summary?.required ?? []).not.toContain("worktree")
+    const worktree = summary?.properties?.worktree
+    expect(worktree?.type).toBe("object")
+    expect(Object.keys(worktree?.properties ?? {}).toSorted()).toEqual(["branch", "directory", "state"])
+    expect(worktree?.required?.toSorted()).toEqual(["directory", "state"])
+    expect(worktree?.properties?.state?.enum).toEqual(["active", "removed", "kept"])
   })
 })
