@@ -78,7 +78,13 @@ const IMAGE = { type: "file", mime: "image/png", filename: "shot.png", url: "dat
 const SESSION = exportOf(
   message("m1", "user", text("first question")),
   message("m2", "assistant", text("first answer")),
-  message("m3", "user", text("fix the bug"), text("in src/a.ts"), text("[file context]", { synthetic: true })),
+  message(
+    "m3",
+    "user",
+    text("fix the bug"),
+    text("in src/a.ts"),
+    text('<system-reminder source="reminder">plan mode</system-reminder>', { synthetic: true }),
+  ),
   message(
     "m4",
     "assistant",
@@ -386,9 +392,52 @@ describe("eval:case: the case of a user message", () => {
     )
     expect(error(asked({ tools: { bash: false, read: true } }))).toContain("user message 0 turns off some of its tools")
     expect(built(asked({ tools: { read: true } })).request).toBe("what is wrong here?")
+    const hook = text('<system-reminder source="hook">Use the staging database.</system-reminder>', { synthetic: true })
+    expect(error(asked({}, hook))).toContain("user message 0 carries context a hook or the application added to it")
+    // A hook's system message lands as plain synthetic text.
+    expect(error(asked({}, text("Remember the release freeze.", { synthetic: true })))).toContain("carries context")
+    for (const again of [
+      '<system-reminder source="reminder">plan mode</system-reminder>',
+      '<system-reminder source="runtime">today is Monday</system-reminder>',
+      '<system-reminder source="instruction-file" path="AGENTS.md">rules</system-reminder>',
+    ])
+      expect(built(asked({}, text(again, { synthetic: true }))).request).toBe("what is wrong here?")
     // A text format is the default and asks for nothing more; an empty system text adds nothing.
     expect(built(asked({ system: "" })).request).toBe("what is wrong here?")
     expect(built(asked({ format: { type: "text" } })).request).toBe("what is wrong here?")
+  })
+
+  test("--out is checked where the file really goes: a symbolic link is refused, a linked directory is resolved", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "case-out-"))
+    try {
+      const repo = path.join(dir, "repo")
+      await fs.mkdir(repo)
+      const from = path.join(dir, "export.json")
+      await fs.writeFile(from, JSON.stringify(SESSION))
+      const outputs = () => {
+        const lines: string[] = []
+        return { lines, output: { log: (line: string) => lines.push(line), error: (line: string) => lines.push(line) } }
+      }
+      // A link to a file inside the repository, and a link onto the export itself.
+      await fs.symlink(path.join(repo, "case.json"), path.join(dir, "into-repo.json"))
+      await fs.symlink(from, path.join(dir, "onto-export.json"))
+      for (const link of ["into-repo.json", "onto-export.json"]) {
+        const { lines, output } = outputs()
+        expect(await runCaseCommand(["--from", from, "--out", path.join(dir, link)], output, repo)).toBe(2)
+        expect(lines.join("\n")).toContain("--out is a symbolic link")
+      }
+      // A linked directory that leads into the repository.
+      await fs.symlink(repo, path.join(dir, "repo-link"))
+      const { lines, output } = outputs()
+      expect(await runCaseCommand(["--from", from, "--out", path.join(dir, "repo-link", "c.json")], output, repo)).toBe(
+        1,
+      )
+      expect(lines.join("\n")).toContain("--out is inside this repository")
+      expect(await fs.readdir(repo)).toEqual([])
+      expect(JSON.parse(await fs.readFile(from, "utf8"))).toEqual(SESSION)
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 
   test("the text it takes for an attachment is still the wording of the prompt", async () => {

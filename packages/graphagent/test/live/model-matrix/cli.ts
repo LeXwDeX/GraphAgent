@@ -9,6 +9,7 @@
  * checkout so that none of it can be committed by accident.
  */
 
+import fs from "node:fs/promises"
 import path from "node:path"
 
 /** The checkout this script is in: `packages/graphagent/test/live/model-matrix` is five levels below it. */
@@ -18,6 +19,28 @@ export const REPO_ROOT = path.resolve(import.meta.dir, "../../../../..")
 export function insideRepo(target: string, repoRoot: string = REPO_ROOT): boolean {
   const relative = path.relative(path.resolve(repoRoot), path.resolve(target))
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+/**
+ * Whether `target` lands in the checkout once the links on its way are followed: the lexical check, then the same
+ * check on the real paths, so a link that leads into the checkout is caught as well.
+ */
+export async function resolvesIntoRepo(target: string, repoRoot: string = REPO_ROOT): Promise<boolean> {
+  return insideRepo(target, repoRoot) || insideRepo(await realPathOf(target), await realPathOf(repoRoot))
+}
+
+/** The real path of `target`, which need not exist yet: its deepest existing ancestor resolved, the rest appended. */
+export async function realPathOf(target: string): Promise<string> {
+  const rest: string[] = []
+  let at = path.resolve(target)
+  for (;;) {
+    const real = await fs.realpath(at).catch(() => undefined)
+    if (real !== undefined) return path.join(real, ...rest)
+    const parent = path.dirname(at)
+    if (parent === at) return path.resolve(target)
+    rest.unshift(path.basename(at))
+    at = parent
+  }
 }
 
 /** The value of a parse, or the reason it failed, in words. */

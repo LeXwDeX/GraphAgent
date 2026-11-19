@@ -49,7 +49,7 @@ import {
 import { startScriptServer, type ScriptServer } from "../lib/script-server"
 import { caseName, loadCaseFile, type CaseFile } from "./case-file"
 import { runCaseModel } from "./case-run"
-import { insideRepo, readFlags, REPO_ROOT } from "./cli"
+import { insideRepo, readFlags, REPO_ROOT, resolvesIntoRepo } from "./cli"
 import { matrixHostConfig, matrixHostEnv } from "./host-config"
 import {
   buildReport,
@@ -341,7 +341,7 @@ async function main(argv: readonly string[], env: Readonly<Record<string, string
     replay = { name: caseName(options.caseFile), file: loaded.value }
   }
   const out = options.out ?? (await fs.mkdtemp(defaultOutPrefix()))
-  if (insideRepo(out)) return usage("the output directory is inside this repository", configured)
+  if (await resolvesIntoRepo(out)) return usage("the output directory is inside this repository", configured)
   await fs.mkdir(path.join(out, "transcripts"), { recursive: true })
   const scenarios =
     options.scenarios.length > 0 ? SCENARIOS.filter((item) => options.scenarios.includes(item.id)) : SCENARIOS

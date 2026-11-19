@@ -34,7 +34,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { isRecord } from "../delegation-timing/classify"
 import { CASE_VERSION, parseMessages, type CaseFile, type ExportedMessage, type Recorded } from "./case-file"
-import { failed, insideRepo, readFlags, REPO_ROOT, type Parsed } from "./cli"
+import { failed, readFlags, realPathOf, REPO_ROOT, resolvesIntoRepo, type Parsed } from "./cli"
 
 export interface CaseOptions {
   readonly from: string
@@ -123,7 +123,7 @@ function recordedOf(message: ExportedMessage): { recorded: Recorded; expect?: { 
 /**
  * What makes the turn a different task than its text: the case replays the text alone, so a turn that asked for
  * structured output (the `StructuredOutput` tool is offered only for it), carried its own system instructions,
- * turned off some of its tools, mentioned an agent or started a subtask is refused instead of replayed as something
+ * turned off some of its tools, mentioned an agent, started a subtask or carries a hook's context is refused instead of replayed as something
  * else. The other per-turn fields of a prompt are left as they are: the model and its variant are what the replay
  * changes, and the hook mode does not change what the model is asked.
  */
@@ -137,8 +137,24 @@ function unsupportedTurn(message: ExportedMessage): string | undefined {
   if (isRecord(tools) && Object.values(tools).some((on) => on === false)) return "turns off some of its tools"
   if (message.parts.some((part) => part.type === "agent" || part.type === "subtask"))
     return "mentions an agent or starts a subtask"
+  // Text the application added that the replay host makes again (its reminders, the runtime context, instruction
+  // files) is left out of the request; anything else (a hook's context or system message) the model saw and the
+  // replay could not give it.
+  if (
+    message.parts.some(
+      (part) =>
+        part.type === "text" &&
+        part.synthetic === true &&
+        typeof part.text === "string" &&
+        !REGENERATED_TEXT.test(part.text),
+    )
+  )
+    return "carries context a hook or the application added to it"
   return undefined
 }
+
+/** The opening of a block the replay host adds to its own user message again. */
+const REGENERATED_TEXT = /^\s*<system-reminder(?:\s+source="(?:reminder|runtime|instruction-file)"[^>]*)?>/
 
 /** The agent a user message was sent to, as the export writes it in the message's `info`; none when it has no name. */
 function agentOf(message: ExportedMessage): string | undefined {
@@ -241,11 +257,15 @@ export async function runCaseCommand(
   const parsed = parseCaseOptions(argv)
   if (!parsed.ok) return usage(parsed.error)
   const { from, out, userMessage } = parsed.value
-  if (insideRepo(out, repoRoot)) {
+  // The checks below apply to the file that is actually written: a symbolic link is refused, and the directory it
+  // goes in is resolved, so neither a link into this repository nor one onto the export gets past them.
+  if (await isSymlink(out)) return usage("--out is a symbolic link; name the file itself")
+  if (await resolvesIntoRepo(out, repoRoot)) {
     output.error("eval:case: refused: --out is inside this repository; the case holds real session content")
     return 1
   }
-  if (out === from) return usage("--out is the export itself; the case is written to a file of its own")
+  if (out === from || (await realPathOf(out)) === (await realPathOf(from)))
+    return usage("--out is the export itself; the case is written to a file of its own")
   let exported: unknown
   try {
     exported = JSON.parse(await fs.readFile(from, "utf8"))
@@ -273,6 +293,13 @@ export async function runCaseCommand(
   const what = "text" in recorded ? "text" : `a ${recorded.calls[0].name} call`
   output.log(`eval:case: wrote ${out} (${built.value.session.messages.length} earlier messages, recorded ${what})`)
   return 0
+}
+
+async function isSymlink(target: string): Promise<boolean> {
+  return fs.lstat(target).then(
+    (stat) => stat.isSymbolicLink(),
+    () => false,
+  )
 }
 
 if (import.meta.main) {
