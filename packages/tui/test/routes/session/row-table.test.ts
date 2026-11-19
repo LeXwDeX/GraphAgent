@@ -19,6 +19,7 @@ import {
   type SessionViewState,
   type TextFactsCache,
 } from "../../../src/routes/session/rows"
+import { openToolLines } from "../../../src/routes/session/fold"
 import { hideToolDetails } from "../../../src/routes/session/tool-attention"
 import { errorMessage } from "../../../src/util/error"
 
@@ -310,6 +311,10 @@ function reference(input: {
       } else if (part.type === "tool") {
         if (hideToolDetails(part.tool, part.state, input.showDetails)) continue
         rows.push([`part:${part.id}`, "tool", message.id, part.id])
+        // A row that is open draws its whole output under the call: its estimate is that many lines.
+        if (input.view.get(part.id, "expanded") || input.view.get(part.id, "errorExpanded")) {
+          chars.set(`part:${part.id}`, openToolLines(part))
+        }
         if (part.state.status === "pending" || part.state.status === "running") streaming.add(`part:${part.id}`)
       }
     }
@@ -618,6 +623,35 @@ describe("a streamed frame costs what the part it writes to costs", () => {
       expect(rig.runs.get("msg_a3")).toBe(1)
       expect(shapeOf(rig.table())).toEqual(rig.reference())
     }))
+
+  test("gives an open tool row the number of lines of its output, and a folded one none", () =>
+    withTable(
+      [
+        { info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_q", "run it")] },
+        {
+          info: assistantMessage("msg_a", 2),
+          parts: [
+            tool(
+              "msg_a",
+              "prt_long",
+              "bash",
+              completed("", { output: Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n") }),
+            ),
+            tool("msg_a", "prt_short", "bash", completed("", { output: "one\ntwo" })),
+          ],
+        },
+      ],
+      (rig) => {
+        expect(rig.table().chars.has("part:prt_long")).toBe(false)
+        rig.view.set("prt_long", "expanded", true)
+        expect(rig.table().chars.get("part:prt_long")).toBe(30)
+        // The other row is folded, and what it keeps is a line of the transcript like any other.
+        expect(rig.table().chars.has("part:prt_short")).toBe(false)
+        rig.view.set("prt_long", "expanded", false)
+        expect(rig.table().chars.has("part:prt_long")).toBe(false)
+        expect(shapeOf(rig.table())).toEqual(rig.reference())
+      },
+    ))
 
   test("a finished message does not follow the stream", () =>
     withTable(conversation(20), (rig) => {
