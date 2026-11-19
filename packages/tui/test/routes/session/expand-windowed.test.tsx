@@ -79,7 +79,8 @@ function openBlocks(scroll: ScrollBoxRenderable) {
     const text = texts(row).join("\n")
     const bash = /Bash printf block-(\d+)/.exec(text)
     if (bash && text.includes("ctrl+o collapse")) open.push(`bash ${bash[1]}`)
-    const reasoning = /- Thought: Block (\d+)/.exec(text)
+    // The header of a thought that is open says its title and how long it took; a folded one says so after that.
+    const reasoning = /Block (\d+) · Thought for \d+s(?! · collapsed)/.exec(text)
     if (reasoning) open.push(`reasoning ${reasoning[1]}`)
   }
   return open.sort()

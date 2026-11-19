@@ -42,7 +42,7 @@ packages/tui/src/
                         #   ticker.ts、sdk.tsx、route.tsx、theme.tsx …
   routes/               # home.tsx（及 home/）、session/、diff/
                         #   session/index.tsx 的 Main 按 `role` 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
-                        #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、tool-row.tsx（工具调用行 `ToolRow` 的纯展示组件，#1614）、result-card.ts（后台结果卡的版面纯函数）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
+                        #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、tool-row.tsx（工具调用行 `ToolRow` 的纯展示组件，#1614）、result-card.ts（后台结果卡的版面纯函数）、reasoning-line.ts（推理行的文字与时长的纯函数，#1615）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
   session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）、
                         #   subagents.ts（子 agent 的 kind、描述、状态标记、/agents 的行模型与分组序等纯函数，顶栏、面板与同级键共用，F5、#1058）
                         #   subagent-record.ts（子 agent 记录的任务块与结束行的判定和文字）
@@ -212,8 +212,8 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 ### 消息列表
 
 - 行数 ≥ `WINDOW_MIN_ROWS`（2000，依据见 `test/perf/README.md` 的“窗口化阈值”：OpenTUI 0.8.3 上约 2000 行以内全挂载满足全部延迟预算，窗口化的滚动反而更贵）时窗口化：视口上下各 `PART_OVERSCAN = 6` 行，末尾 `TAIL_ALWAYS = 4` 行始终挂载，`streaming` 行、选中行、展开中的行始终挂载。未挂载的连续行合并成一个占位盒。
-- 行模型是 `Row { key, messageID, partID?, kind, revision }`，`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice | delegation | handback | result`；`delegation`、`handback` 只在子 agent 视图出现，`result` 是后台结果卡，键 `part:<partID>`（part 是那条合成文本），折叠 id 就是该 part id，所以 `foldRowKey` 不变；`delegation` 是该会话第一条用户消息（会话窗口里的第一条）改画成的“任务 · 来自主会话”块，取代同一条消息的 `user` 行，`handback` 是结束后追加在表尾的一行，二者都由 `createRowTable` 的 `delegation`、`handback` 入参给出；`revision` 分别取被取代的 `user` 行的 revision 加 Task 描述和展开标志、取那一行的文字（切换语言会重新测量）。`delegation` 行没有 part：它的 `partID` 就是它的 key，也是它在 `SessionViewState` 里的折叠 id（`delegation:<messageID>`，`delegationFoldID`），所以提示词按 `ctrl+o` 或点击都能展开（见下）。
-- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以内容宽度向上取整加边距，`tool` 折叠态 2 行（调用行与结果行），打开时按输出行数加 3（行表给打开的工具行记输出行数），`reasoning` 折叠态 1 行，`user` 按文本行数加内边距，`delegation` 按提示词折行数加 5 行（折叠态至多 `DELEGATION_PROMPT_LINES` 行加一行省略号，展开态取全部折行数；会折叠的提示词在其下另有空行加提示行共 2 行，展开与否都在），`handback` 2 行，`result` 折叠态 5 行（上方空行、上下内边距、标题、预览）、展开态按正文折行数加 7 行，其余 3 行（F2 3.3）。
+- 行模型是 `Row { key, messageID, partID?, kind, revision, attached? }`（`attached` 只有 `user` 行带：消息带文件或目录，它们的标签在正文下占一行；并入 `revision`），`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice | delegation | handback | result`；`delegation`、`handback` 只在子 agent 视图出现，`result` 是后台结果卡，键 `part:<partID>`（part 是那条合成文本），折叠 id 就是该 part id，所以 `foldRowKey` 不变；`delegation` 是该会话第一条用户消息（会话窗口里的第一条）改画成的“任务 · 来自主会话”块，取代同一条消息的 `user` 行，`handback` 是结束后追加在表尾的一行，二者都由 `createRowTable` 的 `delegation`、`handback` 入参给出；`revision` 分别取被取代的 `user` 行的 revision 加 Task 描述和展开标志、取那一行的文字（切换语言会重新测量）。`delegation` 行没有 part：它的 `partID` 就是它的 key，也是它在 `SessionViewState` 里的折叠 id（`delegation:<messageID>`，`delegationFoldID`），所以提示词按 `ctrl+o` 或点击都能展开（见下）。
+- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以（内容宽度 − `ROW_INDENT` 3 − `MARK_CELLS` 2）向上取整加 1 行间隔，`tool` 折叠态 2 行（调用行与结果行），打开时按输出行数加 3（行表给打开的工具行记输出行数），`reasoning` 折叠态 2 行（间隔与头行），打开时按正文折行数（宽度同 `text`）加 3，`user` 按字符数除以（内容宽度 − 左右内边距各 `USER_PADDING` 1 − `MARK_CELLS` 2）向上取整，加 1 行间隔，有附件标签（`attached`）再加 1，`delegation` 按提示词折行数加 5 行（折叠态至多 `DELEGATION_PROMPT_LINES` 行加一行省略号，展开态取全部折行数；会折叠的提示词在其下另有空行加提示行共 2 行，展开与否都在），`handback` 2 行，`result` 折叠态 5 行（上方空行、上下内边距、标题、预览）、展开态按正文折行数加 7 行，其余 3 行（F2 3.3）。
 - 行表按消息增量维护（`routes/session/row-table.ts`）：每条消息一个 memo，只读自己的 parts，store 写入或一帧流式只重算它所属的那一条消息，`rowData` 只在某条消息贡献的行变了时重算。已结束的 part（有 `time.end`）读快照（`settledPartText`），不订阅 stream version；正在写入的 part 只在还没有可显示的文字时订阅，出现首批文字后不再订阅。新代码不得在行表或行内组件里对已结束的 part 调用 `readPartText`，也不得在行表里为未变化的 part 重新派生文本（`createTextFacts` 按文本缓存）。
 - 正在写入的 text/reasoning 行，`revision` 不含正文，只含 `done` 等标志，结束时按全文计算一次。正文变化会让每帧都产生新的 `Row`，使该行每帧重挂载、其后的行全部失效；它的高度靠挂载后的实测（`streaming` 行始终挂载）。`chars`（高度估算）因此只在该行出现与结束时更新。
 - 窗口化的行是否挂载经 `createSelector` 逐行询问（`pinned`、末尾、视口三个选择器），视口移动一行只唤醒进出窗口的那几行；`gaps` 用普通循环计算，内容相同的 map 不替换。不要让每一行都读同一个会随滚动变化的 signal。
@@ -411,6 +411,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 默认主题 `graphagent`（`DEFAULT_THEME` 常量），位于 `theme/assets/graphagent.json`，深浅两版同一个 JSON。不保留 `opencode` 旧主题，读不到已保存主题名时回到 `graphagent`，不迁移旧值。
 - 新增 token 的流程（F1 1.2）：`ThemeJson` 里加可选字段 → `theme/index.ts` 的 `resolveTheme` 里给回退值（照 `backgroundMenu`、`selectedListItemText`）→ `Theme` 类型加同名必填字段 → 旧主题不改。`generateSystem` 走回退值，不显式写。`packages/graphagent/src/cli/cmd/run/theme.ts` 的重复实现要复用 TUI 的 `resolveTheme` 或补同一组回退值，并有一致性测试。
 - 现有可选 token：`textDim`、`backgroundSelected`、`backgroundUser`、`borderWarning`、`logoFace`、`logoAccent`、`logoShadow`、`statusRunning`、`statusQueued`、`statusPaused`。已完成用 `success`（灰），失败用 `error`，不再新增。
+- 转录里行首标记与底色（#1615，只用 token）：用户消息一行 `›`（`primary`）加正文（`text`），整块底色 `backgroundUser`，悬停只把这一块自己的底色换成 `border`（子 agent 视图不可点，不悬停）；排队标记 `warning`，时间 `textDim`，附件标签 `textMuted`。助手文字 `⏺` 用 `success`。推理 `∴` 与文字折叠时整行 `textDim`，打开或进行中仍是 `warning` 合成色（上面第三处例外）。标记占 `MARK_CELLS` 列，折行的续行悬挂在标记之下；`∴` 是 Ambiguous 字形，单行的推理行按 `cellWidth` 截断（`reasoningLine`）。
 - 品牌色 `primary`（深 `#4fa3f0`，浅 `#1f6fc4`）白名单，其余位置一律用灰：
   1. logo 的 AGENT 字面和顶栏小标记的 `◆`。
   2. 列表、设置、询问里的选中行（符号和文字）及面板标题。
@@ -418,8 +419,9 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   4. 页脚里当前 agent 名。
   5. 页脚 DAG 指示的 `◆ DAG`（开，F1 3.9）。
   6. 状态带行首的 `◆`（F4 1）。
+  7. 用户消息行首的 `›`（#1615）。
 
-  输入框提示符 `›` 原为白名单第 2 项，#886 收口时决定不做并从白名单删去：输入框的输入门禁与光标几何风险高，收益只是一个装饰字符。
+  输入框提示符 `›` 原为白名单第 2 项，#886 收口时决定不做并从白名单删去：输入框的输入门禁与光标几何风险高，收益只是一个装饰字符。用户消息行首的 `›`（第 7 项）是只读的转录文字，没有输入门禁与光标，那条理由不适用。条目总数以合并顺序为准（同批 #1616 的输入框 `›` 也走这一节）。
 
   新增白名单位置需维护者批准，先停下提出。
 
@@ -553,7 +555,7 @@ Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033�
 - Q4 `context/ticker.ts`（F1 实现，F2 迁移现有动画）提供 `frame`、`second`、`at(time, cb)`；`setTimeout`/`setInterval` 只允许出现在 `ticker.ts`、`frame-clock.ts`、`terminal-win32.ts`。
 - Q5 页脚右侧一个共享位置，优先级 leader 提示 > toast > hook 进度。
 - Q6 `esc` 链层号以 F1 4.5 为准。
-- Q7 品牌色白名单扩为 7 项，新增页脚 `◆ DAG` 与状态带行首 `◆`；#886 收口时删去输入框 `›`，现为 6 项。
+- Q7 品牌色白名单扩为 7 项，新增页脚 `◆ DAG` 与状态带行首 `◆`；#886 收口时删去输入框 `›`，现为 6 项；#1615 加入用户消息行首的 `›`，现为 7 项（总数随同批 #1616 的合并顺序再计）。
 - Q8 `ui/width.ts` 的 `cellWidth(text)` 按 `ambiguous_width`（1 默认 / 2）计算；对齐敏感布局两种设置下 80 列都不溢出；PR 压缩标记只用 ASCII 与 `✓`、`✗`。
 - Q9 预填文本在功能目录生成，落地统一经 `session/prefill.ts` 的 `prefillRootPrompt(text)`。
 - Q10 骨架补 `ask/`、`session/`、`attention/`、`context/`；`component/` 冻结。

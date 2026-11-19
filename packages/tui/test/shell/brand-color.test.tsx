@@ -13,6 +13,10 @@ import { BottomZone, createBottomZoneState } from "../../src/shell/bottom-zone"
 import type { DagIndicatorState } from "../../src/shell/dag-indicator"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { renderPanel } from "../panel/contexts"
+import { assistantMessage, textPart, userMessage, type MessageEntry } from "../fixture/session-records"
+import { json } from "../fixture/tui-sdk"
+import { sessionFixture } from "../routes/dag-mode-harness"
+import { mountSessionShell } from "../routes/session-shell"
 import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
 /**
@@ -29,6 +33,8 @@ import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
  * 4. footer agent name                here
  * 5. footer `◆ DAG` (on)              here
  * 6. status band leading `◆`          test/shell/status-band.test.tsx
+ * 7. user message line mark `›` (#1615) a real transcript here: the `›` of each user message and nothing else of the
+ *                                     transcript, whose `⏺` of the assistant and `∴` of a thought stay gray
  */
 
 beforeEach(() => {
@@ -273,5 +279,60 @@ test("a brand colored run outside the whitelist shows up in the comparison", asy
     expect(runs).not.toEqual(["footer:build", "footer:◆ DAG", "topbar:◆"])
   } finally {
     app.renderer.destroy()
+  }
+})
+
+test("paints the › that opens a user message in the brand color, and nothing else of the transcript (#1615)", async () => {
+  const sessionID = "ses_brand_transcript"
+  const entries: MessageEntry[] = [
+    {
+      info: userMessage("msg_brand_q1", sessionID, 10),
+      parts: [textPart("msg_brand_q1", sessionID, "prt_brand_q1", "第一个问题")],
+    },
+    {
+      info: assistantMessage("msg_brand_a1", sessionID, "msg_brand_q1", 11),
+      parts: [
+        {
+          id: "prt_brand_thought",
+          sessionID,
+          messageID: "msg_brand_a1",
+          type: "reasoning",
+          text: "**A title**\n\nthe body of a thought",
+          time: { start: 1_000, end: 13_000 },
+        },
+        textPart("msg_brand_a1", sessionID, "prt_brand_a1", "第一个回答"),
+      ],
+    },
+    {
+      info: userMessage("msg_brand_q2", sessionID, 20),
+      parts: [textPart("msg_brand_q2", sessionID, "prt_brand_q2", "第二个问题\n第二行")],
+    },
+    {
+      info: assistantMessage("msg_brand_a2", sessionID, "msg_brand_q2", 21),
+      parts: [textPart("msg_brand_a2", sessionID, "prt_brand_a2", "最后的回答")],
+    },
+  ]
+  const shell = await mountSessionShell({
+    sessionID,
+    sessions: [sessionFixture(sessionID)],
+    width: 80,
+    height: 30,
+    handler: (url) => (url.pathname === `/session/${sessionID}/message` ? json(entries) : undefined),
+  })
+
+  try {
+    const frame = await shell.waitForFrame((value) => value.includes("最后的回答"), "the transcript")
+    // Sanity: every kind of row of the transcript is on screen, so an empty result cannot pass for a blank one.
+    for (const text of ["› 第一个问题", "› 第二个问题", "∴ ", "⏺ 第一个回答", "⏺ 最后的回答"])
+      expect(frame).toContain(text)
+
+    const first = rowOf(frame, "第一个问题")
+    const last = rowOf(frame, "最后的回答")
+    const runs = brandRuns(await shell.spans(), brandOf("dark")).filter((run) => run.row >= first && run.row <= last)
+    // One `›` on the row of each user message; the second line of the second message, the thought, and the answers
+    // carry none.
+    expect(labels(runs)).toEqual([`row ${first}:›`, `row ${rowOf(frame, "第二个问题")}:›`].sort())
+  } finally {
+    await shell.dispose()
   }
 })

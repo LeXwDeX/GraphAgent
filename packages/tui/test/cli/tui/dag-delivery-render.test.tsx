@@ -222,6 +222,12 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
     const frame = await waitForFrame(app, "FOLLOWUP USER TURN")
     expect(frame.match(/DAG · Release workflow · final-report/g)).toHaveLength(1)
     expect(frame.match(/DELIVERY BODY/g)).toHaveLength(1)
+    // Each text part of the delivery has the `⏺` of its own (#1615), and the user turn that follows opens with a `›`.
+    // The first message is the task block of this sub-agent record, which is not a user line.
+    expect(frame.match(/⏺ DAG · Release workflow · final-report/g)).toHaveLength(1)
+    expect(frame.match(/⏺ DELIVERY BODY/g)).toHaveLength(1)
+    expect(frame.match(/›/g)).toHaveLength(1)
+    expect(frame).toContain("› FOLLOWUP USER TURN")
     expect(sync.data.message[sessionID]?.map((item) => item.id)).toEqual([requestID, deliveryID, followupID])
     expect(sync.data.part[deliveryID]?.map((part) => part.id)).toEqual([source.id, answer.id])
 
