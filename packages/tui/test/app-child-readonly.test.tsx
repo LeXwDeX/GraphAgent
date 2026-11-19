@@ -22,7 +22,7 @@ afterEach(() => {
 const mainID = "ses_refused_main"
 
 const HINT = {
-  "zh-CN": "子 agent 会话只读：请回主会话让主 agent 调整",
+  "zh-CN": "子 agent 只读：请回主会话让主 agent 调整",
   en: "Sub-agent is read-only; ask the main agent",
 } as const
 

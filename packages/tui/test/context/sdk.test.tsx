@@ -230,7 +230,7 @@ const command = { sessionID: "ses_main", command: "dag-mode", arguments: "on" }
 describe("a refused write seen through the client", () => {
   test("the toast holds the hint in the language of the UI, as a warning that merges its repeats", async () => {
     for (const [language, text] of [
-      ["zh-CN", "子 agent 会话只读：请回主会话让主 agent 调整"],
+      ["zh-CN", "子 agent 只读：请回主会话让主 agent 调整"],
       ["en", "Sub-agent is read-only; ask the main agent"],
     ] as const) {
       setLanguage(language)
