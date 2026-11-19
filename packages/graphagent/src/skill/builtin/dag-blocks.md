@@ -14,8 +14,7 @@ depends on results.
 ## Authoring contract
 
 Never infer or invent a YAML field. Copy the intended envelope and change
-values only. Unknown fields are errors; a tool-call or runtime field does not
-belong here unless listed.
+values only. Unknown fields are errors.
 
 ### Start file
 
@@ -31,16 +30,16 @@ Both are start-only and fixed at run.start: DAG mode on or `mode: deep` fixes
 `standard`. A deep workflow without `acceptance` derives
 `AC1..ACn` from `admission.brief.acceptance_criteria`. `strict` also requires
 block writers (`coding`/`prototype`/fan-out aggregator), a required
-non-skippable diff decision bound to each writer after verify, `completeness`
-among its lenses, read-only lanes and decision, and 1-50 unique `acceptance`
-ids; `standard` warns instead.
+non-skippable diff decision bound to each writer after verify and feeding a
+final `synthesize`, `completeness` among its lenses, read-only lanes and
+decision, and 1-50 unique `acceptance` ids; `standard` warns instead.
 
 ```yaml
 config:
   name: implement-session-recovery
   objective: Implement session recovery with focused tests.
   acceptance: [{ id: AC1, text: Recovery restores the session }]
-  blocks: [{ id: coding, kind: coding }, { id: verify, kind: verify, depends_on: [coding] }, { id: review, kind: review, depends_on: [verify] }]
+  blocks: [{ id: coding, kind: coding }, { id: verify, kind: verify, depends_on: [coding] }, { id: review, kind: review, depends_on: [verify], lenses: [standards, intent, completeness] }, { id: report, kind: synthesize, depends_on: [review] }]
 ```
 
 ### Extend file
@@ -111,8 +110,7 @@ acyclic and may name fragment blocks or durable node IDs.
 - `debug`: reproduce/evidence, then root-cause diagnosis.
 - `coding`: bounded production implementation plus focused tests and checks.
 - `verify`: deterministic acceptance checks with explicit PASS/FAIL evidence.
-- `review`: `lenses` expand into one read-only lane per lens (default standards
-  and intent), `skeptics` add 0-4 adversarial lanes, and `auditor` arbitrates.
+- `review`: one read-only lane per lens and skeptic, arbitrated by `auditor`.
   The `completeness` lens judges every `config.acceptance` item
   covered/partial/missing with evidence and enters unlisted items in
   `required_actions`. Implementation input follows `coding → verify(PASS) →
