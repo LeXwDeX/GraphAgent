@@ -57,10 +57,12 @@ import { DagBudgetTokens, DagMode } from "@graphagent/schema/dag-mode"
 import { TuiEvent } from "@graphagent/schema/tui-event"
 import { Goal } from "@/goal/goal"
 import { ExclusiveRegistry } from "./engine-process"
+import { SessionCancellation } from "./cancellation"
 import { SessionRole } from "./role"
 import { CompactionExport } from "./compaction-export"
 import { SessionStatus } from "./status"
 import { Dag } from "@/dag/dag"
+import { DagMode as DagModeState } from "@/dag/mode"
 import { isTerminalWorkflowStatusValue, isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
 import { landSystemMessages } from "@/hook/trigger-result"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -588,8 +590,9 @@ export interface Interface {
   readonly applyUpdate: (input: { sessionID: SessionID } & UpdateInput) => Effect.Effect<Info, NotFound>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
   /**
-   * Removes the session, its children and everything they own. It does not stop a prompt run that is still
-   * writing into them: delete entry points go through `SessionPrompt.removeSession`, which cancels the runs first.
+   * Removes the session, its children and everything they own, including this process's cancellation epoch and
+   * DAG mode state for each of them. It does not stop a prompt run that is still writing into them: delete entry
+   * points go through `SessionPrompt.removeSession`, which cancels the runs first.
    */
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends SessionV1.Info>(msg: T) => Effect.Effect<T>
@@ -956,6 +959,11 @@ export const layer: Layer.Layer<
           )
           .pipe(Effect.orDie)
         yield* events.remove(sessionID)
+        // Deleted is published: the session is gone for good, so this process drops what it keeps per session id
+        // and would otherwise hold for its whole life (#1584). An instance release is not a deletion and must
+        // keep the cancellation epoch, so this does not belong in the runtime caches' `forgetLocal`.
+        SessionCancellation.forget(sessionID)
+        DagModeState.forget(sessionID)
         // #524: scrub the related dag event aggregates after the session
         // aggregate — terminal workflows included (the cancel loop above skips
         // them). Soft-degrading like the EventResidueSweep sibling: a failed

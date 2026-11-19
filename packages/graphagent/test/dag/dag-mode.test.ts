@@ -133,6 +133,50 @@ describe("DagMode.state (L2)", () => {
   })
 })
 
+// #1584: both process-memory mirrors grew by one entry per session that ever ran DAG mode here.
+describe("DagMode.forget (#1584)", () => {
+  const warn = { used: 1, cacheRead: 0, budget: 10, warnRatio: 0.8, tier: "warn" } as const
+  const exhausted = { ...warn, used: 20, tier: "exhausted" } as const
+  const slotText = (sessionID: SessionID) =>
+    EngineProcess.runtimes.runtimeSlots
+      .list(sessionID)
+      .find((item) => item.key === "dag_mode")
+      ?.parts.join("\n")
+
+  test("drops the budget tier and the snapshot of one session and keeps another's", () => {
+    const gone = SessionID.make("ses_dag_mode_forget_gone")
+    const kept = SessionID.make("ses_dag_mode_forget_kept")
+    for (const id of [gone, kept]) {
+      DagMode.set(id, facts)
+      DagMode.setBudget(id, warn)
+    }
+    const published = slotText(gone)
+    expect(published).toContain("over 10% used")
+
+    DagMode.forget(gone)
+
+    expect(DagMode.budgetState(gone)).toBeUndefined()
+    expect(DagMode.budgetState(kept)).toEqual(warn)
+    // Without its snapshot a budget change is only cached: L2 is not republished for the forgotten session, while
+    // the other one still republishes.
+    DagMode.setBudget(gone, exhausted)
+    DagMode.setBudget(kept, exhausted)
+    expect(slotText(gone)).toBe(published)
+    expect(slotText(kept)).toContain("DAG token budget exhausted")
+
+    for (const id of [gone, kept]) {
+      DagMode.forget(id)
+      EngineProcess.runtimes.runtimeSlots.forget(id)
+    }
+  })
+
+  test("forgetting a session this process never saw is harmless", () => {
+    const id = SessionID.make("ses_dag_mode_forget_unknown")
+    DagMode.forget(id)
+    expect(DagMode.budgetState(id)).toBeUndefined()
+  })
+})
+
 // #1324: the user's tier for unattended permissions. The model-visible wording
 // is fixed by the Issue and must not drift; L1 stays a constant text, and L2
 // states the tier only when it is not the default.

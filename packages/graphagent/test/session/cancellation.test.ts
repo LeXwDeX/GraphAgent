@@ -6,6 +6,7 @@ import { Deferred, Effect } from "effect"
 import { SessionAbortReason } from "@/session/abort-reason"
 import { SessionCancellation } from "@/session/cancellation"
 import { EngineProcess } from "@/session/engine-process"
+import { SessionID } from "@/session/schema"
 import { awaitWithTimeout, it } from "../lib/effect"
 
 describe("session cancellation coordinator", () => {
@@ -137,6 +138,65 @@ describe("SessionCancellation.requestIfEpoch", () => {
       abort.finish()
       expect(SessionCancellation.requestIfEpoch(id, observed)).toBeUndefined()
       expect(EngineProcess.cancellation.sessions.has(id)).toBe(false)
+    }),
+  )
+})
+
+// #1584: `epochs` gained one entry per session ever cancelled and never lost one. Only a deletion may drop it:
+// an epoch that fell back to 0 while its session lives could be matched by a stale observation.
+describe("SessionCancellation.forget", () => {
+  it.effect(
+    "drops the remembered epoch, so a later reader sees 0 again",
+    Effect.sync(() => {
+      const id = "forget-epoch"
+      SessionCancellation.begin(id).finish()
+      SessionCancellation.begin(id).finish()
+      expect(SessionCancellation.epoch(id)).toBe(2)
+
+      SessionCancellation.forget(id)
+
+      expect(EngineProcess.cancellation.epochs.has(id)).toBe(false)
+      expect(SessionCancellation.epoch(id)).toBe(0)
+    }),
+  )
+
+  it.effect(
+    "touches only that session, and not the live state of an abort in flight",
+    Effect.sync(() => {
+      const id = "forget-in-flight"
+      const other = "forget-other"
+      SessionCancellation.begin(other).finish()
+      const abort = SessionCancellation.begin(id)
+      const request = SessionCancellation.request(id)
+
+      SessionCancellation.forget(id)
+
+      expect(SessionCancellation.epoch(other)).toBe(1)
+      // The request keeps its fence: `sessions` is released by its own users, not by a delete.
+      expect(request.valid()).toBe(true)
+      expect(EngineProcess.cancellation.sessions.has(id)).toBe(true)
+      abort.finish()
+      request.release()
+      expect(EngineProcess.cancellation.sessions.has(id)).toBe(false)
+      // Finishing does not write the epoch back.
+      expect(EngineProcess.cancellation.epochs.has(id)).toBe(false)
+      SessionCancellation.forget(other)
+    }),
+  )
+
+  it.effect(
+    "an instance release is not a deletion: neither purgeDirectory nor the runtime caches' remove drop the epoch",
+    Effect.gen(function* () {
+      const id = SessionID.make("ses_forget_instance_release")
+      const directory = "forget-instance-release-directory"
+      SessionCancellation.begin(id).finish()
+      EngineProcess.runtimes.own(id, directory)
+
+      yield* Effect.promise(() => EngineProcess.runtimes.purgeDirectory(directory))
+      yield* EngineProcess.runtimes.remove(id)
+
+      expect(SessionCancellation.epoch(id)).toBe(1)
+      SessionCancellation.forget(id)
     }),
   )
 })

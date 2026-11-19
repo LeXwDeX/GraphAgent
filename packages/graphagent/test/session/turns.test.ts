@@ -25,6 +25,7 @@ import type { Session } from "@/session/session"
 import {
   dropReverted,
   endedTurnsSince,
+  foreignRunning,
   lastOutcomeOf,
   makeTurns,
   originFor,
@@ -381,6 +382,100 @@ describe("orphan recovery", () => {
       // Another pid is probed: the parent process exists, the nonce is not ours to judge.
       expect(runnerAlive(`${process.ppid}:whatever`)).toBe(true)
       expect(runnerAlive(String(process.ppid))).toBe(true)
+    }),
+  )
+})
+
+// #1584: `session delete` asks which turns of a session tree another live process is still running, because the
+// delete cancels only this process's runs. The verdict is `recover`'s, so the rows below mirror its cases.
+describe("foreignRunning", () => {
+  const origin = JSON.stringify({ kind: "user", via: "prompt" })
+  const tag = Date.now()
+  const sessionOf = (label: string) => SessionID.make(`ses_foreign_${label}_${tag}`)
+
+  /** One session per row, so each assertion names the case that produced it. */
+  const seed = (
+    db: Database.Interface["db"],
+    rows: ReadonlyArray<{ label: string; runner: string | null; state?: "running" | "ended" }>,
+  ) =>
+    Effect.gen(function* () {
+      for (const { label, runner, state = "running" } of rows) {
+        const sessionID = sessionOf(label)
+        yield* ensureSession(db, sessionID)
+        yield* db
+          .insert(SessionTurnTable)
+          .values({
+            id: `turn-foreign-${label}-${tag}`,
+            session_id: sessionID,
+            origin,
+            state,
+            outcome: state === "ended" ? { type: "completed" } : null,
+            runner_id: runner,
+            time_started: Date.now(),
+            time_ended: state === "ended" ? Date.now() : null,
+          })
+          .run()
+          .pipe(Effect.orDie)
+      }
+    })
+
+  it.effect("reports the running turns another live process owns, with its pid, and nothing else", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seed(db, [
+        { label: "own", runner: EngineProcess.runner.id },
+        { label: "foreign", runner: `${process.ppid}:whatever` },
+        { label: "bare", runner: String(process.ppid) },
+        { label: "deadpid", runner: "2147483647:some-nonce" },
+        // The same pid with another nonce: an earlier life of this pid, however alive the pid looks.
+        { label: "earlier", runner: `${process.pid}:an-earlier-life` },
+        { label: "norunner", runner: null },
+        { label: "ended", runner: `${process.ppid}:whatever`, state: "ended" },
+      ])
+
+      const found = yield* foreignRunning(
+        { db },
+        ["own", "foreign", "bare", "deadpid", "earlier", "norunner", "ended"].map(sessionOf),
+      )
+
+      expect(found).toEqual([
+        { sessionID: sessionOf("foreign"), runnerID: `${process.ppid}:whatever`, pid: process.ppid },
+        { sessionID: sessionOf("bare"), runnerID: String(process.ppid), pid: process.ppid },
+      ])
+    }),
+  )
+
+  it.effect("keeps to the sessions it was asked about, in the order it was asked", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seed(db, [
+        { label: "first", runner: `${process.ppid}:a` },
+        { label: "second", runner: `${process.ppid}:b` },
+        { label: "unasked", runner: `${process.ppid}:c` },
+      ])
+
+      const found = yield* foreignRunning({ db }, ["second", "first", "second"].map(sessionOf))
+
+      expect(found.map((run) => run.sessionID)).toEqual([sessionOf("second"), sessionOf("first")])
+    }),
+  )
+
+  it.effect("answers nothing for no sessions", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      expect(yield* foreignRunning({ db }, [])).toEqual([])
+    }),
+  )
+
+  it.effect("finds a turn that sits in a later chunk of a long session list", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seed(db, [{ label: "late", runner: `${process.ppid}:late` }])
+      const filler = Array.from({ length: 1200 }, (_, index) => sessionOf(`filler${index}`))
+
+      const found = yield* foreignRunning({ db }, [...filler, sessionOf("late")])
+
+      expect(found.map((run) => run.sessionID)).toEqual([sessionOf("late")])
     }),
   )
 })

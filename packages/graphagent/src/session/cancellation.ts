@@ -18,6 +18,16 @@ export function epoch(sessionID: string): number {
   return cancellation.epochs.get(sessionID) ?? 0
 }
 
+/**
+ * Drop the remembered epoch of a session that was deleted for good (#1584); `Session.remove` is the only caller.
+ * Never call it for an instance release: the session lives on there, and its epoch has to stay monotonic. Session
+ * ids are generated and never reused, so a later session cannot inherit the old value. The live `sessions` entry
+ * stays: `releaseIfUnused` frees it when its last request and abort end.
+ */
+export function forget(sessionID: string): void {
+  cancellation.epochs.delete(sessionID)
+}
+
 function stateFor(sessionID: string): CancellationSession {
   const existing = cancellation.sessions.get(sessionID)
   if (existing) return existing
