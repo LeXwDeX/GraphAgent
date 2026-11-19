@@ -341,6 +341,40 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  // #1573: a page the byte budget cut counts lines only up to the cut, so its display says the budget cut it.
+  it.instance("marks the display of a page the byte budget cut, and of no other page", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      // 30 lines of 2000 characters: 60 KB, over the 50 KB budget and far under the 2000-line cap.
+      const wide = path.join(test.directory, "wide.log")
+      yield* put(wide, Array.from({ length: 30 }, () => "x".repeat(2_000)).join("\n") + "\n")
+
+      const cut = yield* run({ filePath: wide })
+      expect(cut.metadata.truncated).toBe(true)
+      expect(cut.metadata.display).toMatchObject({
+        type: "file",
+        lineStart: 1,
+        lineEnd: 25,
+        totalLines: 26,
+        truncated: true,
+        byBytes: true,
+      })
+
+      // A page the line limit cut counts the whole file and says nothing of bytes.
+      const paged = yield* run({ filePath: wide, limit: 5 })
+      expect(paged.metadata.truncated).toBe(true)
+      expect(paged.metadata.display).toMatchObject({ lineEnd: 5, totalLines: 30, truncated: true })
+      expect(paged.metadata.display).not.toHaveProperty("byBytes")
+
+      // Neither does a page that holds the whole file.
+      const small = path.join(test.directory, "small.log")
+      yield* put(small, "one\ntwo\n")
+      const whole = yield* run({ filePath: small })
+      expect(whole.metadata.display).toMatchObject({ totalLines: 2, truncated: false })
+      expect(whole.metadata.display).not.toHaveProperty("byBytes")
+    }),
+  )
+
   it.instance("stops streaming after the byte cap", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

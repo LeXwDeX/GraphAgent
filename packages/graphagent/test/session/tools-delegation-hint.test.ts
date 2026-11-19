@@ -158,6 +158,8 @@ const block = (agent: string, path: string) =>
 
 const saved = { truncated: true, outputPath: SAVED }
 const bigRead = { truncated: true, display: { type: "file", path: BIG_FILE, totalLines: 2500 } }
+// A page the byte budget cut counts lines only to the cut, so a file of few long lines is told by the flag (#1573).
+const cutRead = { truncated: true, display: { type: "file", path: BIG_FILE, totalLines: 26, byBytes: true } }
 const reply = (metadata: Record<string, unknown>): Reply => ({ output: "PREVIEW", metadata })
 
 describe("the delegation line on a truncated result (#1454)", () => {
@@ -168,6 +170,7 @@ describe("the delegation line on a truncated result (#1454)", () => {
         { tool: "websearch", args: { query: "q" }, metadata: saved, agent: "researcher", path: SAVED },
         { tool: "bash", args: { command: "make" }, metadata: saved, agent: "explore", path: SAVED },
         { tool: "read", args: { filePath: BIG_FILE }, metadata: bigRead, agent: "explore", path: BIG_FILE },
+        { tool: "read", args: { filePath: BIG_FILE }, metadata: cutRead, agent: "explore", path: BIG_FILE },
       ]
       for (const item of cases) {
         yield* arrange({ reply: reply(item.metadata) })
@@ -206,6 +209,7 @@ describe("the delegation line on a truncated result (#1454)", () => {
         { metadata: bigRead, args: { filePath: BIG_FILE, limit: 100 } },
         { metadata: bigRead, args: { filePath: BIG_FILE, page: -1 } },
         { metadata: bigRead, args: { filePath: BIG_FILE, charOffset: 5 } },
+        { metadata: cutRead, args: { filePath: BIG_FILE, limit: 100 } },
       ]
       for (const item of cases) {
         yield* arrange({ reply: reply(item.metadata) })

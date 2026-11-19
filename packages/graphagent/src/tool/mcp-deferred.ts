@@ -60,7 +60,7 @@ export function catalogLine(key: string, description: string): string {
 }
 
 type CatalogItem = Readonly<{ id: string; description: string }>
-type SchemaItem = CatalogItem & Readonly<{ jsonSchema: JSONSchema7 }>
+type SchemaItem = CatalogItem & Readonly<{ rawSchema: JSONSchema7 }>
 
 /**
  * The parameters of the two helpers, as they are meant. Fresh objects each time, so a rewrite of one request never
@@ -138,7 +138,8 @@ export function helperEntries(
 
 /**
  * What `mcp_describe` returns: for each tool, its key, its whole description and its input schema, a blank line
- * between the tools.
+ * between the tools. The schema is the server's own, not the provider's rewrite of it, and `mcp_call` holds the
+ * arguments to that same one (#1576).
  */
 export function describeBlocks(items: ReadonlyArray<SchemaItem>): string {
   return items
@@ -146,7 +147,7 @@ export function describeBlocks(items: ReadonlyArray<SchemaItem>): string {
       [
         item.id,
         item.description.trim() === "" ? NO_DESCRIPTION : item.description,
-        `Input schema: ${JSON.stringify(item.jsonSchema)}`,
+        `Input schema: ${JSON.stringify(item.rawSchema)}`,
       ].join("\n"),
     )
     .join("\n\n")

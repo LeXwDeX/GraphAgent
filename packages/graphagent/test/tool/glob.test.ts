@@ -424,12 +424,95 @@ describe("tool.glob", () => {
       expect(small.output).toContain(`[truncated: showing the first ${listed.length} of 100 paths.`)
       expect(small.output).toContain("output byte budget (6.3 KB)")
       expect(small.output).toContain("Continue: narrow path/pattern.")
+      // #1573: the notice says how to narrow, not only that it should.
+      expect(small.output).toContain(
+        "Set path to a subdirectory, or add a directory prefix or an extension to the pattern (for example src/**/*.ts).",
+      )
 
       const whole = yield* globExecute(params)
       expect(lines(whole.output)).toHaveLength(100)
       expect(whole.metadata.count).toBe(100)
       expect(whole.metadata.truncated).toBe(false)
       expect(whole.output).not.toContain("[truncated:")
+    }),
+  )
+
+  // #1573: a limit the notice suggests has to show that many paths. One past what the byte budget holds is cut at the
+  // budget again, so the notice suggests the most the budget holds, and says so when no limit would show more.
+  it.instance("suggests only a limit the byte budget holds", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 100 }, (_, index) =>
+            Bun.write(path.join(test.directory, `${String(index).padStart(3, "0")}-${"n".repeat(52)}.txt`), "x"),
+          ),
+        ),
+      )
+      const small = { extra: { model: ProviderTest.model({ limit: { context: 32_000, output: 4_096 } }) } }
+      const params = { pattern: "*.txt", path: test.directory }
+      const lines = (output: string) => output.split("\n").filter((line) => line.endsWith(".txt"))
+
+      // The budget holds `fit` of the 100 paths.
+      const fit = lines((yield* globExecute(params, small)).output).length
+      expect(fit).toBeGreaterThan(5)
+      expect(fit).toBeLessThan(100)
+
+      // Asked for 5, the call used to advise limit=100, which the budget cuts at `fit` again.
+      const few = yield* globExecute({ ...params, limit: 5 }, small)
+      expect(few.metadata.count).toBe(5)
+      expect(few.metadata.truncated).toBe(true)
+      expect(few.output).toContain(
+        "[truncated: showing the first 5 of 100 paths. 95 paths omitted. " +
+          `Continue: narrow path/pattern, or glob limit=${fit} to show as many as the output byte budget (6.3 KB) holds.]`,
+      )
+      expect(few.output).not.toContain("glob limit=100")
+
+      // The advice, taken, shows that many paths and is not cut; at that limit no higher one shows more.
+      const taken = yield* globExecute({ ...params, limit: fit }, small)
+      expect(taken.metadata.count).toBe(fit)
+      expect(taken.metadata.truncated).toBe(true)
+      expect(lines(taken.output)).toHaveLength(fit)
+      expect(taken.output).not.toContain("stopped the list")
+      expect(taken.output).toContain(
+        `[truncated: showing the first ${fit} of 100 paths. ${100 - fit} paths omitted. ` +
+          "The output byte budget (6.3 KB) limits one result; narrow path/pattern.]",
+      )
+      expect(taken.output).not.toContain("glob limit=")
+    }),
+  )
+
+  it.instance("suggests only a limit the byte budget holds when the scan stopped at the path cap", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(async () => {
+        for (let index = 0; index < 1001; index++) {
+          await Bun.write(path.join(test.directory, `cap-${index}.txt`), "x")
+        }
+      })
+      const small = { extra: { model: ProviderTest.model({ limit: { context: 32_000, output: 4_096 } }) } }
+      const params = { pattern: "*.txt", path: test.directory }
+      const lines = (output: string) => output.split("\n").filter((line) => line.endsWith(".txt"))
+
+      // The most a call can show: the budget holds `fit` of the 1000 scanned paths.
+      const fit = lines((yield* globExecute({ ...params, limit: 1000 }, small)).output).length
+      expect(fit).toBeGreaterThan(5)
+      expect(fit).toBeLessThan(1000)
+
+      const few = yield* globExecute({ ...params, limit: 5 }, small)
+      expect(few.metadata.count).toBe(5)
+      expect(few.output).toContain(
+        "[truncated: showing the first 5 of at least 1000 paths. The scan stopped at the path cap. " +
+          `Continue: narrow path/pattern, or glob limit=${fit} to show up to ${fit} paths.]`,
+      )
+      expect(few.output).not.toContain("glob limit=1000")
+
+      const taken = yield* globExecute({ ...params, limit: fit }, small)
+      expect(taken.metadata.count).toBe(fit)
+      expect(taken.output).toContain(
+        `[truncated: showing the first ${fit} of at least 1000 paths. The scan stopped at the path cap. ` +
+          "The output byte budget (6.3 KB) limits one result; narrow path/pattern.]",
+      )
     }),
   )
 

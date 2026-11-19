@@ -59,7 +59,7 @@ jobs:
       - checkout: self
         fetchDepth: 1
       - template: templates/toolchain.yml
-      - bash: node --test script/toolchain.test.mjs script/ci-azure.test.mjs && bash script/setup-gh.test.sh
+      - bash: node --test script/toolchain.test.mjs script/ci-azure.test.mjs script/release-smoke.test.mjs && bash script/setup-gh.test.sh
         displayName: Test toolchain pins and pipeline definitions
       # Rule 3 reads the optional PRIVATE_HOST_PATTERNS secret; an undefined
       # variable stays literal and the scanner reports rule 3 as skipped.

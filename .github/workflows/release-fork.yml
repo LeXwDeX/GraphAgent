@@ -19,7 +19,8 @@
 #                            to build. Leave blank to build both.
 # Jobs    : package-templates — package latest reference templates from the
 #                               opencode-dag-config repo into a release asset
-#           build-cli — 2-OS matrix, bundles ripgrep + single-file binary
+#           build-cli — 2-OS matrix, bundles ripgrep + single-file binary,
+#                       smoke-tests it (script/release-smoke.sh)
 #           prepare-release — always assembles and verifies a release candidate
 #           publish-release — optional, creates the GitHub Release
 #           register  — no-op for push triggers, just registers in Actions UI
@@ -256,17 +257,17 @@ jobs:
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         run: bun run ./packages/graphagent/script/prefetch-ripgrep.ts
 
+      # #1034: one smoke script for every platform and for both release
+      # pipelines — version, help mark and command list, removed commands,
+      # path isolation and ignored legacy variables, all offline. macOS adds
+      # its install acceptance after packaging.
       - name: Verify CLI executable
-        if: matrix.name != 'macos' && (inputs.platforms == '' || contains(inputs.platforms, matrix.name))
+        if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
+        env:
+          GRAPHAGENT_VERSION: ${{ needs.version.outputs.version }}
         run: |
           for dir in packages/graphagent/dist/graphagent-*/; do
-            cli="$dir/bin/graphagent"
-            actual="$("$cli" --version)"
-            if [[ "$actual" != "${{ needs.version.outputs.version }}" ]]; then
-              echo "Unexpected CLI version: $actual" >&2
-              exit 1
-            fi
-            "$cli" --help > /dev/null
+            bash script/release-smoke.sh "${dir%/}/bin/graphagent" "$GRAPHAGENT_VERSION"
           done
         timeout-minutes: 5
 

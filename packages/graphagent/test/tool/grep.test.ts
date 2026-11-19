@@ -256,11 +256,14 @@ describe("tool.grep", () => {
         expect(message).not.toContain("Consider enabling PCRE2")
         expect(message).toContain("grep uses Rust regex (no look-around or backreferences)")
         expect(message).toContain("rg --pcre2 -n -e <pattern> <path> with the shell tool")
+        // These two have their own advice; the one for a literal metacharacter is for the other errors.
+        expect(message).not.toContain("Escape literal metacharacters")
       }
     }),
   )
 
-  it.instance("leaves other pattern errors as ripgrep reported them", () =>
+  // #1573: ripgrep's complaint stands as written, and a model that meant plain text is told how to match it.
+  it.instance("keeps ripgrep's complaint about other patterns and adds how to match a literal", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() => Bun.write(path.join(test.directory, "test.txt"), "ab"))
@@ -271,6 +274,9 @@ describe("tool.grep", () => {
       const message = failureMessage(exit)
       expect(message).toContain("regex parse error")
       expect(message).toContain("unclosed group")
+      expect(message).toEndWith(
+        "\n\nEscape literal metacharacters with a backslash (for example \\( or \\[); the pattern is a regex, not plain text.",
+      )
       expect(message).not.toContain("grep uses Rust regex")
     }),
   )
@@ -289,6 +295,38 @@ describe("tool.grep", () => {
         ctx,
       )
       expect(result.metadata.matches).toBeGreaterThan(0)
+    }),
+  )
+
+  // #1573: ripgrep hands each line over with its terminator, and the listing joins its rows with a newline of its own.
+  it.instance("puts adjacent matches and context rows on adjacent lines, whatever the line endings", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const unix = path.join(test.directory, "b-unix.txt")
+      const dos = path.join(test.directory, "a-dos.txt")
+      yield* Effect.promise(() =>
+        Promise.all([Bun.write(unix, "needle 1\nneedle 2\nneedle 3\n"), Bun.write(dos, "needle 1\r\nneedle 2\r\n")]),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+
+      const both = yield* grep.execute({ pattern: "needle", path: test.directory }, ctx)
+      expect(both.output).toBe(
+        [
+          "Found 5 matches",
+          `${dos}:`,
+          "  Line 1: needle 1",
+          "  Line 2: needle 2",
+          "",
+          `${unix}:`,
+          "  Line 1: needle 1",
+          "  Line 2: needle 2",
+          "  Line 3: needle 3",
+        ].join("\n"),
+      )
+
+      const around = yield* grep.execute({ pattern: "needle 2", path: dos, context: 1 }, ctx)
+      expect(around.output).toBe(["Found 1 matches", `${dos}:`, "  Line 1- needle 1", "  Line 2: needle 2"].join("\n"))
     }),
   )
 
@@ -487,6 +525,9 @@ describe("tool.grep", () => {
       expect(next).toBeTruthy()
       const lines = (yield* Effect.promise(() => fs.readFile(full!, "utf8"))).split("\n")
       expect(lines[Number(next) - 1]).toContain("needle 100")
+      // The header, the path and the 100 shown matches are lines 1-102 of the listing, one line per match (#1573).
+      expect(Number(next)).toBe(103)
+      expect(lines).not.toContain("")
     }),
   )
 

@@ -62,3 +62,65 @@ describe("Diagnostic.checkLine", () => {
     expect(LSP.Diagnostic.checkLine("checked", file, [at(1), at(2)], "", "x\ny\n")).toBe("checked: 2 errors")
   })
 })
+
+// #1572: a tool that has the changed lines already gives them as ranges, or as a function that finds them, and no diff
+// runs here.
+describe("Diagnostic with the changed lines given", () => {
+  const ranges = LSP.Diagnostic.changedRanges(oldText, newText, file)
+  const issues = [at(1), at(4), at(5, 2), at(6), at(9)]
+
+  /** A function for the lines that counts its calls. */
+  const counting = (found: LSP.Diagnostic.LineRange[] = ranges) => {
+    const calls = { count: 0 }
+    return {
+      calls,
+      lines: () => {
+        calls.count += 1
+        return found
+      },
+    }
+  }
+
+  test("ranges give the line and the report that the two texts give", () => {
+    expect(LSP.Diagnostic.checkLine("checked", file, issues, ranges)).toBe(
+      LSP.Diagnostic.checkLine("checked", file, issues, oldText, newText),
+    )
+    expect(LSP.Diagnostic.afterEdit(file, issues, ranges)).toBe(
+      LSP.Diagnostic.afterEdit(file, issues, oldText, newText),
+    )
+    expect(LSP.Diagnostic.checkLine("checked", file, issues, ranges)).toBe("checked: 2 errors")
+  })
+
+  test("a function gives them too, and is called once for each call that needs the lines", () => {
+    const { calls, lines } = counting()
+
+    expect(LSP.Diagnostic.checkLine("checked", file, issues, lines)).toBe("checked: 2 errors")
+    expect(LSP.Diagnostic.afterEdit(file, issues, lines)).toBe(LSP.Diagnostic.afterEdit(file, issues, ranges))
+    expect(calls.count).toBe(2)
+  })
+
+  test("the lines are not looked for when the file has no error to place", () => {
+    const { calls, lines } = counting()
+
+    expect(LSP.Diagnostic.checkLine("checked", file, [], lines)).toBe("checked: clean")
+    expect(LSP.Diagnostic.checkLine("checked", file, [at(5, 2), at(5, 3), at(5, 4)], lines)).toBe("checked: clean")
+    expect(LSP.Diagnostic.afterEdit(file, [], lines)).toBe("")
+    expect(LSP.Diagnostic.afterEdit(file, [at(5, 2)], lines)).toBe("")
+    expect(calls.count).toBe(0)
+  })
+
+  test("the lines are not looked for when the check did not run", () => {
+    const { calls, lines } = counting()
+
+    for (const status of ["disabled", "no_server", "timed_out"] as const) {
+      expect(LSP.Diagnostic.checkLine(status, file, issues, lines)).toStartWith("not checked: ")
+    }
+    expect(calls.count).toBe(0)
+  })
+
+  test("an error outside the given lines is not counted", () => {
+    expect(LSP.Diagnostic.checkLine("checked", file, [at(10)], ranges)).toBe("checked: clean")
+    expect(LSP.Diagnostic.checkLine("checked", file, [at(10)], [{ start: 9, end: 10 }])).toBe("checked: 1 error")
+    expect(LSP.Diagnostic.afterEdit(file, [at(10)], [])).toBe("")
+  })
+})

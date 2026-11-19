@@ -84,8 +84,13 @@ export const GlobTool = Tool.define(
           const files = matches.slice(0, limit)
           // The list is cut at the byte budget of the model, like any result that sets `metadata.truncated` itself.
           const limits = yield* trunc.limits({ context: ModelContext.contextOf(ctx.extra) })
-          const lines = files.map((file) => path.resolve(search, file.path))
-          const kept = Truncate.fitItems(lines, limits.maxBytes)
+          // `fit` is how many of the scanned paths the byte budget holds. The budget cuts the sorted list at the same
+          // path whatever limit asked for it, so the list shown is the shorter of `limit` and `fit`, and a limit
+          // above `fit` shows no more.
+          const scanned = matches.slice(0, scan).map((file) => path.resolve(search, file.path))
+          const fit = Truncate.fitItems(scanned, limits.maxBytes)
+          const lines = scanned.slice(0, files.length)
+          const kept = Math.min(files.length, fit)
           const byBytes = kept < files.length
 
           const output = []
@@ -94,23 +99,38 @@ export const GlobTool = Tool.define(
             output.push(...lines.slice(0, kept))
             if (more || files.length < matches.length || byBytes) {
               const total = more ? `at least ${scan}` : `${matches.length}`
-              const next = more
-                ? limit < MAX_LIMIT
-                  ? `, or glob limit=${MAX_LIMIT} to show up to ${MAX_LIMIT} paths`
-                  : ""
-                : `, or glob limit=${Math.min(matches.length, MAX_LIMIT)} to show the rest`
+              const budget = Truncate.formatSize(limits.maxBytes)
               output.push("")
-              output.push(
-                byBytes
-                  ? `[truncated: showing the first ${kept} of ${total} paths. ` +
-                      `The output byte budget (${Truncate.formatSize(limits.maxBytes)}) stopped the list. ` +
-                      `Continue: narrow path/pattern.]`
-                  : `[truncated: showing the first ${files.length} of ${total} paths. ` +
-                      (more
-                        ? "The scan stopped at the path cap. "
-                        : `${matches.length - files.length} paths omitted. `) +
-                      `Continue: narrow path/pattern${next}.]`,
-              )
+              if (byBytes) {
+                output.push(
+                  `[truncated: showing the first ${kept} of ${total} paths. ` +
+                    `The output byte budget (${budget}) stopped the list. ` +
+                    `Continue: narrow path/pattern. ` +
+                    `Set path to a subdirectory, or add a directory prefix or an extension to the pattern (for example src/**/*.ts).]`,
+                )
+              } else {
+                // The limit that shows more than this call did: every omitted path, or the cap, but no more than
+                // the byte budget holds, so the call it suggests is not cut again. None when the scan cap stopped a
+                // call that already asked for the most.
+                const wanted = more ? (limit < MAX_LIMIT ? MAX_LIMIT : undefined) : Math.min(matches.length, MAX_LIMIT)
+                const raise = wanted === undefined ? undefined : Math.min(wanted, fit)
+                const advice =
+                  raise === undefined
+                    ? "Continue: narrow path/pattern."
+                    : raise <= files.length
+                      ? `The output byte budget (${budget}) limits one result; narrow path/pattern.`
+                      : `Continue: narrow path/pattern, or glob limit=${raise} to show ` +
+                        (more
+                          ? `up to ${raise} paths.`
+                          : raise === wanted
+                            ? "the rest."
+                            : `as many as the output byte budget (${budget}) holds.`)
+                output.push(
+                  `[truncated: showing the first ${files.length} of ${total} paths. ` +
+                    (more ? "The scan stopped at the path cap. " : `${matches.length - files.length} paths omitted. `) +
+                    `${advice}]`,
+                )
+              }
             }
           }
 

@@ -41,6 +41,78 @@ describe("GraphAgent release versions", () => {
     })
   })
 
+  test("raises the release to the version floor when the latest stable tag is below it", () => {
+    expect(
+      resolveReleaseVersion({
+        branch: "main",
+        tags: ["graphagent-v1.0.96", "graphagent-v1.0.97", "graphagent-v1.0.98-dev.1"],
+        floor: "2.0.0",
+      }),
+    ).toEqual({
+      channel: "main",
+      version: "2.0.0",
+      tag: "graphagent-v2.0.0",
+      prerelease: false,
+      latest: true,
+      previous_tag: "graphagent-v1.0.97",
+    })
+  })
+
+  test("applies the version floor when no stable tag exists", () => {
+    expect(resolveReleaseVersion({ branch: "main", tags: [], floor: "2.0.0" })).toEqual({
+      channel: "main",
+      version: "2.0.0",
+      tag: "graphagent-v2.0.0",
+      prerelease: false,
+      latest: true,
+      previous_tag: "",
+    })
+  })
+
+  test("continues patch increments once the latest stable tag has reached the floor", () => {
+    expect(
+      resolveReleaseVersion({
+        branch: "main",
+        tags: ["graphagent-v1.0.97", "graphagent-v2.0.0"],
+        floor: "2.0.0",
+      }),
+    ).toEqual({
+      channel: "main",
+      version: "2.0.1",
+      tag: "graphagent-v2.0.1",
+      prerelease: false,
+      latest: true,
+      previous_tag: "graphagent-v2.0.0",
+    })
+  })
+
+  test("ignores a floor that does not exceed the next patch version", () => {
+    const tags = ["graphagent-v1.0.97"]
+
+    expect(resolveReleaseVersion({ branch: "main", tags, floor: "1.0.5" }).version).toBe("1.0.98")
+    expect(resolveReleaseVersion({ branch: "main", tags, floor: "1.0.98" }).version).toBe("1.0.98")
+  })
+
+  test("takes the larger of the floor and the next patch version, comparing segments numerically", () => {
+    expect(resolveReleaseVersion({ branch: "main", tags: ["graphagent-v1.0.97"], floor: "1.0.99" }).version).toBe(
+      "1.0.99",
+    )
+    expect(resolveReleaseVersion({ branch: "main", tags: ["graphagent-v1.9.5"], floor: "1.10.0" }).version).toBe(
+      "1.10.0",
+    )
+    expect(resolveReleaseVersion({ branch: "main", tags: ["graphagent-v1.10.0"], floor: "1.9.9" }).version).toBe(
+      "1.10.1",
+    )
+  })
+
+  test("rejects malformed version floors even when the floor would be ignored", () => {
+    for (const floor of ["2.0", "v2.0.0", "", "2.0.0.0", "2.0.x", "2.0.0-rc.1", " 2.0.0", "2.0.0\n"]) {
+      expect(() => resolveReleaseVersion({ branch: "main", tags: ["graphagent-v2.5.0"], floor })).toThrow(
+        "Invalid GraphAgent release floor",
+      )
+    }
+  })
+
   test("rejects dev and feature branch releases", () => {
     for (const branch of ["dev", "feat/example", ""]) {
       expect(() => resolveReleaseVersion({ branch, tags: [] })).toThrow("GraphAgent releases require main")

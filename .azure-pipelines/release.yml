@@ -20,6 +20,8 @@
 #           Actions cannot run; never publish the same version from both.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute:
 #           ubuntu-24.04-8-core and macos-26-arm64.
+# Smoke   : Every build job runs script/release-smoke.sh against its binary
+#           (same script and assertions as release-fork.yml).
 # macOS   : Like release-fork.yml, the arm64 macOS job builds darwin-arm64
 #           natively and runs the self-contained install acceptance stub.
 # Output  : Pipeline artifacts graphagent-{linux,macos},
@@ -186,20 +188,15 @@ jobs:
               # Bundle ripgrep into each dist/graphagent-*/bin for air-gapped use.
               - bash: bun run ./packages/graphagent/script/prefetch-ripgrep.ts
                 displayName: Prefetch ripgrep
-              - ${{ if ne(target.name, 'macos') }}:
-                  - bash: |
-                      set -euo pipefail
-                      for dir in packages/graphagent/dist/graphagent-*/; do
-                        cli="$dir/bin/graphagent"
-                        actual="$("$cli" --version)"
-                        if [[ "$actual" != "$GRAPHAGENT_VERSION" ]]; then
-                          echo "Unexpected CLI version: $actual" >&2
-                          exit 1
-                        fi
-                        "$cli" --help > /dev/null
-                      done
-                    displayName: Verify CLI executable
-                    timeoutInMinutes: 5
+              # #1034: the same smoke script as release-fork.yml, on every
+              # platform (macOS also runs its install acceptance below).
+              - bash: |
+                  set -euo pipefail
+                  for dir in packages/graphagent/dist/graphagent-*/; do
+                    bash script/release-smoke.sh "${dir%/}/bin/graphagent" "$GRAPHAGENT_VERSION"
+                  done
+                displayName: Verify CLI executable
+                timeoutInMinutes: 5
               - bash: |
                   set -euo pipefail
                   for dir in graphagent-*/; do

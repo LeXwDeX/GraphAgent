@@ -1225,7 +1225,9 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
     const execute = item.execute
     if (!execute) continue
 
-    const validateInput = toolInputValidator(entry.jsonSchema)
+    // The arguments of a deferred tool are written from `mcp_describe`, which shows the server's own schema, so a
+    // hook's replacement of them is held to that one and not to the provider's rewrite of it (#1576).
+    const validateInput = toolInputValidator(entry.source.deferred === true ? entry.rawSchema : entry.jsonSchema)
     item.inputSchema = jsonSchema(entry.jsonSchema)
     item.execute = (args, opts) => {
       const settingsHook = withHookCancellation(hooks, opts.abortSignal)
@@ -1541,7 +1543,9 @@ export const mcpDeferredTools = Effect.fn("ToolPipeline.mcpDeferredTools")(funct
       if (!target?.execute || !targetEntry)
         throw refuse({ kind: "unknown_tool", requested: key, available: available() })
       const callArgs = isRecord(record.arguments) ? record.arguments : {}
-      const mismatch = check(targetEntry.jsonSchema, callArgs)
+      // The server's own schema, the one `mcp_describe` shows; the provider's rewrite of it is not what the tool takes
+      // (#1576).
+      const mismatch = check(targetEntry.rawSchema, callArgs)
       if (mismatch !== undefined) throw refuse({ kind: "invalid_arguments", tool: key, detail: mismatch }, SCHEMA_HINT)
       // The target's wrapper cuts its own result, so this one is not cut again.
       proxiedCalls.set(opts, key)
