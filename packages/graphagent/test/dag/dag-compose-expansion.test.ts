@@ -7,7 +7,7 @@
 // its split node is settled by hand, and `DagComposeExpansion.expand` is what the scheduler calls for the
 // slot. The loop around it is covered by dag-compose-runtime.test.ts.
 import { describe, expect } from "bun:test"
-import { Effect, Exit, Layer } from "effect"
+import { Effect, Exit, Layer, Logger } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -93,6 +93,17 @@ const route = (
     prompt_template: { inline: "Report on {{survey}}" },
   },
 ]
+
+/** A block review route (coding, verify, review) in the same graph as the compose block. */
+const reviewRoute = (): NodeConfig[] =>
+  DagBlocks.compileWorkflowBlocks({
+    objective: "Ship the change",
+    blocks: [
+      { id: "build", kind: "coding" },
+      { id: "check", kind: "verify", depends_on: ["build"] },
+      { id: "gate", kind: "review", depends_on: ["check"] },
+    ],
+  })
 
 const item = (id: string, agent: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -276,6 +287,28 @@ describe("expanding a slot through Dag.extend", () => {
       expect(config?.review_gate).toBe("strict")
       expect(byID(config?.nodes).get("survey")?.expand).toBeUndefined()
       expect(rows).toHaveLength(6)
+    }),
+  )
+
+  it.live("leaves the compiler-owned skip_ok out of the standard review advisory of the merged graph (#1556)", () =>
+    Effect.gen(function* () {
+      const logs: string[] = []
+      const collector = Logger.make((options) => {
+        logs.push(JSON.stringify(options.message))
+      })
+      const { read, expand } = yield* scenario({
+        extraNodes: reviewRoute(),
+        split: { plan: plan([item("official", "researcher"), item("code", "explore")]) },
+      })
+      yield* expand().pipe(Effect.withLogger(collector))
+      const nodes = byID((yield* read).config?.nodes)
+      // The expansion went through, and the standard compile left the conditional decision skippable on purpose.
+      expect(nodes.has("survey--official")).toBe(true)
+      expect(nodes.get("gate")?.skip_ok).toBe(true)
+      // The merged graph is still checked and still says what an author can change...
+      expect(logs.some((line) => line.includes("strict review decision must include the completeness lens"))).toBe(true)
+      // ...but not the field only the block compiler sets.
+      expect(logs.filter((line) => line.includes("skip_ok"))).toEqual([])
     }),
   )
 

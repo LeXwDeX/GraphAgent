@@ -6,7 +6,7 @@
 // disjoint plan packages become parallel writers plus an aggregator under the
 // writer's id, and anything else runs the writer serially without the marker.
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Logger } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -54,6 +54,10 @@ function nodes() {
 
 async function run(planOutput: unknown, expectedWriters: number) {
   const prompts: string[] = []
+  const logs: string[] = []
+  const collector = Logger.make((options) => {
+    logs.push(JSON.stringify(options.message))
+  })
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
@@ -136,6 +140,8 @@ async function run(planOutput: unknown, expectedWriters: number) {
         sessionID: "ses_parent",
         title: "Fan-out",
         config: { name: "fan-out", max_concurrency: 4, nodes: nodes() },
+        // The workflow tool says so for a document that authored blocks (#1413).
+        blockCompiled: true,
       })
       yield* dagSvc.nodeQueued(dagID, "plan", Date.now() + 600_000)
       yield* dagSvc.nodeStarted(dagID, "plan", "ses_plan", Date.now() + 600_000)
@@ -162,6 +168,7 @@ async function run(planOutput: unknown, expectedWriters: number) {
         config,
         running: (yield* running()).map((row) => row.id).sort(),
         prompts,
+        logs,
         status: (yield* storeSvc.getWorkflow(dagID))!.status,
         eventTypes: eventRows.map((row) => row.type),
       }
@@ -173,6 +180,7 @@ async function run(planOutput: unknown, expectedWriters: number) {
         project: { id: "project-1" },
       } as never),
       Effect.scoped,
+      Effect.withLogger(collector),
     ),
   )
 }
@@ -196,6 +204,17 @@ describe("DagLoop fan_out expansion", () => {
     expect(byID.get("decision")?.review?.implementation_node_id).toBe("slices")
     // Each writer still sees the whole plan as context, plus its own assignment.
     expect(result.prompts.filter((text) => text.includes("Assigned work package"))).toHaveLength(3)
+  })
+
+  it("leaves the compiler-owned skip_ok out of the standard review advisory of the expanded graph (#1556)", async () => {
+    const result = await run({ summary: "split", packages: [pkg("api", ["src/api"]), pkg("ui", ["src/ui"])] }, 2)
+    expect(result.running).toEqual(["slices--api", "slices--ui"])
+    // The expansion checked its merged graph and still reported what an author can change...
+    expect(result.logs.some((line) => line.includes("strict review decision must include the completeness lens"))).toBe(
+      true,
+    )
+    // ...but not the field only the block compiler sets.
+    expect(result.logs.filter((line) => line.includes("skip_ok"))).toEqual([])
   })
 
   it("runs the writer unchanged when the planner keeps one package", async () => {

@@ -75,8 +75,15 @@ import {
   settleCapturedOutput,
   settlePlainTextOutput,
   type CaptureSlot,
+  type CapturedSettlement,
 } from "./capture"
-import { captureFinalResponse, correctionPrompt, finalAssistantText, outputLimitReason } from "./final-response"
+import {
+  captureFinalResponse,
+  consistencyCorrectionPrompt,
+  correctionPrompt,
+  finalAssistantText,
+  outputLimitReason,
+} from "./final-response"
 import { commitOutputFileRef, reportAreaDirective, verifyOutputFileRef, type ManagedOutputFileRef } from "./output-ref"
 import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { completeIsolatedNode } from "./worktree-completion"
@@ -1502,51 +1509,8 @@ export function spawnNode(
                       nodeID: input.nodeID,
                       reason: "unassociated",
                     })
-                  let captured = yield* captureFinalResponse({
-                    store: dag.store,
-                    sessionID: childSession.id,
-                    slot: captureSlot!,
-                    message: result,
-                    snapshotID,
-                    caller,
-                    guard: {
-                      workflowID: input.dagID,
-                      nodeID: input.nodeID,
-                      attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
-                    },
-                  })
-                  let lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
-                  // A final response the model can correct (not exactly one JSON
-                  // value, or rejected by the schema) gets one bounded correction
-                  // turn in the same attempt. Empty output, a turn that ended
-                  // abnormally and a validation facility failure get none.
-                  const correction = captured.ok || lengthLimited ? undefined : correctionPrompt(captured)
-                  if (correction !== undefined) {
-                    if (!(yield* claimResubmission)) return
-                    result = yield* nodeExecution(
-                      children.prompt(
-                        {
-                          messageID: MessageID.ascending(),
-                          sessionID: childSession.id,
-                          model,
-                          agent: agent.name,
-                          ...(input.variant ? { variant: input.variant } : {}),
-                          parts: [{ type: "text", text: correction }],
-                        },
-                        { continueToolBudget: true },
-                      ),
-                    )
-                    if (Option.isSome(messageService) && caller) {
-                      inputSnapshot = yield* messageService.value.snapshotForTurn(caller, result.info.id)
-                      snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
-                      if (!snapshotID)
-                        yield* new Dag.StaleMessageInputError({
-                          dagID: input.dagID,
-                          nodeID: input.nodeID,
-                          reason: "unassociated",
-                        })
-                    }
-                    captured = yield* captureFinalResponse({
+                  const capture = () =>
+                    captureFinalResponse({
                       store: dag.store,
                       sessionID: childSession.id,
                       slot: captureSlot!,
@@ -1559,37 +1523,87 @@ export function spawnNode(
                         attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
                       },
                     })
-                    // The correction turn can end at the output cap as well.
-                    lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
-                  }
-                  if (!captured.ok && (captured.code === "stale_input" || captured.code === "unassociated"))
-                    yield* new Dag.StaleMessageInputError({
-                      dagID: input.dagID,
-                      nodeID: input.nodeID,
-                      reason: captured.code,
-                    })
-                  const settlement = captured.ok
-                    ? settleCapturedOutput(
-                        captured.output,
-                        input.reviewImplementationFingerprint,
-                        "",
-                        true,
-                        input.verdictEvidence,
-                        {
-                          ...(input.reviewArbitration !== undefined
-                            ? { reviewArbitration: input.reviewArbitration }
-                            : {}),
-                          ...(input.priorFindings !== undefined ? { priorFindings: input.priorFindings } : {}),
-                          ...(input.strictReviewGate !== undefined ? { strictReviewGate: input.strictReviewGate } : {}),
-                          ...(input.incompleteReviewLanes !== undefined
-                            ? { incompleteReviewLanes: input.incompleteReviewLanes }
-                            : {}),
-                        },
+                  let captured = yield* capture()
+                  let lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
+                  // The one bounded correction turn of the attempt: the model is told what its
+                  // final response got wrong, and the result it resubmits is captured again.
+                  // false: the resubmission was not admitted, and its own failure is settled.
+                  const correct = (text: string) =>
+                    Effect.gen(function* () {
+                      if (!(yield* claimResubmission)) return false
+                      result = yield* nodeExecution(
+                        children.prompt(
+                          {
+                            messageID: MessageID.ascending(),
+                            sessionID: childSession.id,
+                            model,
+                            agent: agent.name,
+                            ...(input.variant ? { variant: input.variant } : {}),
+                            parts: [{ type: "text", text }],
+                          },
+                          { continueToolBudget: true },
+                        ),
                       )
-                    : ({
-                        kind: "fail",
-                        reason: lengthLimited ? yield* lengthReason : captured.reason,
-                      } as const)
+                      if (Option.isSome(messageService) && caller) {
+                        inputSnapshot = yield* messageService.value.snapshotForTurn(caller, result.info.id)
+                        snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
+                        if (!snapshotID)
+                          yield* new Dag.StaleMessageInputError({
+                            dagID: input.dagID,
+                            nodeID: input.nodeID,
+                            reason: "unassociated",
+                          })
+                      }
+                      captured = yield* capture()
+                      // The correction turn can end at the output cap as well.
+                      lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
+                      return true
+                    })
+                  // A final response the model can correct (not exactly one JSON
+                  // value, or rejected by the schema) gets the correction turn.
+                  // Empty output, a turn that ended abnormally and a validation
+                  // facility failure get none.
+                  const correction = captured.ok || lengthLimited ? undefined : correctionPrompt(captured)
+                  if (correction !== undefined && !(yield* correct(correction))) return
+                  const settle = Effect.gen(function* () {
+                    if (!captured.ok && (captured.code === "stale_input" || captured.code === "unassociated"))
+                      yield* new Dag.StaleMessageInputError({
+                        dagID: input.dagID,
+                        nodeID: input.nodeID,
+                        reason: captured.code,
+                      })
+                    return captured.ok
+                      ? settleCapturedOutput(
+                          captured.output,
+                          input.reviewImplementationFingerprint,
+                          "",
+                          true,
+                          input.verdictEvidence,
+                          {
+                            ...(input.reviewArbitration !== undefined
+                              ? { reviewArbitration: input.reviewArbitration }
+                              : {}),
+                            ...(input.priorFindings !== undefined ? { priorFindings: input.priorFindings } : {}),
+                            ...(input.strictReviewGate !== undefined
+                              ? { strictReviewGate: input.strictReviewGate }
+                              : {}),
+                            ...(input.incompleteReviewLanes !== undefined
+                              ? { incompleteReviewLanes: input.incompleteReviewLanes }
+                              : {}),
+                          },
+                        )
+                      : ({
+                          kind: "fail",
+                          reason: lengthLimited ? yield* lengthReason : captured.reason,
+                        } as const)
+                  })
+                  let settlement: CapturedSettlement = yield* settle
+                  // #1556: a block review decision whose dispositions contradict its lanes gets the
+                  // same one turn, with the contract's error text, unless the schema already used it.
+                  if (correction === undefined && settlement.kind === "fail" && settlement.correctable !== undefined) {
+                    if (!(yield* correct(consistencyCorrectionPrompt(settlement.correctable)))) return
+                    settlement = yield* settle
+                  }
                   // A captured-but-invalid payload is a schema failure, not a
                   // genuine REJECT/FAIL verdict. The length cap keeps its own
                   // existing classification.

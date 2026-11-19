@@ -564,6 +564,33 @@ describe("recovery settlement", () => {
     expect(missing.kind).toBe("fail")
     if (missing.kind === "fail") expect(missing.reason).toContain("review--intent")
   })
+
+  it("reads a lane named by its input key as that lane and settles with the node id (#1556)", () => {
+    const raised = rows.map((row) =>
+      row.id === "review--intent" ? { ...row, output: { verdict: "REJECT", required_actions: ["Fix A"] } } : row,
+    )
+    const captured = {
+      verdict: "REJECT",
+      implementation_fingerprint: "sha256:one",
+      required_actions: ["Fix A"],
+      dispositions: [{ node: "intent_review", index: 0, novelty: "new", decision: "upheld", evidence: "reproduced" }],
+      resolved: [],
+    }
+    // `intent_review` is the key the decision's own input_mapping reads the lane under.
+    expect(recoveredSettlement(nodeConfig, config, raised, captured, true)).toMatchObject({
+      kind: "complete",
+      output: { dispositions: [{ node: "review--intent", index: 0 }] },
+    })
+    const unknown = recoveredSettlement(
+      nodeConfig,
+      config,
+      raised,
+      { ...captured, dispositions: [{ ...captured.dispositions[0], node: "security_review" }] },
+      true,
+    )
+    expect(unknown.kind).toBe("fail")
+    if (unknown.kind === "fail") expect(unknown.reason).toContain("security_review[0]")
+  })
 })
 
 describe("coverage", () => {

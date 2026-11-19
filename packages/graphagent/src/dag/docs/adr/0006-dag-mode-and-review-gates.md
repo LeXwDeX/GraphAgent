@@ -269,7 +269,7 @@ warnings (`requireReviewCoverage` in `src/dag/blocks.ts`;
 `strictReviewCoverageErrors` in `src/dag/review-lifecycle.ts`), except `skip_ok`
 on a block-compiled review decision: the block compiler sets it itself and a
 template cannot change it, so a request compiled from blocks does not hear about
-it (authoring, `Dag.create`, replan and extend), while the strict gate and
+it (authoring, `Dag.create`, replan and extend, and the fan-out and compose expansions the runtime extends by itself), while the strict gate and
 graphs without that marker keep the check. With DAG mode on,
 `workflow start` forces `strict`, overriding an authored `standard`
 (`src/tool/workflow/run.ts`). The gate is stored with the workflow and fixed at
@@ -280,7 +280,9 @@ A `review` block takes `lenses`, `skeptics` (0-4 lanes that assume the change is
 wrong), and `prior_round`, which continues a stored review decision. The
 workflow tool resolves it into `prior_findings` before authoring; the model
 never writes them. The arbitration output carries `dispositions` for every lane
-action and `resolved` for every prior finding, and `src/dag/review-lifecycle.ts`
+action and `resolved` for every prior finding. A lane is named by its node id; the
+input key its result arrives under is accepted too and rewritten at settlement,
+and a contradiction earns the attempt's one correction turn. `src/dag/review-lifecycle.ts`
 refuses an ACCEPT while an action is unrefuted or upheld, a prior finding is
 still open, or, under strict, a lens or skeptic lane did not complete. The
 parent runs the rounds, by extending a live workflow or starting a successor with

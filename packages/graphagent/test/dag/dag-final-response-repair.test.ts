@@ -467,3 +467,134 @@ describe("final-response correction turn", () => {
     ])
   })
 })
+
+// #1556: a block review decision whose dispositions contradict its lanes is the model's to correct, once.
+describe("review decision correction turn", () => {
+  const DECISION_SCHEMA = {
+    ...DIFF_REVIEW_SCHEMA,
+    required: [...DIFF_REVIEW_SCHEMA.required, "dispositions", "resolved"],
+    properties: { ...DIFF_REVIEW_SCHEMA.properties, dispositions: { type: "array" }, resolved: { type: "array" } },
+  }
+  // The lane reaches the decision under the key `intent_review`, never under its node id.
+  const lanes = [
+    { nodeID: "decision--intent", output: { verdict: "REJECT", required_actions: ["Fix A"] }, keys: ["intent_review"] },
+  ]
+  const arbitration = {
+    verdictEvidence: lanes,
+    reviewArbitration: true as const,
+    reviewImplementationFingerprint: "sha256:current",
+  }
+  const entry = (node: string, index = 0) => ({
+    node,
+    index,
+    novelty: "new",
+    decision: "upheld",
+    evidence: "reproduced",
+  })
+  const decision = (dispositions: unknown[], extra: Record<string, unknown> = {}) =>
+    assistant(
+      JSON.stringify({
+        verdict: "REJECT",
+        summary: "REJECT",
+        findings: [],
+        required_actions: ["Fix A"],
+        implementation_fingerprint: "sha256:current",
+        dispositions,
+        resolved: [],
+        ...extra,
+      }),
+    )
+  const MISSING = "dispositions miss lane required action(s): decision--intent[0]"
+
+  it("completes in one turn when the decision names its lane by the key it was shown, and stores the node id", async () => {
+    const result = await run(decision([entry("intent_review")]), DECISION_SCHEMA, arbitration)
+
+    expect(result.prompts).toHaveLength(1)
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.events[0]?.output).toMatchObject({ dispositions: [{ node: "decision--intent", index: 0 }] })
+  })
+
+  it("gives a decision that contradicts its lanes one correction turn that carries the error text", async () => {
+    const result = await run([decision([]), decision([entry("intent_review")])], DECISION_SCHEMA, arbitration)
+
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.sessionID).toBe("ses_final_child")
+    expect(result.prompts[1]?.text).toBe(
+      `Your final response was rejected: ${MISSING}. Do not redo the work. Correct exactly what is listed and resubmit the full result as exactly one JSON value, with no Markdown fence and no surrounding prose.`,
+    )
+    expect(result.prompts[1]?.options).toMatchObject({ continueToolBudget: true, internalDelegation: true })
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+    expect(result.events[0]?.output).toMatchObject({ dispositions: [{ node: "decision--intent", index: 0 }] })
+  })
+
+  it("quotes every error of the contract and bounds the text it quotes", async () => {
+    const result = await run(
+      [
+        decision([entry("somewhere_else", 0)], { resolved: [{ ref: "x", how: "fixed", evidence: "e" }] }),
+        decision([entry("decision--intent")]),
+      ],
+      DECISION_SCHEMA,
+      arbitration,
+    )
+
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.text).toContain(MISSING)
+    expect(result.prompts[1]?.text).toContain("dispositions name unknown lane required action(s): somewhere_else[0]")
+    expect(result.prompts[1]?.text).toContain("resolved names ref(s) that are not prior findings: x")
+    expect(result.events).toEqual([expect.objectContaining({ type: "completed" })])
+
+    const many = Array.from({ length: 400 }, (_, index) => entry("bogus_lane", index))
+    const long = await run([decision(many), decision(many)], DECISION_SCHEMA, arbitration)
+    expect(long.prompts).toHaveLength(2)
+    expect(long.prompts[1]?.text.length).toBeLessThan(2400)
+  })
+
+  it("fails as verdict_fail, not schema_invalid, when the correction still contradicts the lanes", async () => {
+    const result = await run([decision([]), decision([entry("nowhere")])], DECISION_SCHEMA, arbitration)
+
+    expect(result.prompts).toHaveLength(2)
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: "failed",
+        trigger: "verdict_fail",
+        reason: expect.stringContaining("Verdict consistency contract failed"),
+      }),
+    ])
+    expect(result.events[0]?.reason).toContain("nowhere[0]")
+    expect(result.events[0]?.errorClass).toBeUndefined()
+  })
+
+  it("spends the one correction turn on a schema failure and a contradiction together", async () => {
+    const result = await run(
+      [assistant(JSON.stringify({ verdict: "REJECT" })), decision([]), decision([entry("intent_review")])],
+      DECISION_SCHEMA,
+      arbitration,
+    )
+
+    expect(result.prompts).toHaveLength(2)
+    expect(result.prompts[1]?.text).toContain("missing required field")
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: "failed",
+        trigger: "verdict_fail",
+        reason: expect.stringContaining(MISSING),
+      }),
+    ])
+  })
+
+  it("gives a review that is not a block decision no correction for the same contradiction", async () => {
+    const result = await run(decision([], { verdict: "ACCEPT", required_actions: [] }), DECISION_SCHEMA, {
+      verdictEvidence: lanes,
+      reviewImplementationFingerprint: "sha256:current",
+    })
+
+    expect(result.prompts).toHaveLength(1)
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: "failed",
+        trigger: "verdict_fail",
+        reason: expect.stringContaining("ACCEPT leaves required actions unrefuted"),
+      }),
+    ])
+  })
+})

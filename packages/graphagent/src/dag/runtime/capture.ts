@@ -15,6 +15,7 @@
 import {
   acceptConsistencyErrors,
   arbitrationConsistencyErrors,
+  canonicalLaneNodes,
   validateReviewResult,
   type VerdictEvidence,
 } from "../review-lifecycle"
@@ -94,7 +95,14 @@ export function isCaptureValidationCurrent(slot: CaptureSlot, validated: { gener
  * guarantees diff reviews always reach spawn with one).
  */
 export type CapturedSettlement =
-  { readonly kind: "complete"; readonly output: unknown } | { readonly kind: "fail"; readonly reason: string }
+  | { readonly kind: "complete"; readonly output: unknown }
+  | {
+      readonly kind: "fail"
+      readonly reason: string
+      /** Present when the model can correct the failure: the consistency errors of a block-compiled review
+       * decision (#1556). The live path gives such a result one correction turn; recovery never re-prompts. */
+      readonly correctable?: readonly string[]
+    }
 
 export type PlainTextSettlement =
   { readonly kind: "complete"; readonly output: string } | { readonly kind: "fail"; readonly reason: string }
@@ -132,10 +140,12 @@ export function settleCapturedOutput(
     if (!result.valid)
       return { kind: "fail", reason: `Review result contract failed${suffix}: ${result.errors.join("; ")}` }
   }
+  // #1556: the lanes a block decision names by the key it was shown are checked, and stored, under their node ids.
+  const output = arbitration.reviewArbitration ? canonicalLaneNodes(captured, evidence) : captured
   const inconsistent = [
-    ...acceptConsistencyErrors(captured, evidence),
+    ...acceptConsistencyErrors(output, evidence),
     ...(arbitration.reviewArbitration
-      ? arbitrationConsistencyErrors(captured, evidence, {
+      ? arbitrationConsistencyErrors(output, evidence, {
           ...(arbitration.priorFindings !== undefined ? { priorFindings: arbitration.priorFindings } : {}),
           ...(arbitration.strictReviewGate !== undefined ? { strict: arbitration.strictReviewGate } : {}),
           ...(arbitration.incompleteReviewLanes !== undefined
@@ -145,6 +155,10 @@ export function settleCapturedOutput(
       : []),
   ]
   if (inconsistent.length > 0)
-    return { kind: "fail", reason: `Verdict consistency contract failed${suffix}: ${inconsistent.join("; ")}` }
-  return { kind: "complete", output: captured }
+    return {
+      kind: "fail",
+      reason: `Verdict consistency contract failed${suffix}: ${inconsistent.join("; ")}`,
+      ...(arbitration.reviewArbitration ? { correctable: inconsistent } : {}),
+    }
+  return { kind: "complete", output }
 }

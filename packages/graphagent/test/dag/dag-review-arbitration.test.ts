@@ -8,8 +8,11 @@ import { describe, expect, it } from "bun:test"
 import { DagBlocks, type PriorRound } from "@/dag/blocks"
 import {
   arbitrationConsistencyErrors,
+  canonicalLaneNodes,
+  reviewLaneFindings,
   reviewRoundMetrics,
   reviewRoundSummary,
+  verdictEvidenceOf,
   type VerdictEvidence,
 } from "@/dag/review-lifecycle"
 import { settleCapturedOutput } from "@/dag/runtime/capture"
@@ -320,5 +323,260 @@ describe("prior-round compilation", () => {
         ],
       }),
     ).toThrow('Block "implementation" declares prior_round, which only review blocks support')
+  })
+})
+// #1556: a block decision's lanes reach it under input keys (`intent_review`), and a lane's node id
+// (`decision--intent`) never appears in its prompt. Settlement reads the key as the lane it names.
+describe("a block decision that names its lanes by the input key it was shown (#1556)", () => {
+  const keyed = (nodeID: string, key: string, required: string[]): VerdictEvidence => ({
+    ...lane(nodeID, required),
+    keys: [key],
+  })
+  const lanes = [
+    keyed("decision--intent", "intent_review", ["A"]),
+    keyed("decision--completeness", "completeness_review", ["B", "C"]),
+    keyed("decision--skeptic-1", "skeptic_1_review", ["D"]),
+  ]
+  const entry = (node: string, index: number, decision: "upheld" | "refuted" = "upheld") => ({
+    node,
+    index,
+    novelty: "new",
+    decision,
+    evidence: `${index} is ${decision}`,
+  })
+  const byKey = [
+    entry("intent_review", 0),
+    entry("completeness_review", 0),
+    entry("completeness_review", 1, "refuted"),
+    entry("skeptic_1_review", 0),
+  ]
+  const byID = [
+    entry("decision--intent", 0),
+    entry("decision--completeness", 0),
+    entry("decision--completeness", 1, "refuted"),
+    entry("decision--skeptic-1", 0),
+  ]
+  const settle = (output: unknown, reviewArbitration = true) =>
+    settleCapturedOutput(output, undefined, "", true, lanes, reviewArbitration ? { reviewArbitration } : {})
+  const reject = (dispositions: unknown[]) => ({ verdict: "REJECT", dispositions, resolved: [] })
+
+  it("completes and stores the lane node ids instead of the keys", () => {
+    const settled = settle(reject(byKey))
+    expect(settled).toEqual({ kind: "complete", output: reject(byID) })
+    if (settled.kind !== "complete") return
+    // What the quality counts and the next round's prior findings read is the stored node id.
+    expect(reviewLaneFindings(settled.output, new Set(["decision--skeptic-1"]))).toBe(1)
+    expect(reviewLaneFindings(reject(byKey), new Set(["decision--skeptic-1"]))).toBe(0)
+  })
+
+  it("accepts the lane node id itself, and both spellings in one result", () => {
+    expect(settle(reject(byID))).toEqual({ kind: "complete", output: reject(byID) })
+    expect(settle(reject([byKey[0], byID[1], byKey[2], byID[3]]))).toEqual({
+      kind: "complete",
+      output: reject([byID[0], byID[1], byID[2], byID[3]]),
+    })
+  })
+
+  it("still rejects a node that is neither a lane nor the key of one", () => {
+    const settled = settle(reject([byKey[0], entry("intent_reviews", 0), byKey[2], byKey[3]]))
+    expect(settled.kind).toBe("fail")
+    if (settled.kind !== "fail") return
+    expect(settled.reason).toContain("dispositions name unknown lane required action(s): intent_reviews[0]")
+    expect(settled.reason).toContain("dispositions miss lane required action(s): decision--completeness[0]")
+    // The model can fix this one, and is told exactly what the contract refused.
+    expect(settled.correctable).toEqual([
+      "dispositions miss lane required action(s): decision--completeness[0]",
+      "dispositions name unknown lane required action(s): intent_reviews[0]",
+    ])
+  })
+
+  it("does not turn an index the lane never raised into a match", () => {
+    const settled = settle(reject([byKey[0], entry("completeness_review", 5), byKey[2], byKey[3]]))
+    expect(settled.kind).toBe("fail")
+    if (settled.kind !== "fail") return
+    expect(settled.reason).toContain("dispositions name unknown lane required action(s): decision--completeness[5]")
+  })
+
+  it("reads the keys of the entries an ACCEPT refutes the same way", () => {
+    const refuted = [
+      { node: "intent_review", index: 0, reason: "The finding is not supported" },
+      { node: "decision--completeness", index: 0, reason: "Covered by README.md" },
+      { node: "completeness_review", index: 1, reason: "Out of scope" },
+      { node: "skeptic_1_review", index: 0, reason: "Not reproducible" },
+    ]
+    const accept = {
+      verdict: "ACCEPT",
+      required_actions: [],
+      refuted,
+      dispositions: byKey.map((item) => ({ ...item, decision: "refuted" })),
+      resolved: [],
+    }
+    const settled = settle(accept)
+    expect(settled.kind).toBe("complete")
+    if (settled.kind !== "complete") return
+    expect(settled.output).toMatchObject({
+      refuted: [
+        { node: "decision--intent", index: 0 },
+        { node: "decision--completeness", index: 0 },
+        { node: "decision--completeness", index: 1 },
+        { node: "decision--skeptic-1", index: 0 },
+      ],
+    })
+  })
+
+  it("leaves a decision that is not block-compiled as it was: no rewrite, no correction", () => {
+    const accept = {
+      verdict: "ACCEPT",
+      required_actions: [],
+      refuted: [{ node: "intent_review", index: 0, reason: "r" }],
+    }
+    const settled = settle(accept, false)
+    expect(settled.kind).toBe("fail")
+    if (settled.kind !== "fail") return
+    expect(settled.reason).toContain("ACCEPT leaves required actions unrefuted")
+    expect(settled.correctable).toBeUndefined()
+  })
+
+  it("marks a block decision's consistency errors as correctable and keeps the reason text", () => {
+    const settled = settle({ verdict: "REJECT" })
+    expect(settled.kind).toBe("fail")
+    if (settled.kind !== "fail") return
+    expect(settled.correctable).toContain("decision must submit dispositions covering every lane required action")
+    expect(settled.reason).toBe(`Verdict consistency contract failed: ${settled.correctable?.join("; ")}`)
+  })
+})
+
+describe("the input keys a decision reads its lanes under", () => {
+  const rows = [
+    { id: "decision--intent", status: "completed", output: { verdict: "REJECT" } },
+    { id: "decision--skeptic-1", status: "completed", output: { verdict: "ACCEPT" } },
+    { id: "decision--security", status: "failed", output: null },
+    { id: "verification", status: "completed", output: { verdict: "PASS" } },
+    { id: "unrelated", status: "completed", output: "x" },
+  ]
+  const dependsOn = ["decision--intent", "decision--skeptic-1", "decision--security", "verification"]
+
+  it("reads the key of each completed dependency from the decision's input mapping", () => {
+    expect(
+      verdictEvidenceOf(dependsOn, rows, {
+        implementation_fingerprint: "implementation.output.fingerprint",
+        verification: "verification.output",
+        intent_review: "decision--intent.output",
+        skeptic_1_review: "decision--skeptic-1.output",
+        security_review: "decision--security.output",
+        intent_actions: "decision--intent.output.required_actions",
+      }),
+    ).toEqual([
+      { nodeID: "decision--intent", output: rows[0]?.output, keys: ["intent_review"] },
+      { nodeID: "decision--skeptic-1", output: rows[1]?.output, keys: ["skeptic_1_review"] },
+      // A key that is the node's own id adds nothing, and a path below the output is not the lane itself.
+      { nodeID: "verification", output: rows[3]?.output },
+    ])
+  })
+
+  it("adds no keys without an input mapping, where the context is keyed by node id", () => {
+    expect(verdictEvidenceOf(dependsOn, rows)).toEqual([
+      { nodeID: "decision--intent", output: rows[0]?.output },
+      { nodeID: "decision--skeptic-1", output: rows[1]?.output },
+      { nodeID: "verification", output: rows[3]?.output },
+    ])
+  })
+
+  it("does not rewrite a node that is itself the id of another dependency", () => {
+    const evidence: VerdictEvidence[] = [
+      { nodeID: "decision--intent", output: {}, keys: ["decision--standards"] },
+      { nodeID: "decision--standards", output: {} },
+    ]
+    const output = { dispositions: [{ node: "decision--standards", index: 0 }], refuted: [] }
+    expect(canonicalLaneNodes(output, evidence)).toBe(output)
+  })
+
+  it("hands back the very output when no entry names a key", () => {
+    const evidence: VerdictEvidence[] = [{ nodeID: "decision--intent", output: {}, keys: ["intent_review"] }]
+    const output = { verdict: "REJECT", dispositions: [{ node: "decision--intent", index: 0 }] }
+    expect(canonicalLaneNodes(output, evidence)).toBe(output)
+    expect(canonicalLaneNodes("not an object", evidence)).toBe("not an object")
+  })
+})
+
+describe("what the arbitration prompt says about the lanes (#1556)", () => {
+  const route = (priorRound?: { workflow_id: string; review_id: string }) => [
+    { id: "implementation", kind: "coding" as const },
+    { id: "verification", kind: "verify" as const, depends_on: ["implementation"] },
+    {
+      id: "decision",
+      kind: "review" as const,
+      depends_on: ["verification"],
+      lenses: ["standards", "intent", "completeness"] as const,
+      skeptics: 2,
+      ...(priorRound ? { prior_round: priorRound } : {}),
+    },
+  ]
+  const compile = (priorRound?: PriorRound) =>
+    DagBlocks.compileWorkflowBlocks(
+      {
+        objective: "Ship it",
+        blocks: route(
+          priorRound ? { workflow_id: priorRound.workflow_id, review_id: priorRound.review_id } : undefined,
+        ),
+      },
+      {
+        review_gate: "strict",
+        acceptance: [{ id: "AC1", text: "Boundary is correct" }],
+        ...(priorRound ? { prior_rounds: { [`${priorRound.workflow_id}/${priorRound.review_id}`]: priorRound } } : {}),
+      },
+    )
+  const promptOf = (nodes: ReturnType<typeof compile>) =>
+    nodes.find((node) => node.id === "decision")?.prompt_template.inline ?? ""
+
+  it("pairs every input key of a route's decision with the lane node id it stands for", () => {
+    const nodes = compile()
+    const decision = nodes.find((node) => node.id === "decision")
+    const prompt = promptOf(nodes)
+    expect(prompt).toContain(
+      "In dispositions and refuted, node is the lane's node id and index is the position in that lane's required_actions, counted from 0, never the key its result arrives under in the context.",
+    )
+    expect(prompt).toContain(
+      "Input key = lane node id: standards_review = decision--standards; intent_review = decision--intent; completeness_review = decision--completeness; skeptic_1_review = decision--skeptic-1; skeptic_2_review = decision--skeptic-2.",
+    )
+    // The pairs are the decision's own input mapping, so the keys the model is shown are the ones it is told about.
+    const laneMapping = Object.entries(decision?.input_mapping ?? {}).filter(([key]) => key.endsWith("_review"))
+    expect(laneMapping).toHaveLength(5)
+    for (const [key, source] of laneMapping) expect(prompt).toContain(`${key} = ${source.replace(/\.output$/, "")}`)
+    for (const laneNode of nodes.filter((node) => node.review_lane !== undefined)) expect(prompt).toContain(laneNode.id)
+  })
+
+  it("lists the lane node ids of a decision that has no route, whose context is keyed by them", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Judge the design",
+      blocks: [{ id: "decision", kind: "review" as const, lenses: ["standards", "intent"] as const }],
+    })
+    expect(nodes.find((node) => node.id === "decision")?.input_mapping).toBeUndefined()
+    expect(promptOf(nodes)).toContain(
+      "In dispositions and refuted, node is the lane's node id and index is the position in that lane's required_actions, counted from 0. Lane node ids: decision--standards, decision--intent.",
+    )
+    expect(promptOf(nodes)).not.toContain("Input key =")
+  })
+
+  it("tells a first round that no prior findings exist, so novelty is new and resolved is empty", () => {
+    expect(promptOf(compile())).toContain(
+      'No prior findings are supplied, so every novelty is "new" (dup_of takes the ref of a prior finding, never a finding of this round) and resolved is [].',
+    )
+    expect(promptOf(compile())).not.toContain("The supplied prior findings are")
+  })
+
+  it("keeps the prior-round instruction when prior findings are supplied", () => {
+    const prompt = promptOf(
+      compile({
+        workflow_id: "wf-prev",
+        review_id: "decision",
+        round: 1,
+        quiet_rounds: 0,
+        new_findings: 1,
+        findings: [{ ref: "wf-prev/decision--intent/0", node: "decision--intent", index: 0, action: "Fix it" }],
+      }),
+    )
+    expect(prompt).toContain("The supplied prior findings are the previous round's unresolved and resolved items")
+    expect(prompt).not.toContain("No prior findings are supplied")
   })
 })
