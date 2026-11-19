@@ -120,70 +120,74 @@ function bridgeToolResults(msgs: ModelMessage[]): ModelMessage[] {
   return result
 }
 
+/** Maps `items` and hands back the array itself when no element changed, so an untouched message keeps its identity. */
+function mapIfChanged<T>(items: T[], fn: (item: T) => T): T[] {
+  const mapped = items.map(fn)
+  return mapped.every((item, index) => item === items[index]) ? items : mapped
+}
+
+/**
+ * Replaces lone surrogates in the model-visible text. The messages it is given are not changed: a message or part whose
+ * text changes comes back as a copy (with the content array and tool output around it), and everything else comes back
+ * as the same object (#1540).
+ */
 function normalizeMessages(
   msgs: ModelMessage[],
   model: Provider.Model,
   _options: Record<string, unknown>,
 ): ModelMessage[] {
-  const sanitizeToolResultOutput = (content: ToolResultPart) => {
-    if (content.output.type === "text" || content.output.type === "error-text") {
-      content.output.value = sanitizeSurrogates(content.output.value)
+  const sanitizeText = <T extends { text: string }>(part: T): T => {
+    const text = sanitizeSurrogates(part.text)
+    return text === part.text ? part : { ...part, text }
+  }
+
+  const sanitizeToolResultOutput = (part: ToolResultPart): ToolResultPart => {
+    const { output } = part
+    if (output.type === "text" || output.type === "error-text") {
+      const value = sanitizeSurrogates(output.value)
+      return value === output.value ? part : { ...part, output: { ...output, value } }
     }
-    if (content.output.type === "content") {
-      content.output.value = content.output.value.map((item) => {
-        if (item.type === "text") {
-          item.text = sanitizeSurrogates(item.text)
-        }
-        return item
-      })
+    if (output.type === "content") {
+      const value = mapIfChanged(output.value, (item) => (item.type === "text" ? sanitizeText(item) : item))
+      return value === output.value ? part : { ...part, output: { ...output, value } }
     }
-    return content
+    return part
   }
 
   msgs = msgs.map((msg) => {
     switch (msg.role) {
-      case "tool":
+      case "tool": {
         if (!Array.isArray(msg.content)) return msg
-        msg.content = msg.content.map((content) => {
-          if (content.type === "tool-result") {
-            return sanitizeToolResultOutput(content)
-          }
-          return content
-        })
-        return msg
+        const content = mapIfChanged(msg.content, (part) =>
+          part.type === "tool-result" ? sanitizeToolResultOutput(part) : part,
+        )
+        return content === msg.content ? msg : { ...msg, content }
+      }
 
-      case "system":
-        msg.content = sanitizeSurrogates(msg.content)
-        return msg
+      case "system": {
+        const content = sanitizeSurrogates(msg.content)
+        return content === msg.content ? msg : { ...msg, content }
+      }
 
-      case "user":
-        if (typeof msg.content === "string") {
-          msg.content = sanitizeSurrogates(msg.content)
-        } else {
-          msg.content = msg.content.map((content) => {
-            if (content.type === "text") {
-              content.text = sanitizeSurrogates(content.text)
-            }
-            return content
-          })
-        }
-        return msg
+      case "user": {
+        const content =
+          typeof msg.content === "string"
+            ? sanitizeSurrogates(msg.content)
+            : mapIfChanged(msg.content, (part) => (part.type === "text" ? sanitizeText(part) : part))
+        return content === msg.content ? msg : { ...msg, content }
+      }
 
-      case "assistant":
-        if (typeof msg.content === "string") {
-          msg.content = sanitizeSurrogates(msg.content)
-        } else {
-          msg.content = msg.content.map((content) => {
-            if (content.type === "text" || content.type === "reasoning") {
-              content.text = sanitizeSurrogates(content.text)
-            }
-            if (content.type === "tool-result") {
-              return sanitizeToolResultOutput(content)
-            }
-            return content
-          })
-        }
-        return msg
+      case "assistant": {
+        const content =
+          typeof msg.content === "string"
+            ? sanitizeSurrogates(msg.content)
+            : mapIfChanged(msg.content, (part) => {
+                if (part.type === "text" || part.type === "reasoning") return sanitizeText(part)
+                if (part.type === "tool-result") return sanitizeToolResultOutput(part)
+                return part
+              })
+        return content === msg.content ? msg : { ...msg, content }
+      }
     }
   })
 
@@ -852,7 +856,9 @@ function openaiCompatibleReasoningEfforts(id: string) {
 function anthropicOpus47OrLater(apiId: string) {
   // Matches "opus-4.7" (Anthropic/Bedrock/Vertex) and "claude-4.7-opus" (SAP AI Core inverted).
   // Greedy \d+ correctly extends to multi-digit majors (e.g. "claude-10.0-opus") for forward compatibility.
-  const version = /opus-(\d+)[.-](\d+)(?:[.@-]|$)|claude-(\d+)[.-](\d+)-opus(?:[.@-]|$)/i.exec(apiId)
+  // The minor is one or two digits: a longer number after the major is a date stamp, and "claude-opus-4-20250514" is
+  // Opus 4, not Opus 4.20250514 (#1540).
+  const version = /opus-(\d+)[.-](\d{1,2})(?:[.@-]|$)|claude-(\d+)[.-](\d{1,2})-opus(?:[.@-]|$)/i.exec(apiId)
   if (!version) return false
   const major = Number(version[1] ?? version[3])
   const minor = Number(version[2] ?? version[4])
@@ -860,7 +866,9 @@ function anthropicOpus47OrLater(apiId: string) {
 }
 
 function anthropicSonnet5OrLater(apiId: string) {
-  const version = /sonnet-(\d+)(?:[.@-]|$)|claude-(\d+)-sonnet(?:[.@-]|$)/i.exec(apiId)
+  // The major is one or two digits for the same reason: "claude-3-7-sonnet-20250219" ends in a date stamp, and it is
+  // Sonnet 3.7, not Sonnet 20250219 (#1540).
+  const version = /sonnet-(\d{1,2})(?:[.@-]|$)|claude-(\d{1,2})-sonnet(?:[.@-]|$)/i.exec(apiId)
   if (!version) return false
   return Number(version[1] ?? version[2]) >= 5
 }

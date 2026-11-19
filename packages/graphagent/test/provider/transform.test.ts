@@ -2583,6 +2583,56 @@ describe("ProviderTransform.message - surrogate sanitization", () => {
     expect(result[5].content[2].output.value[0].text).toBe(expected("tool content"))
     expect(result[2].content[1]).toEqual({ type: "image", image: "data:image/png;base64,abcd" })
   })
+
+  // Sanitizing assigned into the messages it was handed, so the caller's history changed under it (#1540). The model
+  // takes no cache breakpoints: a later step writes those into the messages in place, which this test is not about.
+  test("does not change the messages it was given", () => {
+    const plain = { ...model, id: "test/plain-model", api: { ...model.api, id: "plain-model", npm: "@ai-sdk/openai" } }
+    // The same history with `text` in every place the text of a message can sit.
+    const history = (text: (label: string) => string): ModelMessage[] => [
+      { role: "system", content: text("system") },
+      { role: "user", content: text("user string") },
+      { role: "user", content: [{ type: "text", text: text("user part") }] },
+      { role: "assistant", content: text("assistant string") },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: text("assistant text") },
+          { type: "reasoning", text: text("assistant reasoning") },
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "Read",
+            output: { type: "text", value: text("assistant result") },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-2",
+            toolName: "Read",
+            output: { type: "error-text", value: text("tool error") },
+          },
+          {
+            type: "tool-result",
+            toolCallId: "call-3",
+            toolName: "Read",
+            output: { type: "content", value: [{ type: "text", text: text("tool content") }] },
+          },
+        ],
+      },
+    ]
+    const msgs = history((label) => `${label} \uD83D end`)
+    const before = structuredClone(msgs)
+
+    const result = ProviderTransform.message(msgs, plain, {})
+
+    expect(msgs).toEqual(before)
+    expect(result).toEqual(history((label) => `${label} \uFFFD end`))
+  })
 })
 
 describe("ProviderTransform.message - empty image handling", () => {
@@ -5014,7 +5064,7 @@ describe("ProviderTransform.variants", () => {
       },
       {
         name: "opus 4.7",
-        apiIds: ["claude-opus-4-7", "claude-opus-4.7"],
+        apiIds: ["claude-opus-4-7", "claude-opus-4.7", "claude-opus-4.7@20260101", "claude-4.7-opus"],
         efforts: ["low", "medium", "high", "xhigh", "max"],
         expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
       },
@@ -5025,8 +5075,14 @@ describe("ProviderTransform.variants", () => {
         expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
       },
       {
+        name: "opus 5.5",
+        apiIds: ["claude-opus-5-5"],
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
+      },
+      {
         name: "sonnet 5",
-        apiIds: ["claude-sonnet-5", "claude-sonnet-5-20260630"],
+        apiIds: ["claude-sonnet-5", "claude-sonnet-5-20260630", "claude-5-sonnet"],
         efforts: ["low", "medium", "high", "xhigh", "max"],
         expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
       },
@@ -5054,6 +5110,35 @@ describe("ProviderTransform.variants", () => {
           expect(result.high).toEqual(testCase.expectedHigh)
         })
       }
+    }
+
+    // A date stamp after the family number is not a version: `claude-opus-4-20250514` is Opus 4, not Opus 4.20250514,
+    // and `claude-3-7-sonnet-20250219` is Sonnet 3.7, not Sonnet 20250219. Read as one, it gave these models the adaptive
+    // tiers and the summarized display of the newest ones (#1540).
+    for (const apiId of [
+      "claude-opus-4-20250514",
+      "claude-opus-4@20250514",
+      "claude-opus-4-1-20250805",
+      "claude-opus-4-1@20250805",
+      "claude-3-opus-20240229",
+      "claude-sonnet-4-20250514",
+      "claude-sonnet-4-5-20250929",
+      "claude-3-7-sonnet-20250219",
+      "claude-3-5-sonnet-20241022",
+    ]) {
+      test(`${apiId} keeps the budgeted thinking tiers`, () => {
+        const result = ProviderTransform.variants(
+          createMockModel({
+            id: `anthropic/${apiId}`,
+            providerID: "anthropic",
+            api: { id: apiId, url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+          }),
+        )
+        expect(result).toEqual({
+          high: { thinking: { type: "enabled", budgetTokens: 16_000 } },
+          max: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+        })
+      })
     }
 
     test("github copilot opus 4.7 returns only medium reasoning effort", () => {
