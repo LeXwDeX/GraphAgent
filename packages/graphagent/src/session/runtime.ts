@@ -16,6 +16,7 @@ import { makeReasoningQueue } from "./reasoning-queue"
 import type { RuntimeContext } from "./runtime-context"
 import { RuntimeSlots } from "./runtime-slots"
 import type { MessageID, SessionID } from "./schema"
+import type { RequestManifest } from "./turn/overhead"
 
 /**
  * Process-wide session runtime caches (Issue #1019, PR9).
@@ -93,6 +94,8 @@ export interface SessionRuntimes {
   readonly scopedAgents: Map<SessionID, string>
   /** Measured overhead of the previous prepared request, per session. */
   readonly requestOverheads: Map<SessionID, number>
+  /** What the previous prepared request carried besides its messages, by source, per session (#1461). */
+  readonly requestManifests: Map<SessionID, RequestManifest>
   /** Serialized tool fragment of the last prepared request, per session (Issue #1022, PR5). */
   readonly requestTools: Map<SessionID, { readonly key: string; readonly json: string }>
   /** Prefix of the last conversation request, per session (Issue #1028, PR5). */
@@ -143,6 +146,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
   const modelSwitches = new Map<SessionID, ModelSwitchRecord>()
   const scopedAgents = new Map<SessionID, string>()
   const requestOverheads = new Map<SessionID, number>()
+  const requestManifests = new Map<SessionID, RequestManifest>()
   const requestTools = new Map<SessionID, { readonly key: string; readonly json: string }>()
   const requestPrefixes = new Map<SessionID, RequestPrefix>()
   const runtimeContexts = new Map<SessionID, readonly RuntimeContext.Entry[]>()
@@ -162,6 +166,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     }
     scopedAgents.delete(sessionID)
     requestOverheads.delete(sessionID)
+    requestManifests.delete(sessionID)
     requestTools.delete(sessionID)
     requestPrefixes.delete(sessionID)
     runtimeContexts.delete(sessionID)
@@ -177,6 +182,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     modelSwitches,
     scopedAgents,
     requestOverheads,
+    requestManifests,
     requestTools,
     requestPrefixes,
     runtimeContexts,
