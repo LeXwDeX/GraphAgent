@@ -30,6 +30,15 @@ import type { Truncate } from "@/tool/truncate"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MemorySearch } from "@/tool/memory-search"
 import { ModelContext } from "@/tool/model-context"
+import {
+  ArgumentsError,
+  SCHEMA_HINT,
+  describeBlocks,
+  helperSchemas,
+  makeChecker,
+  MCP_DEFERRED_TOOLS,
+} from "@/tool/mcp-deferred"
+import { ToolError } from "@/tool/tool-error"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import type { Tool } from "@/tool/tool"
 import type { ToolEntry } from "./registry"
@@ -205,6 +214,10 @@ export interface Deps {
     ToolExecutionOptions,
     { confirmed: boolean; allowed: boolean; name: string; original: Record<string, unknown> }
   >
+  /** The wrapped tools of deferred servers, by key: not the model's tools, only what `mcp_call` runs (#1459). */
+  deferredTools: Map<string, AITool>
+  /** A call that `mcp_call` forwards, with the key of the tool it forwards to; the transcript keeps the call as made. */
+  proxiedCalls: WeakMap<ToolExecutionOptions, string>
 }
 
 export type BuiltinEntry = Extract<ToolEntry, { source: { kind: "builtin" } }>
@@ -1183,6 +1196,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   tools: Record<string, AITool>,
 ) {
   const { input, run, hooks, permission, context, truncate, reportInterrupt, hookContext, hookDenied, entries } = deps
+  const { deferredTools } = deps
   const contextTokens = ModelContext.contextOfModel(input.model)
 
   for (const entry of entries) {
@@ -1433,8 +1447,88 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
         ),
       )
     }
-    tools[key] = item
+    // A deferred tool is not one of the model's tools; `mcp_call` reaches it through the same wrapper.
+    if (entry.source.deferred === true) deferredTools.set(key, item)
+    else tools[key] = item
   }
+})
+
+/**
+ * `mcp_describe` and `mcp_call` (#1459), the model's way to the tools of deferred servers. They ask nothing and run no
+ * hook of their own. A call through `mcp_call` is the target's own call: `mcpServerTools` put its question, its hooks
+ * and its forced ask on the tool, under the target's key, and `mcp_call` runs that tool. A fault in the arguments of
+ * either helper, or of the target, is an `ArgumentsError` before anything runs.
+ */
+export const mcpDeferredTools = Effect.fn("ToolPipeline.mcpDeferredTools")(function* (
+  deps: Deps,
+  tools: Record<string, AITool>,
+) {
+  const { input, run, truncate, entries, deferredTools, proxiedCalls } = deps
+  const describeEntry = entries.find((entry) => entry.source.kind === "mcp-deferred" && entry.source.op === "describe")
+  const callEntry = entries.find((entry) => entry.source.kind === "mcp-deferred" && entry.source.op === "call")
+  if (!describeEntry || !callEntry) return
+  const contextTokens = ModelContext.contextOfModel(input.model)
+  const check = makeChecker()
+  const own = helperSchemas()
+  const catalog = new Map(
+    entries
+      .filter((entry): entry is McpEntry => isMcpEntry(entry) && entry.source.deferred === true)
+      .map((entry) => [entry.id, entry]),
+  )
+  const available = () => [...deferredTools.keys()].toSorted((left, right) => left.localeCompare(right))
+  const refuse = (fault: ToolError.Fault, hint = "") => new ArgumentsError(ToolError.render(fault) + hint)
+
+  tools[describeEntry.id] = tool({
+    description: describeEntry.description,
+    inputSchema: jsonSchema(describeEntry.jsonSchema),
+    async execute(args, opts) {
+      const detail = check(own.describe, args)
+      if (detail !== undefined) throw refuse({ kind: "invalid_arguments", tool: MCP_DEFERRED_TOOLS.describe, detail })
+      const asked = toRecord(args).tools
+      const names = [...new Set(Array.isArray(asked) ? asked.filter((name) => typeof name === "string") : [])]
+      const unknown = names.find((name) => !deferredTools.has(name) || !catalog.has(name))
+      if (unknown !== undefined) throw refuse({ kind: "unknown_tool", requested: unknown, available: available() })
+      const text = describeBlocks(names.flatMap((name) => catalog.get(name) ?? []))
+      return run.promise(
+        Effect.gen(function* () {
+          const truncated = yield* truncate.output(text, { context: contextTokens }, input.agent)
+          const output = {
+            title: "MCP tool schemas",
+            metadata: {
+              count: names.length,
+              truncated: truncated.truncated,
+              ...(truncated.truncated && { outputPath: truncated.outputPath }),
+            },
+            output: truncated.content,
+          }
+          if (opts.abortSignal?.aborted) yield* input.processor.completeToolCall(opts.toolCallId, output)
+          return output
+        }),
+      )
+    },
+  })
+
+  tools[callEntry.id] = tool({
+    description: callEntry.description,
+    inputSchema: jsonSchema(callEntry.jsonSchema),
+    async execute(args, opts) {
+      const detail = check(own.call, args)
+      if (detail !== undefined)
+        throw refuse({ kind: "invalid_arguments", tool: MCP_DEFERRED_TOOLS.call, detail }, SCHEMA_HINT)
+      const record = toRecord(args)
+      const key = typeof record.tool === "string" ? record.tool : ""
+      const target = deferredTools.get(key)
+      const targetEntry = catalog.get(key)
+      if (!target?.execute || !targetEntry)
+        throw refuse({ kind: "unknown_tool", requested: key, available: available() })
+      const callArgs = isRecord(record.arguments) ? record.arguments : {}
+      const mismatch = check(targetEntry.jsonSchema, callArgs)
+      if (mismatch !== undefined) throw refuse({ kind: "invalid_arguments", tool: key, detail: mismatch }, SCHEMA_HINT)
+      // The target's wrapper cuts its own result, so this one is not cut again.
+      proxiedCalls.set(opts, key)
+      return target.execute(callArgs, opts)
+    },
+  })
 })
 
 export * as ToolPipeline from "./pipeline"
