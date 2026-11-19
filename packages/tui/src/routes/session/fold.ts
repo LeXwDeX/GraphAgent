@@ -5,6 +5,7 @@ import stripAnsi from "strip-ansi"
 import type { Part, ToolPart } from "@graphagent/sdk"
 import type { PartPreview } from "../../context/stream-buffer"
 import { reasoningSummary, type ThinkingMode } from "../../context/thinking"
+import { t } from "../../i18n"
 import type { BackgroundCard } from "../../session/background-card"
 import { cellWidth, type AmbiguousWidth } from "../../ui/width"
 import { outputOverflows } from "../../util/collapse-tool-output"
@@ -121,6 +122,20 @@ export function reasoningFolds(text: string, thinking: ThinkingMode) {
  */
 export function delegationFolds(text: string, width: number) {
   return outputOverflows(text, DELEGATION_PROMPT_LINES, outputCharCap(DELEGATION_PROMPT_LINES, width))
+}
+
+/**
+ * The line under a tool output that folds (`tool.fold.*`): what the fold leaves out and what opens it, or what
+ * closes it once it is open. `hidden` counts the lines past the cap (`collapseToolOutput`); with none, the output
+ * is only cut at a long line. `key` is the binding of `view.expand.toggle`, which the session reads once and which
+ * is empty while it is unbound: a block without one says "click" and names no key.
+ */
+export function foldHint(fold: { expanded: boolean; hidden: number }, key: string) {
+  if (fold.expanded) return key ? t("tool.fold.less", { key }) : t("tool.fold.lessClick")
+  if (fold.hidden <= 0) return key ? t("tool.fold.long", { key }) : t("tool.fold.longClick")
+  const n = fold.hidden
+  if (key) return t(n === 1 ? "tool.fold.more.one" : "tool.fold.more.other", { n, key })
+  return t(n === 1 ? "tool.fold.moreClick.one" : "tool.fold.moreClick.other", { n })
 }
 
 /**

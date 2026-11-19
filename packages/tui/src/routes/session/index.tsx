@@ -166,6 +166,7 @@ import {
   editShowsBlock,
   errorDenied,
   foldFlag,
+  foldHint,
   GENERIC_OUTPUT_LINES,
   genericOutput,
   genericShowsBlock,
@@ -2235,7 +2236,7 @@ function UserMessage(props: {
                     return (
                       <text fg={theme.text}>
                         <span style={{ bg: theme.secondary, fg: theme.background }}>
-                          {directory ? " Directory " : " File "}
+                          {` ${directory ? t("message.directory") : t("message.file")} `}
                         </span>
                         <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
                       </text>
@@ -2257,7 +2258,7 @@ function UserMessage(props: {
               }
             >
               <text fg={theme.textMuted}>
-                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> QUEUED </span>
+                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> {t("message.queued")} </span>
               </text>
             </Show>
           </box>
@@ -2267,7 +2268,7 @@ function UserMessage(props: {
         <box
           marginTop={1}
           border={["top"]}
-          title=" Compaction "
+          title={` ${t("message.compaction")} `}
           titleAlignment="center"
           borderColor={theme.borderActive}
         />
@@ -2293,10 +2294,13 @@ function DelegationBlock(props: { messageID: string; parts: Part[] }) {
   const folds = createMemo(() => delegationFolds(text(), ctx.width))
   const foldID = () => delegationFoldID(props.messageID)
   const expanded = () => ctx.view.get(foldID(), "expanded")
+  // The cut prompt keeps the `…` line of its own: the hint under a tool output opens with one, this block's does not.
   const prompt = createMemo(() =>
     expanded() || !folds()
       ? text()
-      : collapseToolOutput(text(), DELEGATION_PROMPT_LINES, outputCharCap(DELEGATION_PROMPT_LINES, ctx.width)).output,
+      : collapseToolOutput(text(), DELEGATION_PROMPT_LINES, outputCharCap(DELEGATION_PROMPT_LINES, ctx.width), {
+          ellipsisRow: true,
+        }).output,
   )
 
   return (
@@ -2577,9 +2581,7 @@ function AssistantError(props: { message: AssistantMessage }) {
       >
         <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
         <Show when={retryBlocked()}>
-          <text fg={theme.textMuted}>
-            Tools started in this turn, so it was not replayed automatically. Retry manually.
-          </text>
+          <text fg={theme.textMuted}>{t("message.retryBlocked")}</text>
         </Show>
       </box>
     </Show>
@@ -2627,7 +2629,7 @@ function AssistantSummary(props: { message: AssistantMessage; last: boolean }) {
               <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
             </Show>
             <Show when={props.message.error?.name === "MessageAbortedError"}>
-              <span style={{ fg: theme.textMuted }}> · interrupted</span>
+              <span style={{ fg: theme.textMuted }}> · {t("message.interrupted")}</span>
             </Show>
           </text>
         </box>
@@ -2886,6 +2888,7 @@ function GenericTool(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const hint = createMemo(() => foldHint({ expanded: expanded(), hidden: collapsed().hidden }, ctx.shortcuts.expand()))
   // Only the block folds; the one-line fallback below has nothing to open, and `fold.ts` skips a call that draws it.
   const showBlock = () => genericShowsBlock(attention(), props.output, ctx.showGenericToolOutput())
 
@@ -2907,7 +2910,7 @@ function GenericTool(props: ToolProps) {
           <Show when={attention()}>{(reason) => <text fg={theme.error}>{reason()}</text>}</Show>
           <text fg={theme.text}>{limited()}</text>
           <Show when={collapsed().overflow}>
-            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+            <text fg={theme.textDim}>{hint()}</text>
           </Show>
         </box>
       </BlockTool>
@@ -3139,6 +3142,7 @@ function Shell(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const hint = createMemo(() => foldHint({ expanded: expanded(), hidden: collapsed().hidden }, ctx.shortcuts.expand()))
 
   const workdirDisplay = createMemo(() => {
     const workdir = stringValue(props.input.workdir)
@@ -3172,7 +3176,7 @@ function Shell(props: ToolProps) {
               <text fg={theme.text}>{limited()}</text>
             </Show>
             <Show when={collapsed().overflow}>
-              <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+              <text fg={theme.textDim}>{hint()}</text>
             </Show>
           </box>
         </BlockTool>
