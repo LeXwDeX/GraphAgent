@@ -329,14 +329,7 @@ export const layer = Layer.effect(
       fail: (dagID, reason) => command(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
       failOrphan: (dagID, reason) =>
         command(dagID)((lock) => withMailbox(dagID, "failed", failOrphan(lock, dagID, reason))),
-      failUnrecoverable: (dagID, reason) =>
-        command(dagID)((lock) =>
-          withMailbox(
-            dagID,
-            DagWorkflowTerminal.failUnrecoverableMailboxReason,
-            failUnrecoverable(lock, dagID, reason),
-          ),
-        ),
+      failUnrecoverable,
       settleCompletion: (dagID, options) => command(dagID)((lock) => settleCompletion(lock, dagID, options)),
       exclusive,
       replan: (dagID, fragment) =>

@@ -510,11 +510,16 @@ const invalidExecution = (directory: string, reason: string): ExecutionLocation 
   reason,
 })
 
-/** Resolve whether a workflow's execution directory can still be used. */
-export const resolveExecution = (row: {
+/**
+ * What `resolveExecution` decides without git: the verdict, or the explicitly
+ * bound directory whose identity git still has to vouch for.
+ */
+type ExecutionPrecheck = ExecutionLocation | { readonly _tag: "identity"; readonly directory: string }
+
+const executionPrecheck = (row: {
   readonly directory: string
   readonly executionDirectory?: string | null
-}): ExecutionLocation => {
+}): ExecutionPrecheck => {
   // An explicit binding is a string (including ""); null/absent means the
   // owner fallback. The two must not share the strict identity check: a
   // non-git owner directory is a valid execution location.
@@ -541,10 +546,69 @@ export const resolveExecution = (row: {
   if (row.directory === "") {
     return invalidExecution(target, "workflow has no owner directory to validate the workspace against")
   }
-  const resolved = resolveWorkspace(target, row.directory)
-  if (resolved._tag === "invalid") return invalidExecution(target, resolved.reason)
-  return { _tag: "ok", directory: target }
+  return { _tag: "identity", directory: target }
 }
+
+/** Resolve whether a workflow's execution directory can still be used. */
+export const resolveExecution = (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): ExecutionLocation => {
+  const checked = executionPrecheck(row)
+  if (checked._tag !== "identity") return checked
+  const resolved = resolveWorkspace(checked.directory, row.directory)
+  if (resolved._tag === "invalid") return invalidExecution(checked.directory, resolved.reason)
+  return { _tag: "ok", directory: checked.directory }
+}
+
+/**
+ * #1344: `resolveExecution` for a caller that holds the workflow lock. The
+ * identity check of an explicit binding waits for git without blocking the event
+ * loop (`resolveWorkspaceAsync`); the verdicts are the synchronous version's.
+ * Never fails; only an interruption gets through.
+ */
+export const resolveExecutionAsync = Effect.fn("DagLocation.resolveExecutionAsync")(function* (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): Effect.fn.Return<ExecutionLocation> {
+  const checked = executionPrecheck(row)
+  if (checked._tag !== "identity") return checked
+  const resolved = yield* resolveWorkspaceAsync(checked.directory, row.directory)
+  if (resolved._tag === "invalid") return invalidExecution(checked.directory, resolved.reason)
+  return { _tag: "ok", directory: checked.directory }
+})
+
+/**
+ * #1344: what `failUnrecoverable` reads before its transaction opens: the
+ * verdict on the execution location, which waits for git (ADR-0008 decision 3:
+ * a transaction body takes database work only), with the directories it was
+ * taken against. The transaction applies it only while the row still names them
+ * (`executionObservationHolds`), as `TargetObservation` does for `retarget`:
+ * a session move that re-stamped the row in between wins.
+ */
+export interface ExecutionObservation {
+  readonly directory: string
+  readonly executionDirectory: string | null | undefined
+  readonly location: ExecutionLocation
+}
+
+export const observeExecution = Effect.fn("DagLocation.observeExecution")(function* (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): Effect.fn.Return<ExecutionObservation> {
+  return {
+    directory: row.directory,
+    executionDirectory: row.executionDirectory,
+    location: yield* resolveExecutionAsync(row),
+  }
+})
+
+/** Whether the row still names the directories `observed` was taken against. */
+export const executionObservationHolds = (
+  observed: ExecutionObservation,
+  row: { readonly directory: string; readonly executionDirectory?: string | null },
+): boolean =>
+  observed.directory === row.directory && (observed.executionDirectory ?? null) === (row.executionDirectory ?? null)
 
 /**
  * The explicit failure reason persisted on the WorkflowFailed event (and thus
