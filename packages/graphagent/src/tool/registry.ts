@@ -161,9 +161,16 @@ type State = {
   readonly definitions: RequestCache.CacheState<CachedBuiltin[]>
   /** One agent-tool visibility decision per session turn (Issue #1022, HS6b). */
   agentUsable: Map<string, { readonly turnID: string; readonly value: boolean }>
-  /** The models (`<provider>/<id>`) the user was told tools were moved into the deferred catalog for (#1459). */
+  /**
+   * What was warned of already, once for each: the models (`<provider>/<id>`) the user was told tools were moved into the
+   * deferred catalog for (#1459), and `CATALOG_CAPPED` for the catalog over its cap (#1574), a key no model name equals
+   * as every model name has a `/`.
+   */
   warned: Set<string>
 }
+
+/** The key in `State.warned` of the warning that the catalog of `mcp_describe` is over its cap. */
+const CATALOG_CAPPED = "mcp-catalog-capped"
 
 type AgentCatalogOptions = {
   heading: string
@@ -495,6 +502,18 @@ export const layer = Layer.effect(
         .pipe(Effect.ignore)
     })
 
+    // Tells the log, once, that the catalog in the description of `mcp_describe` is over its cap (#1574): the tools past
+    // it are not listed there, and work as ever by their keys. Not a toast: it is for whoever configured the servers.
+    const warnUnlisted = Effect.fnUntraced(function* (s: State, resolved: ReadonlyArray<ToolEntry>, unlisted: number) {
+      if (unlisted === 0 || s.warned.has(CATALOG_CAPPED)) return
+      s.warned.add(CATALOG_CAPPED)
+      const deferred = resolved.filter((entry) => entry.source.kind === "mcp" && entry.source.deferred === true).length
+      yield* Effect.logWarning(
+        "MCP deferred catalog is over its cap; the tools past it are not listed in mcp_describe",
+        { listed: deferred - unlisted, unlisted },
+      )
+    })
+
     const resolve: Interface["resolve"] = Effect.fn("ToolRegistry.resolve")(function* (input) {
       const transform = (schema: JSONSchema7) => (input.model ? ProviderTransform.schema(input.model, schema) : schema)
 
@@ -716,13 +735,15 @@ RequestCache.set(
         Permission.merge(policy.rules, input.permission ?? []),
       )
       const visible = (id: string) => input.user?.tools?.[id] !== false && !disabled.has(id)
-      const { entries: resolved, moved } = settle({
+      const settled = settle({
         entries: entries.values(),
         visible,
         transform,
         limits: ProviderProfile.profileOf(model).toolLimits,
       })
-      yield* warnMoved(s, model, moved)
+      const resolved = settled.entries
+      yield* warnMoved(s, model, settled.moved)
+      yield* warnUnlisted(s, resolved, settled.unlisted)
       Object.defineProperty(resolved, RESOLVE_KEY, { value: definitionsKey })
       return resolved
     })
