@@ -1,29 +1,29 @@
 {
   "version": 1,
   "prompts": {
-    "dag_mode_system": 1598,
-    "graphagent_apply_patch": 2788,
-    "graphagent_edit_write": 2791,
+    "dag_mode_system": 1523,
+    "graphagent_apply_patch": 2375,
+    "graphagent_edit_write": 2378,
     "runtime_system_note": 434,
     "writing_style": 694
   },
   "tools": {
     "apply_patch": 1169,
-    "bash": 5904,
-    "edit": 1376,
+    "bash": 5932,
+    "edit": 1355,
     "glob": 986,
     "goal": 3863,
-    "grep": 1799,
+    "grep": 1741,
     "invalid": 121,
     "memory_search": 377,
     "question": 2735,
     "read": 2205,
     "skill": 441,
-    "task": 6047,
+    "task": 6006,
     "todowrite": 1209,
     "watch_pr": 2211,
-    "webfetch": 1044,
-    "workflow": 13933,
-    "write": 500
+    "webfetch": 977,
+    "workflow": 13441,
+    "write": 453
   }
 }

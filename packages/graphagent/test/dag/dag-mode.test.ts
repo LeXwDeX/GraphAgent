@@ -58,7 +58,8 @@ describe("DagMode.state (L2)", () => {
     expect(text).toContain("concurrency 12 shared by all sessions")
     expect(text).toContain("100 nodes per workflow")
     expect(text).toContain("DAG token budget 500000 tokens")
-    expect(text).toContain("applies to that request only")
+    // L1 already says the current message overrides the setting for that request (#1457).
+    expect(text).not.toContain("applies to that request only")
     expect(text).toContain("Load the dag-auto skill")
     // #1031 M2: the block travels in runtime context on every request; the
     // Issue caps it at 2.3 KB.
@@ -148,21 +149,22 @@ describe("DagMode unattended permission tier (#1324)", () => {
     "Node permissions: read-only. Nodes cannot edit files, and can run only read-only git and gh queries; plan research and review work only."
 
   /**
-   * L2 texts as they were before the tier existed: byte length and SHA-256 of
+   * L2 texts without a tier line: byte length and SHA-256 of
    * `DagMode.state(...).parts.join("\n")`. The default tier must reproduce
-   * every one of them byte for byte.
+   * every one of them byte for byte. #1457 re-measured them after cutting the
+   * sentences that L1 or the engine already carry.
    */
   const BEFORE_L2 = {
-    base: { facts, bytes: 2333, sha256: "4fe703430844969b8f5a0397620142dd9f8653bbc98bf9d07fe7770eee295a8d" },
+    base: { facts, bytes: 2051, sha256: "ee6fd81d8c4648f843c562643f559ac46d36c0954a4f4de9ad255cb6879c30cf" },
     unlimited: {
       facts: { ...facts, budget: null },
-      bytes: 2329,
-      sha256: "0b5c435430b4ef77c841f7f1ac680e6dd9bd1c7a3e0411a3ff006659fa75c3c0",
+      bytes: 2047,
+      sha256: "1038286291f3233b6e883f98c007869207fb4124040a2953d433c38bbbb674fd",
     },
     planAndNoninteractive: {
       facts: { ...facts, plan: true, noninteractive: true },
-      bytes: 2622,
-      sha256: "a4b3674b873dd254ea7a4a83bd6bbc34f7b30ee0df7840b4b5fc05dc4fc2f3e9",
+      bytes: 2340,
+      sha256: "f1e720ed7934066ac22e9982f03bf4e020b47b39e3c188c48b6daac6f246bc44",
     },
     exhausted: {
       facts: {
@@ -171,16 +173,16 @@ describe("DagMode unattended permission tier (#1324)", () => {
         noninteractive: true,
         budgetState: { used: 1200, cacheRead: 10, budget: 1000, warnRatio: 0.8, tier: "exhausted" as const },
       },
-      bytes: 2840,
-      sha256: "88ca67353d7762cbb6e8e3b5565fca6e10e1491b0b7577721a3254f095d32bd9",
+      bytes: 2558,
+      sha256: "c057b8c1ae76cae84d80db2326db111cdae9da77ade70706fb8c146c92cbd8e7",
     },
     warn: {
       facts: {
         ...facts,
         budgetState: { used: 850, cacheRead: 10, budget: 1000, warnRatio: 0.8, tier: "warn" as const },
       },
-      bytes: 2414,
-      sha256: "f47c038c14f7c3f6d3facae53d62b6e7f3ae712f5b3b6cff4300b5d34318257e",
+      bytes: 2132,
+      sha256: "3c16ec62a8d53ddce3d2b13379f372a0b753d9b98c29221e7225789bbad821a0",
     },
     unavailable: {
       facts: { ...facts, unavailable: "start_denied" as const },
@@ -192,9 +194,9 @@ describe("DagMode unattended permission tier (#1324)", () => {
   test("L1 carries the tier-aware sentence verbatim and nothing else changed", () => {
     expect(DagMode.SYSTEM).toContain(NEW_SENTENCE)
     expect(DagMode.SYSTEM).not.toContain(OLD_SENTENCE)
-    // Swapping the sentence back must give the L1 text of the previous release.
+    // Swapping the sentence back must give the L1 text as it was before it (re-measured by #1457).
     expect(sha256(DagMode.SYSTEM.replace(NEW_SENTENCE, OLD_SENTENCE))).toBe(
-      "4845f706c2e57ccb5e162fd8662d5128e66dac3c26d3c40e926587f0d7251f39",
+      "0dc084921d8c316823ff70aab524d361ffbf9f2fe16b0df631a0fdc30ca01a49",
     )
   })
 
@@ -273,9 +275,10 @@ describe("DagMode unattended permission tier (#1324)", () => {
     expect(readonly - allow).toBe(1 + Buffer.byteLength(READONLY_LINE))
   })
 
-  // A variant whose default text already passes 2.3 KB (the plan and non-interactive notes, a
-  // budget warning) was over the cap before the tier existed and stays as it was, so the cap is
-  // asserted for every variant that fits it today: the test facts and the unlimited budget.
+  // A variant whose default text already passes 2.3 KB (the exhausted budget) was over the cap
+  // before the tier existed and stays as it was, so the cap is asserted for every variant that
+  // fits it today: the test facts, the unlimited budget, the plan and non-interactive notes and a
+  // budget warning (the last two fit since #1457).
   test("L2 stays within its tier's cap: 2.3 KB for allow, 2.5 KB for ask and readonly", () => {
     const fitting = Object.entries(BEFORE_L2).filter(([, before]) => before.bytes <= CAP.allow)
     expect(fitting.map(([name]) => name)).toEqual(expect.arrayContaining(["base", "unlimited"]))

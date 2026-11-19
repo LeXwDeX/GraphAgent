@@ -22,7 +22,7 @@ Choosing foreground or background:
   a quick lookup you can answer directly.
 - Reviews, audits, and test or type-check runs of finished work are good background tasks. Research
   that decides your next edit is not.
-- Never run two writers on the same files. Never background a task and then wait for it with
+- Never background a task and then wait for it with
   sleep or polling; if nothing else is left, end your turn and the result will arrive as a message.
 - A declared execution mode of an agent or command takes precedence over these criteria: pass
   background=false to wait for an agent that runs in the background by default. Interactive agents

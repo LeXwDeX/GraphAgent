@@ -6,8 +6,8 @@ import { ShellID } from "./id"
 
 const PS = new Set(["powershell", "pwsh"])
 const CMD = new Set(["cmd"])
-const FILTER_GUIDANCE =
-  "When only part of a large output matters, filter at the command (for example, pipe through grep/awk/jq or use the tool's native filter) instead of dumping everything and paging afterwards; paging the saved file is the fallback."
+const filterGuidance = (examples: string) =>
+  `When only part of a large output matters, filter at the command (for example, pipe through ${examples} or use the tool's native filter) instead of dumping everything and paging afterwards; paging the saved file is the fallback.`
 
 const BACKGROUND_GUIDANCE =
   "Pass `background: true` for long-running local processes (host CI, builds, smoke tests). The call returns a job id immediately, output is written to a log file, and completion arrives as a result notice; a goal can wait on it with wait_source=background_job and wait_id=<job id>. Background mode has no default timeout unless `timeout` is given. Never wait for such a process with a foreground `sleep` or polling loop."
@@ -92,8 +92,8 @@ function bashCommandSection(chain: string, defaultTimeoutMs: number, silenceWarn
   return `Before executing the command, please follow these steps:
 
 1. Directory Verification:
-   - If the command will create new directories or files, first use \`ls\` to verify the parent directory exists and is the correct location
-   - For example, before running "mkdir foo/bar", first use \`ls foo\` to check that "foo" exists and is the intended parent directory
+   - If the command will create new directories or files, first use \`test -d <parent>\` to verify the parent directory exists and is the correct location
+   - For example, before running "mkdir foo/bar", first use \`test -d foo\` to check that "foo" exists and is the intended parent directory
 
 2. Command Execution:
    - Always quote file paths that contain spaces with double quotes (e.g., rm "path with spaces/file.txt")
@@ -111,9 +111,9 @@ Usage notes:
   - ${BACKGROUND_GUIDANCE}
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
   - If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
-  - ${FILTER_GUIDANCE}
+  - ${filterGuidance("grep/awk/jq")}
 
-  - Avoid using Bash with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+  - Avoid using Bash on files with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT find or ls)
     - Content search: Use Grep (NOT grep or rg)
     - Read files: Use Read (NOT cat/head/tail)
@@ -165,9 +165,9 @@ Usage notes:
   - ${BACKGROUND_GUIDANCE}
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
   - If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
-  - ${FILTER_GUIDANCE}
+  - ${filterGuidance("Select-String, Where-Object or ConvertFrom-Json")}
 
-  - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+  - Avoid using Shell on files with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT Get-ChildItem)
     - Content search: Use Grep (NOT Select-String)
     - Read files: Use Read (NOT Get-Content)
@@ -217,9 +217,9 @@ Usage notes:
   - ${BACKGROUND_GUIDANCE}
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
   - If the output exceeds ${SHELL_TAIL_LINES} lines or the output byte budget, the result keeps the last lines that fit the budget (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`more\` or other pagination commands to limit output; the full output is already captured for precise paging and searching.
-  - ${FILTER_GUIDANCE}
+  - ${filterGuidance("findstr")}
 
-  - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+  - Avoid using Shell on files with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT dir /s)
     - Content search: Use Grep (NOT findstr)
     - Read files: Use Read (NOT type)

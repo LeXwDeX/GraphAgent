@@ -10,14 +10,11 @@ const it = testEffect(Layer.empty)
 // authoring, recovery, patterns, and policy text lives in the dag-* built-in
 // skills (packages/graphagent/test/skill/dag-skills.test.ts).
 describe("CommandPlugin routing", () => {
-  it.effect("makes the default follow DAG mode instead of the model's own judgment", () =>
+  it.effect("leaves the default route to the DAG mode blocks instead of the model's own judgment", () =>
     Effect.sync(() => {
       const content = CommandPlugin.WorkflowContent.replace(/\s+/g, " ")
-      expect(content).toContain("Whether orchestration is the default follows DAG mode")
-      expect(content).toContain("the latest `dag_mode` runtime-context block reports")
-      expect(content).toContain("When it is ON, substantive requests default to workflows")
-      expect(content).toContain("when it is OFF, start one only when the user explicitly asks")
-      expect(content).toContain("applies only to that request")
+      // #1457: whether orchestration is the default is stated in L1 and L2 (`DagMode.SYSTEM`, `DagMode.state`), once.
+      expect(content).not.toContain("Whether orchestration is the default")
       expect(content).toContain("Explicit user instructions take precedence")
       // #1031 M3: the old "judge for yourself" and "file count" retreats are gone.
       expect(content).not.toContain("Promote to a DAG on your own judgment")
