@@ -915,7 +915,7 @@ export const layer = Layer.effect(
         )
 
         for (const toolCallID of Object.keys(ctx.toolcalls)) {
-          yield* forceAbortToolCall(toolCallID)
+          yield* forceAbortToolCall(toolCallID, ctx.attempt.finish)
         }
         ctx.toolcalls = {}
         if (deferred) ctx.assistantMessage.finish = "tool_deferred"

@@ -6,6 +6,7 @@ import { Database } from "@graphagent/core/database/database"
 import type { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { NamedError } from "@graphagent/core/util/error"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { TuiEvent } from "@graphagent/schema/tui-event"
 import { randomUUID } from "node:crypto"
 import { asSchema } from "ai"
 import { Cause, Effect, Exit, Option, type Scope } from "effect"
@@ -795,6 +796,22 @@ function makeAttemptRunner(deps: LoopDeps) {
   })
 }
 
+/**
+ * A reply cut off again after every automatic continuation of the turn (#1464): the turn ends on `length`. The model
+ * gets no further request to read it in, so the user is told.
+ */
+const announceTruncationLimit = Effect.fnUntraced(function* (deps: LoopDeps, sessionID: SessionID) {
+  yield* Effect.logInfo("reply still cut off after the automatic continuations", { "session.id": sessionID })
+  yield* deps.events
+    .publish(TuiEvent.ToastShow, {
+      title: "Output limit",
+      message: `The reply was still cut off after ${Hints.HINT_LIMIT.output_truncated} automatic continuations. Ask for a shorter answer or split the task.`,
+      variant: "warning",
+      duration: 8000,
+    })
+    .pipe(Effect.catchCause(() => Effect.void))
+})
+
 type StopGateResult =
   | { readonly kind: "step" | "continue"; readonly state: TurnState }
   | { readonly kind: "finish"; readonly state: TurnState; readonly outcome: Decide.TurnOutcome }
@@ -854,6 +871,9 @@ function makeStopGate(deps: LoopDeps) {
       budgetExhausted: input.budget.exhausted,
       assistantFinish: input.lastAssistant?.finish,
       pseudoToolCall: Hints.detectPseudoToolCall(input.lastAssistantMsg?.parts ?? []),
+      truncatedText:
+        SessionRole.isRoot(input.session) &&
+        Hints.isTruncatedReply(input.lastAssistant, input.lastAssistantMsg?.parts ?? []),
     }
     let transition = Decide.decide(input.state, signals)
     // The terminal step called a tool: run the single closing step before any
@@ -925,6 +945,8 @@ function makeStopGate(deps: LoopDeps) {
             : State.continueFromQueuedInput(input.state),
       }
     }
+    if (transition.kind === "finish" && Hints.truncationExhausted(input.state.hints, signals.truncatedText))
+      yield* announceTruncationLimit(deps, input.sessionID)
     if (transition.kind === "finish") return { kind: "finish", state: input.state, outcome: transition.outcome }
     return { kind: "step", state: input.state }
   })

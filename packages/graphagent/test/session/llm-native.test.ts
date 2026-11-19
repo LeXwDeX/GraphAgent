@@ -1444,3 +1444,136 @@ describe("session.llm-native.request", () => {
     }),
   )
 })
+
+// The Messages API counts thinking tokens in `max_tokens` and wants `budget_tokens` below it. The session's
+// `maxOutputTokens` is the AI SDK's: the room for the answer, with the budget added on top by its provider and the sum
+// cut to the output limit of the model (#1464). The native lowering sends the same sum.
+describe("session.llm-native.request: max_tokens against the thinking budget", () => {
+  const claude = (output: number): Provider.Model => ({
+    ...baseModel,
+    id: ModelV2.ID.make("claude-opus-4-20250514"),
+    providerID: ProviderV2.ID.make("anthropic"),
+    api: { id: "claude-opus-4-20250514", url: "https://api.anthropic.com/v1", npm: "@ai-sdk/anthropic" },
+    limit: { context: 200_000, input: 200_000, output },
+  })
+  type Body = { max_tokens: number; thinking?: { type: string; budget_tokens: number } }
+  const enabled = (budget: Record<string, number>) => ({ anthropic: { thinking: { type: "enabled", ...budget } } })
+  const cases: ReadonlyArray<{
+    name: string
+    output: number
+    answer: number
+    options: NativeRequestInput["providerOptions"]
+    maxTokens: number
+    budget: number | undefined
+  }> = [
+    {
+      name: "carries the answer room and the budget of a 32k model that the session fitted as one total",
+      output: 32_000,
+      answer: 8_000,
+      options: enabled({ budgetTokens: 24_000 }),
+      maxTokens: 32_000,
+      budget: 24_000,
+    },
+    {
+      name: "keeps the budget below max_tokens when the high tier took half of a 32k model",
+      output: 32_000,
+      answer: 16_000,
+      options: enabled({ budgetTokens: 16_000 }),
+      maxTokens: 32_000,
+      budget: 16_000,
+    },
+    {
+      name: "adds a budget that a 64k limit holds beside the default cap",
+      output: 64_000,
+      answer: 32_000,
+      options: enabled({ budgetTokens: 31_999 }),
+      maxTokens: 63_999,
+      budget: 31_999,
+    },
+    {
+      name: "cuts the sum to the output limit of the model",
+      output: 40_000,
+      answer: 32_000,
+      options: enabled({ budgetTokens: 31_999 }),
+      maxTokens: 40_000,
+      budget: 31_999,
+    },
+    {
+      name: "keeps the cap as the whole max_tokens while an unknown output limit holds the budget",
+      output: 0,
+      answer: 32_000,
+      options: enabled({ budgetTokens: 31_999 }),
+      maxTokens: 32_000,
+      budget: 31_999,
+    },
+    {
+      name: "adds the budget a cap cannot hold when the output limit is unknown",
+      output: 0,
+      answer: 4_096,
+      options: enabled({ budgetTokens: 16_000 }),
+      maxTokens: 20_096,
+      budget: 16_000,
+    },
+    {
+      name: "adds a budget written in snake case",
+      output: 32_000,
+      answer: 8_000,
+      options: enabled({ budget_tokens: 24_000 }),
+      maxTokens: 32_000,
+      budget: 24_000,
+    },
+    {
+      name: "leaves max_tokens alone for thinking that is not enabled, whatever budget it carries",
+      output: 32_000,
+      answer: 8_000,
+      options: { anthropic: { thinking: { type: "adaptive", budgetTokens: 24_000 } } },
+      maxTokens: 8_000,
+      budget: undefined,
+    },
+    {
+      name: "leaves max_tokens alone without thinking",
+      output: 32_000,
+      answer: 8_000,
+      options: undefined,
+      maxTokens: 8_000,
+      budget: undefined,
+    },
+  ]
+
+  for (const item of cases) {
+    it.effect(item.name, () =>
+      Effect.gen(function* () {
+        const prepared = yield* prepareNativeRequest<Body>({
+          model: claude(item.output),
+          apiKey: "test-anthropic-key",
+          messages: [storedSession.user("hi")],
+          maxOutputTokens: item.answer,
+          providerOptions: item.options,
+        })
+        expect(prepared.route).toBe("anthropic-messages")
+        expect(prepared.body.max_tokens).toBe(item.maxTokens)
+        expect(prepared.body.thinking?.budget_tokens).toBe(item.budget)
+        // The request the API receives holds its budget.
+        if (item.budget !== undefined) expect(prepared.body.max_tokens).toBeGreaterThan(item.budget)
+      }),
+    )
+  }
+
+  it.effect("leaves max_tokens alone for the other protocols even when they carry Anthropic options", () =>
+    Effect.gen(function* () {
+      const prepared = yield* prepareNativeRequest<{ max_tokens: number }>({
+        model: {
+          ...baseModel,
+          providerID: ProviderV2.ID.make("relay"),
+          api: { id: "relay-model", url: "https://relay.example.test/v1", npm: "@ai-sdk/openai-compatible" },
+        },
+        apiKey: "test-relay-key",
+        messages: [storedSession.user("hi")],
+        maxOutputTokens: 8_000,
+        providerOptions: { anthropic: { thinking: { type: "enabled", budgetTokens: 24_000 } } },
+      })
+      expect(prepared.route).toBe("openai-compatible-chat")
+      expect(prepared.body.max_tokens).toBe(8_000)
+    }),
+  )
+})

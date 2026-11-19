@@ -59,6 +59,8 @@ export interface Signals extends CompletionSignals {
   readonly assistantFinish: string | undefined
   /** The latest assistant text carries a tool call written as text and the step made no real one. */
   readonly pseudoToolCall: boolean
+  /** The latest assistant reply of a root session was cut off by the output limit in the middle of its text (#1464). */
+  readonly truncatedText: boolean
 }
 
 export type TurnOutcome =
@@ -183,6 +185,12 @@ export function hintFor(state: TurnState, signals: Signals): HintKind | undefine
     state.hints.pseudo_tool_call < HINT_LIMIT.pseudo_tool_call
   )
     return "pseudo_tool_call"
+  if (
+    signals.truncatedText &&
+    signals.assistantFinish === "length" &&
+    state.hints.output_truncated < HINT_LIMIT.output_truncated
+  )
+    return "output_truncated"
   return undefined
 }
 
@@ -222,6 +230,7 @@ export function outcomeOfExit(state: TurnState): TurnOutcome {
     budgetExhausted: false,
     assistantFinish: undefined,
     pseudoToolCall: false,
+    truncatedText: false,
   })
 }
 

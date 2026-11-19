@@ -18,6 +18,7 @@ import { addCorrections, correctionsOf } from "@graphagent/core/session/outcome"
 import { rejectedUnparsable } from "./llm/ai-sdk"
 import { classifyToolError } from "./tool-outcome"
 import { Receipt } from "@/tool/receipt"
+import { ToolError } from "@/tool/tool-error"
 
 export type ToolCall = {
   partID: SessionV1.ToolPart["id"]
@@ -90,6 +91,36 @@ type RejectedInput = { readonly part: SessionV1.ToolPart; readonly produced: num
 function truncatedInput(rejected: readonly RejectedInput[], produced: number, reason: string) {
   const last = rejected.at(-1)
   return reason === "length" && last?.produced === produced ? [withTruncatedArguments(last.part)] : []
+}
+
+/**
+ * The error state of a call still open when its attempt ended. A call whose arguments never ended in a step that
+ * stopped on the output limit was cut off by it: it says so in the words of the other cut-off calls, and carries
+ * no `interrupted`, so the turn goes on and the model sees what happened (#1464). Any other leftover was aborted.
+ */
+function leftoverToolState(
+  part: SessionV1.ToolPart,
+  call: ToolCall,
+  finish: string | undefined,
+  end: number,
+): SessionV1.ToolStateError {
+  const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
+  const time = { start: "time" in part.state ? part.state.time.start : end, end }
+  if (finish === "length" && !call.inputEnded)
+    return {
+      ...part.state,
+      status: "error",
+      error: ToolError.render({ kind: "truncated_arguments", tool: part.tool, length: call.raw.length }),
+      metadata: { ...metadata, argumentsTruncated: true, outcome: "arguments_truncated" },
+      time,
+    }
+  return {
+    ...part.state,
+    status: "error",
+    error: "Tool execution aborted",
+    metadata: { ...metadata, interrupted: true, outcome: "aborted" },
+    time,
+  }
 }
 
 /**
@@ -335,8 +366,12 @@ export function makeToolCalls(deps: ToolCallDeps) {
   // Force-abort one leftover tool call. The claim-before-abort pattern
   // (delete under the call lock, then re-read the part) prevents a
   // concurrent completeToolCall or failToolCall from settling it while the
-  // forced error is persisted.
-  const forceAbortToolCall = Effect.fn("SessionProcessor.forceAbortToolCall")(function* (toolCallID: string) {
+  // forced error is persisted. `finish` is the finish reason of the attempt
+  // that left the call open.
+  const forceAbortToolCall = Effect.fn("SessionProcessor.forceAbortToolCall")(function* (
+    toolCallID: string,
+    finish?: string,
+  ) {
     const call = ctx.toolcalls[toolCallID]
     if (!call) return
     yield* call.lock.withPermits(1)(
@@ -348,18 +383,7 @@ export function makeToolCalls(deps: ToolCallDeps) {
         // read; never overwrite a completed/errored part with a forced
         // abort.
         if (!part || (part.state.status !== "running" && part.state.status !== "pending")) return
-        const end = Date.now()
-        const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-        yield* session.updatePart({
-          ...part,
-          state: {
-            ...part.state,
-            status: "error",
-            error: "Tool execution aborted",
-            metadata: { ...metadata, interrupted: true, outcome: "aborted" },
-            time: { start: "time" in part.state ? part.state.time.start : end, end },
-          },
-        })
+        yield* session.updatePart({ ...part, state: leftoverToolState(part, call, finish, Date.now()) })
         ctx.stepStats.toolCalls += 1
         ctx.stepStats.toolErrors += 1
       }),

@@ -892,6 +892,38 @@ describe("ProviderTransform.options - minimax m3 thinking", () => {
   })
 })
 
+describe("ProviderTransform.options - kimi default thinking budget", () => {
+  const kimi = (output: number, npm = "@ai-sdk/anthropic"): Provider.Model => ({
+    ...relayModel("kimi-k2.5", { npm }),
+    limit: { context: 200_000, output },
+  })
+
+  // A model whose limit is unknown (a configured model without `limit`) reads 0; the budget must not follow it to -1.
+  test("takes the full default budget when the output limit is unknown", () => {
+    expect(ProviderTransform.options({ model: kimi(0), sessionID: "s" }).thinking).toEqual({
+      type: "enabled",
+      budgetTokens: 16_000,
+    })
+  })
+
+  test("scales the default budget to a known output limit", () => {
+    expect(ProviderTransform.options({ model: kimi(8_000), sessionID: "s" }).thinking).toEqual({
+      type: "enabled",
+      budgetTokens: 3_999,
+    })
+    expect(ProviderTransform.options({ model: kimi(64_000), sessionID: "s" }).thinking).toEqual({
+      type: "enabled",
+      budgetTokens: 16_000,
+    })
+  })
+
+  test("leaves the other protocols without a default budget", () => {
+    expect(
+      ProviderTransform.options({ model: kimi(0, "@ai-sdk/openai-compatible"), sessionID: "s" }).thinking,
+    ).toBeUndefined()
+  })
+})
+
 describe("ProviderTransform.options - google thinkingConfig gating", () => {
   const sessionID = "test-session-123"
 
@@ -5071,6 +5103,31 @@ describe("ProviderTransform.variants", () => {
         },
       })
     })
+
+    // A model whose limit is unknown (a configured model without `limit`) reads 0; the budget must not follow it to -1.
+    test("returns high and max with the full budgets when the output limit is unknown", () => {
+      const model = createMockModel({
+        id: "anthropic/claude-4",
+        providerID: "anthropic",
+        api: { id: "claude-4", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+        limit: { context: 200_000, output: 0 },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(result.high).toEqual({ thinking: { type: "enabled", budgetTokens: 16_000 } })
+      expect(result.max).toEqual({ thinking: { type: "enabled", budgetTokens: 31_999 } })
+    })
+
+    test("still scales the budgets to a known output limit", () => {
+      const model = createMockModel({
+        id: "anthropic/claude-4",
+        providerID: "anthropic",
+        api: { id: "claude-4", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+        limit: { context: 200_000, output: 8_000 },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(result.high).toEqual({ thinking: { type: "enabled", budgetTokens: 3_999 } })
+      expect(result.max).toEqual({ thinking: { type: "enabled", budgetTokens: 7_999 } })
+    })
   })
 
   describe("@ai-sdk/google-vertex/anthropic", () => {
@@ -5775,6 +5832,381 @@ describe("ProviderTransform.maxOutputTokens", () => {
         model(384_000),
       ),
     ).toBeUndefined()
+  })
+})
+
+// A model with a stated protocol package, API id and output limit; nothing else matters to the output cap or the budget.
+const outputModel = (npm: string, apiID: string, output: number): Provider.Model => ({
+  id: ModelV2.ID.make(apiID),
+  providerID: ProviderV2.ID.make("local"),
+  api: { id: apiID, url: "", npm },
+  name: apiID,
+  capabilities: {
+    temperature: false,
+    reasoning: true,
+    attachment: false,
+    toolcall: true,
+    input: { text: true, audio: false, image: false, video: false, pdf: false },
+    output: { text: true, audio: false, image: false, video: false, pdf: false },
+    interleaved: false,
+  },
+  cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+  limit: { context: 1_000_000, output },
+  status: "active",
+  options: {},
+  headers: {},
+  release_date: "2026-01-01",
+})
+
+describe("ProviderTransform.requestOutputCap (#1464)", () => {
+  const compatible = "@ai-sdk/openai-compatible"
+  const cases: ReadonlyArray<{
+    name: string
+    npm: string
+    output: number
+    outputTokenMax?: number
+    configured?: number
+    expected: number | undefined
+  }> = [
+    { name: "a known limit is capped as maxOutputTokens caps it", npm: compatible, output: 8_192, expected: 8_192 },
+    { name: "a known large limit keeps the conservative default", npm: compatible, output: 384_000, expected: 32_000 },
+    {
+      name: "a known limit follows the environment override",
+      npm: compatible,
+      output: 128_000,
+      outputTokenMax: 64_000,
+      expected: 64_000,
+    },
+    {
+      name: "a known limit follows a configured output",
+      npm: compatible,
+      output: 384_000,
+      configured: 384_000,
+      expected: 384_000,
+    },
+    { name: "an unknown limit sends no cap on the chat protocol", npm: compatible, output: 0, expected: undefined },
+    { name: "an unknown limit sends no cap on OpenAI", npm: "@ai-sdk/openai", output: 0, expected: undefined },
+    { name: "an unknown limit sends no cap on Google", npm: "@ai-sdk/google", output: 0, expected: undefined },
+    { name: "an unknown limit sends no cap on Bedrock", npm: "@ai-sdk/amazon-bedrock", output: 0, expected: undefined },
+    {
+      name: "an unknown limit keeps the cap the Anthropic protocol requires",
+      npm: "@ai-sdk/anthropic",
+      output: 0,
+      expected: 32_000,
+    },
+    {
+      name: "an unknown limit keeps the cap the Vertex Anthropic protocol requires",
+      npm: "@ai-sdk/google-vertex/anthropic",
+      output: 0,
+      expected: 32_000,
+    },
+    {
+      name: "an unknown limit follows the environment override",
+      npm: compatible,
+      output: 0,
+      outputTokenMax: 64_000,
+      expected: 64_000,
+    },
+    {
+      name: "an unknown limit follows a configured output",
+      npm: compatible,
+      output: 0,
+      configured: 384_000,
+      expected: 384_000,
+    },
+    {
+      name: "an unknown limit on the Anthropic protocol follows the environment override",
+      npm: "@ai-sdk/anthropic",
+      output: 0,
+      outputTokenMax: 64_000,
+      expected: 64_000,
+    },
+  ]
+
+  for (const item of cases) {
+    test(item.name, () => {
+      const model = outputModel(item.npm, "m", item.output)
+      expect(ProviderTransform.requestOutputCap(model, item.outputTokenMax, item.configured)).toBe(item.expected)
+    })
+  }
+
+  test("a known limit always gives what maxOutputTokens gives", () => {
+    for (const npm of [compatible, "@ai-sdk/openai", "@ai-sdk/anthropic", "@ai-sdk/google"]) {
+      for (const output of [8_192, 32_000, 128_000, 384_000]) {
+        for (const [max, configured] of [
+          [undefined, undefined],
+          [16_000, undefined],
+          [64_000, undefined],
+          [undefined, 384_000],
+          [48_000, 384_000],
+        ]) {
+          const model = outputModel(npm, "m", output)
+          expect(ProviderTransform.requestOutputCap(model, max, configured)).toBe(
+            ProviderTransform.maxOutputTokens(model, max, configured),
+          )
+        }
+      }
+    }
+  })
+})
+
+describe("ProviderTransform.fitReasoningBudget (#1464)", () => {
+  type Fitted = {
+    options: Record<string, unknown>
+    maxOutputTokens: number
+    budgetBefore: number
+    budgetAfter: number
+  }
+  const anthropic = "@ai-sdk/anthropic"
+  const bedrock = "@ai-sdk/amazon-bedrock"
+  const cases: ReadonlyArray<{
+    name: string
+    npm: string
+    apiID?: string
+    output: number
+    cap: number | undefined
+    options: Record<string, unknown>
+    expected: Fitted | undefined
+  }> = [
+    {
+      name: "anthropic: the max budget of a 32k model is cut to 75% and the answer keeps the rest",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: {
+        options: { thinking: { type: "enabled", budgetTokens: 24_000 } },
+        maxOutputTokens: 8_000,
+        budgetBefore: 31_999,
+        budgetAfter: 24_000,
+      },
+    },
+    {
+      name: "anthropic: a budget within the share only lowers the cap until both fit",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 16_000 } },
+      expected: {
+        options: { thinking: { type: "enabled", budgetTokens: 16_000 } },
+        maxOutputTokens: 16_000,
+        budgetBefore: 16_000,
+        budgetAfter: 16_000,
+      },
+    },
+    {
+      name: "anthropic on Vertex is treated alike",
+      npm: "@ai-sdk/google-vertex/anthropic",
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: {
+        options: { thinking: { type: "enabled", budgetTokens: 24_000 } },
+        maxOutputTokens: 8_000,
+        budgetBefore: 31_999,
+        budgetAfter: 24_000,
+      },
+    },
+    {
+      name: "anthropic: a limit that holds both the cap and the budget needs no change",
+      npm: anthropic,
+      output: 64_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: undefined,
+    },
+    {
+      name: "anthropic: an unknown output limit is left alone",
+      npm: anthropic,
+      output: 0,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: undefined,
+    },
+    {
+      name: "bedrock: the budget of an Anthropic model is cut like the Anthropic protocol's",
+      npm: bedrock,
+      apiID: "anthropic.claude-sonnet-4-20250514-v1:0",
+      output: 32_000,
+      cap: 32_000,
+      options: { reasoningConfig: { type: "enabled", budgetTokens: 31_999 } },
+      expected: {
+        options: { reasoningConfig: { type: "enabled", budgetTokens: 24_000 } },
+        maxOutputTokens: 8_000,
+        budgetBefore: 31_999,
+        budgetAfter: 24_000,
+      },
+    },
+    {
+      name: "bedrock: an effort control has no budget",
+      npm: bedrock,
+      apiID: "amazon.nova-pro-v1:0",
+      output: 32_000,
+      cap: 32_000,
+      options: { reasoningConfig: { type: "enabled", maxReasoningEffort: "high" } },
+      expected: undefined,
+    },
+    {
+      name: "bedrock: adaptive thinking has no budget",
+      npm: bedrock,
+      apiID: "anthropic.claude-opus-4-7-v1:0",
+      output: 32_000,
+      cap: 32_000,
+      options: { reasoningConfig: { type: "adaptive", maxReasoningEffort: "max" } },
+      expected: undefined,
+    },
+    {
+      name: "google: a Flash budget above 75% of the cap is cut, the cap stays",
+      npm: "@ai-sdk/google",
+      apiID: "gemini-2.5-flash",
+      output: 8_192,
+      cap: 8_192,
+      options: { thinkingConfig: { includeThoughts: true, thinkingBudget: 24_576 } },
+      expected: {
+        options: { thinkingConfig: { includeThoughts: true, thinkingBudget: 6_144 } },
+        maxOutputTokens: 8_192,
+        budgetBefore: 24_576,
+        budgetAfter: 6_144,
+      },
+    },
+    {
+      name: "google vertex: the 2.5 Pro max budget is cut to 75% of the 32k cap",
+      npm: "@ai-sdk/google-vertex",
+      apiID: "gemini-2.5-pro",
+      output: 65_536,
+      cap: 32_000,
+      options: { thinkingConfig: { includeThoughts: true, thinkingBudget: 32_768 } },
+      expected: {
+        options: { thinkingConfig: { includeThoughts: true, thinkingBudget: 24_000 } },
+        maxOutputTokens: 32_000,
+        budgetBefore: 32_768,
+        budgetAfter: 24_000,
+      },
+    },
+    {
+      name: "google: a budget within the share is left alone",
+      npm: "@ai-sdk/google",
+      output: 8_192,
+      cap: 8_192,
+      options: { thinkingConfig: { includeThoughts: true, thinkingBudget: 4_000 } },
+      expected: undefined,
+    },
+    {
+      name: "google: dynamic thinking (-1) is left alone",
+      npm: "@ai-sdk/google",
+      output: 8_192,
+      cap: 8_192,
+      options: { thinkingConfig: { includeThoughts: true, thinkingBudget: -1 } },
+      expected: undefined,
+    },
+    {
+      name: "google: a level control has no budget",
+      npm: "@ai-sdk/google",
+      output: 8_192,
+      cap: 8_192,
+      options: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } },
+      expected: undefined,
+    },
+    {
+      name: "no cap is known",
+      npm: anthropic,
+      output: 32_000,
+      cap: undefined,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: undefined,
+    },
+    {
+      name: "thinking that is not enabled carries no budget",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "adaptive", budgetTokens: 31_999 } },
+      expected: undefined,
+    },
+    {
+      name: "a budget that is not a number is ignored",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: "31999" } },
+      expected: undefined,
+    },
+    {
+      name: "options without a budget",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: { effort: "high" },
+      expected: undefined,
+    },
+    {
+      name: "other protocols are left alone",
+      npm: "@ai-sdk/openai-compatible",
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: undefined,
+    },
+    {
+      name: "the gateway is left alone",
+      npm: "@ai-sdk/gateway",
+      output: 32_000,
+      cap: 32_000,
+      options: { thinking: { type: "enabled", budgetTokens: 31_999 } },
+      expected: undefined,
+    },
+    {
+      name: "the first budget found is the one fitted",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: {
+        thinking: { type: "enabled", budgetTokens: 31_999 },
+        reasoningConfig: { type: "enabled", budgetTokens: 31_999 },
+      },
+      expected: {
+        options: {
+          thinking: { type: "enabled", budgetTokens: 24_000 },
+          reasoningConfig: { type: "enabled", budgetTokens: 31_999 },
+        },
+        maxOutputTokens: 8_000,
+        budgetBefore: 31_999,
+        budgetAfter: 24_000,
+      },
+    },
+    {
+      name: "a thinking block without a budget leaves the budget to the next place",
+      npm: anthropic,
+      output: 32_000,
+      cap: 32_000,
+      options: {
+        thinking: { type: "adaptive" },
+        reasoningConfig: { type: "enabled", budgetTokens: 31_999 },
+      },
+      expected: {
+        options: {
+          thinking: { type: "adaptive" },
+          reasoningConfig: { type: "enabled", budgetTokens: 24_000 },
+        },
+        maxOutputTokens: 8_000,
+        budgetBefore: 31_999,
+        budgetAfter: 24_000,
+      },
+    },
+  ]
+
+  for (const item of cases) {
+    test(item.name, () => {
+      const model = outputModel(item.npm, item.apiID ?? "m", item.output)
+      const before = structuredClone(item.options)
+      expect(ProviderTransform.fitReasoningBudget(model, item.options, item.cap)).toEqual(item.expected)
+      // The input options are not changed.
+      expect(item.options).toEqual(before)
+    })
+  }
+
+  test("the share is 75%", () => {
+    expect(ProviderTransform.REASONING_BUDGET_SHARE).toBe(0.75)
   })
 })
 

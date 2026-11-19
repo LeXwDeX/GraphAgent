@@ -83,7 +83,7 @@ export function initial(input: { stopCap: number }): TurnState {
     overflowRecoveries: 0,
     continuing: undefined,
     final: "none",
-    hints: { pseudo_tool_call: 0 },
+    hints: { pseudo_tool_call: 0, output_truncated: 0 },
   }
 }
 
