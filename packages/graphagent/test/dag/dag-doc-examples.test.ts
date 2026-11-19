@@ -12,13 +12,16 @@
 // strict, so the dag-blocks fragment examples are validated under it as well. `authoring.prepare` runs no structural
 // validation for a non-start action, so the review lifecycle that Dag.replan re-runs on the merged graph (a diff
 // review must feed a required final gate) is applied to the prepared nodes here.
-import { describe, expect, it } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import path from "node:path"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagValidation } from "@/dag/validation"
 import { BUILTIN_SKILLS } from "@/skill/builtin"
 import { isRecord } from "@/util/record"
+import { testEffect } from "../lib/effect"
+
+const it = testEffect(Layer.empty)
 
 const guide = await Bun.file(path.resolve(import.meta.dir, "../../../../docs/dag-workflows.md")).text()
 const skill = (name: string) => BUILTIN_SKILLS.find((item) => item.name === name)?.content ?? ""
@@ -34,16 +37,14 @@ const startExamples = (markdown: string) =>
 const authoring = WorkflowAuthoring.make()
 
 const judge = (content: string, gate: "authored" | "strict") =>
-  Effect.runPromise(
-    authoring.prepare({
-      action: "start",
-      source: { kind: "yaml", source: "example.yaml", content },
-      profile: "portable",
-      // An example that declares inputs is judged with samples, like a template.
-      template: { kind: "sample" },
-      ...(gate === "strict" ? { review_gate: "strict" as const } : {}),
-    }),
-  )
+  authoring.prepare({
+    action: "start",
+    source: { kind: "yaml", source: "example.yaml", content },
+    profile: "portable",
+    // An example that declares inputs is judged with samples, like a template.
+    template: { kind: "sample" },
+    ...(gate === "strict" ? { review_gate: "strict" as const } : {}),
+  })
 
 describe.each([
   ["docs/dag-workflows.md", guide],
@@ -53,19 +54,21 @@ describe.each([
 ])("start examples in %s", (_name, markdown) => {
   const examples = startExamples(markdown)
 
-  it("has at least one start example to check", () => {
+  test("has at least one start example to check", () => {
     expect(examples.length).toBeGreaterThan(0)
   })
 
   for (const gate of ["authored", "strict"] as const) {
-    it(`passes validation under the ${gate} gate`, async () => {
-      const failures: string[] = []
-      for (const { name, content } of examples) {
-        const result = await judge(content, gate)
-        failures.push(...result.errors.map((error) => `${name} ${error.path}: ${error.message}`))
-      }
-      expect(failures).toEqual([])
-    })
+    it.effect(`passes validation under the ${gate} gate`, () =>
+      Effect.gen(function* () {
+        const failures: string[] = []
+        for (const { name, content } of examples) {
+          const result = yield* judge(content, gate)
+          failures.push(...result.errors.map((error) => `${name} ${error.path}: ${error.message}`))
+        }
+        expect(failures).toEqual([])
+      }),
+    )
   }
 })
 
@@ -85,33 +88,33 @@ describe.each([
 ] as const)("%s examples in the dag-blocks skill", (action, heading) => {
   const examples = sectionExamples(skill("dag-blocks"), heading)
 
-  it("has at least one fragment example to check", () => {
+  test("has at least one fragment example to check", () => {
     expect(examples.length).toBeGreaterThan(0)
   })
 
-  it("passes validation and the review lifecycle under the strict gate", async () => {
-    const failures: string[] = []
-    for (const content of examples) {
-      const result = await Effect.runPromise(
-        authoring.prepare({
+  it.effect("passes validation and the review lifecycle under the strict gate", () =>
+    Effect.gen(function* () {
+      const failures: string[] = []
+      for (const content of examples) {
+        const result = yield* authoring.prepare({
           action,
           source: { kind: "yaml", source: `${action}.yaml`, content },
           profile: "portable",
           review_gate: "strict",
           acceptance: [{ id: "AC1", text: "sample" }],
-        }),
-      )
-      failures.push(...result.errors.map((error) => `${action} ${error.path}: ${error.message}`))
-      if (!result.prepared) {
-        failures.push(`${action}: the example produced no prepared graph`)
-        continue
+        })
+        failures.push(...result.errors.map((error) => `${action} ${error.path}: ${error.message}`))
+        if (!result.prepared) {
+          failures.push(`${action}: the example produced no prepared graph`)
+          continue
+        }
+        const lifecycle = DagValidation.reviewLifecycleDiagnostics({
+          review_gate: "strict",
+          nodes: result.prepared.nodes,
+        })
+        failures.push(...lifecycle.errors.map((error) => `${action} ${error.path}: ${error.message}`))
       }
-      const lifecycle = DagValidation.reviewLifecycleDiagnostics({
-        review_gate: "strict",
-        nodes: result.prepared.nodes,
-      })
-      failures.push(...lifecycle.errors.map((error) => `${action} ${error.path}: ${error.message}`))
-    }
-    expect(failures).toEqual([])
-  })
+      expect(failures).toEqual([])
+    }),
+  )
 })
