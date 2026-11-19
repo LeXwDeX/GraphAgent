@@ -42,6 +42,12 @@ interface PoolEntry {
 const DEFAULT_CONNECT_TIMEOUT = 15_000
 const DEFAULT_IDLE_TIMEOUT = 5 * 60 * 1000
 const DEFAULT_MAX_CONNECTION_AGE = 55 * 60 * 1000
+// Websocket retries after the initial failed attempt. A failure after the first frame flags the fallback too
+// late for its own attempt (the stream already reached the caller), so only the attempt after the last
+// websocket one runs over HTTP. The session resends a failed stream RETRY_MAX_RETRIES (5) times, six attempts
+// in all: five websocket retries made the sixth attempt a websocket one that failed just as it flagged the
+// fallback. Keep this below RETRY_MAX_RETRIES; openai-ws-retry-budget.test.ts pins the relation.
+export const DEFAULT_STREAM_RETRIES = 4
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
 
 export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
@@ -51,7 +57,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   const connectTimeout = options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
   const maxConnectionAge = options?.maxConnectionAge ?? DEFAULT_MAX_CONNECTION_AGE
-  const streamRetries = options?.streamRetries ?? 5
+  const streamRetries = options?.streamRetries ?? DEFAULT_STREAM_RETRIES
   const pruneTimer = setInterval(() => prune(), Math.min(idleTimeout, 60_000))
   if (typeof pruneTimer === "object" && "unref" in pruneTimer && typeof pruneTimer.unref === "function") {
     pruneTimer.unref()

@@ -75,6 +75,8 @@ export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_JITTER_FACTOR = 0.25
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+// The Responses WebSocket pool's DEFAULT_STREAM_RETRIES must stay below this, so the last attempt of a turn can
+// run over the HTTP fallback (openai-ws-retry-budget.test.ts).
 export const RETRY_MAX_RETRIES = 5
 
 // Catch-all reconnect for failures no rule recognises: 3s, 6s, 6s.

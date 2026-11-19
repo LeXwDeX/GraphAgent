@@ -21,7 +21,7 @@ import { ProviderError } from "@/provider/error"
 import { Env } from "@/env"
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
-import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
+import { OpenAIWebSocketPool, TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
 import { CodexAdapter } from "@/provider/adapter/codex"
 import type { AdapterContext } from "@/provider/adapter/types"
 import { LLMRequestPrep } from "@/session/llm/request"
@@ -339,7 +339,7 @@ for (const differentHeaders of [false, true]) {
   )
 }
 
-it.live("custom provider preserves the existing WS retry budget and sticky POST/SSE fallback", () =>
+it.live("custom provider applies the default WS retry budget and a sticky POST/SSE fallback", () =>
   Effect.gen(function* () {
     let upgrades = 0
     let posts = 0
@@ -369,7 +369,9 @@ it.live("custom provider preserves the existing WS retry budget and sticky POST/
           const provider = yield* Provider.Service
           const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
           const language = yield* provider.getLanguage(model)
-          for (let attempt = 0; attempt < 5; attempt++) {
+          // The refused upgrade never yields a first frame, so the call that exhausts the budget is answered over
+          // HTTP right away: the failing calls are the retries themselves.
+          for (let attempt = 0; attempt < OpenAIWebSocketPool.DEFAULT_STREAM_RETRIES; attempt++) {
             const result = streamText({
               model: language,
               prompt: "hello",
@@ -401,7 +403,7 @@ it.live("custom provider preserves the existing WS retry budget and sticky POST/
             })
             expect(yield* Effect.promise(() => result.text)).toBe("ok")
           }
-          expect(upgrades).toBe(6)
+          expect(upgrades).toBe(OpenAIWebSocketPool.DEFAULT_STREAM_RETRIES + 1)
           expect(posts).toBe(2)
         }),
       { config: providerConfig(new URL("/v1", server.url).toString(), true) },
