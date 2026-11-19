@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Logger } from "effect"
 import { Skill } from "../../src/skill"
-import { BUILTIN_SKILLS } from "../../src/skill/builtin"
+import { BUILTIN_SKILLS, ROOT_ONLY_SKILLS } from "../../src/skill/builtin"
 import { Config } from "../../src/config/config"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Discovery } from "../../src/skill/discovery"
@@ -93,6 +93,23 @@ const writeSkill = (file: string, name: string, extra: Record<string, unknown> =
   })
 
 describe("skill", () => {
+  test("the skills a child session does not list are the six dag skills (#1457)", () => {
+    expect([...ROOT_ONLY_SKILLS].toSorted()).toEqual([
+      "dag-auto",
+      "dag-blocks",
+      "dag-nodes",
+      "dag-patterns",
+      "dag-policy",
+      "dag-recovery",
+    ])
+    // Every built-in dag skill is in the set, and the others are not.
+    expect(BUILTIN_SKILLS.filter((item) => ROOT_ONLY_SKILLS.has(item.name)).map((item) => item.name)).toEqual(
+      BUILTIN_SKILLS.filter((item) => item.name.startsWith("dag-")).map((item) => item.name),
+    )
+    // The marker is not part of the skill's shape, which the HTTP API returns as it is.
+    for (const item of BUILTIN_SKILLS) expect(Object.keys(item)).not.toContain("rootOnly")
+  })
+
   it.live("registers the nine built-in skills and keeps five dag references hidden", () =>
     provideTmpdirInstance(
       () =>

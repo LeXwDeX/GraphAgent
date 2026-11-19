@@ -1852,7 +1852,7 @@ export function makePrepare(deps: PrepareDeps) {
     const [skills, env, languageDocs, instructions, mcpInstructions, goalDocs, hooksDocs, memoryDocs, modelMsgs] =
       yield* Effect.all(
         [
-          sys.skills(agent, session.permission, nativePermission),
+          sys.skills(agent, session.permission, nativePermission, { root: SessionRole.isRoot(session) }),
           sys.environment(model),
           sys.language(configured.language),
           instruction.system({ sessionID, turn: lastUser.id }).pipe(Effect.orDie),
@@ -1875,8 +1875,8 @@ export function makePrepare(deps: PrepareDeps) {
         { concurrency: "unbounded" },
       )
     const sections = SystemSections.assemble({
-      env, languageDocs, instructions, mcpInstructions, skills,
-      goal: goalDocs.system, hooksDocs, dag: dagTurn.advertised,
+      env, languageDocs, instructions, mcpInstructions, skills, dag: dagTurn.advertised,
+      goal: SessionRole.isRoot(session) ? goalDocs.system : [], hooksDocs: SessionRole.isRoot(session) ? hooksDocs : [],
     })
     // Goal, memory, the environment and the date are state, not system text:
     // the cached prefix must not change when the directory or the day changes.
