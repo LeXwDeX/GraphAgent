@@ -32,18 +32,26 @@ interface FileChange {
   type: "add" | "update" | "delete" | "move"
   movePath?: string
   diff: string
-  /** The hunks of the diff, which the receipt is made from when the formatter leaves the text as it was written. */
+  /**
+   * The hunks of the diff, which the receipt and the language-server check are made from when the formatter leaves the
+   * text as it was written.
+   */
   changes?: WriteReceipt.Changes
   additions: number
   deletions: number
   bom: boolean
-  /** BOM of the file as read; the source for update, move and delete. */
+  /** BOM of the file as read; the source for update, move and delete, the file it replaces for an add over one. */
   oldBom: boolean
   /**
    * The add or move target as the call saw it, when it existed and the session had read it. The call's own
    * baseline, compared with the disk under the locks: the session's record may have been replaced by then.
    */
   targetBaseline?: FileState.Baseline
+  /**
+   * A move onto a file that exists: the text of that file, which the move replaces, for the receipt to compare the new
+   * text with. `oldContent` stays the source's, which `recheck` checks and the language-server check measures from.
+   */
+  overwritten?: string
   /** Under the locks: the source no longer matched the session's last record of it. */
   outside: boolean
   /** Under the locks: the formatter changed the text after it was written. */
@@ -73,6 +81,15 @@ export const ApplyPatchTool = Tool.define(
         .requireRead(sessionID, target, baseline)
         .pipe(Effect.mapError((error) => verificationFailed(error.message)))
       return baseline
+    })
+
+    // The text an Add File or a Move replaces, for the diff and the receipt only. It is never written back, so it is
+    // decoded leniently: a file that is not UTF-8 can still be overwritten. A target above the size `write` loads is
+    // not read, and one that cannot be read has no text either; the receipt then has nothing to compare with, as it
+    // had nothing before. Whether the disk still holds what the call saw is decided under the locks, not here.
+    const readOverwritten = Effect.fnUntraced(function* (target: string, baseline: FileState.Baseline | undefined) {
+      if (!baseline || baseline.size > FileState.MAX_EDITABLE_BYTES) return undefined
+      return yield* Bom.readFile(afs, target).pipe(Effect.catch(() => Effect.succeed(undefined)))
     })
 
     // Under the path locks the disk must still hold what the call planned against: an add or move target as the
@@ -149,11 +166,14 @@ export const ApplyPatchTool = Tool.define(
         switch (hunk.type) {
           case "add": {
             const targetBaseline = yield* requireOverwriteRead(ctx.sessionID, filePath)
-            const oldContent = ""
+            // An Add File over a file that exists replaces its text: the diff and the receipt are made against it.
+            const replaced = yield* readOverwritten(filePath, targetBaseline)
+            const oldContent = replaced?.text ?? ""
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
             const next = Bom.split(newContent)
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, next.text))
+            const planned = WriteReceipt.unifiedDiff(filePath, oldContent, next.text)
+            const diff = trimDiff(planned.text)
 
             let additions = 0
             let deletions = 0
@@ -168,10 +188,11 @@ export const ApplyPatchTool = Tool.define(
               newContent: next.text,
               type: "add",
               diff,
+              changes: planned.changes,
               additions,
               deletions,
               bom: next.bom,
-              oldBom: false,
+              oldBom: replaced?.bom ?? false,
               targetBaseline,
               outside: false,
               reformatted: false,
@@ -232,6 +253,8 @@ export const ApplyPatchTool = Tool.define(
               target && FSUtil.normalizePath(target) !== FSUtil.normalizePath(filePath) ? target : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
             const targetBaseline = movePath ? yield* requireOverwriteRead(ctx.sessionID, movePath) : undefined
+            // A move onto a file that exists replaces it: the receipt compares with its text, not with the source's.
+            const replaced = movePath ? yield* readOverwritten(movePath, targetBaseline) : undefined
 
             fileChanges.push({
               filePath,
@@ -246,6 +269,7 @@ export const ApplyPatchTool = Tool.define(
               bom,
               oldBom: source.bom,
               targetBaseline,
+              overwritten: replaced?.text,
               outside: false,
               reformatted: false,
             })
@@ -393,7 +417,9 @@ export const ApplyPatchTool = Tool.define(
       // Generate output summary
       const summaryLines = fileChanges.map((change) => {
         if (change.type === "add") {
-          return `A ${path.relative(instance.worktree, change.filePath).replaceAll("\\", "/")}`
+          // An Add File over a file that existed replaced it.
+          const mark = change.targetBaseline ? "M" : "A"
+          return `${mark} ${path.relative(instance.worktree, change.filePath).replaceAll("\\", "/")}`
         }
         if (change.type === "delete") {
           return `D ${path.relative(instance.worktree, change.filePath).replaceAll("\\", "/")}`
@@ -419,20 +445,30 @@ export const ApplyPatchTool = Tool.define(
       for (const { change, status } of checked) {
         const target = change.movePath ?? change.filePath
         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
+        // The diff of the plan is the diff of the text on disk unless the formatter changed it.
+        const changes = change.reformatted ? undefined : change.changes
+        // A move onto a file that existed replaces it, so its receipt compares with that file's text, which the plan did
+        // not diff: its diff is of the source, and only the language-server check below uses it.
+        let receiptChanges = changes
+        if (changes && change.overwritten !== undefined) {
+          receiptChanges = WriteReceipt.unifiedDiff(target, change.overwritten, change.newContent).changes
+        }
         const receipt = WriteReceipt.writeReceipt({
           file: target,
-          oldText: change.oldContent,
+          oldText: change.overwritten ?? change.oldContent,
           newText: change.newContent,
           reformatted: change.reformatted,
           diffBudget: budget,
-          changes: change.reformatted ? undefined : change.changes,
+          changes: receiptChanges,
         })
         budget -= receipt.diffLines
         if (receipt.text) receiptBlocks.push(`${rel}\n${receipt.text}`)
         const issues = diagnostics[FSUtil.normalizePath(target)] ?? []
-        const line = LSP.Diagnostic.checkLine(status, target, issues, change.oldContent, change.newContent)
+        // The status line and the report share the written lines, which are worked out once and only for an error.
+        const ranges = WriteReceipt.lazyRanges(target, change.oldContent, change.newContent, changes)
+        const line = LSP.Diagnostic.checkLine(status, target, issues, ranges)
         statusLines.push(`${rel}: ${line}`)
-        const block = LSP.Diagnostic.afterEdit(target, issues, change.oldContent, change.newContent)
+        const block = LSP.Diagnostic.afterEdit(target, issues, ranges)
         if (block) blocks += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
       const title = head + blocks

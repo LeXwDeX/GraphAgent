@@ -113,6 +113,17 @@ const runPatch = Effect.fn("WriteToolTest.runPatch")(function* (patchText: strin
   return yield* tool.execute({ patchText }, ctx)
 })
 
+// #1572: the engine refuses an overwrite of a file the session has not read, so the description has to say so.
+describe("tool.write description (#1572)", () => {
+  it.instance("says an existing file is read before it is overwritten", () =>
+    Effect.gen(function* () {
+      const tool = yield* init()
+
+      expect(tool.description).toContain("\n- Read an existing file before overwriting it.\n")
+    }),
+  )
+})
+
 describe("tool.write", () => {
   describe("new file creation", () => {
     it.instance("writes content to new file", () =>

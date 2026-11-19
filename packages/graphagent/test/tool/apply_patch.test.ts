@@ -2173,3 +2173,306 @@ describe("tool.apply_patch write receipt (#1451)", () => {
     { git: true },
   )
 })
+
+// #1572: an Add File or a Move onto a file that exists replaces it. What the receipt and the request say is made against
+// the text that goes, and the language-server check places its errors by the lines that differ from it.
+describe("tool.apply_patch overwrite receipt (#1572)", () => {
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+  const numbered = (count: number, prefix = "line") => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`)
+  const diagnostic = (line: number): Diagnostic => ({
+    severity: 1,
+    message: "boom",
+    range: { start: { line: line - 1, character: 0 }, end: { line: line - 1, character: 1 } },
+  })
+
+  // The engine refuses an Add File or a Move onto a file the session has not read, so the description has to say so.
+  it.instance("the description says a file that is replaced is read first", () =>
+    Effect.gen(function* () {
+      const tool = yield* (yield* ApplyPatchTool).init()
+
+      expect(tool.description).toContain(
+        "Add File and Move to replace a file that already exists; read that file first, or the call is refused.",
+      )
+    }),
+  )
+
+  it.instance(
+    "an Add File over a file says what it replaced in the summary, the counts, the diff and the request",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "existing.txt")
+        yield* writeText(target, "keep\nold\nlast\n")
+        yield* markRead(target)
+
+        const result = yield* execute({ patchText: patch("*** Add File: existing.txt", "+keep", "+new", "+last") }, ctx)
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "M existing.txt",
+          "",
+          "existing.txt",
+          "Lines 2-2 changed. Additions: 1. Deletions: 1.",
+          "@@ -1,3 +1,3 @@",
+          " keep",
+          "-old",
+          "+new",
+          " last",
+          "",
+          "existing.txt: not checked: LSP disabled",
+        ])
+        expect(result.title).toBe("Success. Updated the following files:\nM existing.txt")
+        expect(yield* readText(target)).toBe("keep\nnew\nlast\n")
+        // The question shows the line that goes as well as the one that comes, and the file entry counts them.
+        expect(calls).toHaveLength(1)
+        expect(calls[0].metadata.diff).toContain("\n-old\n+new\n")
+        expect(calls[0].metadata.files).toMatchObject([{ type: "add", additions: 1, deletions: 1 }])
+        expect(result.metadata).toMatchObject({ files: [{ type: "add", additions: 1, deletions: 1 }] })
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "an Add File that replaces every line counts all of them as deleted",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const target = path.join(test.directory, "existing.txt")
+        yield* writeText(target, "a\nb\nc\nd\n")
+        yield* markRead(target)
+
+        const result = yield* execute({ patchText: patch("*** Add File: existing.txt", "+x", "+y") }, ctx)
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "M existing.txt",
+          "",
+          "existing.txt",
+          "Lines 1-2 changed. Additions: 2. Deletions: 4.",
+          "@@ -1,4 +1,2 @@",
+          "-a",
+          "-b",
+          "-c",
+          "-d",
+          "+x",
+          "+y",
+          "",
+          "existing.txt: not checked: LSP disabled",
+        ])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "an Add File to a path that does not exist keeps the receipt of a new file",
+    () =>
+      Effect.gen(function* () {
+        const { ctx, calls } = makeCtx()
+
+        const result = yield* execute({ patchText: patch("*** Add File: made.txt", "+one", "+two", "+three") }, ctx)
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "A made.txt",
+          "",
+          "made.txt",
+          "Lines 1-3 changed. Additions: 3. Deletions: 0.",
+          "",
+          "made.txt: not checked: LSP disabled",
+        ])
+        expect(calls[0].metadata.diff).toContain("@@ -0,0 +1,3 @@\n+one\n+two\n+three\n")
+        expect(calls[0].metadata.files).toMatchObject([{ type: "add", additions: 3, deletions: 0 }])
+      }),
+    { git: true },
+  )
+
+  it.instance("an Add File over a file that is not UTF-8 still replaces it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "legacy.txt")
+      // Two bytes that are not UTF-8, a line, a third such byte and a line.
+      yield* Effect.promise(() => fs.writeFile(target, Buffer.from([0xff, 0xfe, 0x41, 0x0a, 0xe9, 0x0a])))
+      yield* markRead(target)
+
+      const result = yield* execute({ patchText: patch("*** Add File: legacy.txt", "+new") }, ctx)
+
+      expect(yield* readText(target)).toBe("new\n")
+      // The old text is only decoded for the receipt, so each of its two lines counts as deleted.
+      expect(result.output).toContain("Lines 1-1 changed. Additions: 1. Deletions: 2.")
+    }),
+  )
+
+  it.instance(
+    "an Add File over a file above 10 MiB does not load it, and keeps the receipt it had",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "big.txt")
+        yield* writeText(target, `${"x".repeat(FileState.MAX_EDITABLE_BYTES + 16)}\n`)
+        yield* markRead(target)
+
+        const result = yield* execute({ patchText: patch("*** Add File: big.txt", "+small") }, ctx)
+
+        expect(yield* readText(target)).toBe("small\n")
+        expect(result.output.split("\n").slice(0, 5)).toEqual([
+          "Success. Updated the following files:",
+          "M big.txt",
+          "",
+          "big.txt",
+          "Lines 1-1 changed. Additions: 1. Deletions: 0.",
+        ])
+        expect(calls[0].metadata.diff).not.toContain("xxxx")
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "a Move onto a file says what it replaced, and the request keeps the diff of the source",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        yield* writeText(path.join(test.directory, "from.txt"), "keep\nfrom\n")
+        const destination = path.join(test.directory, "to.txt")
+        yield* writeText(destination, "alpha\nbeta\ngamma\n")
+        yield* markRead(destination)
+
+        const result = yield* execute(
+          { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", " keep", "-from", "+new") },
+          ctx,
+        )
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "M to.txt",
+          "",
+          "to.txt",
+          "Lines 1-2 changed. Additions: 2. Deletions: 3.",
+          "@@ -1,3 +1,2 @@",
+          "-alpha",
+          "-beta",
+          "-gamma",
+          "+keep",
+          "+new",
+          "",
+          "to.txt: not checked: LSP disabled",
+        ])
+        expect(yield* readText(destination)).toBe("keep\nnew\n")
+        // The question is about the move, from the source: the file it replaces is not in it.
+        expect(calls[0].metadata.diff).toContain("\n keep\n-from\n+new\n")
+        expect(calls[0].metadata.diff).not.toContain("alpha")
+        expect(calls[0].metadata.files).toMatchObject([{ type: "move", additions: 1, deletions: 1 }])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "a Move onto a file that already holds the new text has nothing to report for it",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "from.txt"), "keep\nfrom\n")
+        const destination = path.join(test.directory, "to.txt")
+        yield* writeText(destination, "keep\nnew\n")
+        yield* markRead(destination)
+
+        const result = yield* execute(
+          { patchText: patch("*** Update File: from.txt", "*** Move to: to.txt", "@@", " keep", "-from", "+new") },
+          ctx,
+        )
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "M to.txt",
+          "",
+          "to.txt: not checked: LSP disabled",
+        ])
+      }),
+    { git: true },
+  )
+
+  it.instance("a Move onto a file that is not UTF-8 still replaces it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      yield* writeText(path.join(test.directory, "from.txt"), "from\n")
+      const destination = path.join(test.directory, "legacy.txt")
+      yield* Effect.promise(() => fs.writeFile(destination, Buffer.from([0xff, 0xfe, 0x41, 0x0a, 0xe9, 0x0a])))
+      yield* markRead(destination)
+
+      const result = yield* execute(
+        { patchText: patch("*** Update File: from.txt", "*** Move to: legacy.txt", "@@", "-from", "+new") },
+        ctx,
+      )
+
+      expect(yield* readText(destination)).toBe("new\n")
+      expect(result.output).toContain("Lines 1-1 changed. Additions: 1. Deletions: 2.")
+    }),
+  )
+
+  itWithDiagnostics.instance(
+    "an Add File over a file places the errors of the file by the lines that differ from it",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "a.ts")
+        const changed = numbered(30)
+        changed[0] = "CHANGED"
+        yield* writeText(file, numbered(30).join("\n") + "\n")
+        yield* markRead(file)
+        // The error on line 25 was there before; the one on line 1 is in the line that changed.
+        mockedDiagnostics = { [FSUtil.normalizePath(file)]: [diagnostic(1), diagnostic(25)] }
+
+        const result = yield* execute(
+          { patchText: patch("*** Add File: a.ts", ...changed.map((line) => `+${line}`)) },
+          ctx,
+        )
+
+        expect(result.output).toContain("a.ts: checked: 1 error")
+        expect(result.output).toContain("ERROR [1:1] boom")
+        expect(result.output).not.toContain("ERROR [25:1]")
+      }),
+    { git: true },
+  )
+
+  // A patch writes the lines of a chunk without their carriage return, context included, so in a CRLF file the lines it
+  // did not change differ from the old ones by their ending. The errors are placed by the line it did change.
+  itWithDiagnostics.instance(
+    "an Update File on a CRLF file places the errors by the line that changed, not by its whole chunk",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "crlf.ts")
+        yield* writeText(file, numbered(10).join("\r\n") + "\r\n")
+        // Line 9 is four lines below the change, past the two lines that belong to it, but inside the chunk's context.
+        mockedDiagnostics = { [FSUtil.normalizePath(file)]: [diagnostic(9)] }
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Update File: crlf.ts",
+              "@@",
+              " line 3",
+              " line 4",
+              "-line 5",
+              "+CHANGED",
+              " line 6",
+              " line 7",
+            ),
+          },
+          ctx,
+        )
+
+        expect(result.output).toContain("crlf.ts: checked: clean")
+        expect(result.output).not.toContain("LSP errors detected")
+      }),
+    { git: true },
+  )
+})

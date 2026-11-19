@@ -119,12 +119,14 @@ export const WriteTool = Tool.define(
           )
 
           if (reformatted) yield* Receipt.logCorrection("write", "formatted")
+          // The diff of the request is the diff of the text on disk unless the formatter changed it.
+          const changes = reformatted ? undefined : planned.changes
           const receipt = WriteReceipt.writeReceipt({
             file: filepath,
             oldText: contentOld,
             newText: contentNew,
             reformatted,
-            changes: reformatted ? undefined : planned.changes,
+            changes,
           })
           let output = "Wrote file successfully."
           if (receipt.text) output += `\n\n${receipt.text}`
@@ -132,10 +134,12 @@ export const WriteTool = Tool.define(
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
           const issues = diagnostics[normalizedFilepath] ?? []
-          output += `\n\n${LSP.Diagnostic.checkLine(status, filepath, issues, contentOld, contentNew)}`
+          // The status line and the report share the written lines, which are worked out once and only for an error.
+          const ranges = WriteReceipt.lazyRanges(filepath, contentOld, contentNew, changes)
+          output += `\n\n${LSP.Diagnostic.checkLine(status, filepath, issues, ranges)}`
           // Writing one file cannot fix or break errors in other files; repeat
           // only the errors the written lines are responsible for.
-          const block = LSP.Diagnostic.afterEdit(filepath, issues, contentOld, contentNew)
+          const block = LSP.Diagnostic.afterEdit(filepath, issues, ranges)
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {
