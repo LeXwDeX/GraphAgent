@@ -67,12 +67,29 @@ export function report(file: string, issues: LSPClient.Diagnostic[]) {
 }
 
 /**
+ * The lines an edit touched: as ranges, or as a function that finds them. A tool that has run a diff of its own passes
+ * the function (`WriteReceipt.lazyRanges`), which works once and is called only when there is an error to place.
+ */
+export type Ranges = LineRange[] | (() => LineRange[])
+
+/** The touched lines of an edit given as the two texts, as ranges or as a function. */
+function resolve(file: string, from: string | Ranges, newText: string): LineRange[] {
+  if (typeof from === "string") return changedRanges(from, newText, file)
+  return typeof from === "function" ? from() : from
+}
+
+/**
  * Diagnostics belonging to an edit: only errors that overlap the lines the
  * edit touched. Errors elsewhere in the file predate the change and saying them
- * again on every edit just teaches the model to ignore diagnostics.
+ * again on every edit just teaches the model to ignore diagnostics. The lines are
+ * given as ranges, or found by comparing `oldText` with `newText`; without an error
+ * in `issues` they are not looked for.
  */
-export function afterEdit(file: string, issues: LSPClient.Diagnostic[], oldText: string, newText: string) {
-  return report(file, related(issues, changedRanges(oldText, newText, file)))
+export function afterEdit(file: string, issues: LSPClient.Diagnostic[], oldText: string, newText: string): string
+export function afterEdit(file: string, issues: LSPClient.Diagnostic[], ranges: Ranges): string
+export function afterEdit(file: string, issues: LSPClient.Diagnostic[], from: string | Ranges, newText = "") {
+  if (errorsOf(issues).length === 0) return ""
+  return report(file, related(issues, resolve(file, from, newText)))
 }
 
 /**
@@ -89,7 +106,8 @@ const NOT_CHECKED: Record<Exclude<CheckStatus, "checked">, string> = {
 
 /**
  * The status line of a write result. A check that ran counts the errors the edit is responsible for, the same ones
- * `afterEdit` lists; one that did not run says so, so that "not checked" is never read as "no errors".
+ * `afterEdit` lists; one that did not run says so, so that "not checked" is never read as "no errors". The lines are
+ * given as for `afterEdit`, and are not looked for when there is no error to place.
  */
 export function checkLine(
   status: CheckStatus,
@@ -97,9 +115,18 @@ export function checkLine(
   issues: LSPClient.Diagnostic[],
   oldText: string,
   newText: string,
+): string
+export function checkLine(status: CheckStatus, file: string, issues: LSPClient.Diagnostic[], ranges: Ranges): string
+export function checkLine(
+  status: CheckStatus,
+  file: string,
+  issues: LSPClient.Diagnostic[],
+  from: string | Ranges,
+  newText = "",
 ) {
   if (status !== "checked") return `not checked: ${NOT_CHECKED[status]}`
-  const count = errorsOf(related(issues, changedRanges(oldText, newText, file))).length
+  const errors = errorsOf(issues)
+  const count = errors.length === 0 ? 0 : related(errors, resolve(file, from, newText)).length
   if (count === 0) return "checked: clean"
   return `checked: ${count} ${count === 1 ? "error" : "errors"}`
 }

@@ -460,4 +460,58 @@ describe("WriteReceipt from the diff the tool ran", () => {
 
     expect(receipt.text).toBe("Lines 1-3 changed. Additions: 3. Deletions: 0.")
   })
+
+  // #1572: the language-server check reads the lines of a write from the diff of the tool.
+  describe("lazyRanges", () => {
+    test("reads the lines from the diff of the tool, and they are the lines changedRanges gives", () => {
+      for (const [seed, ending] of cases) {
+        const [oldText, newText] = pair(seed, ending)
+
+        const ranges = WriteReceipt.lazyRanges(file, oldText, newText, unified(oldText, newText).changes)()
+
+        expect({ seed, ranges }).toEqual({ seed, ranges: LSP.Diagnostic.changedRanges(oldText, newText, file) })
+      }
+    })
+
+    test("works them out once, when first asked", () => {
+      const oldText = text(lines(20))
+      const newText = withChanged(20, [5, 12])
+      const ranges = WriteReceipt.lazyRanges(file, oldText, newText, unified(oldText, newText).changes)
+
+      const first = ranges()
+
+      expect(first).toEqual([
+        { start: 5, end: 5 },
+        { start: 12, end: 12 },
+      ])
+      expect(ranges()).toBe(first)
+    })
+
+    test("diffs the two texts itself when the tool has no diff of them", () => {
+      const oldText = text(lines(20))
+      const newText = withChanged(20, [5, 12])
+
+      expect(WriteReceipt.lazyRanges(file, oldText, newText)()).toEqual(
+        LSP.Diagnostic.changedRanges(oldText, newText, file),
+      )
+    })
+
+    test("names no line for a text that did not change", () => {
+      const same = text(lines(5))
+
+      expect(WriteReceipt.lazyRanges(file, same, same, unified(same, same).changes)()).toEqual([])
+    })
+
+    // A patch writes the lines of its chunk without their carriage return: the lines around the one it changed differ
+    // from the old ones by the ending alone. The hunks of the diff of the tool span the chunk; the lines that changed are
+    // the ones changedRanges names, so the CRLF text is compared by it.
+    test("a text with CRLF line endings is compared by changedRanges, not read from the hunks of the tool", () => {
+      const oldText = text(lines(10)).replaceAll("\n", "\r\n")
+      const newText = "line 1\r\nline 2\r\nline 3\nline 4\nCHANGED\nline 6\nline 7\nline 8\r\nline 9\r\nline 10\r\n"
+      const changes = unified(oldText, newText).changes
+
+      expect(WriteReceipt.summarize(changes, newText).ranges).toEqual([{ start: 3, end: 7 }])
+      expect(WriteReceipt.lazyRanges(file, oldText, newText, changes)()).toEqual([{ start: 5, end: 5 }])
+    })
+  })
 })

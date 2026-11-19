@@ -167,8 +167,8 @@ function planEdit(source: { readonly text: string; readonly bom: boolean }, para
  * `strategy` is how `replace()` found the text, and `found` where (the 1-based line of the first replacement) and how
  * many spots it replaced; a created file has neither. `reformatted` means the formatter changed the text after it was
  * written. `diff` is the diff of the text that is on disk, in the text of the permission request, and `changes` its
- * hunks, which the receipt is made from. `ctx` is what the call reports through afterwards: it carries the
- * fuzzy-match and formatter corrections from the moment the text is on disk.
+ * hunks, which the receipt and the language-server check are made from. `ctx` is what the call reports through
+ * afterwards: it carries the fuzzy-match and formatter corrections from the moment the text is on disk.
  */
 interface Applied {
   readonly contentOld: string
@@ -243,7 +243,8 @@ export const EditTool = Tool.define(
         )
       }
       const next = Bom.split(params.newString)
-      const diff = trimDiff(WriteReceipt.unifiedDiff(filePath, "", next.text).text)
+      const planned = WriteReceipt.unifiedDiff(filePath, "", next.text)
+      const diff = trimDiff(planned.text)
       yield* askEdit(ctx, relative, filePath, diff)
 
       return yield* FileState.withLocks([filePath])(
@@ -255,6 +256,9 @@ export const EditTool = Tool.define(
             contentOld: "",
             contentNew: written.text,
             diff,
+            // The language-server check reads the lines of the new file from the diff of the request, unless the
+            // formatter changed the text. The receipt of a new file needs no diff.
+            changes: written.reformatted ? undefined : planned.changes,
             outside: false,
             strategy: "exact",
             reformatted: written.reformatted,
@@ -398,8 +402,10 @@ export const EditTool = Tool.define(
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
           const issues = diagnostics[normalizedFilePath] ?? []
-          output += `\n\n${LSP.Diagnostic.checkLine(status, filePath, issues, contentOld, contentNew)}`
-          const block = LSP.Diagnostic.afterEdit(filePath, issues, contentOld, contentNew)
+          // The status line and the report share the edited lines, which are worked out once and only for an error.
+          const ranges = WriteReceipt.lazyRanges(filePath, contentOld, contentNew, applied.changes)
+          output += `\n\n${LSP.Diagnostic.checkLine(status, filePath, issues, ranges)}`
+          const block = LSP.Diagnostic.afterEdit(filePath, issues, ranges)
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           const metadata = { diagnostics, diff, filediff }
