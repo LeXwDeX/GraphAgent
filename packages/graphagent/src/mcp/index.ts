@@ -180,11 +180,29 @@ interface State {
    * grants access must not override that choice and reconnect them.
    */
   manualDisabled: Set<string>
-  /** The `mcp.json` layers behind a signature cache: `tools()` runs on every step and must not decode them again. */
+  /**
+   * The `mcp.json` layers behind a signature cache: `tools()` runs on every step and must not decode them again.
+   * Every reader goes through `configuredServers`, so a file that cannot be read fails none of them (#1575).
+   */
   files: ReturnType<typeof McpConfig.cached>
   /** `tools()` has told the user that the definitions it sends are large (#1459); it says so once. */
   definitionWarned: boolean
 }
+
+/**
+ * The merged servers of the `mcp.json` layers, read through the signature cache of `State.files`. The call that first
+ * sees a file it cannot read says so, once for that content; the servers that are still valid stay in use, so a broken
+ * file neither fails the caller nor hides the servers of the other layer (#1575).
+ */
+const configuredServers = Effect.fnUntraced(function* (s: State, root: string) {
+  const { servers, error } = s.files(root)
+  if (error !== undefined) {
+    yield* Effect.logWarning("mcp.json cannot be read; keeping the servers that are still valid", {
+      error: describeReadFailure(error),
+    })
+  }
+  return servers
+})
 
 const toolID = (server: string, tool: string) => `${server}\0${tool}`
 
@@ -597,9 +615,6 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* (ctx) {
         const bridge = yield* EffectBridge.make()
-        // mcp.json is the only source of server definitions; a removed V1 shape
-        // throws a ConfigInvalidError that names the offending file and key.
-        const config = McpConfig.load(ctx.root)
         const s: State = {
           config: {},
           status: {},
@@ -610,6 +625,9 @@ export const layer = Layer.effect(
           files: McpConfig.cached(),
           definitionWarned: false,
         }
+        // mcp.json is the only source of server definitions. A layer that cannot be read (a syntax error, a removed
+        // V1 shape, an unknown field) is skipped and reported, so the servers of the other layer still start.
+        const config = yield* configuredServers(s, ctx.root)
         // Project-layer servers must be trusted before their process starts.
         // A refused server keeps a `disabled` status (the same surface a user
         // sees for `disabled: true`) and is reported by the CLI's skipped count.
@@ -713,7 +731,7 @@ export const layer = Layer.effect(
     const status = Effect.fn("MCP.status")(function* () {
       const s = yield* InstanceState.get(state)
       const ctx = yield* InstanceState.context
-      const config = McpConfig.load(ctx.root)
+      const config = yield* configuredServers(s, ctx.root)
       const result: Record<string, Status> = {}
 
       for (const key of Object.keys(config)) {
@@ -813,12 +831,7 @@ export const layer = Layer.effect(
       let bytes = 0
       const s = yield* InstanceState.get(state)
       const ctx = yield* InstanceState.context
-      const { servers: config, error } = s.files(ctx.root)
-      if (error !== undefined) {
-        yield* Effect.logWarning("mcp.json cannot be read; keeping the last valid servers", {
-          error: describeReadFailure(error),
-        })
-      }
+      const config = yield* configuredServers(s, ctx.root)
 
       const keys = connectedKeys(s)
       for (const [clientName, client] of Object.entries(s.clients)) {
@@ -881,7 +894,7 @@ export const layer = Layer.effect(
     ) {
       return Effect.gen(function* () {
         const ctx = yield* InstanceState.context
-        const config = McpConfig.load(ctx.root)
+        const config = yield* configuredServers(s, ctx.root)
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
             ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
@@ -936,7 +949,7 @@ export const layer = Layer.effect(
         return undefined
       }
       const ctx = yield* InstanceState.context
-      const config = McpConfig.load(ctx.root)
+      const config = yield* configuredServers(s, ctx.root)
       return yield* Effect.tryPromise({
         try: () => fn(client, requestTimeout(s, clientName, config[clientName])),
         catch: (error) => error,
@@ -979,7 +992,7 @@ export const layer = Layer.effect(
       if (s.config[mcpName]) return s.config[mcpName]
 
       const ctx = yield* InstanceState.context
-      return McpConfig.load(ctx.root)[mcpName]
+      return (yield* configuredServers(s, ctx.root))[mcpName]
     })
 
     const requireMcpConfig = Effect.fnUntraced(function* (mcpName: string) {

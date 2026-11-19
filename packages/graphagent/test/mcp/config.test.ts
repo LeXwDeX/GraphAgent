@@ -76,6 +76,96 @@ describe("mcp.json layers", () => {
   })
 })
 
+// Issue #1575: one layer file that cannot be read must not take the other layer's servers down with it.
+describe("mcp.json loadValid", () => {
+  const entry = (name: string) => ({ mcpServers: { [name]: { type: "local", command: ["echo", name] } } })
+  const failed = (loaded: McpConfig.Loaded) => loaded.failures.map((failure) => failure.file)
+
+  test("skips a user layer that cannot be read and keeps the project layer", () => {
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    write(McpConfig.projectFile(root), entry("project"))
+
+    const loaded = McpConfig.loadValid(root)
+
+    expect(Object.keys(loaded.servers)).toEqual(["project"])
+    expect(failed(loaded)).toEqual([McpConfig.globalFile()])
+    expect(errorMessage(() => McpConfig.load(root))).toMatch(/not valid JSONC/)
+  })
+
+  test("skips a project layer that cannot be read and keeps the user layer", () => {
+    write(McpConfig.globalFile(), entry("user"))
+    write(McpConfig.projectFile(root), { server: { type: "local", command: ["echo"] } })
+
+    const loaded = McpConfig.loadValid(root)
+
+    expect(Object.keys(loaded.servers)).toEqual(["user"])
+    expect(failed(loaded)).toEqual([McpConfig.projectFile(root)])
+    expect(errorMessage(() => McpConfig.load(root))).toMatch(/removed V1 shape/)
+  })
+
+  test("reports each layer that cannot be read, in merge order, and has no servers left", () => {
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    write(McpConfig.projectFile(root), { mcpServers: {}, extra: true })
+
+    const loaded = McpConfig.loadValid(root)
+
+    expect(loaded.servers).toEqual({})
+    expect(loaded.failures).toMatchObject([
+      { file: McpConfig.globalFile(), error: { data: { message: expect.stringContaining("not valid JSONC") } } },
+      {
+        file: McpConfig.projectFile(root),
+        error: { data: { message: expect.stringContaining('only accepts "mcpServers"') } },
+      },
+    ])
+  })
+
+  test("a layer with one invalid entry is skipped whole, not entry by entry", () => {
+    write(McpConfig.globalFile(), {
+      mcpServers: {
+        good: { type: "local", command: ["echo", "good"] },
+        old: { type: "local", command: ["echo", "old"], enabled: true },
+      },
+    })
+    write(McpConfig.projectFile(root), entry("project"))
+
+    const loaded = McpConfig.loadValid(root)
+
+    expect(Object.keys(loaded.servers)).toEqual(["project"])
+    expect(failed(loaded)).toEqual([McpConfig.globalFile()])
+  })
+
+  test("a layer that cannot be read as a file is skipped like one that cannot be decoded", () => {
+    // A directory where the file should be: `existsSync` is true and `readFileSync` throws EISDIR.
+    mkdirSync(McpConfig.globalFile(), { recursive: true })
+    write(McpConfig.projectFile(root), entry("project"))
+
+    const loaded = McpConfig.loadValid(root)
+
+    expect(Object.keys(loaded.servers)).toEqual(["project"])
+    expect(failed(loaded)).toEqual([McpConfig.globalFile()])
+  })
+
+  test("merges the layers that can be read as load does, and has no failures when all can", () => {
+    write(McpConfig.globalFile(), {
+      mcpServers: {
+        shared: { type: "remote", url: "https://global.example.com/mcp" },
+        "global-only": { type: "local", command: ["echo", "global"] },
+      },
+    })
+    write(McpConfig.projectFile(root), { mcpServers: { shared: { type: "local", command: ["echo", "project"] } } })
+
+    const loaded = McpConfig.loadValid(root)
+
+    expect(loaded.failures).toEqual([])
+    expect(loaded.servers).toEqual(McpConfig.load(root))
+    expect(loaded.servers.shared).toMatchObject({ type: "local", command: ["echo", "project"] })
+  })
+
+  test("has nothing to load and nothing to report when no layer file exists", () => {
+    expect(McpConfig.loadValid(root)).toEqual({ servers: {}, failures: [] })
+  })
+})
+
 describe("mcp.json upsert", () => {
   const remote = () =>
     McpConfig.decodeDocument(
@@ -207,6 +297,57 @@ describe("mcp.json cache", () => {
     expect(first.error).toBeDefined()
     expect(files(root)).toEqual({ servers: {} })
     expect(reads.count).toBe(1)
+  })
+
+  // Issue #1575: with no last valid read to keep, the layers that can be read stand in.
+  test("serves the layers that can be read when the first read fails, and reports the failure once", () => {
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    write(McpConfig.projectFile(root), entry("project"))
+    const { reads, files } = counting()
+
+    const first = files(root)
+    expect(Object.keys(first.servers)).toEqual(["project"])
+    expect(first.error).toMatchObject({ data: { path: McpConfig.globalFile() } })
+
+    // The same broken content: the same servers, no second report, and no second read.
+    const again = files(root)
+    expect(again.servers).toBe(first.servers)
+    expect(again.error).toBeUndefined()
+    expect(files(root).servers).toBe(first.servers)
+    expect(reads.count).toBe(1)
+
+    // Fixing the file brings its servers in, and the failure is gone.
+    write(McpConfig.globalFile(), entry("user"))
+    const fixed = files(root)
+    expect(Object.keys(fixed.servers).sort()).toEqual(["project", "user"])
+    expect(fixed.error).toBeUndefined()
+    expect(reads.count).toBe(2)
+  })
+
+  test("a different unreadable content is reported again with the layers that can be read", () => {
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    const { files } = counting()
+    expect(files(root).error).toBeDefined()
+
+    write(McpConfig.projectFile(root), entry("project"))
+    const next = files(root)
+
+    expect(Object.keys(next.servers)).toEqual(["project"])
+    expect(next.error).toBeDefined()
+  })
+
+  test("keeps the last valid servers of every layer, not only of the layers that can still be read", () => {
+    write(McpConfig.globalFile(), entry("user"))
+    write(McpConfig.projectFile(root), entry("project"))
+    const { files } = counting()
+    files(root)
+
+    writeFileSync(McpConfig.globalFile(), "{ not json")
+    const broken = files(root)
+
+    expect(Object.keys(broken.servers).sort()).toEqual(["project", "user"])
+    expect(broken.error).toBeDefined()
+    expect(Object.keys(files(root).servers).sort()).toEqual(["project", "user"])
   })
 })
 

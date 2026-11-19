@@ -61,6 +61,36 @@ export function load(root: string): Servers {
   return servers
 }
 
+/** A layer file `loadValid` skipped, and why it could not be read. */
+export interface Failure {
+  readonly file: string
+  readonly error: unknown
+}
+
+/** The merged servers of the layers that could be read, and the layers that could not. */
+export interface Loaded {
+  readonly servers: Servers
+  readonly failures: ReadonlyArray<Failure>
+}
+
+/**
+ * `load` for a caller that must go on without the layer files that cannot be read (#1575): such a layer is skipped
+ * and recorded in `failures`, and the other layers merge as `load` merges them. `load` itself stays strict.
+ */
+export function loadValid(root: string): Loaded {
+  const servers: Servers = {}
+  const failures: Failure[] = []
+  for (const layer of layers(root)) {
+    if (!existsSync(layer.file)) continue
+    try {
+      Object.assign(servers, readLayer(layer.file))
+    } catch (error) {
+      failures.push({ file: layer.file, error })
+    }
+  }
+  return { servers, failures }
+}
+
 /**
  * Signature of the layer files `load` reads: size and modification time of each, `absent` for a missing one.
  * It changes whenever a layer file is written, created or removed. A file that cannot be stat'ed reads as
@@ -90,24 +120,27 @@ export interface Cached {
 
 /**
  * `load` for a caller that runs on every step: the files are read again only when their signature changes.
- * A file that cannot be read leaves the last valid servers in place (none before the first valid read), and the
- * failure is reported once for that content, not on every call.
+ * A file that cannot be read leaves the last valid servers in place. Before the first valid read there are none to
+ * keep, so the servers of the layers that can be read stand in (`loadValid`, #1575). The failure is reported once
+ * for that content, not on every call, and the same content keeps returning the same servers.
  */
 export function cached(read: (root: string) => Servers = load): (root: string) => Cached {
   let last: { readonly signature: string; readonly servers: Servers } | undefined
-  let failure: string | undefined
+  // The content that could not be read, and the servers that stand in for it: `last`'s, else the readable layers'.
+  let failure: { readonly signature: string; readonly servers: Servers } | undefined
   return (root) => {
     const current = signature(root)
     if (last?.signature === current) return { servers: last.servers }
-    if (failure === current) return { servers: last?.servers ?? {} }
+    if (failure?.signature === current) return { servers: failure.servers }
     try {
       const servers = read(root)
       last = { signature: current, servers }
       failure = undefined
       return { servers }
     } catch (error) {
-      failure = current
-      return { servers: last?.servers ?? {}, error }
+      const servers = last?.servers ?? loadValid(root).servers
+      failure = { signature: current, servers }
+      return { servers, error }
     }
   }
 }
