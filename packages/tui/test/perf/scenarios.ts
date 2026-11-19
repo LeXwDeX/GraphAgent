@@ -336,9 +336,15 @@ const WATCHED_CHECKS = { total: 6, pending: 2, failed: 0, passed: 4 }
  */
 async function mountBanded(fixture: PerfFixture) {
   const harness = await mountHarness(fixture, { statusBand: true })
-  harness.clock.advance(MOUNT_SETTLE_MS)
-  await settleHighlights(harness)
-  return harness
+  try {
+    harness.clock.advance(MOUNT_SETTLE_MS)
+    await settleHighlights(harness)
+    return harness
+  } catch (error) {
+    // The callers' cleanup only covers a harness they were handed; one that failed to settle is disposed here.
+    await harness.dispose()
+    throw error
+  }
 }
 
 /**
