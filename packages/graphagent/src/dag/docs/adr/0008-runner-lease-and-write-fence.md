@@ -396,8 +396,9 @@ These PRs put new code in new files. `loop.ts` and `dag.ts` only lose lines.
 
 ## Deferred
 
-- The full split of `loop.ts` and `dag.ts`, and an asynchronous git
-  fingerprint in `DagLocation`: #1344, v2.1.
+- The split of `loop.ts`: #1344, v2.1. The split of `dag.ts`, the asynchronous
+  git fingerprint of `DagLocation` (#1476) and git under the workflow lock
+  (Amendment 5) are done.
 - Writing the epoch into the event payload.
 - Having the host start instances for directories that have none.
 - Replacing the pid probe of `runnerAlive` with heartbeats.
@@ -1007,3 +1008,96 @@ with its pending mark, and the mailbox reservation) in favour of
   `dag-delivery-session-lock.test.ts` pins both directions.
 - The runner lease, the write fence and the reconciler are untouched: delivery
   writes the workflow only through the entry's port, as before.
+
+## Amendment 5 (#1344, git under the workflow lock)
+
+The last acceptance item of #1344, which the asynchronous fingerprint of
+`DagLocation` (#1476) left open: no command that holds the workflow lock runs a
+synchronous git call, and none starts git inside its transaction. The text above
+and Amendments 1 to 4 stay as written, except the Deferred list, which is
+updated in place. Paths are relative to `packages/graphagent/`.
+
+### Decision 3: what a command reads before its transaction, inside the lock
+
+The order of `retarget` (#1476) is now the order of every command that has to
+wait for git before it writes: take the workflow lock, read the row, read what
+waits (git, the disk, the config service), open the transaction, re-read the row
+in it, and apply what was read only while the row still names what it was read
+against. A row that moved in between rejects or ignores the call; it is never
+resolved in the transaction, where it would hold the write reservation for as
+long as git takes.
+
+- `retarget` (`workflow-recover.ts`): the lock, the row, `observeTarget`, then
+  the transaction, where `observationHolds` compares the owner and execution
+  directories. `observeTarget` resolved the requested workspace with
+  `resolveWorkspace`, up to three synchronous git commands under the lock; it now
+  calls `resolveWorkspaceAsync`.
+- `failUnrecoverable` (`workflow-terminal.ts`) called `resolveExecution` inside
+  the transaction; for an explicitly bound execution directory that is
+  `resolveWorkspace` again, up to three synchronous git commands. It is now a
+  command of its own, like `retarget`: the lock, the row (a missing or terminal
+  row skips the observation), `observeExecution` (`resolveExecutionAsync`), then
+  the transaction, which re-reads the row and acts only while
+  `executionObservationHolds` (the row still names the same `directory` and
+  `executionDirectory`) and the verdict is not `ok`. A session move that
+  re-stamped the row in between still wins and returns `ignored`, as the
+  decision 4 text above requires. What the transaction can no longer see is the
+  disk: it used to judge the directory as it was when the transaction ran, and
+  now judges it as it was when git was asked, a gap as long as git takes. A
+  directory that reappears in that gap is not seen; a row that is re-stamped is.
+- `replan` and `extend` (`graph-mutation.ts`) pinned every workspace of the
+  fragment with `pinNodeWorkspaces` inside the transaction (up to three
+  synchronous git commands per distinct workspace), and `_replan` also read the
+  user's node cap there (`readUserMaxTotalNodes`: a dynamic import and a read of
+  the config service). Both are now read by `prepare` before the transaction
+  opens. `extend` carries the pending and queued nodes forward with their stored
+  definitions, so `prepare` also resolves the workspaces of the pending and
+  queued nodes of the row it read: the workspaces checked are those of the
+  fragment `_extend` builds, as before. The transaction hands
+  `pinNodeWorkspaces` a resolver that answers from what `prepare` read, and only
+  while the row still has the owner directory it was resolved against; a
+  workspace it did not read, or a moved owner, rejects with `Replan rejected:
+  the workflow changed while its workspaces were being resolved; inspect status
+  and retry`. Verdicts and their reasons are those of `resolveWorkspace`, so an
+  unusable workspace is reported as before.
+- `Dag.exclusive` carries the workflow worktree settlement of the loop
+  (`runtime/worktree-completion.ts`, D9-g). The settlement has to stay inside
+  the lock: it makes the terminal read, the commit, the patch and the fenced
+  publish one critical section with recovery and replan. Its git was
+  synchronous: `commitWorktree` (up to seven commands: status, add, commit,
+  status, rev-parse and two diffs) and `gitHead`. It now waits for
+  `commitWorktreeAsync` and `gitHeadAsync`. There is no transaction in
+  `exclusive`, so nothing moves; the git only stops blocking the event loop.
+
+The asynchronous functions are the synchronous ones with the same commands, the
+same order and the same results, run as child processes of `AppProcess` (the
+runner the fingerprint of #1476 uses). `commitWorktree` is written once as a
+coroutine over its git commands and has the two runners; the others are mirrors
+whose equivalence `test/dag/dag-lock-git-async.test.ts` checks value by value.
+The synchronous versions stay for the callers outside the lock: create, spawn,
+validation, the write guard, recovery, the reconciler, the supervision sweep and
+the change facts.
+
+### The cap of the lock
+
+`WORKFLOW_LOCK_TIMEOUT` (30 seconds) covers the wait for the lock and the whole
+critical section, so it now also bounds the git a command waits for in the lock.
+Each command has a timeout and an output cap of its own (20 seconds and 64 MiB:
+`FINGERPRINT_GIT_TIMEOUT_MS` and `GIT_TIMEOUT_MS`); the synchronous
+`gitCommonDir`, `gitWorktrees` and `gitHead` had no timeout, and their
+asynchronous versions have one. A section that outlasts the cap is interrupted
+and the child process is killed (`exclusive` turns the timeout into a defect, as
+before). Synchronous git in the lock could not be interrupted at all, which is
+why it is not allowed there. The comment on `WORKFLOW_LOCK_TIMEOUT` in
+`command-core.ts` said that a critical section must never await async work,
+which stopped being true with #1476; it now describes this rule.
+
+### Decision 3: the transaction body takes database work only
+
+With the commands above, this holds for git in every command that waits for it
+under the lock: `nodeCompleted` and `retarget` (#1476), `failUnrecoverable`,
+`replan` and `extend`. `_replan` no longer waits on a dynamic import inside its
+transaction either. Filesystem calls that are not git are not covered: the
+canonical-path and `stat` checks of `resolveWorkspace` and `resolveExecution`,
+and the existence check, the patch artifact and the settlement evidence that the
+worktree settlement writes under `exclusive`, are still synchronous.

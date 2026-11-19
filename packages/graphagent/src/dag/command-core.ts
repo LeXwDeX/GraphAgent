@@ -53,11 +53,16 @@ export const readUserMaxTotalNodes = Effect.fn("Dag.readUserMaxTotalNodes")(func
   return dag.max_total_nodes
 })
 
-// Cap on workflow-lock acquisition + critical section (ADR-0004). The critical
-// section is a synchronous DB write, so exceeding this means the workflow is
-// already broken — interrupt loudly via Effect's builtin TimeoutException. The
-// critical section must never await async work; that is the only way this bound
-// can fire.
+// Cap on workflow-lock acquisition + critical section (ADR-0004). What a command
+// writes is database work in one transaction (ADR-0008 decision 3), so exceeding
+// this means the workflow is already broken — interrupt loudly via Effect's
+// builtin TimeoutException. Work that waits for git (#1344: the target and
+// workspace reads of `retarget`, `failUnrecoverable`, `replan` and `extend`,
+// and the commit of a workflow worktree settlement under `exclusive`) may wait
+// inside the lock, never inside the transaction, as child processes that each
+// have their own timeout; the cap bounds the whole section and interrupting it
+// kills the child. Synchronous git does not belong in the lock at all: the cap
+// cannot interrupt it.
 export const WORKFLOW_LOCK_TIMEOUT = "30 seconds" as const
 
 // The per-workflow KeyedMutex is single-permit and NOT reentrant: a guarded

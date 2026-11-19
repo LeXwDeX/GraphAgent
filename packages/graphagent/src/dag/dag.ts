@@ -140,8 +140,10 @@ export interface Interface {
    * control flow (its directory disappeared or was never stamped). Unlike
    * `fail`, this also legalizes the pending→running and paused→running legs
    * first, so a row abandoned in any non-terminal status can reach `failed`
-   * and open one terminal wake episode. Revalidates the durable execution
-   * location inside the workflow lock: a concurrent move to a valid directory
+   * and open one terminal wake episode. Reads the verdict on the durable
+   * execution location under the workflow lock, before the transaction opens
+   * (it waits for git), and applies it only while the row still names the
+   * directories it was read against: a concurrent move to a valid directory
    * wins and returns `ignored`. Idempotent: an already-terminal row also
    * returns `ignored`.
    */
