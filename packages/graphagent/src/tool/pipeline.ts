@@ -38,6 +38,7 @@ import {
   makeChecker,
   MCP_DEFERRED_TOOLS,
 } from "@/tool/mcp-deferred"
+import { DelegationHint } from "@/tool/delegation-hint"
 import { ToolError } from "@/tool/tool-error"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import type { Tool } from "@/tool/tool"
@@ -273,6 +274,19 @@ export function boundErrorCause(
       return Cause.hasDies(cause) ? Effect.die(failure) : Effect.fail(failure)
     }),
   )
+}
+
+/**
+ * Whether the session can make the `task` call that a delegation line shows for `agent` (#1454): it holds the task
+ * tool (a child session and an explicit `!cmd` run do not), its rules do not deny a task for that agent, and the
+ * agent exists. The line is never shown for a call the session could not make.
+ */
+const delegable = (deps: Deps, agent: string): Effect.Effect<boolean> => {
+  const { agentService, configuredPermission, entries } = deps
+  if (!entries.some((entry) => isBuiltinEntry(entry) && entry.id === TaskTool.id)) return Effect.succeed(false)
+  if (Permission.evaluate(TaskTool.id, agent, configuredPermission).action === "deny") return Effect.succeed(false)
+  if (!agentService) return Effect.succeed(false)
+  return agentService.get(agent).pipe(Effect.map((info) => info !== undefined))
 }
 
 export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
@@ -545,6 +559,11 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
               if (preLines.length) {
                 output.output = `${hookBlock(preLines)}\n\n${output.output ?? ""}`
               }
+              // A truncated result of a root session says how to hand the rest to a subagent; it comes last, after
+              // the hook text, and only reads what the tool wrote (#1454).
+              const hint = DelegationHint.hintOf(item.id, toRecord(args), output.metadata)
+              if (hint && (yield* delegable(deps, hint.agent)))
+                output.output = `${output.output ?? ""}\n\n${DelegationHint.block(hint)}`
               if (options.abortSignal?.aborted) {
                 yield* input.processor.completeToolCall(options.toolCallId, output)
               }

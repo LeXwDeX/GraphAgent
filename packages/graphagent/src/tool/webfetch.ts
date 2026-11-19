@@ -3,6 +3,7 @@ import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { Parser } from "htmlparser2"
 import * as Tool from "./tool"
+import * as Truncate from "./truncate"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
@@ -30,6 +31,7 @@ export const WebFetchTool = Tool.define(
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const httpOk = HttpClient.withScope(HttpClient.filterStatusOk(http))
+    const trunc = yield* Truncate.Service
 
     return {
       description: DESCRIPTION,
@@ -149,6 +151,17 @@ export const WebFetchTool = Tool.define(
             }
           }
 
+          // A PDF is not text. It is saved where `read` can open it: an agent without a shell cannot download it
+          // itself (#1454).
+          if (isPdf(mime, bytes)) {
+            const file = yield* trunc.writeBytes(bytes, ".pdf")
+            return {
+              title,
+              output: `The response is a PDF (${bytes.byteLength} bytes), saved to ${file}. Read it with: read filePath="${file}"`,
+              metadata: {},
+            }
+          }
+
           if (isBinaryResponse(mime, bytes)) {
             throw new Error(
               `The response is binary (${mime || "unknown content type"}, ${bytes.byteLength} bytes) and cannot be returned as text. Download it with a shell command (for example curl -o) and inspect it with a suitable tool instead.`,
@@ -201,6 +214,13 @@ export const WebFetchTool = Tool.define(
 const BINARY_MIME =
   /^(?:audio|video|font)\/|^application\/(?:pdf|zip|gzip|x-gzip|x-tar|x-7z-compressed|x-rar-compressed|wasm|vnd\.ms-|vnd\.openxmlformats-)/
 const TEXT_MIME = /^text\/|[/+](?:json|xml|javascript|ecmascript|yaml|x-yaml|csv|toml)$/
+
+const PDF_SIGNATURE = [0x25, 0x50, 0x44, 0x46, 0x2d] // "%PDF-"
+
+/** A PDF by its declared type, or by the signature every PDF file starts with. */
+function isPdf(mime: string, bytes: Uint8Array) {
+  return mime === "application/pdf" || PDF_SIGNATURE.every((byte, index) => bytes[index] === byte)
+}
 
 /** Decoding PDFs, archives or executables as text only feeds the model noise. */
 function isBinaryResponse(mime: string, bytes: Uint8Array) {

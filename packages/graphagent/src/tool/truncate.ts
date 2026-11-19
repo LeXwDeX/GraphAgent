@@ -75,6 +75,11 @@ export interface Interface {
   readonly cleanup: () => Effect.Effect<void>
   readonly write: (text: string) => Effect.Effect<string>
   /**
+   * Like `write`, for bytes: the file is named a tool id plus `extension` (with its leading dot), so it is cleaned up
+   * after 7 days like any saved output and its name tells the type. A failed write is a defect, as in `write`.
+   */
+  readonly writeBytes: (bytes: Uint8Array, extension: string) => Effect.Effect<string>
+  /**
    * Like `write`, but a failed write is the value `{ failed }` instead of a defect, so a caller can still
    * return what it has and say that the rest could not be saved.
    */
@@ -358,6 +363,13 @@ export const layer = Layer.effect(
       return file
     })
 
+    const writeBytes = Effect.fn("Truncate.writeBytes")(function* (bytes: Uint8Array, extension: string) {
+      const file = path.join(TRUNCATION_DIR, ToolID.ascending() + extension)
+      yield* fs.ensureDir(TRUNCATION_DIR).pipe(Effect.orDie)
+      yield* fs.writeFile(file, bytes).pipe(Effect.orDie)
+      return file
+    })
+
     const save = Effect.fn("Truncate.save")(function* (text: string) {
       const file = path.join(TRUNCATION_DIR, ToolID.ascending())
       return yield* fs.ensureDir(TRUNCATION_DIR).pipe(
@@ -406,7 +418,7 @@ export const layer = Layer.effect(
       Effect.forkScoped,
     )
 
-    return Service.of({ cleanup, write, save, output, limits })
+    return Service.of({ cleanup, write, writeBytes, save, output, limits })
   }),
 )
 
