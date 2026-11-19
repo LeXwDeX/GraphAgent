@@ -433,6 +433,20 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     check("P15b", "frames", "0", (value) => value === 0)
     check("P15b", "seconds", "0", (value) => value === 0)
     check("P15b", "renderRequests", "0", (value) => value === 0)
+    // P15c: the status band with a workflow running and a goal set is on every idle path of a session. It draws from
+    // no clock, so none of the three counters moves (#1620).
+    check("P15c", "frames", "0", (value) => value === 0)
+    check("P15c", "seconds", "0", (value) => value === 0)
+    check("P15c", "renderRequests", "0", (value) => value === 0)
+    // P15d: the same with a PR watched, in the two states of the PR tracker: CI being watched, and the outcome known
+    // with the notice owed to the agent, where the tracker has its one-shot pending. Both windows have to be idle;
+    // the metric names say which one was not.
+    check("P15d", "framesWatching", "0", (value) => value === 0)
+    check("P15d", "secondsWatching", "0", (value) => value === 0)
+    check("P15d", "renderRequestsWatching", "0", (value) => value === 0)
+    check("P15d", "framesAwaiting", "0", (value) => value === 0)
+    check("P15d", "secondsAwaiting", "0", (value) => value === 0)
+    check("P15d", "renderRequestsAwaiting", "0", (value) => value === 0)
     check("P16", "frames", `≤ ${tickLimit}`, (value) => value <= tickLimit)
     check("P17", "framesEmpty", `≤ ${tickLimit}`, (value) => value <= tickLimit)
     check("P17", "framesEight", `≤ ${tickLimit}`, (value) => value <= tickLimit)

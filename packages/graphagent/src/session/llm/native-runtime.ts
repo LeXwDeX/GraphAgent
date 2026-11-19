@@ -105,7 +105,8 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     // include, textVerbosity, promptCacheKey). Both sides intentionally use
     // OpenAI's official wire field names, so this is identity, not translation
     // — if a field ever needs to differ between the two surfaces, the
-    // translation belongs here, not split across both packages.
+    // translation belongs here, not split across both packages. The one that
+    // does today is the OpenAI-compatible cache key, which native-request maps.
     const tools = nativeTools(input.tools, input)
     // Same text the AI SDK path gives for a tool name outside the active set.
     const unknownTool = (name: string) =>

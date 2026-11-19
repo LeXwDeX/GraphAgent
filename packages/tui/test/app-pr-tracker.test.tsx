@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, expect, test } from "bun:test"
-import type { GlobalEvent, PrWatchEntry, SessionReminder } from "@graphagent/sdk"
+import type { GlobalEvent, Message, Part, PrWatchEntry, SessionReminder, SessionStatus } from "@graphagent/sdk"
+import { createRoot } from "solid-js"
+import { createStore } from "solid-js/store"
 import { setLanguage, t } from "../src/i18n"
-import { promptShown, runApp, waitForFrame } from "./fixture/run-app"
+import { createPrTracker } from "../src/shell/pr-tracker"
+import type { ToastOptions } from "../src/ui/toast"
+import { footerRow, promptShown, promptTop, runApp, waitFor, waitForFrame } from "./fixture/run-app"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -146,5 +150,217 @@ test("the status band reads the tracker the app mounts: the PR of the root and i
     await waitForFrame(app.setup, (current) => current.includes("check the deploy"), "the reminder row")
   } finally {
     await app.stop()
+  }
+})
+
+// ── Esc leaves the PR row alone (#1620, #1036 acceptance 8) ─────────────────────────────────────────────────────────
+//
+// Since W1 (#1035) an interrupt only stops the turn: the watch goes on, and a watch is cancelled only by a deleted
+// session or a disposed instance. Nothing in the interrupt path is wired to the tracker, so the stop, the abort error
+// the server answers it with and the idle status after it must change neither the PR row, nor the band around it,
+// nor the footer.
+
+function statusEvent(type: "busy" | "idle"): GlobalEvent {
+  return {
+    directory,
+    payload: {
+      id: `evt_app_pr_${++sequence}`,
+      type: "session.status",
+      properties: { sessionID: mainID, status: { type } },
+    },
+  }
+}
+
+/** The error a stopped turn ends in. The shell shows nothing for it. */
+function abortedEvent(): GlobalEvent {
+  return {
+    directory,
+    payload: {
+      id: `evt_app_pr_${++sequence}`,
+      type: "session.error",
+      properties: {
+        sessionID: mainID,
+        error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } },
+      },
+    },
+  }
+}
+
+/** The server accepts the stop an interrupt sends; one it refused would put an error toast in the footer. */
+function stoppable(handler: FetchHandler): FetchHandler {
+  return (url, request) => (url.pathname === `/session/${mainID}/abort` ? json(true) : handler(url, request))
+}
+
+/** The one write a stop makes. */
+const abort = { method: "POST", path: `/session/${mainID}/abort`, body: undefined }
+
+/** The rows the band can take (at most two), right above the top edge of the input box. */
+function bandOf(frame: string) {
+  const rows = frame.split("\n").map((row) => row.trimEnd())
+  const first = promptTop(rows)
+  if (first < 2) throw new Error(`no prompt in the frame:\n${frame}`)
+  return rows.slice(first - 2, first).join("\n")
+}
+
+test("Esc stops a busy session and leaves the watching PR row, the band and the footer as they were", async () => {
+  const app = await runApp({
+    sessions,
+    args: { continue: true },
+    width: 120,
+    height: 30,
+    handler: stoppable(served([watch()])),
+  })
+  // The footer of every frame looked at once the baseline is taken: a toast takes the place of its idle hints there.
+  const footers = new Set<string>()
+  const next = (predicate: (frame: string) => boolean, label: string) =>
+    waitForFrame(
+      app.setup,
+      (frame) => {
+        footers.add(footerRow(frame))
+        return predicate(frame)
+      },
+      label,
+    )
+  try {
+    await next(promptShown, "the prompt")
+    app.events.emit(prEvent(watch()))
+    const idle = await next((frame) => frame.includes("PR #7"), "the PR row")
+    const before = bandOf(idle)
+    const footer = footerRow(idle)
+    footers.clear()
+    expect(before).toContain(t("pr.ci.waiting"))
+    // The idle hints are on the footer: there is no toast to start from.
+    expect(footer).toContain(t("shell.footer.commands"))
+
+    // The turn runs, so Esc is the interrupt: the first press arms it, the second sends the stop.
+    app.events.emit(statusEvent("busy"))
+    await next((frame) => frame.includes("esc interrupt"), "the interrupt hint")
+    const sent = app.writes().length
+    app.setup.mockInput.pressEscape()
+    await next((frame) => frame.includes("again to interrupt"), "the hint for the second press")
+    expect(app.writes()).toHaveLength(sent)
+    app.setup.mockInput.pressEscape()
+    await waitFor(() => app.writes().length > sent)
+    await next((frame) => frame.includes("Stopping"), "the stop under way")
+    expect(app.writes().slice(sent)).toEqual([abort])
+
+    // The server's side of it: the turn's error is an abort, then the session is idle.
+    app.events.emit(abortedEvent())
+    app.events.emit(statusEvent("idle"))
+    const after = await next((frame) => !frame.includes("Stopping"), "the session idle")
+    expect(bandOf(after)).toBe(before)
+    expect(app.writes().slice(sent)).toEqual([abort])
+
+    // The same watch is still live: its next update reaches the row.
+    app.events.emit(prEvent(watch({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } })))
+    const updated = await next((frame) => frame.includes(t("pr.ci", { passed: 4, total: 6 })), "the CI counts")
+    expect(bandOf(updated)).toContain("PR #7")
+
+    // The control: a cancelled watch (the state a deleted session or a disposed instance gives it) does take the row
+    // away, and takes it without a toast. The interrupt did not go that way.
+    app.events.emit(prEvent(watch({ phase: "cancelled" })))
+    const cancelled = await next((frame) => !frame.includes("PR #7"), "the row gone")
+    expect(bandOf(cancelled)).not.toContain("PR #7")
+
+    // Not one frame of it all had a toast where the hints are, and the stop is the only request that was written.
+    expect([...footers]).toEqual([footer])
+    expect(app.writes()).toEqual([abort])
+  } finally {
+    await app.stop()
+  }
+})
+
+interface TrackedData {
+  pr_watch: Record<string, Record<string, PrWatchEntry>>
+  reminder: Record<string, SessionReminder[]>
+  session_status: Record<string, SessionStatus>
+  message: Record<string, Message[]>
+  part: Record<string, Part[]>
+  hydrated: string[]
+}
+
+/** The assistant message of the turn the stop interrupts; once stopped it ends in the abort error. */
+function interruptedTurn(stopped: boolean): Message {
+  return {
+    id: "msg_pr_turn",
+    sessionID: mainID,
+    role: "assistant",
+    time: { created: 1_700_000_000_000, ...(stopped ? { completed: 1_700_000_001_000 } : {}) },
+    ...(stopped
+      ? { error: { name: "MessageAbortedError" as const, data: { message: "The operation was aborted." } } }
+      : {}),
+    parentID: "msg_pr_user",
+    modelID: "test-model",
+    providerID: "test",
+    mode: "build",
+    agent: "build",
+    path: { cwd: "/work", root: "/work" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+}
+
+test("the tracker lists the same PR rows through an interrupt, and neither toasts nor starts a timer", () => {
+  // The root only builds the fixture: the steps run outside it, so the tracker's effects (the one that arms
+  // `ticker.at` and announces clock-driven toasts) run between them, as they do in the app.
+  const fixture = createRoot((dispose) => {
+    const toasts: ToastOptions[] = []
+    const timers: number[] = []
+    const [data, setData] = createStore<TrackedData>({
+      pr_watch: {},
+      reminder: {},
+      session_status: {},
+      message: {},
+      part: {},
+      hydrated: [mainID],
+    })
+    // The tracker as `app.tsx` wires it, over a store of its own and a clock that stands still.
+    const tracker = createPrTracker({
+      data,
+      ticker: {
+        now: () => 1_700_000_000_000,
+        at(time) {
+          timers.push(time)
+          return () => {}
+        },
+      },
+      toast: { show: (options) => void toasts.push(options) },
+      onPrWatchEvent: () => () => {},
+      currentRoot: () => mainID,
+    })
+    return { toasts, timers, setData, tracker, dispose }
+  })
+  const { toasts, timers, setData, tracker } = fixture
+  try {
+    setData("pr_watch", mainID, { w1: watch({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } }) })
+    // Plain copies: what was listed before must not move with the later reads.
+    const before = structuredClone(tracker.items(mainID))
+    expect(before.map((item) => `${item.watchID}:${item.state.kind}`)).toEqual(["w1:watching"])
+
+    // What the store holds of an interrupt, in order: the turn runs, it is stopped with an abort error, it is idle.
+    const steps: ReadonlyArray<readonly [string, () => void]> = [
+      [
+        "the turn runs",
+        () => {
+          setData("session_status", mainID, { type: "busy" })
+          setData("message", mainID, [interruptedTurn(false)])
+        },
+      ],
+      ["the turn is stopped", () => setData("message", mainID, [interruptedTurn(true)])],
+      ["the session is idle", () => setData("session_status", mainID, { type: "idle" })],
+    ]
+    for (const [label, step] of steps) {
+      step()
+      expect(structuredClone(tracker.items(mainID)), label).toEqual(before)
+    }
+    expect(toasts).toEqual([])
+    expect(timers).toEqual([])
+
+    // The control: the effects do run here. A watch that has an outcome owed to the agent arms its three-minute
+    // clock, which the steps above never did.
+    setData("pr_watch", mainID, "w1", watch({ phase: "delivering", outcome: "success" }))
+    expect(timers.length).toBeGreaterThan(0)
+  } finally {
+    fixture.dispose()
   }
 })

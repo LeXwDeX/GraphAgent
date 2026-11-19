@@ -4,10 +4,23 @@
 import { describe, expect, it } from "bun:test"
 import { $ } from "bun"
 import { eq } from "drizzle-orm"
-import { Effect, Fiber } from "effect"
+import { Effect, Exit, Fiber } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import os from "node:os"
 import { Database } from "@graphagent/core/database/database"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
@@ -21,8 +34,8 @@ import { Session } from "@graphagent/schema/session"
 import { Dag, parseWorkflowConfig, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
 import { DagIsolation } from "@/dag/isolation"
 import { DagLocation } from "@/dag/location"
-import { workflowArtifactsRoot } from "@/dag/runtime/output-ref"
-import { settleWorkflowWorktree } from "@/dag/runtime/worktree-completion"
+import { workflowArtifactsRoot, workflowReportsArea } from "@/dag/runtime/output-ref"
+import { completeIsolatedNode, settleWorkflowWorktree } from "@/dag/runtime/worktree-completion"
 import { tmpdir } from "../fixture/fixture"
 import { makeWorkflowRow } from "./fixtures"
 import { installGitGate, withoutGit } from "./fixture/git-shim"
@@ -493,34 +506,34 @@ describe("gitHeadAsync gives the answer of gitHead", () => {
   })
 })
 
-describe("commitWorktreeAsync gives the results of commitWorktree", () => {
-  // A pinned identity and clock make a commit a function of its tree, its parent
-  // and its message, so two copies of one repository commit the same hash.
-  const PINNED = {
-    GIT_AUTHOR_NAME: "Pinned",
-    GIT_AUTHOR_EMAIL: "pinned@example.test",
-    GIT_AUTHOR_DATE: "2026-01-02T03:04:05Z",
-    GIT_COMMITTER_NAME: "Pinned",
-    GIT_COMMITTER_EMAIL: "pinned@example.test",
-    GIT_COMMITTER_DATE: "2026-01-02T03:04:05Z",
-  }
-  const git = (directory: string, ...args: string[]) =>
-    execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim()
+// A pinned identity and clock make a commit a function of its tree, its parent
+// and its message, so two copies of one repository commit the same hash.
+const PINNED = {
+  GIT_AUTHOR_NAME: "Pinned",
+  GIT_AUTHOR_EMAIL: "pinned@example.test",
+  GIT_AUTHOR_DATE: "2026-01-02T03:04:05Z",
+  GIT_COMMITTER_NAME: "Pinned",
+  GIT_COMMITTER_EMAIL: "pinned@example.test",
+  GIT_COMMITTER_DATE: "2026-01-02T03:04:05Z",
+}
+const git = (directory: string, ...args: string[]) =>
+  execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim()
 
-  /** Runs `body` with the pinned identity in the environment that git inherits. */
-  const pinned = async <A>(body: () => Promise<A>) => {
-    const previous = Object.entries(PINNED).map(([key]) => [key, process.env[key]] as const)
-    Object.assign(process.env, PINNED)
-    try {
-      return await body()
-    } finally {
-      for (const [key, value] of previous) {
-        if (value === undefined) Reflect.deleteProperty(process.env, key)
-        else process.env[key] = value
-      }
+/** Runs `body` with the pinned identity in the environment that git inherits. */
+const pinned = async <A>(body: () => Promise<A>) => {
+  const previous = Object.entries(PINNED).map(([key]) => [key, process.env[key]] as const)
+  Object.assign(process.env, PINNED)
+  try {
+    return await body()
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key)
+      else process.env[key] = value
     }
   }
+}
 
+describe("commitWorktreeAsync gives the results of commitWorktree", () => {
   /** What both runners answer on two copies of one repository after `setup`, the directory made comparable. */
   const both = async (setup: (directory: string) => void) =>
     pinned(async () => {
@@ -599,6 +612,546 @@ describe("commitWorktreeAsync gives the results of commitWorktree", () => {
       const asynchronous = await Effect.runPromise(DagIsolation.commitWorktreeAsync(plain.path, "", "dag: test"))
       expect(asynchronous).toMatchObject({ ok: false, reason: expect.stringContaining("git status failed") })
     })
+  })
+})
+
+// #1583: the completion of an isolated node (the live path and crash recovery) waits for git and the disk off the
+// event loop, and gives the results the synchronous completion gave.
+
+/** The error `run` throws; a call that does not throw fails the test. */
+const thrown = (run: () => unknown): Error => {
+  try {
+    run()
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error))
+  }
+  throw new Error("expected the call to throw")
+}
+
+describe("writePatchArtifactAsync gives the results of writePatchArtifact", () => {
+  const PATCH = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-一\n+二\n"
+  const writeAsync = (reportsArea: string, dagID: string, nodeID: string, patch = PATCH) =>
+    DagIsolation.writePatchArtifactAsync(reportsArea, dagID, nodeID, patch)
+
+  it("writes the same file and names the same path and checksum", async () => {
+    await using tmp = await tmpdir()
+    const synchronous = DagIsolation.writePatchArtifact(path.join(tmp.path, "sync"), "dag_1", "node-1", PATCH)
+    const asynchronous = await Effect.runPromise(writeAsync(path.join(tmp.path, "async"), "dag_1", "node-1"))
+    expect(asynchronous.path).toBe(path.join(tmp.path, "async", "dag_1", "node-1.patch"))
+    expect(asynchronous.sha256).toBe(synchronous.sha256)
+    expect(asynchronous.sha256).toBe(createHash("sha256").update(PATCH).digest("hex"))
+    expect(readFileSync(asynchronous.path, "utf8")).toBe(PATCH)
+    expect(readFileSync(synchronous.path, "utf8")).toBe(PATCH)
+  })
+
+  it("replaces the patch an earlier attempt of the node left", async () => {
+    await using tmp = await tmpdir()
+    await Effect.runPromise(writeAsync(tmp.path, "dag_1", "node-1", "first\n"))
+    const second = await Effect.runPromise(writeAsync(tmp.path, "dag_1", "node-1", PATCH))
+    expect(readFileSync(second.path, "utf8")).toBe(PATCH)
+  })
+
+  it("refuses an identifier that would leave the report directory, with the error the synchronous version throws", async () => {
+    await using tmp = await tmpdir()
+    const identifiers = [
+      ["", "node-1"],
+      [".", "node-1"],
+      ["..", "node-1"],
+      ["a/b", "node-1"],
+      ["a\\b", "node-1"],
+      ["a\0b", "node-1"],
+      ["dag_1", ""],
+      ["dag_1", ".."],
+      ["dag_1", "../node"],
+      ["dag_1", "a/b"],
+    ] as const
+    for (const [dagID, nodeID] of identifiers) {
+      const synchronous = thrown(() => DagIsolation.writePatchArtifact(tmp.path, dagID, nodeID, PATCH))
+      const asynchronous = await Effect.runPromise(writeAsync(tmp.path, dagID, nodeID).pipe(Effect.flip))
+      expect(synchronous.message).toContain("for patch artifact")
+      expect(asynchronous).toBeInstanceOf(Error)
+      expect(asynchronous.message).toBe(synchronous.message)
+    }
+  })
+
+  it("fails with the error of the disk, as the synchronous version throws it", async () => {
+    await using tmp = await tmpdir()
+    // A file where the directory of the workflow belongs.
+    writeFileSync(path.join(tmp.path, "dag_1"), "not a directory")
+    const synchronous = thrown(() => DagIsolation.writePatchArtifact(tmp.path, "dag_1", "node-1", PATCH))
+    const asynchronous = await Effect.runPromise(writeAsync(tmp.path, "dag_1", "node-1").pipe(Effect.flip))
+    expect(synchronous.message).toContain("EEXIST")
+    expect(asynchronous.message).toBe(synchronous.message)
+  })
+})
+
+/** The completion of a worktree that is at `baseHead`, the arguments both `completeWorktree` versions take. */
+const completionOf = (
+  directory: string,
+  baseHead: string,
+  reportsArea: string,
+  options: { state?: DagIsolation.WorktreeState; dagID?: string; nodeID?: string } = {},
+): DagIsolation.WorktreeCompletionInput => ({
+  worktree: { directory, state: options.state ?? "active", touchedPaths: [], conflictsWith: [], baseHead },
+  reportsArea,
+  dagID: options.dagID ?? "dag_1",
+  nodeID: options.nodeID ?? "node-1",
+  message: "dag: test",
+})
+
+/** A text, a binary and an untracked change on top of the base commit. */
+const withChanges = (directory: string) => {
+  writeFileSync(path.join(directory, "tracked.txt"), "changed\n")
+  writeFileSync(path.join(directory, "untracked.txt"), "new\n")
+  writeFileSync(path.join(directory, "binary.bin"), Buffer.from([0, 1, 2, 255, 0]))
+}
+
+describe("completeWorktreeAsync gives the results of completeWorktree", () => {
+  /** `value` as plain data, with the paths of one run replaced by a name both runs share. */
+  const comparable = (value: unknown, names: ReadonlyArray<readonly [string, string]>) => {
+    let text = JSON.stringify(value)
+    for (const [directory, name] of names) text = text.replaceAll(JSON.stringify(directory).slice(1, -1), name)
+    return JSON.parse(text)
+  }
+
+  /** The patch a node left in a report area; nothing where there is none, or where something else is in its place. */
+  const patchOf = (reportsArea: string, dagID = "dag_1", nodeID = "node-1") => {
+    const file = path.join(reportsArea, dagID, `${nodeID}.patch`)
+    return existsSync(file) && statSync(file).isFile() ? readFileSync(file, "utf8") : undefined
+  }
+
+  /**
+   * What both versions answer on two copies of one repository after `setup`, each with a report area of its own
+   * (prepared by `options.reports`), the paths made comparable; and the patch the asynchronous one wrote.
+   */
+  const both = async (
+    setup: (directory: string) => void,
+    options: {
+      state?: DagIsolation.WorktreeState
+      dagID?: string
+      nodeID?: string
+      reports?: (reportsArea: string) => void
+    } = {},
+  ) =>
+    pinned(async () => {
+      const original = mkdtempSync(path.join(os.tmpdir(), "graphagent-complete-a-"))
+      const copy = mkdtempSync(path.join(os.tmpdir(), "graphagent-complete-b-"))
+      const synchronousReports = mkdtempSync(path.join(os.tmpdir(), "graphagent-complete-reports-a-"))
+      const asynchronousReports = mkdtempSync(path.join(os.tmpdir(), "graphagent-complete-reports-b-"))
+      try {
+        git(original, "init", "-q")
+        git(original, "config", "commit.gpgsign", "false")
+        git(original, "config", "core.fsmonitor", "false")
+        writeFileSync(path.join(original, "tracked.txt"), "one\n")
+        git(original, "add", "-A")
+        git(original, "commit", "-q", "-m", "base")
+        const baseHead = git(original, "rev-parse", "HEAD")
+        setup(original)
+        cpSync(original, copy, { recursive: true })
+        options.reports?.(synchronousReports)
+        options.reports?.(asynchronousReports)
+        const synchronous = DagIsolation.completeWorktree(completionOf(original, baseHead, synchronousReports, options))
+        const asynchronous = await Effect.runPromise(
+          DagIsolation.completeWorktreeAsync(completionOf(copy, baseHead, asynchronousReports, options)),
+        )
+        expect(
+          comparable(asynchronous, [
+            [copy, "<dir>"],
+            [asynchronousReports, "<reports>"],
+          ]),
+        ).toEqual(
+          comparable(synchronous, [
+            [original, "<dir>"],
+            [synchronousReports, "<reports>"],
+          ]),
+        )
+        const patch = patchOf(asynchronousReports, options.dagID, options.nodeID)
+        expect(patch).toBe(patchOf(synchronousReports, options.dagID, options.nodeID))
+        return { result: asynchronous, patch }
+      } finally {
+        for (const directory of [original, copy, synchronousReports, asynchronousReports])
+          rmSync(directory, { recursive: true, force: true })
+      }
+    })
+
+  it("completes a directory that is missing as a failure while active, and as a removed worktree otherwise", async () => {
+    await using tmp = await tmpdir()
+    const directory = path.join(tmp.path, "gone")
+    const reportsArea = path.join(tmp.path, "reports")
+    for (const state of ["active", "removed", "kept"] as const) {
+      const input = completionOf(directory, "abc", reportsArea, { state })
+      input.worktree.touchedPaths = ["saved.txt"]
+      const asynchronous = await Effect.runPromise(DagIsolation.completeWorktreeAsync(input))
+      expect(asynchronous).toEqual(DagIsolation.completeWorktree(input))
+      if (state === "active")
+        expect(asynchronous).toEqual({ ok: false, reason: `active worktree directory is missing: ${directory}` })
+      else
+        expect(asynchronous).toEqual({
+          ok: true,
+          completion: { worktree: { ...input.worktree, state: "removed" }, touchedPaths: [] },
+        })
+    }
+    expect(existsSync(reportsArea)).toBe(false)
+  })
+
+  it("reports a directory that is no repository with the reason the synchronous version gave", async () => {
+    await using tmp = await tmpdir()
+    const input = completionOf(tmp.path, "", path.join(tmp.path, "reports"))
+    const asynchronous = await Effect.runPromise(DagIsolation.completeWorktreeAsync(input))
+    expect(asynchronous).toEqual(DagIsolation.completeWorktree(input))
+    expect(asynchronous).toMatchObject({ ok: false, reason: expect.stringContaining("git status failed") })
+    expect(existsSync(path.join(tmp.path, "reports"))).toBe(false)
+  })
+
+  it("keeps the state of a clean tree, and writes no patch", async () => {
+    for (const state of ["active", "kept"] as const) {
+      const { result, patch } = await both(() => {}, { state })
+      expect(result).toMatchObject({
+        ok: true,
+        completion: { worktree: { state, touchedPaths: [] }, touchedPaths: [] },
+      })
+      expect(patch).toBeUndefined()
+    }
+  })
+
+  it("completes a clean tree from the range of a commit made earlier in the attempt", async () => {
+    const { result, patch } = await both((directory) => {
+      writeFileSync(path.join(directory, "tracked.txt"), "two\n")
+      git(directory, "commit", "-aq", "-m", "ahead")
+    })
+    expect(result).toMatchObject({
+      ok: true,
+      completion: {
+        worktree: { commit: expect.stringMatching(/^[0-9a-f]{40}$/), state: "active", touchedPaths: ["tracked.txt"] },
+        touchedPaths: ["tracked.txt"],
+      },
+    })
+    expect(patch).toContain("tracked.txt")
+  })
+
+  it("commits a dirty tree with text, binary and untracked changes, and records its patch", async () => {
+    const { result, patch } = await both(withChanges)
+    expect(result).toMatchObject({
+      ok: true,
+      completion: {
+        worktree: {
+          commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+          patchPath: expect.stringMatching(/node-1\.patch$/),
+          state: "active",
+          touchedPaths: ["binary.bin", "tracked.txt", "untracked.txt"],
+        },
+        touchedPaths: ["binary.bin", "tracked.txt", "untracked.txt"],
+      },
+    })
+    expect(patch).toContain("GIT binary patch")
+    expect(patch).toContain("untracked.txt")
+    expect(result.ok && result.completion.worktree.patchSha256).toBe(createHash("sha256").update(patch!).digest("hex"))
+  })
+
+  it("fails with the error of the disk when the report directory of the workflow cannot be created", async () => {
+    // A file where the directory of the workflow belongs; the work was committed before the patch was written.
+    const { result, patch } = await both(withChanges, {
+      reports: (reportsArea) => writeFileSync(path.join(reportsArea, "dag_1"), "not a directory"),
+    })
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("EEXIST") })
+    expect(patch).toBeUndefined()
+  })
+
+  it("fails with the error of the disk when the patch file cannot be written", async () => {
+    // A directory where the patch file belongs.
+    const { result } = await both(withChanges, {
+      reports: (reportsArea) => mkdirSync(path.join(reportsArea, "dag_1", "node-1.patch"), { recursive: true }),
+    })
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("EISDIR") })
+  })
+
+  posixIt("fails with the error of the disk when the report directory is read-only", async () => {
+    if (process.getuid?.() === 0) return // root writes into a read-only directory
+    const { result } = await both(withChanges, {
+      reports: (reportsArea) => {
+        mkdirSync(path.join(reportsArea, "dag_1"))
+        chmodSync(path.join(reportsArea, "dag_1"), 0o555)
+      },
+    })
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("EACCES") })
+  })
+
+  it("refuses an identifier that would leave the report directory, with the same reason", async () => {
+    const workflow = await both(withChanges, { dagID: ".." })
+    expect(workflow.result).toMatchObject({ ok: false, reason: 'invalid workflow ID for patch artifact: ".."' })
+    const node = await both(withChanges, { nodeID: "../node" })
+    expect(node.result).toMatchObject({ ok: false, reason: 'invalid node ID for patch artifact: "../node"' })
+  })
+})
+
+describe("completing a node waits for git without blocking the event loop", () => {
+  /** A repository with one commit and a change on top of it, and a report area of its own. */
+  const changed = () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "graphagent-complete-slow-"))
+    const reportsArea = mkdtempSync(path.join(os.tmpdir(), "graphagent-complete-slow-reports-"))
+    git(directory, "init", "-q")
+    git(directory, "config", "user.name", "Slow")
+    git(directory, "config", "user.email", "slow@example.test")
+    git(directory, "config", "commit.gpgsign", "false")
+    git(directory, "config", "core.fsmonitor", "false")
+    writeFileSync(path.join(directory, "tracked.txt"), "one\n")
+    git(directory, "add", "-A")
+    git(directory, "commit", "-q", "-m", "base")
+    const baseHead = git(directory, "rev-parse", "HEAD")
+    writeFileSync(path.join(directory, "change.txt"), "dirty\n")
+    return {
+      directory,
+      reportsArea,
+      baseHead,
+      dispose: () => {
+        rmSync(directory, { recursive: true, force: true })
+        rmSync(reportsArea, { recursive: true, force: true })
+      },
+    }
+  }
+
+  posixIt("commits a dirty tree with timers firing, and writes its patch", async () => {
+    const tree = changed()
+    const watch = watchGit()
+    const installed = await watch.install("*")
+    try {
+      const result = await measured(() =>
+        Effect.runPromise(
+          DagIsolation.completeWorktreeAsync(completionOf(tree.directory, tree.baseHead, tree.reportsArea)),
+        ),
+      )
+      // status, add, commit, status, rev-parse, then the committed range twice.
+      expectUnblocked(result, 7)
+      expect(result.value).toMatchObject({ ok: true, completion: { touchedPaths: ["change.txt"] } })
+      expect(readFileSync(path.join(tree.reportsArea, "dag_1", "node-1.patch"), "utf8")).toContain("change.txt")
+    } finally {
+      await installed.dispose()
+      watch.dispose()
+      tree.dispose()
+    }
+  })
+
+  posixIt("reads a clean tree with timers firing", async () => {
+    const tree = changed()
+    rmSync(path.join(tree.directory, "change.txt"))
+    const watch = watchGit()
+    const installed = await watch.install("*")
+    try {
+      const result = await measured(() =>
+        Effect.runPromise(
+          DagIsolation.completeWorktreeAsync(completionOf(tree.directory, tree.baseHead, tree.reportsArea)),
+        ),
+      )
+      // status, then rev-parse HEAD against the base.
+      expectUnblocked(result, 2)
+      expect(result.value).toMatchObject({ ok: true, completion: { touchedPaths: [] } })
+    } finally {
+      await installed.dispose()
+      watch.dispose()
+      tree.dispose()
+    }
+  })
+
+  posixIt("is still waiting, with timers firing, while its git is parked", async () => {
+    const tree = changed()
+    const installed = await installGitGate()
+    try {
+      const running = Effect.runPromise(
+        DagIsolation.completeWorktreeAsync(completionOf(tree.directory, tree.baseHead, tree.reportsArea)),
+      )
+      let finished = false
+      void running.then(() => {
+        finished = true
+      })
+      await installed.started()
+      // A blocked loop could not run this timer, and the gate would never be released.
+      const parked = await measured(() => Bun.sleep(200))
+      expect(parked.ticks).toBeGreaterThan(8)
+      expect(finished).toBe(false)
+      await installed.release()
+      expect(await running).toMatchObject({ ok: true, completion: { touchedPaths: ["change.txt"] } })
+    } finally {
+      await installed.dispose()
+      tree.dispose()
+    }
+  })
+
+  posixIt("lets an interruption through while its git is parked, and records nothing", async () => {
+    const tree = changed()
+    try {
+      const installed = await installGitGate()
+      try {
+        const controller = new AbortController()
+        const running = Effect.runPromiseExit(
+          DagIsolation.completeWorktreeAsync(completionOf(tree.directory, tree.baseHead, tree.reportsArea)),
+          { signal: controller.signal },
+        )
+        await installed.started()
+        controller.abort()
+        expect(Exit.hasInterrupts(await running)).toBe(true)
+      } finally {
+        await installed.dispose()
+      }
+      // The worktree is as the node left it: nothing is committed and no patch was written, so a retry redoes it all.
+      expect(git(tree.directory, "rev-parse", "HEAD")).toBe(tree.baseHead)
+      expect(git(tree.directory, "status", "--porcelain")).toBe("?? change.txt")
+      expect(existsSync(path.join(tree.reportsArea, "dag_1"))).toBe(false)
+    } finally {
+      tree.dispose()
+    }
+  })
+
+  posixIt("finishes a node's commit and patch before an interruption lands, then keeps the worktree", async () => {
+    const projectID = `proj-lock-git-interrupt-${process.pid}`
+    const tree = changed()
+    const removed: string[] = []
+    try {
+      const installed = await installGitGate()
+      try {
+        const controller = new AbortController()
+        const running = Effect.runPromiseExit(
+          completeIsolatedNode({
+            worktree: {
+              directory: tree.directory,
+              state: "active",
+              touchedPaths: [],
+              conflictsWith: [],
+              baseHead: tree.baseHead,
+            },
+            ownerDirectory: tree.directory,
+            projectID,
+            dagID: "dag_1",
+            nodeID: "node-1",
+            message: "dag: node-1",
+            remove: (directory) =>
+              Effect.sync(() => {
+                removed.push(directory)
+                return true
+              }),
+          }),
+          { signal: controller.signal },
+        )
+        let settled = false
+        void running.then(() => {
+          settled = true
+        })
+        await installed.started()
+        controller.abort()
+        await Bun.sleep(100)
+        // The interruption waits for the commit instead of cutting it between two git commands.
+        expect(settled).toBe(false)
+        await installed.release()
+        expect(Exit.hasInterrupts(await running)).toBe(true)
+      } finally {
+        await installed.dispose()
+      }
+      expect(git(tree.directory, "rev-parse", "HEAD")).not.toBe(tree.baseHead)
+      expect(git(tree.directory, "status", "--porcelain")).toBe("")
+      expect(existsSync(path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"))).toBe(true)
+      // The removal after the commit is still interruptible, so the worktree stays for recovery.
+      expect(removed).toEqual([])
+    } finally {
+      tree.dispose()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("lets the git timeout end an interrupted node completion whose git hangs", async () => {
+    const projectID = `proj-lock-git-hang-${process.pid}`
+    const tree = changed()
+    const removed: string[] = []
+    try {
+      const installed = await installGitGate()
+      try {
+        const exit = await Effect.runPromise(
+          Effect.gen(function* () {
+            const fiber = yield* completeIsolatedNode({
+              worktree: {
+                directory: tree.directory,
+                state: "active",
+                touchedPaths: [],
+                conflictsWith: [],
+                baseHead: tree.baseHead,
+              },
+              ownerDirectory: tree.directory,
+              projectID,
+              dagID: "dag_1",
+              nodeID: "node-1",
+              message: "dag: node-1",
+              remove: (directory) =>
+                Effect.sync(() => {
+                  removed.push(directory)
+                  return true
+                }),
+            }).pipe(Effect.forkChild)
+            yield* Effect.promise(() => installed.started())
+            yield* Fiber.interrupt(fiber).pipe(Effect.forkChild)
+            // The gate is never released: only the git command's own timeout can let the waiting cancel finish.
+            yield* TestClock.adjust("21 seconds")
+            return yield* Fiber.await(fiber)
+          }).pipe(Effect.provide(TestClock.layer())),
+        )
+        expect(Exit.hasInterrupts(exit)).toBe(true)
+      } finally {
+        await installed.dispose()
+      }
+      // The timed-out commit recorded nothing and nothing was removed, so recovery redoes the node.
+      expect(git(tree.directory, "rev-parse", "HEAD")).toBe(tree.baseHead)
+      expect(existsSync(path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"))).toBe(false)
+      expect(removed).toEqual([])
+    } finally {
+      tree.dispose()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("completes an isolated node with timers firing, and removes its worktree after the commit", async () => {
+    const projectID = `proj-lock-git-complete-${process.pid}`
+    const tree = changed()
+    const removed: string[] = []
+    const watch = watchGit()
+    const installed = await watch.install("*")
+    try {
+      const result = await measured(() =>
+        Effect.runPromise(
+          completeIsolatedNode({
+            worktree: {
+              directory: tree.directory,
+              state: "active",
+              touchedPaths: [],
+              conflictsWith: [],
+              baseHead: tree.baseHead,
+            },
+            ownerDirectory: tree.directory,
+            projectID,
+            dagID: "dag_1",
+            nodeID: "node-1",
+            message: "dag: node-1",
+            remove: (directory) =>
+              Effect.sync(() => {
+                removed.push(directory)
+                return true
+              }),
+          }),
+        ),
+      )
+      expectUnblocked(result, 7)
+      expect(result.value).toMatchObject({
+        ok: true,
+        worktree: {
+          state: "removed",
+          patchPath: path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"),
+          touchedPaths: ["change.txt"],
+        },
+        touchedPaths: ["change.txt"],
+      })
+      expect(removed).toEqual([tree.directory])
+    } finally {
+      await installed.dispose()
+      watch.dispose()
+      tree.dispose()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
   })
 })
 

@@ -389,6 +389,93 @@ describe("ProviderErrorClass.factsOf temporary", () => {
   })
 })
 
+// The 429 bodies of `packages/llm/test/executor.test.ts` (#1578), which asserts how the native executor reads each one:
+// the spent balances as `QuotaExceeded`, tried once, and the windowed allocations as `RateLimit`, retried. Keep the two
+// lists in step, so that the executor and this table agree on every body.
+describe("ProviderErrorClass on the 429 bodies the native executor classifies", () => {
+  const spentBalances: ReadonlyArray<readonly [name: string, body: string]> = [
+    [
+      "credit_balance_exhausted",
+      '{"error":{"type":"credit_balance_exhausted","message":"Your credit balance is exhausted."}}',
+    ],
+    [
+      "exceeded_current_quota_error",
+      '{"error":{"code":"exceeded_current_quota_error","message":"You exceeded your current quota, please check your plan and billing details."}}',
+    ],
+    [
+      "enforced_spend_limit_reached",
+      '{"error":{"code":"enforced_spend_limit_reached","message":"The spend limit for this workspace has been reached."}}',
+    ],
+    [
+      "arrearage",
+      '{"error":{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}}',
+    ],
+    [
+      "allocationquota.freetieronly",
+      '{"error":{"code":"AllocationQuota.FreeTierOnly","message":"The free tier of the model has been exhausted."}}',
+    ],
+    [
+      "free allocated quota exceeded",
+      '{"error":{"message":"The Free Allocated Quota Exceeded, please purchase a plan."}}',
+    ],
+    [
+      "insufficient_quota",
+      '{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}',
+    ],
+  ]
+
+  const windowedAllocations: ReadonlyArray<readonly [name: string, body: string]> = [
+    [
+      "insufficient_quota",
+      '{"error":{"code":"insufficient_quota","type":"insufficient_quota","message":"Allocated quota exceeded, please increase your quota limit."}}',
+    ],
+    [
+      "Throttling.AllocationQuota",
+      '{"error":{"code":"Throttling.AllocationQuota","message":"Allocated quota exceeded, please increase your quota limit."}}',
+    ],
+    [
+      "the phrase in capitals",
+      '{"error":{"code":"Throttling.AllocationQuota","message":"ALLOCATED QUOTA EXCEEDED, PLEASE INCREASE YOUR QUOTA LIMIT."}}',
+    ],
+  ]
+
+  // What the native runtime stores for such an error: the message names the HTTP status, the reason's tag rides in
+  // `metadata.code`, and only a `RateLimit` is flagged retryable.
+  const stored = (
+    body: string,
+    tag: "QuotaExceeded" | "RateLimit",
+  ): Parameters<typeof ProviderErrorClass.factsOf>[0] => ({
+    message: `Provider request failed with HTTP 429: ${body}`,
+    statusCode: 429,
+    isRetryable: tag === "RateLimit",
+    responseBody: body,
+    metadata: { code: tag },
+  })
+
+  test.each(spentBalances)("reads %s as a spent balance", (_name, body) => {
+    const facts = ProviderErrorClass.factsOf(stored(body, "QuotaExceeded"))
+    expect(ProviderErrorClass.match(facts, false)).toBe("quota_exhausted")
+  })
+
+  test.each(windowedAllocations)(
+    "reads the 429 asking to increase the quota limit (%s) as a rate limit",
+    (_name, body) => {
+      const facts = ProviderErrorClass.factsOf(stored(body, "RateLimit"))
+      expect(ProviderErrorClass.match(facts, false)).toBe("rate_limited")
+    },
+  )
+
+  test("reads the bodies the same way when no native tag rides along", () => {
+    const untagged = (body: string) =>
+      ProviderErrorClass.match(
+        ProviderErrorClass.factsOf({ message: "boom", isRetryable: false, statusCode: 429, responseBody: body }),
+        false,
+      )
+    for (const [, body] of spentBalances) expect(untagged(body)).toBe("quota_exhausted")
+    for (const [, body] of windowedAllocations) expect(untagged(body)).toBe("rate_limited")
+  })
+})
+
 describe("ProviderErrorClass.hintOf", () => {
   test("names the provider and the way out for an exhausted quota", () => {
     expect(ProviderErrorClass.hintOf("quota_exhausted", "zhipuai")).toBe(

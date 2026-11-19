@@ -137,6 +137,34 @@ describe("requiredCompletionGaps", () => {
     ])
   })
 
+  // #1582: the staged-gate pattern of the dag-patterns skill. REVISE and REJECT are business verdicts of a completed
+  // gate, so they leave no gap (the optional `design` is only condition-skipped); BLOCKED is a failing gate verdict.
+  it("leaves REVISE and REJECT on a required non-review gate without a gap, and fails BLOCKED", () => {
+    const staged = config([
+      {
+        ...gateNode,
+        output_schema: {
+          type: "object",
+          required: ["verdict"],
+          properties: { verdict: { type: "string", enum: ["ACCEPT", "REVISE", "REJECT", "BLOCKED"] } },
+        },
+      },
+      {
+        ...gateNode,
+        id: "design",
+        depends_on: ["gate"],
+        required: false,
+        condition: 'gate.output.verdict == "ACCEPT"',
+      },
+    ])
+    const settled = (verdict: string) => [
+      row("gate", "completed", { verdict }),
+      { ...row("design", "skipped", undefined, "condition_false"), required: false },
+    ]
+    for (const verdict of ["REVISE", "REJECT"]) expect(requiredCompletionGaps(staged, settled(verdict))).toEqual([])
+    expect(requiredCompletionGaps(staged, settled("BLOCKED"))).toEqual(["gate (verdict BLOCKED)"])
+  })
+
   it("fails schema-valid design review verdicts and treats a scalar verdict contract explicitly", () => {
     const review = config([
       {

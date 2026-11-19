@@ -39,6 +39,12 @@ export interface PanelShellProps {
   /** Maximum content rows; defaults to min(14, floor(terminal height * 0.45)). */
   maxRows?: number
   /**
+   * One muted line between the content and the hint row, for the explanation of what is selected. It sits outside the
+   * scroll area, so it stays in view however far the content scrolls. Left out, the panel takes no row for it; an empty
+   * string keeps the row, blank, so that a panel whose selection only sometimes has a note keeps its height.
+   */
+  note?: string
+  /**
    * Receives the content scroll container. Templates use it to reveal the
    * selected row; it is an internal extension of the shared shell.
    */
@@ -54,6 +60,8 @@ const GAP = 2
 const TAB_GAP = 2
 const TITLE_MIN_WIDTH = 8
 const HINT_SEPARATOR = " · "
+/** The note starts under the names of the rows, past the two-cell selection marker. */
+const NOTE_INDENT = 2
 
 export function PanelShell(props: PanelShellProps) {
   const { theme } = useTheme()
@@ -217,6 +225,11 @@ export function PanelShell(props: PanelShellProps) {
           {props.children}
         </box>
       </scrollbox>
+      <Show when={props.note !== undefined}>
+        <text height={1} flexShrink={0} fg={theme.textMuted} wrapMode="none">
+          {`${" ".repeat(NOTE_INDENT)}${truncateCells(props.note!, Math.max(0, innerWidth() - NOTE_INDENT), ambiguousWidth())}`}
+        </text>
+      </Show>
       <text height={1} flexShrink={0} fg={theme.textDim} wrapMode="none">
         {truncateCells(hintText(), innerWidth(), ambiguousWidth())}
       </text>

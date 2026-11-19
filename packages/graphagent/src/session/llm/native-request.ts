@@ -238,6 +238,23 @@ export const model = (input: Provider.Model | RequestInput, headers?: Record<str
   throw new Error(`Native LLM request adapter does not support provider package ${model.api.npm}`)
 }
 
+/**
+ * The AI SDK's OpenAI-compatible provider copies unknown options into the request body as they are named, so
+ * `ProviderTransform.options` gives the opt-in cache key (`setCacheKey: true`) by its wire name, `prompt_cache_key`,
+ * under the provider's own namespace. The native Chat lowering reads `providerOptions.openai.promptCacheKey` instead
+ * and would drop it: carry the key across, so both runtimes send it under the same opt-in. A cache key already given
+ * under `openai` wins.
+ */
+const providerOptions = (input: RequestInput): RequestInput["providerOptions"] => {
+  const options = input.providerOptions
+  if (!options || input.model.api.npm !== "@ai-sdk/openai-compatible") return options
+  // The namespace `ProviderTransform.providerOptions` writes for this SDK: the provider ID up to its first dot.
+  const key = options[input.model.providerID.split(".")[0]]?.prompt_cache_key
+  if (typeof key !== "string") return options
+  const openai = options.openai
+  return { ...options, openai: { ...openai, promptCacheKey: openai?.promptCacheKey ?? key } }
+}
+
 export const request = (input: RequestInput) => {
   const converted = convertMessages(input.messages)
   // This is the only native adapter boundary that should construct canonical
@@ -249,7 +266,7 @@ export const request = (input: RequestInput) => {
     tools: tools(input.tools),
     toolChoice: input.toolChoice,
     generation: generation(input),
-    providerOptions: input.providerOptions,
+    providerOptions: providerOptions(input),
   })
 }
 
