@@ -28,6 +28,14 @@ import type { WorkflowOwner } from "./dag"
 export type PauseCommands = Pick<Effect.Success<ReturnType<typeof DagWorkflowPause.make>>, "resume">
 
 /**
+ * The mailbox reason of `failUnrecoverable`: only a workflow it failed closes
+ * its mailbox. An `ignored` outcome means the workflow moved or terminalized
+ * concurrently: the transaction must not close a live mailbox.
+ */
+export const failUnrecoverableMailboxReason = (outcome: "failed" | "ignored") =>
+  outcome === "failed" ? "failed" : undefined
+
+/**
  * The terminal family: cancelling, completing and failing a workflow (the
  * orphan and the unrecoverable variants included), the natural settlement, and
  * the node cleanup they share. They run on the one `Core` the layer built, so

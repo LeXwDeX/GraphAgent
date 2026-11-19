@@ -530,11 +530,9 @@ export const layer = Layer.effect(
         command(dagID)((lock) => withMailbox(dagID, "failed", failOrphan(lock, dagID, reason))),
       failUnrecoverable: (dagID, reason) =>
         command(dagID)((lock) =>
-          // An `ignored` outcome means the workflow moved or terminalized
-          // concurrently: the transaction must not close a live mailbox.
           withMailbox(
             dagID,
-            (outcome) => (outcome === "failed" ? "failed" : undefined),
+            DagWorkflowTerminal.failUnrecoverableMailboxReason,
             failUnrecoverable(lock, dagID, reason),
           ),
         ),
