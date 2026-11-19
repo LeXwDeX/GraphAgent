@@ -22,7 +22,10 @@ import { useShortcutEntries } from "./help"
 import { usePanelHost } from "./host"
 import { SettingsPanel, type SettingRow, type SettingsTab } from "./settings"
 import { ThemePanel } from "./theme"
+import { VariantPanel } from "./variant"
 
+// AGENTS.md 6.6: a choice row cycles through at most six options; one with more opens a list instead.
+const MAX_INLINE_CHOICES = 6
 const PERMISSION_TOOLS = ["edit", "bash", "webfetch", "external_directory"] as const
 type PermissionTool = (typeof PERMISSION_TOOLS)[number]
 type DagMode = "on" | "off"
@@ -401,21 +404,34 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
           })
         },
       },
-      {
-        id: "variant",
-        label: t("panel.config.variant"),
-        kind: "choice",
-        value: local.model.variant.current() ?? "default",
-        valueLabel: variants.length === 0 ? t("panel.config.variant.none") : undefined,
-        options: [
-          { value: "default", label: t("panel.variant.default") },
-          ...variants.map((variant) => ({ value: variant, label: variant })),
-        ],
-        suffix: () => (delegated() ? t("subagent.readonlyTag") : undefined),
-        description: t("panel.config.variant.description"),
-        disabled: variants.length === 0 || delegated(),
-        onChange: (next) => local.model.variant.set(next === "default" ? undefined : next),
-      },
+      // Six options or fewer cycle in place; past that the row opens the variant list, as section 6.6 requires.
+      variants.length + 1 > MAX_INLINE_CHOICES
+        ? {
+            id: "variant",
+            label: t("panel.config.variant"),
+            kind: "action",
+            valueLabel: local.model.variant.current() ?? t("panel.variant.default"),
+            suffix: () => (delegated() ? t("subagent.readonlyTag") : undefined),
+            description: t("panel.config.variant.description"),
+            disabled: delegated(),
+            // The same list the `variant.list` key opens, on this panel's stack as the theme list is.
+            run: () => host.push({ id: "variant", render: () => <VariantPanel /> }),
+          }
+        : {
+            id: "variant",
+            label: t("panel.config.variant"),
+            kind: "choice",
+            value: local.model.variant.current() ?? "default",
+            valueLabel: variants.length === 0 ? t("panel.config.variant.none") : undefined,
+            options: [
+              { value: "default", label: t("panel.variant.default") },
+              ...variants.map((variant) => ({ value: variant, label: variant })),
+            ],
+            suffix: () => (delegated() ? t("subagent.readonlyTag") : undefined),
+            description: t("panel.config.variant.description"),
+            disabled: variants.length === 0 || delegated(),
+            onChange: (next) => local.model.variant.set(next === "default" ? undefined : next),
+          },
       {
         id: "small-model",
         label: t("panel.config.smallModel"),

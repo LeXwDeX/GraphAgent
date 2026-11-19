@@ -762,8 +762,16 @@ const modelFields = {
 /** A model with two reasoning variants, and one with none. */
 const withVariants = { ...modelFields, id: "m", name: "Test model", variants: { high: {}, xhigh: {} } }
 const withoutVariants = { ...modelFields, id: "plain", name: "Plain model" }
+/** Six variants: with `default` that is seven options, one more than a row may cycle through. */
+const withManyVariants = {
+  ...modelFields,
+  id: "many",
+  name: "Many model",
+  variants: { minimal: {}, low: {}, medium: {}, high: {}, xhigh: {}, max: {} },
+}
+type TestModel = typeof withoutVariants & { variants?: Record<string, Record<string, unknown>> }
 
-function providerOf(...models: (typeof withVariants | typeof withoutVariants)[]): Provider {
+function providerOf(...models: TestModel[]): Provider {
   return {
     id: "test",
     name: "Test Provider",
@@ -775,7 +783,7 @@ function providerOf(...models: (typeof withVariants | typeof withoutVariants)[])
 }
 
 /** Connects one provider with these models, the first of which is the one the TUI starts on. */
-function connect(...models: (typeof withVariants | typeof withoutVariants)[]) {
+function connect(...models: TestModel[]) {
   return (context: AppPanelTestContext) => {
     context.sync.set("agent", agents)
     context.sync.set("provider", [providerOf(...models)])
@@ -961,6 +969,36 @@ test("the reasoning effort row offers default and the variants of the current mo
     expect(await untilRow(app, "推理强度", (text) => text.includes("默认"))).toContain("换一个（1/3）")
 
     // The home view has no session to tell: the choice is the TUI's own and nothing is written anywhere else.
+    expect(writes).toEqual([])
+    expect(updates).toEqual([])
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("with more than six options the reasoning effort row opens the variant list instead of cycling", async () => {
+  let context!: AppPanelTestContext
+  const { app, tmp, updates, writes, host } = await renderConfig({
+    tab: "model",
+    setup: (value) => {
+      context = value
+      connect(withManyVariants, withoutVariants)(value)
+    },
+  })
+  try {
+    await currentModel(context)
+    expect(context.local.model.variant.list()).toHaveLength(6)
+    await down(app)
+    const line = await untilRow(app, "推理强度", (text) => text.includes("默认"))
+    // An action shows its value and no hint to change it in place.
+    expect(line).not.toContain("换一个")
+
+    await enter(app)
+    await waitFor(() => host().top()?.id === "variant", "the variant list")
+    expect(await renderUntilFrame(app, (text) => text.includes("minimal"), "the variant list")).toContain("max")
+    // Opening the list sets nothing: the choice is the list's.
+    expect(context.local.model.variant.current()).toBeUndefined()
     expect(writes).toEqual([])
     expect(updates).toEqual([])
   } finally {
