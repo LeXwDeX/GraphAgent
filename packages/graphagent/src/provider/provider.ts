@@ -36,6 +36,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 import { inlineReasoningTag, wrapInlineReasoning } from "./inline-reasoning"
 import { OpenAIWebSocketPool } from "./openai-ws/ws-pool"
+import { RequestCapture } from "./request-capture"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionCompactionEvent } from "@graphagent/schema/session-compaction-event"
@@ -1759,6 +1760,7 @@ export const layer = Layer.effect(
             const request = OpenAIWebSocketPool.isTitleHeaderConsumer(fetchFn)
               ? { input, init: fetchInit }
               : OpenAIWebSocketPool.withoutInternalRequestHeaders(input, fetchInit)
+            if (runtimeFlags.debugRequests) await RequestCapture.record(request)
             res = await fetchFn(request.input, request.init)
           } finally {
             headerTimeoutCtl?.clear()
