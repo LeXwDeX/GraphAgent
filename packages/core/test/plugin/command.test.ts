@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
+import { DELEGATION_CRITERIA } from "@graphagent/core/plugin/delegation-criteria"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
@@ -17,9 +18,6 @@ describe("CommandPlugin routing", () => {
       expect(content).toContain("When it is ON, substantive requests default to workflows")
       expect(content).toContain("when it is OFF, start one only when the user explicitly asks")
       expect(content).toContain("applies only to that request")
-      expect(content).toContain("Choose direct execution, a `task` child, or a `workflow` DAG")
-      expect(content).toContain("small edits, bounded debugging, and read-only questions")
-      expect(content).toContain("coordination cost")
       expect(content).toContain("Explicit user instructions take precedence")
       // #1031 M3: the old "judge for yourself" and "file count" retreats are gone.
       expect(content).not.toContain("Promote to a DAG on your own judgment")
@@ -44,10 +42,8 @@ describe("CommandPlugin routing", () => {
       expect(routing).toContain("parks the workflow paused")
       expect(routing).toContain("one live DAG")
       expect(routing).toContain("`agent` tool")
-      expect(routing).toContain("Direct execution:")
-      expect(routing).toContain("One `task` child")
-      expect(routing).toContain("One `workflow` DAG")
-      expect(routing).toContain("not a task-category rule")
+      // #1454: the three tiers come from one shared constant, not wording of the router's own.
+      expect(routing).toContain(DELEGATION_CRITERIA)
       expect(routing).toContain("one agent, direct work, or no DAG")
       expect(routing).toContain("A read-only request")
       expect(routing).toContain("`spec(list)`")

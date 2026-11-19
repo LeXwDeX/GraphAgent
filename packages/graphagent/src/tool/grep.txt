@@ -4,4 +4,4 @@ Search file contents with a regular expression. Use this to locate code by patte
 - include filters paths, for example "*.js" or "*.{ts,tsx}".
 - Returns file paths, line numbers, and matching lines. limit sets how many matches to show (default 100, capped at 1000). context adds that many lines before and after each match (default 0, capped at 20), which reads a saved shell output in one call. Results are sorted by path and line; files ignored by .gitignore are not searched. A search with no match reports how many files were searched. Matching lines over 64 KB are skipped and counted at the end of the result.
 - When output is truncated the notice gives the number omitted and either the saved full listing to read with offset or the larger limit that shows more. Long matching lines name the read offset and maxLineLength that continue them.
-- For match counts, run `rg --count` with the shell tool. For open-ended searches that need several rounds, delegate with task instead.
+- For match counts, run `rg --count` with the shell tool.

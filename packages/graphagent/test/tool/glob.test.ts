@@ -197,6 +197,15 @@ const git = Effect.fn("GlobToolTest.git")(function* (cwd: string, args: string[]
 })
 
 describe("tool.glob", () => {
+  // #1454: a subagent reads this description and has no `task` tool, so it is not told to delegate.
+  it.effect("description names no delegation", () =>
+    Effect.gen(function* () {
+      const info = yield* GlobTool
+      const glob = yield* info.init()
+      expect(glob.description).not.toMatch(/delegate/i)
+    }),
+  )
+
   it.instance("matches files from a directory path", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

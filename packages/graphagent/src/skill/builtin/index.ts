@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
+import { DELEGATION_CRITERIA } from "@graphagent/core/plugin/delegation-criteria"
 import customizeConfigContent from "./customize-graphagent.md" with { type: "text" }
 import configureHooksContent from "./configure-hooks.md" with { type: "text" }
 import gitWorkflowContent from "./git-workflow.md" with { type: "text" }
@@ -51,7 +52,7 @@ export const BUILTIN_SKILLS: readonly BuiltinSkill[] = [
   {
     name: "dag-auto",
     description: "Assess useful DAG orchestration for a request and adapt the graph to its evidence and dependencies",
-    content: dagAutoContent,
+    content: dagAutoContent.replace("{{delegation_criteria}}", () => DELEGATION_CRITERIA),
   },
   {
     name: "dag-blocks",
