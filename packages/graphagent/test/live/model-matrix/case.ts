@@ -17,7 +17,7 @@
  * before the user message, its text, the agent it was sent to (when the export names one), and what the original
  * model did first (its first tool call, or its text). It holds the text of the user message and nothing else, so a
  * message that carries an attachment (a source file, an image, a PDF) makes no case: the replay would not be the
- * same task.
+ * same task. Neither does one that asked for structured output, mentioned an agent or started a subtask.
  *
  * The whole case is checked for credentials before anything is written: a value shaped like a key or a token, or
  * holding the value of a secret-looking environment variable of this process, refuses the case. Only the JSON path
@@ -25,7 +25,7 @@
  *
  * Exit code: 0 when the case was written, 1 when it was refused (a finding, or `--out` inside this repository), 2
  * for a usage error (bad arguments, an unreadable export, a user message the export does not have or one that
- * carries an attachment).
+ * carries an attachment or is another kind of turn the case cannot hold).
  */
 
 import { HttpRecorderInternal } from "@graphagent/http-recorder/internal"
@@ -120,6 +120,19 @@ function recordedOf(message: ExportedMessage): { recorded: Recorded; expect?: { 
 }
 
 /** The agent a user message was sent to, as the export writes it in the message's `info`; none when it has no name. */
+/**
+ * What makes the turn a different task than its text: the case replays the text alone, so a turn that asked for
+ * structured output (the `StructuredOutput` tool is offered only for it), mentioned an agent or started a subtask is
+ * refused instead of replayed as something else.
+ */
+function unsupportedTurn(message: ExportedMessage): string | undefined {
+  const { format } = message.info
+  if (isRecord(format) && format.type === "json_schema") return "asks for structured output"
+  if (message.parts.some((part) => part.type === "agent" || part.type === "subtask"))
+    return "mentions an agent or starts a subtask"
+  return undefined
+}
+
 function agentOf(message: ExportedMessage): string | undefined {
   const { agent } = message.info
   return typeof agent === "string" && agent.trim() !== "" ? agent : undefined
@@ -156,6 +169,13 @@ export function buildCase(exported: unknown, userMessage?: number): Parsed<CaseF
     return failed(
       `user message ${wanted} carries an attachment (a source file, an image or a PDF), which the case format ` +
         "does not support yet; pick another turn with --user-message",
+    )
+  }
+  const unsupported = unsupportedTurn(user)
+  if (unsupported) {
+    return failed(
+      `user message ${wanted} ${unsupported}, which the case format does not support yet; pick another turn with ` +
+        "--user-message",
     )
   }
   const next = messages[at + 1]

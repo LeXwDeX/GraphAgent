@@ -369,6 +369,22 @@ describe("eval:case: the case of a user message", () => {
     expect(error(earlier, 0)).toContain("user message 0 carries an attachment")
   })
 
+  test("a turn that is more than its text makes no case: structured output, an agent mention, a subtask", () => {
+    const asked = (info: Record<string, unknown>, ...parts: Record<string, unknown>[]) =>
+      exportOf(
+        { ...message("m1", "user", text("what is wrong here?"), ...parts), info: { id: "m1", role: "user", ...info } },
+        message("m2", "assistant", text("x")),
+      )
+    const schema = { type: "json_schema", schema: { type: "object" } }
+    expect(error(asked({ format: schema }))).toContain("user message 0 asks for structured output")
+    expect(error(asked({}, { type: "agent", name: "explore" }))).toContain("mentions an agent or starts a subtask")
+    expect(error(asked({}, { type: "subtask", agent: "explore", prompt: "p" }))).toContain(
+      "mentions an agent or starts a subtask",
+    )
+    // A text format is the default and asks for nothing more.
+    expect(built(asked({ format: { type: "text" } })).request).toBe("what is wrong here?")
+  })
+
   test("the text it takes for an attachment is still the wording of the prompt", async () => {
     const prompt = await fs.readFile(path.join(import.meta.dir, "../../../src/session/turn/prepare.ts"), "utf8")
     for (const start of ATTACHMENT_TEXT) expect(prompt).toContain(start)
