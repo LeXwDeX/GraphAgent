@@ -5353,13 +5353,16 @@
             }
           },
           "400": {
-            "description": "InvalidRequestError | BadRequest",
+            "description": "InvalidRequestError | ProviderModelNotFoundError | BadRequest",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderModelNotFoundError"
                     },
                     {
                       "$ref": "#/components/schemas/BadRequestError"
@@ -6134,13 +6137,16 @@
             }
           },
           "400": {
-            "description": "BadRequest | InvalidRequestError",
+            "description": "BadRequest | ProviderModelNotFoundError | InvalidRequestError",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/BadRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderModelNotFoundError"
                     },
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
@@ -6232,13 +6238,16 @@
             }
           },
           "400": {
-            "description": "BadRequest | InvalidRequestError",
+            "description": "BadRequest | ProviderModelNotFoundError | InvalidRequestError",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/BadRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderModelNotFoundError"
                     },
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
@@ -6339,13 +6348,16 @@
             }
           },
           "400": {
-            "description": "InvalidRequestError | BadRequest",
+            "description": "InvalidRequestError | ProviderModelNotFoundError | BadRequest",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderModelNotFoundError"
                     },
                     {
                       "$ref": "#/components/schemas/BadRequestError"
@@ -6552,13 +6564,16 @@
             }
           },
           "400": {
-            "description": "InvalidRequestError | BadRequest",
+            "description": "InvalidRequestError | ProviderModelNotFoundError | BadRequest",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderModelNotFoundError"
                     },
                     {
                       "$ref": "#/components/schemas/BadRequestError"
@@ -6961,13 +6976,16 @@
             }
           },
           "400": {
-            "description": "InvalidRequestError | BadRequest",
+            "description": "InvalidRequestError | ProviderModelNotFoundError | BadRequest",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderModelNotFoundError"
                     },
                     {
                       "$ref": "#/components/schemas/BadRequestError"
@@ -15156,6 +15174,39 @@
           }
         },
         "required": ["type", "label"],
+        "additionalProperties": false
+      },
+      "ProviderModelNotFoundError": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["ProviderModelNotFoundError"]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "providerID": {
+                "type": "string"
+              },
+              "modelID": {
+                "type": "string"
+              },
+              "suggestions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": ["providerID", "modelID", "suggestions", "message"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["name", "data"],
         "additionalProperties": false
       },
       "QuestionNotFoundError": {

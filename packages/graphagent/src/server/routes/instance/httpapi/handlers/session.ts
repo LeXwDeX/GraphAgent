@@ -79,6 +79,12 @@ const promptError = (error: unknown) =>
     ? new InvalidRequestError({ name: "InvalidRequestError", data: { message: error.message } })
     : new HttpApiError.BadRequest({})
 
+// Typed prompt failures become declared API errors, and so does a model that does not exist, which the prompt service
+// raises as a defect (#1557). The model is mapped last: `promptError` turns any typed error it does not know into a
+// bare 400.
+const promptFailure = <A, E, R>(self: Effect.Effect<A, E, R>) =>
+  self.pipe(Effect.mapError(promptError), SessionError.mapModelNotFound)
+
 const tryParseJson = (text: string) =>
   Effect.try({
     try: () => JSON.parse(text) as unknown,
@@ -380,7 +386,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           command: Command.Default.INIT,
           arguments: "",
         })
-        .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+        .pipe(
+          Effect.mapError(() => new HttpApiError.BadRequest({})),
+          SessionError.mapModelNotFound,
+        )
       return true
     })
 
@@ -397,7 +406,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           modelID: ctx.payload.modelID,
           auto: ctx.payload.auto,
         }),
-      )
+      ).pipe(SessionError.mapModelNotFound)
       return true
     })
 
@@ -430,9 +439,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof SetModelPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      return yield* promptSvc
-        .setModel({ ...ctx.payload, sessionID: ctx.params.sessionID })
-        .pipe(Effect.mapError(promptError))
+      return yield* promptSvc.setModel({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(promptFailure)
     })
 
     const attention = Effect.fn("SessionHttpApi.attention")(function* (ctx: {
@@ -456,9 +463,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       yield* grantLocalStartup(ctx.params.sessionID)
       const current = yield* requireSession(ctx.params.sessionID)
       ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
-      return yield* promptSvc
-        .resume({ ...ctx.payload, sessionID: ctx.params.sessionID })
-        .pipe(Effect.mapError(promptError))
+      return yield* promptSvc.resume({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(promptFailure)
     })
 
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
@@ -466,7 +471,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      const message = yield* submit(ctx).pipe(Effect.mapError(promptError))
+      const message = yield* submit(ctx).pipe(promptFailure)
       return HttpServerResponse.stream(Stream.make(JSON.stringify(message)).pipe(Stream.encodeText), {
         contentType: "application/json",
       })
@@ -500,9 +505,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
       const current = yield* requireSession(ctx.params.sessionID)
       ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
-      return yield* promptSvc
-        .command({ ...ctx.payload, sessionID: ctx.params.sessionID })
-        .pipe(Effect.mapError(promptError))
+      return yield* promptSvc.command({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(promptFailure)
     })
 
     const shell = Effect.fn("SessionHttpApi.shell")(function* (ctx: {

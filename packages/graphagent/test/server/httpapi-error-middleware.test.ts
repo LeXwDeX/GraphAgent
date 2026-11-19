@@ -141,14 +141,14 @@ describe("HttpApi error middleware", () => {
     }),
   )
 
-  // #1557: a model that does not exist is a wrong request, not a server fault. The body names the model and its
-  // suggestions under the tag the CLI error formatter reads, so `graphagent run` can print it.
-  it.live("returns a model-not-found defect as a named client error with the model and its suggestions", () =>
+  // #1557: a missing model is answered by the handlers that resolve one, with an error their endpoint declares. The
+  // boundary does not make up an undeclared client error for it: a defect that no handler translated stays a safe 500.
+  it.live("does not map a model-not-found defect to an undeclared client error", () =>
     Effect.gen(function* () {
       const error = new Provider.ModelNotFoundError({
         providerID: ProviderV2.ID.make("local-proxy-openai"),
         modelID: ModelV2.ID.make("gpt-nope"),
-        suggestions: ["gpt-5", "gpt-5-mini"],
+        suggestions: ["gpt-5"],
       })
       yield* HttpRouter.add("GET", "/no-model", Effect.die(error)).pipe(
         Layer.provide(errorLayer),
@@ -159,43 +159,9 @@ describe("HttpApi error middleware", () => {
       const response = yield* HttpClientRequest.get("/no-model").pipe(HttpClient.execute)
       const body = yield* response.json
 
-      expect(response.status).toBe(400)
-      expect(body).toEqual({
-        name: "ProviderModelNotFoundError",
-        data: {
-          message: "Model not found: local-proxy-openai/gpt-nope. Did you mean: gpt-5, gpt-5-mini?",
-          providerID: "local-proxy-openai",
-          modelID: "gpt-nope",
-          suggestions: ["gpt-5", "gpt-5-mini"],
-        },
-      })
-    }),
-  )
-
-  it.live("returns a model-not-found defect without suggestions as an empty suggestion list", () =>
-    Effect.gen(function* () {
-      const error = new Provider.ModelNotFoundError({
-        providerID: ProviderV2.ID.make("local-proxy-openai"),
-        modelID: ModelV2.ID.make("gpt-nope"),
-      })
-      yield* HttpRouter.add("GET", "/no-model-hint", Effect.die(error)).pipe(
-        Layer.provide(errorLayer),
-        HttpRouter.serve,
-        Layer.build,
-      )
-
-      const response = yield* HttpClientRequest.get("/no-model-hint").pipe(HttpClient.execute)
-
-      expect(response.status).toBe(400)
-      expect(yield* response.json).toEqual({
-        name: "ProviderModelNotFoundError",
-        data: {
-          message: "Model not found: local-proxy-openai/gpt-nope.",
-          providerID: "local-proxy-openai",
-          modelID: "gpt-nope",
-          suggestions: [],
-        },
-      })
+      expect(response.status).toBe(500)
+      expectUnknownErrorBody(body)
+      expect(JSON.stringify(body)).not.toContain("gpt-nope")
     }),
   )
 })

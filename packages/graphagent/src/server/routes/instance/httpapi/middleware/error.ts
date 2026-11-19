@@ -34,25 +34,6 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
         )
       }
 
-      // A model the request names that does not exist is the caller's mistake, so it is a 400 like the two above
-      // (#1557). The body carries the model and the closest names, under the tag `graphagent run` formats for its user.
-      if (Provider.ModelNotFoundError.isInstance(error)) {
-        return Effect.succeed(
-          HttpServerResponse.jsonUnsafe(
-            {
-              name: error._tag,
-              data: {
-                message: error.message,
-                providerID: error.providerID,
-                modelID: error.modelID,
-                suggestions: error.suggestions ?? [],
-              },
-            },
-            { status: 400 },
-          ),
-        )
-      }
-
       const ref = `err_${crypto.randomUUID().slice(0, 8)}`
 
       return Effect.logError("failed", { ref, error, cause: Cause.pretty(cause) }).pipe(

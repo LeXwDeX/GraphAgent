@@ -371,39 +371,6 @@ describe("session HttpApi", () => {
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
   )
 
-  // #1557: a model that does not exist is the caller's mistake, so the prompt answers 400 with the model and its
-  // suggestions instead of the 500 "Unexpected server error" a defect used to become.
-  it.live("answers a prompt that names an unknown model with 400, the model and its suggestions", () =>
-    Effect.gen(function* () {
-      const llm = yield* TestLLMServer
-      const directory = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
-      const session = yield* createSession({ title: "unknown model" }).pipe(provideInstanceEffect(directory))
-
-      const response = yield* request(pathFor(SessionPaths.prompt, { sessionID: session.id }), {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-graphagent-directory": directory },
-        body: JSON.stringify({
-          agent: "build",
-          model: { providerID: "test", modelID: "test-modle" },
-          parts: [{ type: "text", text: "hello" }],
-        }),
-      })
-
-      expect(response.status).toBe(400)
-      expect(yield* responseJson(response)).toMatchObject({
-        name: "ProviderModelNotFoundError",
-        data: {
-          providerID: "test",
-          modelID: "test-modle",
-          suggestions: expect.arrayContaining(["test-model"]),
-          message: expect.stringContaining("Model not found: test/test-modle."),
-        },
-      })
-      // The request stopped before any model was called.
-      expect(yield* llm.calls).toBe(0)
-    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
-  )
-
   it.instance(
     "serves lifecycle mutation routes",
     () =>

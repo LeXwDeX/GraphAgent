@@ -30,6 +30,7 @@ import {
   ConflictError,
   InvalidRequestError,
   PermissionNotFoundError,
+  ProviderModelNotFoundError,
   SessionBusyError,
   UpstreamError,
 } from "../errors"
@@ -554,7 +555,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           payload: InitPayload,
           success: described(Schema.Boolean, "200"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [HttpApiError.BadRequest, ProviderModelNotFoundError, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.init",
@@ -567,7 +568,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           payload: SummarizePayload,
           success: described(Schema.Boolean, "Summarized session"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [HttpApiError.BadRequest, ProviderModelNotFoundError, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.summarize",
@@ -582,7 +583,7 @@ export const SessionApi = HttpApi.make("session")
             Schema.Struct({ providerID: ProviderV2.ID, modelID: ModelV2.ID }),
             "Selected session model",
           ),
-          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
+          error: [InvalidRequestError, ProviderModelNotFoundError, HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.setModel",
@@ -610,7 +611,7 @@ export const SessionApi = HttpApi.make("session")
             Schema.NullOr(SessionV1.WithParts),
             "Resumed message, or null when no initial message is queued",
           ),
-          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
+          error: [InvalidRequestError, ProviderModelNotFoundError, HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.resume",
@@ -623,7 +624,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           payload: PromptPayload,
           success: described(SessionV1.WithParts, "Created message"),
-          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
+          error: [InvalidRequestError, ProviderModelNotFoundError, HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.prompt",
@@ -648,7 +649,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           payload: CommandPayload,
           success: described(SessionV1.WithParts, "Created message"),
-          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
+          error: [InvalidRequestError, ProviderModelNotFoundError, HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.command",

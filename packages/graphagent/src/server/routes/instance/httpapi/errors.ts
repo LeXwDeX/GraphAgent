@@ -95,9 +95,13 @@ export class ProviderNotFoundError extends Schema.Error<ProviderNotFoundError>("
   { httpApiStatus: 404 },
 ) {}
 
-export class ModelNotFoundError extends Schema.Error<ModelNotFoundError>("ModelNotFoundError")(
+// #1557: a request names a model the catalog does not have, or the session still names one that is gone. The session
+// exists and the model is the mistake, so it is a 400 like `InvalidRequestError`, not the 404 that a missing session
+// answers on the same endpoints. The name is the tag of the provider's own error, which is what `graphagent run`
+// formats for its user, and `suggestions` are the closest names the catalog has (empty when it has none).
+export class ProviderModelNotFoundError extends Schema.Error<ProviderModelNotFoundError>("ProviderModelNotFoundError")(
   {
-    name: Schema.Literal("ModelNotFoundError"),
+    name: Schema.Literal("ProviderModelNotFoundError"),
     data: Schema.Struct({
       providerID: Schema.String,
       modelID: Schema.String,
@@ -105,7 +109,7 @@ export class ModelNotFoundError extends Schema.Error<ModelNotFoundError>("ModelN
       message: Schema.String,
     }),
   },
-  { httpApiStatus: 404 },
+  { httpApiStatus: 400 },
 ) {}
 
 export class SessionNotFoundError extends Schema.Error<SessionNotFoundError>("SessionNotFoundError")(
@@ -285,5 +289,23 @@ export function notFound(message: string) {
   return new ApiNotFoundError({
     name: "NotFoundError",
     data: { message },
+  })
+}
+
+/** The declared `ProviderModelNotFoundError` for the provider's own error that names a missing model (#1557). */
+export function modelNotFound(error: {
+  readonly providerID: string
+  readonly modelID: string
+  readonly suggestions?: readonly string[]
+  readonly message: string
+}) {
+  return new ProviderModelNotFoundError({
+    name: "ProviderModelNotFoundError",
+    data: {
+      providerID: error.providerID,
+      modelID: error.modelID,
+      suggestions: error.suggestions ?? [],
+      message: error.message,
+    },
   })
 }
