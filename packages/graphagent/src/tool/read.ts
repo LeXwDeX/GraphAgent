@@ -109,8 +109,11 @@ type Display =
       text: string
       lineStart: number
       lineEnd: number
+      /** Lines of the whole file, counted to the end of it; only to the cut when `byBytes`. */
       totalLines: number
       truncated: boolean
+      /** The byte budget cut the page (#1573): the file is larger than it shows, whatever `totalLines` says. */
+      byBytes?: true
     }
 
 type Metadata = {
@@ -575,6 +578,8 @@ export const ReadTool = Tool.define<
             lineEnd: last,
             totalLines: file.count,
             truncated,
+            // Written only when the byte budget cut the page, so any other page keeps the shape it had.
+            ...(file.cut ? { byBytes: true as const } : {}),
           },
         },
       }
