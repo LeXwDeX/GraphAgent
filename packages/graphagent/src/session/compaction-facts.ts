@@ -6,6 +6,7 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import { isHookRewake } from "@/hook"
 import { Token } from "@/util/token"
 import { isRecord } from "@/util/record"
+import type { MessageID } from "./schema"
 
 /**
  * What the continuation text after an automatic compaction states as fact (Issue #1469): the user's own words and the
@@ -13,8 +14,9 @@ import { isRecord } from "@/util/record"
  * the summary only narrates, it is never their source.
  */
 
-/** One request of the user: its text and one `[Attached ...]` line per file part. */
+/** One request of the user: the message it came in, its text and one `[Attached ...]` line per file part. */
 export interface Request {
+  readonly messageID: MessageID
   readonly text: string
   readonly attachments: readonly string[]
 }
@@ -54,7 +56,7 @@ function requestOf(message: SessionV1.WithParts): Request | undefined {
     part.type === "file" ? [`[Attached ${part.mime}: ${part.filename ?? "file"}]`] : [],
   )
   if (!text && attachments.length === 0) return undefined
-  return { text, attachments }
+  return { messageID: message.info.id, text, attachments }
 }
 
 /** The newest human request and, for a child session, its first one. No length limit: the text is the user's. */
@@ -74,6 +76,18 @@ export function requestsOf(input: { messages: readonly SessionV1.WithParts[]; ch
     if (first) return { latest, first }
   }
   return { latest }
+}
+
+/**
+ * The requests the continuation text has to quote. The retained `tail` is in context word for word, so the latest
+ * request is left out when its message is one of the tail's: a second copy would only take room. Any other request is
+ * quoted, the one this summary replaced and the one an earlier compaction already took out of the history the model
+ * reads. A child's first request is its task prompt and is always quoted.
+ */
+export function quotedRequests(requests: Requests, tail: readonly SessionV1.WithParts[]): Requests {
+  const { latest, ...rest } = requests
+  if (latest && tail.some((message) => message.info.id === latest.messageID)) return rest
+  return requests
 }
 
 const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff
@@ -98,12 +112,12 @@ function excerpt(text: string, budget: number) {
 
 /**
  * The requests as the continuation text may carry them. A request is the user's own words and stays whole while it
- * fits its share of `budget` tokens (the first and the latest request of a child share it). A longer one would take
- * the room the compacted conversation needs, so it keeps its beginning and its end with the omitted middle counted.
- * The attachment lines are never cut.
+ * fits its share of `budget` tokens (the requests that are there share it: a child's first and latest request take half
+ * each, a request alone takes all of it). A longer one would take the room the compacted conversation needs, so it
+ * keeps its beginning and its end with the omitted middle counted. The attachment lines are never cut.
  */
 export function fitRequests(requests: Requests, budget: number): Requests {
-  const share = Math.floor(budget / (requests.first ? 2 : 1))
+  const share = Math.floor(budget / Math.max(1, (requests.first ? 1 : 0) + (requests.latest ? 1 : 0)))
   const fit = (request: Request): Request => ({ ...request, text: excerpt(request.text, share) })
   return {
     ...(requests.latest ? { latest: fit(requests.latest) } : {}),
