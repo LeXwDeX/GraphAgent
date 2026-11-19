@@ -60,6 +60,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionInbox } from "../../src/session/inbox"
 import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
+import { estimateOverhead } from "../../src/session/overflow"
 import { explainFingerprintChange, fingerprintOf, StepMetricsRing } from "../../src/session/step-metrics"
 import { ReminderState } from "../../src/session/reminder-state"
 import { SessionRevert } from "../../src/session/revert"
@@ -2742,6 +2743,86 @@ it.instance("records the prepared conversation prefix for compaction", () =>
       expect(prefix!.prefixTokens).toBeGreaterThan(0)
       expect(prefix!.recordedAt).toBeGreaterThan(0)
     }).pipe(Effect.ensuring(Effect.sync(() => EngineProcess.runtimes.forgetRequestPrefix(chat.id))))
+  }),
+)
+
+// The estimates behind the compaction model choice and the next limit check must cover the system text the
+// provider receives, base prompt and writing style included (#1461 B1).
+it.instance("counts the base prompt in the request overhead and the shared prefix estimate", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Overhead",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* Effect.gen(function* () {
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const body = (yield* llm.hits)[0]?.body as { messages?: Array<{ role?: string; content?: unknown }> }
+      const sent = body.messages?.find((message) => message.role === "system")?.content
+      if (typeof sent !== "string") throw new Error("the request carries no system message")
+      const prefix = EngineProcess.runtimes.requestPrefixes.get(chat.id)
+      expect(prefix).toBeDefined()
+      const floor = estimateOverhead({ system: [sent], tools: prefix!.tools, toolsJson: prefix!.toolsJson })
+      expect(EngineProcess.runtimes.requestOverheads.get(chat.id)!).toBeGreaterThanOrEqual(floor)
+      expect(prefix!.prefixTokens).toBeGreaterThanOrEqual(floor)
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          EngineProcess.runtimes.forgetRequestPrefix(chat.id)
+          EngineProcess.runtimes.requestOverheads.delete(chat.id)
+        }),
+      ),
+    )
+  }),
+)
+
+it.instance("keeps a manifest of what each request carries besides its messages (#1461)", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    yield* writeText(path.join(dir, "AGENTS.md"), "# Rules for the manifest test")
+    const chat = yield* sessions.create({
+      title: "Manifest",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* Effect.gen(function* () {
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const manifest = EngineProcess.runtimes.requestManifests.get(chat.id)
+      expect(manifest?.model).toBe(`${ref.providerID}/${ref.modelID}`)
+      const sources = manifest!.entries.map((entry) => entry.source)
+      expect(sources).toEqual(expect.arrayContaining(["base", "environment", "instructions", "runtime_note", "tools"]))
+      // The base comes first and the tools follow the system sections.
+      expect(sources[0]).toBe("base")
+      expect(sources.indexOf("tools")).toBeGreaterThan(sources.indexOf("runtime_note"))
+      for (const entry of manifest!.entries) {
+        expect(entry.bytes).toBeGreaterThan(0)
+        expect(entry.tokens).toBeGreaterThan(0)
+        expect(entry.hash).toMatch(/^[0-9a-f]{16}$/)
+      }
+      // An instruction file is named by its path.
+      const instructions = manifest!.entries.filter((entry) => entry.source === "instructions")
+      expect(instructions.map((entry) => entry.label)).toContain(path.join(dir, "AGENTS.md"))
+      expect(manifest!.bytes).toBe(manifest!.entries.reduce((sum, entry) => sum + entry.bytes, 0))
+    }).pipe(Effect.ensuring(Effect.sync(() => EngineProcess.runtimes.requestManifests.delete(chat.id))))
   }),
 )
 
