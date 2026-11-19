@@ -12,9 +12,7 @@ import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagTransact } from "@graphagent/core/dag/transact"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
-import { WorkflowStatus } from "@graphagent/core/dag/core/types"
 import type { PauseReason } from "@graphagent/core/dag/core/types"
-import { ResumeGuard } from "./resume-guard"
 import { AdmissionRecord, ExecutionMode } from "./admission"
 import type { AcceptanceItem, PriorFinding, ReviewGate, WorkflowBlockKind } from "./blocks"
 import { DagCommandCore, ID } from "./command-core"
@@ -479,13 +477,7 @@ export const layer = Layer.effect(
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
     const transactService = yield* DagTransact.Service
     const core = yield* DagCommandCore.make({ events, store, mailboxService, transactService })
-    const {
-      withMailbox,
-      withWorkflowLock,
-      transact,
-      command,
-      guardWorkflow,
-    } = core
+    const { withMailbox, withWorkflowLock, transact, command } = core
 
     const { create } = yield* DagWorkflowCreate.make(core)
 
@@ -493,9 +485,9 @@ export const layer = Layer.effect(
       pause,
       pauseForCheckpoint,
       resume,
-      stillPausedFor,
-      resumeIfPausedFor,
-      step,
+      guardedResume,
+      guardedResumeIfPausedFor,
+      guardedStep,
       pauseForBudget,
       requeueNodes,
       pauseForArchive,
@@ -528,38 +520,9 @@ export const layer = Layer.effect(
       requeueNodes: (dagID, nodeIDs, reason) => command(dagID)((lock) => requeueNodes(lock, dagID, nodeIDs, reason)),
       pauseForCheckpoint: (dagID, checkpointSeq) =>
         command(dagID)((lock) => pauseForCheckpoint(lock, dagID, checkpointSeq)),
-      // D12: resume/step are the two engine transitions that can lift a pause,
-      // so both consult the injectable ResumeGuard before publishing. The
-      // guard runs under the workflow lock, after the state-machine check, and
-      // only on the public path — failUnrecoverable's internal resume bypasses
-      // it deliberately (terminalizing is not resuming execution). The policy
-      // reads config and usage, not just the database, so it runs before the
-      // transaction; the transition guard and the publish run inside it.
-      resume: (dagID) =>
-        withWorkflowLock(dagID)((lock) =>
-          Effect.gen(function* () {
-            const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
-            yield* ResumeGuard.check(workflow)
-            yield* transact(dagID, resume(lock, dagID))
-          }),
-        ),
-      resumeIfPausedFor: (dagID, reason) =>
-        withWorkflowLock(dagID)((lock) =>
-          Effect.gen(function* () {
-            const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-            if (!workflow || !stillPausedFor(workflow, reason)) return "skipped" as const
-            yield* ResumeGuard.check(workflow)
-            return yield* transact(dagID, resumeIfPausedFor(lock, dagID, reason))
-          }),
-        ),
-      step: (dagID) =>
-        withWorkflowLock(dagID)((lock) =>
-          Effect.gen(function* () {
-            const workflow = yield* guardWorkflow(dagID, WorkflowStatus.STEPPING)
-            yield* ResumeGuard.check(workflow)
-            return yield* transact(dagID, step(lock, dagID))
-          }),
-        ),
+      resume: guardedResume,
+      resumeIfPausedFor: guardedResumeIfPausedFor,
+      step: guardedStep,
       cancel: (dagID) => command(dagID)((lock) => withMailbox(dagID, "cancelled", cancel(lock, dagID))),
       complete: (dagID, options) =>
         command(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
