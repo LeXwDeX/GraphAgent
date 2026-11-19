@@ -857,6 +857,8 @@ export const layer = Layer.effect(
             source: "unknown",
             // Only the boolean `true` marks a tool; any other value is ignored.
             requiresUserInteraction: mcpTool._meta?.["anthropic/requiresUserInteraction"] === true,
+            // Only the boolean `true` marks a tool read-only (#1454); the read-only built-in subagents may call it.
+            ...(mcpTool.annotations?.readOnlyHint === true ? { readOnly: true } : {}),
             // A rewritten key remembers the key it had, so the deny and ask rules written for that key still apply.
             ...(key === plain ? {} : { baseKey: plain }),
             // Only a deferred server's tools carry the mark; the tool list leaves them out (#1459).

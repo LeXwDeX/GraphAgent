@@ -6,6 +6,7 @@ import type { RuntimeFlags } from "@/effect/runtime-flags"
 import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
+import { McpReadonly } from "@/agent/mcp-readonly"
 import type { Provider } from "@/provider/provider"
 import type { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderTransform } from "@/provider/transform"
@@ -230,11 +231,17 @@ export function requestSystem(input: ToolsInput & Pick<PrepareInput, "system">):
 }
 
 export function resolveTools(input: ToolsInput) {
+  // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454).
+  const policy = McpReadonly.adjust(
+    input.agent,
+    { native: input.nativePermission ?? [], rules: input.agent.permission },
+    McpReadonly.idsOfTools(input.tools),
+  )
   const disabled = Permission.disabledTools(
     // A rewritten MCP key also answers to the deny rules of the key it had before (#1459).
     Object.entries(input.tools).map(([id, item]) => ({ id, alias: McpCatalog.toolBinding(item)?.baseKey })),
-    input.nativePermission ?? [],
-    Permission.merge(input.agent.permission, input.permission ?? []),
+    policy.native,
+    Permission.merge(policy.rules, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
 }
