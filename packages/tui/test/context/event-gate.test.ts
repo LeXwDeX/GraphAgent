@@ -47,6 +47,8 @@ describe("eventScope", () => {
       "question.replied",
       "goal.updated",
       "goal.cleared",
+      "loop.updated",
+      "loop.cleared",
       "dag.workflow.summary.updated",
       "lifecycle.transitioned",
       "pr.watch.updated",

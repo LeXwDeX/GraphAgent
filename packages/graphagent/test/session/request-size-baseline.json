@@ -8,7 +8,7 @@
     "writing_style": 694
   },
   "tools": {
-    "apply_patch": 1169,
+    "apply_patch": 1274,
     "bash": 5932,
     "edit": 1355,
     "glob": 986,
@@ -24,6 +24,6 @@
     "watch_pr": 2211,
     "webfetch": 977,
     "workflow": 13441,
-    "write": 453
+    "write": 500
   }
 }

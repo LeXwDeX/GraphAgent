@@ -1632,12 +1632,16 @@ const serviceLayer = Layer.effect(
     // The lease and Goal use this same shared durable store. Install once for
     // this Goal layer's scope; its finalizer removes the resolver and stale
     // registrations if the lease's DAG consumers outlive the Goal service.
+    // The authority is identified by `db`, not by the resolver closure below:
+    // a Goal layer built a second time over the same registry (the HttpApi app
+    // graph builds in a forked MemoMap, so it and its parent may each build
+    // Goal) reads the same table, and must join the installed authority.
     // The resolver only reads DB state, never takes another lease lock, so
     // updateAfterJudge remains safe inside automation.use's existing lock.
     // An undecodable row is not an active goal: the lease runs this on every
     // claim/use/register, so a decode throw would kill DAG automation for the
     // session too. Database read failures still die (fail closed).
-    yield* automation.installGoalAuthority((sessionID) =>
+    const activeGoalID = (sessionID: SessionID) =>
       db
         .select({ payload: GoalStateTable.payload })
         .from(GoalStateTable)
@@ -1654,8 +1658,8 @@ const serviceLayer = Layer.effect(
               error: String(decoded.error),
             }).pipe(Effect.as(undefined))
           }),
-        ),
-    )
+        )
+    yield* automation.installGoalAuthority(activeGoalID, db)
 
     return Service.of({
       controlDuringTurn,

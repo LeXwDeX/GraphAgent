@@ -56,6 +56,8 @@ export type Event =
   | EventSessionIdle
   | EventGoalUpdated
   | EventGoalCleared
+  | EventLoopUpdated
+  | EventLoopCleared
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
@@ -138,6 +140,208 @@ export type QuestionOption = {
    */
   description: string
 }
+
+export type LoopTerminalStatus = "completed" | "cancelled"
+
+export type Loop = {
+  /**
+   * Identity of this loop; a replacement loop gets a new one
+   */
+  loopID: string
+  status: LoopStatus
+  /**
+   * Current round, counted from 1
+   */
+  round: number
+  /**
+   * Round limit
+   */
+  maxRounds: number
+  /**
+   * The user's first description, verbatim; never changes
+   */
+  prompt: string
+  /**
+   * The final goal as the background analysis understands it; absent before the first analysis
+   */
+  objective?: string
+  /**
+   * True while a background analysis is running; clients show "updating loop goal"
+   */
+  analyzing: boolean
+  /**
+   * Epoch milliseconds of the next self-healing probe. Set on a waiting loop that waits for a provider to recover, not for an external object
+   */
+  probeAt?: number
+  /**
+   * The external object a waiting loop waits for
+   */
+  wait?: {
+    source: LoopWaitSource
+    /**
+     * Epoch milliseconds when the wait expires
+     */
+    deadline: number
+  }
+  /**
+   * 0 before the first analysis, 1 once it is committed, plus one for every later intent change
+   */
+  intentRevision: number
+  /**
+   * continue: keep going, next_prompt is required. done: every acceptance item is met with evidence. blocked: only the user can unblock it, open_questions lists the questions. goal_changed: a human message moved the long-term goal. user_stop: a human message asked to stop.
+   */
+  lastVerdict?: "continue" | "done" | "blocked" | "goal_changed" | "user_stop"
+  /**
+   * Reason of the last committed analysis
+   */
+  lastReason?: string
+  stop?: LoopStopRecord
+}
+
+export type LoopStopRecord =
+  | {
+      reason: "completed"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "user_stopped"
+      detail?:
+        | {
+            basis_message_id: string
+          }
+        | {
+            code: "migrated"
+            message: string
+          }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "user_interrupted"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "goal_changed"
+      detail:
+        | {
+            code: "explicit"
+          }
+        | {
+            code: "inferred"
+            basis_message_id: string
+          }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "needs_user"
+      detail: {
+        code: "open_question" | "rejected"
+      }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "provider_unavailable"
+      detail: {
+        code: string
+        status?: number
+        message: string
+      }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "context_exhausted"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "content_refused"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "hook_stopped"
+      detail: {
+        message: string
+      }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "session_archived"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "budget_exhausted"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "no_progress"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "wait_expired"
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "analysis_failed"
+      detail: {
+        code: "invalid_output" | "limit"
+      }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+  | {
+      reason: "internal_error"
+      detail: {
+        code: string
+        message: string
+      }
+      /**
+       * Epoch milliseconds when the loop stopped
+       */
+      at: number
+    }
+
+export type LoopWaitSource = "background_job" | "watch_pr" | "hook" | "timer" | "dag"
+
+export type LoopStatus = "active" | "waiting" | "stopped" | "completed" | "cancelled"
 
 export type Goal = {
   /**
@@ -2411,6 +2615,25 @@ export type EventQuestionAsked = {
     questions: Array<QuestionInfo>
     tool?: QuestionTool
     expiresAt?: number
+  }
+}
+
+export type EventLoopCleared = {
+  id: string
+  type: "loop.cleared"
+  properties: {
+    sessionID: string
+    status?: LoopTerminalStatus
+    stop?: LoopStopRecord
+  }
+}
+
+export type EventLoopUpdated = {
+  id: string
+  type: "loop.updated"
+  properties: {
+    sessionID: string
+    loop: Loop
   }
 }
 

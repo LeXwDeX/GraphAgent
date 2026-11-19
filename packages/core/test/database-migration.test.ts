@@ -12,6 +12,7 @@ import { baseline } from "@graphagent/core/database/migration.gen"
 import { Database } from "@graphagent/core/database/database"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
+import { LoopAnalysisTable } from "@graphagent/core/loop/sql"
 import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
@@ -249,6 +250,111 @@ describe("DatabaseMigration", () => {
         expect(indexes.map((index) => index.name)).toEqual(["session_step_model_idx", "session_step_session_idx"])
         const modelIndex = yield* db.all<{ name: string }>(sql`PRAGMA index_info(session_step_model_idx)`)
         expect(modelIndex.map((column) => column.name)).toEqual(["provider_id", "model_id"])
+      }),
+    )
+  })
+
+  test("baseline contains the loop tables: goal-shaped state and outcome, and a per-loop analysis log", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        const columns = (name: string) =>
+          db
+            .all<{ name: string; type: string; notnull: number; pk: number }>(
+              sql`SELECT name, type, "notnull", pk FROM pragma_table_info(${name})`,
+            )
+            .pipe(Effect.map((rows) => rows.map((column) => [column.name, column.type, column.notnull, column.pk])))
+
+        expect(yield* columns("loop_state")).toEqual([
+          ["session_id", "TEXT", 0, 1],
+          ["payload", "TEXT", 1, 0],
+          ["updated_at", "INTEGER", 1, 0],
+        ])
+        expect(yield* columns("loop_outcome")).toEqual([
+          ["loop_id", "TEXT", 0, 1],
+          ["session_id", "TEXT", 1, 0],
+          ["payload", "TEXT", 1, 0],
+          ["completed_at", "INTEGER", 1, 0],
+        ])
+        // The column shape is the goal tables' shape; only the identity column is renamed.
+        expect(yield* columns("loop_state")).toEqual(yield* columns("goal_state"))
+        expect((yield* columns("loop_outcome")).map(([, ...rest]) => rest)).toEqual(
+          (yield* columns("goal_outcome")).map(([, ...rest]) => rest),
+        )
+        expect(yield* columns("loop_analysis")).toEqual([
+          ["loop_id", "TEXT", 1, 1],
+          ["seq", "INTEGER", 1, 2],
+          ["session_id", "TEXT", 1, 0],
+          ["round", "INTEGER", 1, 0],
+          ["boundary", "TEXT", 1, 0],
+          ["verdict", "TEXT", 1, 0],
+          ["reason", "TEXT", 1, 0],
+          ["intent_revision", "INTEGER", 1, 0],
+          ["change_summary", "TEXT", 0, 0],
+          ["change_basis_message_id", "TEXT", 0, 0],
+          ["prompt", "TEXT", 0, 0],
+          ["input_tokens", "INTEGER", 1, 0],
+          ["output_tokens", "INTEGER", 1, 0],
+          ["reasoning_tokens", "INTEGER", 1, 0],
+          ["elapsed_ms", "INTEGER", 1, 0],
+          ["created_at", "INTEGER", 1, 0],
+        ])
+
+        const indexes = yield* db.all<{ name: string }>(
+          sql`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('loop_state', 'loop_outcome', 'loop_analysis') AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+        )
+        expect(indexes.map((index) => index.name)).toEqual([
+          "loop_analysis_session_idx",
+          "loop_outcome_session_completed_idx",
+          "loop_state_updated_at_idx",
+        ])
+        const outcomeIndex = yield* db.all<{ name: string }>(sql`PRAGMA index_info(loop_outcome_session_completed_idx)`)
+        expect(outcomeIndex.map((column) => column.name)).toEqual(["session_id", "completed_at"])
+        // Like the goal tables, none of them has a foreign key: session removal purges them explicitly.
+        for (const table of ["loop_state", "loop_outcome", "loop_analysis"])
+          expect(yield* db.all(sql`SELECT * FROM pragma_foreign_key_list(${table})`), table).toEqual([])
+      }),
+    )
+  })
+
+  test("numbers loop analyses per loop: one (loop_id, seq) row at most", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        const row = (loop_id: string, seq: number) => ({
+          loop_id,
+          seq,
+          session_id: "ses_loop_analysis",
+          round: 1,
+          boundary: "msg_1",
+          verdict: "continue",
+          reason: "keep going",
+          intent_revision: 1,
+          input_tokens: 0,
+          output_tokens: 0,
+          reasoning_tokens: 0,
+          elapsed_ms: 0,
+          created_at: 0,
+        })
+        yield* db.insert(LoopAnalysisTable).values(row("loop_a", 1)).run()
+        yield* db.insert(LoopAnalysisTable).values(row("loop_a", 2)).run()
+        yield* db.insert(LoopAnalysisTable).values(row("loop_b", 1)).run()
+        const duplicate = yield* Effect.exit(db.insert(LoopAnalysisTable).values(row("loop_a", 2)).run())
+        expect(Exit.isFailure(duplicate)).toBe(true)
+
+        expect(
+          yield* db.all<{ loop_id: string; seq: number }>(
+            sql`SELECT loop_id, seq FROM loop_analysis ORDER BY loop_id, seq`,
+          ),
+        ).toEqual([
+          { loop_id: "loop_a", seq: 1 },
+          { loop_id: "loop_a", seq: 2 },
+          { loop_id: "loop_b", seq: 1 },
+        ])
       }),
     )
   })

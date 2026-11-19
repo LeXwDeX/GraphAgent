@@ -8899,6 +8899,12 @@
             "$ref": "#/components/schemas/EventGoalCleared"
           },
           {
+            "$ref": "#/components/schemas/EventLoopUpdated"
+          },
+          {
+            "$ref": "#/components/schemas/EventLoopCleared"
+          },
+          {
             "$ref": "#/components/schemas/EventQuestionAsked"
           },
           {
@@ -9107,6 +9113,440 @@
         },
         "required": ["label", "description"],
         "additionalProperties": false
+      },
+      "LoopTerminalStatus": {
+        "type": "string",
+        "enum": ["completed", "cancelled"]
+      },
+      "Loop": {
+        "type": "object",
+        "properties": {
+          "loopID": {
+            "type": "string",
+            "description": "Identity of this loop; a replacement loop gets a new one"
+          },
+          "status": {
+            "$ref": "#/components/schemas/LoopStatus"
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Current round, counted from 1"
+          },
+          "maxRounds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Round limit"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The user's first description, verbatim; never changes"
+          },
+          "objective": {
+            "type": "string",
+            "description": "The final goal as the background analysis understands it; absent before the first analysis"
+          },
+          "analyzing": {
+            "type": "boolean",
+            "description": "True while a background analysis is running; clients show \"updating loop goal\""
+          },
+          "probeAt": {
+            "type": "number",
+            "description": "Epoch milliseconds of the next self-healing probe. Set on a waiting loop that waits for a provider to recover, not for an external object"
+          },
+          "wait": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/components/schemas/LoopWaitSource"
+              },
+              "deadline": {
+                "type": "number",
+                "description": "Epoch milliseconds when the wait expires"
+              }
+            },
+            "required": ["source", "deadline"],
+            "additionalProperties": false,
+            "description": "The external object a waiting loop waits for"
+          },
+          "intentRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "0 before the first analysis, 1 once it is committed, plus one for every later intent change"
+          },
+          "lastVerdict": {
+            "type": "string",
+            "enum": ["continue", "done", "blocked", "goal_changed", "user_stop"],
+            "description": "continue: keep going, next_prompt is required. done: every acceptance item is met with evidence. blocked: only the user can unblock it, open_questions lists the questions. goal_changed: a human message moved the long-term goal. user_stop: a human message asked to stop."
+          },
+          "lastReason": {
+            "type": "string",
+            "description": "Reason of the last committed analysis"
+          },
+          "stop": {
+            "$ref": "#/components/schemas/LoopStopRecord"
+          }
+        },
+        "required": ["loopID", "status", "round", "maxRounds", "prompt", "analyzing", "intentRevision"],
+        "additionalProperties": false
+      },
+      "LoopStopRecord": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["completed"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["user_stopped"]
+              },
+              "detail": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "basis_message_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["basis_message_id"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "enum": ["migrated"]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["code", "message"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["user_interrupted"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["goal_changed"]
+              },
+              "detail": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "enum": ["explicit"]
+                      }
+                    },
+                    "required": ["code"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "enum": ["inferred"]
+                      },
+                      "basis_message_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["code", "basis_message_id"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "detail", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["needs_user"]
+              },
+              "detail": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "enum": ["open_question", "rejected"]
+                  }
+                },
+                "required": ["code"],
+                "additionalProperties": false
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "detail", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["provider_unavailable"]
+              },
+              "detail": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "number"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": ["code", "message"],
+                "additionalProperties": false
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "detail", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["context_exhausted"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["content_refused"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["hook_stopped"]
+              },
+              "detail": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": ["message"],
+                "additionalProperties": false
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "detail", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["session_archived"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["budget_exhausted"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["no_progress"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["wait_expired"]
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["analysis_failed"]
+              },
+              "detail": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "enum": ["invalid_output", "limit"]
+                  }
+                },
+                "required": ["code"],
+                "additionalProperties": false
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "detail", "at"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": ["internal_error"]
+              },
+              "detail": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": ["code", "message"],
+                "additionalProperties": false
+              },
+              "at": {
+                "type": "number",
+                "description": "Epoch milliseconds when the loop stopped"
+              }
+            },
+            "required": ["reason", "detail", "at"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "LoopWaitSource": {
+        "type": "string",
+        "enum": ["background_job", "watch_pr", "hook", "timer", "dag"]
+      },
+      "LoopStatus": {
+        "type": "string",
+        "enum": ["active", "waiting", "stopped", "completed", "cancelled"]
       },
       "Goal": {
         "type": "object",
@@ -16134,6 +16574,67 @@
               }
             },
             "required": ["id", "sessionID", "questions"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventLoopCleared": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["loop.cleared"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "status": {
+                "$ref": "#/components/schemas/LoopTerminalStatus"
+              },
+              "stop": {
+                "$ref": "#/components/schemas/LoopStopRecord"
+              }
+            },
+            "required": ["sessionID"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventLoopUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["loop.updated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "loop": {
+                "$ref": "#/components/schemas/Loop"
+              }
+            },
+            "required": ["sessionID", "loop"],
             "additionalProperties": false
           }
         },

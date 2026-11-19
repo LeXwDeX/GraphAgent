@@ -115,7 +115,7 @@ export interface ExclusiveState {
   readonly blockedGoalClaims: Set<SessionID>
   /** Never reused: an old token must not become valid again. */
   generation: number
-  goalAuthority?: { readonly resolve: GoalAuthority; users: number }
+  goalAuthority?: { readonly resolve: GoalAuthority; readonly store: object; users: number }
   readonly lock: KeyedMutex.KeyedMutex<SessionID>
 }
 
@@ -139,8 +139,14 @@ export interface ExclusiveAfterFence<A, E = never, R = never> {
 export type ExclusiveRequest = { readonly kind: "goal"; readonly id: string } | { readonly kind: "dag" }
 
 export interface ExclusiveRegistryInterface {
-  /** Installed by the shared Goal layer for its lifetime; reads its shared durable store. */
-  readonly installGoalAuthority: (resolve: GoalAuthority) => Effect.Effect<void, never, Scope.Scope>
+  /**
+   * Installed by a Goal layer for its lifetime; reads its shared durable store.
+   * The authority is identified by that store (`store`, defaulting to `resolve`
+   * itself): a second install over the same store joins the first, because every
+   * resolver over one store answers the same question, and an install over a
+   * different store is rejected.
+   */
+  readonly installGoalAuthority: (resolve: GoalAuthority, store?: object) => Effect.Effect<void, never, Scope.Scope>
   readonly register: (sessionID: SessionID, owner: ExclusiveOwner) => Effect.Effect<void>
   readonly unregister: (sessionID: SessionID, owner: ExclusiveOwner) => Effect.Effect<void>
   readonly claim: (sessionID: SessionID, request: ExclusiveRequest) => Effect.Effect<Option.Option<ExclusiveToken>>
@@ -466,20 +472,30 @@ const reconcileGoal = Effect.fnUntraced(function* (state: ExclusiveState, sessio
   return true
 })
 
+// A registry can be shared by more than one Goal layer: a layer graph built in
+// a forked MemoMap (HttpRouter.serve forks the one it is built in) reuses the
+// registry the parent already built, but keeps the layers it was first to
+// request, so two Goal layers can build against one registry whenever the fork
+// reaches Goal before the parent does. Each build closes over its own resolver
+// function, so the authority is identified by the durable store the resolver
+// reads, not by the function: two layers over one store are one authority, and
+// only a layer over a different store (which would give the registry a second
+// source of truth) is rejected.
 const installGoalAuthority = Effect.fn("ExclusiveRegistry.installGoalAuthority")(function* (
   state: ExclusiveState,
   resolve: GoalAuthority,
+  store: object = resolve,
 ) {
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      if (state.goalAuthority && state.goalAuthority.resolve !== resolve)
+      if (state.goalAuthority && state.goalAuthority.store !== store)
         throw new Error("ExclusiveRegistry already has a different Goal authority")
       if (state.goalAuthority) state.goalAuthority.users += 1
-      else state.goalAuthority = { resolve, users: 1 }
+      else state.goalAuthority = { resolve, store, users: 1 }
     }),
     () =>
       Effect.sync(() => {
-        if (!state.goalAuthority || state.goalAuthority.resolve !== resolve || --state.goalAuthority.users > 0) return
+        if (!state.goalAuthority || state.goalAuthority.store !== store || --state.goalAuthority.users > 0) return
         state.goalAuthority = undefined
         // The shared Goal scope has closed: do not retain its DB closure or
         // goal registrations in a registry whose DAG scope outlives it.
@@ -718,7 +734,7 @@ const makeState = (): ExclusiveState => ({
 // build's registrations, blocked claims, or Goal authority. Cross-build
 // coordination goes through the process-level inbox nudge hook.
 const make = (state: ExclusiveState): ExclusiveRegistryInterface => ({
-  installGoalAuthority: (resolve) => installGoalAuthority(state, resolve),
+  installGoalAuthority: (resolve, store) => installGoalAuthority(state, resolve, store),
   register: (sessionID, value) => register(state, sessionID, value),
   unregister: (sessionID, value) => unregister(state, sessionID, value),
   claim: (sessionID, request) => claim(state, sessionID, request),

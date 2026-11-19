@@ -352,6 +352,42 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`loop_analysis\` (
+          \`loop_id\` text NOT NULL,
+          \`seq\` integer NOT NULL,
+          \`session_id\` text NOT NULL,
+          \`round\` integer NOT NULL,
+          \`boundary\` text NOT NULL,
+          \`verdict\` text NOT NULL,
+          \`reason\` text NOT NULL,
+          \`intent_revision\` integer NOT NULL,
+          \`change_summary\` text,
+          \`change_basis_message_id\` text,
+          \`prompt\` text,
+          \`input_tokens\` integer NOT NULL,
+          \`output_tokens\` integer NOT NULL,
+          \`reasoning_tokens\` integer NOT NULL,
+          \`elapsed_ms\` integer NOT NULL,
+          \`created_at\` integer NOT NULL,
+          CONSTRAINT \`loop_analysis_pk\` PRIMARY KEY(\`loop_id\`, \`seq\`)
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`loop_outcome\` (
+          \`loop_id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`payload\` text NOT NULL,
+          \`completed_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`loop_state\` (
+          \`session_id\` text PRIMARY KEY,
+          \`payload\` text NOT NULL,
+          \`updated_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`project_directory\` (
           \`project_id\` text NOT NULL,
           \`directory\` text NOT NULL,
@@ -526,6 +562,11 @@ export default {
         `CREATE INDEX \`goal_outcome_session_completed_idx\` ON \`goal_outcome\` (\`session_id\`,\`completed_at\`);`,
       )
       yield* tx.run(`CREATE INDEX \`goal_state_updated_at_idx\` ON \`goal_state\` (\`updated_at\`);`)
+      yield* tx.run(`CREATE INDEX \`loop_analysis_session_idx\` ON \`loop_analysis\` (\`session_id\`);`)
+      yield* tx.run(
+        `CREATE INDEX \`loop_outcome_session_completed_idx\` ON \`loop_outcome\` (\`session_id\`,\`completed_at\`);`,
+      )
+      yield* tx.run(`CREATE INDEX \`loop_state_updated_at_idx\` ON \`loop_state\` (\`updated_at\`);`)
       yield* tx.run(`CREATE INDEX \`message_diff_session_idx\` ON \`message_diff\` (\`session_id\`);`)
       yield* tx.run(
         `CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`,

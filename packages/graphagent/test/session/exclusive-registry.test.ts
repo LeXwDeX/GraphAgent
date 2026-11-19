@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, Option } from "effect"
+import { Deferred, Effect, Exit, Fiber, Option, Scope } from "effect"
 import { EngineProcess, ExclusiveRegistry } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
@@ -66,6 +66,51 @@ describe("ExclusiveRegistry", () => {
       // A rejected installation must not replace the original resolver.
       const sessionID = SessionID.descending()
       expect(Option.isSome(yield* lease.claim(sessionID, { kind: "goal", id: "first" }))).toBe(true)
+    }),
+  )
+
+  it.live("rejects an install over a different store even when its resolver is equivalent", () =>
+    Effect.gen(function* () {
+      const lease = yield* ExclusiveRegistry.Service
+      yield* lease.installGoalAuthority(() => Effect.succeed("current-goal"), {})
+      const other = yield* lease.installGoalAuthority(() => Effect.succeed("current-goal"), {}).pipe(Effect.exit)
+      expect(Exit.isFailure(other)).toBe(true)
+    }),
+  )
+
+  it.live("installs over one store join one authority that outlives the first scope", () =>
+    Effect.gen(function* () {
+      const lease = yield* ExclusiveRegistry.Service
+      const sessionID = SessionID.descending()
+      const store = {}
+      const first = yield* Scope.make()
+      const second = yield* Scope.make()
+      yield* Effect.addFinalizer(() =>
+        Scope.close(first, Exit.void).pipe(Effect.andThen(Scope.close(second, Exit.void))),
+      )
+      // Two Goal layers over one store are two resolver closures over one table.
+      yield* lease
+        .installGoalAuthority(() => Effect.succeed("current-goal"), store)
+        .pipe(Effect.provideService(Scope.Scope, first))
+      yield* lease
+        .installGoalAuthority(() => Effect.succeed("current-goal"), store)
+        .pipe(Effect.provideService(Scope.Scope, second))
+      const stale = { kind: "goal" as const, id: "stale-goal" }
+      const current = { kind: "goal" as const, id: "current-goal" }
+      yield* lease.register(sessionID, stale)
+      expect(Option.isNone(yield* lease.claim(sessionID, stale))).toBe(true)
+      expect(Option.isSome(yield* lease.claim(sessionID, current))).toBe(true)
+
+      // The first installer closing must not take the authority away from the second.
+      yield* Scope.close(first, Exit.void)
+      yield* lease.register(sessionID, stale)
+      expect(Option.isNone(yield* lease.claim(sessionID, stale))).toBe(true)
+      expect(Option.isSome(yield* lease.claim(sessionID, current))).toBe(true)
+
+      // The last one closing removes it: explicit registrations count again.
+      yield* Scope.close(second, Exit.void)
+      yield* lease.register(sessionID, stale)
+      expect(Option.isSome(yield* lease.claim(sessionID, stale))).toBe(true)
     }),
   )
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { formatPatch, structuredPatch } from "diff"
+import { changedRanges } from "@/lsp/diagnostic"
 
 /**
  * What a write tool tells the model about the change it just made (#1451): where it landed, how much was added and
@@ -13,7 +14,8 @@ import { formatPatch, structuredPatch } from "diff"
  * run one already: the tool diffs the text for its permission request with `unifiedDiff` and keeps the hunks
  * (`Changes`), and the receipt is made from them. Only a file that the formatter rewrote has no diff to take, and
  * the diff of its receipt is capped at `MAX_EDITS`: a change of more is named by the lines it spans, without counts
- * and diff.
+ * and diff. The lines that the language-server check places its errors by (#1572) are read from the same hunks
+ * (`lazyRanges`).
  */
 
 /** The diff lines a result shows, a patch of several files together. */
@@ -188,7 +190,8 @@ function landing(run: { start: number; added: number }, total: number): LineRang
 
 /**
  * The lines of the new text the change touched, each run of changed lines as one range (the same ranges
- * `LSP.Diagnostic.changedRanges` gives), and how many lines it added and removed, counted the way `diffLines` counts.
+ * `LSP.Diagnostic.changedRanges` gives for a diff that compares logical lines, see `lazyRanges`), and how many lines it
+ * added and removed, counted the way `diffLines` counts.
  */
 export function summarize(
   changes: Changes,
@@ -222,6 +225,29 @@ export function summarize(
     if (run) ranges.push(landing(run, total))
   }
   return { ranges, additions, deletions }
+}
+
+/**
+ * Where a write landed, for the language-server check of its result: the lines of `newText` that differ from `oldText`,
+ * the ranges `LSP.Diagnostic.changedRanges` gives. It returns a function that works them out the first time it is called
+ * and keeps them. The check calls it only for a file that has an error, so a write without one costs no diff here.
+ *
+ * `changes` is the diff the tool ran for its permission request, when the text is still what that diff was made from
+ * (the formatter did not change it): the lines are then read from it, and no other diff runs. That holds only while
+ * neither text has a CRLF line ending. `changedRanges` compares logical lines, and the diff of the tool compares lines
+ * as they are; a patch writes the lines of its chunk without their carriage return, so the lines around the one it
+ * changed differ from the old ones by their ending alone, and the hunks span the whole chunk where `changedRanges`
+ * names only the line that changed. Texts with CRLF, and a write that has no diff, are compared by `changedRanges`.
+ */
+export function lazyRanges(file: string, oldText: string, newText: string, changes?: Changes): () => LineRange[] {
+  let found: LineRange[] | undefined
+  return () => {
+    found ??=
+      changes && !oldText.includes("\r\n") && !newText.includes("\r\n")
+        ? summarize(changes, newText).ranges
+        : changedRanges(oldText, newText, file)
+    return found
+  }
 }
 
 /** The first five ranges as `start-end`, and how many there are when some are left out. */
