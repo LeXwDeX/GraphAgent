@@ -82,6 +82,14 @@ const LEGACY_ENV_ALLOW: Allow[] = [
     reason: "macOS acceptance pins OC_OPENCODE_NAME until G1",
   },
   {
+    file: "script/release-smoke.sh",
+    reason: "#1034 release smoke test proves the retired config variable is ignored and clears it from the caller",
+  },
+  {
+    file: "script/release-smoke.test.mjs",
+    reason: "stand-in CLI that honors the retired config variable, proving the release smoke test rejects it",
+  },
+  {
     file: "packages/graphagent/src/image/image.ts",
     reason: "G0b: the photon-node patch reads __OPENCODE_PHOTON_WASM_PATH",
   },
@@ -458,6 +466,16 @@ const TERMINAL_ALLOW: TerminalAllow[] = [
   { file: "LICENSE", reason: "upstream MIT copyright line; the license text is not rewritten" },
   { file: "NOTICE", reason: "upstream attribution kept on purpose (independent development keeps the source note)" },
   ...OC_ASSET_ALLOW,
+  {
+    file: "script/release-smoke.sh",
+    reason:
+      "#1034 release smoke test scans for directories named after the upstream word and checks its config variable is ignored",
+  },
+  {
+    file: "script/release-smoke.test.mjs",
+    reason:
+      "stand-in CLI that creates an upstream-named directory and prints the upstream name, proving the smoke test rejects both",
+  },
   {
     file: "script/oc-path-priority.test.sh",
     reason: "installer path-priority tests pin the current installer names until G1",
