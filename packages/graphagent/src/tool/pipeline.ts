@@ -1225,7 +1225,9 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
     const execute = item.execute
     if (!execute) continue
 
-    const validateInput = toolInputValidator(entry.jsonSchema)
+    // The arguments of a deferred tool are written from `mcp_describe`, which shows the server's own schema, so a
+    // hook's replacement of them is held to that one and not to the provider's rewrite of it (#1576).
+    const validateInput = toolInputValidator(entry.source.deferred === true ? entry.rawSchema : entry.jsonSchema)
     item.inputSchema = jsonSchema(entry.jsonSchema)
     item.execute = (args, opts) => {
       const settingsHook = withHookCancellation(hooks, opts.abortSignal)

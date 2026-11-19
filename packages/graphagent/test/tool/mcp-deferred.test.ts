@@ -1021,11 +1021,12 @@ describe("a deferred tool under a provider that rewrites schemas (#1576)", () =>
   const downgrade = (schema: JSONSchema7) => ProviderTransform.schema(openai, schema)
   // Arguments the server's schema accepts and the rewritten one does not.
   const FITS = { rows: [{ id: 1 }, { id: 2 }], level: 2, anything: 7 }
-  const loose = (keys: string[] = ["srv_loose"]) =>
+  const loose = (keys: string[] = ["srv_loose"], hooks?: SettingsHook.Interface) =>
     resolveTools(ALLOW_ALL, {
       keys: new Set(keys),
       rewrite: downgrade,
       tools: { srv_loose: makeMcp("loose", { description: "Takes loose arguments.", schema: LOOSE_SCHEMA }) },
+      hooks,
     })
 
   test("the rewrite does change what the server wrote", () => {
@@ -1072,6 +1073,29 @@ describe("a deferred tool under a provider that rewrites schemas (#1576)", () =>
         ["srv_loose", "Takes loose arguments.", `Input schema: ${LOOSE_TEXT}`].join("\n"),
       )
       expect(result.ok && result.value.output).not.toContain('"items"')
+    }),
+  )
+
+  it.instance("a hook's replacement of the arguments is held to the server's own schema too", () =>
+    Effect.gen(function* () {
+      // A PreToolUse hook that has every call run with `updatedInput` instead.
+      const replacing = (updatedInput: Record<string, unknown>): SettingsHook.Interface => ({
+        trigger: (payload) =>
+          Effect.succeed({
+            additionalContexts: [],
+            systemMessages: [],
+            ...(payload.event === "PreToolUse" ? { updatedInput } : {}),
+          }),
+        list: () => Effect.succeed([]),
+      })
+      const fits = yield* loose(["srv_loose"], replacing(FITS))
+      expect((yield* attempt(fits, "mcp_call", { tool: "srv_loose", arguments: { level: 1 } })).ok).toBe(true)
+      expect(seen.runs).toEqual([{ tool: "loose", args: FITS }])
+
+      const refused = yield* loose(["srv_loose"], replacing({ level: 9 }))
+      const error = failureOf(yield* attempt(refused, "mcp_call", { tool: "srv_loose", arguments: { level: 1 } }))
+      expect(error.message).toContain("Hook replacement does not match tool input schema")
+      expect(seen.runs).toEqual([])
     }),
   )
 
