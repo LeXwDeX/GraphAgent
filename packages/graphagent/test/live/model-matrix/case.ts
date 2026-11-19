@@ -17,7 +17,8 @@
  * before the user message, its text, the agent it was sent to (when the export names one), and what the original
  * model did first (its first tool call, or its text). It holds the text of the user message and nothing else, so a
  * message that carries an attachment (a source file, an image, a PDF) makes no case: the replay would not be the
- * same task. Neither does one that asked for structured output, carried its own system instructions, mentioned an agent or started a subtask.
+ * same task. Neither does one that asked for structured output, carried its own system instructions, turned off
+ * some of its tools, mentioned an agent or started a subtask.
  *
  * The whole case is checked for credentials before anything is written: a value shaped like a key or a token, or
  * holding the value of a secret-looking environment variable of this process, refuses the case. Only the JSON path
@@ -119,22 +120,27 @@ function recordedOf(message: ExportedMessage): { recorded: Recorded; expect?: { 
   return text.trim() === "" ? undefined : { recorded: { text } }
 }
 
-/** The agent a user message was sent to, as the export writes it in the message's `info`; none when it has no name. */
 /**
  * What makes the turn a different task than its text: the case replays the text alone, so a turn that asked for
- * structured output (the `StructuredOutput` tool is offered only for it), carried its own system instructions, an agent or started a subtask is
- * refused instead of replayed as something else.
+ * structured output (the `StructuredOutput` tool is offered only for it), carried its own system instructions,
+ * turned off some of its tools, mentioned an agent or started a subtask is refused instead of replayed as something
+ * else. The other per-turn fields of a prompt are left as they are: the model and its variant are what the replay
+ * changes, and the hook mode does not change what the model is asked.
  */
 function unsupportedTurn(message: ExportedMessage): string | undefined {
   const { format, system } = message.info
   if (isRecord(format) && format.type === "json_schema") return "asks for structured output"
   // A DAG worker's turn carries its execution context here, and the request appends it to the system prompt.
   if (typeof system === "string" && system.trim() !== "") return "carries its own system instructions"
+  // The request leaves out every tool the turn turned off; the replay would offer them all.
+  const { tools } = message.info
+  if (isRecord(tools) && Object.values(tools).some((on) => on === false)) return "turns off some of its tools"
   if (message.parts.some((part) => part.type === "agent" || part.type === "subtask"))
     return "mentions an agent or starts a subtask"
   return undefined
 }
 
+/** The agent a user message was sent to, as the export writes it in the message's `info`; none when it has no name. */
 function agentOf(message: ExportedMessage): string | undefined {
   const { agent } = message.info
   return typeof agent === "string" && agent.trim() !== "" ? agent : undefined

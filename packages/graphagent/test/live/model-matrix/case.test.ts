@@ -384,6 +384,8 @@ describe("eval:case: the case of a user message", () => {
     expect(error(asked({ system: "You are node n1 of workflow w1." }))).toContain(
       "user message 0 carries its own system instructions",
     )
+    expect(error(asked({ tools: { bash: false, read: true } }))).toContain("user message 0 turns off some of its tools")
+    expect(built(asked({ tools: { read: true } })).request).toBe("what is wrong here?")
     // A text format is the default and asks for nothing more; an empty system text adds nothing.
     expect(built(asked({ system: "" })).request).toBe("what is wrong here?")
     expect(built(asked({ format: { type: "text" } })).request).toBe("what is wrong here?")
