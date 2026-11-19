@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
+import path from "path"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { resolveProfile } from "@graphagent/core/model-profile"
 import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-distillation"
@@ -427,6 +428,37 @@ function reply(
       }),
     )
   }
+}
+
+// A summary in the template's shape: the three sections the continuation reads each hold one item.
+function validSummary(input: { goal?: string; progress?: string; next?: string } = {}) {
+  return `## Goal
+- ${input.goal ?? "summary"}
+
+## Constraints & Preferences
+- (none)
+
+## Progress
+### Done
+- (none)
+
+### In Progress
+- ${input.progress ?? "(none)"}
+
+### Blocked
+- (none)
+
+## Key Decisions
+- (none)
+
+## Next Steps
+- ${input.next ?? "(none)"}
+
+## Critical Context
+- (none)
+
+## Relevant Files
+- (none)`
 }
 
 const todoLayer = (todos: Todo.Info[]) => Layer.mock(Todo.Service)({ get: () => Effect.succeed(todos) })
@@ -1025,6 +1057,8 @@ describe("session.compaction.process", () => {
     `Skills loaded earlier in this conversation are no longer in context: ${names}. Call the skill tool with the name to load one again when needed.`
   const fallbackText =
     "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+  // The latest request of the sessions below: a lone "hello" turn.
+  const hello = "Latest user request:\nhello"
 
   it.instance("lists the skills loaded in the compacted range after auto compaction", () =>
     Effect.gen(function* () {
@@ -1050,7 +1084,10 @@ describe("session.compaction.process", () => {
       const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
       expect(result).toBe("continue")
       expect(last?.info.role).toBe("user")
-      expect(syntheticTexts(last)[0]).toBe(`${fallbackText}\n\n${skillNote("dag-auto, git-workflow")}`)
+      // The note closes the continuation text, inside the compaction block.
+      expect(syntheticTexts(last)[0]).toBe(
+        Injection.wrap("compaction", `${fallbackText}\n${hello}\n\n${skillNote("dag-auto, git-workflow")}`),
+      )
     }),
   )
 
@@ -1078,7 +1115,7 @@ describe("session.compaction.process", () => {
       })
 
       const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
-      expect(syntheticTexts(last)).toEqual([fallbackText])
+      expect(syntheticTexts(last)).toEqual([Injection.wrap("compaction", `${fallbackText}\n${hello}`)])
     }),
   )
 
@@ -1136,7 +1173,9 @@ describe("session.compaction.process", () => {
         expect(result).toBe("continue")
         // The recent turn stays verbatim, so its skill body is still in context.
         expect(part?.tail_start_id).toBe(recent.id)
-        expect(syntheticTexts(last)[0]).toBe(`${fallbackText}\n\n${skillNote("git-workflow")}`)
+        expect(syntheticTexts(last)[0]).toBe(
+          Injection.wrap("compaction", `${fallbackText}\nLatest user request:\nrecent\n\n${skillNote("git-workflow")}`),
+        )
       }).pipe(withCompaction({ config: cfg({ tail_turns: 1 }) })),
     { git: true },
   )
@@ -2210,14 +2249,14 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "asks instead of quoting a request over the authoritative budget",
+    "quotes a request over the old 2000-character budget in full",
     () => {
       const stub = llm()
       stub.push(
         reply(`## Next Steps
 - old cancelled step`),
       )
-      const request = "z".repeat(2_100)
+      const request = `${"z".repeat(2_100)} and never touch the lockfile`
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2236,9 +2275,10 @@ describe("session.compaction.process", () => {
 
         const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
         expect(result).toBe("continue")
-        expect(text).toContain("Continue if you have next steps")
-        expect(text).not.toContain("Latest user request:")
-        expect(text).not.toContain(request)
+        expect(text).toContain(`Latest user request:\n${request}\n`)
+        expect(text).toContain("never touch the lockfile")
+        expect(text).not.toContain("Continue if you have next steps")
+        expect(text).not.toContain("old work")
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
     },
     { git: true },
@@ -2280,7 +2320,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "asks when the newest user turn is attachment-only",
+    "states an attachment-only newest user turn by its attachment line",
     () => {
       const stub = llm()
       stub.push(
@@ -2314,8 +2354,7 @@ describe("session.compaction.process", () => {
 
         const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
         expect(result).toBe("continue")
-        expect(text).toContain("Continue if you have next steps")
-        expect(text).not.toContain("Latest user request:")
+        expect(text).toContain("Latest user request:\n[Attached image/png: cat.png]\n")
         expect(text).not.toContain("old request")
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
     },
@@ -2370,7 +2409,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "asks instead of reviving an older request when the latest text turn carries an attachment",
+    "states the latest text turn with its attachment line and does not revive an older request",
     () => {
       const stub = llm()
       stub.push(
@@ -2404,8 +2443,7 @@ describe("session.compaction.process", () => {
         const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
         const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
         expect(visible.some((message) => message.info.id === latest.id)).toBe(false)
-        expect(text).toContain("Continue if you have next steps")
-        expect(text).not.toContain("Latest user request:")
+        expect(text).toContain("Latest user request:\nreview the attachment\n[Attached text/plain: pasted.txt]\n")
         expect(text).not.toContain("old request")
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
     },
@@ -4137,4 +4175,473 @@ describe("session.compaction skill note", () => {
       "no longer in context: dag-auto, git-workflow. Call the skill tool",
     )
   })
+})
+
+describe("session.compaction continuation text", () => {
+  // The synthetic text of the last message, which an auto-compaction without a replay writes.
+  const continuation = (sessionID: SessionID) =>
+    SessionNs.use.messages({ sessionID }).pipe(
+      Effect.map(
+        (messages) =>
+          messages
+            .at(-1)
+            ?.parts.flatMap((part) => (part.type === "text" && part.synthetic ? [part.text] : []))
+            .join("\n") ?? "",
+      ),
+    )
+
+  const compactAuto = (sessionID: SessionID, overflow?: boolean) =>
+    Effect.gen(function* () {
+      const messages = yield* SessionNs.use.messages({ sessionID })
+      return yield* SessionCompaction.use.process({
+        parentID: messages.at(-1)!.info.id,
+        messages,
+        sessionID,
+        auto: true,
+        overflow,
+      })
+    })
+
+  const toolPart = (
+    sessionID: SessionID,
+    messageID: MessageID,
+    tool: string,
+    input: Record<string, unknown>,
+    metadata: Record<string, unknown> = {},
+  ) =>
+    SessionNs.Service.use((ssn) =>
+      ssn.updatePart({
+        id: PartID.ascending(),
+        messageID,
+        sessionID,
+        type: "tool",
+        callID: `call_${PartID.ascending()}`,
+        tool,
+        state: { status: "completed", input, output: "ok", title: tool, metadata, time: { start: 1, end: 2 } },
+      }),
+    )
+
+  const textPart = (sessionID: SessionID, messageID: MessageID, text: string) =>
+    SessionNs.Service.use((ssn) => ssn.updatePart({ id: PartID.ascending(), messageID, sessionID, type: "text", text }))
+
+  const filePart = (sessionID: SessionID, messageID: MessageID, mime: string, filename: string) =>
+    SessionNs.Service.use((ssn) =>
+      ssn.updatePart({
+        id: PartID.ascending(),
+        messageID,
+        sessionID,
+        type: "file",
+        mime,
+        filename,
+        url: `https://example.com/${filename}`,
+      }),
+    )
+
+  itCompaction.instance(
+    "wraps the continuation in a compaction block: requests, task state, files, summary, then the skill note",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary({ goal: "Ship the fix", progress: "Waiting on CI", next: "Merge the PR" })))
+      const todos: Todo.Info[] = [{ content: "write tests", status: "pending", priority: "high" }]
+      const workflows = [workflowRow({ id: "wf_live", title: "Issue 1469", status: "running" })]
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const ctx = yield* InstanceState.context
+        const session = yield* ssn.create({})
+        const request = yield* createUserMessage(session.id, "fix the parser bug")
+        const answer = yield* createAssistantMessage(session.id, request.id, ctx.directory)
+        yield* toolPart(session.id, answer.id, "edit", { filePath: "src/parser.ts" })
+        yield* toolPart(session.id, answer.id, "read", { filePath: path.join(ctx.directory, "src", "lexer.ts") })
+        yield* loadSkillPart(session.id, answer.id, "call_skill", "git-workflow")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const text = yield* continuation(session.id)
+        expect(text.startsWith('<system-reminder source="compaction">\n')).toBe(true)
+        expect(text.endsWith("\n</system-reminder>")).toBe(true)
+        const order = [
+          "Continue the pending work only if the latest user request still calls for it.",
+          "Latest user request:\nfix the parser bug",
+          "Context:\nOpen todos:\n- pending: write tests",
+          "Active workflows:\n- running: wf_live (Issue 1469)",
+          `Files changed in this session:\n- ${path.join(ctx.directory, "src", "parser.ts")}`,
+          `Files read in this session:\n- ${path.join(ctx.directory, "src", "lexer.ts")}`,
+          "Summary goal: Ship the fix",
+          "Summary in progress (may be stale):\n- Waiting on CI",
+          "Summary next steps (may be stale):\n- Merge the PR",
+          SessionCompaction.skillContinuationNote(["git-workflow"])!,
+          "</system-reminder>",
+        ].map((part) => text.indexOf(part))
+        expect(order.every((index) => index >= 0)).toBe(true)
+        expect(order).toEqual([...order].sort((a, b) => a - b))
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 0 }),
+          todo: todoLayer(todos),
+          dagStore: dagStoreLayer(workflows),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "excerpts a request that is more than the retained tail's budget could carry again",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      const request = `BEGIN-OF-REQUEST ${"filler ".repeat(3_000)}END-OF-REQUEST`
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, request)
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const text = yield* continuation(session.id)
+        expect(text).toContain("Latest user request:\nBEGIN-OF-REQUEST filler")
+        expect(text).toContain("filler END-OF-REQUEST\n")
+        expect(text).toMatch(/\[\.\.\. \d+ characters omitted \.\.\.\]/)
+        // 300 tokens of budget: the continuation is a fraction of the request.
+        expect(text.length).toBeLessThan(2_000)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0, preserve_recent_tokens: 300 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "leaves the file sections out when the session touched no file",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary({ next: "Keep going" })))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "explain the design")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const text = yield* continuation(session.id)
+        expect(text).toContain("Summary next steps (may be stale):\n- Keep going")
+        expect(text).not.toContain("Files changed in this session:")
+        expect(text).not.toContain("Files read in this session:")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps listing the files from before an earlier compaction",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const ctx = yield* InstanceState.context
+        const session = yield* ssn.create({})
+        const first = yield* createUserMessage(session.id, "start the work")
+        const firstAnswer = yield* createAssistantMessage(session.id, first.id, ctx.directory)
+        yield* toolPart(session.id, firstAnswer.id, "edit", { filePath: "src/before.ts" })
+        yield* createSummaryCompaction(session.id)
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const resumed = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+        const secondAnswer = yield* createAssistantMessage(session.id, resumed.info.id, ctx.directory)
+        yield* toolPart(session.id, secondAnswer.id, "write", { filePath: "src/after.ts" })
+        yield* createSummaryCompaction(session.id)
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const text = yield* continuation(session.id)
+        expect(text).toContain(
+          `Files changed in this session:\n- ${path.join(ctx.directory, "src", "before.ts")}\n- ${path.join(ctx.directory, "src", "after.ts")}`,
+        )
+        expect(text).toContain("Latest user request:\nstart the work")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "a child session restates its task prompt before its latest request",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const parent = yield* ssn.create({})
+        const child = yield* ssn.create({ parentID: parent.id })
+        const task = yield* createUserMessage(child.id, "audit the parser module and report every finding")
+        yield* filePart(child.id, task.id, "text/plain", "spec.md")
+        yield* createUserMessage(child.id, "also include the lexer")
+        yield* createSummaryCompaction(child.id)
+
+        expect(yield* compactAuto(child.id)).toBe("continue")
+
+        const text = yield* continuation(child.id)
+        const original = text.indexOf(
+          "Original task prompt:\naudit the parser module and report every finding\n[Attached text/plain: spec.md]\n",
+        )
+        const latest = text.indexOf("Latest user request:\nalso include the lexer\n")
+        expect(original).toBeGreaterThan(-1)
+        expect(latest).toBeGreaterThan(original)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "a child session with a single request does not repeat it, and a root session has no task prompt",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const parent = yield* ssn.create({})
+        const child = yield* ssn.create({ parentID: parent.id })
+        yield* createUserMessage(child.id, "the only request")
+        yield* createSummaryCompaction(child.id)
+        expect(yield* compactAuto(child.id)).toBe("continue")
+        const childText = yield* continuation(child.id)
+        expect(childText).toContain("Latest user request:\nthe only request\n")
+        expect(childText).not.toContain("Original task prompt:")
+
+        yield* createUserMessage(parent.id, "root request one")
+        yield* createUserMessage(parent.id, "root request two")
+        yield* createSummaryCompaction(parent.id)
+        expect(yield* compactAuto(parent.id)).toBe("continue")
+        const rootText = yield* continuation(parent.id)
+        expect(rootText).toContain("Latest user request:\nroot request two\n")
+        expect(rootText).not.toContain("Original task prompt:")
+        expect(rootText).not.toContain("root request one")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps the system text, tool switches and output format of the prior turn on the continuation message",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const turn = yield* createUserMessage(session.id, "run the node")
+        yield* ssn.updateMessage({
+          ...turn,
+          system: "node ctx",
+          tools: { workflow: false },
+          format: new SessionV1.OutputFormatJsonSchema({ type: "json_schema", schema: {}, retryCount: 2 }),
+        })
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        expect(last?.info.role).toBe("user")
+        if (last?.info.role !== "user") return
+        expect(last.parts[0]).toMatchObject({ type: "text", synthetic: true, metadata: { compaction_continue: true } })
+        expect(last.info.system).toBe("node ctx")
+        expect(last.info.tools).toEqual({ workflow: false })
+        expect(last.info.format).toMatchObject({ type: "json_schema", schema: {}, retryCount: 2 })
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  // The turn's mode is read from its last user message (tools.ts, prepare.ts, loop.ts), so the follow-up carries it.
+  for (const hookMode of ["interactive", "noninteractive", undefined] as const) {
+    itCompaction.instance(
+      `keeps the hook mode of the prior turn on the continuation message: ${hookMode ?? "unset"}`,
+      () => {
+        const stub = llm()
+        stub.push(reply(validSummary()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          const turn = yield* createUserMessage(session.id, "run the node")
+          yield* ssn.updateMessage({ ...turn, hookMode })
+          yield* createSummaryCompaction(session.id)
+
+          expect(yield* compactAuto(session.id)).toBe("continue")
+
+          const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+          expect(last?.info.role).toBe("user")
+          if (last?.info.role !== "user") return
+          expect(last.parts[0]).toMatchObject({
+            type: "text",
+            synthetic: true,
+            metadata: { compaction_continue: true },
+          })
+          expect(last.info.hookMode).toBe(hookMode)
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+      },
+      { git: true },
+    )
+
+    itCompaction.instance(
+      `keeps the hook mode of the replayed turn on the overflow replay message: ${hookMode ?? "unset"}`,
+      () => {
+        const stub = llm()
+        stub.push(reply(validSummary()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          yield* createUserMessage(session.id, "earlier question")
+          const current = yield* createUserMessage(session.id, "current task")
+          yield* ssn.updateMessage({ ...current, hookMode })
+          yield* createSummaryCompaction(session.id)
+
+          expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+          const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+          expect(last?.info.role).toBe("user")
+          if (last?.info.role !== "user") return
+          expect(
+            last.parts.some((part) => part.type === "text" && !part.synthetic && part.text === "current task"),
+          ).toBe(true)
+          expect(last.info.hookMode).toBe(hookMode)
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+      },
+      { git: true },
+    )
+  }
+
+  itCompaction.instance(
+    "keeps the steps a turn already finished in the summary input when an overflow hits mid-turn",
+    () => {
+      const stub = llm()
+      const captured: string[] = []
+      stub.push(reply(validSummary(), (input) => captured.push(JSON.stringify(input.messages))))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const root = (yield* TestInstance).directory
+        const session = yield* ssn.create({})
+        const earlier = yield* createUserMessage(session.id, "earlier question")
+        const earlierAnswer = yield* createAssistantMessage(session.id, earlier.id, root)
+        yield* textPart(session.id, earlierAnswer.id, "earlier answer")
+        const current = yield* createUserMessage(session.id, "current task")
+        const step = yield* createAssistantMessage(session.id, current.id, root)
+        yield* textPart(session.id, step.id, "STEP_ONE_DONE")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+        expect(captured).toHaveLength(1)
+        expect(captured[0]).toContain("STEP_ONE_DONE")
+        expect(captured[0]).toContain("current task")
+        // Nothing is replayed: the follow-up is the continuation text, which still names the request.
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        expect(last?.parts.every((part) => part.type !== "text" || part.synthetic === true)).toBe(true)
+        const text = yield* continuation(session.id)
+        expect(text).toContain("Latest user request:\ncurrent task\n")
+        expect(text).toContain(
+          "The previous request exceeded the provider's size limit. The conversation was compacted.",
+        )
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "still replays the prompt of the turn when the overflowed step is the only one",
+    () => {
+      const stub = llm()
+      const captured: string[] = []
+      stub.push(reply(validSummary(), (input) => captured.push(JSON.stringify(input.messages))))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const root = (yield* TestInstance).directory
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "earlier question")
+        const current = yield* createUserMessage(session.id, "current task")
+        // The step that overflowed never finished.
+        yield* ssn.updateMessage({
+          id: MessageID.ascending(),
+          role: "assistant",
+          sessionID: session.id,
+          mode: "build",
+          agent: "build",
+          path: { cwd: root, root },
+          cost: 0,
+          tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: ref.modelID,
+          providerID: ref.providerID,
+          parentID: current.id,
+          time: { created: Date.now() },
+        })
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+        expect(captured[0]).toContain("earlier question")
+        expect(captured[0]).not.toContain("current task")
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        expect(
+          last?.parts.some((part) => part.type === "text" && !part.synthetic && part.text === "current task"),
+        ).toBe(true)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  it.instance(
+    "does not blame media attachments for an overflow without a replayable turn",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      // Only one turn precedes the marker, so there is no earlier context to replay it over.
+      yield* createUserMessage(session.id, "current")
+      yield* createSummaryCompaction(session.id)
+
+      expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+      const text = yield* continuation(session.id)
+      expect(text).toContain(
+        "The previous request exceeded the provider's size limit. The conversation was compacted.\n\nContinue if you have next steps",
+      )
+      expect(text).toContain("Latest user request:\ncurrent\n")
+      expect(text).not.toContain("media attachments")
+      expect(text).not.toContain("attachments were too large")
+    }),
+  )
+
+  it.instance(
+    "keeps the media explanation when the latest request of an overflow carries attachments",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const picture = yield* createUserMessage(session.id, "what is in this picture?")
+      yield* filePart(session.id, picture.id, "image/png", "cat.png")
+      yield* createSummaryCompaction(session.id)
+
+      expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+      const text = yield* continuation(session.id)
+      expect(text).toContain("due to large media attachments")
+      expect(text).toContain("explain that the attachments were too large to process")
+      expect(text).toContain("Latest user request:\nwhat is in this picture?\n[Attached image/png: cat.png]")
+      expect(text.indexOf("due to large media attachments")).toBeLessThan(text.indexOf("Latest user request:"))
+    }),
+  )
+
+  it.instance(
+    "does not add the overflow sentence to a continuation that is not an overflow",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "current")
+      yield* createSummaryCompaction(session.id)
+
+      expect(yield* compactAuto(session.id)).toBe("continue")
+
+      expect(yield* continuation(session.id)).not.toContain("size limit")
+    }),
+  )
 })
