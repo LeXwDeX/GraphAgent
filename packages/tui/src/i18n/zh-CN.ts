@@ -76,6 +76,7 @@ export const zhCN = {
   "shell.footer.trust": "⚠ {count} 条项目命令未信任 · /trust",
   "subagent.readonly": "子 agent 只接受主 agent 的通信",
   "subagent.readonlyTag": "只读",
+  "error.child_session_read_only": "子 agent 只读：请回主会话让主 agent 调整",
   "subagent.position": "子 agent {index}/{total}",
   "subagent.hint.switch": "切换",
   "subagent.hint.back": "返回",
@@ -457,6 +458,9 @@ export const zhCN = {
   "dagmode.panel.mode.nodes": "节点上限 {max}",
   "dagmode.panel.mode.tokens": "token {used}/{budget}",
   "dagmode.panel.mode.tokensOpen": "token {used}（未设预算）",
+  "dagmode.panel.worktree": "工作目录 {path} · 分支 {branch}",
+  "dagmode.panel.worktree.noBranch": "工作目录 {path}",
+  "dagmode.panel.worktree.removed": "分支 {branch} · 目录已清理",
   "dagmode.panel.usage":
     "用量 输入 {input} · 输出 {output} · 推理 {reasoning} · 缓存 读 {read} 写 {write} · 费用 {cost}",
   "dagmode.panel.quality.reviews": "审核 {n} 次",

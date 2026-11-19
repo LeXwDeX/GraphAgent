@@ -593,3 +593,219 @@ exports[`the usage row how it looks 80 by 24, in English 1`] = `
                                                                                 
 "
 `;
+
+exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 依赖升级验证                                                 │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）        │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                 │
+│ 2/5 完成 · 第 3/4 波 · 1 运行中 · 1 失败 · 1 排队 · 已用 10m 0s              │
+│ 工作目录 …worktree/dag-8f3a1c-workflow · 分支 graphagent/dag-8f3a1c-workflow │
+│                                                                              │
+│   第 1 波  ✓ resolve    2s                                                   │
+│   第 2 波  ✓ install    48s                                                  │
+│ › 第 3 波  ✗ e2e        4m 0s                                                │
+│ ripgrep 下载超时（504）                                                      │
+│   │        ● typecheck  9m 0s                                                │
+│ up 上移 · down 下移 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 依赖升级验证                                                                                    /dag │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）                                                │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                                                         │
+│ 2/5 完成 · 第 3/4 波 · 1 运行中 · 1 失败 · 1 排队 · 已用 10m 0s                                                      │
+│ 工作目录 /repo/.agents/worktree/dag-8f3a1c-workflow · 分支 graphagent/dag-8f3a1c-workflow                            │
+│                                                                                                                      │
+│   第 1 波  ✓ resolve    2s                                                                                           │
+│   第 2 波  ✓ install    48s                                                                                          │
+│ › 第 3 波  ✗ e2e        4m 0s                                                                                        │
+│ ripgrep 下载超时（504）                                                                                              │
+│   │        ● typecheck  9m 0s                                                                                        │
+│   第 4 波  ○ unit                                                                                                    │
+│ up 上移 · down 下移 · enter 进入子 agent · i 请主 agent 处理 · o 详情 · escape 关闭                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;
+
+exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Workflow [Running] 依赖升级验证                                              │
+│ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no bud… │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                 │
+│ 2/5 done · wave 3/4 · 1 running · 1 failed · 1 queued · elapsed 10m 0s       │
+│ Worktree …rktree/dag-8f3a1c-workflow · branch graphagent/dag-8f3a1c-workflow │
+│                                                                              │
+│   Wave 1  ✓ resolve    2s                                                    │
+│   Wave 2  ✓ install    48s                                                   │
+│ › Wave 3  ✗ e2e        4m 0s                                                 │
+│ ripgrep 下载超时（504）                                                      │
+│   │       ● typecheck  9m 0s                                                 │
+│ up Previous · down Next · enter Sub-agent · i Ask main agent · escape Close  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Workflow [Running] 依赖升级验证                                                                                 /dag │
+│ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no budget)                                      │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                                                         │
+│ 2/5 done · wave 3/4 · 1 running · 1 failed · 1 queued · elapsed 10m 0s                                               │
+│ Worktree /repo/.agents/worktree/dag-8f3a1c-workflow · branch graphagent/dag-8f3a1c-workflow                          │
+│                                                                                                                      │
+│   Wave 1  ✓ resolve    2s                                                                                            │
+│   Wave 2  ✓ install    48s                                                                                           │
+│ › Wave 3  ✗ e2e        4m 0s                                                                                         │
+│ ripgrep 下载超时（504）                                                                                              │
+│   │       ● typecheck  9m 0s                                                                                         │
+│   Wave 4  ○ unit                                                                                                     │
+│ up Previous · down Next · enter Sub-agent · i Ask main agent · o Details · escape Close                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;
+
+exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
+" ◇─◆ GraphAgent                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 工作流 [运行中] 依赖升级验证                                                 │
+│ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）        │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                 │
+│ 2/5 完成 · 第 3/4 波 · 1 运行中 · 1 失败 · 1 排队 · 已用 10m 0s              │
+│ 分支 graphagent/dag-8f3a1c-workflow · 目录已清理                             │
+│                                                                              │
+│   第 1 波  ✓ resolve    2s                                                   │
+│   第 2 波  ✓ install    48s                                                  │
+│ › 第 3 波  ✗ e2e        4m 0s                                                │
+│ ripgrep 下载超时（504）                                                      │
+│   │        ● typecheck  9m 0s                                                │
+│ up 上移 · down 下移 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
+" ◇─◆ GraphAgent                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Workflow [Running] 依赖升级验证                                                                                 /dag │
+│ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no budget)                                      │
+│ ━━━━━ ━━━━━ ━━━━━━━━━━ ─────                                                                                         │
+│ 2/5 done · wave 3/4 · 1 running · 1 failed · 1 queued · elapsed 10m 0s                                               │
+│ branch graphagent/dag-8f3a1c-workflow · directory cleaned up                                                         │
+│                                                                                                                      │
+│   Wave 1  ✓ resolve    2s                                                                                            │
+│   Wave 2  ✓ install    48s                                                                                           │
+│ › Wave 3  ✗ e2e        4m 0s                                                                                         │
+│ ripgrep 下载超时（504）                                                                                              │
+│   │       ● typecheck  9m 0s                                                                                         │
+│   Wave 4  ○ unit                                                                                                     │
+│ up Previous · down Next · enter Sub-agent · i Ask main agent · o Details · escape Close                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;

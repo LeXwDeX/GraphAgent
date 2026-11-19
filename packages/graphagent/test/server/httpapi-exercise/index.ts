@@ -2521,10 +2521,93 @@ const scenarios: Scenario[] = [
         check(summary.failedNodes === 1, "the failed node should be counted")
         check(summary.coverageCount === 1, "a failed node should be one coverage entry")
         check(summary.quality === null, "a workflow outside the strict review gate has no quality")
+        // #1618: a workflow without isolation has no worktree, so the field is left out and not sent as null.
+        check(!("worktree" in summary), "a workflow without isolation should carry no worktree field")
         // #468: graphRev is the topology invalidation token — an equal-count
         // replan bumps it alone so TUI signatures can detect the change.
         check(typeof summary.graphRev === "number", "summary should have graphRev")
         check(summary.graphRev === 1, "fresh fixture workflow should carry graphRev 1")
+      }),
+    ),
+
+  // #1618: the workflow-level worktree on the summary. While the workflow runs, the live pointer in its config is all
+  // there is and the state is `active`; once the terminal settlement is written, its state replaces it. Only the
+  // directory, the branch and the state go on the wire.
+  http.protected
+    .get("/dag/session/{sessionID}/summary", "dag.summary.worktree")
+    .seeded((ctx) =>
+      ctx.session({ title: "DAG summary worktree owner" }).pipe(
+        Effect.flatMap((s) =>
+          ctx.dag({
+            sessionID: s.id,
+            nodes: [{ id: "a", name: "A", worker_type: "general", depends_on: [], required: true }],
+            worktree: {
+              directory: "/repo/.agents/worktree/dag-fixture-workflow",
+              branch: "graphagent/dag-fixture-workflow",
+            },
+          }),
+        ),
+      ),
+    )
+    .at((ctx) => ({
+      path: route("/dag/session/{sessionID}/summary", { sessionID: ctx.state.sessionID }),
+      headers: ctx.headers(),
+    }))
+    .jsonEffect(200, (body) =>
+      Effect.sync(() => {
+        array(body)
+        check(body.length === 1, "dag.summary.worktree should return the one fixture workflow")
+        const summary = body[0]
+        object(summary)
+        const worktree = summary.worktree
+        object(worktree)
+        check(
+          worktree.directory === "/repo/.agents/worktree/dag-fixture-workflow",
+          "worktree should carry the directory",
+        )
+        check(worktree.branch === "graphagent/dag-fixture-workflow", "worktree should carry the branch")
+        check(worktree.state === "active", "a live pointer should be reported as active")
+        check(
+          Object.keys(worktree).toSorted().join(",") === "branch,directory,state",
+          "worktree should carry nothing but directory, branch and state",
+        )
+      }),
+    ),
+
+  http.protected
+    .get("/dag/session/{sessionID}/summary", "dag.summary.worktree.settled")
+    .seeded((ctx) =>
+      ctx.session({ title: "DAG summary settled worktree owner" }).pipe(
+        Effect.flatMap((s) =>
+          ctx.dag({
+            sessionID: s.id,
+            nodes: [{ id: "a", name: "A", worker_type: "general", depends_on: [], required: true }],
+            worktree: {
+              directory: "/repo/.agents/worktree/dag-fixture-workflow",
+              branch: "graphagent/dag-fixture-workflow",
+              settled: "removed",
+            },
+          }),
+        ),
+      ),
+    )
+    .at((ctx) => ({
+      path: route("/dag/session/{sessionID}/summary", { sessionID: ctx.state.sessionID }),
+      headers: ctx.headers(),
+    }))
+    .jsonEffect(200, (body) =>
+      Effect.sync(() => {
+        array(body)
+        const summary = body[0]
+        object(summary)
+        const worktree = summary.worktree
+        object(worktree)
+        check(worktree.state === "removed", "a settled worktree should be reported with the state it settled in")
+        check(worktree.branch === "graphagent/dag-fixture-workflow", "the kept branch should still be reported")
+        check(
+          Object.keys(worktree).toSorted().join(",") === "branch,directory,state",
+          "the settlement's commit and patch evidence should stay off the wire",
+        )
       }),
     ),
 

@@ -34,6 +34,11 @@ export namespace RipgrepAsset {
     id: "ripgrep",
     version,
     required: true,
+    // The engine (src/ripgrep.ts) passes --json, --sort=path, --no-config, --files, --hidden, --follow and --glob=.
+    // --json and --sort arrived in ripgrep 0.10.0 (--no-config came with config files in 0.8.0, per the CHANGELOG), so
+    // an older system rg fails every grep/glob call and is skipped for the pinned asset. Anything from 0.10.0 up is
+    // accepted, such as apt's 14.1.0. Raise this when the engine starts using a newer flag.
+    system: { minimum: "0.10.0" },
     targets: [
       target({
         os: "darwin",

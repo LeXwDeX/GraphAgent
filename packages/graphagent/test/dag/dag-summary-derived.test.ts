@@ -6,6 +6,7 @@
 // loads almost no output text, and the memo must skip work without ever
 // changing a result.
 import { describe, expect, test } from "bun:test"
+import { eq } from "drizzle-orm"
 import { Effect, Layer, Schema } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
@@ -15,6 +16,7 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionSchema } from "@graphagent/core/session/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
+import type { DagEvent } from "@graphagent/schema/dag-event"
 import { DagSummary } from "@graphagent/schema/dag-summary"
 import { DagCoverage } from "@/dag/coverage"
 import type { WorkflowConfig } from "@/dag/dag"
@@ -240,6 +242,133 @@ describe("DagSummaryDerived.forWorkflows (#1027 D6b)", () => {
   )
 })
 
+// #1618: the workflow-level worktree on the summary. The rule is the one `workflow status` follows: the settled row
+// wins, the live pointer in the persisted config stands in for it until then, and a workflow without isolation has
+// neither and carries no field.
+describe("DagSummaryDerived worktree (#1618)", () => {
+  const plain = () => ({ name: "plain", nodes: strictConfig().nodes.filter((node) => node.block === "coding") })
+  const pointer = {
+    directory: "/repo/.agents/worktree/dag-wf-workflow",
+    branch: "graphagent/dag-wf-workflow",
+    baseHead: "base-sha",
+  }
+  const settledRow = (state: DagEvent.WorkflowWorktree["state"], extra: Partial<DagEvent.WorkflowWorktree> = {}) =>
+    ({
+      directory: pointer.directory,
+      branch: pointer.branch,
+      baseHead: "base-sha",
+      head: "head-sha",
+      patchPath: "/reports/wf/workflow.patch",
+      patchSha256: "patch-sha",
+      touchedPaths: ["src/a.ts"],
+      state,
+      ...extra,
+    }) satisfies DagEvent.WorkflowWorktree
+
+  /** Settles the seeded workflow the way the projection does: the column only, no seq and no update time. */
+  const settle = (worktree: DagEvent.WorkflowWorktree) =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .update(WorkflowTable)
+        .set({ worktree })
+        .where(eq(WorkflowTable.id, WORKFLOW_ID))
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+  const derivedOf = Effect.gen(function* () {
+    const store = yield* DagStore.Service
+    const workflow = (yield* store.listBySession("ses_parent"))[0]
+    return (yield* DagSummaryDerived.forWorkflows(store, [workflow])).get(WORKFLOW_ID)
+  })
+
+  it.effect("the live pointer says active, with the directory and branch and none of its other fields", () =>
+    Effect.gen(function* () {
+      yield* seed({ ...plain(), worktree: pointer }, { implementation: { output: { fingerprint: "fp" } } })
+      const derived = yield* derivedOf
+      expect(derived?.worktree).toEqual({ directory: pointer.directory, branch: pointer.branch, state: "active" })
+      // The numbers beside it are what they were.
+      expect(derived).toMatchObject({ coverageCount: 0, quality: null })
+    }),
+  )
+
+  it.effect("a pointer without a branch is active without one", () =>
+    Effect.gen(function* () {
+      yield* seed({ ...plain(), worktree: { directory: pointer.directory } }, {})
+      expect((yield* derivedOf)?.worktree).toEqual({ directory: pointer.directory, state: "active" })
+    }),
+  )
+
+  it.effect("a settlement wins over the pointer and gives its own state, and only the fields the wire declares", () =>
+    Effect.gen(function* () {
+      yield* seed({ ...plain(), worktree: pointer }, {})
+      for (const state of ["removed", "kept"] as const) {
+        yield* settle(settledRow(state, state === "kept" ? { reason: "patch failed" } : {}))
+        const worktree = (yield* derivedOf)?.worktree
+        // The commit, patch and reason evidence stay on the row; the wire carries where it was and what remains.
+        expect(worktree).toEqual({ directory: pointer.directory, branch: pointer.branch, state })
+      }
+      // The settlement's own directory and branch are what count, not the pointer's.
+      yield* settle(settledRow("kept", { directory: "/elsewhere", branch: undefined }))
+      expect((yield* derivedOf)?.worktree).toEqual({ directory: "/elsewhere", state: "kept" })
+    }),
+  )
+
+  it.effect("a settlement stands on its own once the pointer is gone from the config", () =>
+    Effect.gen(function* () {
+      yield* seed(plain(), {})
+      yield* settle(settledRow("removed"))
+      expect((yield* derivedOf)?.worktree).toEqual({
+        directory: pointer.directory,
+        branch: pointer.branch,
+        state: "removed",
+      })
+    }),
+  )
+
+  it.effect("a workflow without isolation has no field at all, and a pointer that names no directory is ignored", () =>
+    Effect.gen(function* () {
+      yield* seed(plain(), {})
+      const none = yield* derivedOf
+      expect(none).toBeDefined()
+      expect("worktree" in none!).toBe(false)
+
+      const { db } = yield* Database.Service
+      for (const broken of [{}, { directory: "" }, { directory: 7 }, { branch: "only-a-branch" }, "x", null]) {
+        yield* db
+          .update(WorkflowTable)
+          .set({ config: JSON.stringify({ ...plain(), worktree: broken }) })
+          .where(eq(WorkflowTable.id, WORKFLOW_ID))
+          .run()
+          .pipe(Effect.orDie)
+        const derived = yield* derivedOf
+        expect({ broken, drawn: derived !== undefined && "worktree" in derived }).toEqual({ broken, drawn: false })
+      }
+    }),
+  )
+
+  it.effect("an unreadable config carries no pointer, but a settlement is still reported", () =>
+    Effect.gen(function* () {
+      yield* seed(plain(), {})
+      const { db } = yield* Database.Service
+      yield* db
+        .update(WorkflowTable)
+        .set({ config: "{ not json" })
+        .where(eq(WorkflowTable.id, WORKFLOW_ID))
+        .run()
+        .pipe(Effect.orDie)
+      expect((yield* derivedOf)?.worktree).toBeUndefined()
+      yield* settle(settledRow("kept"))
+      expect((yield* derivedOf)?.worktree).toEqual({
+        directory: pointer.directory,
+        branch: pointer.branch,
+        state: "kept",
+      })
+    }),
+  )
+})
+
 describe("DagSummaryDerived memo (#1027 D6b)", () => {
   const config = strictConfig()
   const lite = (workflowId: string, outputs: Outputs): SummaryNodeRow[] =>
@@ -263,17 +392,17 @@ describe("DagSummaryDerived memo (#1027 D6b)", () => {
         ["wf-b", "1"],
       ]),
       nodes: [...lite("wf-a", roundOne), ...lite("wf-b", {})],
+      workflows: ["wf-a", "wf-b"].map((id) => makeWorkflowRow({ id, config: JSON.stringify(config) })),
       reads: [] as string[][],
       markerReads: 0,
     }
-    const workflows = ["wf-a", "wf-b"].map((id) => makeWorkflowRow({ id, config: JSON.stringify(config) }))
     const store = {
       getWorkflowRevisions: () =>
         Effect.sync(() => {
           state.markerReads += 1
           return state.revisions
         }),
-      listBySession: () => Effect.succeed(workflows),
+      listBySession: () => Effect.succeed(state.workflows),
       getSummaryNodes: (input: { readonly workflowIds: readonly string[] }) =>
         Effect.sync(() => {
           state.reads.push([...input.workflowIds])
@@ -310,6 +439,40 @@ describe("DagSummaryDerived memo (#1027 D6b)", () => {
       const result = yield* resolve(h, ["wf-a", "wf-b"])
       expect(h.state.reads).toEqual([["wf-a", "wf-b"], ["wf-b"]])
       expect(result.get("wf-b")?.quality).toMatchObject({ reviews: 1, raised: 5 })
+    }),
+  )
+
+  // #1618: the settlement of a workflow's worktree is written without moving the workflow's seq or update time, so the
+  // marker's own settled segment is all that tells the memo the live pointer it holds is out of date. The memo keeps
+  // exactly what the marker allows, and gives the settled state the moment the marker moves.
+  pure.effect("gives the settled worktree once the marker moves for it, and keeps the pointer until then", () =>
+    Effect.gen(function* () {
+      const h = harness()
+      const pointer = { directory: "/wt/wf-a", branch: "graphagent/wf-a" }
+      const withPointer = JSON.stringify({ ...config, worktree: pointer })
+      h.state.workflows = [
+        makeWorkflowRow({ id: "wf-a", config: withPointer }),
+        makeWorkflowRow({ id: "wf-b", config: JSON.stringify(config) }),
+      ]
+      const first = yield* resolve(h, ["wf-a", "wf-b"])
+      expect(first.get("wf-a")?.worktree).toEqual({ ...pointer, state: "active" })
+      expect(first.get("wf-b")?.worktree).toBeUndefined()
+
+      // The row is settled, but the marker has not moved: the memo is only a cache of what it derived at that marker.
+      const settled = { ...pointer, touchedPaths: [], state: "removed" as const }
+      h.state.workflows = [
+        makeWorkflowRow({ id: "wf-a", config: withPointer, worktree: settled }),
+        makeWorkflowRow({ id: "wf-b", config: JSON.stringify(config) }),
+      ]
+      expect((yield* resolve(h, ["wf-a", "wf-b"])).get("wf-a")?.worktree).toEqual({ ...pointer, state: "active" })
+      expect(h.state.reads).toHaveLength(1)
+
+      // The store's marker ends in the settled flag: only wf-a derives again, and it now says what remained.
+      h.state.revisions.set("wf-a", "1.0.1.0.1")
+      const second = yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toEqual([["wf-a", "wf-b"], ["wf-a"]])
+      expect(second.get("wf-a")?.worktree).toEqual({ ...pointer, state: "removed" })
+      expect(second.get("wf-b")).toBe(first.get("wf-b"))
     }),
   )
 
@@ -408,6 +571,41 @@ describe("DagSummaryDerived.toWire (#1027 D6b)", () => {
     expect(encode({ ...wire, quality: null }).quality).toBeNull()
     expect(encode({ ...wire, quality: { ...quality, completeness: null } }).quality?.completeness).toBeNull()
     expect(() => encode({ ...wire, quality: { ...quality, raised: -1 } })).toThrow()
+  })
+
+  // #1618: the worktree is one more optional field, so a client from before it decodes a newer server's summary, and a
+  // newer client one from an older server, which has no field to send.
+  test("carries the worktree only when the workflow has one, and encodes it through the public schema", () => {
+    const encode = Schema.encodeUnknownSync(DagSummary.WorkflowSummary)
+    const quality = null
+    const bare = DagSummaryDerived.toWire(summary, { coverageCount: 0, quality })
+    expect("worktree" in bare).toBe(false)
+    expect(encode(bare)).toEqual(bare)
+
+    for (const worktree of [
+      { directory: "/wt/wf", branch: "graphagent/wf", state: "active" },
+      { directory: "/wt/wf", state: "kept" },
+      { directory: "/wt/wf", branch: "graphagent/wf", state: "removed" },
+    ] as const) {
+      const wire = DagSummaryDerived.toWire(summary, { coverageCount: 0, quality, worktree }, 3)
+      expect(wire.worktree).toEqual(worktree)
+      expect(encode(wire)).toEqual(wire)
+    }
+
+    // Anything the schema does not declare is a failure here, not in a client: a state the wire has no word for, a path
+    // that is not a string, and the evidence the settlement row holds.
+    const wire = DagSummaryDerived.toWire(summary, {
+      coverageCount: 0,
+      quality,
+      worktree: { directory: "/wt/wf", state: "active" },
+    })
+    expect(() => encode({ ...wire, worktree: { directory: "/wt/wf", state: "gone" } })).toThrow()
+    expect(() => encode({ ...wire, worktree: { directory: 7, state: "active" } })).toThrow()
+    expect(() => encode({ ...wire, worktree: { state: "active" } })).toThrow()
+    expect(encode({ ...wire, worktree: { directory: "/wt/wf", state: "kept", patchPath: "/p" } }).worktree).toEqual({
+      directory: "/wt/wf",
+      state: "kept",
+    })
   })
 
   // #1475: the usage figures ride the same schema as optional fields, so an older server's summary still decodes.

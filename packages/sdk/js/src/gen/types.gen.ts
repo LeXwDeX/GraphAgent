@@ -409,6 +409,11 @@ export type DagWorkflowSummary = {
   coverageCount?: number
   checkpointPending?: boolean
   quality?: DagWorkflowQuality | null
+  worktree?: {
+    directory: string
+    branch?: string
+    state: "active" | "removed" | "kept"
+  }
 }
 
 export type DagWorkflowQuality = {

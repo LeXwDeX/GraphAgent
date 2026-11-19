@@ -76,14 +76,20 @@ function reminder(over: Partial<SessionReminder> = {}): SessionReminder {
   }
 }
 
-/** An assistant message; `failed` ends its turn in an error. */
-function assistant(id: string, created: number, completed?: number, failed = false): Message {
+/** An assistant message; `failed` ends its turn in an error, `"aborted"` in the user's own stop (Esc). */
+function assistant(id: string, created: number, completed?: number, failed: boolean | "aborted" = false): Message {
+  const error =
+    failed === "aborted"
+      ? { name: "MessageAbortedError" as const, data: { message: "Aborted" } }
+      : failed
+        ? { name: "UnknownError" as const, data: { message: "failed" } }
+        : undefined
   return {
     id,
     sessionID: ROOT,
     role: "assistant",
     time: { created, ...(completed !== undefined ? { completed } : {}) },
-    ...(failed ? { error: { name: "UnknownError" as const, data: { message: "failed" } } } : {}),
+    ...(error ? { error } : {}),
     parentID: "msg_user",
     modelID: "model",
     providerID: "provider",
@@ -254,6 +260,10 @@ function mount(options: { start?: number; toast?: (toast: ToastOptions) => void 
       addMessage(message: Message) {
         setData("message", ROOT, (list = []) => [...list, message])
       },
+      /** A message as the server rewrites it when its turn ends (or is stopped): the same id with the new content. */
+      updateMessage(message: Message) {
+        setData("message", ROOT, (list = []) => list.map((held) => (held.id === message.id ? message : held)))
+      },
       /** The history cache: an evicted root loses its messages and leaves `hydrated`. */
       evict(root = ROOT) {
         setData("hydrated", (list) => list.filter((id) => id !== root))
@@ -419,6 +429,103 @@ describe("pr tracker: rows", () => {
     h.deliver(entry({ updatedAt: T0 + SECOND, checks: { total: 6, pending: 1, failed: 0, passed: 5 } }))
     expect(before.entry.checks?.passed).toBe(4)
     expect(said(h.tracker.items(ROOT)[0])).toBe("CI 5/6")
+  })
+})
+
+// The user pressing Esc on the agent's turn is the user taking over, not a turn that failed (#1641): the row goes,
+// with no warning, no toast and no callback left behind. The message ends in a stop and the session goes idle; the
+// tests do not assume which of the two the client sees first.
+describe("pr tracker: a turn the user stopped", () => {
+  const stop = assistant("msg_a1", T0 + 2 * SECOND, T0 + 9 * SECOND, "aborted")
+
+  /** The notice is delivered and the agent has started on it: the row says so, and no callback is pending. */
+  function working() {
+    const h = mount()
+    h.deliver(delivered(T0))
+    expect(kinds(h)).toEqual(["w1:notified"])
+    expect(h.clock.pending()).toEqual([T0 + PR_UNRESPONSIVE_MS])
+
+    h.clock.advanceTo(T0 + 5 * SECOND)
+    h.setStatus("busy")
+    h.addMessage(assistant("msg_a1", T0 + 2 * SECOND))
+    expect(kinds(h)).toEqual(["w1:working"])
+    expect(h.clock.pending()).toEqual([])
+    return h
+  }
+
+  /** Nothing was said but the outcome the delivery brought. */
+  const quiet = (h: Harness) => expect(h.toasts.map((toast) => toast.dedupeKey)).toEqual(["pr:w1:success"])
+
+  test("busy, stopped, idle: the row goes, with no warning, no toast and no callback", () => {
+    const h = working()
+    h.clock.advanceTo(T0 + 9 * SECOND)
+    h.updateMessage(stop)
+    expect(kinds(h)).toEqual(["w1:working"])
+    h.setStatus("idle")
+
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.clock.pending()).toEqual([])
+    quiet(h)
+  })
+
+  test("idle before the stop reaches the store: the row is never a warning, and goes once it does", () => {
+    const h = working()
+    h.clock.advanceTo(T0 + 9 * SECOND)
+    h.setStatus("idle")
+    // The message has no error yet, so for a moment it is an answer.
+    expect(kinds(h)).toEqual(["w1:handled"])
+    h.updateMessage(stop)
+
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.clock.pending()).toEqual([])
+    quiet(h)
+  })
+
+  test("the stop and a watch event in one frame do not toast a failed turn", () => {
+    const h = working()
+    h.clock.advanceTo(T0 + 9 * SECOND)
+    // One frame: the store takes the events in, then the listener judges, then the effect folds the result in.
+    batch(() => {
+      h.updateMessage(stop)
+      h.setStatus("idle")
+      h.deliver(delivered(T0, { updatedAt: T0 + 9 * SECOND }))
+    })
+
+    quiet(h)
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.clock.pending()).toEqual([])
+  })
+
+  test("a failed turn after the stop is a warning again", () => {
+    const h = working()
+    h.clock.advanceTo(T0 + 9 * SECOND)
+    h.updateMessage(stop)
+    h.setStatus("idle")
+    expect(h.tracker.items(ROOT)).toEqual([])
+
+    h.clock.advanceTo(T0 + 20 * SECOND)
+    h.setStatus("busy")
+    h.addMessage(assistant("msg_a2", T0 + 12 * SECOND))
+    expect(kinds(h)).toEqual(["w1:working"])
+    h.updateMessage(assistant("msg_a2", T0 + 12 * SECOND, T0 + 19 * SECOND, true))
+    h.setStatus("idle")
+
+    const [item] = h.tracker.items(ROOT)
+    expect(item.state).toMatchObject({ kind: "turnError", sticky: true, tone: "warning" })
+  })
+
+  test("a stop seen before the history was evicted still counts after it", () => {
+    const h = working()
+    h.clock.advanceTo(T0 + 9 * SECOND)
+    h.updateMessage(stop)
+    h.setStatus("idle")
+    expect(h.tracker.items(ROOT)).toEqual([])
+
+    // Without the history only what was seen of it is left: the row stays away, and no three minutes start.
+    h.evict()
+    expect(h.tracker.items(ROOT)).toEqual([])
+    expect(h.clock.pending()).toEqual([])
+    quiet(h)
   })
 })
 
