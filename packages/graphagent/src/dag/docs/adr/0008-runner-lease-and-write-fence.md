@@ -1127,10 +1127,27 @@ An interruption (the cap above, a cancel) stops the wait and never an fs step in
 the middle: each step is one async function that runs to its end once it has
 started, as the synchronous call did, so a cut-short settlement leaves no
 half-written file and strands no temporary file, and the retry redoes what was cut
-short from the committed range. The temporary name of the evidence is unique per
-call because a retry can now start while the tail of an interrupted call is still
-running. The cap reaches these waits, which it could not while they were
-synchronous, and a slow disk no longer holds the whole process.
+short from the committed range. The cap reaches these waits, which it could not
+while they were synchronous, and a slow disk no longer holds the whole process.
+
+What the synchronous call could not do is outlive the critical section, and an
+asynchronous write can: the tail of a write whose caller was interrupted runs after
+the lock was released, and by then a recovery can have reopened the workflow and
+the next settlement written the same `_workflow.patch` and
+`_workflow.settlement.json`. The old write would land over the new file, and the
+`patchSha256` recorded for it would not be the file's checksum; the episode fence
+of the publish cannot fence a file write. So the writes to one file are ordered in
+this process by its absolute path (`DagIsolation.writeInOrder`, used by
+`writePatchArtifactAsync` and by the evidence's temporary file and rename): a
+write starts only after every earlier write to the same file has ended, whether it
+succeeded, failed or lost its caller, and the entry of a file leaves the table when
+its last write ends. The wait for the earlier writes belongs to the caller's wait,
+so an interruption ends it and the cap bounds it as it bounds every other wait
+under the lock. A write whose caller was interrupted before its turn is not
+started (nobody records it, and a later one follows it anyway); a write that has
+started is never cut and keeps its place, and the later writes queue behind it.
+The order is by file and within the process; it does not order the writes of
+another process.
 
 The synchronous versions stay for the callers outside the lock: `canonicalDirectory`,
 `resolveWorkspace` and `resolveExecution` (validation, workspace pinning at

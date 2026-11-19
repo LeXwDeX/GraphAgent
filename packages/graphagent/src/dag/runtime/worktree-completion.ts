@@ -9,7 +9,6 @@
  * instance-aware remove operation in.
  */
 
-import { randomUUID } from "node:crypto"
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { DateTime, Effect, Cause, Fiber, Option, Schedule, Schema } from "effect"
@@ -207,6 +206,10 @@ export function settleWorkflowWorktree(
     // step in the middle: each one is a single async function that runs to its
     // end, as the synchronous call it replaced did, so it leaves no half-written
     // file and no stranded temporary file, and a retry redoes what was cut short.
+    // The one thing the synchronous call could not do is outlive the critical
+    // section, and a write that does must not land over the next settlement's:
+    // the patch and the evidence take their turn behind the earlier writes to
+    // the same file (`DagIsolation.writeInOrder`).
     const commit = yield* DagIsolation.commitWorktreeAsync(
       configured.directory,
       configured.baseHead ?? "",
@@ -322,26 +325,36 @@ function pathExists(path: string): Effect.Effect<boolean> {
  * a half-written temporary file or strand it, as it could not between the
  * synchronous calls it replaces. A failed write or rename removes the temporary
  * file and fails with the error's message, the reason the synchronous throw
- * gave. The temporary name is unique per call: a retry that starts while the
- * tail of an interrupted call is still running must not share its file. */
+ * gave. What the synchronous calls could not do is outlive the critical section:
+ * the tail of an interrupted call can still be running when a recovery has
+ * reopened the workflow and the next settlement persists its evidence, and its
+ * rename would land over the newer file. So the whole sequence takes its turn
+ * behind the earlier writes to the same file (`DagIsolation.writeInOrder`), which
+ * also keeps two calls from sharing the temporary file. */
 function persistSettlementEvidence(
   projectID: string,
   dagID: string,
   worktree: DagEvent.WorkflowWorktree,
 ): Effect.Effect<void, Error> {
   return Effect.tryPromise({
-    try: async () => {
+    try: async (signal) => {
       const file = settlementEvidencePath(projectID, dagID)
       if (!file) throw new Error(`invalid workflow ID for settlement evidence: ${JSON.stringify(dagID)}`)
-      await mkdir(dirname(file), { recursive: true })
-      const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`
-      try {
-        await writeFile(temporary, JSON.stringify(worktree))
-        await rename(temporary, file)
-      } catch (error) {
-        await rm(temporary, { force: true })
-        throw error
-      }
+      await DagIsolation.writeInOrder(
+        file,
+        async () => {
+          await mkdir(dirname(file), { recursive: true })
+          const temporary = `${file}.tmp-${process.pid}`
+          try {
+            await writeFile(temporary, JSON.stringify(worktree))
+            await rename(temporary, file)
+          } catch (error) {
+            await rm(temporary, { force: true })
+            throw error
+          }
+        },
+        signal,
+      )
     },
     catch: (error) => (error instanceof Error ? error : new Error(String(error))),
   })

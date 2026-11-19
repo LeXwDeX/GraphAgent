@@ -1714,3 +1714,324 @@ describe("workflow worktree settlement waits for the disk under the lock without
     }
   })
 })
+
+// A write that outlives its caller (the cap of the workflow lock, a cancel) ends after the lock was released. A recovery
+// can have reopened the workflow by then, and the settlement of its next episode writes the same `_workflow.patch` and
+// `_workflow.settlement.json`: the old write must not land over the new one, which the synchronous write could never
+// do, because it ended inside the critical section.
+describe("writes to one file keep their order when the caller of one gave up (#1583)", () => {
+  const deferred = () => {
+    let resolve!: () => void
+    const promise = new Promise<void>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+
+  /** Waits, in real time, for `condition`: a few turns of the event loop, the queue's own, are all it takes. */
+  const until = async (condition: () => boolean) => {
+    for (let attempt = 0; attempt < 200 && !condition(); attempt++) await Bun.sleep(10)
+  }
+
+  /** Parks the first `writeFile` of `fs/promises` aimed at a path ending in `suffix` until `release`; the rest go through. */
+  const parkFirstWriteFile = (suffix: string) => {
+    const original = nodeFsPromises.writeFile
+    const reached = deferred()
+    const gate = deferred()
+    let seen = 0
+    let content: unknown
+    let landed: Promise<void> = Promise.resolve()
+    const probe = spyOn(nodeFsPromises, "writeFile").mockImplementation((file, data, options) => {
+      if (typeof file !== "string" || !file.endsWith(suffix) || ++seen > 1) return original(file, data, options)
+      content = data
+      reached.resolve()
+      landed = gate.promise.then(() => original(file, data, options))
+      void landed.catch(() => undefined)
+      return landed
+    })
+    return {
+      reached: reached.promise,
+      release: gate.resolve,
+      landed: () => landed,
+      content: () => content,
+      restore: () => probe.mockRestore(),
+    }
+  }
+
+  /** Parks the first `rename` of `fs/promises` onto a path ending in `suffix` until `release`; the rest go through. */
+  const parkFirstRename = (suffix: string) => {
+    const original = nodeFsPromises.rename
+    const reached = deferred()
+    const gate = deferred()
+    let seen = 0
+    let landed: Promise<void> = Promise.resolve()
+    const probe = spyOn(nodeFsPromises, "rename").mockImplementation((from, to) => {
+      if (typeof to !== "string" || !to.endsWith(suffix) || ++seen > 1) return original(from, to)
+      reached.resolve()
+      landed = gate.promise.then(() => original(from, to))
+      void landed.catch(() => undefined)
+      return landed
+    })
+    return { reached: reached.promise, release: gate.resolve, landed: () => landed, restore: () => probe.mockRestore() }
+  }
+
+  /** A repository with a linked worktree that has a first change. */
+  const treeWithChange = async (tmp: { path: string }, branch: string) => {
+    const linked = path.join(tmp.path, "order-tree")
+    await $`git worktree add -b ${branch} ${linked}`.cwd(tmp.path).quiet()
+    const baseHead = (await $`git rev-parse HEAD`.cwd(linked).text()).trim()
+    writeFileSync(path.join(linked, "first.txt"), "first\n")
+    return { linked, baseHead }
+  }
+
+  describe("DagIsolation.writeInOrder", () => {
+    const unique = (name: string) => path.join(os.tmpdir(), `graphagent-write-order-${process.pid}`, name)
+    /** How a write ended: its result, or the message of the error it failed with. */
+    const outcome = (write: Promise<unknown>) =>
+      write.then(
+        () => "ended",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      )
+
+    it("starts a write only when the earlier writes to its file have ended", async () => {
+      const file = unique("order")
+      const log: string[] = []
+      const first = deferred()
+      const second = deferred()
+      const write = (name: string, gate?: { promise: Promise<void> }) => async () => {
+        log.push(`start ${name}`)
+        await gate?.promise
+        log.push(`end ${name}`)
+        return name
+      }
+      const a = DagIsolation.writeInOrder(file, write("a", first))
+      const b = DagIsolation.writeInOrder(file, write("b", second))
+      const c = DagIsolation.writeInOrder(file, write("c"))
+      const other = DagIsolation.writeInOrder(`${file}.other`, write("other"))
+      await Bun.sleep(20)
+      // The others wait for `a`; another file does not.
+      expect(log).toEqual(["start a", "start other", "end other"])
+      expect(await other).toBe("other")
+      expect(DagIsolation.pendingWritePaths()).toEqual([path.resolve(file)])
+      first.resolve()
+      await a
+      await Bun.sleep(20)
+      expect(log.slice(3)).toEqual(["end a", "start b"])
+      second.resolve()
+      expect(await Promise.all([b, c])).toEqual(["b", "c"])
+      expect(log.slice(3)).toEqual(["end a", "start b", "end b", "start c", "end c"])
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    })
+
+    it("goes on after a write that failed, skips one whose caller gave up before its turn, and never cuts one that started", async () => {
+      const file = unique("outcomes")
+      const started: string[] = []
+      const hold = deferred()
+      const failing = DagIsolation.writeInOrder(file, async () => {
+        started.push("failing")
+        await hold.promise
+        throw new Error("disk full")
+      })
+      const controller = new AbortController()
+      const abandoned = DagIsolation.writeInOrder(
+        file,
+        async () => {
+          started.push("abandoned")
+          return "abandoned"
+        },
+        controller.signal,
+      )
+      const kept = DagIsolation.writeInOrder(file, async () => {
+        started.push("kept")
+        return "kept"
+      })
+      // Its caller gave up while it waited for its turn.
+      controller.abort()
+      hold.resolve()
+      expect(await outcome(failing)).toBe("disk full")
+      expect(await outcome(abandoned)).toContain("not started")
+      expect(await kept).toBe("kept")
+      expect(started).toEqual(["failing", "kept"])
+
+      // A write that has started when its caller gives up runs to its end.
+      const running = deferred()
+      const late = new AbortController()
+      let finished = false
+      const cut = DagIsolation.writeInOrder(
+        file,
+        async () => {
+          await running.promise
+          finished = true
+        },
+        late.signal,
+      )
+      await Bun.sleep(10)
+      late.abort()
+      running.resolve()
+      await cut
+      expect(finished).toBe(true)
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    })
+  })
+
+  it("keeps the patch of the later settlement when the write of an interrupted one ends after it", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { linked, baseHead } = await treeWithChange(tmp, "lock-order-patch")
+    const projectID = `proj-lock-order-patch-${process.pid}`
+    const dagID = "dag_lock_order_patch"
+    const patchFile = path.join(workflowReportsArea(projectID), dagID, "_workflow.patch")
+    const gate = parkFirstWriteFile("_workflow.patch")
+    try {
+      const input = {
+        dagID,
+        projectID,
+        owner: tmp.path,
+        directory: linked,
+        status: "failed" as const,
+        branch: "lock-order-patch",
+        baseHead,
+      }
+      // The first settlement writes its patch, which parks, and its caller gives up.
+      const first = settling(input)
+      const controller = new AbortController()
+      const firstRun = Effect.runPromiseExit(first.effect, { signal: controller.signal })
+      await gate.reached
+      controller.abort()
+      expect(Exit.hasInterrupts(await firstRun)).toBe(true)
+      expect(first.published).toEqual([])
+
+      // The workflow is reopened, more is done in the worktree, and the second settlement has another patch to write.
+      writeFileSync(path.join(linked, "second.txt"), "second\n")
+      const second = settling(input)
+      let secondEnded = false
+      const secondRun = Effect.runPromise(second.effect).then((outcome) => {
+        secondEnded = true
+        return outcome
+      })
+      await Bun.sleep(400)
+      const waitedForTheWriteAhead = !secondEnded
+      // The slow disk answers: the first write ends, and then the second.
+      gate.release()
+      expect(await secondRun).toBe("settled")
+      await gate.landed()
+
+      const patch = readFileSync(patchFile)
+      expect(patch.toString()).toContain("second.txt")
+      expect(patch.toString()).not.toBe(String(gate.content()))
+      expect(second.published[0]).toMatchObject({ patchSha256: createHash("sha256").update(patch).digest("hex") })
+      expect(waitedForTheWriteAhead).toBe(true)
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    } finally {
+      gate.release()
+      gate.restore()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the evidence of the later settlement when the rename of an interrupted one ends after it", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { linked, baseHead } = await treeWithChange(tmp, "lock-order-evidence")
+    const projectID = `proj-lock-order-evidence-${process.pid}`
+    const dagID = "dag_lock_order_evidence"
+    const evidenceFile = path.join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+    const gate = parkFirstRename("_workflow.settlement.json")
+    try {
+      const input = {
+        dagID,
+        projectID,
+        owner: tmp.path,
+        directory: linked,
+        status: "completed" as const,
+        branch: "lock-order-evidence",
+        baseHead,
+      }
+      // The first settlement has written the temporary file of its evidence; the rename parks, and its caller gives up.
+      const first = settling(input)
+      const controller = new AbortController()
+      const firstRun = Effect.runPromiseExit(first.effect, { signal: controller.signal })
+      await gate.reached
+      controller.abort()
+      expect(Exit.hasInterrupts(await firstRun)).toBe(true)
+      expect(first.published).toEqual([])
+      expect(first.removed).toEqual([])
+
+      writeFileSync(path.join(linked, "second.txt"), "second\n")
+      const second = settling(input)
+      let secondEnded = false
+      const secondRun = Effect.runPromise(second.effect).then((outcome) => {
+        secondEnded = true
+        return outcome
+      })
+      await Bun.sleep(400)
+      const waitedForTheWriteAhead = !secondEnded
+      gate.release()
+      expect(await secondRun).toBe("settled")
+      await gate.landed()
+
+      const evidence = JSON.parse(readFileSync(evidenceFile, "utf8"))
+      expect(evidence.touchedPaths).toEqual(["first.txt", "second.txt"])
+      expect(evidence).toEqual(second.published[0])
+      expect(readdirSync(path.dirname(evidenceFile)).filter((name) => name.includes(".tmp-"))).toEqual([])
+      expect(waitedForTheWriteAhead).toBe(true)
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    } finally {
+      gate.release()
+      gate.restore()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  it("bounds the wait behind an earlier write by the cap of the lock, and never starts the write that gave up", async () => {
+    await using tmp = await tmpdir()
+    const reports = path.join(tmp.path, "reports")
+    const patchFile = path.join(reports, "dag_lock_order_cap", "_workflow.patch")
+    const gate = parkFirstWriteFile("_workflow.patch")
+    try {
+      const write = (patch: string) =>
+        DagIsolation.writePatchArtifactAsync(reports, "dag_lock_order_cap", "_workflow", patch)
+      const controller = new AbortController()
+      const first = Effect.runPromiseExit(write("first\n"), { signal: controller.signal })
+      await gate.reached
+      controller.abort()
+      expect(Exit.hasInterrupts(await first)).toBe(true)
+
+      const timedOut = await Effect.runPromise(
+        Effect.gen(function* () {
+          const dag = yield* Dag.Service
+          const fiber = yield* dag.exclusive("dag_lock_order_cap", write("second\n")).pipe(Effect.forkChild)
+          // It is waiting for the write ahead of it, in real time; then the clock of the test runs the cap out.
+          yield* Effect.promise(() => Bun.sleep(50))
+          yield* TestClock.adjust("31 seconds")
+          const exit = yield* Fiber.await(fiber)
+          // The lock went with the timeout: the next critical section of the workflow runs.
+          expect(yield* dag.exclusive("dag_lock_order_cap", Effect.succeed("again"))).toBe("again")
+          return exit
+        }).pipe(
+          Effect.provide(spiedLayer(path.join(tmp.path, "transaction-open"))),
+          Effect.provide(TestClock.layer()),
+          Effect.scoped,
+        ),
+      )
+      expect(Exit.isFailure(timedOut)).toBe(true)
+      if (Exit.isFailure(timedOut)) {
+        const defect = Cause.findDefect(timedOut.cause)
+        expect(defect._tag).toBe("Success")
+        if (defect._tag === "Success") expect(Cause.isTimeoutError(defect.success)).toBe(true)
+      }
+
+      // The write ahead goes on to its end; the one whose caller gave up on it never starts.
+      gate.release()
+      await gate.landed()
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(readFileSync(patchFile, "utf8")).toBe("first\n")
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    } finally {
+      gate.release()
+      gate.restore()
+    }
+  })
+})
