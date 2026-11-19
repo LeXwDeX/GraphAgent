@@ -71,6 +71,11 @@ export interface Failure {
 export interface Loaded {
   readonly servers: Servers
   readonly failures: ReadonlyArray<Failure>
+  /**
+   * The project-layer document the servers were merged from: undefined when the project layer is absent or was
+   * skipped. Trust verdicts are taken against this document, never against a skipped one (#1575).
+   */
+  readonly project?: ProjectLayerDocument
 }
 
 /**
@@ -80,15 +85,17 @@ export interface Loaded {
 export function loadValid(root: string): Loaded {
   const servers: Servers = {}
   const failures: Failure[] = []
+  let project: ProjectLayerDocument | undefined
   for (const layer of layers(root)) {
     if (!existsSync(layer.file)) continue
     try {
       Object.assign(servers, readLayer(layer.file))
+      if (layer.scope === "project") project = projectDocument(layer.file)
     } catch (error) {
       failures.push({ file: layer.file, error })
     }
   }
-  return { servers, failures }
+  return { servers, failures, project }
 }
 
 /**
@@ -114,6 +121,11 @@ function fileSignature(file: string): string {
 /** The servers of the layer files, and why they could not be read when that is the case. */
 export interface Cached {
   readonly servers: Servers
+  /**
+   * The project-layer document `servers` came from (see `Loaded.project`). A cached server keeps the provenance of
+   * the read that produced it, so a project entry stays gated after its file becomes unreadable (#1575).
+   */
+  readonly project?: ProjectLayerDocument
   /** Set by the first call that sees a layer file it cannot read; a call for the same content has none. */
   readonly error?: unknown
 }
@@ -125,22 +137,24 @@ export interface Cached {
  * for that content, not on every call, and the same content keeps returning the same servers.
  */
 export function cached(read: (root: string) => Servers = load): (root: string) => Cached {
-  let last: { readonly signature: string; readonly servers: Servers } | undefined
+  type Entry = { readonly signature: string; readonly servers: Servers; readonly project?: ProjectLayerDocument }
+  let last: Entry | undefined
   // The content that could not be read, and the servers that stand in for it: `last`'s, else the readable layers'.
-  let failure: { readonly signature: string; readonly servers: Servers } | undefined
+  let failure: Entry | undefined
+  const view = (entry: Entry): Cached => ({ servers: entry.servers, project: entry.project })
   return (root) => {
     const current = signature(root)
-    if (last?.signature === current) return { servers: last.servers }
-    if (failure?.signature === current) return { servers: failure.servers }
+    if (last?.signature === current) return view(last)
+    if (failure?.signature === current) return view(failure)
     try {
       const servers = read(root)
-      last = { signature: current, servers }
+      last = { signature: current, servers, project: projectLayer(root) }
       failure = undefined
-      return { servers }
+      return view(last)
     } catch (error) {
-      const servers = last?.servers ?? loadValid(root).servers
-      failure = { signature: current, servers }
-      return { servers, error }
+      const recovered = last ?? loadValid(root)
+      failure = { signature: current, servers: recovered.servers, project: recovered.project }
+      return { ...view(failure), error }
     }
   }
 }
@@ -165,6 +179,10 @@ export function projectLayer(root: string): ProjectLayerDocument | undefined {
   if (!hasProjectLayer(root, Global.Path.home)) return undefined
   const file = projectFile(root)
   if (!existsSync(file)) return undefined
+  return projectDocument(file)
+}
+
+function projectDocument(file: string): ProjectLayerDocument | undefined {
   let text: string
   try {
     text = readFileSync(file, "utf8")

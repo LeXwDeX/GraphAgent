@@ -194,14 +194,18 @@ interface State {
  * sees a file it cannot read says so, once for that content; the servers that are still valid stay in use, so a broken
  * file neither fails the caller nor hides the servers of the other layer (#1575).
  */
-const configuredServers = Effect.fnUntraced(function* (s: State, root: string) {
-  const { servers, error } = s.files(root)
+const configured = Effect.fnUntraced(function* (s: State, root: string) {
+  const { servers, project, error } = s.files(root)
   if (error !== undefined) {
     yield* Effect.logWarning("mcp.json cannot be read; keeping the servers that are still valid", {
       error: describeReadFailure(error),
     })
   }
-  return servers
+  return { servers, project }
+})
+
+const configuredServers = Effect.fnUntraced(function* (s: State, root: string) {
+  return (yield* configured(s, root)).servers
 })
 
 const toolID = (server: string, tool: string) => `${server}\0${tool}`
@@ -471,12 +475,15 @@ export const layer = Layer.effect(
      * Project-trust verdict for one server name whose effective configuration
      * comes from the project `mcp.json`. Undefined when the name is not
      * project-sourced (a global entry or a runtime-added server): no project
-     * provenance, so nothing to gate.
+     * provenance, so nothing to gate. The provenance is the project document
+     * the configured servers were read from, not the file as it is now: a
+     * cached project server stays gated after its file becomes unreadable, and
+     * a skipped project document gates nothing (#1575).
      */
     const projectVerdict = Effect.fnUntraced(function* (name: string) {
       if (!trust) return undefined
       const ctx = yield* InstanceState.context
-      const project = McpConfig.projectLayer(ctx.root)
+      const { project } = yield* configured(yield* InstanceState.get(state), ctx.root)
       if (!project) return undefined
       const entry = mcpEntries(project.relative, project.value).find((candidate) => candidate.label === name)
       if (!entry) return undefined
@@ -489,10 +496,12 @@ export const layer = Layer.effect(
      * from the project layer are omitted and stay ungated. One gate call keeps
      * the refused ids in the directory's skipped report.
      */
-    const projectVerdicts = Effect.fnUntraced(function* (root: string, names: readonly string[]) {
+    const projectVerdicts = Effect.fnUntraced(function* (
+      project: McpConfig.ProjectLayerDocument | undefined,
+      names: readonly string[],
+    ) {
       const verdicts = new Map<string, boolean>()
       if (!trust || names.length === 0) return verdicts
-      const project = McpConfig.projectLayer(root)
       if (!project) return verdicts
       const byName = new Map(mcpEntries(project.relative, project.value).map((entry) => [entry.label, entry]))
       const sourced = names.flatMap((name) => {
@@ -627,11 +636,11 @@ export const layer = Layer.effect(
         }
         // mcp.json is the only source of server definitions. A layer that cannot be read (a syntax error, a removed
         // V1 shape, an unknown field) is skipped and reported, so the servers of the other layer still start.
-        const config = yield* configuredServers(s, ctx.root)
+        const { servers: config, project } = yield* configured(s, ctx.root)
         // Project-layer servers must be trusted before their process starts.
         // A refused server keeps a `disabled` status (the same surface a user
         // sees for `disabled: true`) and is reported by the CLI's skipped count.
-        const verdicts = yield* projectVerdicts(ctx.root, Object.keys(config))
+        const verdicts = yield* projectVerdicts(project, Object.keys(config))
 
         yield* Effect.forEach(
           Object.entries(config),
@@ -657,7 +666,7 @@ export const layer = Layer.effect(
         // so the state must react on its own: newly trusted servers start,
         // revoked ones are closed. A manual disconnect wins over a later grant.
         const reconcile = Effect.fnUntraced(function* () {
-          const next = yield* projectVerdicts(ctx.root, Object.keys(config))
+          const next = yield* projectVerdicts(project, Object.keys(config))
           for (const [name, allowed] of next) {
             if (!allowed) {
               const client = s.clients[name]

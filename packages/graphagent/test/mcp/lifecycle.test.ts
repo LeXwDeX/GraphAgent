@@ -401,6 +401,64 @@ trustIt.live("a project MCP server starts no client before trust, starts after i
   }),
 )
 
+// A root with a project mcp.json and the real MCP service behind an isolated trust store (#1575).
+const trustRoot = Effect.fnUntraced(function* (projectText: string) {
+  const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-trust-root-")))
+  const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-trust-state-")))
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      await fs.rm(root, { recursive: true, force: true })
+      await fs.rm(stateDirectory, { recursive: true, force: true })
+    }),
+  )
+  const file = path.join(root, ".agents", "mcp.json")
+  yield* Effect.promise(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, projectText)
+  })
+  const services = yield* Layer.build(mcpWithTrust(stateDirectory))
+  const ctx: InstanceContext = {
+    directory: root,
+    worktree: root,
+    root,
+    project: { id: Project.ID.global, worktree: root, time: { created: 0, updated: 0 }, sandboxes: [] },
+  }
+  const inInstance = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(InstanceRef, ctx))
+  return { file, mcp: Context.get(services, MCP.Service), inInstance }
+})
+
+trustIt.live("a refused project server stays refused after its mcp.json becomes unreadable", () =>
+  Effect.gen(function* () {
+    const { file, mcp, inInstance } = yield* trustRoot(
+      JSON.stringify({ mcpServers: { "project-refused": { type: "local", command: ["echo", "test"] } } }),
+    )
+    lastCreatedClientName = "project-refused"
+    getOrCreateClientState("project-refused")
+    expect((yield* inInstance(mcp.status()))["project-refused"]).toEqual({ status: "disabled" })
+
+    // The cached configuration still names the server; its provenance is the document it was read from.
+    yield* Effect.promise(() => fs.writeFile(file, "{ not json, and longer than before"))
+    const exit = yield* inInstance(mcp.connect("project-refused")).pipe(Effect.exit)
+    if (!Exit.isFailure(exit)) throw new Error("connect started a refused project server")
+    expect(String(Cause.squash(exit.cause))).toContain("not trusted")
+    expect(clientCreateCount).toBe(0)
+  }),
+)
+
+trustIt.live("a skipped project mcp.json does not gate the user-layer server of the same name", () =>
+  Effect.gen(function* () {
+    yield* userLayer(JSON.stringify({ mcpServers: { shared: { type: "local", command: ["echo", "user"] } } }))
+    // Parses, but the unknown top-level field makes the loader skip the whole project layer.
+    const { mcp, inInstance } = yield* trustRoot(
+      JSON.stringify({ unknown: true, mcpServers: { shared: { type: "local", command: ["echo", "project"] } } }),
+    )
+    lastCreatedClientName = "shared"
+    getOrCreateClientState("shared")
+    expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
+    expect(clientCreateCount).toBe(1)
+  }),
+)
+
 function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server: string) {
   if ("status" in status) return status.status
   return status[server]?.status
