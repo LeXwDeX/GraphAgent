@@ -299,9 +299,13 @@ provider error table. The executor reports it only for 4xx answers other than
 401 and 429, and matches `safety` as a whole word, so a `safety_settings`
 parameter error or a 5xx that mentions safety is not read as a content refusal.
 
-The native `QuotaExceeded` tag is weaker evidence. The executor puts it on every
-429 whose body says "quota exceeded", a spent balance and a full per-minute
-window alike, and the tag is kept in the error metadata. The table therefore
+The native `QuotaExceeded` tag is weaker evidence. The executor puts it on a
+429 whose body says "insufficient quota" or "quota exceeded", or names a spent
+balance from the table's spent-balance rows (`credit_balance_exhausted`,
+`arrearage` and the others), unless the body carries Bailian's per-minute
+"please increase your quota limit", which stays a rate limit. A full per-minute
+window in other wording still gets the tag, and the tag is kept in the error
+metadata. The table therefore
 reads it as a spent quota only after every provider code that names a spent
 balance has had its turn, and only when nothing in the message, the body or the
 response headers says the limit lifts by itself: a per-second, per-minute,
