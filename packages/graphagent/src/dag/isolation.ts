@@ -179,6 +179,15 @@ export function numstat(directory: string): Map<string, string> | undefined {
   return counts
 }
 
+/** #1581: the top-level directory of the repository or worktree `directory` is in (`git rev-parse --show-toplevel`),
+ * the root that `touchedPaths` and `numstat` paths are relative to. `undefined` when git cannot answer, like
+ * `numstat`: outside a repository, or for a directory that does not exist. */
+export function repoRoot(directory: string): string | undefined {
+  const top = git(directory, ["rev-parse", "--show-toplevel"])
+  const root = top.ok ? top.text.replace(/\r?\n$/, "") : ""
+  return root === "" ? undefined : root
+}
+
 function parseNameList(text: string): string[] {
   return [...new Set(text.split("\0").filter(Boolean).map(normalizeTouchedPath))].sort()
 }

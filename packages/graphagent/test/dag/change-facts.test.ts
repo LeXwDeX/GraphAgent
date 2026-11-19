@@ -3,13 +3,16 @@
 
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { DagIsolation } from "@/dag/isolation"
 import { MAX_FACT_LINES, collectChangeFacts, renderChangeFacts, type ChangeFacts } from "@/dag/runtime/change-facts"
 import { makeNodeRow } from "./fixtures"
 
 const roots: string[] = []
+
+const posixIt = it.skipIf(process.platform === "win32")
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -17,6 +20,18 @@ afterEach(() => {
 
 function git(directory: string, args: string[]) {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" })
+}
+
+/** A directory that is no repository. */
+function plain() {
+  const directory = mkdtempSync(path.join(tmpdir(), "change-facts-plain-"))
+  roots.push(directory)
+  return directory
+}
+
+/** A path as the facts spell it: `/` between the parts, on every platform. */
+function posix(value: string) {
+  return value.split(path.sep).join("/")
 }
 
 function repo() {
@@ -32,14 +47,22 @@ function repo() {
   return root
 }
 
-/** A completed writer whose recorded paths and self-reported `changed_files` are the two sides of the facts. */
-function writer(id: string, touched: string[] | null, reported?: unknown, dependsOn: string[] = []) {
+/** A completed writer whose recorded paths and self-reported `changed_files` are the two sides of the facts.
+ * `worktreeDirectory` is the worktree an isolated writer ran in, where its recorded paths are rooted. */
+function writer(
+  id: string,
+  touched: string[] | null,
+  reported?: unknown,
+  dependsOn: string[] = [],
+  worktreeDirectory?: string,
+) {
   return makeNodeRow({
     id,
     status: "completed",
     dependsOn,
     touchedPaths: touched,
     output: reported === undefined ? { summary: "done" } : { summary: "done", changed_files: reported },
+    ...(worktreeDirectory === undefined ? {} : { worktreeDirectory }),
   })
 }
 
@@ -223,12 +246,192 @@ describe("collectChangeFacts: line counts", () => {
   })
 })
 
+describe("collectChangeFacts: a writer reports an absolute path (#1581)", () => {
+  /** Where an isolated writer ran: removed by the time a judge reads the facts, as the engine removes a worktree. */
+  const removedWorktree = () => path.join(plain(), "worktree", "w")
+
+  /** The record and the report name the same files: nothing differs either way, nothing is marked outside. */
+  function expectNoDifference(facts: ChangeFacts | undefined, recorded: string[]) {
+    expect(facts?.recorded).toEqual(recorded)
+    expect(facts?.reportedNotRecorded).toEqual([])
+    expect(facts?.recordedNotReported).toEqual([])
+    expect(facts).not.toHaveProperty("reportedOutside")
+  }
+
+  for (const [label, spell] of [
+    ["relative", () => "a.ts"],
+    ["with a ./ prefix", () => "./a.ts"],
+    ["absolute below the repository root", (root: string) => path.join(root, "a.ts")],
+  ] as const)
+    it(`finds no difference when the file is reported ${label}`, () => {
+      const root = repo()
+      expectNoDifference(collect([writer("w", ["a.ts"], [spell(root)])], { directory: root }), ["a.ts"])
+    })
+
+  it("finds no difference when the file is reported absolute below the writer's worktree", () => {
+    const root = repo()
+    const worktree = path.join(plain(), "w")
+    mkdirSync(path.join(worktree, "src"), { recursive: true })
+    const reported = [path.join(worktree, "src", "a.ts")]
+    expectNoDifference(collect([writer("w", ["src/a.ts"], reported, [], worktree)], { directory: root }), ["src/a.ts"])
+  })
+
+  it("finds no difference below a worktree that is gone, and with no directory to read a repository from", () => {
+    const worktree = removedWorktree()
+    const reported = [path.join(worktree, "src", "a.ts")]
+    expectNoDifference(collect([writer("w", ["src/a.ts"], reported, [], worktree)]), ["src/a.ts"])
+  })
+
+  it("reads a path below a worktree that sits inside the repository against the worktree", () => {
+    const root = repo()
+    const worktree = path.join(root, ".agents", "worktree", "w")
+    mkdirSync(path.join(worktree, "src"), { recursive: true })
+    const reported = [path.join(worktree, "src", "a.ts")]
+    expectNoDifference(collect([writer("w", ["src/a.ts"], reported, [], worktree)], { directory: root }), ["src/a.ts"])
+  })
+
+  it("matches what the engine records in a real linked worktree, before and after it is removed", () => {
+    const root = repo()
+    const linked = path.join(plain(), "linked")
+    git(root, ["worktree", "add", "--quiet", "--detach", linked, "HEAD"])
+    mkdirSync(path.join(linked, "src"))
+    writeFileSync(path.join(linked, "src", "new.ts"), "x\n")
+    writeFileSync(path.join(linked, "a.ts"), "one\nTWO\nthree\n")
+    const touched = DagIsolation.touchedPaths(linked)
+    expect(touched).toEqual(["a.ts", "src/new.ts"])
+    const reported = [path.join(linked, "a.ts"), path.join(linked, "src", "new.ts")]
+    expectNoDifference(collect([writer("w", touched, reported, [], linked)], { directory: root }), touched)
+    git(root, ["worktree", "remove", "--force", linked])
+    expectNoDifference(collect([writer("w", touched, reported, [], linked)], { directory: root }), touched)
+  })
+
+  it("reads an absolute path against the repository root when the node runs in a subdirectory", () => {
+    const root = repo()
+    mkdirSync(path.join(root, "pkg"))
+    const reported = [path.join(root, "pkg", "b.ts")]
+    expectNoDifference(collect([writer("w", ["pkg/b.ts"], reported)], { directory: path.join(root, "pkg") }), [
+      "pkg/b.ts",
+    ])
+  })
+
+  posixIt("reads a symlinked spelling of the repository as the repository", () => {
+    const root = repo()
+    const link = path.join(plain(), "link")
+    symlinkSync(root, link, "dir")
+    expectNoDifference(collect([writer("w", ["a.ts"], [path.join(link, "a.ts")])], { directory: root }), ["a.ts"])
+  })
+
+  posixIt("reads a symlinked spelling of a worktree that is gone as that worktree", () => {
+    const real = plain()
+    const link = path.join(plain(), "link")
+    symlinkSync(real, link, "dir")
+    // The writer ran in `<link>/wt` (removed since) and reported its file through the real directory.
+    const reported = [path.join(real, "wt", "src", "a.ts")]
+    expectNoDifference(collect([writer("w", ["src/a.ts"], reported, [], path.join(link, "wt"))]), ["src/a.ts"])
+  })
+
+  posixIt("keeps the name of a symlink the writer reported: git records the link, not its target", () => {
+    const root = repo()
+    symlinkSync("a.ts", path.join(root, "alias.ts"))
+    const reported = [path.join(root, "alias.ts")]
+    expectNoDifference(collect([writer("w", ["alias.ts"], reported)], { directory: root }), ["alias.ts"])
+  })
+
+  it("keeps an absolute path below neither the worktree nor the repository, and marks it outside", () => {
+    const root = repo()
+    const elsewhere = path.join(plain(), "x.ts")
+    // Its name starts with the repository's, but it is not below it.
+    const sibling = path.join(`${root}-sibling`, "x.ts")
+    const facts = collect([writer("w", ["a.ts"], [path.join(root, "a.ts"), elsewhere, sibling])], { directory: root })
+    const outside = [posix(elsewhere), posix(sibling)].sort()
+    expect(facts?.reportedNotRecorded).toEqual(outside)
+    expect(facts?.reportedOutside).toEqual(outside)
+    expect(facts?.recordedNotReported).toEqual([])
+  })
+
+  it("reads each writer's report against that writer's own worktree", () => {
+    const [first, second] = [removedWorktree(), removedWorktree()]
+    const facts = collect(
+      [
+        // The first writer also reported a file of the second one's worktree: below none of its own roots.
+        writer("w1", ["a.ts"], [path.join(first, "a.ts"), path.join(second, "b.ts")], [], first),
+        writer("w2", ["b.ts"], [path.join(second, "b.ts")], [], second),
+      ],
+      { node: makeNodeRow({ id: "judge", dependsOn: ["w1", "w2"] }) },
+    )
+    expect(facts?.recorded).toEqual(["a.ts", "b.ts"])
+    expect(facts?.reportedNotRecorded).toEqual([posix(path.join(second, "b.ts"))])
+    expect(facts?.reportedOutside).toEqual([posix(path.join(second, "b.ts"))])
+    expect(facts?.recordedNotReported).toEqual([])
+  })
+
+  it("keeps and marks an absolute path without a directory, outside a repository, or in a directory that is gone", () => {
+    const elsewhere = path.join(plain(), "x.ts")
+    for (const directory of [undefined, plain(), path.join(plain(), "missing")]) {
+      const facts = collect([writer("w", ["a.ts"], [elsewhere])], { directory })
+      expect(facts?.reportedNotRecorded).toEqual([posix(elsewhere)])
+      expect(facts?.reportedOutside).toEqual([posix(elsewhere)])
+      expect(facts?.recordedNotReported).toEqual(["a.ts"])
+      expect(facts?.counts).toBeUndefined()
+    }
+  })
+
+  it("leaves a relative path as it is, even one that climbs out of the repository", () => {
+    const facts = collect([writer("w", ["a.ts"], ["../x.ts", "a.ts"])], { directory: repo() })
+    expect(facts?.reportedNotRecorded).toEqual(["../x.ts"])
+    expect(facts).not.toHaveProperty("reportedOutside")
+  })
+
+  it("renders no difference for a file reported by its absolute path, and a note only on the outside one", () => {
+    const root = repo()
+    const elsewhere = path.join(plain(), "x.ts")
+    const facts = collect([writer("w", ["a.ts"], [path.join(root, "a.ts"), elsewhere, "y.ts"])], { directory: root })
+    const lines = renderChangeFacts(facts!).split("\n")
+    expect(lines).toContain(`reported, not recorded: ${posix(elsewhere)} (outside the repository)`)
+    expect(lines).toContain("reported, not recorded: y.ts")
+    expect(lines.filter((line) => line.startsWith("recorded, not reported"))).toEqual([])
+    expect(lines.filter((line) => line.startsWith("reported, not recorded"))).toHaveLength(2)
+  })
+})
+
 describe("renderChangeFacts", () => {
   const facts = (overrides: Partial<ChangeFacts> = {}): ChangeFacts => ({
     recorded: [],
     reportedNotRecorded: [],
     recordedNotReported: [],
     ...overrides,
+  })
+
+  it("ends the line of a reported path that is outside the repository with a note, and no other line", () => {
+    expect(
+      renderChangeFacts(
+        facts({
+          recorded: ["a.ts"],
+          reportedNotRecorded: ["/elsewhere/x.ts", "y.ts"],
+          reportedOutside: ["/elsewhere/x.ts"],
+          recordedNotReported: ["a.ts"],
+        }),
+      ),
+    ).toBe(
+      [
+        '<engine-facts source="git">',
+        "Measured by the engine from git, not reported by any model.",
+        "reported, not recorded: /elsewhere/x.ts (outside the repository)",
+        "reported, not recorded: y.ts",
+        "recorded, not reported: a.ts",
+        "recorded paths (1):",
+        "- a.ts (no line counts)",
+        "</engine-facts>",
+      ].join("\n"),
+    )
+  })
+
+  it("keeps an outside path with a line break on one line, the note after its escape", () => {
+    const lines = renderChangeFacts(
+      facts({ reportedNotRecorded: ["/x/a\nb.ts"], reportedOutside: ["/x/a\nb.ts"] }),
+    ).split("\n")
+    expect(lines).toContain("reported, not recorded: /x/a\\nb.ts (outside the repository)")
+    expect(lines).toHaveLength(5)
   })
 
   it("renders the block: source, what it is, the differences, then the recorded paths with their counts", () => {
