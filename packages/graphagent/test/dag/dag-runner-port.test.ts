@@ -753,7 +753,7 @@ describe("the loop and the delivery write runner commands through the port only 
 
   test("loop.ts provides the port, never the plain service, as the Dag service of the spawn, the recovery and the watchers", () => {
     // #1344: the handlers split out of loop.ts keep their provide sites, so they are counted with the loop's.
-    const loop = ["loop.ts", "replan-handler.ts"].map(source).join("\n")
+    const loop = ["loop.ts", "replan-handler.ts", "message-continuation.ts"].map(source).join("\n")
     const plain = /provideService\(\s*Dag\.Service\s*,\s*dag\s*\)/g
 
     expect(loop.match(plain) ?? []).toEqual([])

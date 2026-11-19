@@ -3,20 +3,7 @@
 
 export * as DagLoop from "./loop"
 
-import {
-  Cause,
-  Effect,
-  Layer,
-  Context,
-  Stream,
-  Semaphore,
-  Fiber,
-  Option,
-  DateTime,
-  Scope,
-  Exit,
-  Deferred,
-} from "effect"
+import { Cause, Effect, Layer, Context, Stream, Semaphore, Fiber, Option, DateTime, Scope } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { InstanceState } from "@/effect/instance-state"
@@ -49,7 +36,6 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
-import { SessionRole } from "@/session/role"
 import { SessionStatus } from "@/session/status"
 import { SessionInbox } from "@/session/inbox"
 import { ExclusiveRegistry } from "@/session/engine-process"
@@ -58,14 +44,13 @@ import { renderTemplate } from "../templates/resolve"
 import { upstreamBlock } from "../templates/envelope"
 import { DagConfig } from "../config"
 import { DagSection } from "@/config/dag-section"
-import { spawnNode, makeDeadlineWatcher } from "./spawn"
+import { spawnNode } from "./spawn"
 import { DagComposeExpansion } from "./compose-expansion"
 import { UpstreamBound } from "./upstream-bound"
 import { collectChangeFacts, renderChangeFacts } from "./change-facts"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
-  continueRecoveredMessageNode,
   makeSessionStatusChecker,
   makeLastAssistantTextReader,
   makeLastAssistantMessageReader,
@@ -97,6 +82,7 @@ import {
 import type { DagLoopContext } from "./context"
 import { DagLoopControlHandlers } from "./control-handlers"
 import { DagLoopGates } from "./gates"
+import { DagLoopMessageContinuation } from "./message-continuation"
 import { DagLoopReplanHandler } from "./replan-handler"
 
 export { PAUSED_REMINDER_DELAY_MS, isPausedReminderDue, wakeBatchIdentity } from "./delivery"
@@ -182,7 +168,7 @@ const serviceLayer = Layer.effect(
         const { checkpointDisposition, enforceCheckpointGate, convergeSkippedNodes, checkCompletion } =
           DagLoopGates.make(loop)
 
-        let startMessageContinuations: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
+        const startMessageContinuations = DagLoopMessageContinuation.make(loop)
         // Forward reference for the condition-skip rescan inside spawnReady.
         let rescanReady: (dagID: string) => Effect.Effect<void, Error, Scope.Scope> = () => Effect.void
 
@@ -807,103 +793,6 @@ const serviceLayer = Layer.effect(
         })
 
         const forkWakeAfter = makeForkWakeAfter(nudge)
-
-        startMessageContinuations = Effect.fn("DagLoop.startMessageContinuations")(function* (
-          dagID: string,
-          entry: WorkflowEntry,
-        ) {
-          if (entry.runtime.isPaused() || entry.messageContinuations.size === 0) return
-          const workflow = yield* store.getWorkflow(dagID)
-          if (!workflow || !["running", "stepping"].includes(workflow.status)) return
-          for (const nodeID of entry.messageContinuations) {
-            const node = yield* store.getNode(dagID, nodeID)
-            if (!node || node.status !== "running" || !node.childSessionId) {
-              entry.messageContinuations.delete(nodeID)
-              continue
-            }
-            if (entry.fibers.has(nodeID)) continue
-            const registered = yield* Deferred.make<void>()
-            let ownedFiber: Fiber.Fiber<unknown, unknown> | undefined
-            // #943: the continuation must run where this node was bound.
-            // Ownership/mailbox stays on the owner directory; prompt, report
-            // and artifact authorization follow the execution workspace.
-            const nodeConfig = entry.config?.nodes.find((candidate) => candidate.id === nodeID)
-            const executionDirectory = nodeConfig?.workspace ?? entry.executionDirectory ?? ctx.directory
-            // A non-git owner has worktree "/", which would make every absolute
-            // path "inside" the boundary. Derive the boundary from the instance
-            // directory instead so external sources still require approval.
-            const { worktree, boundary } = artifactPermissionBase(ctx.directory, ctx.worktree, executionDirectory)
-            const continuation = Effect.scoped(
-              Effect.gen(function* () {
-                yield* scheduler.childSlot({ kind: "workflow", workflowID: dagID }, entry.concurrency, {
-                  rootSessionID: SessionRole.liveRootOf(SessionID.make(entry.parentSessionID)),
-                })
-                return yield* Deferred.await(registered).pipe(
-                  Effect.andThen(
-                    continueRecoveredMessageNode(
-                      dagID,
-                      nodeID,
-                      entry.config ?? null,
-                      workflow.directory,
-                      makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary),
-                      executionDirectory,
-                    ),
-                  ),
-                )
-              }),
-            ).pipe(
-              Effect.provideService(Dag.Service, entry.port),
-              Effect.provideService(SessionPrompt.Service, promptSvc),
-              (self) => (messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self),
-              Effect.onExit((exit) =>
-                Effect.gen(function* () {
-                  // A finished or interrupted helper must relinquish its own
-                  // reservation before any DB read or exit classification. Never
-                  // delete a replacement attempt's fiber installed under this ID.
-                  if (ownedFiber && entry.fibers.get(nodeID) === ownedFiber) entry.fibers.delete(nodeID)
-                  if (!Exit.isSuccess(exit) || runtimes.get(dagID) !== entry) return
-                  const current = yield* store.getNode(dagID, nodeID)
-                  if (current?.childSessionId !== node.childSessionId || current.replanAttempts !== node.replanAttempts)
-                    return
-                  if (current.status !== "running") return
-                  const phase = yield* store.getWorkflow(dagID)
-                  if (!phase || !["running", "stepping", "paused"].includes(phase.status)) return
-                  // Pause may win after the loop reserved this attempt but before
-                  // the helper's first phase read. Keep it resumable; if resume
-                  // raced this cleanup, the scoped retry rechecks the phase.
-                  entry.messageContinuations.add(nodeID)
-                  yield* entry.evalLock
-                    .withPermits(1)(startMessageContinuations(dagID, entry))
-                    .pipe(guarded("RecoveredAgentMessageRearm"), Effect.forkIn(stateScope))
-                }),
-              ),
-              guarded("RecoveredAgentMessageContinuation"),
-            )
-            const fiber = yield* continuation.pipe(Effect.forkIn(stateScope))
-            ownedFiber = fiber
-            entry.fibers.set(nodeID, fiber)
-            // It continues the child session this attempt already runs in; that is the one eviction cancels.
-            entry.attemptChild.set(fiber, RunnerLease.attached(node.childSessionId))
-            const watcher =
-              entry.watchers.get(nodeID) ??
-              (yield* makeDeadlineWatcher({
-                dagID,
-                nodeID,
-                attempt: { replanAttempts: node.replanAttempts, childSessionID: node.childSessionId },
-                timeoutMs: nodeConfig?.worker_config?.timeout_ms,
-                maxTimeoutExtensions:
-                  entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
-                scope: stateScope,
-              }).pipe(
-                Effect.provideService(Dag.Service, entry.port),
-                Effect.provideService(SessionPrompt.Service, promptSvc),
-                Effect.forkIn(stateScope),
-              ))
-            entry.watchers.set(nodeID, watcher)
-            entry.messageContinuations.delete(nodeID)
-            yield* Deferred.succeed(registered, undefined)
-          }
-        })
 
         // The `adopt` action of the reconciler (decision 6, row 10) and the one place that creates a runtime entry.
         // `observed` is older than the claim: the adoption works from the row it reads once it holds the claim.
