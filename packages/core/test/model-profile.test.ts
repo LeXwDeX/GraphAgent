@@ -1346,6 +1346,132 @@ describe("shipped rule schema-fixes", () => {
   })
 })
 
+describe("shipped rule inline-reasoning-think", () => {
+  // Qwen, DeepSeek and GLM models behind an OpenAI-compatible endpoint write their reasoning into the answer text
+  // between think tags unless the server splits it out. Each family is in the rule because its own documentation says
+  // so; a family whose documentation does not is left out.
+  const FAMILIES = ["qwen", "deepseek", "glm"]
+  const expected = (npm: string | undefined, apiID: string) =>
+    npm === "@ai-sdk/openai-compatible" && FAMILIES.some((family) => apiID.toLowerCase().includes(family))
+  const PROVIDERS = ["relay", "custom", "deepseek", "zhipuai", "alibaba", "openrouter", "mistral", "DeepSeek"]
+  const NPMS = [
+    undefined,
+    "@ai-sdk/openai-compatible",
+    "@ai-sdk/openai",
+    "@ai-sdk/anthropic",
+    "@ai-sdk/google",
+    "@ai-sdk/gateway",
+    "@openrouter/ai-sdk-provider",
+  ]
+  const IDS = [
+    "",
+    "m",
+    "local-think",
+    "think",
+    "qwen3-235b-a22b",
+    "Qwen/Qwen3-8B",
+    "QWEN3-CODER",
+    "deepseek-r1",
+    "DeepSeek-V3.1",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "glm-4.5",
+    "GLM-4.6",
+    "zai-org/GLM-4.5-Air",
+    "qwe",
+    "deepsee",
+    "gl",
+    "gpt-5",
+    "claude-sonnet-4",
+    "kimi-k2.5",
+    "minimax-m3",
+    "mistral-large",
+  ]
+  const resolved = (providerID: string, apiID: string, npm?: string, config?: ProfileConfig) =>
+    resolveProfile({
+      providerID,
+      apiID,
+      ...(npm === undefined ? {} : { npm }),
+      ...(config === undefined ? {} : { config }),
+    })
+  const rule = BUILTIN_RULES.find((item) => item.name === "inline-reasoning-think")
+
+  test("is shipped once, after the schema fixes, and cites the documentation of each family", () => {
+    const names = BUILTIN_RULES.map((item) => item.name)
+    expect(names.slice(10)).toEqual(["inline-reasoning-think"])
+    expect(names.filter((item) => item === "inline-reasoning-think")).toHaveLength(1)
+    expect(rule?.source).toContain("https://huggingface.co/Qwen/")
+    expect(rule?.source).toContain("https://huggingface.co/deepseek-ai/")
+    expect(rule?.source).toContain("https://github.com/zai-org/")
+  })
+
+  test("a rule reads only the API id as a string; provider and npm are compared, never taken apart", () => {
+    const noProvider: RuleInput = { providerID: "relay", apiID: "X" }
+    Reflect.deleteProperty(noProvider, "providerID")
+    expect(() => rule?.match(noProvider)).not.toThrow()
+    expect(() => rule?.match({ providerID: "relay", apiID: "X" })).not.toThrow()
+    expect(() => rule?.match({ providerID: "relay", apiID: "", npm: "" })).not.toThrow()
+    expect(rule?.match({ providerID: "relay", apiID: "m" })).toBe(false)
+    expect(rule?.match({ providerID: "relay", apiID: "m", npm: "@ai-sdk/openai-compatible" })).toBe(false)
+  })
+
+  test("gives think to exactly the OpenAI-compatible models of the three families, for every provider and id", () => {
+    for (const providerID of PROVIDERS) {
+      for (const npm of NPMS) {
+        for (const id of IDS) {
+          const profile = resolved(providerID, id, npm)
+          const named = expected(npm, id)
+          expect({ providerID, npm, id, tag: profile.reasoningMode.inlineTag }).toEqual({
+            providerID,
+            npm,
+            id,
+            tag: named ? "think" : undefined,
+          })
+          expect<string | undefined>(profile.sources["reasoningMode.inlineTag"]).toBe(
+            named ? "builtin:inline-reasoning-think" : undefined,
+          )
+        }
+      }
+    }
+  })
+
+  test("names the tag and nothing else of the reasoning mode", () => {
+    const profile = resolved("relay", "glm-4.6", "@ai-sdk/openai-compatible")
+    expect(profile.reasoningMode).toEqual({ controls: [], placeholder: false, replay: "none", inlineTag: "think" })
+    // Another rule's key stays with that rule.
+    const deepseek = resolved("relay", "deepseek-r1", "@ai-sdk/openai-compatible")
+    expect(deepseek.reasoningMode.placeholder).toBe(true)
+    expect(deepseek.sources["reasoningMode.placeholder"]).toBe("builtin:reasoning-placeholder-deepseek")
+    expect(deepseek.reasoningMode.inlineTag).toBe("think")
+  })
+
+  test("a configured tag wins, and an empty one switches the rule off", () => {
+    const configured = resolved("relay", "qwen3-max", "@ai-sdk/openai-compatible", {
+      profile: { reasoning_mode: { inline_tag: "reasoning" } },
+    })
+    expect(configured.reasoningMode.inlineTag).toBe("reasoning")
+    expect(configured.sources["reasoningMode.inlineTag"]).toBe("config")
+    const off = resolved("relay", "qwen3-max", "@ai-sdk/openai-compatible", {
+      profile: { reasoning_mode: { inline_tag: "" } },
+    })
+    expect(off.reasoningMode.inlineTag).toBe("")
+    expect(off.sources["reasoningMode.inlineTag"]).toBe("config")
+    // A configured key next to it leaves the rule alone.
+    const other = resolved("relay", "qwen3-max", "@ai-sdk/openai-compatible", {
+      profile: { reasoning_mode: { placeholder: true } },
+    })
+    expect(other.reasoningMode.inlineTag).toBe("think")
+  })
+
+  test("a model of an existing entry is evaluated again for its own package and id", () => {
+    const first = resolved("relay", "qwen3-max", "@ai-sdk/openai-compatible")
+    expect(first.sources["reasoningMode.inlineTag"]).toBe("builtin:inline-reasoning-think")
+    // A built-in result is not inherited: moving the entry to another package drops the tag.
+    const moved = resolveProfile({ providerID: "relay", apiID: "qwen3-max", npm: "@ai-sdk/openai", base: first })
+    expect(moved.reasoningMode.inlineTag).toBeUndefined()
+    expect(moved.sources["reasoningMode.inlineTag"]).toBeUndefined()
+  })
+})
+
 describe("resolveProfile isolation", () => {
   const deepFreeze = <T>(value: T): T => {
     if (typeof value === "object" && value !== null) {

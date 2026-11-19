@@ -125,3 +125,51 @@ describe("inline reasoning tags follow the model profile", () => {
     expect(inlineReasoningTag(profiled("custom", "local-think", ""), table)).toBe("think")
   })
 })
+
+describe("inline reasoning tags follow the built-in profile rules", () => {
+  /** A model without a profile of its own: the tag comes from the built-in rules for its package and API id. */
+  const reached = (apiID: string, npm = "@ai-sdk/openai-compatible", providerID = "relay") => ({
+    providerID: ProviderV2.ID.make(providerID),
+    api: { id: apiID, url: "", npm },
+  })
+
+  test("a Qwen, DeepSeek or GLM model on an OpenAI-compatible endpoint gets think", () => {
+    for (const id of ["qwen3-235b-a22b", "Qwen/Qwen3-8B", "deepseek-r1", "DeepSeek-V3.1", "glm-4.5", "GLM-4.6"]) {
+      expect({ id, tag: inlineReasoningTag(reached(id)) }).toEqual({ id, tag: "think" })
+    }
+  })
+
+  test("a model no rule names, and a model of another package, gets none", () => {
+    expect(inlineReasoningTag(reached("local-think", undefined, "custom"))).toBeUndefined()
+    expect(inlineReasoningTag(reached("gpt-5"))).toBeUndefined()
+    expect(inlineReasoningTag(reached("qwen3-max", "@ai-sdk/openai"))).toBeUndefined()
+    expect(inlineReasoningTag(reached("deepseek-r1", "@ai-sdk/anthropic"))).toBeUndefined()
+  })
+
+  test("splits <think> out of the text of a model a rule names, and leaves the text of any other alone", async () => {
+    const named = inlineReasoningTag(reached("qwen3-max"))
+    expect(await collect(wrapInlineReasoning(answering("<think>a</think>b"), named))).toEqual({
+      reasoning: "a",
+      answer: "b",
+    })
+    const unnamed = inlineReasoningTag(reached("gpt-5"))
+    expect(await collect(wrapInlineReasoning(answering("<think>a</think>b"), unnamed))).toEqual({
+      reasoning: "",
+      answer: "<think>a</think>b",
+    })
+  })
+
+  test("a configured inline_tag wins over the rule, and an empty one switches it off", () => {
+    const configured = (inlineTag: string) => ({
+      ...reached("qwen3-max"),
+      profile: resolveProfile({
+        providerID: "relay",
+        apiID: "qwen3-max",
+        npm: "@ai-sdk/openai-compatible",
+        config: { profile: { reasoning_mode: { inline_tag: inlineTag } } },
+      }),
+    })
+    expect(inlineReasoningTag(configured("reasoning"))).toBe("reasoning")
+    expect(inlineReasoningTag(configured(""))).toBeUndefined()
+  })
+})
