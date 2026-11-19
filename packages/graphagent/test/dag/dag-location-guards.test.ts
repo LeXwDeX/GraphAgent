@@ -1046,9 +1046,8 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     // (b) Revalidation sites. Each region must carry an executable ownership
     // authority call (ownsWorkflow / ownsSession), located by semantic anchors
     // so the probe survives refactors that keep the site boundaries.
-    const loopFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/loop.ts"))
-    expect(loopFile).toBeDefined()
-    const loopSource = loopFile!.source
+    const spawnReadyFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/spawn-ready.ts"))
+    expect(spawnReadyFile).toBeDefined()
     const gatesFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/gates.ts"))
     expect(gatesFile).toBeDefined()
     const spawnFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/spawn.ts"))
@@ -1056,8 +1055,9 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
 
     const regions: Array<{ name: string; source: string; from: string; to: string; authority: RegExp }> = [
       {
+        // #1344: the scheduling round lives in spawn-ready.ts.
         name: "spawnReady (pre-spawn ownership revalidation + inert-entry eviction)",
-        source: loopSource,
+        source: spawnReadyFile!.source,
         from: "const spawnReady = Effect.fn(",
         to: "rescanReady = spawnReady",
         authority: /ownsWorkflow\(/,

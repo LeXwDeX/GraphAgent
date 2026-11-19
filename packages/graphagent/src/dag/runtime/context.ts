@@ -16,6 +16,7 @@ import type { ChildRuns } from "@/session/child/run"
 import type { ExclusiveRegistry } from "@/session/engine-process"
 import type { SessionPrompt } from "@/session/prompt"
 import type { Session } from "@/session/session"
+import type { Truncate } from "@/tool/truncate"
 import type { Dag } from "../dag"
 import type { WorkflowEntry } from "./entry"
 import type { RunnerLease } from "./runner-lease"
@@ -46,6 +47,8 @@ export interface Context {
   /** The child runs of the prompt service: where the run of an attempt's child session is cancelled. */
   readonly childRuns: ChildRuns.Interface
   readonly permissionSvc: Permission.Interface | undefined
+  /** #1453: spills an oversized upstream string to disk; without it a value is handed over whole. */
+  readonly truncate: Truncate.Interface | undefined
   /** Exclusive automation ownership: a workflow registers here to hold its parent session while it lives. */
   readonly automation: ExclusiveRegistry.Interface
   readonly scheduler: AgentScheduler.Interface
