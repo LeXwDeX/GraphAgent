@@ -1032,6 +1032,8 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     const loopFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/loop.ts"))
     expect(loopFile).toBeDefined()
     const loopSource = loopFile!.source
+    const gatesFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/gates.ts"))
+    expect(gatesFile).toBeDefined()
     const spawnFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/spawn.ts"))
     expect(spawnFile).toBeDefined()
 
@@ -1040,14 +1042,15 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
         name: "spawnReady (pre-spawn ownership revalidation + inert-entry eviction)",
         source: loopSource,
         from: "const spawnReady = Effect.fn(",
-        to: "const checkCompletion = Effect.fn(",
+        to: "rescanReady = spawnReady",
         authority: /ownsWorkflow\(/,
       },
       {
+        // #1344: the completion check lives in the gates module, the last function of its `make`.
         name: "checkCompletion (terminal-transition ownership revalidation)",
-        source: loopSource,
+        source: gatesFile!.source,
         from: "const checkCompletion = Effect.fn(",
-        to: "const checkSessionStatus = makeSessionStatusChecker",
+        to: "return { checkpointDisposition,",
         authority: /ownsWorkflow\(/,
       },
       {
