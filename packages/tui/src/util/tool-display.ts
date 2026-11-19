@@ -61,6 +61,7 @@ const toolRowNames: Readonly<Record<string, string>> = {
   write: "Write",
   edit: "Edit",
   apply_patch: "Patch",
+  task: "Task",
 }
 
 export function toolRowName(tool: string) {

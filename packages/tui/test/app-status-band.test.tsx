@@ -465,7 +465,12 @@ test("the runs have a row of their own just above the prompt, and a click on it 
     expect(rows.filter((line) => line.includes("◇ 后台")).length).toBe(1)
 
     await app.setup.mockMouse.click(10, own)
-    const panel = await waitForFrame(app.setup, (value) => value.includes("explore · Scan one"), "the sub-agent list")
+    // The transcript names the runs too (a Task row says `explore · Scan one`): the list is open when its filter is.
+    const panel = await waitForFrame(
+      app.setup,
+      (value) => value.includes("explore · Scan one") && value.includes("筛选…"),
+      "the sub-agent list",
+    )
     expect(promptShown(panel)).toBe(false)
     expect(app.writes()).toEqual([])
   } finally {
@@ -499,7 +504,11 @@ test("the mark rides on the goal row, and a click on it opens /agents while one 
 
     app.setup.renderer.clearSelection()
     await app.setup.mockMouse.click(at.x + 1, at.row)
-    const panel = await waitForFrame(app.setup, (value) => value.includes("explore · Scan two"), "the sub-agent list")
+    const panel = await waitForFrame(
+      app.setup,
+      (value) => value.includes("explore · Scan two") && value.includes("筛选…"),
+      "the sub-agent list",
+    )
     expect(promptShown(panel)).toBe(false)
     expect(app.writes()).toEqual([])
     expect(app.commands()).toEqual([])

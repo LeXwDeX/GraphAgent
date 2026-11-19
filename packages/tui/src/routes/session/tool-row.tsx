@@ -36,6 +36,11 @@ const RESULT_MARK = "  ⎿ "
 const RESULT_INDENT = 4
 /** What the muted tail of a result line is set off with. */
 export const DETAIL_SEPARATOR = " · "
+/** Cells the tag keeps off the end of the title, and the action off the end of the result line. */
+const TAG_GAP = 2
+const ACTION_GAP = 2
+/** The result text is cut to leave room for the action, but not below this: the action gives way first. */
+const MIN_RESULT_CELLS = 8
 
 export interface ToolRowProps {
   state: ToolRowState
@@ -50,8 +55,23 @@ export interface ToolRowProps {
   result?: string | JSX.Element
   /** The color of a string `result`, where the state's own is not the one that says it. */
   resultColor?: RGBA
+  /** The color of the dot, and of the spinner of a call that runs, where the state's own is not the one that says it. */
+  dotColor?: RGBA
+  /**
+   * What stands at the right end of the first line, dim. It is drawn only whole, with at least two cells between it and
+   * the title; a title that leaves it no room is not cut for it, the tag is left out.
+   */
+  tag?: string
   /** What a running call has printed last: muted, after the result on the same line, and cut to what the result leaves. */
   detail?: string
+  /**
+   * What a string `result` line ends with, after the result and its `detail`: the `note` set off with ` · `, dim, then
+   * the `action` two cells on, muted and in the text color while the pointer is on the row. Each is drawn whole or not
+   * at all. The note is drawn only where the result fits whole beside it; the action costs the result a cut, but not
+   * below a few cells.
+   */
+  note?: string
+  action?: string
   /**
    * The lines the fold of the call's output leaves out, which the hint under the row counts; 0 when the fold only cuts
    * a long line. Absent when nothing folds, and for a row that opens without saying so: it has no hint.
@@ -81,8 +101,8 @@ export interface ToolRowProps {
  * opens it. A call that runs has a braille spinner for its dot, which follows the ticker only while the row is on screen.
  *
  * The row draws what it is given and reads no data: the caller says what each state reads, and what a click does.
- * Hovering a row that has a click paints this row's own arg in the text color and nothing else, so the mouse costs
- * the frame of one row and no store write.
+ * Hovering a row that has a click paints this row's own arg, and the word of its `action`, in the text color and nothing
+ * else, so the mouse costs the frame of one row and no store write.
  */
 export function ToolRow(props: ToolRowProps) {
   const { theme } = useTheme()
@@ -95,6 +115,7 @@ export function ToolRow(props: ToolRowProps) {
   const resultRoom = () => Math.max(1, inner() - RESULT_INDENT)
 
   const dot = () => {
+    if (props.dotColor) return props.dotColor
     switch (props.state) {
       case "done":
         return theme.success
@@ -129,18 +150,34 @@ export function ToolRow(props: ToolRowProps) {
     const aw = ambiguousWidth()
     return truncateCells(remoteLine(props.arg), inner() - DOT_CELLS - cellWidth(props.name, aw) - 1, aw)
   })
+  // The tag is the first to give way: it needs the whole title to fit with room to spare, and is left out otherwise.
+  const tag = createMemo(() => {
+    if (!props.tag) return ""
+    const aw = ambiguousWidth()
+    const title = DOT_CELLS + cellWidth(props.name, aw) + (arg() ? 1 + cellWidth(arg(), aw) : 0)
+    const whole = !props.arg || arg() === remoteLine(props.arg)
+    return whole && title + TAG_GAP + cellWidth(props.tag, aw) <= inner() ? props.tag : ""
+  })
 
   const result = children(() => props.result)
-  // A string result: the line, and the tail that goes after it when there is room.
+  // A string result: the line, and what goes after it when there is room: the tail, then the note and the action.
   const line = createMemo(() => {
     const text = result()
     if (typeof text !== "string") return undefined
     const aw = ambiguousWidth()
-    const head = truncateCells(text, resultRoom(), aw)
-    if (!props.detail || head !== text) return { head, tail: "" }
-    const room = resultRoom() - cellWidth(head, aw) - cellWidth(DETAIL_SEPARATOR, aw)
-    const tail = room > 1 ? truncateCells(props.detail, room, aw) : ""
-    return { head, tail: tail ? DETAIL_SEPARATOR + tail : "" }
+    const width = (value: string) => cellWidth(value, aw)
+    let note = props.note ? DETAIL_SEPARATOR + props.note : ""
+    let action = props.action ? " ".repeat(ACTION_GAP) + props.action : ""
+    // The action may cost the result a cut, down to a few cells; the note costs it none: it is left out unless the
+    // result fits whole beside it.
+    if (resultRoom() - width(action) < Math.min(width(text), MIN_RESULT_CELLS)) action = ""
+    if (width(text) > resultRoom() - width(note) - width(action)) note = ""
+    const room = resultRoom() - width(note) - width(action)
+    const head = truncateCells(text, Math.max(1, room), aw)
+    if (!props.detail || head !== text) return { head, tail: "", note, action }
+    const left = room - width(head) - width(DETAIL_SEPARATOR)
+    const tail = left > 1 ? truncateCells(props.detail, left, aw) : ""
+    return { head, tail: tail ? DETAIL_SEPARATOR + tail : "", note, action }
   })
 
   const hint = createMemo(() => {
@@ -161,7 +198,7 @@ export function ToolRow(props: ToolRowProps) {
         props.onClick?.()
       }}
       ref={(el: BoxRenderable) => {
-        // The row is always more than one line, so the one after it keeps a blank line from it even before it has a height.
+        // A row is a block of its own, one line or more: the one after it keeps a blank line from it even before it has a height.
         alwaysSeparate.add(el)
         setPreLayoutSiblingMargin(el, (previous) =>
           previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous)) ? 1 : 0,
@@ -172,7 +209,7 @@ export function ToolRow(props: ToolRowProps) {
         <box width={DOT_CELLS} flexShrink={0}>
           <Switch>
             <Match when={props.state === "running"}>
-              <Spinner color={theme.primary} visible={props.visible} />
+              <Spinner color={props.dotColor ?? theme.primary} visible={props.visible} />
             </Match>
             <Match when={true}>
               <text fg={dot()}>⏺</text>
@@ -185,6 +222,12 @@ export function ToolRow(props: ToolRowProps) {
             <span style={{ fg: hover() ? theme.text : theme.textMuted }}>{" " + arg()}</span>
           </Show>
         </text>
+        <Show when={tag()}>
+          <box flexGrow={1} />
+          <text fg={theme.textDim} wrapMode="none" flexShrink={0}>
+            {tag()}
+          </text>
+        </Show>
       </box>
       <Show when={result()}>
         <box flexDirection="row">
@@ -204,6 +247,12 @@ export function ToolRow(props: ToolRowProps) {
                 {text().head}
                 <Show when={text().tail}>
                   <span style={{ fg: theme.textMuted }}>{text().tail}</span>
+                </Show>
+                <Show when={text().note}>
+                  <span style={{ fg: theme.textDim }}>{text().note}</span>
+                </Show>
+                <Show when={text().action}>
+                  <span style={{ fg: hover() ? theme.text : theme.textMuted }}>{text().action}</span>
                 </Show>
               </text>
             )}

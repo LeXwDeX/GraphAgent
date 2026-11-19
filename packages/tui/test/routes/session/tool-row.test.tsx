@@ -168,6 +168,123 @@ test("what a call that runs has printed last is a muted tail on the result line"
   )
 })
 
+test("a dot color the caller gives replaces the one of the state, and the spinner takes it too", async () => {
+  await using({ state: "pending", name: "Task", arg: "explore · a", dotColor: palette().statusQueued }, {}, (view) => {
+    expect(colorOf(view.spans(), "⏺")?.equals(palette().statusQueued)).toBe(true)
+  })
+  await using({ state: "running", name: "Task", arg: "explore · a", dotColor: palette().error }, {}, (view) => {
+    const glyph = SPINNER_FRAMES.find((frame) => view.rows()[0].includes(frame))
+    expect(glyph).toBeDefined()
+    expect(colorOf(view.spans(), glyph!)?.equals(palette().error)).toBe(true)
+  })
+})
+
+test("a tag stands at the right end of the first line, dim, and leaves the title whole", async () => {
+  await using({ state: "done", name: "Task", arg: "explore · scan", tag: "main agent · foreground" }, {}, (view) => {
+    const first = view.rows()[0]
+    expect(first).toStartWith("   ⏺ Task explore · scan")
+    expect(first).toEndWith("main agent · foreground")
+    // It is flush with the right end of the content, which is the width of the row.
+    expect(cellWidth(first, 1)).toBe(view.width)
+    expect(colorOf(view.spans(), "main agent")?.equals(palette().textDim)).toBe(true)
+    expect(colorOf(view.spans(), "explore · scan")?.equals(palette().textMuted)).toBe(true)
+  })
+})
+
+test("a tag is left out where the whole of it does not fit beside the whole title, and the title is not cut for it", async () => {
+  const tag = "main agent · foreground"
+  // A row at 80 columns has 77 cells. The title is the dot, `Task`, a space and the arg: 7 cells and the arg; the tag is
+  // 23 cells and keeps two off the title, so it fits beside an arg of up to 45.
+  const fits = "x".repeat(45)
+  const near = "x".repeat(46)
+  await using({ state: "done", name: "Task", arg: fits, tag }, {}, (view) => {
+    expect(view.rows()[0]).toBe(`   ⏺ Task ${fits}${" ".repeat(2)}${tag}`)
+  })
+  await using({ state: "done", name: "Task", arg: near, tag }, {}, (view) => {
+    expect(view.rows()[0]).toBe(`   ⏺ Task ${near}`)
+  })
+  // A title that does not fit even without it is cut as it is, with no tag.
+  await using({ state: "done", name: "Task", arg: "x".repeat(200), tag }, {}, (view) => {
+    expect(view.rows()[0]).toEndWith("…")
+    expect(view.rows()[0]).not.toContain("main agent")
+    expect(cellWidth(view.rows()[0], 1)).toBeLessThanOrEqual(view.width)
+  })
+})
+
+for (const ambiguousWidth of [1, 2] as const) {
+  test(`a tag is never wider than the row, at ambiguous_width ${ambiguousWidth}`, async () => {
+    // `·` and `…` are ambiguous glyphs: two cells each at 2, so the tag that fit at 1 may not at 2.
+    for (const arg of ["x".repeat(30), "x".repeat(40), "x".repeat(60)]) {
+      await using(
+        { state: "done", name: "Task", arg, tag: "主 agent · 后台（已转）" },
+        { ambiguousWidth, width: 60 },
+        (view) => {
+          expect(cellWidth(view.rows()[0], ambiguousWidth)).toBeLessThanOrEqual(60)
+        },
+      )
+    }
+  })
+}
+
+test("a note and an action end the result line: the note dim after a separator, the action muted two cells on", async () => {
+  await using(
+    { state: "running", name: "Task", arg: "a", result: "运行中", note: "转后台 ctrl+x w", action: "进入" },
+    {},
+    (view) => {
+      expect(view.rows()[1]).toBe("     ⎿ 运行中 · 转后台 ctrl+x w  进入")
+      const spans = view.spans()
+      expect(colorOf(spans, "运行中")?.equals(palette().primary)).toBe(true)
+      expect(colorOf(spans, "转后台")?.equals(palette().textDim)).toBe(true)
+      expect(colorOf(spans, "进入")?.equals(palette().textMuted)).toBe(true)
+    },
+  )
+})
+
+test("the action is in the text color under the pointer, on a row that has a click only", async () => {
+  await using(
+    { state: "done", name: "Task", arg: "a", result: "完成", action: "进入", onClick: () => {} },
+    {},
+    async (view) => {
+      const at = await cellOf(view, "进入")
+      await view.app.mockMouse.moveTo(at.column + 1, at.row)
+      await view.app.renderOnce()
+      expect(colorOf(view.spans(), "进入")?.equals(palette().text)).toBe(true)
+      await view.app.mockMouse.moveTo(view.width - 1, 6)
+      await view.app.renderOnce()
+      expect(colorOf(view.spans(), "进入")?.equals(palette().textMuted)).toBe(true)
+    },
+  )
+  await using({ state: "done", name: "Task", arg: "a", result: "完成", action: "进入" }, {}, async (view) => {
+    const at = await cellOf(view, "进入")
+    await view.app.mockMouse.moveTo(at.column + 1, at.row)
+    await view.app.renderOnce()
+    expect(colorOf(view.spans(), "进入")?.equals(palette().textMuted)).toBe(true)
+  })
+})
+
+test("where the result line is tight, the note goes first, then the action, and the result is cut only to what is left", async () => {
+  const given = { state: "done", name: "Task", arg: "a", note: "转后台 ctrl+x w", action: "进入" } as const
+  // At 80 columns the result line has 73 cells; the note takes 18 and the action 6, so all three fit with a result of up
+  // to 49.
+  const fits = "x".repeat(49)
+  await using({ ...given, result: fits }, {}, (view) => {
+    expect(view.rows()[1]).toBe(`     ⎿ ${fits} · 转后台 ctrl+x w  进入`)
+  })
+  // One cell more and the note is left out whole, not cut, and the result is not cut for it.
+  await using({ ...given, result: "x".repeat(50) }, {}, (view) => {
+    expect(view.rows()[1]).toBe(`     ⎿ ${"x".repeat(50)}  进入`)
+  })
+  // A result wider than the line is cut for the action, which stays.
+  await using({ ...given, result: "x".repeat(200) }, {}, (view) => {
+    expect(view.rows()[1]).toBe(`     ⎿ ${"x".repeat(66)}…  进入`)
+  })
+  await using({ ...given, result: "x".repeat(200) }, { width: 20 }, (view) => {
+    expect(view.rows()[1]).not.toContain("进入")
+    expect(view.rows()[1]).toEndWith("…")
+    expect(cellWidth(view.rows()[1], 1)).toBeLessThanOrEqual(20)
+  })
+})
+
 test("elements given as the result are drawn under the mark, a line to a row, wrapped at the room they have", async () => {
   const result = () => (
     <box>

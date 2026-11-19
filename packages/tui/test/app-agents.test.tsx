@@ -217,6 +217,12 @@ function clearDrafts(setup: Setup) {
   for (const input of textareas(setup)) if (!input.isDestroyed) input.setText("")
 }
 
+/**
+ * Whether the sub-agent list is on screen. A main session's transcript names the runs too (a Task row says
+ * `explore · Inspect bravo`, as the list does), so a name tells nothing by itself: the list names each run once more.
+ */
+const listed = (frame: string, name: string) => frame.split(name).length > 2
+
 /** Opens `/agents` the way a user does in a main session: the command typed into the input. */
 async function openByCommand(setup: Setup, popupText: string) {
   await setup.mockInput.typeText("/agents")
@@ -292,14 +298,15 @@ test("/agents lists the sub-agents of the main session in the order of its group
 
     const frame = await waitForFrame(
       app.setup,
-      (value) => value.includes("explore · Inspect charlie"),
+      (value) => listed(value, "explore · Inspect charlie"),
       "the sub-agent list",
     )
     expect(promptShown(frame)).toBe(false)
     // The two background runs first, newest start first (they began together: the id settles it), then the other.
-    // (The transcript above the list names them too, in the order of the calls: only the list's own rows count.)
+    // (The transcript above the list names them too, in the order of the calls: the list is below it, so its own rows
+    // are the last ones.)
     const order = ["explore · Inspect bravo", "explore · Inspect charlie", "explore · Inspect alpha"].map((text) =>
-      frame.indexOf(text),
+      frame.lastIndexOf(text),
     )
     expect(order).toEqual([...order].sort((left, right) => left - right))
     expect(order.every((position) => position > 0)).toBe(true)
@@ -335,7 +342,7 @@ test("enter in the list goes into the chosen sub-agent, which only then is loade
     await waitForFrame(app.setup, promptShown, "the prompt")
     await waitFor(() => fake.messageReads.includes(rootID))
     await openByCommand(app.setup, "查看子会话与子 agent")
-    await waitForFrame(app.setup, (value) => value.includes("explore · Inspect bravo"), "the sub-agent list")
+    await waitForFrame(app.setup, (value) => listed(value, "explore · Inspect bravo"), "the sub-agent list")
     expect(fake.childReads()).toEqual([])
 
     app.setup.mockInput.pressArrow("down")
@@ -371,7 +378,7 @@ test("asking the main agent adds to the draft instead of replacing it, and submi
     await waitFor(() => fake.messageReads.includes(rootID))
     await app.setup.mockInput.typeText("first, release notes")
     await openByPalette(app.setup)
-    await waitForFrame(app.setup, (value) => value.includes("explore · Inspect charlie"), "the sub-agent list")
+    await waitForFrame(app.setup, (value) => listed(value, "explore · Inspect charlie"), "the sub-agent list")
 
     app.setup.mockInput.pressArrow("down")
     await app.setup.renderOnce()
