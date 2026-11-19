@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import type { Part, ReasoningPart, TextPart, ToolPart } from "@graphagent/sdk"
+import { setLanguage } from "../../../src/i18n"
 import {
   completedOutput,
   delegationFolds,
   errorDenied,
   foldFlag,
+  foldHint,
   genericShowsBlock,
   outputCharCap,
   reasoningFolds,
@@ -303,4 +306,72 @@ test("the card of a background result folds by the width of the view: a wider on
   expect(resultCardFolds(line, 100, 1)).toBe(true)
   expect(resultCardFolds(line, 101, 1)).toBe(false)
   expect(resultCardFolds(line, 20, 1)).toBe(true)
+})
+
+afterEach(() => {
+  setLanguage(DEFAULT_LANGUAGE)
+})
+
+// The line under a folded output, which `Shell` and `GenericTool` draw from the lines `collapseToolOutput` left out.
+const HINTS = {
+  en: {
+    one: "… 1 more line · ctrl+o expand",
+    other: "… 34 more lines · ctrl+o expand",
+    oneClick: "… 1 more line · click to expand",
+    otherClick: "… 34 more lines · click to expand",
+    long: "… long output · ctrl+o expand",
+    longClick: "… long output · click to expand",
+    less: "ctrl+o collapse",
+    lessClick: "click to collapse",
+  },
+  "zh-CN": {
+    one: "… 还有 1 行 · ctrl+o 展开",
+    other: "… 还有 34 行 · ctrl+o 展开",
+    oneClick: "… 还有 1 行 · 点击展开",
+    otherClick: "… 还有 34 行 · 点击展开",
+    long: "… 内容较长 · ctrl+o 展开",
+    longClick: "… 内容较长 · 点击展开",
+    less: "ctrl+o 收起",
+    lessClick: "点击收起",
+  },
+} as const
+
+for (const language of ["en", "zh-CN"] as const) {
+  test(`a folded output says how many lines it leaves out and which key opens it, in ${language}`, () => {
+    setLanguage(language)
+    const says = HINTS[language]
+    expect(foldHint({ expanded: false, hidden: 1 }, "ctrl+o")).toBe(says.one)
+    expect(foldHint({ expanded: false, hidden: 34 }, "ctrl+o")).toBe(says.other)
+    // Only a cut at a long line, which leaves no line out.
+    expect(foldHint({ expanded: false, hidden: 0 }, "ctrl+o")).toBe(says.long)
+    expect(foldHint({ expanded: true, hidden: 34 }, "ctrl+o")).toBe(says.less)
+  })
+
+  test(`with the key unbound the hint says click and names no key, in ${language}`, () => {
+    setLanguage(language)
+    const says = HINTS[language]
+    expect(foldHint({ expanded: false, hidden: 1 }, "")).toBe(says.oneClick)
+    expect(foldHint({ expanded: false, hidden: 34 }, "")).toBe(says.otherClick)
+    expect(foldHint({ expanded: false, hidden: 0 }, "")).toBe(says.longClick)
+    expect(foldHint({ expanded: true, hidden: 34 }, "")).toBe(says.lessClick)
+    // A fallback text has no `{key}` left in it, whatever it counts.
+    for (const hidden of [0, 1, 2, 5]) {
+      for (const expanded of [false, true]) expect(foldHint({ expanded, hidden }, "")).not.toContain("{")
+    }
+  })
+}
+
+test("the hint names the key the keymap gives, whatever it is", () => {
+  setLanguage("en")
+  expect(foldHint({ expanded: false, hidden: 5 }, "f9")).toBe("… 5 more lines · f9 expand")
+  expect(foldHint({ expanded: true, hidden: 5 }, "<leader> o")).toBe("<leader> o collapse")
+})
+
+test("the hint counts what the fold left out: fifteen lines under a cap of ten leave five", () => {
+  setLanguage("zh-CN")
+  const folded = collapseToolOutput(lines(15), 10, outputCharCap(10, 100))
+  expect(foldHint({ expanded: false, hidden: folded.hidden }, "ctrl+o")).toBe("… 还有 5 行 · ctrl+o 展开")
+  // The text it folded to has no `…` line of its own: the hint opens with it.
+  expect(folded.output.split("\n")).toHaveLength(10)
+  expect(folded.output).not.toContain("…")
 })
