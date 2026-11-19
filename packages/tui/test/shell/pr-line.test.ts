@@ -122,7 +122,7 @@ describe("the PR row", () => {
       kind: "handled",
       item: () =>
         item({ delivery: { state: "delivered", deliveredAt: T0 } }, idle, [
-          { created: T0 + 1, completed: T0 + 2, error: false },
+          { created: T0 + 1, completed: T0 + 2, error: false, aborted: false },
         ]),
       zh: "✓ 通过 · agent 已处理",
       en: "✓ passed · agent handled it",
@@ -132,7 +132,7 @@ describe("the PR row", () => {
       kind: "turnError",
       item: () =>
         item({ delivery: { state: "delivered", deliveredAt: T0 } }, idle, [
-          { created: T0 + 1, completed: T0 + 2, error: true },
+          { created: T0 + 1, completed: T0 + 2, error: true, aborted: false },
         ]),
       zh: "✓ 通过 · agent 回合出错",
       en: "✓ passed · agent turn failed",
@@ -253,7 +253,7 @@ describe("the PR row", () => {
       working({ number: 1035 }),
       ...outcomes.map((outcome, index) =>
         item({ outcome, number: 2000 + index, delivery: { state: "delivered", deliveredAt: T0 } }, idle, [
-          { created: T0 + 1, completed: T0 + 2, error: false },
+          { created: T0 + 1, completed: T0 + 2, error: false, aborted: false },
         ]),
       ),
     ]

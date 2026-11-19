@@ -22,6 +22,7 @@ import {
   prToastFor,
   type PrAssistant,
   type PrCompactItem,
+  type PrLineFacts,
   type PrLineKind,
   type PrLineState,
   type PrMark,
@@ -87,11 +88,20 @@ const answer = (created: number, completed: number | undefined = created + SECON
   created,
   completed,
   error: false,
+  aborted: false,
 })
 const failed = (created: number, completed: number | undefined = created + SECOND): PrAssistant => ({
   created,
   completed,
   error: true,
+  aborted: false,
+})
+/** The user pressed Esc: the message ends in an error that is not a failure of the agent's. */
+const stoppedByUser = (created: number, completed: number | undefined = created + SECOND): PrAssistant => ({
+  created,
+  completed,
+  error: true,
+  aborted: true,
 })
 
 const meta = { watchID: "watch_1", number: 1036 }
@@ -367,7 +377,7 @@ describe("handled", () => {
 
   test("an assistant message that only called tools is an answer", () => {
     // The line is given no message content: an error-free assistant message is all it asks for.
-    const toolsOnly: PrAssistant = { created: T0 + SECOND, completed: T0 + 2 * SECOND, error: false }
+    const toolsOnly: PrAssistant = { created: T0 + SECOND, completed: T0 + 2 * SECOND, error: false, aborted: false }
     expect(prLineState(delivered(), idle([toolsOnly]), T0 + 3 * SECOND).kind).toBe("handled")
   })
 
@@ -385,7 +395,7 @@ describe("handled", () => {
 
   test("an answer that has not completed counts from its creation", () => {
     // (An explicit object: the `answer` helper fills `completed` in when it is left out.)
-    const session = idle([{ created: T0 + 10 * SECOND, error: false }])
+    const session = idle([{ created: T0 + 10 * SECOND, error: false, aborted: false }])
     expect(prLineState(delivered(), session, T0 + 20 * SECOND).nextAt).toBe(T0 + 10 * SECOND + PR_HANDLED_VISIBLE_MS)
     expect(prLineState(delivered(), session, T0 + 70 * SECOND).hidden).toBe(true)
     expect(prLineState(delivered(), session, T0 + 70 * SECOND - 1).hidden).toBe(false)
@@ -422,6 +432,62 @@ describe("turn errors", () => {
   })
 })
 
+// The user pressing Esc on the agent's turn is the user taking over, not a turn that failed (#1641).
+describe("a turn the user stopped", () => {
+  const stoppedAt = T0 + 20 * SECOND
+  const stop = stoppedByUser(T0 + 5 * SECOND, stoppedAt)
+  /** Handled and hidden at once: no warning, no boundary left for the clock. */
+  const takenOver: PrLineFacts = { kind: "handled", outcome: "success", tone: "default", sticky: false, hidden: true }
+
+  test("the only turn since the notice, stopped: handled and hidden at once, with no clock", () => {
+    // From the moment the session is idle and whatever the time: nothing is awaited, so no boundary.
+    for (const now of [stoppedAt, stoppedAt + 30 * SECOND, T0 + 3 * MINUTE, T0 + 99 * MINUTE]) {
+      const facts = prLineFacts(delivered(), idle([stop]), now)
+      expect(facts, `at ${now - T0}`).toEqual(takenOver)
+      expect(prMark(facts), `at ${now - T0}`).toBeUndefined()
+    }
+  })
+
+  test("two stops in a row are still the user taking over, not a failed turn", () => {
+    expect(prLineFacts(delivered(), idle([stop, stoppedByUser(T0 + 30 * SECOND)]), T0 + MINUTE)).toEqual(takenOver)
+  })
+
+  test("a stop of the latest turn hides the row at once, after an earlier answer or failure too", () => {
+    const latest = stoppedByUser(T0 + 30 * SECOND, T0 + 35 * SECOND)
+    // Inside the minute the answer alone would have stayed on screen.
+    const answered = answer(T0 + 5 * SECOND, T0 + 10 * SECOND)
+    expect(prLineFacts(delivered(), idle([answered]), T0 + 36 * SECOND).hidden).toBe(false)
+    expect(prLineFacts(delivered(), idle([answered, latest]), T0 + 36 * SECOND)).toEqual(takenOver)
+    expect(prLineFacts(delivered(), idle([failed(T0 + 5 * SECOND), latest]), T0 + 36 * SECOND)).toEqual(takenOver)
+  })
+
+  test("a failed turn after the stop is a warning again; an answer after it is handled as usual", () => {
+    const failure = failed(T0 + 30 * SECOND)
+    expect(prLineFacts(delivered(), idle([stop, failure]), T0 + MINUTE)).toMatchObject({
+      kind: "turnError",
+      sticky: true,
+      hidden: false,
+    })
+    // The order of the list is not the order of time: the turn created last decides.
+    expect(prLineFacts(delivered(), idle([failure, stop]), T0 + MINUTE).kind).toBe("turnError")
+    expect(prLineFacts(delivered(), idle([failure, stoppedByUser(T0 + 40 * SECOND)]), T0 + MINUTE)).toEqual(takenOver)
+
+    const answered = answer(T0 + 30 * SECOND, T0 + 40 * SECOND)
+    expect(prLineFacts(delivered(), idle([stop, answered]), T0 + MINUTE)).toMatchObject({
+      kind: "handled",
+      hidden: false,
+      nextAt: T0 + 40 * SECOND + PR_HANDLED_VISIBLE_MS,
+    })
+  })
+
+  test("a stop from before the notice is not the user taking over from it", () => {
+    // created === deliveredAt is not after it either.
+    const before = [stoppedByUser(T0 - MINUTE), stoppedByUser(T0)]
+    expect(prLineFacts(delivered(), idle(before), T0 + SECOND)).toMatchObject({ kind: "notified", hidden: false })
+    expect(prLineFacts(delivered(), idle(before), T0 + 3 * MINUTE).kind).toBe("unresponsive")
+  })
+})
+
 describe("a root whose history is not loaded (partial)", () => {
   const partial = (assistants: readonly PrAssistant[] = []): PrSession => ({
     status: "idle",
@@ -444,6 +510,14 @@ describe("a root whose history is not loaded (partial)", () => {
   test("an answer seen still counts", () => {
     expect(prLineState(delivered(), partial([answer(T0 + SECOND)]), T0 + 10 * SECOND).kind).toBe("handled")
     expect(prLineState(delivered(), partial([answer(T0 + SECOND)]), T0 + 5 * MINUTE).hidden).toBe(true)
+  })
+
+  test("a stop of the user's seen still counts: the user took over", () => {
+    for (const now of [T0 + 10 * SECOND, T0 + 5 * MINUTE, T0 + 60 * MINUTE]) {
+      const facts = prLineFacts(delivered(), partial([stoppedByUser(T0 + SECOND)]), now)
+      expect(facts, `at ${now - T0}`).toMatchObject({ kind: "handled", sticky: false, hidden: true })
+      expect(facts.nextAt).toBeUndefined()
+    }
   })
 
   test("busy, no reply and an owed notice do not depend on the history", () => {
@@ -471,9 +545,17 @@ describe("precedence", () => {
     expect(kind(plain, busy(answers), later)).toBe("working")
     expect(kind(plain, busy(errors), later)).toBe("working")
     expect(kind(plain, busy(), later)).toBe("working")
+    // noReply and working over the user's stop
+    const stops = [stoppedByUser(T0 + 2 * SECOND)]
+    expect(kind(stopped, idle(stops), later)).toBe("noReply")
+    expect(kind(plain, busy(stops), later)).toBe("working")
+    expect(kind(plain, retrying(stops), later)).toBe("working")
     // handled over an error and the clock
     expect(kind(plain, idle([...errors, ...answers]), later)).toBe("handled")
     expect(kind(plain, idle([...answers, ...errors]), T0 + 2 * SECOND)).toBe("handled")
+    // handled (the user took over) over the error it stopped and the clock
+    expect(kind(plain, idle(stops), later)).toBe("handled")
+    expect(kind(plain, idle([...errors, ...stops]), later)).toBe("handled")
     // turnError over the clock
     expect(kind(plain, idle(errors), later)).toBe("turnError")
     // unresponsive, then notified: only the clock decides
@@ -954,7 +1036,14 @@ function everyEntry(): PrWatchEntry[] {
 }
 
 function everySession(): PrSession[] {
-  const assistants = [[], [answer(T0 + SECOND)], [failed(T0 + SECOND)], [failed(T0 + SECOND), answer(T0 + 2 * SECOND)]]
+  const assistants = [
+    [],
+    [answer(T0 + SECOND)],
+    [failed(T0 + SECOND)],
+    [failed(T0 + SECOND), answer(T0 + 2 * SECOND)],
+    [stoppedByUser(T0 + SECOND)],
+    [answer(T0 + SECOND), stoppedByUser(T0 + 2 * SECOND)],
+  ]
   return [idle, busy, retrying, unknown].flatMap((make) => assistants.map((list) => make(list)))
 }
 
