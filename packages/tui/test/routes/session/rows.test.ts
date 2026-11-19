@@ -96,9 +96,32 @@ describe("firstVisible and lastVisible", () => {
 
 describe("estimateRowHeight", () => {
   test("wraps content by available width", () => {
-    expect(estimateRowHeight(row("a", "text"), 13, 10)).toBe(2)
-    expect(estimateRowHeight(row("a", "text"), 13, 25)).toBe(4)
-    expect(estimateRowHeight(row("a", "user"), 13, 10)).toBe(4)
+    // The text of the assistant stands behind an indent of 3 and its mark of 2: 8 cells of a row 13 wide, and the
+    // gap above it makes one row more.
+    expect(estimateRowHeight(row("a", "text"), 13, 8)).toBe(2)
+    expect(estimateRowHeight(row("a", "text"), 13, 9)).toBe(3)
+    expect(estimateRowHeight(row("a", "text"), 13, 25)).toBe(5)
+    expect(estimateRowHeight(row("a", "text"), 13, 0)).toBe(2)
+  })
+
+  test("sizes a user message by its words, the gap above it and the line of the labels it carries", () => {
+    // The message has no rows of padding any more: one row of gap, and the lines of its words, which stand between
+    // a padding of 1 on each side and behind the mark of 2, so 9 cells of a row 13 wide.
+    expect(estimateRowHeight(row("a", "user"), 13, 9)).toBe(1 + 1)
+    expect(estimateRowHeight(row("a", "user"), 13, 10)).toBe(2 + 1)
+    expect(estimateRowHeight(row("a", "user"), 13, 25)).toBe(3 + 1)
+    expect(estimateRowHeight(row("a", "user"), 13, 0)).toBe(1 + 1)
+    // The labels of the files and directories it attached take a row of their own, whatever the words.
+    const attached: Row = { ...row("a", "user"), attached: true }
+    expect(estimateRowHeight(attached, 13, 9)).toBe(1 + 1 + 1)
+    expect(estimateRowHeight(attached, 13, 25)).toBe(3 + 1 + 1)
+    expect(estimateRowHeight({ ...attached, attached: false }, 13, 9)).toBe(1 + 1)
+  })
+
+  test("never divides by a width that is gone", () => {
+    for (const kind of ["user", "text", "reasoning"] as const) {
+      for (const width of [0, 1, 4, 5]) expect(estimateRowHeight(row("a", kind), width, 3, true)).toBeGreaterThan(0)
+    }
   })
 
   test("collapses expandable rows until expanded", () => {
@@ -109,6 +132,14 @@ describe("estimateRowHeight", () => {
     expect(estimateRowHeight(row("a", "tool"), 40, 1000, true)).toBe(1000 + 3)
     expect(estimateRowHeight(row("a", "tool"), 40, 0, true)).toBe(1 + 3)
     expect(estimateRowHeight(row("a", "reasoning"), 40, 39)).toBe(2)
+    expect(estimateRowHeight(row("a", "reasoning"), 40, 39, false)).toBe(2)
+  })
+
+  test("sizes an open thought by the header, the gap above it and under it, and the words behind its indent and mark", () => {
+    // The body is behind the indent of 3 and the mark of 2: 35 cells of a row 40 wide.
+    expect(estimateRowHeight(row("a", "reasoning"), 40, 35, true)).toBe(1 + 3)
+    expect(estimateRowHeight(row("a", "reasoning"), 40, 36, true)).toBe(2 + 3)
+    expect(estimateRowHeight(row("a", "reasoning"), 40, 0, true)).toBe(1 + 3)
   })
 
   test("uses fixed heights for metadata rows", () => {

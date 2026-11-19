@@ -121,6 +121,9 @@ test("the Chinese transcript stays on screen, dimmed, while a panel is open", as
   try {
     await expectAllShown(shell)
     const before = await fgOf(shell, "你好，世界")
+    // The marks in front of the lines (#1615) are part of the main area and fade with it: the `›` of the user message
+    // and the `⏺` of the answer.
+    const marks = { user: await fgOf(shell, "›"), answer: await fgOf(shell, "⏺") }
 
     shell.bottomZone().host.push({ id: "panel", render: () => <text>面板内容</text> })
     await shell.settle()
@@ -128,12 +131,16 @@ test("the Chinese transcript stays on screen, dimmed, while a panel is open", as
     expect(await shell.frame()).toContain("面板内容")
     await expectAllShown(shell)
     expectDimmer(await fgOf(shell, "你好，世界"), before)
+    expectDimmer(await fgOf(shell, "›"), marks.user)
+    expectDimmer(await fgOf(shell, "⏺"), marks.answer)
 
     shell.bottomZone().host.pop()
     await shell.settle()
     expect(shell.bottomZone().dimmed()).toBe(false)
     await expectAllShown(shell)
     expect(await fgOf(shell, "你好，世界")).toEqual(before)
+    expect(await fgOf(shell, "›")).toEqual(marks.user)
+    expect(await fgOf(shell, "⏺")).toEqual(marks.answer)
   } finally {
     await shell.dispose()
   }

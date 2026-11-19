@@ -1091,3 +1091,68 @@ describe("the card of a background result", () => {
       expect(after.at(-1)).toMatchObject({ key: "part:prt_res", kind: "result" })
     }))
 })
+
+describe("the files a user message carries", () => {
+  const file = (messageID: string, id: string, mime = "text/plain"): Part => ({
+    id,
+    sessionID,
+    messageID,
+    type: "file",
+    mime,
+    filename: "a.ts",
+    url: "file:///tmp/a.ts",
+  })
+  const userRow = (rig: Rig, messageID: string) => rig.table().rows.find((row) => row.key === `user:${messageID}`)
+
+  test("make the row of the message say so, for the estimate of the line their labels take", () => {
+    const entries: Entry[] = [
+      { info: userMessage("msg_plain", 1), parts: [text("msg_plain", "prt_plain", "just words")] },
+      {
+        info: userMessage("msg_file", 2),
+        parts: [text("msg_file", "prt_words", "look at this"), file("msg_file", "prt_file")],
+      },
+      {
+        info: userMessage("msg_dir", 3),
+        parts: [text("msg_dir", "prt_dir_words", "and at this"), file("msg_dir", "prt_dir", "application/x-directory")],
+      },
+    ]
+    return withTable(entries, (rig) => {
+      expect(userRow(rig, "msg_plain")?.attached).toBe(false)
+      expect(userRow(rig, "msg_file")?.attached).toBe(true)
+      expect(userRow(rig, "msg_dir")?.attached).toBe(true)
+      expect(shapeOf(rig.table())).toEqual(rig.reference())
+    })
+  })
+
+  test("move the revision of the row when the message gains one, which measures the row again", () => {
+    const entries: Entry[] = [{ info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_u", "look at this")] }]
+    return withTable(entries, (rig) => {
+      const before = userRow(rig, "msg_u")!
+      rig.setStore("part", "msg_u", (parts) => [...parts, file("msg_u", "prt_late")])
+      const after = userRow(rig, "msg_u")!
+      expect(after.attached).toBe(true)
+      expect(after.revision).not.toBe(before.revision)
+      expect(after).not.toBe(before)
+    })
+  })
+
+  test("are no row of their own: a message of nothing but files has none", () => {
+    const entries: Entry[] = [{ info: userMessage("msg_only", 1), parts: [file("msg_only", "prt_only")] }]
+    return withTable(entries, (rig) => {
+      expect(rig.table().rows).toEqual([])
+    })
+  })
+
+  test("leave the row of a message that did not change as it was, when another one gains a file", () => {
+    const entries: Entry[] = [
+      { info: userMessage("msg_a", 1), parts: [text("msg_a", "prt_a", "first")] },
+      { info: userMessage("msg_b", 2), parts: [text("msg_b", "prt_b", "second")] },
+    ]
+    return withTable(entries, (rig) => {
+      const before = userRow(rig, "msg_a")
+      rig.setStore("part", "msg_b", (parts) => [...parts, file("msg_b", "prt_f")])
+      expect(userRow(rig, "msg_a")).toBe(before)
+      expect(userRow(rig, "msg_b")?.attached).toBe(true)
+    })
+  })
+})

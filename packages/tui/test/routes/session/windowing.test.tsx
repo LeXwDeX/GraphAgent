@@ -91,6 +91,20 @@ async function sample(harness: Awaited<ReturnType<typeof mountHarness>>, rounds 
 }
 
 /** The first span of the frame that holds `text`, as the cell its first character sits in. */
+/**
+ * Where the header of a thought that is open stands. A folded header ends in `· collapsed`; an open one is the same
+ * words without it, so it is the one `∴ Thought for` row that does not say so.
+ */
+function locateOpenThought(harness: Harness) {
+  const frame = harness.app.captureSpans()
+  for (let row = 0; row < frame.lines.length; row++) {
+    const line = frame.lines[row].spans.map((span) => span.text).join("")
+    const index = line.indexOf("Thought for")
+    if (index !== -1 && !line.includes("· collapsed")) return { row, column: index }
+  }
+  return undefined
+}
+
 function locateText(harness: Harness, text: string) {
   const frame = harness.app.captureSpans()
   for (let row = 0; row < frame.lines.length; row++) {
@@ -288,13 +302,13 @@ test("a row the reader opened stays mounted while the viewport is away from it",
     for (let attempt = 0; attempt < 30 && !header; attempt++) {
       scroll.scrollTo(middle + attempt * page)
       await renderSettled(harness)
-      header = locateText(harness, "+ Thought")
+      header = locateText(harness, "· collapsed")
     }
     expect(header).toBeDefined()
     const opened = scroll.scrollTop
     await harness.app.mockMouse.click(header!.column + 2, header!.row)
     await renderSettled(harness)
-    expect(locateText(harness, "- Thought")).toBeDefined()
+    expect(locateOpenThought(harness)).toBeDefined()
 
     // Far from it, the row is still one of the mounted ones.
     scroll.scrollTo(0)
@@ -304,11 +318,11 @@ test("a row the reader opened stays mounted while the viewport is away from it",
     // Back at it, it is open as it was left, and closing it returns the window to what the viewport needs.
     scroll.scrollTo(opened)
     await renderSettled(harness)
-    const open = locateText(harness, "- Thought")
+    const open = locateOpenThought(harness)
     expect(open).toBeDefined()
     await harness.app.mockMouse.click(open!.column + 2, open!.row)
     await renderSettled(harness)
-    expect(locateText(harness, "+ Thought")).toBeDefined()
+    expect(locateOpenThought(harness)).toBeUndefined()
     scroll.scrollTo(0)
     await renderSettled(harness)
     expect(harness.counters.mountedRows(scroll)).toBe(baseline)

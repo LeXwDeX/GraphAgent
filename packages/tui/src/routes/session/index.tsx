@@ -30,7 +30,7 @@ import { SplitBorder } from "../../ui/border"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
-import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
+import { createSyntaxStyleMemo, generateSubtleSyntax, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { PatchDiff } from "../../component/patch-diff"
@@ -149,15 +149,19 @@ import {
   estimateRowHeight,
   foldRowKey,
   isWindowed,
+  MARK_CELLS,
   PART_OVERSCAN,
   prefixPositions,
+  ROW_INDENT,
   rowRevision,
   settledPartText,
   TAIL_ALWAYS,
+  USER_PADDING,
   visibleRange,
   type Row,
   type SessionViewState,
 } from "./rows"
+import { reasoningDuration, reasoningLine } from "./reasoning-line"
 import { createRowTable, type Delegation } from "./row-table"
 import { RESULT_CARD_INDENT, RESULT_CARD_MARK, resultCardPreview, resultCardTitle } from "./result-card"
 import { toggleExpand } from "./expand"
@@ -2182,7 +2186,6 @@ function UserMessage(props: {
   pending?: Message
 }) {
   const ctx = use()
-  const local = useLocal()
   const receiptShortcut = ctx.shortcuts.dagmodeToggle
   const text = createMemo(() => {
     const texts = props.parts
@@ -2199,72 +2202,65 @@ function UserMessage(props: {
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => isQueuedMessage(props.message, props.pending))
-  const color = createMemo(() => local.agent.color(props.message.agent))
-  const queuedFg = createMemo(() => selectedForeground(theme, color()))
-  const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
+  const created = () => Locale.todayTimeOrDateTime(props.message.time.created)
 
   const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
 
+  // The block is the prototype's (#1615): a `›` in the brand color and the words of the message, on a ground of their own
+  // that runs the width of the transcript. What wraps keeps hanging under the first word, and what the message has
+  // besides its words (a badge that says it waits, its time, the files it carries) stands inside the block.
   return (
     <>
       <Show when={text()}>
         <box
           id={props.message.id}
           ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-          border={["left"]}
-          borderColor={color()}
-          customBorderChars={SplitBorder.customBorderChars}
           marginTop={props.index === 0 ? 0 : 1}
+          paddingLeft={USER_PADDING}
+          paddingRight={USER_PADDING}
+          backgroundColor={hover() ? theme.border : theme.backgroundUser}
+          flexShrink={0}
+          onMouseOver={() => {
+            if (props.onMouseUp) setHover(true)
+          }}
+          onMouseOut={() => {
+            setHover(false)
+          }}
+          onMouseUp={props.onMouseUp}
         >
-          <box
-            onMouseOver={() => {
-              if (props.onMouseUp) setHover(true)
-            }}
-            onMouseOut={() => {
-              setHover(false)
-            }}
-            onMouseUp={props.onMouseUp}
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-            flexShrink={0}
-          >
-            <text fg={theme.text}>{text()}</text>
-            <Show when={files().length}>
-              <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
-                <For each={files()}>
-                  {(file) => {
-                    const directory = file.mime === "application/x-directory"
-                    return (
-                      <text fg={theme.text}>
-                        <span style={{ bg: theme.secondary, fg: theme.background }}>
-                          {` ${directory ? t("message.directory") : t("message.file")} `}
-                        </span>
-                        <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
-                      </text>
-                    )
-                  }}
-                </For>
-              </box>
-            </Show>
-            <Show
-              when={queued()}
-              fallback={
-                <Show when={ctx.showTimestamps()}>
-                  <text fg={theme.textMuted}>
-                    <span style={{ fg: theme.textMuted }}>
-                      {Locale.todayTimeOrDateTime(props.message.time.created)}
-                    </span>
-                  </text>
+          <box flexDirection="row">
+            <box width={MARK_CELLS} flexShrink={0}>
+              <text fg={theme.primary}>›</text>
+            </box>
+            <box flexGrow={1} flexShrink={1}>
+              <text fg={theme.text}>
+                {text()}
+                <Show when={queued()}>
+                  <span style={{ fg: theme.warning }}>{`  ${t("message.queued")}`}</span>
                 </Show>
-              }
-            >
-              <text fg={theme.textMuted}>
-                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> {t("message.queued")} </span>
+                <Show when={ctx.showTimestamps()}>
+                  <span style={{ fg: theme.textDim }}>{`  ${created()}`}</span>
+                </Show>
               </text>
-            </Show>
+            </box>
           </box>
+          <Show when={files().length}>
+            <box paddingLeft={MARK_CELLS} flexDirection="row" gap={1} flexWrap="wrap">
+              <For each={files()}>
+                {(file) => {
+                  const directory = file.mime === "application/x-directory"
+                  return (
+                    <text fg={theme.textMuted}>
+                      <span style={{ bg: theme.secondary, fg: theme.background }}>
+                        {` ${directory ? t("message.directory") : t("message.file")} `}
+                      </span>
+                      <span> {file.filename} </span>
+                    </text>
+                  )
+                }}
+              </For>
+            </box>
+          </Show>
         </box>
       </Show>
       <Show when={compaction()}>
@@ -2677,6 +2673,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo((owner) => generateSubtleSyntax(theme, owner))
+  const open = () => !inMinimal() || expanded()
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -2687,23 +2684,23 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     <Show when={content()}>
       <box
         ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-        paddingLeft={3}
+        paddingLeft={ROW_INDENT}
         marginTop={1}
         flexDirection="column"
         flexShrink={0}
       >
         <box onMouseUp={toggle}>
           <ReasoningHeader
-            toggleable={inMinimal()}
-            open={!inMinimal() || expanded()}
+            open={open()}
             done={isDone()}
             title={summary().title}
-            duration={isDone() ? Locale.duration(duration()) : undefined}
+            duration={isDone() ? duration() : undefined}
+            room={Math.max(1, ctx.width - ROW_INDENT - MARK_CELLS)}
             visible={() => ctx.isVisible(props.part.id)}
           />
         </box>
-        <Show when={(!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
+        <Show when={open() && summary().body}>
+          <box paddingLeft={MARK_CELLS} marginTop={1}>
             <AdaptiveMarkdown
               content={summary().body}
               streaming={!isDone()}
@@ -2718,48 +2715,59 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   )
 }
 
+/**
+ * The one line a thought is drawn as (#1615): a `∴` and what it says (`reasoningLine`), the dimmest line of the transcript
+ * while the thought is folded. A thought that is open, or still being written, keeps the warning color it always had,
+ * and the one being written has a spinner for the glyph, which follows the ticker only while the row is on screen.
+ */
 function ReasoningHeader(props: {
-  toggleable: boolean
   open: boolean
   done: boolean
   title: string | null
-  duration?: string
+  /** Milliseconds a finished thought took. */
+  duration?: number
+  /** Cells the line has after its glyph. */
+  room: number
   visible?: Accessor<boolean>
 }) {
   const { theme } = useTheme()
-  const fg = () =>
-    props.open
+  const kv = useKV()
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
+  const fg = () => {
+    if (props.done && !props.open) return theme.textDim
+    return props.open
       ? RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
       : theme.warning
+  }
+  const line = createMemo(() =>
+    reasoningLine({
+      done: props.done,
+      open: props.open,
+      title: props.title,
+      duration: props.duration === undefined ? undefined : reasoningDuration(props.duration),
+      room: props.room,
+      ambiguousWidth: ambiguousWidth(),
+    }),
+  )
 
   return (
     <Switch>
       <Match when={!props.done}>
         <box flexDirection="row">
           <Spinner color={fg()} visible={props.visible}>
-            {props.title ? "Thinking: " + props.title : "Thinking"}
+            {line()}
           </Spinner>
         </box>
       </Match>
       <Match when={true}>
-        <text fg={fg()} wrapMode="none">
-          <Show when={props.toggleable}>
-            <span>{props.open ? "- " : "+ "}</span>
-          </Show>
-          <span>Thought</span>
-          <Show when={props.title || props.duration}>
-            <span>: </span>
-          </Show>
-          <Show when={props.title}>
-            <span>{props.title}</span>
-          </Show>
-          <Show when={props.duration}>
-            <span>
-              {props.title ? " · " : ""}
-              {props.duration}
-            </span>
-          </Show>
-        </text>
+        <box flexDirection="row">
+          <box width={MARK_CELLS} flexShrink={0}>
+            <text fg={fg()}>∴</text>
+          </box>
+          <text fg={fg()} wrapMode="none">
+            {line()}
+          </text>
+        </box>
       </Match>
     </Switch>
   )
@@ -2775,18 +2783,30 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   // A finished part reads its snapshot: following the stream version would re-run this on every frame.
   const raw = createMemo(() => (isDone() ? settledPartText(props.part) : ctx.sync.readPartText(props.part)))
   const content = createMemo(() => (isDone() ? raw().trim() : raw().trimStart()))
+  // The `⏺` stands in front of the first words as soon as there are any, while the text is still being written.
   return (
     <Show when={content()}>
-      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <AdaptiveMarkdown
-          content={content()}
-          streaming={!isDone()}
-          syntaxStyle={syntax()}
-          tableOptions={{ style: "grid" }}
-          conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
-        />
+      <box
+        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+        paddingLeft={ROW_INDENT}
+        marginTop={1}
+        flexShrink={0}
+        flexDirection="row"
+      >
+        <box width={MARK_CELLS} flexShrink={0}>
+          <text fg={theme.success}>⏺</text>
+        </box>
+        <box flexGrow={1} flexShrink={1}>
+          <AdaptiveMarkdown
+            content={content()}
+            streaming={!isDone()}
+            syntaxStyle={syntax()}
+            tableOptions={{ style: "grid" }}
+            conceal={ctx.conceal()}
+            fg={theme.markdownText}
+            bg={theme.background}
+          />
+        </box>
       </box>
     </Show>
   )

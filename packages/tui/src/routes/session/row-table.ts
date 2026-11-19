@@ -194,9 +194,17 @@ function buildMessageRows(
     }
     const text = texts.join("\n\n")
     const compaction = parts.some((part) => part.type === "compaction")
+    // The labels of the files and directories the message attached stand under its text, in a line of their own.
+    const attached = parts.some((part) => part.type === "file")
     if (text || compaction) {
       const key = `user:${message.id}`
-      rows.push({ key, messageID: message.id, kind: "user", revision: rowRevision(text, compaction) })
+      rows.push({
+        key,
+        messageID: message.id,
+        kind: "user",
+        revision: rowRevision(text, compaction, attached),
+        attached,
+      })
       chars.set(key, longestLine(text))
     }
     // A synthetic part is not the user's: it has no row, unless its metadata says it is the result of a background
