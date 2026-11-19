@@ -7,24 +7,26 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
 import type { Part } from "@graphagent/sdk"
-import { createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js"
+import { createSignal, Match, onCleanup, onMount, Show, Switch, type ParentProps } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
 import { limitRendererListeners } from "../../src/util/renderer"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
+import { resolveRootSessionID } from "../../src/ask/ask-queue"
 import { EditorContextProvider } from "../../src/context/editor"
 import { EpilogueProvider } from "../../src/context/epilogue"
+import { useEvent } from "../../src/context/event"
 import { ExitProvider } from "../../src/context/exit"
 import { KVProvider } from "../../src/context/kv"
 import { ToastLocalProvider } from "../fixture/tui-local"
 import { LocationProvider } from "../../src/context/location"
-import { ProjectProvider } from "../../src/context/project"
+import { ProjectProvider, useProject } from "../../src/context/project"
 import { PromptRefProvider, usePromptRef } from "../../src/context/prompt"
 import { RouteProvider, useRoute } from "../../src/context/route"
 import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
-import { TickerProvider } from "../../src/context/ticker-context"
+import { TickerProvider, useTicker } from "../../src/context/ticker-context"
 import { createTicker, type Ticker } from "../../src/context/ticker"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../src/keymap"
 import type { PromptRef } from "../../src/component/prompt"
@@ -41,7 +43,10 @@ import {
   type BottomZoneStateApi,
 } from "../../src/shell/bottom-zone"
 import { AppFrame } from "../../src/shell/app-frame"
-import { FooterToastProvider } from "../../src/ui/toast"
+import { createPrTracker } from "../../src/shell/pr-tracker"
+import { PrTrackerProvider } from "../../src/shell/pr-tracker-context"
+import { SessionStatusBand } from "../../src/shell/status-band"
+import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { HookStatusProvider } from "../../src/context/hook-status"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -164,6 +169,12 @@ export type HarnessOptions = {
    * assertions that read the words of the screen do not depend on where the suite runs.
    */
   language?: "zh-CN" | "en"
+  /**
+   * Draw the status band the way `app.tsx` does, and mount the PR tracker it reads (#1620). Off by default: the band
+   * takes two rows of the screen, and the scenarios that were measured without it keep their numbers. A scenario
+   * that needs the band (`P15c`, `P15d`) mounts a harness of its own with this on.
+   */
+  statusBand?: boolean
 }
 
 export async function mountHarness(fixture: PerfFixture, options: HarnessOptions = {}): Promise<PerfHarness> {
@@ -228,6 +239,7 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
       <AppFrame
         topBar={{ path: directory }}
         footer={{ agent: "build", dag: dagIndicator() }}
+        statusBand={options.statusBand ? <SessionStatusBand /> : undefined}
         bottomZone={<BottomZone state={props.bottomZone} />}
       >
         <Show when={options.routes} fallback={<Main />}>
@@ -242,6 +254,39 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
         </Show>
       </AppFrame>
     )
+  }
+
+  /**
+   * The PR tracker `app.tsx` mounts around the session route (`PrTrackerScope`): the same arguments, over the
+   * harness's own ticker, which the manual clock drives, so a callback it arms at a minute away never falls due in a
+   * two-second window. Opening a PR in a browser is not something a harness does.
+   */
+  function PrTrackerScope(props: ParentProps) {
+    const route = useRoute()
+    const sync = useSync()
+    const project = useProject()
+    const event = useEvent()
+    const toast = useToast()
+    const tracker = createPrTracker({
+      data: sync.data,
+      ticker: useTicker(),
+      toast,
+      onPrWatchEvent: (listener) =>
+        event.on("pr.watch.updated", (payload, metadata) => {
+          // The store ignores an event routed to another workspace, and so does the tracker.
+          if (metadata.workspace !== undefined && metadata.workspace !== project.workspace.current()) return
+          listener(payload.properties)
+        }),
+      currentRoot: () =>
+        route.data.type === "session" ? resolveRootSessionID(sync.data.session, route.data.sessionID) : undefined,
+      openUrl: () => {},
+    })
+    return <PrTrackerProvider value={tracker}>{props.children}</PrTrackerProvider>
+  }
+
+  /** The tracker only when the harness draws the band: with it off the tree is the one every scenario was measured in. */
+  function WithPrTracker(props: ParentProps) {
+    return options.statusBand ? <PrTrackerScope>{props.children}</PrTrackerScope> : props.children
   }
 
   function Harness() {
@@ -322,7 +367,9 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
                                                 <EditorContextProvider integration={{}}>
                                                   <LocationProvider>
                                                     <BottomZoneProvider state={bottomZone}>
-                                                      <Probe bottomZone={bottomZone} />
+                                                      <WithPrTracker>
+                                                        <Probe bottomZone={bottomZone} />
+                                                      </WithPrTracker>
                                                     </BottomZoneProvider>
                                                   </LocationProvider>
                                                 </EditorContextProvider>

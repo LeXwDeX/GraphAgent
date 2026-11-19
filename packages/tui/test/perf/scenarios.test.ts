@@ -19,6 +19,8 @@ const COUNT_SCENARIOS = new Set([
   "P13",
   "P15",
   "P15b",
+  "P15c",
+  "P15d",
   "P16",
   "P17",
   "P17b",
