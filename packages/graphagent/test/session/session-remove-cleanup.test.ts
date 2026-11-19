@@ -18,9 +18,11 @@ import { CompactionExport } from "@/session/compaction-export"
 import { MessageID, type SessionID } from "@/session/schema"
 import { BackgroundJob } from "@/background/job"
 import { SessionAttention } from "@/notification/attention"
-import { ExclusiveRegistry } from "@/session/engine-process"
+import { EngineProcess, ExclusiveRegistry } from "@/session/engine-process"
+import { SessionCancellation } from "@/session/cancellation"
 import { Goal } from "@/goal/goal"
 import { Dag } from "@/dag/dag"
+import { DagMode } from "@/dag/mode"
 import { testEffect } from "../lib/effect"
 import { testInstanceStoreLayer } from "../fixture/fixture"
 
@@ -226,6 +228,69 @@ describe("Session.remove compaction export cleanup (#1469)", () => {
       yield* session.remove(info.id)
 
       expect((yield* session.get(info.id).pipe(Effect.exit))._tag).toBe("Failure")
+    }),
+  )
+})
+
+// #1584: the cancellation epoch and the DAG mode state a process keeps per session id only ever grew. A deleted
+// session is the one point where they can go, so `Session.remove` drops them for the session and for every child.
+describe("Session.remove process-memory cleanup (#1584)", () => {
+  const budget = { used: 1, cacheRead: 0, budget: 10, warnRatio: 0.8, tier: "warn" } as const
+
+  /** What a session leaves in this process once it was cancelled and its DAG budget was tracked. */
+  const remember = Effect.fnUntraced(function* (sessionID: SessionID) {
+    SessionCancellation.begin(sessionID).finish()
+    DagMode.setBudget(sessionID, budget)
+    // Both maps are process-wide: leave nothing behind for a session the test did not remove.
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        SessionCancellation.forget(sessionID)
+        DagMode.forget(sessionID)
+      }),
+    )
+  })
+
+  const expectRemembered = (sessionID: SessionID) => {
+    expect(EngineProcess.cancellation.epochs.get(sessionID)).toBe(1)
+    expect(SessionCancellation.epoch(sessionID)).toBe(1)
+    expect(DagMode.budgetState(sessionID)).toEqual(budget)
+  }
+
+  const expectForgotten = (sessionID: SessionID) => {
+    expect(EngineProcess.cancellation.epochs.has(sessionID)).toBe(false)
+    expect(SessionCancellation.epoch(sessionID)).toBe(0)
+    expect(DagMode.budgetState(sessionID)).toBeUndefined()
+  }
+
+  it.instance("forgets the epoch and the budget tier of the removed session and keeps another session's", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const gone = yield* session.create({})
+      const kept = yield* session.create({})
+      yield* remember(gone.id)
+      yield* remember(kept.id)
+      expectRemembered(gone.id)
+
+      yield* session.remove(gone.id)
+
+      expectForgotten(gone.id)
+      expectRemembered(kept.id)
+    }),
+  )
+
+  it.instance("forgets them for every child below a removed parent as well", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const parent = yield* session.create({})
+      const child = yield* session.create({ parentID: parent.id })
+      const grandchild = yield* session.create({ parentID: child.id })
+      const other = yield* session.create({})
+      for (const info of [parent, child, grandchild, other]) yield* remember(info.id)
+
+      yield* session.remove(parent.id)
+
+      for (const info of [parent, child, grandchild]) expectForgotten(info.id)
+      expectRemembered(other.id)
     }),
   )
 })

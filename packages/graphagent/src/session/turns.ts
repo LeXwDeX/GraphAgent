@@ -5,7 +5,7 @@ import type { Database } from "@graphagent/core/database/database"
 import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { and, asc, desc, eq, gte } from "drizzle-orm"
+import { and, asc, desc, eq, gte, inArray } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Option, type Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import type { Goal } from "@/goal/goal"
@@ -405,6 +405,54 @@ export function recover(database: Database.Interface): Effect.Effect<void> {
       },
       { concurrency: 1, discard: true },
     )
+  })
+}
+
+/** A turn another live process is running, as `foreignRunning` reports it. */
+export interface ForeignRun {
+  readonly sessionID: string
+  readonly runnerID: string
+  /** The other process: the `runnerID` part before the nonce. */
+  readonly pid: number
+}
+
+const FOREIGN_LOOKUP_CHUNK = 500
+
+/**
+ * The `running` turns of `sessionIDs` that another live process owns (#1584), in the order of `sessionIDs`.
+ * A cancel reaches only this process's runs, so a delete here cannot stop these; the CLI asks before it removes a
+ * tree. The verdict is `recover`'s: `runnerAlive` judges the `pid:nonce` identity. This process's own rows are
+ * left out, because the delete cancels those itself; a dead or recycled runner, a row with no runner and an
+ * ended row are not reported.
+ */
+export function foreignRunning(
+  database: Pick<Database.Interface, "db">,
+  sessionIDs: ReadonlyArray<SessionID>,
+): Effect.Effect<ReadonlyArray<ForeignRun>> {
+  return Effect.gen(function* () {
+    const ids = [...new Set<string>(sessionIDs)]
+    const found: ForeignRun[] = []
+    for (let start = 0; start < ids.length; start += FOREIGN_LOOKUP_CHUNK) {
+      const rows = yield* database.db
+        .select({ session_id: SessionTurnTable.session_id, runner_id: SessionTurnTable.runner_id })
+        .from(SessionTurnTable)
+        .where(
+          and(
+            eq(SessionTurnTable.state, "running"),
+            inArray(SessionTurnTable.session_id, ids.slice(start, start + FOREIGN_LOOKUP_CHUNK)),
+          ),
+        )
+        .all()
+        .pipe(Effect.orDie)
+      for (const row of rows) {
+        const runnerID = row.runner_id
+        if (!runnerID || runnerID === EngineProcess.runner.id || !runnerAlive(runnerID)) continue
+        found.push({ sessionID: row.session_id, runnerID, pid: Number(runnerID.split(":")[0]) })
+      }
+    }
+    // A chunk comes back in the database's order; the caller's order is the one a message can rely on.
+    const position = new Map(ids.map((id, index) => [id, index]))
+    return found.sort((a, b) => (position.get(a.sessionID) ?? 0) - (position.get(b.sessionID) ?? 0))
   })
 }
 

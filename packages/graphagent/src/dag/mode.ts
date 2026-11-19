@@ -214,6 +214,15 @@ export function budgetState(sessionID: SessionID): BudgetState | undefined {
   return budgets.get(sessionID)
 }
 
+/**
+ * Drop this process's snapshot and budget tier of a session that was deleted for good (#1584); `Session.remove`
+ * is the only caller. The two maps otherwise keep one entry for every session that ever ran DAG mode here.
+ */
+export function forget(sessionID: SessionID): void {
+  snapshots.delete(sessionID)
+  budgets.delete(sessionID)
+}
+
 export type ReceiptKind = "on" | "off" | "status" | "budget"
 
 export type ReceiptValues = Record<string, string | number | boolean | undefined>
