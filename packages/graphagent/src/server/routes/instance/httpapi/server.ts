@@ -124,7 +124,7 @@ import { schemaErrorLayer } from "./middleware/schema-error"
 export const context = Context.makeUnsafe<unknown>(new Map())
 
 // Route tree:
-// - rootApiRoutes: typed /global/* and control routes; auth is declared by RootHttpApi.
+// - rootApiRoutes: typed /global/* and control routes.
 // - eventApiRoutes: typed SSE route with instance routing context and its existing API contract.
 // - instanceApiRoutes: remaining typed instance routes.
 const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
@@ -212,17 +212,17 @@ export const app = LayerNode.group([
   // lifecycle service in this graph, the same placement as the job and goal
   // resolvers above.
   PrWatchLifecycle.node,
-  // #1071 PR2: the process-level PR/MR poller. The sidecar and headless
-  // serving paths build this node graph without AppLayer, so the loop must be
-  // listed here too. A second instance in the same process shares the durable
+  // #1071 PR2: the process-level PR/MR poller. The in-process server builds
+  // this node graph itself, not through AppLayer, so the loop must be listed
+  // here too. A second instance in the same process shares the durable
   // rows; the per-row CAS makes concurrent pollers convergent (one poll and
   // one transition per observation), so the duplicate is safe.
   PrWatchPoller.node,
   // #1072: reminder-domain resolver, same placement as the PR-watch one above.
   ReminderLifecycle.node,
   // #1072: the process-level reminder clock. `/remind` resolves it through
-  // `serviceOption` from the request context, and the sidecar and headless
-  // paths build this graph without AppLayer, so it must be listed here too. A
+  // `serviceOption` from the request context, and the in-process server builds
+  // this graph itself, not through AppLayer, so it must be listed here too. A
   // second instance in the same process shares the durable rows; the per-row
   // CAS makes concurrent clocks convergent.
   ReminderClock.node,
@@ -308,28 +308,27 @@ export const app = LayerNode.group([
   // InstanceBootstrap's `serviceOption(GoalLoop.Service).init()` (idle-event
   // subscription + startup goal scan), which runs in the request fiber's
   // ambient context. GoalLoop.node was listed only in AppLayer
-  // (app-runtime.ts provideMerge), so headless serve, the
-  // sidecar, and non-CWD TUI directories never armed goal continuation or
+  // (app-runtime.ts provideMerge), so a process serving this graph without
+  // AppLayer, and non-CWD TUI directories, never armed goal continuation or
   // the crash-recovery scan: standing goals stalled after their first turn.
   GoalLoop.node,
   // DagSupervisionSweep: host-level deadline supervision (2026-08-18
-  // orphaned-nodes incident) was constructed only in AppLayer, but the
-  // sidecar calls Server.listen without effectCmd, so AppLayer never existed
-  // there and the sweep never ran on that path (issue #341). Listing
-  // it here makes every serving process build it with the listener scope.
-  // Processes that also build AppLayer (serve via AppRuntime) get a
-  // second instance; settle is convergent (withWorkflowLock + guardNode +
-  // conditional projector UPDATE), so the duplicate is safe — see the sweep
-  // header's multi-host convergence notes.
+  // orphaned-nodes incident) was constructed only in AppLayer, so a process
+  // that served this graph without AppLayer never ran the sweep (issue #341).
+  // Listing it here makes every process serving this graph build it with the
+  // server scope. Processes that also build AppLayer (a command under
+  // AppRuntime) get a second instance; settle is convergent
+  // (withWorkflowLock + guardNode + conditional projector UPDATE), so the
+  // duplicate is safe — see the sweep header's multi-host convergence notes.
   DagSupervisionSweep.node,
   // EventResidueSweep (#524): default-on startup residue sweep for crash/
   // in-flight zombie event aggregates. Same app-graph-level placement
-  // rationale as DagSupervisionSweep above — the sidecar and headless
-  // serving processes build this node graph without AppLayer, and the sweep
+  // rationale as DagSupervisionSweep above — the in-process server builds
+  // this node graph itself, not through AppLayer, and the sweep
   // is idempotent (a second pass in AppLayer processes removes nothing).
   EventResidueSweep.node,
-  // RuntimeJobRecovery (#1069 P5): the sidecar and headless serving paths
-  // build this node graph without AppLayer, so the restart sweep must be
+  // RuntimeJobRecovery (#1069 P5): the in-process server builds this node
+  // graph itself, not through AppLayer, so the restart sweep must be
   // listed here as well. Rows written by this process are excluded, making a
   // second instance in the same process convergent rather than destructive.
   RuntimeJobRecovery.node,

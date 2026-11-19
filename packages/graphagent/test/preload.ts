@@ -60,7 +60,7 @@ const cacheDir = path.join(dir, "cache", "graphagent")
 await fs.mkdir(cacheDir, { recursive: true })
 await fs.writeFile(path.join(cacheDir, "version"), "14")
 
-// Clear provider and server auth env vars to ensure clean test state
+// Clear provider env vars to ensure clean test state
 delete process.env["ANTHROPIC_API_KEY"]
 delete process.env["OPENAI_API_KEY"]
 delete process.env["GOOGLE_API_KEY"]
@@ -81,8 +81,6 @@ delete process.env["DEEPSEEK_API_KEY"]
 delete process.env["FIREWORKS_API_KEY"]
 delete process.env["CEREBRAS_API_KEY"]
 delete process.env["SAMBANOVA_API_KEY"]
-delete process.env["GRAPHAGENT_SERVER_PASSWORD"]
-delete process.env["GRAPHAGENT_SERVER_USERNAME"]
 delete process.env["GRAPHAGENT_ENABLE_EXPERIMENTAL_MODELS"]
 delete process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 delete process.env["OTEL_EXPORTER_OTLP_HEADERS"]

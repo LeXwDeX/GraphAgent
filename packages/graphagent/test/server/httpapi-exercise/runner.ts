@@ -1,4 +1,3 @@
-import { Flag } from "@graphagent/core/flag/flag"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { Database } from "@graphagent/core/database/database"
 import { Project } from "@graphagent/core/project"
@@ -12,8 +11,7 @@ import { Cause, Duration, Effect, Layer, Scope } from "effect"
 import { TestLLMServer } from "../../lib/llm-server"
 
 import { MessageID, PartID, SessionID } from "../../../src/session/schema"
-import { call, callAuthProbe, callRequest, disposeApps } from "./backend"
-import { original } from "./environment"
+import { call, callRequest, disposeApps } from "./backend"
 import { runtime } from "./runtime"
 import type {
   ActiveScenario,
@@ -346,8 +344,6 @@ function fakeLlmConfig(url: string): Partial<ConfigV1.Info> {
 
 const resetState = Effect.promise(async () => {
   const modules = await runtime()
-  Flag.GRAPHAGENT_SERVER_PASSWORD = original.GRAPHAGENT_SERVER_PASSWORD
-  Flag.GRAPHAGENT_SERVER_USERNAME = original.GRAPHAGENT_SERVER_USERNAME
   // This runs from Effect.ensuring, i.e. uninterruptibly — a single promise
   // that never resolves here used to hang the whole runner with zero output
   // (the 2026-07-27 CI incident). Bound every step independently so a stuck

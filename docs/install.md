@@ -16,7 +16,6 @@ From source (requires the [Bun](https://bun.sh) version pinned in `package.json`
 ```bash
 bun install
 bun dev              # TUI
-bun dev serve        # headless API server (port 4096)
 
 # standalone binary
 ./packages/graphagent/script/build.ts --single

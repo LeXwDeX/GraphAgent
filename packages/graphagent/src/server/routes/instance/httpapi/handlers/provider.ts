@@ -1,5 +1,6 @@
 import { ProviderAuth } from "@/provider/auth"
 import { Provider } from "@/provider/provider"
+import { ProviderRedact } from "@/provider/redact"
 
 import { Effect, Schema } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
@@ -33,8 +34,10 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
     const provider = yield* Provider.Service
     const svc = yield* ProviderAuth.Service
 
+    // #1553: the provider's `key` and `options` hold the resolved credential, so they are redacted on the way out.
     const list = Effect.fn("ProviderHttpApi.list")(function* () {
-      return yield* provider.publicProviders()
+      const result = yield* provider.publicProviders()
+      return { ...result, all: result.all.map(ProviderRedact.redactProvider) }
     })
 
     const auth = Effect.fn("ProviderHttpApi.auth")(function* () {
