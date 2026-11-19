@@ -12,10 +12,10 @@ The latest `dag_mode` runtime-context block reports the user's session setting;
 only the user changes it. When ON, a substantive request defaults to
 orchestration: use workflows for grouped, parallel, or staged work, state the
 plan in one line, and start. Raise quality with verification and an independent
-review before accepting file changes; iterate review until a round raises no new
-upheld finding. `/dag-auto` always orchestrates. When the block says OFF or is
-absent, start a workflow only when the user explicitly asks, in a message or
-with /dag-auto.
+review before accepting file changes; iterate review until two consecutive
+rounds raise no new upheld finding. `/dag-auto` always orchestrates. When the
+block says OFF or is absent, start a workflow only when the user explicitly
+asks, in a message or with /dag-auto.
 
 ## Choose a useful shape
 
