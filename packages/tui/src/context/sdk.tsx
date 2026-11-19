@@ -6,6 +6,7 @@ import { batch, onCleanup, onMount } from "solid-js"
 import { createSimpleContext } from "./helper"
 import { createFrameClock, type FrameClock } from "./frame-clock"
 import type { GateDecision } from "./event-gate"
+import { TuiLog } from "../util/log"
 
 /**
  * Per-request location addressing. The server only honours the
@@ -21,6 +22,52 @@ export function locationHeaders(input: {
   if (input.directory) headers["x-graphagent-directory"] = encodeURIComponent(input.directory)
   if (input.workspace) headers["x-graphagent-workspace"] = input.workspace
   return headers
+}
+
+/**
+ * The session a refused write names, when `response` is the server's refusal of a write to a sub-agent's session:
+ * 409 `{ name: "ChildSessionReadOnlyError", data: { sessionID, message } }` (#1026). Any other response, and a body
+ * that cannot be read, is not JSON or has another shape, is not that refusal and yields nothing. Only a clone is
+ * read, so the caller still gets the whole body.
+ */
+async function refusedChildSession(response: Response): Promise<string | undefined> {
+  if (response.status !== 409) return undefined
+  try {
+    const body: unknown = await response.clone().json()
+    if (typeof body !== "object" || body === null) return undefined
+    if (!("name" in body) || body.name !== "ChildSessionReadOnlyError") return undefined
+    if (!("data" in body) || typeof body.data !== "object" || body.data === null) return undefined
+    if (!("sessionID" in body.data) || typeof body.data.sessionID !== "string") return undefined
+    return body.data.sessionID
+  } catch {
+    // Not that refusal: the caller reads the response as it is and has its own say about the failure.
+    return undefined
+  }
+}
+
+/**
+ * `base` plus one duty: a refused write to a sub-agent's session is passed to `onRefused` with that session's id
+ * (#1618). Every request of the client goes through this one `fetch`, so no write entry has to know about the
+ * refusal. The arguments are forwarded as they came (the generated client passes one `Request`; a URL with an init
+ * works as well) and the response is returned as it came. The refusal is read before the response goes back, so the
+ * report precedes whatever the caller does about the failure; a report that fails never fails the request.
+ */
+export function reportChildSessionReadOnly(base: typeof fetch, onRefused: (sessionID: string) => void): typeof fetch {
+  const reporting = async (...args: Parameters<typeof fetch>) => {
+    const response = await base(...args)
+    const sessionID = await refusedChildSession(response)
+    if (sessionID === undefined) return response
+    try {
+      onRefused(sessionID)
+    } catch (error) {
+      TuiLog.write("error", "Reporting a refused write to a sub-agent session failed", {
+        sessionID,
+        error: String(error),
+      })
+    }
+    return response
+  }
+  return Object.assign(reporting, { preconnect: base.preconnect })
 }
 
 export type EventSource = {
@@ -83,6 +130,11 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     fetch?: typeof fetch
     headers?: RequestInit["headers"]
     events?: EventSource
+    /**
+     * The server refused a write to a sub-agent's session (409 `ChildSessionReadOnlyError`, #1618). The data layer
+     * cannot show a toast (it stays below `ui/`), so `app.tsx` turns the report into one.
+     */
+    onChildSessionReadOnly?: (sessionID: string) => void
   }) => {
     const abort = new AbortController()
     const renderer = useRenderer()
@@ -118,7 +170,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         baseUrl: props.url,
         signal: abort.signal,
         directory: props.directory,
-        fetch: props.fetch,
+        // The app always brings its own transport (the worker's); without one the SDK keeps its default fetch as is.
+        fetch:
+          props.fetch &&
+          reportChildSessionReadOnly(props.fetch, (sessionID) => props.onChildSessionReadOnly?.(sessionID)),
         headers: props.headers,
       })
     }

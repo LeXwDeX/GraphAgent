@@ -271,3 +271,29 @@ export function truncateCells(text: string, maxWidth: number, ambiguousWidth: Am
   }
   return `${result}${ELLIPSIS}`
 }
+
+/**
+ * Truncate `text` from the left to at most `maxWidth` terminal cells, putting `…` in front of what is kept, for
+ * text whose end says more than its start (a path: the directory that tells one worktree from another). Uses
+ * the same width model as {@link cellWidth}, so it never counts characters, and it cuts between grapheme
+ * clusters, so a wide glyph or a combined emoji is kept whole or dropped whole.
+ */
+export function truncateCellsLeft(text: string, maxWidth: number, ambiguousWidth: AmbiguousWidth = 1): string {
+  if (maxWidth <= 0) return ""
+  if (cellWidth(text, ambiguousWidth) <= maxWidth) return text
+
+  const ellipsisWidth = cellWidth(ELLIPSIS, ambiguousWidth)
+  if (maxWidth < ellipsisWidth) return ""
+
+  const segments = Array.from(graphemes.segment(text), ({ segment }) => segment)
+  let result = ""
+  let width = 0
+  for (let index = segments.length - 1; index >= 0; index--) {
+    const segment = segments[index]
+    const segmentWidth = cellWidth(segment, ambiguousWidth)
+    if (width + segmentWidth + ellipsisWidth > maxWidth) break
+    result = `${segment}${result}`
+    width += segmentWidth
+  }
+  return `${ELLIPSIS}${result}`
+}

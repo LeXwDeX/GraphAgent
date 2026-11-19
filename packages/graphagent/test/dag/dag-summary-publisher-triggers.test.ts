@@ -8,6 +8,7 @@
 //   - NodeQueued moves pending -> queued              -> summary.queuedNodes rises
 //   - WorkflowStepped moves running -> stepping       -> summary.status changes
 //   - NodeSafetyDenied records a denial               -> summary.coverageCount rises
+//   - WorkflowWorktreeSettled settles the worktree    -> summary.worktree goes from the live pointer to the settled state
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
 import { DagStore, type WorkflowRow, type WorkflowSummary } from "@graphagent/core/dag/store"
@@ -89,6 +90,17 @@ describe("DagSummaryPublisher trigger coverage", () => {
             timestamp: ts,
           },
         },
+        // #1618: the settlement is written after the terminal event and moves neither seq nor update time, so no other
+        // event says the summary's worktree changed.
+        {
+          type: DagEvent.WorkflowWorktreeSettled.type,
+          data: {
+            dagID: "dag-5",
+            worktree: { directory: "/wt/dag-5", touchedPaths: [], state: "removed" },
+            episode: { graphRev: 1, seq: 1 },
+            timestamp: ts,
+          },
+        },
       ]
       const result: Record<string, number> = {}
       for (const event of cases) {
@@ -105,6 +117,7 @@ describe("DagSummaryPublisher trigger coverage", () => {
         [DagEvent.NodeQueued.type]: 1,
         [DagEvent.WorkflowStepped.type]: 1,
         [DagEvent.NodeSafetyDenied.type]: 1,
+        [DagEvent.WorkflowWorktreeSettled.type]: 1,
       })
     }).pipe(Effect.provide(Layer.provideMerge(DagSummaryPublisher.layer, Layer.mergeAll(events, store))))
   })

@@ -17,10 +17,12 @@ const root = path.resolve(import.meta.dir, "../../../..")
 const command = process.env.TUI_PTY_COMMAND ?? "bun"
 const args = (process.env.TUI_PTY_ARGS ?? "run dev").split(" ").filter(Boolean)
 /**
- * The input box shows this placeholder until the first keystroke. It is not `>`: the box has no prompt glyph, and the
- * first `>` in the stream is the renderer's terminal query (`ESC [ > 0 q`), about a second before any frame is drawn.
+ * The input box draws the prompt mark `›` (U+203A) at the start of its first row, and nothing else on the home screen
+ * draws it, so its first appearance is the first frame with the box. It is not `>`: that is the renderer's terminal
+ * query (`ESC [ > 0 q`), printed about a second before any frame. It is not the placeholder either, which is written in
+ * the interface language and so depends on the locale of whoever runs the measurement.
  */
-const expected = process.env.TUI_PTY_EXPECTED ?? "Ask anything"
+const expected = process.env.TUI_PTY_EXPECTED ?? "›"
 const timeoutMs = Number(process.env.TUI_PTY_TIMEOUT_MS ?? 30_000)
 const baselinePath = process.env.TUI_PTY_BASELINE
 

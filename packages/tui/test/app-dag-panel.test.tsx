@@ -5,7 +5,7 @@ import { afterEach, expect, test } from "bun:test"
 import { TextareaRenderable, type Renderable } from "@opentui/core"
 import type { DagNode, DagWorkflowSummary } from "@graphagent/sdk"
 import { setLanguage } from "../src/i18n"
-import { runApp, waitForFrame, PROMPT_MARK, type Setup } from "./fixture/run-app"
+import { runApp, waitForFrame, promptShown, type Setup } from "./fixture/run-app"
 import { json } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -89,7 +89,7 @@ function mountApp() {
 test("/dag opens the workflow panel over the input, and escape gives the input back", async () => {
   const app = await mountApp()
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await app.setup.mockInput.typeText("/dag")
     await waitForFrame(app.setup, (frame) => frame.includes("工作流"), "the command popup")
     app.setup.mockInput.pressEnter()
@@ -101,10 +101,10 @@ test("/dag opens the workflow panel over the input, and escape gives the input b
     )
     expect(frame).toContain("依赖升级验证")
     expect(frame).toContain("请主 agent 处理")
-    expect(frame).not.toContain(PROMPT_MARK)
+    expect(promptShown(frame)).toBe(false)
 
     app.setup.mockInput.pressEscape()
-    await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the input again")
+    await waitForFrame(app.setup, promptShown, "the input again")
     expect(app.writes()).toEqual([])
   } finally {
     for (const input of textareas(app.setup)) if (!input.isDestroyed) input.setText("")
@@ -115,7 +115,7 @@ test("/dag opens the workflow panel over the input, and escape gives the input b
 test("a request chosen in the panel is the draft of the main session, and nothing is sent", async () => {
   const app = await mountApp()
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await app.setup.mockInput.typeText("/dag")
     await waitForFrame(app.setup, (frame) => frame.includes("工作流"), "the command popup")
     app.setup.mockInput.pressEnter()
@@ -127,7 +127,7 @@ test("a request chosen in the panel is the draft of the main session, and nothin
     for (let index = 0; index < 3; index++) app.setup.mockInput.pressArrow("down")
     app.setup.mockInput.pressEnter()
 
-    const frame = await waitForFrame(app.setup, (value) => value.includes(PROMPT_MARK), "the input again")
+    const frame = await waitForFrame(app.setup, promptShown, "the input again")
     expect(frame).toContain("请重试节点 e2e（工作流 wf_app_panel）。")
     const [input] = textareas(app.setup)
     expect(input.plainText).toBe("请重试节点 e2e（工作流 wf_app_panel）。")

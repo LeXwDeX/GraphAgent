@@ -34,6 +34,11 @@ export interface Row {
   partID?: string
   kind: RowKind
   revision: number
+  /**
+   * A `user` row only: the message carries files or directories, whose labels stand in a line of their own under its
+   * text. It is part of the row's revision, so a message that gains or loses one is measured again.
+   */
+  attached?: boolean
 }
 
 /**
@@ -256,12 +261,27 @@ export function visibleRange(positions: readonly number[], top: number, viewport
   return { first, last }
 }
 
+/** Cells the text of the assistant and a thought are indented by, which the marks in front of them start at. */
+export const ROW_INDENT = 3
+/**
+ * Cells the mark in front of a line of the transcript takes: the `›` of a user message, the `⏺` of the assistant's
+ * text and the `∴` of a thought, and the gap to the words. What wraps under a mark is indented by the same cells.
+ */
+export const MARK_CELLS = 2
+/** Cells of padding a user message keeps on each side of its block. */
+export const USER_PADDING = 1
+
 export function estimateRowHeight(row: Row, width: number, chars: number, expanded = false): number {
-  const contentWidth = Math.max(1, width - 3)
+  const contentWidth = Math.max(1, width - ROW_INDENT)
   const lines = Math.max(1, Math.ceil(chars / contentWidth))
+  // The words of a user message stand between its padding and after its mark, those of the assistant's text and of an
+  // open thought after the mark, which is itself indented.
+  const userLines = Math.max(1, Math.ceil(chars / Math.max(1, width - 2 * USER_PADDING - MARK_CELLS)))
+  const markedLines = Math.max(1, Math.ceil(chars / Math.max(1, width - ROW_INDENT - MARK_CELLS)))
   switch (row.kind) {
     case "user":
-      return lines + 3
+      // The gap above, the line of the message and its words; under them the labels of what it attached.
+      return userLines + 1 + (row.attached ? 1 : 0)
     case "delegation": {
       // The title, the description and the gap before the prompt, and the padding above and below, make five. A
       // prompt that runs past DELEGATION_PROMPT_LINES folds into those lines and a `…` line, unless the reader
@@ -277,9 +297,10 @@ export function estimateRowHeight(row: Row, width: number, chars: number, expand
       // under the title. Open, the body (a gap, then its lines) and the hint (a gap, then its line) stand there.
       return expanded ? lines + 7 : 5
     case "text":
-      return lines + 1
+      return markedLines + 1
     case "reasoning":
-      return expanded ? lines + 3 : 2
+      // The gap above and the header make two rows. Open, a gap and the words of the thought stand under them.
+      return expanded ? markedLines + 3 : 2
     case "tool":
       // The call and the line under it make two rows. Open, the whole output (`chars` is its number of lines, which
       // the row table gives a tool row that is open) stands under them, and the hint that closes it under that.

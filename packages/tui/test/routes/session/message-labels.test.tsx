@@ -15,6 +15,8 @@ import { mountRoute, sessionFixture, waitFor } from "../dag-mode-harness"
  * The words the message rows used to hard-code in English (#1615 PR A): the badge of a queued message, the labels of
  * an attached file and directory, the divider of a compaction, the mark of an interrupted turn, and the note of a turn
  * that could not be replayed. They come from the message tables now, in the reader's language; English reads as it did.
+ * The queued badge stands at the end of the line of the message since PR B, and the labels of an attachment in a line
+ * under it, both inside its block.
  */
 
 afterEach(() => {
@@ -55,7 +57,7 @@ const says = (text: string) => (frame: string) => frame.includes(text)
 
 const LABELS = {
   en: {
-    queued: " QUEUED ",
+    queued: "QUEUED",
     file: " File  a.ts ",
     directory: " Directory  src ",
     compaction: " Compaction ",
@@ -63,7 +65,7 @@ const LABELS = {
     retry: "Tools started in this turn, so it was not replayed automatically. Retry manually.",
   },
   "zh-CN": {
-    queued: " 排队中 ",
+    queued: "排队中",
     file: " 文件  a.ts ",
     directory: " 目录  src ",
     compaction: " 压缩 ",
@@ -93,12 +95,13 @@ for (const language of ["en", "zh-CN"] as const) {
     try {
       const frame = await harness.waitForFrame(says(label.queued), "the badge")
       const rows = frame.split("\n")
-      // One badge, on the message that waits: under its text, and not on the first prompt.
+      // One badge, on the message that waits: at the end of the line of its text, and not on the first prompt.
       expect(rows.filter((row) => row.includes(label.queued))).toHaveLength(1)
       const second = rows.findIndex((row) => row.includes("second prompt"))
       const badge = rows.findIndex((row) => row.includes(label.queued))
       expect(second).toBeGreaterThanOrEqual(0)
-      expect(badge).toBeGreaterThan(second)
+      expect(badge).toBe(second)
+      expect(rows[badge].indexOf(label.queued)).toBeGreaterThan(rows[second].indexOf("second prompt"))
       expect(rows.findIndex((row) => row.includes("first prompt"))).toBeLessThan(second)
       expect(harness.writes()).toEqual([])
     } finally {

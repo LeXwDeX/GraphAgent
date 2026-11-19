@@ -23,6 +23,7 @@ import {
   batch,
   Show,
   on,
+  type ComponentProps,
   type JSX,
   type ParentProps,
 } from "solid-js"
@@ -176,6 +177,28 @@ export type TuiInput = {
 function LocalWithToast(props: ParentProps) {
   const toast = useToast()
   return <LocalProvider notify={(notice) => toast.show(notice)}>{props.children}</LocalProvider>
+}
+
+/**
+ * The SDK reports a write the server refused because it addressed a sub-agent's session (409
+ * `ChildSessionReadOnlyError`, #1618) through a callback, so the data layer stays below `ui/`. Here it becomes one
+ * footer toast, whichever of the write entries sent the request; the key makes repeats within ten seconds one toast.
+ * The toast provider sits above the SDK provider, so the callback goes in as a prop.
+ */
+function SDKWithToast(props: Omit<ComponentProps<typeof SDKProvider>, "onChildSessionReadOnly">) {
+  const toast = useToast()
+  return (
+    <SDKProvider
+      {...props}
+      onChildSessionReadOnly={() =>
+        toast.show({
+          text: t("error.child_session_read_only"),
+          level: "warning",
+          dedupeKey: "error.child_session_read_only",
+        })
+      }
+    />
+  )
 }
 
 /**
@@ -342,7 +365,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                         }
                                       >
                                         <TuiConfigProvider config={input.config}>
-                                          <SDKProvider
+                                          <SDKWithToast
                                             url={input.url}
                                             directory={input.directory}
                                             fetch={input.fetch}
@@ -378,7 +401,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                 </ThemeProvider>
                                               </SyncProvider>
                                             </ProjectProvider>
-                                          </SDKProvider>
+                                          </SDKWithToast>
                                         </TuiConfigProvider>
                                       </RouteProvider>
                                     </HookStatusProvider>

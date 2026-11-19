@@ -45,7 +45,7 @@ import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
 import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
-import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import { cellWidth, truncateCells, truncateCellsLeft, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
 import { remoteLine } from "../util/remote-text"
 import { DetailPanel, type DetailRow } from "./detail"
@@ -198,6 +198,29 @@ function fitLine(
     break
   }
   return fitted
+}
+
+/**
+ * The worktree row (#1618): where the workflow's isolated worktree is and which branch it is on, read off the
+ * summary's `worktree` and nothing else. The path is what gives way: it is cut from the left, so the end that tells
+ * one worktree from another stays, and the branch is kept whole; only a line too wide even then loses the tail of
+ * the branch. A worktree that was cleaned up has no directory to name, so the row is its branch and that the
+ * directory is gone, and without a branch there is nothing left to say. Both strings come from the server and
+ * are cleaned of escapes and line breaks first. One row, never wider than `width`; none when there is nothing to show.
+ */
+function worktreeLine(worktree: DagWorkflowSummary["worktree"], width: number, aw: AmbiguousWidth) {
+  if (worktree === undefined) return undefined
+  const branch = worktree.branch === undefined ? "" : remoteLine(worktree.branch)
+  if (worktree.state === "removed") {
+    return branch === "" ? undefined : truncateCells(t("dagmode.panel.worktree.removed", { branch }), width, aw)
+  }
+  const path = remoteLine(worktree.directory)
+  if (path === "") return undefined
+  const key: MessageKey = branch === "" ? "dagmode.panel.worktree.noBranch" : "dagmode.panel.worktree"
+  // The room the path may take is what the words around it leave, and never less than the cut mark: a branch too long
+  // for the line takes the end of the line, not the place where the path was.
+  const room = Math.max(width - cellWidth(t(key, { path: "", branch }), aw), 2)
+  return truncateCells(t(key, { path: truncateCellsLeft(path, room, aw), branch }), width, aw)
 }
 
 const nodeKey = (workflowID: string, nodeID: string) => `${workflowID}\u0000${nodeID}`
@@ -358,6 +381,8 @@ export function DagPanel(props: { state?: DagPanelState }) {
     return summary === undefined ? undefined : dagUsageText(summary)
   })
   const qualityText = createMemo(() => dagQualityText(active()?.summary.quality))
+  /** The shown workflow's worktree (#1618), laid out to the panel's width; none when it has no isolation. */
+  const worktreeText = createMemo(() => worktreeLine(active()?.summary.worktree, innerWidth(), ambiguousWidth()))
   /** A workflow paused while the budget is gone: the pause is most likely the budget's, so the panel says what ends it. */
   const budgetPaused = createMemo(() => {
     const summary = active()?.summary
@@ -760,6 +785,13 @@ export function DagPanel(props: { state?: DagPanelState }) {
       <text fg={theme.textMuted} wrapMode="none">
         {countsText()}
       </text>
+      <Show when={worktreeText()}>
+        {(text) => (
+          <text fg={theme.textMuted} wrapMode="none">
+            {text()}
+          </text>
+        )}
+      </Show>
       <Show when={usageText()}>
         {(text) => (
           <text fg={theme.textMuted} wrapMode="none">

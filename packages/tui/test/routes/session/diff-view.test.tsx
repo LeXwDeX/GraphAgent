@@ -50,7 +50,7 @@ const DIFF = [
   "",
 ].join("\n")
 
-/** The perf fixture cut down to its text part and one completed edit call, which renders as a diff block. */
+/** The perf fixture cut down to its text part and one completed edit call, whose row opens to a diff block. */
 function editTranscript() {
   const fixture = createFixture("S")
   const call = fixture.parts.find((part) => part.type === "tool" && part.state.status === "completed")
@@ -86,6 +86,9 @@ function split(frame: string) {
 test("an edit in the session shows a unified diff at 124 columns and a split one at 125", async () => {
   const harness = await mountHarness(editTranscript())
   try {
+    // The row of an edit folds its diff under the summary (#1614): the key opens it, and the width decides how it is laid out.
+    harness.app.mockInput.pressKey("o", { ctrl: true })
+    await harness.app.renderOnce()
     expect(split(await diffAt(harness, 124))).toBe(false)
     expect(split(await diffAt(harness, 125))).toBe(true)
     expect(split(await diffAt(harness, 167))).toBe(true)

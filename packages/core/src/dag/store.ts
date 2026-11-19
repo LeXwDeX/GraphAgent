@@ -328,8 +328,11 @@ export interface Interface {
    * statement. It differs whenever an event was projected for the workflow
    * (the workflow row and every current node row carry the latest durable
    * event seq and update time), so a value derived from the workflow's config
-   * and node rows stays valid exactly as long as the marker does. The marker
-   * is only ever compared for equality.
+   * and node rows stays valid exactly as long as the marker does. The one
+   * write that moves neither is the settlement of a workflow-level worktree
+   * (`WorkflowWorktreeSettled`, #1618), so the marker also records whether
+   * `workflow.worktree` has been written. The marker is only ever compared
+   * for equality.
    */
   readonly getWorkflowRevisions: (sessionId: string) => Effect.Effect<ReadonlyMap<string, string>>
   /**
@@ -641,13 +644,19 @@ export const layer = Layer.effect(
       // One grouped pass over the session's workflows and their current nodes.
       // Both seq and update time are folded in: every projection stamps the
       // event seq and the event time on the row it writes, so either moving
-      // is enough to invalidate a derived value.
+      // is enough to invalidate a derived value. The worktree settlement is
+      // the exception: it is written without touching seq or time_updated
+      // (report identity is pinned to the terminal event), so the marker ends
+      // in whether `workflow.worktree` is set. The write is once per terminal
+      // episode, and a reopen bumps seq as it clears the pointer, so a settled
+      // marker never recurs for different contents.
       getWorkflowRevisions: Effect.fn("DagStore.getWorkflowRevisions")(function* (sessionId) {
         const rows = yield* db
           .select({
             id: WorkflowTable.id,
             seq: WorkflowTable.seq,
             timeUpdated: WorkflowTable.time_updated,
+            worktreeSettled: sql<number>`${WorkflowTable.worktree} IS NOT NULL`,
             nodeSeq: max(WorkflowNodeTable.seq),
             nodeTimeUpdated: max(WorkflowNodeTable.time_updated),
           })
@@ -661,7 +670,10 @@ export const layer = Layer.effect(
           .all()
           .pipe(Effect.orDie)
         return new Map(
-          rows.map((row) => [row.id, `${row.seq}.${row.nodeSeq ?? 0}.${row.timeUpdated}.${row.nodeTimeUpdated ?? 0}`]),
+          rows.map((row) => [
+            row.id,
+            `${row.seq}.${row.nodeSeq ?? 0}.${row.timeUpdated}.${row.nodeTimeUpdated ?? 0}.${row.worktreeSettled ? 1 : 0}`,
+          ]),
         )
       }),
 

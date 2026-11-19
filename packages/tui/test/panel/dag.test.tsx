@@ -2568,6 +2568,361 @@ describe("the usage row", () => {
   }
 })
 
+// #1618: where the workflow's isolated worktree is and which branch it is on, one muted row under the counts. The
+// server's summary says it (`worktree`): the live pointer as `active`, and once the workflow settled it the state it
+// settled in. The row is read-only text: no key, no button, nothing asked of the server.
+describe("the worktree row", () => {
+  const PATH = "/repo/.agents/worktree/dag-8f3a1c-workflow"
+  const BRANCH = "graphagent/dag-8f3a1c-workflow"
+  const ZH = `工作目录 ${PATH} · 分支 ${BRANCH}`
+  const EN = `Worktree ${PATH} · branch ${BRANCH}`
+  const ZH_REMOVED = `分支 ${BRANCH} · 目录已清理`
+  const EN_REMOVED = `branch ${BRANCH} · directory cleaned up`
+  type Worktree = NonNullable<DagWorkflowSummary["worktree"]>
+  const tree = (state: Worktree["state"], extra: Partial<Worktree> = {}): Worktree => ({
+    directory: PATH,
+    branch: BRANCH,
+    state,
+    ...extra,
+  })
+  const withTree = (
+    worktree: Worktree | undefined,
+    extra: Partial<DagWorkflowSummary> = {},
+    id = WF,
+    title = "依赖升级验证",
+  ) => summaryOf(id, title, "running", { ...(worktree ? { worktree } : {}), ...extra })
+  const figures = {
+    tokensInput: 1_200,
+    tokensOutput: 340,
+    tokensReasoning: 56,
+    tokensCacheRead: 98_000,
+    tokensCacheWrite: 7_800,
+    cost: 0.0027,
+    costUnknown: false,
+  } satisfies Partial<DagWorkflowSummary>
+
+  async function frameOf(summary: DagWorkflowSummary, options: Parameters<typeof mountDag>[0] = {}) {
+    const shell = await mountDag({ server: dagServer({ summaries: { [ROOT]: [summary] } }), ...options })
+    try {
+      await openLoaded(shell)
+      return await shell.frame()
+    } finally {
+      await shell.dispose()
+    }
+  }
+
+  test("a live pointer is active: the directory and the branch, under the counts, in the muted color", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withTree(tree("active"))] } })
+    const shell = await mountDag({ server, width: 120, height: 40 })
+    try {
+      await openLoaded(shell)
+      const lines = frameLines(await shell.frame())
+      const counts = lines.findIndex((line) => line.includes("完成 · 第"))
+      expect(counts).toBeGreaterThan(-1)
+      expect(lines.findIndex((line) => line.includes(ZH))).toBe(counts + 1)
+      // One row, in the color of the counts above it, and not a word of it is a key to press.
+      expect(lines.filter((line) => line.includes("工作目录"))).toHaveLength(1)
+      expect(colorOf(await shell.spans(), ZH)?.equals(palette().textMuted)).toBe(true)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a kept worktree reads like an active one: the directory is still there", async () => {
+    const frame = await frameOf(withTree(tree("kept")), { width: 120, height: 40 })
+    expect(frameLines(frame)).toContain(ZH)
+    expect(frame).not.toContain("目录已清理")
+  })
+
+  test("a cleaned-up worktree names the branch and that the directory is gone, and not the directory", async () => {
+    const frame = await frameOf(withTree(tree("removed")), { width: 120, height: 40 })
+    const lines = frameLines(frame)
+    expect(lines).toContain(ZH_REMOVED)
+    expect(frame).not.toContain(PATH)
+    expect(frame).not.toContain("工作目录")
+  })
+
+  test("without a branch the row is the directory alone, and a cleaned-up worktree has nothing to say", async () => {
+    const bare = { ...tree("active"), branch: undefined }
+    const active = await frameOf(withTree(bare), { width: 120, height: 40 })
+    expect(frameLines(active)).toContain(`工作目录 ${PATH}`)
+    expect(active).not.toContain("分支")
+    // Kept is the same as active here; the cleaned-up one has no directory to name and no branch to name instead.
+    expect(frameLines(await frameOf(withTree({ ...bare, state: "kept" }), { width: 120, height: 40 }))).toContain(
+      `工作目录 ${PATH}`,
+    )
+    const removed = await frameOf(withTree({ ...bare, state: "removed" }), { width: 120, height: 40 })
+    expect(removed).not.toContain("目录已清理")
+    expect(removed).not.toContain("工作目录")
+    expect(removed).not.toContain(PATH)
+  })
+
+  test("a workflow without the field draws no row, and the rows around it stay", async () => {
+    const frame = await frameOf(withTree(undefined, { ...figures, quality: quality() }), { width: 120, height: 40 })
+    expect(frame).not.toContain("工作目录")
+    expect(frame).not.toContain("目录已清理")
+    const lines = frameLines(frame)
+    const counts = lines.findIndex((line) => line.includes("完成 · 第"))
+    // No gap where the row would be: the usage row follows the counts directly.
+    expect(lines[counts + 1]).toContain("用量 输入")
+    expect(lines[counts + 2]).toContain("审核 2 次")
+  })
+
+  test("sits between the counts and the usage row", async () => {
+    const frame = await frameOf(withTree(tree("active"), { ...figures, quality: quality() }), {
+      width: 120,
+      height: 40,
+    })
+    const lines = frameLines(frame)
+    const counts = lines.findIndex((line) => line.includes("完成 · 第"))
+    expect(lines[counts + 1]).toBe(ZH)
+    expect(lines[counts + 2]).toContain("用量 输入")
+    expect(lines[counts + 3]).toContain("审核 2 次")
+  })
+
+  test("says it in English, in each of the three shapes", async () => {
+    const active = frameLines(await frameOf(withTree(tree("active")), { width: 120, height: 40, language: "en" }))
+    const counts = active.findIndex((line) => line.includes(" done · wave "))
+    expect(counts).toBeGreaterThan(-1)
+    expect(active[counts + 1]).toBe(EN)
+    expect(frameLines(await frameOf(withTree(tree("kept")), { width: 120, height: 40, language: "en" }))).toContain(EN)
+    expect(
+      frameLines(
+        await frameOf(withTree({ ...tree("active"), branch: undefined }), { width: 120, height: 40, language: "en" }),
+      ),
+    ).toContain(`Worktree ${PATH}`)
+    const removed = await frameOf(withTree(tree("removed")), { width: 120, height: 40, language: "en" })
+    expect(frameLines(removed)).toContain(EN_REMOVED)
+    expect(removed).not.toContain(PATH)
+  })
+
+  test("belongs to the workflow on show: switching tabs changes it, and a pushed summary moves it along", async () => {
+    const other = { directory: "/repo/.agents/worktree/dag-2-workflow", branch: "graphagent/dag-2-workflow" }
+    const server = dagServer({
+      summaries: {
+        [ROOT]: [withTree(tree("active")), withTree({ ...other, state: "kept" }, {}, WF2, "文档整理")],
+      },
+      tables: { [WF]: pipeline(), [WF2]: [wire("docs", "completed", {}, WF2)] },
+    })
+    const shell = await mountDag({ server, width: 120, height: 40 })
+    try {
+      await openLoaded(shell)
+      expect(frameLines(await shell.frame())).toContain(ZH)
+
+      await press(shell, "right")
+      await waitFor(() => shell.sync().dag.nodes(WF2) !== undefined)
+      await shell.settle()
+      const second = frameLines(await shell.frame())
+      expect(second).toContain(`工作目录 ${other.directory} · 分支 ${other.branch}`)
+      expect(second).not.toContain(ZH)
+
+      // The terminal event came with the pointer; the settlement then says the directory is gone, and a push for the
+      // other workflow does not touch this one.
+      await press(shell, "left")
+      await shell.settle()
+      shell.events.emit(
+        summaryPush([withTree(tree("removed")), withTree({ ...other, state: "kept" }, {}, WF2, "文档整理")]),
+      )
+      await shell.settle()
+      const settled = frameLines(await shell.frame())
+      expect(settled).toContain(ZH_REMOVED)
+      expect(settled).not.toContain(ZH)
+
+      // And a summary without the field, as an older server would send, takes the row away again.
+      shell.events.emit(summaryPush([withTree(undefined), withTree({ ...other, state: "kept" }, {}, WF2, "文档整理")]))
+      await shell.settle()
+      const gone = await shell.frame()
+      expect(gone).not.toContain("目录已清理")
+      expect(gone).not.toContain("工作目录")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a path and a branch from the server have no escapes or line breaks in them", async () => {
+    const frame = await frameOf(
+      withTree({
+        directory: `/wt/\u001b[31mred\u001b[0m\n/inner`,
+        branch: "feat/\u001b]0;title\u0007x\ny",
+        state: "active",
+      }),
+      { width: 120, height: 40 },
+    )
+    expect(frame).not.toContain("\u001b")
+    expect(frame).not.toContain("\u0007")
+    expect(frameLines(frame)).toContain("工作目录 /wt/red /inner · 分支 feat/x y")
+  })
+
+  test("takes everything from the summary: nothing is read for it, and nothing is written", async () => {
+    const server = dagServer({ summaries: { [ROOT]: [withTree(tree("active"))] } })
+    const shell = await mountDag({ server, width: 120, height: 40 })
+    const probe = probeStoreWrites(shell.sync().data, ["message", "part"])
+    try {
+      await openLoaded(shell)
+      expect(frameLines(await shell.frame())).toContain(ZH)
+      // Every key the panel has, and a pushed settlement: the row never asks the server for anything.
+      for (const key of ["down", "o", "return", "up", "i"]) await press(shell, key)
+      shell.events.emit(summaryPush([withTree(tree("removed"))]))
+      await shell.settle()
+      expect(shell.writes()).toEqual([])
+      // Whatever the DAG routes were asked, it was only read from, and nothing was asked about the worktree.
+      const dag = shell.requested.filter((entry) => entry.includes("/dag"))
+      expect(dag.length).toBeGreaterThan(0)
+      expect(dag.filter((entry) => !entry.startsWith("GET "))).toEqual([])
+      expect(shell.requested.filter((entry) => entry.includes("worktree"))).toEqual([])
+      expect(probe.total()).toBe(0)
+    } finally {
+      probe.dispose()
+      await shell.dispose()
+    }
+  })
+
+  // The row is text laid out from the summary: it listens to no clock and asks for no repaint, so the panel costs what
+  // it cost without it, and an idle screen with a finished workflow on it draws nothing at all.
+  test("adds no clock subscription and no repaint: a finished workflow with the row on screen stays still", async () => {
+    const done = { runningNodes: 0, failedNodes: 0, completedNodes: 5 }
+    const tables = {
+      [WF]: [
+        wire("a", "completed", { started_at: NOW - 100_000, completed_at: NOW - 70_000 }),
+        wire("b", "completed", { depends_on: ["a"], started_at: NOW - 70_000, completed_at: NOW - 40_000 }),
+      ],
+    }
+    const server = dagServer({
+      summaries: { [ROOT]: [summaryOf(WF, "已结束", "completed", { ...done, worktree: tree("removed") })] },
+      tables,
+    })
+    const shell = await mountDag({ server, width: 120, height: 40 })
+    const counters = createCounters(shell.app.renderer, shell.keymap())
+    try {
+      await openLoaded(shell)
+      expect(frameLines(await shell.frame())).toContain(ZH_REMOVED)
+      expect(shell.clock.seconds()).toBe(0)
+      expect(shell.clock.frames()).toBe(0)
+      await shell.app.renderOnce()
+      const before = counters.snapshot()
+      shell.clock.advance(2_000)
+      await shell.app.renderOnce()
+      expect(counters.delta(before).renderRequests).toBe(0)
+      expect(shell.clock.seconds()).toBe(0)
+      expect(shell.clock.frames()).toBe(0)
+    } finally {
+      counters.dispose()
+      await shell.dispose()
+    }
+
+    // A running workflow listens to the one-second clock for its elapsed time, with the row or without it, once.
+    for (const worktree of [undefined, tree("active")]) {
+      const running = await mountDag({
+        server: dagServer({ summaries: { [ROOT]: [withTree(worktree)] } }),
+        width: 120,
+        height: 40,
+      })
+      try {
+        await openLoaded(running)
+        expect({
+          drawn: worktree !== undefined,
+          seconds: running.clock.seconds(),
+          frames: running.clock.frames(),
+        }).toEqual({
+          drawn: worktree !== undefined,
+          seconds: 1,
+          frames: 0,
+        })
+      } finally {
+        await running.dispose()
+      }
+    }
+  })
+
+  describe("how it looks", () => {
+    test("active, 80 by 24, in Chinese", async () => {
+      expect(await frameOf(withTree(tree("active")), { width: 80, height: 24 })).toMatchSnapshot()
+    })
+
+    test("active, 120 by 40, in Chinese", async () => {
+      expect(await frameOf(withTree(tree("active")), { width: 120, height: 40 })).toMatchSnapshot()
+    })
+
+    test("active, 80 by 24, in English", async () => {
+      expect(await frameOf(withTree(tree("active")), { width: 80, height: 24, language: "en" })).toMatchSnapshot()
+    })
+
+    test("kept, 120 by 40, in English", async () => {
+      expect(await frameOf(withTree(tree("kept")), { width: 120, height: 40, language: "en" })).toMatchSnapshot()
+    })
+
+    test("cleaned up, 80 by 24, in Chinese", async () => {
+      expect(await frameOf(withTree(tree("removed")), { width: 80, height: 24 })).toMatchSnapshot()
+    })
+
+    test("cleaned up, 120 by 40, in English", async () => {
+      expect(await frameOf(withTree(tree("removed")), { width: 120, height: 40, language: "en" })).toMatchSnapshot()
+    })
+  })
+
+  for (const language of ["zh-CN", "en"] as const) {
+    for (const ambiguousWidth of [1, 2] as const) {
+      test(`is one row, cut from the left of the path and never wider, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        const lead = language === "en" ? "Worktree" : "工作目录"
+        const branchLead = language === "en" ? " · branch " : " · 分支 "
+        // A long path and a branch that has to stay whole, from the narrowest the panel is drawn to one with room for it all.
+        const directory = "/work/some-project/.agents/worktree/dag-8f3a1c9d-workflow"
+        for (const width of [60, 80, 100, 140]) {
+          const frame = await frameOf(withTree({ directory, branch: BRANCH, state: "active" }), {
+            width,
+            height: 30,
+            language,
+            ambiguousWidth,
+          })
+          const lines = rowsOf(frame).filter((line) => line.startsWith("│") && line.endsWith("│"))
+          const rows = lines.filter((line) => line.includes(lead))
+          expect({ width, rows: rows.length }).toEqual({ width, rows: 1 })
+          // Inside the border and the padding: what the panel itself laid out.
+          const inner = rows[0].slice(1, -1).trimEnd()
+          expect({ width, fits: cellWidth(inner, ambiguousWidth) <= width - 3 }).toEqual({ width, fits: true })
+          // The branch is whole at every width; the path gave way from the left when it did not all fit.
+          expect({ width, branch: inner.endsWith(`${branchLead}${BRANCH}`) }).toEqual({ width, branch: true })
+          const shown = inner.slice(
+            inner.indexOf(lead) + lead.length + 1,
+            inner.length - `${branchLead}${BRANCH}`.length,
+          )
+          if (width < 140) {
+            expect({ width, cut: shown.startsWith("…") }).toEqual({ width, cut: true })
+            expect({ width, tail: directory.endsWith(shown.slice(1)) }).toEqual({ width, tail: true })
+          } else {
+            expect({ width, whole: shown }).toEqual({ width, whole: directory })
+          }
+        }
+      })
+
+      test(`a cleaned-up worktree and a line that cannot hold its branch are cut to the width too, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        const long = `graphagent/${"very-long-branch-name-".repeat(6)}end`
+        for (const state of ["removed", "active"] as const) {
+          for (const width of [60, 80]) {
+            const frame = await frameOf(withTree({ directory: PATH, branch: long, state }), {
+              width,
+              height: 30,
+              language,
+              ambiguousWidth,
+            })
+            const lines = rowsOf(frame).filter((line) => line.startsWith("│") && line.endsWith("│"))
+            const rows = lines.filter((line) => line.includes("very-long-branch"))
+            expect({ state, width, rows: rows.length }).toEqual({ state, width, rows: 1 })
+            const inner = rows[0].slice(1, -1).trimEnd()
+            expect({ state, width, fits: cellWidth(inner, ambiguousWidth) <= width - 3 }).toEqual({
+              state,
+              width,
+              fits: true,
+            })
+            // No room even for the whole branch: the end of the line is what goes.
+            expect({ state, width, cut: inner.endsWith("…") }).toEqual({ state, width, cut: true })
+          }
+        }
+      })
+    }
+  }
+})
+
 describe("what the work did not cover", () => {
   /** A table in which one node of each kind of gap sits among the ones that are fine. */
   function gaps(workflow = WF): DagNode[] {

@@ -49,6 +49,30 @@ function ReboundShortcut() {
   return null
 }
 
+/** Shortcuts in two categories and one in none, and three the list must leave out: hidden, a panel's own, unbound. */
+function GroupedShortcuts() {
+  useBindings(() => ({
+    commands: [
+      { name: "test.beta", title: "Beta", category: "Group B", run: () => {} },
+      { name: "test.alpha", title: "Alpha", category: "Group B", run: () => {} },
+      { name: "test.first", title: "First", category: "Group A", run: () => {} },
+      { name: "test.bare", title: "Bare", run: () => {} },
+      { name: "test.hidden", title: "Hidden one", category: "Group A", hidden: true, run: () => {} },
+      { name: "test.panel", title: "Panel one", category: "Panel", run: () => {} },
+      { name: "test.unbound", title: "Unbound one", category: "Group A", run: () => {} },
+    ],
+    bindings: [
+      { key: "f1", cmd: "test.beta" },
+      { key: "f2", cmd: "test.alpha" },
+      { key: "f3", cmd: "test.first" },
+      { key: "f4", cmd: "test.bare" },
+      { key: "f5", cmd: "test.hidden" },
+      { key: "f6", cmd: "test.panel" },
+    ],
+  }))
+  return null
+}
+
 function ExportHarness(props: { onReady(host: PanelHostApi, options: Promise<ExportOptions | null>): void }) {
   const host = createPanelHost()
   onMount(() =>
@@ -125,6 +149,32 @@ test("help panel shows the rebound key for an existing command", async () => {
     expect(frame).toContain("切换工作流模式")
     expect(frame).toContain("f8")
     expect(frame).not.toContain("ctrl+x d")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("help panel groups the shortcuts by category, sorts them by title, and leaves out what cannot be pressed", async () => {
+  await using tmp = await shellState()
+  const app = await renderAppPanel(
+    () => (
+      <>
+        <GroupedShortcuts />
+        <PanelSurface spec={{ id: "help", render: () => <HelpPanel /> }} />
+      </>
+    ),
+    { width: 120, height: 40, state: tmp.path },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    // A command with no category comes first and has no heading; the others follow under theirs, each in order of title.
+    const order = ["Bare", "Group A", "First", "Group B", "Alpha", "Beta"].map((text) => frame.indexOf(text))
+    expect(order.every((index) => index >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((left, right) => left - right))
+    expect(frame.match(/Group A/g)).toHaveLength(1)
+    expect(frame.match(/Group B/g)).toHaveLength(1)
+    for (const left of ["Hidden one", "Panel one", "Unbound one"]) expect(frame).not.toContain(left)
   } finally {
     app.renderer.destroy()
   }

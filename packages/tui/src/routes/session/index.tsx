@@ -30,7 +30,7 @@ import { SplitBorder } from "../../ui/border"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
-import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
+import { createSyntaxStyleMemo, generateSubtleSyntax, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { PatchDiff } from "../../component/patch-diff"
@@ -48,6 +48,7 @@ import { createSessionAttention } from "@graphagent/sdk/attention"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import {
+  DIAGNOSTIC_LINES,
   numberValue,
   parseApplyPatchFiles,
   parseDiagnostics,
@@ -58,7 +59,7 @@ import {
   stringValue,
   toolDisplay,
   toolRowName,
-  webSearchProviderLabel,
+  webSearchProviderName,
 } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, locationHeaders } from "../../context/sdk"
@@ -148,15 +149,19 @@ import {
   estimateRowHeight,
   foldRowKey,
   isWindowed,
+  MARK_CELLS,
   PART_OVERSCAN,
   prefixPositions,
+  ROW_INDENT,
   rowRevision,
   settledPartText,
   TAIL_ALWAYS,
+  USER_PADDING,
   visibleRange,
   type Row,
   type SessionViewState,
 } from "./rows"
+import { reasoningDuration, reasoningLine } from "./reasoning-line"
 import { createRowTable, type Delegation } from "./row-table"
 import { RESULT_CARD_INDENT, RESULT_CARD_MARK, resultCardPreview, resultCardTitle } from "./result-card"
 import { toggleExpand } from "./expand"
@@ -164,7 +169,7 @@ import { diffView, sessionContentWidth } from "./diff-view"
 import {
   completedOutput,
   delegationFolds,
-  editShowsBlock,
+  editRows,
   errorDenied,
   errorLine,
   firstLine,
@@ -173,16 +178,17 @@ import {
   genericRowOutput,
   lastLine,
   outputCharCap,
+  patchFileRows,
   resultCardFolds,
   shellOutput,
   toolError,
   toolFailed,
   toolMetadata,
-  writeShowsBlock,
+  writtenLines,
   type FoldEnv,
   type FoldSource,
 } from "./fold"
-import { ToolRow, toolRowState, type ToolRowState } from "./tool-row"
+import { DETAIL_SEPARATOR, ToolRow, toolRowState, type ToolRowState } from "./tool-row"
 
 // The tool data readers live in `util/tool-display`, where `./fold` reads them too; the tests import them from here.
 export {
@@ -2180,7 +2186,6 @@ function UserMessage(props: {
   pending?: Message
 }) {
   const ctx = use()
-  const local = useLocal()
   const receiptShortcut = ctx.shortcuts.dagmodeToggle
   const text = createMemo(() => {
     const texts = props.parts
@@ -2197,72 +2202,65 @@ function UserMessage(props: {
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => isQueuedMessage(props.message, props.pending))
-  const color = createMemo(() => local.agent.color(props.message.agent))
-  const queuedFg = createMemo(() => selectedForeground(theme, color()))
-  const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
+  const created = () => Locale.todayTimeOrDateTime(props.message.time.created)
 
   const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
 
+  // The block is the prototype's (#1615): a `›` in the brand color and the words of the message, on a ground of their own
+  // that runs the width of the transcript. What wraps keeps hanging under the first word, and what the message has
+  // besides its words (a badge that says it waits, its time, the files it carries) stands inside the block.
   return (
     <>
       <Show when={text()}>
         <box
           id={props.message.id}
           ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-          border={["left"]}
-          borderColor={color()}
-          customBorderChars={SplitBorder.customBorderChars}
           marginTop={props.index === 0 ? 0 : 1}
+          paddingLeft={USER_PADDING}
+          paddingRight={USER_PADDING}
+          backgroundColor={hover() ? theme.border : theme.backgroundUser}
+          flexShrink={0}
+          onMouseOver={() => {
+            if (props.onMouseUp) setHover(true)
+          }}
+          onMouseOut={() => {
+            setHover(false)
+          }}
+          onMouseUp={props.onMouseUp}
         >
-          <box
-            onMouseOver={() => {
-              if (props.onMouseUp) setHover(true)
-            }}
-            onMouseOut={() => {
-              setHover(false)
-            }}
-            onMouseUp={props.onMouseUp}
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-            flexShrink={0}
-          >
-            <text fg={theme.text}>{text()}</text>
-            <Show when={files().length}>
-              <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
-                <For each={files()}>
-                  {(file) => {
-                    const directory = file.mime === "application/x-directory"
-                    return (
-                      <text fg={theme.text}>
-                        <span style={{ bg: theme.secondary, fg: theme.background }}>
-                          {` ${directory ? t("message.directory") : t("message.file")} `}
-                        </span>
-                        <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
-                      </text>
-                    )
-                  }}
-                </For>
-              </box>
-            </Show>
-            <Show
-              when={queued()}
-              fallback={
-                <Show when={ctx.showTimestamps()}>
-                  <text fg={theme.textMuted}>
-                    <span style={{ fg: theme.textMuted }}>
-                      {Locale.todayTimeOrDateTime(props.message.time.created)}
-                    </span>
-                  </text>
+          <box flexDirection="row">
+            <box width={MARK_CELLS} flexShrink={0}>
+              <text fg={theme.primary}>›</text>
+            </box>
+            <box flexGrow={1} flexShrink={1}>
+              <text fg={theme.text}>
+                {text()}
+                <Show when={queued()}>
+                  <span style={{ fg: theme.warning }}>{`  ${t("message.queued")}`}</span>
                 </Show>
-              }
-            >
-              <text fg={theme.textMuted}>
-                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> {t("message.queued")} </span>
+                <Show when={ctx.showTimestamps()}>
+                  <span style={{ fg: theme.textDim }}>{`  ${created()}`}</span>
+                </Show>
               </text>
-            </Show>
+            </box>
           </box>
+          <Show when={files().length}>
+            <box paddingLeft={MARK_CELLS} flexDirection="row" gap={1} flexWrap="wrap">
+              <For each={files()}>
+                {(file) => {
+                  const directory = file.mime === "application/x-directory"
+                  return (
+                    <text fg={theme.textMuted}>
+                      <span style={{ bg: theme.secondary, fg: theme.background }}>
+                        {` ${directory ? t("message.directory") : t("message.file")} `}
+                      </span>
+                      <span> {file.filename} </span>
+                    </text>
+                  )
+                }}
+              </For>
+            </box>
+          </Show>
         </box>
       </Show>
       <Show when={compaction()}>
@@ -2675,6 +2673,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo((owner) => generateSubtleSyntax(theme, owner))
+  const open = () => !inMinimal() || expanded()
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -2685,23 +2684,23 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     <Show when={content()}>
       <box
         ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-        paddingLeft={3}
+        paddingLeft={ROW_INDENT}
         marginTop={1}
         flexDirection="column"
         flexShrink={0}
       >
         <box onMouseUp={toggle}>
           <ReasoningHeader
-            toggleable={inMinimal()}
-            open={!inMinimal() || expanded()}
+            open={open()}
             done={isDone()}
             title={summary().title}
-            duration={isDone() ? Locale.duration(duration()) : undefined}
+            duration={isDone() ? duration() : undefined}
+            room={Math.max(1, ctx.width - ROW_INDENT - MARK_CELLS)}
             visible={() => ctx.isVisible(props.part.id)}
           />
         </box>
-        <Show when={(!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
+        <Show when={open() && summary().body}>
+          <box paddingLeft={MARK_CELLS} marginTop={1}>
             <AdaptiveMarkdown
               content={summary().body}
               streaming={!isDone()}
@@ -2716,48 +2715,59 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   )
 }
 
+/**
+ * The one line a thought is drawn as (#1615): a `∴` and what it says (`reasoningLine`), the dimmest line of the transcript
+ * while the thought is folded. A thought that is open, or still being written, keeps the warning color it always had,
+ * and the one being written has a spinner for the glyph, which follows the ticker only while the row is on screen.
+ */
 function ReasoningHeader(props: {
-  toggleable: boolean
   open: boolean
   done: boolean
   title: string | null
-  duration?: string
+  /** Milliseconds a finished thought took. */
+  duration?: number
+  /** Cells the line has after its glyph. */
+  room: number
   visible?: Accessor<boolean>
 }) {
   const { theme } = useTheme()
-  const fg = () =>
-    props.open
+  const kv = useKV()
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
+  const fg = () => {
+    if (props.done && !props.open) return theme.textDim
+    return props.open
       ? RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
       : theme.warning
+  }
+  const line = createMemo(() =>
+    reasoningLine({
+      done: props.done,
+      open: props.open,
+      title: props.title,
+      duration: props.duration === undefined ? undefined : reasoningDuration(props.duration),
+      room: props.room,
+      ambiguousWidth: ambiguousWidth(),
+    }),
+  )
 
   return (
     <Switch>
       <Match when={!props.done}>
         <box flexDirection="row">
           <Spinner color={fg()} visible={props.visible}>
-            {props.title ? "Thinking: " + props.title : "Thinking"}
+            {line()}
           </Spinner>
         </box>
       </Match>
       <Match when={true}>
-        <text fg={fg()} wrapMode="none">
-          <Show when={props.toggleable}>
-            <span>{props.open ? "- " : "+ "}</span>
-          </Show>
-          <span>Thought</span>
-          <Show when={props.title || props.duration}>
-            <span>: </span>
-          </Show>
-          <Show when={props.title}>
-            <span>{props.title}</span>
-          </Show>
-          <Show when={props.duration}>
-            <span>
-              {props.title ? " · " : ""}
-              {props.duration}
-            </span>
-          </Show>
-        </text>
+        <box flexDirection="row">
+          <box width={MARK_CELLS} flexShrink={0}>
+            <text fg={fg()}>∴</text>
+          </box>
+          <text fg={fg()} wrapMode="none">
+            {line()}
+          </text>
+        </box>
       </Match>
     </Switch>
   )
@@ -2773,18 +2783,30 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   // A finished part reads its snapshot: following the stream version would re-run this on every frame.
   const raw = createMemo(() => (isDone() ? settledPartText(props.part) : ctx.sync.readPartText(props.part)))
   const content = createMemo(() => (isDone() ? raw().trim() : raw().trimStart()))
+  // The `⏺` stands in front of the first words as soon as there are any, while the text is still being written.
   return (
     <Show when={content()}>
-      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <AdaptiveMarkdown
-          content={content()}
-          streaming={!isDone()}
-          syntaxStyle={syntax()}
-          tableOptions={{ style: "grid" }}
-          conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
-        />
+      <box
+        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+        paddingLeft={ROW_INDENT}
+        marginTop={1}
+        flexShrink={0}
+        flexDirection="row"
+      >
+        <box width={MARK_CELLS} flexShrink={0}>
+          <text fg={theme.success}>⏺</text>
+        </box>
+        <box flexGrow={1} flexShrink={1}>
+          <AdaptiveMarkdown
+            content={content()}
+            streaming={!isDone()}
+            syntaxStyle={syntax()}
+            tableOptions={{ style: "grid" }}
+            conceal={ctx.conceal()}
+            fg={theme.markdownText}
+            bg={theme.background}
+          />
+        </box>
       </box>
     </Show>
   )
@@ -2900,7 +2922,12 @@ function ToolCall(props: {
   progress?: string
   /** The lines the row leaves out of the output of a call that completed, when that output folds. */
   folds?: number
-  /** The whole output of a call that folds. */
+  /**
+   * A call that completed has a `body` to open under its summary, and its row says nothing of it: no hint under the
+   * summary, open or closed. The click and `view.expand.toggle` open it all the same (an edit, a write, a patch).
+   */
+  opens?: boolean
+  /** The whole output of a call that folds, or what the open row of a call that `opens` draws. */
   body?: JSX.Element
   /** A call that completed without doing what it was asked: its dot is that of a call that failed. */
   blocked?: boolean
@@ -2923,7 +2950,7 @@ function ToolCall(props: {
     const current = toolRowState(props.part.state, waiting())
     return current === "done" && props.blocked ? "failed" : current
   })
-  const folded = () => completed() && props.folds !== undefined
+  const folded = () => completed() && (props.folds !== undefined || Boolean(props.opens))
   const expanded = () => ctx.view.get(props.part.id, "expanded")
   const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
 
@@ -3255,40 +3282,76 @@ function Shell(props: ToolProps) {
   )
 }
 
+/** The errors a call's diagnostics hold for one file, in words. */
+const diagnosticCount = (errors: number) =>
+  t(errors === 1 ? "tool.row.diagnostics.one" : "tool.row.diagnostics.other", { n: errors })
+
+/**
+ * What a change did to a file, the line under the call of an edit or of a file of a patch: the lines it added and the
+ * lines it removed, in the colors of success and of error, and how many errors the language server found in the file.
+ * A count the server did not give is left out, and the others stand as they are.
+ */
+function ChangeSummary(props: { additions?: number; deletions?: number; errors: number }) {
+  const { theme } = useTheme()
+  const counts = createMemo(() => {
+    const list: Array<{ text: string; fg: RGBA }> = []
+    if (props.additions !== undefined) list.push({ text: "+" + props.additions, fg: theme.success })
+    // U+2212, the minus sign, and not the hyphen of a flag.
+    if (props.deletions !== undefined) list.push({ text: "\u2212" + props.deletions, fg: theme.error })
+    return list
+  })
+  return (
+    <text fg={theme.text} wrapMode="none">
+      <For each={counts()}>
+        {(count, index) => <span style={{ fg: count.fg }}>{(index() ? " " : "") + count.text}</span>}
+      </For>
+      <Show when={props.errors > 0}>
+        <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(props.errors)}</span>
+      </Show>
+    </text>
+  )
+}
+
 function Write(props: ToolProps) {
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
-  const code = createMemo(() => {
-    return stringValue(props.input.content) ?? ""
-  })
+  const filePath = createMemo(() => stringValue(props.input.filePath))
+  const code = createMemo(() => stringValue(props.input.content) ?? "")
+  // The code block numbers the lines the file has, which the line break that ends the last one does not start.
+  const shown = createMemo(() => code().replace(/\n$/, ""))
+  const lines = createMemo(() => writtenLines(code()))
+  const errors = useDiagnosticErrors(() => props.metadata.diagnostics, filePath)
 
   return (
-    <Switch>
-      <Match when={writeShowsBlock(props.metadata)}>
-        <BlockTool title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={pathFormatter.format(filePath())}
+      // What a write has under its summary is the file it wrote, which is always folded and opened with no hint.
+      opens={lines() > 0}
+      done={
+        <text fg={theme.text} wrapMode="none">
+          {t(lines() === 1 ? "tool.row.written.one" : "tool.row.written.other", { n: lines() })}
+          <Show when={errors().length > 0}>
+            <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(errors().length)}</span>
+          </Show>
+        </text>
+      }
+      body={
+        <box flexDirection="column">
           <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
             <code
               conceal={false}
               fg={theme.text}
-              filetype={filetype(stringValue(props.input.filePath))}
+              filetype={filetype(filePath())}
               syntaxStyle={syntax()}
-              content={code()}
+              content={shown()}
             />
           </line_number>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool
-          icon="←"
-          pending="Preparing write..."
-          complete={stringValue(props.input.filePath)}
-          part={props.part}
-        >
-          Write {pathFormatter.format(stringValue(props.input.filePath))}
-        </InlineTool>
-      </Match>
-    </Switch>
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={filePath() ?? ""} />
+        </box>
+      }
+    />
   )
 }
 
@@ -3399,7 +3462,8 @@ function WebSearch(props: ToolProps) {
     <ToolCall
       part={props.part}
       name={toolRowName(props.tool)}
-      arg={query() === undefined ? undefined : `${webSearchProviderLabel(props.metadata.provider)} "${query()}"`}
+      // The row leads with the tool's name: the provider goes after it by its own name, with no second "Web Search".
+      arg={query() === undefined ? undefined : words(webSearchProviderName(props.metadata.provider), `"${query()}"`)}
       done={
         results() === undefined
           ? undefined
@@ -3747,125 +3811,117 @@ export function backgroundReason(error: string | undefined, width: number, ambig
   return undefined
 }
 
-function Edit(props: ToolProps) {
+/** The diff of one file, as an open row draws it under its summary; the colors of the diff are its own. */
+function DiffBlock(props: { diff: string; filePath: string | undefined }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const pathFormatter = usePathFormatter()
-
   const view = createMemo(() => diffView(ctx.tui.diff_style, ctx.width))
+  return (
+    <PatchDiff
+      scroll={ctx.scroll}
+      diff={props.diff}
+      view={view()}
+      filetype={filetype(props.filePath)}
+      syntaxStyle={syntax()}
+      showLineNumbers={true}
+      width="100%"
+      wrapMode={ctx.diffWrapMode()}
+      fg={theme.text}
+      addedBg={theme.diffAddedBg}
+      removedBg={theme.diffRemovedBg}
+      contextBg={theme.diffContextBg}
+      addedSignColor={theme.diffHighlightAdded}
+      removedSignColor={theme.diffHighlightRemoved}
+      lineNumberFg={theme.diffLineNumber}
+      lineNumberBg={theme.diffContextBg}
+      addedLineNumberBg={theme.diffAddedLineNumberBg}
+      removedLineNumberBg={theme.diffRemovedLineNumberBg}
+    />
+  )
+}
 
-  const ft = createMemo(() => filetype(stringValue(props.input.filePath)))
-
-  const diffContent = createMemo(() => stringValue(props.metadata.diff) ?? "")
+function Edit(props: ToolProps) {
+  const pathFormatter = usePathFormatter()
+  const filePath = createMemo(() => stringValue(props.input.filePath))
+  const rows = createMemo(() => editRows(props.metadata))
+  // What the edit added and removed is counted by the server (`filediff`); a call that has no count says it is done.
+  const filediff = createMemo(() => recordValue(props.metadata.filediff))
+  const additions = createMemo(() => numberValue(filediff()?.additions))
+  const deletions = createMemo(() => numberValue(filediff()?.deletions))
+  const errors = useDiagnosticErrors(() => props.metadata.diagnostics, filePath)
 
   return (
-    <Switch>
-      <Match when={editShowsBlock(props.metadata)}>
-        <BlockTool title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
-          <box paddingLeft={1}>
-            <PatchDiff
-              scroll={ctx.scroll}
-              diff={diffContent()}
-              view={view()}
-              filetype={ft()}
-              syntaxStyle={syntax()}
-              showLineNumbers={true}
-              width="100%"
-              wrapMode={ctx.diffWrapMode()}
-              fg={theme.text}
-              addedBg={theme.diffAddedBg}
-              removedBg={theme.diffRemovedBg}
-              contextBg={theme.diffContextBg}
-              addedSignColor={theme.diffHighlightAdded}
-              removedSignColor={theme.diffHighlightRemoved}
-              lineNumberFg={theme.diffLineNumber}
-              lineNumberBg={theme.diffContextBg}
-              addedLineNumberBg={theme.diffAddedLineNumberBg}
-              removedLineNumberBg={theme.diffRemovedLineNumberBg}
-            />
-          </box>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={stringValue(props.input.filePath)} part={props.part}>
-          Edit {pathFormatter.format(stringValue(props.input.filePath))} {input({ replaceAll: props.input.replaceAll })}
-        </InlineTool>
-      </Match>
-    </Switch>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={words(pathFormatter.format(filePath()), input({ replaceAll: props.input.replaceAll }))}
+      // What an edit has under its summary is its diff, which is always folded and opened with no hint.
+      opens={rows() > 0}
+      done={
+        additions() === undefined && deletions() === undefined ? undefined : (
+          <ChangeSummary additions={additions()} deletions={deletions()} errors={errors().length} />
+        )
+      }
+      body={
+        <box flexDirection="column">
+          <DiffBlock diff={stringValue(props.metadata.diff) ?? ""} filePath={filePath()} />
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={filePath() ?? ""} />
+        </box>
+      }
+    />
+  )
+}
+
+type PatchFileInfo = ReturnType<typeof parseApplyPatchFiles>[number]
+
+/** One file of a patch: a row of its own, which opens to the diff of the file. */
+function PatchFile(props: ToolProps & { file: PatchFileInfo }) {
+  const pathFormatter = usePathFormatter()
+  const rows = createMemo(() => patchFileRows(props.file))
+  const errors = useDiagnosticErrors(
+    () => props.metadata.diagnostics,
+    () => props.file.movePath ?? props.file.filePath,
+  )
+  // What the patch did to the file, said as the tool does: a file it deleted, created or moved is named so.
+  const arg = createMemo(() => {
+    const file = props.file
+    if (file.type === "delete") return t("tool.row.patch.deleted", { path: file.relativePath })
+    if (file.type === "add") return t("tool.row.patch.created", { path: file.relativePath })
+    if (file.type === "move") {
+      return t("tool.row.patch.moved", { from: pathFormatter.format(file.filePath), to: file.relativePath })
+    }
+    return file.relativePath
+  })
+
+  return (
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={arg()}
+      opens={rows() > 0}
+      done={
+        <ChangeSummary additions={props.file.additions} deletions={props.file.deletions} errors={errors().length} />
+      }
+      body={
+        <box flexDirection="column">
+          <DiffBlock diff={props.file.patch} filePath={props.file.filePath} />
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={props.file.movePath ?? props.file.filePath} />
+        </box>
+      }
+    />
   )
 }
 
 function ApplyPatch(props: ToolProps) {
-  const ctx = use()
-  const { theme, syntax } = useTheme()
-  const pathFormatter = usePathFormatter()
-
   const files = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
-  const view = createMemo(() => diffView(ctx.tui.diff_style, ctx.width))
-
-  function Diff(p: { diff: string; filePath: string }) {
-    return (
-      <box paddingLeft={1}>
-        <PatchDiff
-          scroll={ctx.scroll}
-          diff={p.diff}
-          view={view()}
-          filetype={filetype(p.filePath)}
-          syntaxStyle={syntax()}
-          showLineNumbers={true}
-          width="100%"
-          wrapMode={ctx.diffWrapMode()}
-          fg={theme.text}
-          addedBg={theme.diffAddedBg}
-          removedBg={theme.diffRemovedBg}
-          contextBg={theme.diffContextBg}
-          addedSignColor={theme.diffHighlightAdded}
-          removedSignColor={theme.diffHighlightRemoved}
-          lineNumberFg={theme.diffLineNumber}
-          lineNumberBg={theme.diffContextBg}
-          addedLineNumberBg={theme.diffAddedLineNumberBg}
-          removedLineNumberBg={theme.diffRemovedLineNumberBg}
-        />
-      </box>
-    )
-  }
-
-  function title(file: { type: string; relativePath: string; filePath: string; deletions: number }) {
-    if (file.type === "delete") return "# Deleted " + file.relativePath
-    if (file.type === "add") return "# Created " + file.relativePath
-    if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " → " + file.relativePath
-    return "← Patched " + file.relativePath
-  }
-
   return (
-    <Switch>
-      <Match when={files().length > 0}>
-        <For each={files()}>
-          {(file) => (
-            <BlockTool title={title(file)} part={props.part}>
-              <Show
-                when={file.type !== "delete"}
-                fallback={
-                  <text fg={theme.diffRemoved}>
-                    -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
-                  </text>
-                }
-              >
-                <Diff diff={file.patch} filePath={file.filePath} />
-                <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
-              </Show>
-            </BlockTool>
-          )}
-        </For>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." failure="Patch failed" complete={false} part={props.part}>
-          Patch
-        </InlineTool>
-      </Match>
-    </Switch>
+    <Show
+      when={props.part.state.status === "completed" && files().length > 0}
+      fallback={<ToolCall part={props.part} name={toolRowName(props.tool)} />}
+    >
+      <For each={files()}>{(file) => <PatchFile {...props} file={file} />}</For>
+    </Show>
   )
 }
 
@@ -3938,21 +3994,25 @@ function Skill(props: ToolProps) {
   )
 }
 
+/** The errors the language server found in `filePath`, all of them, from the diagnostics a call recorded. */
+function useDiagnosticErrors(diagnostics: () => unknown, filePath: () => string | undefined) {
+  const terminalEnvironment = useTuiTerminalEnvironment()
+  return createMemo(() =>
+    parseDiagnostics(diagnostics(), normalizePath(filePath() ?? "", terminalEnvironment.platform), Infinity),
+  )
+}
+
 function Diagnostics(props: { diagnostics: unknown; filePath: string }) {
   const { theme } = useTheme()
-  const terminalEnvironment = useTuiTerminalEnvironment()
-  const errors = createMemo(() => {
-    const normalized = normalizePath(
-      typeof props.filePath === "string" ? props.filePath : "",
-      terminalEnvironment.platform,
-    )
-    return parseDiagnostics(props.diagnostics, normalized)
-  })
+  const errors = useDiagnosticErrors(
+    () => props.diagnostics,
+    () => props.filePath,
+  )
 
   return (
     <Show when={errors().length}>
       <box>
-        <For each={errors()}>
+        <For each={errors().slice(0, DIAGNOSTIC_LINES)}>
           {(diagnostic) => (
             <text fg={theme.error}>
               Error [{diagnostic.range.start.line + 1}:{diagnostic.range.start.character + 1}] {diagnostic.message}
