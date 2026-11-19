@@ -187,31 +187,16 @@ routes/session/index.tsx	toast	No text parts found in last assistant message
 routes/session/index.tsx	toast	Session exported to ${}
 routes/session/index.tsx	toast	Session not found: ${}
 routes/session/index.tsx	toast	Session transcript copied to clipboard!
-routes/session/permission.tsx	jsx-text	No diff provided
-routes/session/permission.tsx	jsx-text	Patterns
-routes/session/permission.tsx	jsx-text	This keeps the session running despite repeated failures.
-routes/session/permission.tsx	prop	${} Task
-routes/session/permission.tsx	prop	Access external directory ${}
 routes/session/permission.tsx	prop	Allow for this session
 routes/session/permission.tsx	prop	Allow once
-routes/session/permission.tsx	prop	Call tool ${}	2
-routes/session/permission.tsx	prop	Call tool ${} · ${}
-routes/session/permission.tsx	prop	Continue after repeated failures
-routes/session/permission.tsx	prop	Edit ${}
-routes/session/permission.tsx	prop	Glob "${}"
-routes/session/permission.tsx	prop	Grep "${}"
-routes/session/permission.tsx	prop	List ${}
 routes/session/permission.tsx	prop	Next option
 routes/session/permission.tsx	prop	Previous option
-routes/session/permission.tsx	prop	Read ${}
 routes/session/permission.tsx	prop	Reject and relay through the main agent
 routes/session/permission.tsx	prop	Reject permission	3
 routes/session/permission.tsx	prop	Reject without a reason
 routes/session/permission.tsx	prop	Select option
 routes/session/permission.tsx	prop	Send rejection reason
-routes/session/permission.tsx	prop	Shell command
 routes/session/permission.tsx	prop	Toggle permission fullscreen
-routes/session/permission.tsx	prop	WebFetch ${}
 routes/session/question.tsx	prop	Clear answer edit
 routes/session/question.tsx	prop	Next answer
 routes/session/question.tsx	prop	Next question
