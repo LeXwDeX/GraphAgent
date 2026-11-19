@@ -592,8 +592,13 @@ export interface MessageView {
   readonly parts: readonly PartView[]
   readonly error?: string
   readonly completed: boolean
-  /** Token counts of the message (zero for a user message). */
-  readonly tokens: { readonly input: number; readonly output: number; readonly reasoning: number }
+  /** Token counts of the message (zero for a user message). `input` excludes the cached input, kept in `cache`. */
+  readonly tokens: {
+    readonly input: number
+    readonly output: number
+    readonly reasoning: number
+    readonly cache: { readonly read: number; readonly write: number }
+  }
 }
 
 /** Characters of a tool result kept from each end: the first and the last of what the model saw. */
@@ -655,7 +660,13 @@ const count = (value: unknown): number => (typeof value === "number" && Number.i
 
 function tokensOf(info: Record<string, unknown>): MessageView["tokens"] {
   const tokens = isRecord(info.tokens) ? info.tokens : {}
-  return { input: count(tokens.input), output: count(tokens.output), reasoning: count(tokens.reasoning) }
+  const cache = isRecord(tokens.cache) ? tokens.cache : {}
+  return {
+    input: count(tokens.input),
+    output: count(tokens.output),
+    reasoning: count(tokens.reasoning),
+    cache: { read: count(cache.read), write: count(cache.write) },
+  }
 }
 
 export function readMessages(json: unknown): MessageView[] {

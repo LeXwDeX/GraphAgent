@@ -41,11 +41,17 @@ export const BASH_SCENARIOS: readonly Scenario[] = [
       },
     },
     judge: (run) => {
-      const last = run.calls.findLast((item) => item.tool === "bash" && item.status === "completed")
+      // The last completed run of the build script, so a later check such as `git status` does not count.
+      const last = run.calls.findLast(
+        (item) =>
+          item.tool === "bash" && item.status === "completed" && String(item.input.command ?? "").includes("build.sh"),
+      )
       return [
         ...ranTool(run, "bash"),
         ...("config.toml" in run.files ? [] : ["files: config.toml missing"]),
-        ...(last?.text.includes("build ok") ? [] : [`calls: last completed bash lacks ${describeNeedle("build ok")}`]),
+        ...(last?.text.includes("build ok")
+          ? []
+          : [`calls: last completed build.sh run lacks ${describeNeedle("build ok")}`]),
         ...replyHas(run, "build ok"),
       ]
     },

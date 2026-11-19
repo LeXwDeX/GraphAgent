@@ -171,12 +171,16 @@ describe("judges", () => {
 
   test("bash.recover wants the fix on disk, the last completed run to succeed and the reply to say so", () => {
     const recover = scenario("bash.recover")
-    const calls = [done("bash", "config.toml not found"), done("bash", ""), done("bash", "build ok\n")]
+    const build = (text: string): Call => ({ ...done("bash", text), input: { command: "sh scripts/build.sh" } })
+    const calls = [build("config.toml not found"), done("bash", ""), build("build ok\n")]
     expect(recover.judge(view({ calls, files: { "config.toml": "" }, reply: "build ok" }))).toEqual([])
+    // A later check that is not the build does not replace the build's result.
+    const checked = [...calls, { ...done("bash", " M x"), input: { command: "git status --short" } }]
+    expect(recover.judge(view({ calls: checked, files: { "config.toml": "" }, reply: "build ok" }))).toEqual([])
     const missing = recover.judge(view({ calls, files: {}, reply: "build ok" }))
     expect(missing).toEqual(["files: config.toml missing"])
     const stuck = recover.judge(view({ calls: calls.slice(0, 1), files: { "config.toml": "" }, reply: "build ok" }))
-    expect(stuck).toEqual(['calls: last completed bash lacks "build ok"'])
+    expect(stuck).toEqual(['calls: last completed build.sh run lacks "build ok"'])
   })
 
   test("a failed call does not count as the named tool having run", () => {
@@ -717,7 +721,7 @@ describe("the host the matrix builds on", () => {
         info: {
           id: "m2",
           role: "assistant",
-          tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 0, write: 0 } },
+          tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 30, write: 10 } },
         },
         parts: [
           tool({ status: "completed", input: { a: 1 }, output: "fine", metadata: {} }),
@@ -730,8 +734,8 @@ describe("the host the matrix builds on", () => {
       },
     ]
     const [user, model] = readMessages(json)
-    expect(user?.tokens).toEqual({ input: 0, output: 0, reasoning: 0 })
-    expect(model?.tokens).toEqual({ input: 100, output: 20, reasoning: 5 })
+    expect(user?.tokens).toEqual({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })
+    expect(model?.tokens).toEqual({ input: 100, output: 20, reasoning: 5, cache: { read: 30, write: 10 } })
     const parts = model?.parts ?? []
     expect(parts.map((part) => [part.status, part.outcome])).toEqual([
       ["completed", "ok"],
@@ -755,7 +759,8 @@ describe("the host the matrix builds on", () => {
       ["error", "execution_error", "odd"],
       ["error", "aborted", "(the call did not finish: running)"],
     ])
-    expect(tokensOf(readMessages(json))).toBe(125)
+    // The cached input counts: the session keeps it out of `input`.
+    expect(tokensOf(readMessages(json))).toBe(165)
   })
 
   test("a run that breaks before a verdict is an error, tried once more, and its reason is redacted", async () => {

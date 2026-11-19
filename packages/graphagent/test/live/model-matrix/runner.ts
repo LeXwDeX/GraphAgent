@@ -151,14 +151,13 @@ export function lastReply(messages: readonly MessageView[]): string {
   return ""
 }
 
+/** Every token of the assistant messages, the cached input included: the session stores it apart from `input`. */
 export function tokensOf(messages: readonly MessageView[]): number {
-  return messages.reduce(
-    (sum, message) =>
-      message.role === "assistant"
-        ? sum + message.tokens.input + message.tokens.output + message.tokens.reasoning
-        : sum,
-    0,
-  )
+  return messages.reduce((sum, message) => {
+    if (message.role !== "assistant") return sum
+    const { input, output, reasoning, cache } = message.tokens
+    return sum + input + output + reasoning + cache.read + cache.write
+  }, 0)
 }
 
 function todosOf(value: unknown): RunView["todos"] {
