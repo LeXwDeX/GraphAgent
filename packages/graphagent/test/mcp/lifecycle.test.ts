@@ -1276,6 +1276,34 @@ it.instance(
   { mcp: {} },
 )
 
+it.instance(
+  "starts the servers of the user layer when the project mcp.json is a directory, and says so once",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        yield* userLayer(
+          JSON.stringify({ mcpServers: { "user-server": { type: "local", command: ["echo", "test"] } } }),
+        )
+        // Reading it throws (EISDIR), both in the loader and in the project-trust enumeration.
+        yield* Effect.promise(async () => {
+          await fs.rm(McpConfig.projectFile(directory), { force: true })
+          await fs.mkdir(McpConfig.projectFile(directory), { recursive: true })
+        })
+        lastCreatedClientName = "user-server"
+        getOrCreateClientState("user-server")
+
+        const first = yield* withUnreadableWarnings(mcp.status())
+        expect(Object.keys(first.result)).toEqual(["user-server"])
+        expect(first.result["user-server"]?.status).toBe("connected")
+        expect(first.warnings).toHaveLength(1)
+        expect(JSON.stringify(first.warnings[0])).toContain(escapedPath(McpConfig.projectFile(directory)))
+        expect(McpConfig.projectLayer(directory)).toBeUndefined()
+      }),
+    ),
+  { mcp: {} },
+)
+
 // Whichever call meets the file that became unreadable first says so, once; none of the calls fails and each goes on
 // with the servers that were valid.
 const callNames = ["status", "tools", "prompts", "getPrompt", "connect"] as const

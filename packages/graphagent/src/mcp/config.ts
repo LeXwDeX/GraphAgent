@@ -157,21 +157,34 @@ export interface ProjectLayerDocument {
  * The decoder applies schema defaults and rejects unknown fields, so its output
  * can never match the canonical value the enumeration fingerprinted; the gate
  * must read exactly what the file declares. Undefined when the root has no
- * project layer, the file is missing, or it does not parse — the loader reports
- * the parse error when it reads the same file.
+ * project layer, the file is missing, it cannot be read (a directory, EACCES),
+ * or it does not parse — the loader reports the failure when it reads the same
+ * file and contributes none of its servers, so nothing here needs a verdict.
  */
 export function projectLayer(root: string): ProjectLayerDocument | undefined {
   if (!hasProjectLayer(root, Global.Path.home)) return undefined
   const file = projectFile(root)
   if (!existsSync(file)) return undefined
+  let text: string
+  try {
+    text = readFileSync(file, "utf8")
+  } catch {
+    return undefined
+  }
   const errors: ParseError[] = []
-  const value = parse(readFileSync(file, "utf8"), errors, { allowTrailingComma: true })
+  const value = parse(text, errors, { allowTrailingComma: true })
   if (errors.length) return undefined
   return { relative: "mcp.json", value }
 }
 
 function readLayer(filepath: string): Servers {
-  const text = readFileSync(filepath, "utf8")
+  let text: string
+  try {
+    text = readFileSync(filepath, "utf8")
+  } catch (error) {
+    // A directory or EACCES: name the file, as a parse error does.
+    throw invalid(filepath, `mcp.json cannot be read: ${error instanceof Error ? error.message : String(error)}`)
+  }
   return decodeDocument(text, filepath)
 }
 
