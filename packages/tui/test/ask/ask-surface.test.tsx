@@ -135,10 +135,10 @@ describe("permission ask surface", () => {
     try {
       const frame = app.captureCharFrame()
       expect(frame).toContain("1/3")
-      expect(frame).toContain("请求权限")
+      expect(frame).toContain("Bash 需要权限")
       expect(frame).toContain("允许这一次")
       expect(frame).toContain("本会话内都允许")
-      expect(frame).toContain("拒绝")
+      expect(frame).toContain("拒绝，并告诉 agent 怎么做")
       expect(frame).not.toContain("转达")
 
       app.mockInput.pressKey("3")
@@ -183,8 +183,10 @@ describe("permission ask surface", () => {
     )
     try {
       const frame = app.captureCharFrame()
-      expect(frame).toContain("explore · 扫描破坏性变更 请求权限")
+      expect(frame).toContain("explore · 扫描破坏性变更 · Bash 需要权限")
       expect(frame).toContain("拒绝，并请主 agent 转达…")
+      // A sub-agent's request is rejected as it is: only the root can say why.
+      expect(frame).not.toContain("告诉 agent 怎么做")
       expect(frame).not.toContain("自己输入")
 
       app.mockInput.pressKey("4")

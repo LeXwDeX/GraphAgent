@@ -3,15 +3,12 @@
 
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import type { Counters } from "../lib/engine-probe"
 import { testEffect } from "../lib/effect"
+import { expectBytesWithinTolerance, withoutBytes } from "./determinism"
 import { COMPACTION_EVERY, MESSAGES, SUMMARY_DIFF_BYTES, TAIL_TURNS, TURNS, s3Scenario } from "./scenarios/s3"
 
 const scenario = s3Scenario()
 const it = testEffect(scenario.layer)
-
-const withoutBytes = (counts: Counters) =>
-  Object.fromEntries(Object.entries(counts).filter(([key]) => key !== "json.encodeBytes" && key !== "sha256Bytes"))
 
 // Pre-H5 engine baseline recorded at d452d3a8. The measured window parsed the
 // seeded 256KiB turn diff about seven times, so H5 (#1016) moving the diff to
@@ -56,8 +53,13 @@ describe("S3 cold start on a compacted long session", () => {
 
         const second = result.second
         expect(second.seededCompactions).toBe(TURNS / COMPACTION_EVERY)
+        // The seeded history carries no timings; the measured turn's own
+        // step-finish part persists whole-millisecond `metrics` durations that
+        // the window parses three times, so a digit boundary crossed between
+        // passes moves `json.parseBytes` by three bytes (determinism.ts has the
+        // full account). Only the byte counters get a band; the rest is exact.
         expect(withoutBytes(second.counts)).toEqual(withoutBytes(first.counts))
-        expect(Math.abs(second.counts["json.encodeBytes"] - first.counts["json.encodeBytes"])).toBeLessThanOrEqual(64)
+        expectBytesWithinTolerance(second.counts, first.counts)
       }),
     scenario.instance,
     { timeout: scenario.timeout },

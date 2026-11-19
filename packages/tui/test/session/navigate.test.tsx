@@ -274,7 +274,7 @@ async function clickRow(harness: Harness, text: string) {
 test("clicking a Task row opens the sub-agent that row started", async () => {
   const harness = await mountTree({ handler: taskRows })
   try {
-    await clickRow(harness, "Task — Inspect bravo")
+    await clickRow(harness, "Inspect bravo")
     await waitFor(() => viewing(harness) === secondID)
     await harness.settle()
     expect(viewing(harness)).toBe(secondID)
@@ -291,7 +291,7 @@ test("clicking the Task row of a sub-agent that is retrying says why in the foot
   try {
     const retrying: SessionStatus = { type: "retry", attempt: 3, message: "rate limited", next: 0 }
     harness.sync().set("session_status", thirdID, retrying)
-    await clickRow(harness, "Task — Inspect charlie")
+    await clickRow(harness, "Inspect charlie")
     await waitFor(() => viewing(harness) === thirdID)
     expect(harness.toast().currentToast).toMatchObject({ level: "warning", text: "子 agent 正在重试：rate limited" })
     expect(harness.writes()).toEqual([])

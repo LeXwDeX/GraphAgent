@@ -9,7 +9,7 @@ import {
   formatBackgroundStatus,
   formatCompletedSubagentDetail,
   formatSubagentRetry,
-  formatSubagentTitle,
+  formatSubagentTags,
   formatSubagentToolcalls,
   InlineToolRow,
   parseApplyPatchFiles,
@@ -122,17 +122,29 @@ function Fixture(props: { errorExpanded?: boolean; before?: "shell" | "user" }) 
   )
 }
 
-// The Task rows are still the rows of `InlineToolRow` (#1614 PR C draws them as blocks); the calls around them are not.
+// The Task rows are rows of `ToolRow` like the calls around them (#1614): two lines, with who asked and where it runs at
+// the end of the first.
 function TaskRowsFixture() {
   return (
     <box flexDirection="column" width={WIDTH}>
       <ToolRow state="done" name="Grep" arg='"Task"' result="2 matches" width={WIDTH} />
-      <InlineToolRow icon="⠙" complete={true} pending="" separate={true}>
-        Explore Task — Inspect active task spacing
-      </InlineToolRow>
-      <InlineToolRow icon="✓" complete={true} pending="" separate={true}>
-        {"General Task — Confirm completed task spacing\n↳ 1 toolcall · 501ms"}
-      </InlineToolRow>
+      <ToolRow
+        state="pending"
+        name="Task"
+        arg="explore · Inspect active task spacing"
+        tag="main agent · background"
+        result="queued · waiting for a slot"
+        width={WIDTH}
+      />
+      <ToolRow
+        state="done"
+        name="Task"
+        arg="general · Confirm completed task spacing"
+        tag="main agent · foreground"
+        result="done · 1 tool call · 501ms"
+        action="open"
+        width={WIDTH}
+      />
       <ToolRow
         state="done"
         name="Read"
@@ -159,21 +171,27 @@ function LoadedReadBeforeTaskFixture() {
         }
         width={WIDTH}
       />
-      <InlineToolRow icon="✓" complete={true} pending="" separate={true}>
-        {"Explore Task — Inspect active task spacing\n↳ 1 toolcall · 501ms"}
-      </InlineToolRow>
+      <ToolRow
+        state="done"
+        name="Task"
+        arg="explore · Inspect active task spacing"
+        tag="main agent · foreground"
+        result="done · 1 tool call · 501ms"
+        width={WIDTH}
+      />
     </box>
   )
 }
 
+// The one-line rows that are still `InlineToolRow`s are the ones of a question and a todo update.
 function AssistantSummaryBeforeInlineFixture() {
   return (
     <box flexDirection="column" width={72}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
         <text>▣ Build · Little Frank · 53.1s</text>
       </box>
-      <InlineToolRow icon="✓" complete={true} pending="">
-        {"Build Task — Review changes\n↳ 48 toolcalls · 1m 40s"}
+      <InlineToolRow icon="→" complete={true} pending="">
+        Asked 2 questions
       </InlineToolRow>
     </box>
   )
@@ -191,8 +209,8 @@ function AssistantErrorBeforeInlineFixture() {
       >
         <text>Managed inference requires an active Member plan</text>
       </box>
-      <InlineToolRow icon="✓" complete={true} pending="">
-        {"Build Task — Review changes\n↳ 48 toolcalls · 1m 40s"}
+      <InlineToolRow icon="→" complete={true} pending="">
+        Asked 2 questions
       </InlineToolRow>
     </box>
   )
@@ -234,8 +252,8 @@ function FailedPendingToolFixture() {
 
 function FailedCompleteToolFixture() {
   return (
-    <InlineToolRow icon="│" complete={true} pending="Delegating..." failed={true} failure="Task failed">
-      Explore Task — Inspect renderer
+    <InlineToolRow icon="→" complete={true} pending="Asking questions..." failed={true} failure="Question failed">
+      Asked 2 questions
     </InlineToolRow>
   )
 }
@@ -275,8 +293,8 @@ describe("TUI inline tool wrapping", () => {
 
   test("preserves useful completed copy when a tool fails", async () => {
     const frame = await renderFrame(() => <FailedCompleteToolFixture />, { width: 72, height: 3 })
-    expect(frame).toContain("Explore Task — Inspect renderer")
-    expect(frame).not.toContain("Task failed")
+    expect(frame).toContain("Asked 2 questions")
+    expect(frame).not.toContain("Question failed")
   })
 
   test("filters malformed nested tool wire data", () => {
@@ -332,20 +350,14 @@ describe("TUI inline tool wrapping", () => {
     expect(formatCompletedSubagentDetail(undefined, "501ms")).toBe("— · 501ms")
   })
 
-  test("keeps who asked and where it runs attached to the subagent identity", () => {
+  test("keeps who asked and where it runs together, for the end of the first line of a Task row", () => {
     const labels = { initiator: undefined, background: false, promoted: false }
-    expect(formatSubagentTitle("Explore", "Inspect renderer", labels)).toBe(
-      "Explore Task — Inspect renderer · main agent · foreground",
+    expect(formatSubagentTags(labels)).toBe("main agent · foreground")
+    expect(formatSubagentTags({ ...labels, background: true })).toBe("main agent · background")
+    expect(formatSubagentTags({ ...labels, initiator: "user" })).toBe("you · foreground")
+    expect(formatSubagentTags({ initiator: "agent", background: true, promoted: true })).toBe(
+      "main agent · background (moved)",
     )
-    expect(formatSubagentTitle("Explore", "Inspect renderer", { ...labels, background: true })).toBe(
-      "Explore Task — Inspect renderer · main agent · background",
-    )
-    expect(formatSubagentTitle("Explore", "Inspect renderer", { ...labels, initiator: "user" })).toBe(
-      "Explore Task — Inspect renderer · you · foreground",
-    )
-    expect(
-      formatSubagentTitle("Explore", "Inspect renderer", { initiator: "agent", background: true, promoted: true }),
-    ).toBe("Explore Task — Inspect renderer · main agent · background (moved)")
   })
 
   test("keeps retry status ahead of wrapping messages", () => {
@@ -357,9 +369,7 @@ describe("TUI inline tool wrapping", () => {
     expect(formatCompletedSubagentDetail(2, "501ms")).toBe("2 次工具调用 · 501ms")
     expect(formatSubagentToolcalls(1)).toBe("1 次工具调用")
     expect(formatSubagentToolcalls(undefined)).toBe("—")
-    expect(
-      formatSubagentTitle("Explore", "检查渲染器", { initiator: "user", background: false, promoted: false }),
-    ).toBe("Explore Task — 检查渲染器 · 你发起 · 前台")
+    expect(formatSubagentTags({ initiator: "user", background: false, promoted: false })).toBe("你发起 · 前台")
     expect(formatSubagentRetry(2, "限流")).toBe("重试中（第 2 次）· 限流")
   })
 
@@ -420,7 +430,7 @@ describe("TUI inline tool wrapping", () => {
     expect(await renderFrame(() => <Fixture before="user" />, { width: 72, height: 20 })).toMatchSnapshot()
   })
 
-  test("separates after a multi-line task row", async () => {
+  test("separates after a task row", async () => {
     expect(await renderFrame(() => <TaskRowsFixture />, { width: 72, height: 12 })).toMatchSnapshot()
   })
 
@@ -428,11 +438,11 @@ describe("TUI inline tool wrapping", () => {
     expect(await renderFrame(() => <LoadedReadBeforeTaskFixture />, { width: 72, height: 8 })).toMatchSnapshot()
   })
 
-  test("separates an inline row from the previous assistant summary", async () => {
+  test("separates a one-line row from the previous assistant summary", async () => {
     expect(await renderFrame(() => <AssistantSummaryBeforeInlineFixture />, { width: 72, height: 5 })).toMatchSnapshot()
   })
 
-  test("separates an inline row from the previous assistant error", async () => {
+  test("separates a one-line row from the previous assistant error", async () => {
     expect(await renderFrame(() => <AssistantErrorBeforeInlineFixture />, { width: 72, height: 7 })).toMatchSnapshot()
   })
 
