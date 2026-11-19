@@ -18,17 +18,20 @@ import {
 import type { PauseReason } from "@graphagent/core/dag/core/types"
 import type { DagCommandCore, ID, WorkflowLock } from "./command-core"
 import { DEFAULT_WORKFLOW_CONFIG, parseWorkflowConfig } from "./workflow-config"
+import { ResumeGuard } from "./resume-guard"
 
 /**
  * The pause family: pausing a workflow (manual, checkpoint, budget, archive),
  * resuming and stepping it, and requeueing the nodes a budget pause cancelled.
  * They run on the one `Core` the layer built, so they see the same services and
- * guards as every other command module. `resume` is returned for the modules
- * that lift a pause as part of their own command.
+ * guards as every other command module. `resume` is the unguarded transition,
+ * returned for the modules that lift a pause as part of their own command; the
+ * `guarded*` entries are the public resume and step, which take the workflow
+ * lock and consult the `ResumeGuard` first.
  */
 export const make = (environment: DagCommandCore.Core) =>
   Effect.gen(function* () {
-    const { events, store, guardWorkflow } = environment
+    const { events, store, withWorkflowLock, transact, guardWorkflow } = environment
     const pause = Effect.fn("Dag.pause")(function* (lock: WorkflowLock, dagID: string, reason?: PauseReason) {
       yield* guardWorkflow(dagID, WorkflowStatus.PAUSED)
       yield* events.publish(DagEvent.WorkflowPaused, {
@@ -116,6 +119,39 @@ export const make = (environment: DagCommandCore.Core) =>
       })
       return { status: "stepping" as const, nodeID }
     })
+
+    // D12: resume/step are the two engine transitions that can lift a pause,
+    // so both consult the injectable ResumeGuard before publishing. The
+    // guard runs under the workflow lock, after the state-machine check, and
+    // only on the public path — failUnrecoverable's internal resume bypasses
+    // it deliberately (terminalizing is not resuming execution). The policy
+    // reads config and usage, not just the database, so it runs before the
+    // transaction; the transition guard and the publish run inside it.
+    const guardedResume = (dagID: string) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
+          yield* ResumeGuard.check(workflow)
+          yield* transact(dagID, resume(lock, dagID))
+        }),
+      )
+    const guardedResumeIfPausedFor = (dagID: string, reason: PauseReason) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+          if (!workflow || !stillPausedFor(workflow, reason)) return "skipped" as const
+          yield* ResumeGuard.check(workflow)
+          return yield* transact(dagID, resumeIfPausedFor(lock, dagID, reason))
+        }),
+      )
+    const guardedStep = (dagID: string) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const workflow = yield* guardWorkflow(dagID, WorkflowStatus.STEPPING)
+          yield* ResumeGuard.check(workflow)
+          return yield* transact(dagID, step(lock, dagID))
+        }),
+      )
 
     const pauseForBudget = Effect.fn("Dag.pauseForBudget")(function* (lock: WorkflowLock, dagID: string) {
       const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
@@ -232,9 +268,9 @@ export const make = (environment: DagCommandCore.Core) =>
       pause,
       pauseForCheckpoint,
       resume,
-      stillPausedFor,
-      resumeIfPausedFor,
-      step,
+      guardedResume,
+      guardedResumeIfPausedFor,
+      guardedStep,
       pauseForBudget,
       requeueNodes,
       pauseForArchive,

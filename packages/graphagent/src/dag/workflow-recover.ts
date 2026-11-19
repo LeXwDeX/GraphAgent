@@ -27,7 +27,7 @@ import type { Interface } from "./dag"
  */
 export const make = (environment: DagCommandCore.Core) =>
   Effect.gen(function* () {
-    const { events, store, withMailbox, command, guardWorkflowNotTerminal } = environment
+    const { events, store, withMailbox, withWorkflowLock, transact, command, guardWorkflowNotTerminal } = environment
     const recover: Interface["recover"] = Effect.fn("Dag.recover")(function* (dagID, input) {
       const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
       if (!workflow) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
@@ -185,7 +185,7 @@ export const make = (environment: DagCommandCore.Core) =>
       )
     })
 
-    const retarget = Effect.fn("Dag.retarget")(function* (
+    const applyRetarget = Effect.fn("Dag.retarget")(function* (
       lock: WorkflowLock,
       dagID: string,
       input: { workspace?: string; fingerprint?: string; nodeIDs?: readonly string[]; reason?: string },
@@ -323,6 +323,17 @@ export const make = (environment: DagCommandCore.Core) =>
         graphRev: workflow.graphRev + 1,
       }
     })
+
+    // `command`, with the reads that wait for git (#1344) between the lock and
+    // the transaction: ADR-0008 decision 3 keeps them out of the latter.
+    const retarget: Interface["retarget"] = (dagID, input) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const row = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+          const target = row ? yield* DagLocation.observeTarget(row, input.workspace) : undefined
+          return yield* transact(dagID, withMailbox(dagID, undefined, applyRetarget(lock, dagID, input, target)))
+        }),
+      )
 
     return { recover, retarget }
   })
