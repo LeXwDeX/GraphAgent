@@ -535,7 +535,7 @@ describe("tool.registry MCP resolution", () => {
           // The catalog is the description of mcp_describe: one line per deferred tool, by key, first sentence only.
           const lines = (describe?.description ?? "").split("\n")
           expect(lines.slice(0, 2)).toEqual([
-            "Read the input schema of deferred MCP tools before calling them with mcp_call.",
+            "Read the input schema of deferred MCP tools before calling them with mcp_call. Pass tools (1 to 10 names from the list below), or server (a server name) to list all tools of that server; not both.",
             "Deferred tools:",
           ])
           expect(lines.slice(2)).toEqual([
@@ -552,10 +552,11 @@ describe("tool.registry MCP resolution", () => {
           // whose schemas lose `minItems` and `maxItems` in the provider's rewrite, like every other tool's.
           expect(describe?.jsonSchema).toMatchObject({
             type: "object",
-            required: ["tools"],
             additionalProperties: false,
-            properties: { tools: { type: "array", items: { type: "string" } } },
+            properties: { tools: { type: "array", items: { type: "string" } }, server: { type: "string" } },
           })
+          // Neither is required: a call gives one of them, which the helper checks when it runs.
+          expect(describe?.jsonSchema).not.toHaveProperty("required")
           expect(call?.jsonSchema).toMatchObject({
             type: "object",
             required: ["tool"],
@@ -1123,6 +1124,97 @@ describe("tool.registry MCP resolution", () => {
             expect(toasts).toEqual([])
           }),
         )
+      }),
+    )
+  })
+
+  describe("the cap on the catalog (#1574)", () => {
+    const DESCRIBE = MCP_DEFERRED_TOOLS.describe
+    // `count` tools of a deferred server `big`, keys `big_000` and on.
+    const many = (count: number) =>
+      Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `big_${String(index).padStart(3, "0")}`,
+          mcpTool("big", `t${index}`, undefined, true),
+        ]),
+      )
+    // Runs `body` with `tools` as the MCP tools, and puts the suite's own back.
+    const withTools = <A, E, R>(tools: Record<string, ReturnType<typeof mcpTool>>, body: Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        const original = mcpTools
+        mcpTools = tools
+        toasts.length = 0
+        return body.pipe(Effect.ensuring(Effect.sync(() => (mcpTools = original))))
+      })
+    // What is logged while `resolve` runs under `logger`.
+    const capture = () => {
+      const logged: Array<{ level: string; text: string }> = []
+      const logger = Logger.make((options) =>
+        logged.push({ level: options.logLevel, text: JSON.stringify(options.message) }),
+      )
+      return { logged, logger, capped: () => logged.filter((item) => item.text.includes("over its cap")) }
+    }
+    const isDeferred = (entry: ToolRegistry.ToolEntry) => entry.source.kind === "mcp" && entry.source.deferred === true
+
+    it.instance("warns once, with the numbers, that the catalog is over its cap, and shows no toast", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        yield* withTools(
+          many(201),
+          Effect.gen(function* () {
+            const { logger, capped } = capture()
+            const session = sessionInfo(directory)
+            const first = yield* registry.resolve({ model, agent: build, session }).pipe(Effect.withLogger(logger))
+            expect(capped()).toHaveLength(1)
+            expect(capped()[0].level).toBe("Warn")
+            expect(capped()[0].text).toContain('"listed":200')
+            expect(capped()[0].text).toContain('"unlisted":1')
+
+            // Another request, another session and another model are the same directory: it is said once.
+            yield* registry.resolve({ model, agent: build, session }).pipe(Effect.withLogger(logger))
+            yield* registry
+              .resolve({ model, agent: build, session: sessionInfo(directory, { id: SessionID.make("ses_other") }) })
+              .pipe(Effect.withLogger(logger))
+            const other = ProviderTest.model({
+              providerID: ProviderV2.ID.make("test"),
+              id: ModelV2.ID.make("other-model"),
+            })
+            yield* registry.resolve({ model: other, agent: build, session }).pipe(Effect.withLogger(logger))
+            expect(capped()).toHaveLength(1)
+            expect(toasts).toEqual([])
+
+            // The description is cut, the entries are not: all 201 are there, and the last line sums up the one left out.
+            const lines = (first.find((entry) => entry.id === DESCRIBE)?.description ?? "").split("\n")
+            expect(lines.filter((line) => line.startsWith("- "))).toHaveLength(200)
+            expect(lines.at(-1)).toBe(
+              '... big: 1 more tool not listed — call mcp_describe with {"server": "big"} to list it.',
+            )
+            expect(first.filter(isDeferred)).toHaveLength(201)
+          }),
+        )
+      }),
+    )
+
+    it.instance("says nothing while every tool is listed, at exactly the cap and below it", () =>
+      Effect.gen(function* () {
+        const { registry, build, directory, model } = yield* setup
+        for (const count of [1, 200]) {
+          yield* withTools(
+            many(count),
+            Effect.gen(function* () {
+              const { logger, logged, capped } = capture()
+              const entries = yield* registry
+                .resolve({ model, agent: build, session: sessionInfo(directory) })
+                .pipe(Effect.withLogger(logger))
+              expect(capped()).toEqual([])
+              expect(logged.filter((item) => item.level === "Warn")).toEqual([])
+              const lines = (entries.find((entry) => entry.id === DESCRIBE)?.description ?? "").split("\n")
+              expect(lines.filter((line) => line.startsWith("- "))).toHaveLength(count)
+              expect(lines.filter((line) => line.startsWith("..."))).toEqual([])
+              expect(toasts).toEqual([])
+            }),
+          )
+        }
       }),
     )
   })

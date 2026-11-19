@@ -32,11 +32,16 @@ import { MemorySearch } from "@/tool/memory-search"
 import { ModelContext } from "@/tool/model-context"
 import {
   ArgumentsError,
+  DESCRIBE_CHOICE,
+  type DescribeRequest,
   SCHEMA_HINT,
   describeBlocks,
+  describeRequest,
   helperSchemas,
   makeChecker,
   MCP_DEFERRED_TOOLS,
+  serverListing,
+  unknownServer,
 } from "@/tool/mcp-deferred"
 import { DelegationHint } from "@/tool/delegation-hint"
 import { ToolError } from "@/tool/tool-error"
@@ -1497,7 +1502,28 @@ export const mcpDeferredTools = Effect.fn("ToolPipeline.mcpDeferredTools")(funct
       .map((entry) => [entry.id, entry]),
   )
   const available = () => [...deferredTools.keys()].toSorted((left, right) => left.localeCompare(right))
+  // The servers with a deferred tool the agent can see: `catalog` holds only the tools its rules leave visible.
+  const servers = () =>
+    [...new Set([...catalog.values()].map((entry) => entry.source.server))].toSorted((left, right) =>
+      left.localeCompare(right),
+    )
   const refuse = (fault: ToolError.Fault, hint = "") => new ArgumentsError(ToolError.render(fault) + hint)
+  // What `mcp_describe` answers: the schemas of the tools asked for, or a line for each tool of a server. Both are read
+  // from `catalog`, the tools the agent can see, whether or not the description of `mcp_describe` lists them.
+  const answer = (asked: DescribeRequest) => {
+    if (asked.kind === "server") {
+      const items = [...catalog.values()].filter((entry) => entry.source.server === asked.server)
+      if (items.length === 0) throw new ArgumentsError(unknownServer(asked.server, servers()))
+      return { title: "MCP server tools", text: serverListing(items), count: items.length }
+    }
+    const unknown = asked.names.find((name) => !deferredTools.has(name) || !catalog.has(name))
+    if (unknown !== undefined) throw refuse({ kind: "unknown_tool", requested: unknown, available: available() })
+    return {
+      title: "MCP tool schemas",
+      text: describeBlocks(asked.names.flatMap((name) => catalog.get(name) ?? [])),
+      count: asked.names.length,
+    }
+  }
 
   tools[describeEntry.id] = tool({
     description: describeEntry.description,
@@ -1505,18 +1531,17 @@ export const mcpDeferredTools = Effect.fn("ToolPipeline.mcpDeferredTools")(funct
     async execute(args, opts) {
       const detail = check(own.describe, args)
       if (detail !== undefined) throw refuse({ kind: "invalid_arguments", tool: MCP_DEFERRED_TOOLS.describe, detail })
-      const asked = toRecord(args).tools
-      const names = [...new Set(Array.isArray(asked) ? asked.filter((name) => typeof name === "string") : [])]
-      const unknown = names.find((name) => !deferredTools.has(name) || !catalog.has(name))
-      if (unknown !== undefined) throw refuse({ kind: "unknown_tool", requested: unknown, available: available() })
-      const text = describeBlocks(names.flatMap((name) => catalog.get(name) ?? []))
+      const asked = describeRequest(toRecord(args))
+      if (asked === undefined)
+        throw refuse({ kind: "invalid_arguments", tool: MCP_DEFERRED_TOOLS.describe, detail: DESCRIBE_CHOICE })
+      const { title, text, count } = answer(asked)
       return run.promise(
         Effect.gen(function* () {
           const truncated = yield* truncate.output(text, { context: contextTokens }, input.agent)
           const output = {
-            title: "MCP tool schemas",
+            title,
             metadata: {
-              count: names.length,
+              count,
               truncated: truncated.truncated,
               ...(truncated.truncated && { outputPath: truncated.outputPath }),
             },

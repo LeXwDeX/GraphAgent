@@ -22,6 +22,97 @@ function fakeServerHandle(): LSPServer.Handle {
   return { process: spawn(process.execPath, [serverPath], { stdio: "pipe" }) }
 }
 
+/** A diagnostics wait times out after 5 s or 10 s: the timers it must not leave behind once it returned. */
+const LONG_TIMER_MS = 1_000
+
+/** The instance around the client runs background work with timers of its own; only timers set by the client count. */
+const CLIENT_SOURCE = /src[\\/]lsp[\\/]client\.ts/
+
+/**
+ * Wraps globalThis.setTimeout and clearTimeout to watch the timers of LONG_TIMER_MS or more that the client sets. A
+ * watched timer is pending from its creation until it fires or is cleared. restore() puts the originals back and clears
+ * what is still pending, so a wait that fails its check cannot hold this process or a later test.
+ */
+function watchLongTimers() {
+  const nativeSetTimeout = globalThis.setTimeout
+  const nativeClearTimeout = globalThis.clearTimeout
+  const watched = new Map<ReturnType<typeof setTimeout>, { delay: number; pending: boolean }>()
+  // Object.assign keeps the members of the native function, so each wrapper still has the type of the original.
+  globalThis.setTimeout = Object.assign((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const entry = { delay: delay ?? 0, pending: true }
+    const timer = nativeSetTimeout(
+      (...fired: unknown[]) => {
+        entry.pending = false
+        handler(...fired)
+      },
+      delay,
+      ...args,
+    )
+    if (entry.delay >= LONG_TIMER_MS && CLIENT_SOURCE.test(new Error().stack ?? "")) watched.set(timer, entry)
+    return timer
+  }, nativeSetTimeout)
+  globalThis.clearTimeout = Object.assign((timer: Parameters<typeof nativeClearTimeout>[0]) => {
+    const entry = typeof timer === "object" ? watched.get(timer) : undefined
+    if (entry) entry.pending = false
+    nativeClearTimeout(timer)
+  }, nativeClearTimeout)
+  return {
+    /** How many watched timers were set. */
+    armed: () => watched.size,
+    /** Delays, in ms, of the watched timers that are still pending. */
+    pending: () => [...watched.values()].filter((entry) => entry.pending).map((entry) => entry.delay),
+    restore() {
+      globalThis.setTimeout = nativeSetTimeout
+      globalThis.clearTimeout = nativeClearTimeout
+      for (const [timer, entry] of watched) if (entry.pending) nativeClearTimeout(timer)
+    },
+  }
+}
+
+/** Runs `wait`; returns its answer and the delays of the long timers the client left pending once it returned. */
+async function leftoverTimers(wait: () => Promise<boolean>) {
+  const timers = watchLongTimers()
+  try {
+    const answer = await wait()
+    // A wait that armed nothing would pass without showing anything, say if stacks stopped naming the client.
+    expect(timers.armed()).toBeGreaterThan(0)
+    return { answer, pending: timers.pending() }
+  } finally {
+    timers.restore()
+  }
+}
+
+/** A client on the fake server with `file` open at `version`, shut down afterwards, for the tests that watch a wait. */
+async function withOpenFile(fn: (client: LSPClient.Info, file: string, version: number) => Promise<void>) {
+  const handle = fakeServerHandle()
+  await using tmp = await tmpdir()
+  const file = path.join(tmp.path, "client.ts")
+  await Bun.write(file, "const x = 1\n")
+  await withTestInstance({
+    directory: tmp.path,
+    fn: async (ctx) => {
+      const client = await LSPClient.create({
+        serverID: "fake",
+        server: handle,
+        root: tmp.path,
+        directory: tmp.path,
+        instance: ctx,
+      })
+      try {
+        await fn(client, file, await client.notify.open({ path: file }))
+      } finally {
+        await client.shutdown()
+      }
+    },
+  })
+}
+
+const diagnostic = {
+  range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+  message: "diagnostic",
+  severity: 1,
+}
+
 describe("LSPClient interop", () => {
   test("handles workspace/workspaceFolders request", async () => {
     const handle = spawnFakeServer() as any
@@ -566,5 +657,79 @@ describe("LSPClient interop", () => {
         await client.shutdown()
       },
     })
+  })
+
+  // A diagnostics wait arms a push wait for the whole call and a registration wait for each round, each with a timer
+  // and a listener. The listener goes with the same cancel as the timer, so the timers are what these tests read back.
+  // One case per way out of the wait; none may leave its 5 s or 10 s timer pending.
+  describe("diagnostics wait cleanup", () => {
+    const modes = ["document", "full"] as const
+
+    test.each(modes)("%s mode leaves no timer pending when a pull answers in the first round", (mode) =>
+      withOpenFile(async (client, file, version) => {
+        await client.connection.sendRequest("test/configure-pull-diagnostics", {
+          registrations: [{}],
+          documentDiagnostics: [diagnostic],
+        })
+        // The server sends the registration before it answers this request and the client handles messages in order,
+        // so the registration is in place when the wait starts.
+        await client.connection.sendRequest("test/register-configured-pull-diagnostics", {})
+
+        const { answer, pending } = await leftoverTimers(() => client.waitForDiagnostics({ path: file, version, mode }))
+
+        expect(answer).toBe(true)
+        expect(pending).toEqual([])
+      }),
+    )
+
+    test.each(modes)("%s mode leaves no timer pending when a registration arrives and the next pull answers", (mode) =>
+      withOpenFile(async (client, file, version) => {
+        await client.connection.sendRequest("test/configure-pull-diagnostics", {
+          registrations: [{}],
+          documentDiagnostics: [diagnostic],
+        })
+
+        const { answer, pending } = await leftoverTimers(async () => {
+          // Nothing is registered yet, so there is nothing to pull and the wait parks until the registration arrives.
+          const wait = client.waitForDiagnostics({ path: file, version, mode })
+          await client.connection.sendRequest("test/register-configured-pull-diagnostics", {})
+          return wait
+        })
+
+        expect(answer).toBe(true)
+        expect(pending).toEqual([])
+      }),
+    )
+
+    test.each(modes)("%s mode leaves no timer pending when a push wins the race", (mode) =>
+      withOpenFile(async (client, file, version) => {
+        const { answer, pending } = await leftoverTimers(async () => {
+          const wait = client.waitForDiagnostics({ path: file, version, mode })
+          await client.connection.sendNotification("test/publish-diagnostics", {
+            uri: pathToFileURL(file).href,
+            version,
+            diagnostics: [diagnostic],
+          })
+          return wait
+        })
+
+        expect(answer).toBe(true)
+        expect(pending).toEqual([])
+      }),
+    )
+
+    // The window is nearly spent when the wait starts, as in the timeout test above, so it ends on its own timer.
+    test.each(waits)("%s mode leaves no timer pending when the wait runs out", (mode, windowMs) =>
+      withOpenFile(async (client, file, version) => {
+        const started = Date.now()
+
+        const { answer, pending } = await leftoverTimers(() =>
+          client.waitForDiagnostics({ path: file, version, mode, after: started - (windowMs - 500) }),
+        )
+
+        expect(answer).toBe(false)
+        expect(pending).toEqual([])
+      }),
+    )
   })
 })
