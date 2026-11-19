@@ -57,6 +57,7 @@ import {
   recordValue,
   stringValue,
   toolDisplay,
+  toolRowName,
   webSearchProviderLabel,
 } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
@@ -118,7 +119,7 @@ import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import * as Model from "../../util/model"
 import { formatTranscript } from "../../util/transcript"
 import { sessionEpilogue } from "../../util/presentation"
-import { setPreLayoutSiblingMargin } from "../../util/layout"
+import { alwaysSeparate, setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { t } from "../../i18n"
 import { renderUserTextPart } from "../../i18n/receipt"
@@ -165,16 +166,15 @@ import {
   delegationFolds,
   editShowsBlock,
   errorDenied,
+  errorLine,
+  firstLine,
   foldFlag,
-  foldHint,
-  GENERIC_OUTPUT_LINES,
-  genericOutput,
-  genericShowsBlock,
+  foldOutput,
+  genericRowOutput,
+  lastLine,
   outputCharCap,
   resultCardFolds,
-  SHELL_OUTPUT_LINES,
   shellOutput,
-  shellShowsBlock,
   toolError,
   toolFailed,
   toolMetadata,
@@ -182,6 +182,7 @@ import {
   type FoldEnv,
   type FoldSource,
 } from "./fold"
+import { ToolRow, toolRowState, type ToolRowState } from "./tool-row"
 
 // The tool data readers live in `util/tool-display`, where `./fold` reads them too; the tests import them from here.
 export {
@@ -195,7 +196,7 @@ export {
 
 addDefaultParsers(parsers.parsers)
 
-export const alwaysSeparate = new WeakSet<BoxRenderable>()
+export { alwaysSeparate }
 
 const sessionBindingCommands = [
   "session.timeline",
@@ -2875,52 +2876,146 @@ type ToolProps = {
   output?: string
   part: ToolPart
 }
-function GenericTool(props: ToolProps) {
-  const attention = createMemo(() => toolAttention(props.tool, props.part.state))
+/** The parts of an arg that are there, set off with a space. */
+const words = (...parts: Array<string | undefined>) => parts.filter(Boolean).join(" ")
+
+/** `text` as one line of a row: no escapes or control characters, and a tab is a space. */
+const oneLine = (text: string) => remoteLine(text.replaceAll("\t", " "))
+
+/**
+ * The row of a tool call that draws no block of its own (#1614): the state the call is in and what each state says
+ * under it, and what a click on the row opens. A call that completed says what its tool has to say as `done`, and
+ * "done" when it has nothing. A call whose output folds gives the lines the row leaves out of it as `folds` and the
+ * whole of it as `body`, which the open row draws.
+ */
+function ToolCall(props: {
+  part: ToolPart
+  name: string
+  arg?: string
+  /** The line under a call that completed. */
+  done?: string | JSX.Element
+  /** The color of `done`, when it is a string that is not in the one the state gives. */
+  doneColor?: RGBA
+  /** What a call that runs has printed last. */
+  progress?: string
+  /** The lines the row leaves out of the output of a call that completed, when that output folds. */
+  folds?: number
+  /** The whole output of a call that folds. */
+  body?: JSX.Element
+  /** A call that completed without doing what it was asked: its dot is that of a call that failed. */
+  blocked?: boolean
+  /** What the open row of a call that failed draws after its error: the output a command printed before it did. */
+  trace?: string
+}) {
   const { theme } = useTheme()
   const ctx = use()
-  const output = createMemo(() => genericOutput(props.output))
-  const expanded = () => ctx.view.get(props.part.id, "expanded")
-  const maxLines = GENERIC_OUTPUT_LINES
-  const maxChars = createMemo(() => outputCharCap(maxLines, ctx.width))
-  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
-  const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return output()
-    return collapsed().output
+  const sync = useSync()
+
+  const waiting = createMemo(() => {
+    const callID = sync.data.permission[ctx.sessionID]?.at(0)?.tool?.callID
+    return Boolean(callID) && callID === props.part.callID
   })
-  const hint = createMemo(() => foldHint({ expanded: expanded(), hidden: collapsed().hidden }, ctx.shortcuts.expand()))
-  // Only the block folds; the one-line fallback below has nothing to open, and `fold.ts` skips a call that draws it.
-  const showBlock = () => genericShowsBlock(attention(), props.output, ctx.showGenericToolOutput())
+  const error = createMemo(() => toolError(props.part.state))
+  // A call the user or the rules turned down is not a failure: it has no error to open.
+  const failed = createMemo(() => toolFailed(props.part.state))
+  const completed = () => props.part.state.status === "completed"
+  const state = createMemo((): ToolRowState => {
+    const current = toolRowState(props.part.state, waiting())
+    return current === "done" && props.blocked ? "failed" : current
+  })
+  const folded = () => completed() && props.folds !== undefined
+  const expanded = () => ctx.view.get(props.part.id, "expanded")
+  const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
+
+  const result = (): string | JSX.Element | undefined => {
+    switch (state()) {
+      case "waiting":
+        return t("tool.row.waiting")
+      case "pending":
+        return t("tool.row.pending")
+      case "running":
+        return t("tool.row.running")
+      case "denied":
+        return t("tool.row.denied")
+      case "failed": {
+        // A call that completed and is drawn as failed was blocked: what it says is why.
+        if (completed()) return props.done
+        const line = errorLine(error())
+        return line ? t("tool.row.failedWith", { error: line }) : t("tool.row.failed")
+      }
+      default:
+        return props.done ?? t("tool.row.done")
+    }
+  }
 
   return (
-    <Show
-      when={showBlock()}
-      fallback={
-        <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
-          {props.tool} {input(props.input)}
-        </InlineTool>
+    <ToolRow
+      state={state()}
+      name={props.name}
+      arg={props.arg}
+      width={ctx.width}
+      result={result()}
+      resultColor={completed() ? props.doneColor : undefined}
+      detail={state() === "running" ? props.progress : undefined}
+      hidden={folded() ? props.folds : undefined}
+      expanded={folded() ? expanded() : failed() ? errorExpanded() : false}
+      expandKey={ctx.shortcuts.expand()}
+      visible={() => ctx.isVisible(props.part.id)}
+      onClick={
+        folded()
+          ? () => ctx.view.set(props.part.id, "expanded", !expanded())
+          : failed()
+            ? () => ctx.view.set(props.part.id, "errorExpanded", !errorExpanded())
+            : undefined
       }
     >
-      <BlockTool
-        title={attention() ? `# ${props.tool}: blocked` : `# ${props.tool} ${input(props.input)}`}
-        part={props.part}
-        onClick={collapsed().overflow ? () => ctx.view.set(props.part.id, "expanded", !expanded()) : undefined}
-      >
-        <box gap={1}>
-          <Show when={attention()}>{(reason) => <text fg={theme.error}>{reason()}</text>}</Show>
-          <text fg={theme.text}>{limited()}</text>
-          <Show when={collapsed().overflow}>
-            <text fg={theme.textDim}>{hint()}</text>
+      {folded() ? (
+        props.body
+      ) : (
+        <box>
+          <text fg={theme.error}>{error()}</text>
+          <Show when={props.trace}>
+            <box marginTop={1}>
+              <text fg={theme.textMuted}>{props.trace}</text>
+            </box>
           </Show>
         </box>
-      </BlockTool>
-    </Show>
+      )}
+    </ToolRow>
+  )
+}
+
+function GenericTool(props: ToolProps) {
+  const { theme } = useTheme()
+  const ctx = use()
+  const attention = createMemo(() => toolAttention(props.tool, props.part.state))
+  // The output the reader asked to see; a call that was blocked says why instead.
+  const output = createMemo(() => genericRowOutput(attention(), props.output, ctx.showGenericToolOutput()))
+  const fold = createMemo(() => foldOutput(output(), ctx.width))
+
+  return (
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={input(props.input)}
+      blocked={Boolean(attention())}
+      folds={fold().folds ? fold().hidden : undefined}
+      done={
+        attention() ? (
+          <text fg={theme.error}>{attention()}</text>
+        ) : fold().folds ? (
+          oneLine(firstLine(output()))
+        ) : output() ? (
+          <text fg={theme.text}>{output()}</text>
+        ) : undefined
+      }
+      body={<text fg={theme.text}>{output()}</text>}
+    />
   )
 }
 
 function InlineTool(props: {
   icon: string
-  iconColor?: RGBA
   color?: RGBA
   complete: unknown
   pending: string
@@ -2963,7 +3058,6 @@ function InlineTool(props: {
   return (
     <InlineToolRow
       icon={props.icon}
-      iconColor={props.iconColor}
       color={fg()}
       errorColor={theme.error}
       failed={failed()}
@@ -2994,7 +3088,6 @@ function InlineTool(props: {
 
 export function InlineToolRow(props: {
   icon: string
-  iconColor?: RGBA
   color?: RGBA
   errorColor?: RGBA
   failed?: boolean
@@ -3048,7 +3141,7 @@ export function InlineToolRow(props: {
             <box flexDirection="row">
               <text
                 width={INLINE_TOOL_ICON_WIDTH}
-                fg={props.failed ? props.errorColor : (props.iconColor ?? props.color)}
+                fg={props.failed ? props.errorColor : props.color}
                 attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
               >
                 {props.icon}
@@ -3073,17 +3166,8 @@ export function InlineToolRow(props: {
   )
 }
 
-function BlockTool(props: {
-  title?: string
-  children: JSX.Element
-  onClick?: () => void
-  part?: ToolPart
-  spinner?: boolean
-}) {
+function BlockTool(props: { title?: string; children: JSX.Element; part?: ToolPart }) {
   const { theme } = useTheme()
-  const ctx = use()
-  const renderer = useRenderer()
-  const [hover, setHover] = createSignal(false)
   const error = createMemo(() => (props.part?.state.status === "error" ? props.part.state.error : undefined))
   return (
     <box
@@ -3094,30 +3178,15 @@ function BlockTool(props: {
       paddingLeft={2}
       marginTop={1}
       gap={1}
-      backgroundColor={hover() ? theme.backgroundMenu : theme.backgroundPanel}
+      backgroundColor={theme.backgroundPanel}
       customBorderChars={SplitBorder.customBorderChars}
       borderColor={theme.background}
-      onMouseOver={() => props.onClick && setHover(true)}
-      onMouseOut={() => setHover(false)}
-      onMouseUp={() => {
-        if (renderer.getSelection()?.getSelectedText()) return
-        props.onClick?.()
-      }}
     >
       <Show when={props.title}>
         {(title) => (
-          <Show
-            when={props.spinner}
-            fallback={
-              <text paddingLeft={3} fg={theme.textMuted}>
-                {title()}
-              </text>
-            }
-          >
-            <Spinner color={theme.textMuted} visible={() => ctx.isVisible(props.part?.id)}>
-              {title().replace(/^# /, "")}
-            </Spinner>
-          </Show>
+          <text paddingLeft={3} fg={theme.textMuted}>
+            {title()}
+          </text>
         )}
       </Show>
       {props.children}
@@ -3132,61 +3201,57 @@ function Shell(props: ToolProps) {
   const { theme } = useTheme()
   const pathFormatter = usePathFormatter()
   const ctx = use()
-  const isRunning = createMemo(() => props.part.state.status === "running")
+  // Only the tail of the output is known here (the server keeps `SHELL_TAIL_LINES` of it), and while the call runs it
+  // is the preview the stream buffer holds, so what the row keeps of a folded output is its last line.
   const output = createMemo(() => shellOutput(props.metadata))
-  const expanded = () => ctx.view.get(props.part.id, "expanded")
-  const maxLines = SHELL_OUTPUT_LINES
-  const maxChars = createMemo(() => outputCharCap(maxLines, ctx.width))
-  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
-  const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return output()
-    return collapsed().output
+  const fold = createMemo(() => foldOutput(output(), ctx.width))
+  // The code a command that failed exited with; a signal ends a command with none.
+  const exit = createMemo(() => {
+    const code = numberValue(props.metadata.exit)
+    return code === undefined || code === 0 ? undefined : code
   })
-  const hint = createMemo(() => foldHint({ expanded: expanded(), hidden: collapsed().hidden }, ctx.shortcuts.expand()))
+  const withExit = (text: string) => (exit() === undefined ? text : t("tool.row.exitWith", { code: exit()!, text }))
 
-  const workdirDisplay = createMemo(() => {
-    const workdir = stringValue(props.input.workdir)
-    if (!workdir || workdir === ".") return undefined
-    const formatted = pathFormatter.format(workdir)
-    if (formatted === ".") return undefined
-    return formatted
+  const workdir = createMemo(() => {
+    const dir = stringValue(props.input.workdir)
+    if (!dir || dir === ".") return undefined
+    const formatted = pathFormatter.format(dir)
+    return formatted === "." ? undefined : formatted
   })
-
-  const title = createMemo(() => {
-    const wd = workdirDisplay()
-    if (!wd) return
-    return `# Running in ${wd}`
+  // The first line of the command, and a `…` when there are more; the directory it runs in, when it is not this one.
+  const arg = createMemo(() => {
+    const lines = (stringValue(props.input.command) ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+    if (lines.length === 0) return undefined
+    return words(lines[0] + (lines.length > 1 ? "…" : ""), workdir() && "· " + workdir())
   })
 
   return (
-    <Switch>
-      <Match when={shellShowsBlock(props.metadata)}>
-        <BlockTool
-          title={title()}
-          part={props.part}
-          onClick={collapsed().overflow ? () => ctx.view.set(props.part.id, "expanded", !expanded()) : undefined}
-        >
-          <box gap={1}>
-            <Show when={isRunning()} fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}>
-              <Spinner color={theme.text} visible={() => ctx.isVisible(props.part.id)}>
-                {stringValue(props.input.command)}
-              </Spinner>
-            </Show>
-            <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
-            </Show>
-            <Show when={collapsed().overflow}>
-              <text fg={theme.textDim}>{hint()}</text>
-            </Show>
-          </box>
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="$" pending="Writing command..." complete={stringValue(props.input.command)} part={props.part}>
-          {stringValue(props.input.command)}
-        </InlineTool>
-      </Match>
-    </Switch>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={arg()}
+      progress={oneLine(lastLine(output()))}
+      folds={fold().folds ? fold().hidden : undefined}
+      doneColor={exit() === undefined ? undefined : theme.error}
+      done={
+        !output() ? (
+          exit() === undefined ? (
+            t("tool.row.noOutput")
+          ) : (
+            t("tool.row.exit", { code: exit()! })
+          )
+        ) : fold().folds ? (
+          withExit(oneLine(lastLine(output())))
+        ) : (
+          <text fg={exit() === undefined ? theme.text : theme.error}>{withExit(output())}</text>
+        )
+      }
+      body={<text fg={theme.text}>{output()}</text>}
+      trace={output()}
+    />
   )
 }
 
@@ -3227,23 +3292,48 @@ function Write(props: ToolProps) {
   )
 }
 
+/** What a search tool acts on: its pattern, and where it looks when it is not the working directory. */
+function searchArg(pattern: string | undefined, path: string) {
+  if (pattern === undefined) return undefined
+  return words(`"${pattern}"`, path ? t("tool.row.inPath", { path }) : undefined)
+}
+
 function Glob(props: ToolProps) {
   const pathFormatter = usePathFormatter()
+  const count = createMemo(() => numberValue(props.metadata.count))
   return (
-    <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
-      Glob "{stringValue(props.input.pattern)}"{" "}
-      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-      <Show when={numberValue(props.metadata.count)}>
-        ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
-      </Show>
-    </InlineTool>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={searchArg(stringValue(props.input.pattern), pathFormatter.format(stringValue(props.input.path)))}
+      done={
+        count() === undefined
+          ? undefined
+          : t(count() === 1 ? "tool.row.files.one" : "tool.row.files.other", { n: count()! })
+      }
+    />
   )
+}
+
+/** How much a call that read a file or a directory got of it, in words; nothing when the server did not say. */
+function readSummary(display: unknown) {
+  const info = recordValue(display)
+  if (info?.type === "directory") {
+    const entries = numberValue(info.totalEntries)
+    return entries === undefined
+      ? undefined
+      : t(entries === 1 ? "tool.row.entries.one" : "tool.row.entries.other", { n: entries })
+  }
+  const start = numberValue(info?.lineStart)
+  const end = numberValue(info?.lineEnd)
+  if (start === undefined || end === undefined) return undefined
+  const lines = Math.max(0, end - start + 1)
+  return t(lines === 1 ? "tool.row.lines.one" : "tool.row.lines.other", { n: lines })
 }
 
 function Read(props: ToolProps) {
   const { theme } = useTheme()
   const pathFormatter = usePathFormatter()
-  const isRunning = createMemo(() => props.part.state.status === "running")
   const loaded = createMemo(() => {
     if (props.part.state.status !== "completed") return []
     if (props.part.state.time.compacted) return []
@@ -3251,57 +3341,71 @@ function Read(props: ToolProps) {
     if (!value || !Array.isArray(value)) return []
     return value.filter((p): p is string => typeof p === "string")
   })
+  const summary = createMemo(() => readSummary(props.metadata.display))
   return (
-    <>
-      <InlineTool
-        icon="→"
-        pending="Reading file..."
-        complete={stringValue(props.input.filePath)}
-        spinner={isRunning()}
-        part={props.part}
-      >
-        Read {pathFormatter.format(stringValue(props.input.filePath))} {input(props.input, ["filePath"])}
-      </InlineTool>
-      <For each={loaded()}>
-        {(filepath) => (
-          <box paddingLeft={3}>
-            <text paddingLeft={3} fg={theme.textMuted}>
-              ↳ Loaded {pathFormatter.format(filepath)}
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={words(pathFormatter.format(stringValue(props.input.filePath)), input(props.input, ["filePath"]))}
+      done={
+        loaded().length > 0 ? (
+          <box>
+            <text fg={theme.text} wrapMode="none">
+              {summary() ?? t("tool.row.done")}
             </text>
+            <For each={loaded()}>
+              {(filepath) => (
+                <text fg={theme.textMuted}>
+                  {"↳ " + t("tool.row.loaded", { path: pathFormatter.format(filepath) })}
+                </text>
+              )}
+            </For>
           </box>
-        )}
-      </For>
-    </>
+        ) : (
+          summary()
+        )
+      }
+    />
   )
 }
 
 function Grep(props: ToolProps) {
   const pathFormatter = usePathFormatter()
+  const matches = createMemo(() => numberValue(props.metadata.matches))
   return (
-    <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
-      Grep "{stringValue(props.input.pattern)}"{" "}
-      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-      <Show when={numberValue(props.metadata.matches)}>
-        ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
-      </Show>
-    </InlineTool>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={searchArg(stringValue(props.input.pattern), pathFormatter.format(stringValue(props.input.path)))}
+      done={
+        matches() === undefined
+          ? undefined
+          : matches() === 0
+            ? t("tool.row.noMatches")
+            : t(matches() === 1 ? "tool.row.matches.one" : "tool.row.matches.other", { n: matches()! })
+      }
+    />
   )
 }
 
 function WebFetch(props: ToolProps) {
-  return (
-    <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
-      WebFetch {stringValue(props.input.url)}
-    </InlineTool>
-  )
+  return <ToolCall part={props.part} name={toolRowName(props.tool)} arg={stringValue(props.input.url)} />
 }
 
 function WebSearch(props: ToolProps) {
+  const results = createMemo(() => numberValue(props.metadata.numResults))
+  const query = createMemo(() => stringValue(props.input.query))
   return (
-    <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
-      {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
-      <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
-    </InlineTool>
+    <ToolCall
+      part={props.part}
+      name={toolRowName(props.tool)}
+      arg={query() === undefined ? undefined : `${webSearchProviderLabel(props.metadata.provider)} "${query()}"`}
+      done={
+        results() === undefined
+          ? undefined
+          : t(results() === 1 ? "tool.row.results.one" : "tool.row.results.other", { n: results()! })
+      }
+    />
   )
 }
 
@@ -3828,10 +3932,9 @@ function Question(props: ToolProps) {
 }
 
 function Skill(props: ToolProps) {
+  const name = createMemo(() => stringValue(props.input.name))
   return (
-    <InlineTool icon="→" pending="Loading skill..." complete={stringValue(props.input.name)} part={props.part}>
-      Skill "{stringValue(props.input.name)}"
-    </InlineTool>
+    <ToolCall part={props.part} name={toolRowName(props.tool)} arg={name() === undefined ? undefined : `"${name()}"`} />
   )
 }
 

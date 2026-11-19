@@ -9,13 +9,19 @@ import {
   completedOutput,
   delegationFolds,
   errorDenied,
+  errorLine,
+  firstLine,
   foldFlag,
   foldHint,
-  genericShowsBlock,
+  foldOutput,
+  genericRowOutput,
+  lastLine,
+  openToolLines,
   outputCharCap,
   reasoningFolds,
   resultCardFolds,
   shellOutput,
+  TOOL_FOLD_LINES,
   toolFailed,
   toolMetadata,
   type FoldEnv,
@@ -84,28 +90,67 @@ test("parts that are not a reasoning or a tool never fold", () => {
   expect(flag({ ...base, id: "prt_patch", type: "patch", hash: "h", files: ["a.ts"] })).toBeUndefined()
 })
 
-test("a bash output folds past ten lines", () => {
-  expect(flag(tool("bash", completed("", { output: lines(10) })))).toBeUndefined()
-  expect(flag(tool("bash", completed("", { output: lines(11) })))).toBe("expanded")
-  expect(flag(tool("bash", completed("", { output: `\n${lines(10)}\n\n` })))).toBeUndefined()
+test("every tool output folds past six lines", () => {
+  expect(TOOL_FOLD_LINES).toBe(6)
+  expect(flag(tool("bash", completed("", { output: lines(6) })))).toBeUndefined()
+  expect(flag(tool("bash", completed("", { output: lines(7) })))).toBe("expanded")
+  expect(flag(tool("bash", completed("", { output: `\n${lines(6)}\n\n` })))).toBeUndefined()
 })
 
 test("a bash output folds past the characters the width allows, and a wider view allows more", () => {
-  const cap = outputCharCap(10, 100)
-  expect(cap).toBe(940)
+  const cap = outputCharCap(TOOL_FOLD_LINES, 100)
+  expect(cap).toBe(564)
   const oneLine = "x".repeat(1000)
   expect(flag(tool("bash", completed("", { output: oneLine })), { width: 100 })).toBe("expanded")
   expect(flag(tool("bash", completed("", { output: oneLine })), { width: 200 })).toBeUndefined()
   // The least width the cap is taken from: a narrow view still shows a line of twenty characters.
-  expect(outputCharCap(10, 10)).toBe(200)
+  expect(outputCharCap(TOOL_FOLD_LINES, 10)).toBe(120)
 })
 
 test("terminal escapes are not counted as output", () => {
   // Two hundred painted characters: well under the cap as text, well over it with their escapes.
   const painted = "\u001b[31mx\u001b[0m".repeat(200)
-  expect(painted.length).toBeGreaterThan(940)
+  expect(painted.length).toBeGreaterThan(outputCharCap(TOOL_FOLD_LINES, 100))
   expect(shellOutput({ output: painted })).toBe("x".repeat(200))
   expect(flag(tool("bash", completed("", { output: painted })))).toBeUndefined()
+})
+
+test("what the server writes for a command that printed nothing is no output", () => {
+  expect(shellOutput({ output: "(no output)" })).toBe("")
+  expect(shellOutput({ output: "  (no output)\n" })).toBe("")
+  expect(shellOutput({ output: "" })).toBe("")
+  expect(shellOutput({})).toBe("")
+  // Only the whole placeholder is one: a line that says so among others is an output.
+  expect(shellOutput({ output: "a\n(no output)" })).toBe("a\n(no output)")
+})
+
+test("the fold of an output leaves out every line but the one its row keeps", () => {
+  const width = 100
+  expect(foldOutput("", width)).toEqual({ folds: false, hidden: 0 })
+  expect(foldOutput("one line", width)).toEqual({ folds: false, hidden: 0 })
+  expect(foldOutput(lines(TOOL_FOLD_LINES), width)).toEqual({ folds: false, hidden: 0 })
+  expect(foldOutput(lines(TOOL_FOLD_LINES + 1), width)).toEqual({ folds: true, hidden: TOOL_FOLD_LINES })
+  expect(foldOutput(lines(40), width)).toEqual({ folds: true, hidden: 39 })
+  // A line cut at the characters the lines may take leaves no line out of an output of one; two leave the other.
+  expect(foldOutput("x".repeat(1000), width)).toEqual({ folds: true, hidden: 0 })
+  expect(foldOutput(`${"x".repeat(1000)}\ny`, width)).toEqual({ folds: true, hidden: 1 })
+})
+
+test("the line a folded row keeps is the last of a bash output and the first of any other", () => {
+  expect(lastLine("a\nb\nc")).toBe("c")
+  expect(lastLine("only")).toBe("only")
+  expect(firstLine("a\nb\nc")).toBe("a")
+  expect(firstLine("only")).toBe("only")
+  expect(firstLine("")).toBe("")
+})
+
+test("the line a failed row says is the first of the error that has text, as one displayable line", () => {
+  expect(errorLine("boom\nat run (task.ts:42)")).toBe("boom")
+  expect(errorLine("\n  \n  refused  \nmore")).toBe("refused")
+  expect(errorLine("\u001b[31mred\u001b[0m boom\u0007")).toBe("red boom")
+  expect(errorLine("")).toBeUndefined()
+  expect(errorLine(" \n\t\n ")).toBeUndefined()
+  expect(errorLine(undefined)).toBeUndefined()
 })
 
 test("a bash call without output is one line, and a successful one has nothing to fold", () => {
@@ -114,17 +159,16 @@ test("a bash call without output is one line, and a successful one has nothing t
   expect(flag(tool("bash", { status: "running", input: {}, time: { start: 1 } }))).toBeUndefined()
 })
 
-test("a running bash call folds by the tail the stream buffer holds, as its block shows it", () => {
+test("a running bash call has nothing to fold: its row says it runs, with the latest line of the tail", () => {
   const part = tool("bash", { status: "running", input: {}, metadata: { output: "one line" }, time: { start: 1 } })
   expect(flag(part)).toBeUndefined()
 
   previews.set(part.id, { tail: lines(30), totalLength: 5000, seq: 1 })
   try {
-    expect(flag(part)).toBe("expanded")
+    expect(flag(part)).toBeUndefined()
   } finally {
     previews.delete(part.id)
   }
-  expect(flag(part)).toBeUndefined()
 })
 
 test("a failed call drawn as one line folds its error under errorExpanded", () => {
@@ -149,9 +193,9 @@ test("a call the user or the permission rules turned down is not a failure", () 
   expect(errorDenied(undefined)).toBe(false)
 })
 
-test("a failed bash call that has output is a block: its output folds, its error is always shown", () => {
-  expect(flag(tool("bash", failed("aborted", { output: lines(30), interrupted: true })))).toBe("expanded")
-  expect(flag(tool("bash", failed("aborted", { output: "short" })))).toBeUndefined()
+test("a failed bash call is one line whatever it printed: its error folds, with the output it printed", () => {
+  expect(flag(tool("bash", failed("aborted", { output: lines(30), interrupted: true })))).toBe("errorExpanded")
+  expect(flag(tool("bash", failed("aborted", { output: "short" })))).toBe("errorExpanded")
 })
 
 test("a failed call of a tool that draws a fixed block has no folded error", () => {
@@ -169,31 +213,49 @@ test("a failed call of a tool that draws a fixed block has no folded error", () 
   expect(flag(tool("question", failed("boom", { answers: [["yes"]] })))).toBeUndefined()
 })
 
-test("a generic tool output is a block only when it was blocked or the reader asked for it", () => {
+test("a generic tool output is drawn only when the reader asked for it, and folds at the same six lines", () => {
   const long = completed(lines(20))
   expect(flag(tool("custom_tool", long))).toBeUndefined()
   expect(flag(tool("custom_tool", long), { showGenericToolOutput: true })).toBe("expanded")
-  // The block of a generic tool folds past three lines, not ten.
-  expect(flag(tool("custom_tool", completed(lines(3))), { showGenericToolOutput: true })).toBeUndefined()
-  expect(flag(tool("custom_tool", completed(lines(4))), { showGenericToolOutput: true })).toBe("expanded")
+  expect(flag(tool("custom_tool", completed(lines(6))), { showGenericToolOutput: true })).toBeUndefined()
+  expect(flag(tool("custom_tool", completed(lines(7))), { showGenericToolOutput: true })).toBe("expanded")
 })
 
-test("a blocked call draws its block without the setting, and folds only past the cap", () => {
+test("a blocked call says why and has no output to fold, however long its output is", () => {
   const blocked = (output: string) => completed(output, { blocked: true, diagnosticSummary: "Denied by policy" })
   expect(flag(tool("custom_tool", blocked("short")))).toBeUndefined()
-  expect(flag(tool("custom_tool", blocked(lines(8))))).toBe("expanded")
+  expect(flag(tool("custom_tool", blocked(lines(40))))).toBeUndefined()
+  expect(flag(tool("custom_tool", blocked(lines(40))), { showGenericToolOutput: true })).toBeUndefined()
+})
+
+test("a call that is still running or pending has no output to fold, whatever the reader shows", () => {
+  const running = tool("custom_tool", { status: "running", input: {}, time: { start: 1 } })
+  const pending = tool("custom_tool", { status: "pending", input: {}, raw: "" })
+  expect(flag(running, { showGenericToolOutput: true })).toBeUndefined()
+  expect(flag(pending, { showGenericToolOutput: true })).toBeUndefined()
 })
 
 test("a failed generic call is one line with a folded error", () => {
   expect(flag(tool("custom_tool", failed("boom")), { showGenericToolOutput: true })).toBe("errorExpanded")
 })
 
-test("the block rule of a generic tool", () => {
-  expect(genericShowsBlock("blocked", undefined, false)).toBe(true)
-  expect(genericShowsBlock(undefined, "output", true)).toBe(true)
-  expect(genericShowsBlock(undefined, "output", false)).toBe(false)
-  expect(genericShowsBlock(undefined, "", true)).toBe(false)
-  expect(genericShowsBlock(undefined, undefined, true)).toBe(false)
+test("the output a generic tool row draws is the one the reader asked for, and none when the call was blocked", () => {
+  expect(genericRowOutput(undefined, "  output\n", true)).toBe("output")
+  expect(genericRowOutput(undefined, "output", false)).toBe("")
+  expect(genericRowOutput("blocked", "output", true)).toBe("")
+  expect(genericRowOutput(undefined, undefined, true)).toBe("")
+  expect(genericRowOutput(undefined, "", true)).toBe("")
+})
+
+test("the open row of a call draws as many lines under its result as the output has, or its error and output", () => {
+  expect(openToolLines(tool("bash", completed("", { output: lines(30) })))).toBe(30)
+  expect(openToolLines(tool("bash", completed("", {})))).toBe(0)
+  expect(openToolLines(tool("bash", completed("", { output: "(no output)" })))).toBe(0)
+  expect(openToolLines(tool("custom_tool", completed(lines(9))))).toBe(9)
+  expect(openToolLines(tool("bash", { status: "pending", input: {}, raw: "" }))).toBe(0)
+  // The error of a call that failed, and the blank line and the output a bash call printed before it did.
+  expect(openToolLines(tool("read", failed("one\ntwo\nthree")))).toBe(3)
+  expect(openToolLines(tool("bash", failed("aborted", { output: lines(4) })))).toBe(1 + 1 + 4)
 })
 
 test("the prompt of a task block folds past its lines, and past the characters those lines take", () => {

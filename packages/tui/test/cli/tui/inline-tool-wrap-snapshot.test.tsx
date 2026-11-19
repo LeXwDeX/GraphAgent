@@ -20,47 +20,67 @@ import {
   alwaysSeparate,
   toolDisplay,
 } from "../../../src/routes/session"
+import { ToolRow } from "../../../src/routes/session/tool-row"
+import { ShellContexts, renderFirstFrame, shellState } from "../../shell/contexts"
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
+let state: Awaited<ReturnType<typeof shellState>> | undefined
 
 // The row texts follow the interface language: the helpers below are read in English unless a test says otherwise.
 beforeEach(() => {
   setLanguage("en")
 })
 
-afterEach(() => {
+afterEach(async () => {
   testSetup?.renderer.destroy()
   testSetup = undefined
+  await state?.[Symbol.asyncDispose]()
+  state = undefined
   setLanguage(DEFAULT_LANGUAGE)
 })
 
-type ToolFixture = { icon: string; label: string; error?: string }
+/** The width the rows of the fixtures below are laid out at, which is what `ToolRow` is given as the content width. */
+const WIDTH = 72
 
+type ToolFixture = { name: string; arg: string; result: string; error?: string }
+
+// The calls of one turn, as the rows of the tools draw them: the call, and what came of it under it (#1614).
 const tools: readonly ToolFixture[] = [
   {
-    icon: "✱",
-    label:
-      'Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.*dir|xdg|APPDATA" in packages/graphagent/src (151 matches)',
+    name: "Grep",
+    arg: '"GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.*dir|xdg|APPDATA" in packages/graphagent/src',
+    result: "151 matches",
   },
+  { name: "Glob", arg: '"**/*db*" in packages/graphagent', result: "6 files" },
+  { name: "Read", arg: "packages/graphagent/src/storage/db.ts [offset=1, limit=130]", result: "Read 130 lines" },
   {
-    icon: "✱",
-    label: 'Glob "**/*db*" in packages/graphagent (6 matches)',
-  },
-  {
-    icon: "→",
-    label: "Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]",
-  },
-  {
-    icon: "→",
-    label: "Read packages/graphagent/src/index.ts [offset=1, limit=100]",
+    name: "Read",
+    arg: "packages/graphagent/src/index.ts [offset=1, limit=100]",
+    result: "Failed · No LSP server available for this file type.",
     error: "No LSP server available for this file type.",
   },
   {
-    icon: "✱",
-    label:
-      'Grep "export const GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Global\\.Path\\.data|data =" in packages/graphagent/src (115 matches)',
+    name: "Grep",
+    arg: '"export const GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Global\\.Path\\.data|data =" in packages/graphagent/src',
+    result: "115 matches",
   },
 ] as const
+
+/** One call as the row of a tool draws it; a call that failed opens its error when `errorExpanded` is set. */
+function Call(props: { item: ToolFixture; errorExpanded?: boolean }) {
+  return (
+    <ToolRow
+      state={props.item.error ? "failed" : "done"}
+      name={props.item.name}
+      arg={props.item.arg}
+      result={props.item.result}
+      expanded={props.item.error ? props.errorExpanded : undefined}
+      width={WIDTH}
+    >
+      <text>{props.item.error}</text>
+    </ToolRow>
+  )
+}
 
 function ShellOutput() {
   return (
@@ -92,57 +112,53 @@ function UserMessage() {
 
 function Fixture(props: { errorExpanded?: boolean; before?: "shell" | "user" }) {
   return (
-    <box flexDirection="column" width={72}>
+    <box flexDirection="column" width={WIDTH}>
       <box flexDirection="column">
         {props.before === "shell" && <ShellOutput />}
         {props.before === "user" && <UserMessage />}
-        <For each={tools}>
-          {(item) => (
-            <InlineToolRow
-              icon={item.icon}
-              complete={true}
-              pending=""
-              failed={Boolean(item.error)}
-              error={item.error}
-              errorExpanded={props.errorExpanded}
-            >
-              {item.label}
-            </InlineToolRow>
-          )}
-        </For>
+        <For each={tools}>{(item) => <Call item={item} errorExpanded={props.errorExpanded} />}</For>
       </box>
     </box>
   )
 }
 
+// The Task rows are still the rows of `InlineToolRow` (#1614 PR C draws them as blocks); the calls around them are not.
 function TaskRowsFixture() {
   return (
-    <box flexDirection="column" width={72}>
-      <InlineToolRow icon="✱" complete={true} pending="">
-        Grep "Task" (2 matches)
-      </InlineToolRow>
+    <box flexDirection="column" width={WIDTH}>
+      <ToolRow state="done" name="Grep" arg='"Task"' result="2 matches" width={WIDTH} />
       <InlineToolRow icon="⠙" complete={true} pending="" separate={true}>
         Explore Task — Inspect active task spacing
       </InlineToolRow>
       <InlineToolRow icon="✓" complete={true} pending="" separate={true}>
         {"General Task — Confirm completed task spacing\n↳ 1 toolcall · 501ms"}
       </InlineToolRow>
-      <InlineToolRow icon="→" complete={true} pending="">
-        Read src/cli/cmd/tui/routes/session/index.tsx
-      </InlineToolRow>
+      <ToolRow
+        state="done"
+        name="Read"
+        arg="src/cli/cmd/tui/routes/session/index.tsx"
+        result="Read 40 lines"
+        width={WIDTH}
+      />
     </box>
   )
 }
 
 function LoadedReadBeforeTaskFixture() {
   return (
-    <box flexDirection="column" width={72}>
-      <InlineToolRow icon="→" complete={true} pending="">
-        Read src/cli/cmd/tui/routes/session/index.tsx
-      </InlineToolRow>
-      <box paddingLeft={3}>
-        <text paddingLeft={3}>↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx</text>
-      </box>
+    <box flexDirection="column" width={WIDTH}>
+      <ToolRow
+        state="done"
+        name="Read"
+        arg="src/cli/cmd/tui/routes/session/index.tsx"
+        result={
+          <box>
+            <text>Read 40 lines</text>
+            <text>↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx</text>
+          </box>
+        }
+        width={WIDTH}
+      />
       <InlineToolRow icon="✓" complete={true} pending="" separate={true}>
         {"Explore Task — Inspect active task spacing\n↳ 1 toolcall · 501ms"}
       </InlineToolRow>
@@ -196,9 +212,13 @@ function StickyScrollFixture(props: { separated: boolean; scroll: (scroll: Scrol
           <text>Assistant text</text>
         </box>
       </Show>
-      <InlineToolRow icon="→" complete={true} pending="">
-        Read src/cli/cmd/tui/routes/session/index.tsx
-      </InlineToolRow>
+      <ToolRow
+        state="done"
+        name="Read"
+        arg="src/cli/cmd/tui/routes/session/index.tsx"
+        result="Read 40 lines"
+        width={72}
+      />
     </scrollbox>
   )
 }
@@ -213,18 +233,26 @@ function FailedPendingToolFixture() {
 
 function FailedCompleteToolFixture() {
   return (
-    <InlineToolRow icon="→" complete={true} pending="Reading file..." failed={true} failure="Read failed">
-      Read src/index.ts
+    <InlineToolRow icon="│" complete={true} pending="Delegating..." failed={true} failure="Task failed">
+      Explore Task — Inspect renderer
     </InlineToolRow>
   )
 }
 
-async function renderFrame(component: () => JSX.Element, options: { width: number; height: number }) {
-  testSetup = await testRender(component, options)
-  await testSetup.renderOnce()
-  await testSetup.renderOnce()
-
+/** The fixture in the provider stack of the shell, which the theme and the settings of a row come from. */
+async function mountInStack(component: () => JSX.Element, options: { width: number; height: number }) {
+  state = await shellState()
+  testSetup = await testRender(() => <ShellContexts state={state!.path}>{component()}</ShellContexts>, options)
+  await renderFirstFrame(testSetup)
   return testSetup
+}
+
+async function renderFrame(component: () => JSX.Element, options: { width: number; height: number }) {
+  const app = await mountInStack(component, options)
+  await app.renderOnce()
+  await app.renderOnce()
+
+  return app
     .captureCharFrame()
     .split("\n")
     .map((line) => line.trimEnd())
@@ -246,8 +274,8 @@ describe("TUI inline tool wrapping", () => {
 
   test("preserves useful completed copy when a tool fails", async () => {
     const frame = await renderFrame(() => <FailedCompleteToolFixture />, { width: 72, height: 3 })
-    expect(frame).toContain("Read src/index.ts")
-    expect(frame).not.toContain("Read failed")
+    expect(frame).toContain("Explore Task — Inspect renderer")
+    expect(frame).not.toContain("Task failed")
   })
 
   test("filters malformed nested tool wire data", () => {
@@ -364,26 +392,30 @@ describe("TUI inline tool wrapping", () => {
   })
 
   test("snapshots consecutive grep, glob, and read rows at a narrow width", async () => {
-    expect(await renderFrame(() => <Fixture />, { width: 72, height: 12 })).toMatchSnapshot()
+    const frame = await renderFrame(() => <Fixture />, { width: 72, height: 18 })
+    expect(frame).toMatchSnapshot()
+    // A call is one row for its line and one for its result, cut at the width and not wrapped, and a blank row between.
+    expect(frame.split("\n").every((row) => row.length <= 72)).toBe(true)
+    expect(frame.split("\n").filter((row) => row.includes("⏺"))).toHaveLength(tools.length)
   })
 
   test("snapshots expanded tool errors under the tool text", async () => {
-    expect(await renderFrame(() => <Fixture errorExpanded />, { width: 72, height: 12 })).toMatchSnapshot()
+    expect(await renderFrame(() => <Fixture errorExpanded />, { width: 72, height: 20 })).toMatchSnapshot()
   })
 
   test("keeps separation after a shell output block", async () => {
-    expect(await renderFrame(() => <Fixture before="shell" />, { width: 72, height: 16 })).toMatchSnapshot()
+    expect(await renderFrame(() => <Fixture before="shell" />, { width: 72, height: 22 })).toMatchSnapshot()
   })
 
   test("keeps separation after a padded user message", async () => {
-    expect(await renderFrame(() => <Fixture before="user" />, { width: 72, height: 14 })).toMatchSnapshot()
+    expect(await renderFrame(() => <Fixture before="user" />, { width: 72, height: 20 })).toMatchSnapshot()
   })
 
   test("separates after a multi-line task row", async () => {
-    expect(await renderFrame(() => <TaskRowsFixture />, { width: 72, height: 10 })).toMatchSnapshot()
+    expect(await renderFrame(() => <TaskRowsFixture />, { width: 72, height: 12 })).toMatchSnapshot()
   })
 
-  test("separates a task row from a preceding inline detail", async () => {
+  test("separates a task row from a preceding tool row with a loaded file", async () => {
     expect(await renderFrame(() => <LoadedReadBeforeTaskFixture />, { width: 72, height: 8 })).toMatchSnapshot()
   })
 
@@ -398,26 +430,25 @@ describe("TUI inline tool wrapping", () => {
   test("updates sticky-bottom geometry when a text separator mounts and unmounts", async () => {
     const [separated, setSeparated] = createSignal(false)
     let scroll: ScrollBoxRenderable | undefined
-    testSetup = await testRender(
-      () => <StickyScrollFixture separated={separated()} scroll={(value) => (scroll = value)} />,
-      {
-        width: 72,
-        height: 3,
-      },
-    )
+    await mountInStack(() => <StickyScrollFixture separated={separated()} scroll={(value) => (scroll = value)} />, {
+      width: 72,
+      height: 3,
+    })
 
-    await testSetup.renderOnce()
-    expect(scroll?.scrollHeight).toBe(3)
+    // Two rows of one line, and a call of two: four lines.
+    await testSetup!.renderOnce()
+    expect(scroll?.scrollHeight).toBe(4)
     expect(scroll?.scrollTop).toBe(Math.max(0, scroll!.scrollHeight - scroll!.viewport.height))
 
+    // The text that mounts before the call gets a blank line between: six.
     setSeparated(true)
-    await testSetup.renderOnce()
-    expect(scroll?.scrollHeight).toBe(5)
+    await testSetup!.renderOnce()
+    expect(scroll?.scrollHeight).toBe(6)
     expect(scroll?.scrollTop).toBe(Math.max(0, scroll!.scrollHeight - scroll!.viewport.height))
 
     setSeparated(false)
-    await testSetup.renderOnce()
-    expect(scroll?.scrollHeight).toBe(3)
+    await testSetup!.renderOnce()
+    expect(scroll?.scrollHeight).toBe(4)
     expect(scroll?.scrollTop).toBe(Math.max(0, scroll!.scrollHeight - scroll!.viewport.height))
   })
 })

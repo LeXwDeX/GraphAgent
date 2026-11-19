@@ -1,5 +1,11 @@
 import type { BaseRenderable, BoxRenderable } from "@opentui/core"
 
+/**
+ * Boxes that the row after them always keeps a blank line from, whatever height they have when the margin is taken: the
+ * margin of `setPreLayoutSiblingMargin` is read before the layout, when a box that has just mounted has no height yet.
+ */
+export const alwaysSeparate = new WeakSet<BoxRenderable>()
+
 const previousByParent = new WeakMap<
   BaseRenderable,
   { frameID: number; previous: WeakMap<BaseRenderable, BaseRenderable | undefined> }

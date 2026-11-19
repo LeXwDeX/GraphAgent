@@ -103,7 +103,11 @@ describe("estimateRowHeight", () => {
 
   test("collapses expandable rows until expanded", () => {
     expect(estimateRowHeight(row("a", "tool"), 40, 0)).toBe(2)
-    expect(estimateRowHeight(row("a", "tool"), 40, 10, true)).toBe(4)
+    // Open, a tool row draws its whole output under the call and the line under it, and the hint that closes it under
+    // that. The row table gives `chars` as the number of lines of that output, whatever their width.
+    expect(estimateRowHeight(row("a", "tool"), 40, 10, true)).toBe(10 + 3)
+    expect(estimateRowHeight(row("a", "tool"), 40, 1000, true)).toBe(1000 + 3)
+    expect(estimateRowHeight(row("a", "tool"), 40, 0, true)).toBe(1 + 3)
     expect(estimateRowHeight(row("a", "reasoning"), 40, 39)).toBe(2)
   })
 

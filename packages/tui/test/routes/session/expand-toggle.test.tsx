@@ -11,13 +11,17 @@ import { readFrame, readSpans } from "../dag-mode-harness"
 
 /**
  * `view.expand.toggle` (ctrl+o, #886 4.4) in the real session route. The transcript is the perf fixture cut down
- * to the parts a case needs: part 1 is plain text, part 5 a bash call with a 30 line output (ten lines show, and a
- * hint under them names the key), part 6 a read call, part 8 reasoning, which the default thinking mode folds to
- * one header.
+ * to the parts a case needs: part 1 is plain text, part 5 a bash call with a 30 line output (its last line shows
+ * under the call, and a hint under that names the key), part 6 a read call, part 8 reasoning, which the default
+ * thinking mode folds to one header.
  */
 
 const PART = (index: number) => `prt_ses_perf_main_${index}`
-const BEYOND_THE_CAP = "output line 29"
+/**
+ * A line the folded row does not show, since it keeps the last of the thirty, `output line 29`; and one the open row
+ * shows, since the transcript follows its tail and the viewport holds the last lines of it.
+ */
+const BEYOND_THE_CAP = "output line 25"
 /** The hint under an output that folds, and under one that is open: they name `view.expand.toggle`, ctrl+o. */
 const FOLDED = "more lines · ctrl+o expand"
 const OPEN = "ctrl+o collapse"
@@ -163,8 +167,10 @@ test("with thinking shown the reasoning has nothing to fold and the key goes to 
   }
 }, 60_000)
 
-test("the error of a failed tool call is a block the key opens", async () => {
-  const error = "boom: the read was refused by the test"
+test("the error of a failed tool call folds under the line that says it failed, and the key opens it", async () => {
+  // The row says the first line of the error; the rest is what the key opens.
+  const first = "boom: the read was refused"
+  const error = `${first}\nthe test says why, on a line of its own`
   const harness = await mountHarness(
     transcript([1, 6], (fixture) => {
       const read = fixture.parts.find((part): part is Extract<Part, { type: "tool" }> => part.id === PART(6))!
@@ -178,13 +184,14 @@ test("the error of a failed tool call is a block the key opens", async () => {
   )
   try {
     const before = await until(harness, holds("missing.ts"), "held the failed call")
-    expect(before).not.toContain(error)
+    expect(before).toContain(first)
+    expect(before).not.toContain("on a line of its own")
 
     pressExpand(harness)
-    await until(harness, holds(error), "opened the error")
+    await until(harness, holds("on a line of its own"), "opened the error")
 
     pressExpand(harness)
-    await until(harness, lacks(error), "closed the error")
+    await until(harness, lacks("on a line of its own"), "closed the error")
   } finally {
     await harness.dispose()
   }
@@ -240,7 +247,7 @@ test("a reasoning that has only a title has nothing to open, so the key goes pas
   }
 }, 60_000)
 
-test("a failed bash call that printed output is a block: the key opens its output, not an error", async () => {
+test("a failed bash call is one line whatever it printed: the key opens its error, and under it what it printed", async () => {
   const harness = await mountHarness(
     transcript([1, 5], (fixture) => {
       toolPart(fixture, 5).state = {
@@ -253,13 +260,19 @@ test("a failed bash call that printed output is a block: the key opens its outpu
     }),
   )
   try {
-    const before = await until(harness, holds(FOLDED), "held the folded output")
-    expect(before).toContain("Tool execution aborted")
+    const before = await until(harness, holds("Tool execution aborted"), "held the failed call")
     expect(before).not.toContain(BEYOND_THE_CAP)
+    // The row of a call that failed has an error to open, not an output to fold: no hint counts lines.
+    expect(before).not.toContain(FOLDED)
 
     pressExpand(harness)
-    const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
-    expect(opened).toContain(OPEN)
+    // The error stands under the call, above the thirty lines the command printed, which the viewport holds the end of.
+    const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the error")
+    expect(opened).not.toContain(OPEN)
+
+    pressExpand(harness)
+    const closed = await until(harness, lacks(BEYOND_THE_CAP), "closed the error")
+    expect(closed).toContain("Tool execution aborted")
   } finally {
     await harness.dispose()
   }
