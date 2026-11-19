@@ -25,10 +25,14 @@
  * background review whose model is a local stub, so its findings are fixed
  * text and cost nothing; the runtime's own result delivery then injects them
  * into the session and starts the main agent's turn, which is what is judged.
+ *
+ * The model matrix (`test/live/model-matrix`, Issue #1474) reuses the host, the HTTP client, the git and
+ * session helpers and the transcript reader from here; what it adds lives in its own directory.
  */
 
 import { ChildNotice } from "@/session/child/notice"
 import { ConfigVariable } from "@graphagent/core/config/variable"
+import { TOOL_OUTCOME_KINDS, type ToolOutcomeKind } from "@graphagent/core/session/outcome"
 import { parse as parseJsonc } from "jsonc-parser"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -60,7 +64,7 @@ const HOST_READY_MS = 60_000
  * The denial is therefore restated after it: nothing outside the workspace is reachable apart from the
  * runtime's truncated tool output in the temporary home.
  */
-function sessionPermission(home: string) {
+export function sessionPermission(home: string) {
   return [
     { permission: "*", pattern: "*", action: "allow" },
     { permission: "external_directory", pattern: "*", action: "deny" },
@@ -251,7 +255,7 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 
 export interface HostSetup {
   readonly origin: OriginConfig
-  readonly model: ModelRef
+  readonly model: Pick<ModelRef, "providerID" | "modelID">
   readonly stubURL: string
   readonly stepCap: number
   /** The host's temporary home: the only place outside the workspace the model may read (truncated tool output). */
@@ -347,15 +351,22 @@ export function hostEnv(input: {
   }
 }
 
-async function seedHome(home: string, auditFile: string): Promise<void> {
+/**
+ * The host's home: a quiet user config and, with an `auditFile`, the PreToolUse hook that stops a scenario at its
+ * first decisive call. Without one no `hooks.json` is written, so every tool call runs (the model matrix, which
+ * wants the tools to answer).
+ */
+export async function seedHome(home: string, auditFile?: string): Promise<void> {
   const config = path.join(home, ".config", "graphagent")
   await fs.mkdir(config, { recursive: true })
   await fs.mkdir(path.join(home, "tmp"), { recursive: true })
-  const command = `${shellQuote(process.execPath)} ${shellQuote(HOOK_ENTRY)} ${shellQuote(auditFile)}`
-  await fs.writeFile(
-    path.join(config, "hooks.json"),
-    JSON.stringify({ PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command }] }] }),
-  )
+  if (auditFile !== undefined) {
+    const command = `${shellQuote(process.execPath)} ${shellQuote(HOOK_ENTRY)} ${shellQuote(auditFile)}`
+    await fs.writeFile(
+      path.join(config, "hooks.json"),
+      JSON.stringify({ PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command }] }] }),
+    )
+  }
   // A valid, disabled memory config: without one the runtime would enable memory with the conversation model.
   await fs.writeFile(
     path.join(config, "memory.jsonc"),
@@ -446,9 +457,9 @@ export function client(host: Host, directory: string) {
 // Workspace: the fixture as a small git history plus the scenario's edits
 // ---------------------------------------------------------------------------
 
-type Git = (args: readonly string[], cwd: string, date?: string) => Promise<void>
+export type Git = (args: readonly string[], cwd: string, date?: string) => Promise<void>
 
-function gitRunner(home: string): Git {
+export function gitRunner(home: string): Git {
   return async (args, cwd, date) => {
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? "",
@@ -567,6 +578,12 @@ export interface PartView {
   readonly callID?: string
   readonly input?: Readonly<Record<string, unknown>>
   readonly status?: string
+  /** A completed tool call's `state.output`, kept to {@link clipToolText}. */
+  readonly output?: string
+  /** A failed tool call's `state.error`, kept to {@link clipToolText}. */
+  readonly error?: string
+  /** A finished tool call's outcome (#1473): see {@link outcomeOf}. */
+  readonly outcome?: ToolOutcomeKind
 }
 
 export interface MessageView {
@@ -575,6 +592,32 @@ export interface MessageView {
   readonly parts: readonly PartView[]
   readonly error?: string
   readonly completed: boolean
+  /** Token counts of the message (zero for a user message). */
+  readonly tokens: { readonly input: number; readonly output: number; readonly reasoning: number }
+}
+
+/** Characters of a tool result kept from each end: the first and the last of what the model saw. */
+export const TOOL_TEXT_CAP = 4000
+
+/**
+ * A tool result for the record. Up to twice the cap it is kept whole; a longer one keeps its first and its last
+ * `TOOL_TEXT_CAP` characters, because the end of a result is where a list ends and where the truncation notice,
+ * the saved-file path and the receipt lines sit.
+ */
+export function clipToolText(value: string): string {
+  if (value.length <= 2 * TOOL_TEXT_CAP) return value
+  const omitted = value.length - 2 * TOOL_TEXT_CAP
+  return `${value.slice(0, TOOL_TEXT_CAP)}\n[... ${omitted} characters omitted ...]\n${value.slice(-TOOL_TEXT_CAP)}`
+}
+
+/**
+ * The outcome #1473 records for a finished call: an `error` state reads `metadata.outcome` (a missing or unknown
+ * value is `execution_error`), a completed call is `denied` when a hook denied it and `ok` otherwise.
+ */
+export function outcomeOf(status: string, metadata: Readonly<Record<string, unknown>>): ToolOutcomeKind | undefined {
+  if (status === "completed") return metadata.hookDenied === true ? "denied" : "ok"
+  if (status !== "error") return undefined
+  return TOOL_OUTCOME_KINDS.find((kind) => kind === metadata.outcome) ?? "execution_error"
 }
 
 function partView(value: unknown): PartView {
@@ -592,15 +635,27 @@ function partView(value: unknown): PartView {
   if (type === "reasoning") return { type, text: text(value.text) ?? "" }
   if (type === "tool") {
     const state = isRecord(value.state) ? value.state : {}
+    const status = text(state.status) ?? ""
+    const outcome = outcomeOf(status, isRecord(state.metadata) ? state.metadata : {})
     return {
       type,
       tool: text(value.tool) ?? "",
       ...(text(value.callID) ? { callID: text(value.callID) } : {}),
       input: isRecord(state.input) ? state.input : {},
-      status: text(state.status) ?? "",
+      status,
+      ...(status === "completed" ? { output: clipToolText(text(state.output) ?? "") } : {}),
+      ...(status === "error" ? { error: clipToolText(text(state.error) ?? "") } : {}),
+      ...(outcome ? { outcome } : {}),
     }
   }
   return { type }
+}
+
+const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0)
+
+function tokensOf(info: Record<string, unknown>): MessageView["tokens"] {
+  const tokens = isRecord(info.tokens) ? info.tokens : {}
+  return { input: count(tokens.input), output: count(tokens.output), reasoning: count(tokens.reasoning) }
 }
 
 export function readMessages(json: unknown): MessageView[] {
@@ -617,6 +672,7 @@ export function readMessages(json: unknown): MessageView[] {
         parts: Array.isArray(item.parts) ? item.parts.map(partView) : [],
         ...(failure && name !== "MessageAbortedError" ? { error: `${name ?? "error"}: ${detail ?? ""}` } : {}),
         completed: isRecord(item.info.time) && typeof item.info.time.completed === "number",
+        tokens: tokensOf(item.info),
       },
     ]
   })
@@ -701,7 +757,7 @@ function scrubber(places: RunContext["places"]): (value: string) => string {
   return (value) => longestFirst.reduce((current, [place, label]) => current.replaceAll(place, label), value)
 }
 
-async function until<T>(label: string, timeoutMs: number, probe: () => Promise<T | undefined>): Promise<T> {
+export async function until<T>(label: string, timeoutMs: number, probe: () => Promise<T | undefined>): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await probe()
@@ -715,7 +771,7 @@ async function within(label: string, timeoutMs: number, promise: Promise<void>):
   await Promise.race([promise, wait(timeoutMs).then(() => Promise.reject(new Error(`timed out waiting for ${label}`)))])
 }
 
-async function settle(api: ReturnType<typeof client>, sessionID: string, timeoutMs: number): Promise<void> {
+export async function settle(api: ReturnType<typeof client>, sessionID: string, timeoutMs: number): Promise<void> {
   let quiet = 0
   await until("the session to go idle", timeoutMs, async () => {
     const status = await api("/session/status")
@@ -865,7 +921,7 @@ export async function runScenario(ctx: RunContext, scenario: Scenario): Promise<
 // Rounds and the whole evaluation
 // ---------------------------------------------------------------------------
 
-async function pool<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+export async function pool<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = []
   let next = 0
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -925,13 +981,32 @@ export function optionsFromEnv(env: Record<string, string | undefined>): EvalOpt
   }
 }
 
-function redactor(secretNames: readonly string[]): (value: string) => string {
+export function redactor(secretNames: readonly string[]): (value: string) => string {
   const secrets = secretNames
     .map((name) => process.env[name])
     .filter((value): value is string => !!value && value.length >= 4)
   return (value) => {
     const cleaned = secrets.reduce((current, secret) => current.replaceAll(secret, "<redacted>"), value)
     return cleaned.replace(/https?:\/\/(?!127\.0\.0\.1)[^\s"')]+/g, "<url>")
+  }
+}
+
+/**
+ * What a host needs to reach a model's provider: the variables the provider block names with `{env:NAME}`, taken
+ * from this process, and a function that scrubs their values (and every foreign URL) from a text. An unset
+ * variable is an error: a provider call with an empty key would fail in a way that looks like the model's.
+ */
+export function providerEnv(
+  origin: OriginConfig,
+  model: Pick<ModelRef, "providerID">,
+): { readonly passthrough: Record<string, string>; readonly redact: (value: string) => string } {
+  const names = referencedEnv(origin.providers[model.providerID])
+  const missing = names.filter((name) => !process.env[name])
+  if (missing.length > 0)
+    throw new Error(`the provider block refers to unset environment variables: ${missing.join(", ")}`)
+  return {
+    passthrough: Object.fromEntries(names.map((name) => [name, process.env[name] ?? ""])),
+    redact: redactor(names),
   }
 }
 
@@ -945,10 +1020,7 @@ async function runRound(input: {
   readonly onRecord: (record: RunRecord) => void
 }): Promise<RunRecord[]> {
   const { options, origin, model } = input
-  const names = referencedEnv(origin.providers[model.providerID])
-  const missing = names.filter((name) => !process.env[name])
-  if (missing.length > 0)
-    throw new Error(`the provider block refers to unset environment variables: ${missing.join(", ")}`)
+  const { passthrough, redact } = providerEnv(origin, model)
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "gaeval-"))
   const home = path.join(root, "home")
   const work = path.join(root, "work")
@@ -963,8 +1035,6 @@ async function runRound(input: {
   let host: Host | undefined
   try {
     const config = hostConfig({ origin, model, stubURL: stub.baseURL, stepCap: options.stepCap, home })
-    const passthrough = Object.fromEntries(names.map((name) => [name, process.env[name] ?? ""]))
-    const redact = redactor(names)
     host = await startHost({ env: hostEnv({ home, config, passthrough }), cwd: home }).catch((error: unknown) => {
       throw new Error(redact(error instanceof Error ? error.message : "the evaluation host failed to start"))
     })
