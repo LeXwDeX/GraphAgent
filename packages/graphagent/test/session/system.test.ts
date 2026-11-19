@@ -171,6 +171,34 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("skills output leaves out the skills of tools only a root session has for a child session (#1457)", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      availableSkills = [
+        ...skills,
+        { name: "dag-policy", description: "Policy.", location: "/builtin/dag-policy/SKILL.md", content: "# policy" },
+        { name: "dag-auto", description: "Auto.", location: "/builtin/dag-auto/SKILL.md", content: "# auto" },
+      ]
+      try {
+        // The child's list comes first, so a cached text of the root's list would show as the same text.
+        const child = (yield* prompt.skills(build, undefined, undefined, { root: false })) ?? ""
+        const root = (yield* prompt.skills(build, undefined, undefined, { root: true })) ?? ""
+        const unspecified = (yield* prompt.skills(build)) ?? ""
+
+        expect(child).toContain("- alpha-skill: Alpha skill.")
+        expect(child).not.toContain("dag-policy")
+        expect(child).not.toContain("dag-auto")
+        expect(root).toContain("- dag-policy: Policy.")
+        expect(root).toContain("- dag-auto: Auto.")
+        expect(root).toContain("- alpha-skill: Alpha skill.")
+        expect(unspecified).toBe(root)
+        expect(child).not.toBe(root)
+      } finally {
+        availableSkills = skills
+      }
+    }),
+  )
+
   it.effect("skills output follows a changed available list", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service

@@ -7,12 +7,15 @@ import { logLines } from "effect/testing/TestConsole"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { DEFAULT_WRITING_STYLE } from "@graphagent/core/system-context/writing-style"
+import type { Agent } from "../../src/agent/agent"
+import { LoopAgent } from "../../src/loop/agent"
 import { SessionID } from "../../src/session/schema"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Provider } from "../../src/provider/provider"
 import { isInternalOneShot } from "../../src/session/llm/internal-one-shot"
-import { prepare } from "../../src/session/llm/request"
+import { isInternalAgent, prepare } from "../../src/session/llm/request"
 import type { ProviderAdapters } from "../../src/provider/adapter/registry"
 import type { ChatInput, ChatParams } from "../../src/provider/adapter/types"
 import { testEffect } from "../lib/effect"
@@ -25,6 +28,23 @@ const PROMPT_IDENTITY = "You are GraphAgent, a coding agent working in the user'
 const REMOVED_CATALOG = "## GraphAgent / OpenCode capabilities"
 
 const it = testEffect(Layer.mergeAll(RuntimeFlags.layer()))
+
+const agentOf = (agent: Partial<Agent.Info> & { readonly name: string }): Agent.Info => ({
+  mode: "primary",
+  permission: [],
+  options: {},
+  ...agent,
+})
+
+// The agents the application runs for itself, shaped like their definitions: compaction, title and summary are
+// built in and hidden, `btw` is built in, and the loop's analysis agent is the real constant.
+const internalAgents: readonly Agent.Info[] = [
+  agentOf({ name: "compaction", native: true, hidden: true }),
+  agentOf({ name: "title", native: true, hidden: true }),
+  agentOf({ name: "summary", native: true, hidden: true }),
+  agentOf({ name: "btw", native: true }),
+  LoopAgent.AGENT,
+]
 
 const itOutputOverride = testEffect(Layer.mergeAll(RuntimeFlags.layer({ outputTokenMax: 64_000 })))
 
@@ -200,7 +220,10 @@ describe("runtime capabilities in model requests", () => {
         user: { ...input.user, system: "User instructions." },
       })
       const system = prepared.system.join("\n")
-      expect(system).toStartWith("Custom agent instructions.")
+      // The agent's prompt follows the Safety section (#1457).
+      expect(system).toStartWith(GraphAgentPrompt.baseline())
+      expect(system).toContain("Custom agent instructions.")
+      expect(system.indexOf("Custom agent instructions.")).toBeGreaterThan(system.indexOf("# Safety"))
       expect(system).not.toContain(REMOVED_CATALOG)
       expect(system.split(DEFAULT_WRITING_STYLE)).toHaveLength(2)
       expect(system).toContain("## Active Hooks")
@@ -208,6 +231,71 @@ describe("runtime capabilities in model requests", () => {
       expect(system.indexOf(DEFAULT_WRITING_STYLE)).toBeLessThan(system.indexOf("User instructions."))
     }),
   )
+
+  it.instance(
+    "an agent with its own prompt keeps the Safety section unless the application runs it for itself (#1457)",
+    () =>
+      Effect.gen(function* () {
+        const input = yield* request()
+        const systemOf = (agent: Agent.Info) =>
+          prepare({ ...input, agent: { ...agent, prompt: "Own instructions." } }).pipe(
+            Effect.map((prepared) => prepared.system.join("\n")),
+          )
+        for (const agent of [
+          agentOf({ name: "explore", native: true }),
+          agentOf({ name: "auditor", mode: "subagent", native: true }),
+          agentOf({ name: "custom" }),
+        ]) {
+          const system = yield* systemOf(agent)
+          expect(system).toBe(`${GraphAgentPrompt.baseline()}\nOwn instructions.\n${DEFAULT_WRITING_STYLE}`)
+          expect(system.split("# Safety")).toHaveLength(2)
+          expect(system).toContain("source=")
+        }
+        for (const agent of internalAgents) {
+          const system = yield* systemOf(agent)
+          expect(system).toBe(`Own instructions.\n${DEFAULT_WRITING_STYLE}`)
+          expect(system).not.toContain("# Safety")
+        }
+      }),
+  )
+
+  it.instance("the system text is the same for a root and a child session (#1457)", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      for (const agent of [input.agent, { ...input.agent, prompt: "Own instructions." }]) {
+        const root = yield* prepare({ ...input, agent })
+        const child = yield* prepare({ ...input, agent, parentSessionID: "ses_parent" })
+        expect(child.system).toEqual(root.system)
+        expect(child.messages[0]).toEqual(root.messages[0])
+      }
+    }),
+  )
+
+  for (const [language, styled] of [
+    ["zh-CN", false],
+    ["en", true],
+  ] as const) {
+    it.instance(`the writing style is added for replies in English only: ${language} (#1457)`, () =>
+      Effect.gen(function* () {
+        const input = yield* request("openai", "gpt-5", "@ai-sdk/openai")
+        const count = (text: unknown) => String(text).split(DEFAULT_WRITING_STYLE).length - 1
+        const expected = styled ? 1 : 0
+        for (const agent of [input.agent, { ...input.agent, prompt: "Own instructions." }]) {
+          const prepared = yield* prepare({ ...input, agent, cfg: { language } })
+          expect(count(prepared.system.join("\n"))).toBe(expected)
+          expect(count((prepared.messages[0] as { content?: unknown }).content)).toBe(expected)
+          const oauth = yield* prepare({
+            ...input,
+            agent,
+            cfg: { language },
+            auth: { type: "oauth", access: "synthetic", refresh: "synthetic", expires: 0 },
+          })
+          expect(count(oauth.params.options.instructions)).toBe(expected)
+          expect(oauth.params.options.instructions).toBe(prepared.system.join("\n"))
+        }
+      }),
+    )
+  }
 
   it.instance("child sessions keep the shared prompt and writing style without the removed catalog", () =>
     Effect.gen(function* () {
@@ -541,6 +629,24 @@ describe("internal one-shot agents", () => {
       expect(isInternalOneShot("loop-steer")).toBe(true)
       expect(isInternalOneShot("build")).toBe(false)
       expect(isInternalOneShot("plan")).toBe(false)
+    }),
+  )
+})
+
+describe("internal agents (#1457)", () => {
+  it.instance("tells the agents the application runs for itself from the rest", () =>
+    Effect.sync(() => {
+      for (const agent of internalAgents) expect(isInternalAgent(agent)).toBe(true)
+      for (const agent of [
+        agentOf({ name: "explore", native: true, prompt: "Explore." }),
+        agentOf({ name: "build", native: true }),
+        agentOf({ name: "custom", prompt: "Custom." }),
+        // `hidden` alone does not make a user's agent internal, and neither does the name of an internal one-shot.
+        agentOf({ name: "ghost", hidden: true }),
+        agentOf({ name: "title" }),
+      ]) {
+        expect(isInternalAgent(agent)).toBe(false)
+      }
     }),
   )
 })

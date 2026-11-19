@@ -24,3 +24,11 @@ export function editingInstruction(tools: readonly string[]) {
 export function render(tools: readonly string[]) {
   return PROMPT.replace("${editingInstruction}", () => editingInstruction(tools))
 }
+
+/**
+ * The `# Safety` section of that prompt, whole: the rules for the user's work and secrets, and for the text the
+ * application inserts. An agent that brings its own prompt keeps these rules through this text (#1457).
+ */
+export function baseline(): string {
+  return PROMPT.slice(PROMPT.indexOf("# Safety\n"))
+}

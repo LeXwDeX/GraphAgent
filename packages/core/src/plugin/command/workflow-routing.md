@@ -1,13 +1,5 @@
 # Orchestration Router
 
-Whether orchestration is the default follows DAG mode, which the latest
-`dag_mode` runtime-context block reports. When it is ON, substantive requests
-default to workflows; when it is OFF, start one only when the user explicitly
-asks, in a message or with /dag-auto. A direct-work or workflow instruction in
-the current message applies only to that request. The parent owns execution
-choices and workflow controls. Children stay within their assigned scope and do
-not start nested workflows.
-
 ## Execution mode
 
 {{delegation_criteria}}

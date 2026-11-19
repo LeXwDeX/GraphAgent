@@ -11,6 +11,7 @@ import { contextWindow, DEFAULT_CONTEXT_WINDOW } from "@graphagent/core/model-pr
 import { ProjectV2 } from "@graphagent/core/project"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { Injection } from "@graphagent/core/system-context/injection"
 import { DEFAULT_WRITING_STYLE } from "@graphagent/core/system-context/writing-style"
 import { Hash } from "@graphagent/core/util/hash"
@@ -753,10 +754,18 @@ describe("LLMRequestPrep.baseSystem and requestSystem", () => {
   })
 
   test("baseSystem is the agent prompt, or the provider prompt for the tools in use, then the writing style", () => {
-    expect(LLMRequestPrep.baseSystem(request({ agent: { ...streamInput().agent, prompt: "Custom agent." } }))).toEqual([
+    // An agent with a prompt of its own keeps the Safety section in front of it (#1457) ...
+    const custom = request({ agent: { ...streamInput().agent, prompt: "Custom agent." } })
+    expect(LLMRequestPrep.baseSystem(custom)).toEqual([
+      GraphAgentPrompt.baseline(),
       "Custom agent.",
       DEFAULT_WRITING_STYLE,
     ])
+    // ... unless the application runs it for itself, and the writing style is left out on request.
+    const internal = request({ agent: { ...streamInput().agent, native: true, hidden: true, prompt: "Custom agent." } })
+    expect(LLMRequestPrep.baseSystem(internal)).toEqual(["Custom agent.", DEFAULT_WRITING_STYLE])
+    expect(LLMRequestPrep.baseSystem(custom, false)).toEqual([GraphAgentPrompt.baseline(), "Custom agent."])
+    expect(LLMRequestPrep.baseSystem(internal, false)).toEqual(["Custom agent."])
     expect(LLMRequestPrep.baseSystem(request({ tools: { edit: readTool, write: readTool } }))).toEqual([
       ...SystemPrompt.provider(["edit", "write"]),
       DEFAULT_WRITING_STYLE,
@@ -767,6 +776,7 @@ describe("LLMRequestPrep.baseSystem and requestSystem", () => {
       permission: [{ permission: "edit", pattern: "*", action: "deny" }],
     })
     expect(LLMRequestPrep.baseSystem(denied)).toEqual([...SystemPrompt.provider([]), DEFAULT_WRITING_STYLE])
+    expect(LLMRequestPrep.baseSystem(denied, false)).toEqual(SystemPrompt.provider([]))
   })
 
   test("requestSystem appends the system texts and the per-message system text, and drops empty ones", () => {
@@ -778,10 +788,23 @@ describe("LLMRequestPrep.baseSystem and requestSystem", () => {
         user: { ...base.user, system: "User instructions." },
       }),
     )
-    expect(system).toEqual(["Custom agent.", DEFAULT_WRITING_STYLE, "first", "second", "User instructions."])
+    expect(system).toEqual([
+      GraphAgentPrompt.baseline(),
+      "Custom agent.",
+      DEFAULT_WRITING_STYLE,
+      "first",
+      "second",
+      "User instructions.",
+    ])
     expect(
       LLMRequestPrep.requestSystem(request({ agent: { ...base.agent, prompt: "Custom agent." }, system: [] })),
-    ).toEqual(["Custom agent.", DEFAULT_WRITING_STYLE])
+    ).toEqual([GraphAgentPrompt.baseline(), "Custom agent.", DEFAULT_WRITING_STYLE])
+    expect(
+      LLMRequestPrep.requestSystem(
+        request({ agent: { ...base.agent, prompt: "Custom agent." }, system: ["first"] }),
+        false,
+      ),
+    ).toEqual([GraphAgentPrompt.baseline(), "Custom agent.", "first"])
   })
 
   test("prepare sends exactly the joined requestSystem", () =>

@@ -2,6 +2,7 @@ import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
 import { Instruction } from "./instruction"
+import { CompactionFacts } from "./compaction-facts"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
@@ -36,7 +37,8 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { buildPrompt } from "@graphagent/core/session/compaction-prompt"
 import { SessionCompactionEvent } from "@graphagent/schema/session-compaction-event"
-import { SettingsHook, isHookRewake, type TriggerResult } from "@/hook"
+import { Injection } from "@graphagent/core/system-context/injection"
+import { SettingsHook, type TriggerResult } from "@/hook"
 import { hookBlock } from "@/hook/trigger-result"
 import { HookStartContext } from "@/hook/start-context"
 import { Memory } from "@/memory/memory"
@@ -130,83 +132,51 @@ function summaryText(message: SessionV1.WithParts) {
   return text || undefined
 }
 
-// Reads the compacted summary's pending-work sections. Only bullets under the exact
-// headings count; a heading or a "(none)" placeholder ends the section.
-function summaryItems(summary: string | undefined, heading: string) {
-  if (!summary) return []
-  const lines = summary.split("\n")
-  const start = lines.findIndex((line) => line.trim() === heading)
-  if (start < 0) return []
-  const items: string[] = []
-  for (const line of lines.slice(start + 1)) {
-    const text = line.trim()
-    if (!text) continue
-    if (text.startsWith("#")) break
-    if (!text.startsWith("- ")) continue
-    const item = text.slice(2).trim()
-    if (!item || item === "(none)") continue
-    items.push(item)
-  }
-  return items
-}
-
 const ACTIVE_WORKFLOW_STATUSES = new Set(["pending", "running", "paused", "stepping"])
-// The latest request is quoted verbatim and labeled authoritative. Above this explicit
-// budget the continuation is omitted instead of quoting a prefix as if it were the request.
-const AUTHORITATIVE_REQUEST_MAX_CHARS = 2_000
 
-// Returns the newest real user turn's request, null when that turn cannot be
-// represented as text (attachments, mixed or non-text parts), or undefined when no
-// real user turn exists. Internal rewake prompts are not user turns.
-function latestUserRequest(messages: readonly SessionV1.WithParts[]) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]
-    if (message.info.role !== "user") continue
-    if (message.parts.some((part) => part.type === "compaction" || part.type === "subtask")) continue
+const OVERFLOW_NOTE = "The previous request exceeded the provider's size limit. The conversation was compacted."
+// The overflow note for a latest request that carries attachments.
+const MEDIA_OVERFLOW_NOTE =
+  "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files."
 
-    const textParts = message.parts.flatMap((part) =>
-      part.type === "text" && !part.synthetic && !part.ignored ? [part] : [],
-    )
-    // Attachments, tool output and mixed parts are a real turn we cannot represent;
-    // never inspect their data for the rewake sentinel.
-    if (message.parts.some((part) => part.type !== "text")) return null
-    // Synthetic-only or ignored-only turns are internal (auto-continue, injected
-    // context), not user requests.
-    if (!textParts.length) continue
-    // The internal rewake convention prefixes the assembled original text.
-    if (isHookRewake(textParts.map((part) => part.text).join("\n"))) continue
-    const text = textParts
-      .map((part) => part.text.trim())
-      .filter(Boolean)
-      .join("\n")
-    return text || null
-  }
-  return undefined
-}
+const requestLines = (label: string, request: CompactionFacts.Request) => [
+  label,
+  ...(request.text ? [request.text] : []),
+  ...request.attachments,
+]
 
-function pendingContinuation(input: {
+// An empty list has no section; an older path the limit cut off is only counted.
+const pathLines = (label: string, paths: readonly string[], omitted: number) =>
+  paths.length === 0
+    ? []
+    : [label, ...(omitted > 0 ? [`- (+${omitted} older paths omitted)`] : []), ...paths.map((file) => `- ${file}`)]
+
+// What the model resumes from after an automatic compaction. The requests, the task state and the files are facts the
+// harness read; the summary lines after them are narrative and may be stale, so the latest request outranks them.
+function continuationText(input: {
   summary: string | undefined
-  request: string | null | undefined
+  requests: CompactionFacts.Requests
   todos: readonly Pick<Todo.Info, "content" | "status">[]
   workflows: readonly Pick<DagStore.WorkflowRow, "id" | "title" | "status">[]
+  files: CompactionFacts.SessionFiles
+  overflow: boolean
 }) {
-  // The newest user turn could not be represented safely (attachments or mixed parts).
-  if (input.request === null) return undefined
-  // A prefix of the request can drop later restrictions. Do not reconstruct it.
-  if (input.request && input.request.length > AUTHORITATIVE_REQUEST_MAX_CHARS) return undefined
-
   const openTodos = input.todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled")
   const workflows = input.workflows.filter((workflow) => ACTIVE_WORKFLOW_STATUSES.has(workflow.status))
-  const goal = summaryItems(input.summary, "## Goal")[0]
-  const progress = summaryItems(input.summary, "### In Progress")
-  const next = summaryItems(input.summary, "## Next Steps")
-  if (!openTodos.length && !workflows.length && !progress.length && !next.length) return undefined
+  const goal = CompactionFacts.summaryItems(input.summary, "## Goal")[0]
+  const progress = CompactionFacts.summaryItems(input.summary, "### In Progress")
+  const next = CompactionFacts.summaryItems(input.summary, "## Next Steps")
+  const pending = openTodos.length > 0 || workflows.length > 0 || progress.length > 0 || next.length > 0
 
-  const lines = [
-    "Continue the pending work only if the latest user request still calls for it.",
-    "The latest user request takes precedence over the summary and task state below; do not resume work that it stopped or replaced.",
-  ]
-  if (input.request) lines.push("Latest user request:", input.request)
+  const lines = pending
+    ? [
+        "Continue the pending work only if the latest user request still calls for it.",
+        "The latest user request takes precedence over the summary and task state below; do not resume work that it stopped or replaced.",
+      ]
+    : ["Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."]
+  const { first, latest } = input.requests
+  if (first) lines.push(...requestLines("Original task prompt:", first))
+  if (latest) lines.push(...requestLines("Latest user request:", latest))
   const context: string[] = []
   if (openTodos.length) context.push("Open todos:", ...openTodos.map((todo) => `- ${todo.status}: ${todo.content}`))
   if (workflows.length)
@@ -214,11 +184,15 @@ function pendingContinuation(input: {
       "Active workflows:",
       ...workflows.map((workflow) => `- ${workflow.status}: ${workflow.id} (${workflow.title})`),
     )
+  context.push(...pathLines("Files changed in this session:", input.files.changed, input.files.omittedChanged))
+  context.push(...pathLines("Files read in this session:", input.files.read, input.files.omittedRead))
   if (goal) context.push(`Summary goal: ${goal}`)
   if (progress.length) context.push("Summary in progress (may be stale):", ...progress.map((item) => `- ${item}`))
   if (next.length) context.push("Summary next steps (may be stale):", ...next.map((item) => `- ${item}`))
   if (context.length) lines.push("Context:", ...context)
-  return lines.join("\n")
+  const text = lines.join("\n")
+  if (!input.overflow) return text
+  return `${latest?.attachments.length ? MEDIA_OVERFLOW_NOTE : OVERFLOW_NOTE}\n\n${text}`
 }
 
 /**
@@ -312,6 +286,41 @@ function splitTurn(input: {
     }
     return undefined
   })
+}
+
+type UserTurn = {
+  readonly info: SessionV1.User
+  readonly parts: SessionV1.Part[]
+  readonly index: number
+}
+
+type Replay = Pick<UserTurn, "info" | "parts">
+
+// The latest real user turn before the marker. The marker is a user message too, but no turn.
+function priorUserTurn(messages: readonly SessionV1.WithParts[], parentID: MessageID): UserTurn | undefined {
+  for (let i = messages.findIndex((m) => m.info.id === parentID) - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info.role === "user" && !msg.parts.some((part) => part.type === "compaction"))
+      return { info: msg.info, parts: msg.parts, index: i }
+  }
+  return undefined
+}
+
+// A provider overflow replays the prompt of the turn it hit, so that turn stays out of the summary input. Without
+// an earlier turn there is nothing to summarize and nothing is replayed. A turn that already finished steps is not
+// replayed either: its prompt would run them again, and the summary would never hear of them.
+function overflowReplay(
+  messages: SessionV1.WithParts[],
+  parentID: MessageID,
+): { replay: Replay | undefined; messages: SessionV1.WithParts[] } {
+  const none = { replay: undefined, messages }
+  const prior = priorUserTurn(messages, parentID)
+  if (!prior) return none
+  const marker = messages.findIndex((m) => m.info.id === parentID)
+  if (messages.slice(prior.index + 1, marker).some((m) => m.info.role === "assistant" && m.info.finish)) return none
+  const earlier = messages.slice(0, prior.index)
+  if (!earlier.some((m) => m.info.role === "user" && !m.parts.some((part) => part.type === "compaction"))) return none
+  return { replay: { info: prior.info, parts: prior.parts }, messages: earlier }
 }
 
 export interface Interface {
@@ -612,6 +621,104 @@ export const layer = Layer.effect(
       }
     })
 
+    // The follow-up user message of an automatic compaction: the replay of the prompt an overflow cut off or, without
+    // one, the continuation text. Returns the new message's id.
+    const appendFollowUp = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      parentID: MessageID
+      messages: SessionV1.WithParts[]
+      userMessage: SessionV1.User
+      replay: Replay | undefined
+      overflow: boolean
+      summary: string | undefined
+      head: readonly SessionV1.WithParts[]
+      /** Tokens the quoted requests may take: what the retained tail may take. */
+      budget: number
+    }) {
+      if (input.replay) {
+        const original = input.replay.info
+        const replayMsg = yield* session.updateMessage({
+          id: MessageID.ascending(),
+          role: "user",
+          sessionID: input.sessionID,
+          time: { created: Date.now() },
+          agent: original.agent,
+          model: original.model,
+          hookMode: original.hookMode,
+          format: original.format,
+          tools: original.tools,
+          system: original.system,
+        })
+        for (const part of input.replay.parts) {
+          if (part.type === "compaction") continue
+          const replayPart =
+            part.type === "file" && MessageV2.isMedia(part.mime)
+              ? { type: "text" as const, text: `[Attached ${part.mime}: ${part.filename ?? "file"}]` }
+              : part
+          yield* session.updatePart({
+            ...replayPart,
+            id: PartID.ascending(),
+            messageID: replayMsg.id,
+            sessionID: input.sessionID,
+          })
+        }
+        return replayMsg.id
+      }
+
+      // The facts come from the stored history as a whole: neither the summary nor the retained tail limits them.
+      const todo = Option.getOrUndefined(yield* Effect.serviceOption(Todo.Service))
+      const todos = todo ? yield* todo.get(input.sessionID) : []
+      const dag = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
+      const workflows = dag ? yield* dag.listBySession(input.sessionID) : []
+      const history = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+      // A session that cannot be read counts as a root.
+      const info = yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const ctx = yield* InstanceState.context
+      const body = continuationText({
+        summary: input.summary,
+        requests: CompactionFacts.fitRequests(
+          CompactionFacts.requestsOf({ messages: history, child: info !== undefined && SessionRole.isChild(info) }),
+          input.budget,
+        ),
+        todos,
+        workflows,
+        files: CompactionFacts.sessionFiles({ messages: history, directory: ctx.directory }),
+        overflow: input.overflow,
+      })
+      const text = Injection.wrap("compaction", withSkillNote(body, input.head))
+      // The turn's mode and request settings are read from its last user message, so the message that continues the
+      // turn carries them, as the user messages a Stop hook or a DAG message appends do. They come from the turn's own
+      // last user message: the marker holds only an agent and a model.
+      const prior = priorUserTurn(input.messages, input.parentID)?.info
+      const continueMsg = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: input.sessionID,
+        time: { created: Date.now() },
+        agent: input.userMessage.agent,
+        model: input.userMessage.model,
+        hookMode: prior?.hookMode,
+        format: prior?.format,
+        system: prior?.system,
+        tools: prior?.tools,
+      })
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: continueMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        // Internal marker for auto-compaction followups.
+        metadata: { compaction_continue: true },
+        synthetic: true,
+        text,
+        time: {
+          start: Date.now(),
+          end: Date.now(),
+        },
+      })
+      return continueMsg.id
+    })
+
     const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
       parentID: MessageID
       messages: SessionV1.WithParts[]
@@ -648,30 +755,9 @@ export const layer = Layer.effect(
         if (preResult.blocked) return yield* settleVetoedCompaction({ ...input, parent, blocked: preResult.blocked })
       }
 
-      let messages = input.messages
-      let replay:
-        | {
-            info: SessionV1.User
-            parts: SessionV1.Part[]
-          }
-        | undefined
-      if (input.overflow) {
-        const idx = input.messages.findIndex((m) => m.info.id === input.parentID)
-        for (let i = idx - 1; i >= 0; i--) {
-          const msg = input.messages[i]
-          if (msg.info.role === "user" && !msg.parts.some((p) => p.type === "compaction")) {
-            replay = { info: msg.info, parts: msg.parts }
-            messages = input.messages.slice(0, i)
-            break
-          }
-        }
-        const hasContent =
-          replay && messages.some((m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction"))
-        if (!hasContent) {
-          replay = undefined
-          messages = input.messages
-        }
-      }
+      const { replay, messages } = input.overflow
+        ? overflowReplay(input.messages, input.parentID)
+        : { replay: undefined, messages: input.messages }
 
       const agent = yield* agents.get("compaction")
       if (!agent) return yield* Effect.die(new Error("Compaction agent is unavailable"))
@@ -878,88 +964,23 @@ export const layer = Layer.effect(
         yield* session.findMessage(input.sessionID, (item) => item.info.id === msg.id).pipe(Effect.orDie),
       )
       const summary = summaryText(storedSummary ?? { info: msg, parts: [] })
-      const requestMessage = Option.getOrUndefined(
-        yield* session
-          .findMessage(input.sessionID, (item) => latestUserRequest([item]) !== undefined)
-          .pipe(Effect.orDie),
-      )
-      const request = requestMessage ? latestUserRequest([requestMessage]) : undefined
-      const todo = Option.getOrUndefined(yield* Effect.serviceOption(Todo.Service))
-      const todos = todo ? yield* todo.get(input.sessionID) : []
-      const dag = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
-      const workflows = dag ? yield* dag.listBySession(input.sessionID) : []
-
-      // Auto-compaction may append a follow-up user message (overflow replay or the
-      // synthetic "continue" prompt). SessionStart(compact) contexts attach to it so
-      // they sit after the summary in model input; without one they are queued.
-      let followUpID: MessageID | undefined
-      if (result === "continue" && input.auto) {
-        if (replay) {
-          const original = replay.info
-          const replayMsg = yield* session.updateMessage({
-            id: MessageID.ascending(),
-            role: "user",
-            sessionID: input.sessionID,
-            time: { created: Date.now() },
-            agent: original.agent,
-            model: original.model,
-            format: original.format,
-            tools: original.tools,
-            system: original.system,
-          })
-          followUpID = replayMsg.id
-          for (const part of replay.parts) {
-            if (part.type === "compaction") continue
-            const replayPart =
-              part.type === "file" && MessageV2.isMedia(part.mime)
-                ? { type: "text" as const, text: `[Attached ${part.mime}: ${part.filename ?? "file"}]` }
-                : part
-            yield* session.updatePart({
-              ...replayPart,
-              id: PartID.ascending(),
-              messageID: replayMsg.id,
+      // Auto-compaction may append a follow-up user message (overflow replay or the synthetic "continue" prompt).
+      // SessionStart(compact) contexts attach to it so they sit after the summary in model input; without one they
+      // are queued.
+      const followUpID =
+        result === "continue" && input.auto
+          ? yield* appendFollowUp({
               sessionID: input.sessionID,
-            })
-          }
-        }
-
-        if (!replay) {
-          const continueMsg = yield* session.updateMessage({
-            id: MessageID.ascending(),
-            role: "user",
-            sessionID: input.sessionID,
-            time: { created: Date.now() },
-            agent: userMessage.agent,
-            model: userMessage.model,
-          })
-          followUpID = continueMsg.id
-          const text =
-            (input.overflow
-              ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
-              : "") +
-            (pendingContinuation({
+              parentID: input.parentID,
+              messages: input.messages,
+              userMessage,
+              replay,
+              overflow: input.overflow === true,
               summary,
-              request,
-              todos,
-              workflows,
-            }) ??
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
-          yield* session.updatePart({
-            id: PartID.ascending(),
-            messageID: continueMsg.id,
-            sessionID: input.sessionID,
-            type: "text",
-            // Internal marker for auto-compaction followups.
-            metadata: { compaction_continue: true },
-            synthetic: true,
-            text: withSkillNote(text, selected.head),
-            time: {
-              start: Date.now(),
-              end: Date.now(),
-            },
-          })
-        }
-      }
+              head: selected.head,
+              budget: preserveRecentBudget({ cfg, model: conversationModel }),
+            })
+          : undefined
 
       if (processor.message.error) return "stop"
       if (result === "continue") {
