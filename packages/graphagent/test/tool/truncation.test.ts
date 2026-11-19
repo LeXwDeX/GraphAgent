@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { NodeFileSystem } from "@effect/platform-node"
 import { FSUtil } from "@graphagent/core/fs-util"
-import { Effect, FileSystem, Layer } from "effect"
+import { Cause, Effect, Exit, FileSystem, Layer } from "effect"
 import { Truncate } from "@/tool/truncate"
 import { ModelContext } from "@/tool/model-context"
 import type { Agent } from "@/agent/agent"
@@ -337,6 +337,60 @@ describe("Truncate", () => {
 
       expect(out.code).toBe(0)
     }, 20000)
+  })
+
+  describe("writeBytes (#1454)", () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff, 0x80])
+
+    it.live("writes the bytes to a tool_ file that keeps the extension, beside the saved outputs", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const fs = yield* FileSystem.FileSystem
+        const file = yield* svc.writeBytes(bytes, ".pdf")
+        yield* Effect.addFinalizer(() => fs.remove(file, { force: true }).pipe(Effect.ignore))
+
+        expect(path.dirname(file)).toBe(Truncate.DIR)
+        expect(path.basename(file).startsWith("tool_")).toBe(true)
+        expect(path.extname(file)).toBe(".pdf")
+        expect(new Uint8Array(yield* fs.readFile(file))).toEqual(bytes)
+      }),
+    )
+
+    it.live("gives each write a file of its own", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const fs = yield* FileSystem.FileSystem
+        const first = yield* svc.writeBytes(bytes, ".pdf")
+        const second = yield* svc.writeBytes(bytes, ".pdf")
+        yield* Effect.addFinalizer(() =>
+          Effect.all([fs.remove(first, { force: true }), fs.remove(second, { force: true })]).pipe(Effect.ignore),
+        )
+
+        expect(first).not.toBe(second)
+      }),
+    )
+
+    it.live("is cleaned up after 7 days like any saved output", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const fs = yield* FileSystem.FileSystem
+        const file = yield* svc.writeBytes(bytes, ".pdf")
+        yield* Effect.addFinalizer(() => fs.remove(file, { force: true }).pipe(Effect.ignore))
+        const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+        yield* fs.utimes(file, old, old)
+        yield* svc.cleanup()
+
+        expect(yield* fs.exists(file)).toBe(false)
+      }),
+    )
+
+    unwritableIt.live("dies when the disk refuses the write, as write does", () =>
+      Effect.gen(function* () {
+        const exit = yield* (yield* Truncate.Service).writeBytes(bytes, ".pdf").pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
+      }),
+    )
   })
 
   describe("output budget (#1448)", () => {
