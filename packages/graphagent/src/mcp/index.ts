@@ -208,6 +208,8 @@ export interface ServerInstructions {
   name: string
   instructions: string
   tools: string[]
+  /** The keys among `tools` of the tools that declare `readOnlyHint: true`, as `tools()` binds them (#1574). */
+  readOnlyTools: string[]
 }
 
 export interface Interface {
@@ -739,9 +741,19 @@ export const layer = Layer.effect(
         .filter(([name]) => s.status[name]?.status === "connected")
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, item]) => {
-          const listed = (s.defs[name] ?? []).map((tool) => keys.get(toolID(name, tool.name)) ?? "")
-          // A tool listed twice has one key, and a tool without a key is not offered.
-          return { name, instructions: item, tools: [...new Set(listed)].filter((key) => key !== "") }
+          // A tool listed twice has one key, and a tool without a key is not offered. The first listing of a key is the
+          // one `tools()` binds, so it is the one whose hint counts: only the boolean `true` marks a tool read-only.
+          const offered = new Map<string, boolean>()
+          for (const tool of s.defs[name] ?? []) {
+            const key = keys.get(toolID(name, tool.name)) ?? ""
+            if (key !== "" && !offered.has(key)) offered.set(key, tool.annotations?.readOnlyHint === true)
+          }
+          return {
+            name,
+            instructions: item,
+            tools: [...offered.keys()],
+            readOnlyTools: [...offered].filter(([, readOnly]) => readOnly).map(([key]) => key),
+          }
         })
     })
 

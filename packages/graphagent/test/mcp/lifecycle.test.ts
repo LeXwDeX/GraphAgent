@@ -494,6 +494,7 @@ it.instance(
           name: "guide-server",
           instructions: "Use lookup before mutate.",
           tools: ["guide-server_test_tool"],
+          readOnlyTools: [],
         })
       }),
     ),
@@ -727,11 +728,86 @@ it.instance(
 
         const instructions = yield* mcp.instructions()
         expect(instructions).toEqual([
-          { name: "a.b", instructions: "Guidance for a.b.", tools: [`a_b_c_${toolKeySuffix("a.b", "c")}`] },
-          { name: "dup", instructions: "Guidance for dup.", tools: ["dup_x"] },
+          {
+            name: "a.b",
+            instructions: "Guidance for a.b.",
+            tools: [`a_b_c_${toolKeySuffix("a.b", "c")}`],
+            readOnlyTools: [],
+          },
+          { name: "dup", instructions: "Guidance for dup.", tools: ["dup_x"], readOnlyTools: [] },
         ])
         const keys = Object.keys(yield* mcp.tools())
         for (const item of instructions) for (const key of item.tools) expect(keys).toContain(key)
+      }),
+    ),
+  { mcp: {} },
+)
+
+// Issue #1574: `instructions()` says which of a server's tools declare `readOnlyHint: true`, by the key `tools()` gives
+// them and by the rule `tools()` binds `readOnly` with, so the system prompt can judge a server as the tool list does.
+it.instance(
+  "instructions() lists the read-only tools of a server by key, as tools() binds them",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "ro"
+        const state = getOrCreateClientState("ro")
+        state.instructions = "Guidance for ro."
+        state.tools = [
+          { name: "yes", description: "ro/yes", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "no", description: "ro/no", inputSchema: emptyInput, annotations: { readOnlyHint: false } },
+          { name: "bare", description: "ro/bare", inputSchema: emptyInput },
+          { name: "other", description: "ro/other", inputSchema: emptyInput, annotations: { idempotentHint: true } },
+          // Only the boolean `true` counts: a server that sends something else does not make its tool read-only.
+          { name: "text", description: "ro/text", inputSchema: emptyInput, annotations: { readOnlyHint: "true" } },
+          { name: "one", description: "ro/one", inputSchema: emptyInput, annotations: { readOnlyHint: 1 } },
+          // A tool listed twice is bound once, from its first listing: the hint of the second is not the tool's.
+          { name: "dup", description: "ro/dup", inputSchema: emptyInput, annotations: { readOnlyHint: false } },
+          { name: "dup", description: "ro/dup", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "dup2", description: "ro/dup2", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "dup2", description: "ro/dup2", inputSchema: emptyInput },
+        ]
+        yield* mcp.add("ro", { type: "local", command: ["echo", "test"] })
+
+        // A key that was rewritten to stay unique is the key the tool is listed under.
+        lastCreatedClientName = "a.b"
+        const colliding = getOrCreateClientState("a.b")
+        colliding.instructions = "Guidance for a.b."
+        colliding.tools = [
+          { name: "c", description: "a.b/c", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+        ]
+        yield* mcp.add("a.b", { type: "local", command: ["echo", "test"] })
+        yield* connectWith(mcp, "a", ["b.c"], "Guidance for a.")
+
+        const instructions = yield* mcp.instructions()
+        const named = (name: string) => instructions.find((item) => item.name === name)
+        expect(named("ro")?.tools).toEqual([
+          "ro_yes",
+          "ro_no",
+          "ro_bare",
+          "ro_other",
+          "ro_text",
+          "ro_one",
+          "ro_dup",
+          "ro_dup2",
+        ])
+        expect(named("ro")?.readOnlyTools).toEqual(["ro_yes", "ro_dup2"])
+        expect(named("a.b")?.readOnlyTools).toEqual([`a_b_c_${toolKeySuffix("a.b", "c")}`])
+        expect(named("a")?.readOnlyTools).toEqual([])
+
+        // Whatever the rule is, it is the one `tools()` binds `readOnly` with: the same keys, server by server.
+        const tools = yield* mcp.tools()
+        const boundReadOnly = (server: string) =>
+          Object.keys(tools).filter((key) => {
+            const binding = McpCatalog.toolBinding(tools[key])
+            return binding?.server === server && binding.readOnly === true
+          })
+        for (const item of instructions) {
+          expect(item.readOnlyTools.toSorted(), item.name).toEqual(boundReadOnly(item.name).toSorted())
+          // The read-only tools are among the tools of the server, and each is named once.
+          for (const key of item.readOnlyTools) expect(item.tools, `${item.name} ${key}`).toContain(key)
+          expect(new Set(item.readOnlyTools).size).toBe(item.readOnlyTools.length)
+        }
       }),
     ),
   { mcp: {} },
