@@ -21,9 +21,12 @@
  *    session kept running. The NodeSkipped handler now aborts live fibers.
  */
 import { describe, expect, it } from "bun:test"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { Cause, Deferred, Effect, Exit, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
+import { InvalidTransitionError } from "@graphagent/core/dag/core/types"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -32,6 +35,7 @@ import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { Agent } from "@/agent/agent"
+import { DagBlocks } from "@/dag/blocks"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -91,6 +95,13 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
   } as never
 }
 
+/** Dag commands that the loop issues and a case makes fail: the first `remaining` calls fail, the rest reach the real service. */
+interface FailCommands {
+  readonly nodeQueued?: { remaining: number }
+  readonly extend?: { remaining: number; readonly error?: Error }
+  readonly failUnrecoverable?: { remaining: number }
+}
+
 function guardLayer(input: {
   readonly childPrompts: Queue.Queue<PromptGate>
   readonly cancels: string[]
@@ -99,35 +110,50 @@ function guardLayer(input: {
   readonly failGetWorkflow?: { remaining: number }
   /** Injected Dag.pause failures (typed or defect) for the DAG-03 gate test. */
   readonly failPause?: { remaining: number; defect?: boolean }
+  /** Injected failures of the commands a scheduling round issues (#1344). */
+  readonly failCommands?: FailCommands
+  /** Injected defects for the startup scan of unreported wakes: the session list, or one session's snapshot. */
+  readonly failWakeScan?: { readonly listed?: boolean; readonly snapshot?: boolean }
   readonly hooks?: Layer.Layer<SettingsHook.Service>
 }) {
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const realStore = DagStore.layer.pipe(Layer.provide(database))
-  const store = input.failGetWorkflow
-    ? Layer.effect(
-        DagStore.Service,
-        Effect.gen(function* () {
-          const real = yield* DagStore.Service
-          return DagStore.Service.of({
-            ...real,
-            getWorkflow: (id) =>
-              Effect.suspend(() => {
-                if (input.failGetWorkflow!.remaining > 0) {
-                  input.failGetWorkflow!.remaining--
-                  return Effect.die(new Error("injected transient db failure"))
-                }
-                return real.getWorkflow(id)
-              }),
-          })
-        }),
-      ).pipe(Layer.provide(realStore))
-    : realStore
+  const failGetWorkflow = input.failGetWorkflow
+  const failWakeScan = input.failWakeScan
+  const store =
+    failGetWorkflow || failWakeScan
+      ? Layer.effect(
+          DagStore.Service,
+          Effect.gen(function* () {
+            const real = yield* DagStore.Service
+            return DagStore.Service.of({
+              ...real,
+              getWorkflow: (id) =>
+                Effect.suspend(() => {
+                  if (failGetWorkflow && failGetWorkflow.remaining > 0) {
+                    failGetWorkflow.remaining--
+                    return Effect.die(new Error("injected transient db failure"))
+                  }
+                  return real.getWorkflow(id)
+                }),
+              getSessionsWithUnreportedWakes: () =>
+                failWakeScan?.listed
+                  ? Effect.die(new Error("injected wake list failure"))
+                  : real.getSessionsWithUnreportedWakes(),
+              getWakeSnapshot: (sessionID) =>
+                failWakeScan?.snapshot
+                  ? Effect.die(new Error("injected wake snapshot failure"))
+                  : real.getWakeSnapshot(sessionID),
+            })
+          }),
+        ).pipe(Layer.provide(realStore))
+      : realStore
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const realDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
-  const dag = input.failPause
+  const pausing = input.failPause
     ? Layer.effect(
         Dag.Service,
         Effect.gen(function* () {
@@ -162,6 +188,34 @@ function guardLayer(input: {
         }),
       ).pipe(Layer.provide(realDag))
     : realDag
+  const failCommands = input.failCommands
+  const dag = failCommands
+    ? Layer.effect(
+        Dag.Service,
+        Effect.gen(function* () {
+          const real = yield* Dag.Service
+          const failing = <A>(
+            command: { remaining: number; readonly error?: Error } | undefined,
+            name: string,
+            run: () => Effect.Effect<A, Error>,
+          ) =>
+            Effect.suspend(() => {
+              if (command && command.remaining > 0) {
+                command.remaining--
+                return Effect.fail(command.error ?? new Error(`injected ${name} failure`))
+              }
+              return run()
+            })
+          return Dag.Service.of({
+            ...real,
+            nodeQueued: (...args) => failing(failCommands.nodeQueued, "nodeQueued", () => real.nodeQueued(...args)),
+            extend: (...args) => failing(failCommands.extend, "extend", () => real.extend(...args)),
+            failUnrecoverable: (...args) =>
+              failing(failCommands.failUnrecoverable, "failUnrecoverable", () => real.failUnrecoverable(...args)),
+          })
+        }),
+      ).pipe(Layer.provide(pausing))
+    : pausing
   const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const session = Layer.mock(Session.Service, {
@@ -229,6 +283,8 @@ function runGuardTest<A>(
     readonly instanceProject: string
     readonly failGetWorkflow?: { remaining: number }
     readonly failPause?: { remaining: number; defect?: boolean }
+    readonly failCommands?: FailCommands
+    readonly failWakeScan?: { readonly listed?: boolean; readonly snapshot?: boolean }
     readonly hooks?: Layer.Layer<SettingsHook.Service>
   },
   test: (services: {
@@ -239,7 +295,10 @@ function runGuardTest<A>(
     readonly cancels: string[]
     readonly created: string[]
   }) => Effect.Effect<A, Error>,
-  beforeInit?: (services: { readonly database: Database.Interface }) => Effect.Effect<void>,
+  beforeInit?: (services: {
+    readonly database: Database.Interface
+    readonly dag: Dag.Interface
+  }) => Effect.Effect<void, Error>,
 ) {
   return Effect.gen(function* () {
     const childPrompts = yield* Queue.unbounded<PromptGate>()
@@ -274,7 +333,7 @@ function runGuardTest<A>(
           .run()
           .pipe(Effect.orDie)
       }
-      if (beforeInit) yield* beforeInit({ database })
+      if (beforeInit) yield* beforeInit({ database, dag })
       yield* loop.init()
       return yield* test({ dag, loop, store, childPrompts, cancels, created })
     }).pipe(
@@ -285,6 +344,8 @@ function runGuardTest<A>(
           created,
           failGetWorkflow: options.failGetWorkflow,
           failPause: options.failPause,
+          failCommands: options.failCommands,
+          failWakeScan: options.failWakeScan,
           hooks: options.hooks,
         }),
       ),
@@ -1072,6 +1133,319 @@ describe("DagLoop control cancel scheduling", () => {
           yield* Deferred.succeed(upstream.release, "late")
           yield* Deferred.succeed(downstream.release, "done")
         }),
+      ),
+    )
+  })
+})
+
+/** The text of the prompt a child was given. */
+function promptText(child: PromptGate) {
+  return child.input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+}
+
+/** A workflow that a planner already planned: the fan-out writer is its first ready node, so its first round is the expansion. */
+function seedPlanned(dag: Dag.Interface, plan: unknown) {
+  return Effect.gen(function* () {
+    const dagID = yield* dag.create({
+      projectID: "project-1",
+      sessionID: "ses_project-1",
+      title: "Fan-out",
+      config: {
+        name: "fan-out",
+        max_concurrency: 4,
+        nodes: DagBlocks.compileWorkflowBlocks({
+          objective: "Deliver the planned change",
+          blocks: [
+            new DagBlocks.WorkflowBlock({ id: "plan", kind: "plan" }),
+            new DagBlocks.WorkflowBlock({ id: "slices", kind: "coding", depends_on: ["plan"], fan_out: "plan" }),
+            new DagBlocks.WorkflowBlock({ id: "gates", kind: "verify", depends_on: ["slices"] }),
+            new DagBlocks.WorkflowBlock({ id: "decision", kind: "review", depends_on: ["gates"] }),
+          ],
+        }),
+      },
+    })
+    yield* dag.nodeQueued(dagID, "plan", Date.now() + 600_000)
+    yield* dag.nodeStarted(dagID, "plan", "ses_plan", Date.now() + 600_000)
+    yield* dag.nodeCompleted(dagID, "plan", JSON.stringify(plan))
+    return dagID
+  })
+}
+
+/** A running workflow whose only node was running in a child session that no longer exists: the startup recovery invents its failure. */
+function seedCrashed(dag: Dag.Interface) {
+  return Effect.gen(function* () {
+    const dagID = yield* dag.create({
+      projectID: "project-1",
+      sessionID: "ses_project-1",
+      title: "Crashed",
+      config: { name: "crashed", nodes: [node({ id: "a", name: "a" })] },
+    })
+    yield* dag.nodeQueued(dagID, "a", Date.now() + 60_000)
+    yield* dag.nodeStarted(dagID, "a", "ses_child_crashed", Date.now() + 60_000)
+    return dagID
+  })
+}
+
+// #1344: failure paths of the loop that a clean run never reaches. The cases were added with the split of loop.ts
+// so that each branch it keeps is exercised, not only the ones the happy paths pass through.
+describe("DagLoop failure paths", () => {
+  it("fails a node whose prompt template cannot be resolved, without creating a child session", async () => {
+    await Effect.runPromise(
+      runGuardTest({ instanceProject: "project-1" }, ({ dag, store, created }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_project-1",
+            title: "Unresolvable template",
+            config: { name: "bad-template", nodes: [node({ id: "bad", name: "bad", prompt_template: {} })] },
+          })
+          const failed = yield* pollWithTimeout(
+            store.getNode(dagID, "bad").pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+            "the node with an unresolvable template was not failed",
+          )
+          expect(failed.errorReason).toContain("Template resolution failed")
+          expect(failed.errorClass).toBe("exec_failed")
+          expect(created).toEqual([])
+        }),
+      ),
+    )
+  })
+
+  it("comes up and keeps scheduling when the startup scan for unreported wakes fails", async () => {
+    await Effect.runPromise(
+      runGuardTest({ instanceProject: "project-1", failWakeScan: { listed: true } }, ({ dag, childPrompts }) =>
+        Effect.gen(function* () {
+          yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_project-1",
+            title: "After a failed wake scan",
+            config: { name: "after-scan", nodes: [node({ id: "after", name: "after" })] },
+          })
+          const child = yield* takeWithin(childPrompts, "the node did not start after the failed wake scan")
+          expect(child.title).toBe("after")
+          yield* Deferred.succeed(child.release, "done")
+        }),
+      ),
+    )
+  })
+
+  it("comes up and keeps scheduling when the snapshot of a session with an unreported wake cannot be read", async () => {
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failWakeScan: { snapshot: true } },
+        ({ dag, childPrompts }) =>
+          Effect.gen(function* () {
+            yield* dag.create({
+              projectID: "project-1",
+              sessionID: "ses_project-1",
+              title: "After a failed snapshot",
+              config: { name: "after-snapshot", nodes: [node({ id: "after", name: "after" })] },
+            })
+            const child = yield* takeWithin(childPrompts, "the node did not start after the failed snapshot read")
+            expect(child.title).toBe("after")
+            yield* Deferred.succeed(child.release, "done")
+          }),
+        ({ database }) =>
+          database.db
+            .insert(WorkflowTable)
+            .values({
+              id: "dag_unreported_wake",
+              project_id: Project.ID.make("project-1"),
+              session_id: SessionID.make("ses_project-1"),
+              directory: process.cwd(),
+              target_fingerprint: { kind: "none" },
+              title: "Finished, never reported",
+              status: "completed",
+              config: JSON.stringify({ name: "finished", nodes: [] }),
+              seq: 10,
+              wake_reported: false,
+            })
+            .run()
+            .pipe(Effect.orDie),
+      ),
+    )
+  })
+
+  it("fails a node whose admission fails unexpectedly, with the failure as its reason", async () => {
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failCommands: { nodeQueued: { remaining: 1 } } },
+        ({ dag, store, created }) =>
+          Effect.gen(function* () {
+            const dagID = yield* dag.create({
+              projectID: "project-1",
+              sessionID: "ses_project-1",
+              title: "Unexpected admission failure",
+              config: { name: "admission-failure", nodes: [node({ id: "a", name: "a" })] },
+            })
+            const failed = yield* pollWithTimeout(
+              store.getNode(dagID, "a").pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+              "the node whose admission failed was not failed",
+            )
+            expect(failed.errorClass).toBe("exec_failed")
+            expect(failed.errorReason).toContain("injected nodeQueued failure")
+            expect(created).toEqual([])
+          }),
+      ),
+    )
+  })
+
+  it("fails a fan-out writer whose expansion cannot be written, with the failure as its reason", async () => {
+    let dagID = ""
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failCommands: { extend: { remaining: 1 } } },
+        ({ store }) =>
+          Effect.gen(function* () {
+            const failed = yield* pollWithTimeout(
+              store.getNode(dagID, "slices").pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+              "the writer whose expansion failed was not failed",
+            )
+            expect(failed.errorClass).toBe("exec_failed")
+            expect(failed.errorReason).toBe("Fan-out expansion failed: injected extend failure")
+          }),
+        ({ dag }) =>
+          seedPlanned(dag, {
+            summary: "one",
+            packages: [{ id: "all", instruction: "Implement all", write_set: ["src"] }],
+          }).pipe(Effect.map((id) => void (dagID = id))),
+      ),
+    )
+  })
+
+  it("leaves a fan-out writer to the replan that reshaped it first, when its expansion is refused as stale", async () => {
+    const extend = { remaining: 1, error: new InvalidTransitionError("slices", "pending", "pending") }
+    let dagID = ""
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failCommands: { extend } },
+        ({ store }) =>
+          Effect.gen(function* () {
+            yield* pollWithTimeout(
+              Effect.sync(() => (extend.remaining === 0 ? (true as const) : undefined)),
+              "the expansion of the writer was never attempted",
+            )
+            // The refusal ends the round: nothing fails the writer, and no child is started for it.
+            yield* Effect.sleep("200 millis")
+            expect((yield* store.getNode(dagID, "slices"))?.status).toBe("pending")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+          }),
+        ({ dag }) =>
+          seedPlanned(dag, {
+            summary: "one",
+            packages: [{ id: "all", instruction: "Implement all", write_set: ["src"] }],
+          }).pipe(Effect.map((id) => void (dagID = id))),
+      ),
+    )
+  })
+
+  it("starts a review decision once an optional lane has failed, with that lane named in its inputs", async () => {
+    await Effect.runPromise(
+      runGuardTest({ instanceProject: "project-1" }, ({ dag, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_project-1",
+            title: "Review with a failed lane",
+            config: {
+              name: "review-lanes",
+              nodes: [
+                node({ id: "lens", name: "lens", review_lane: "intent" }),
+                node({ id: "skeptic", name: "skeptic", review_lane: "skeptic-1", required: false }),
+                node({
+                  id: "decision",
+                  name: "decision",
+                  depends_on: ["lens", "skeptic"],
+                  review_arbitration: true,
+                }),
+              ],
+            },
+          })
+          const lanes = [
+            yield* takeWithin(childPrompts, "the first lane did not start"),
+            yield* takeWithin(childPrompts, "the second lane did not start"),
+          ]
+          const lens = lanes.find((child) => child.title === "lens")
+          expect(lens).toBeDefined()
+          yield* dag.nodeFailed(dagID, "skeptic", "lane crashed", "exec_failed")
+          yield* Deferred.succeed(lens!.release, "lens finished")
+          const decision = yield* takeWithin(childPrompts, "the decision did not start after its lanes settled")
+          expect(decision.title).toBe("decision")
+          // The failed lane reaches the decision as the placeholder of a dependency that settled without output.
+          expect(promptText(decision)).toContain('"skeptic": "Dependency \\"skeptic\\" failed: lane crashed"')
+        }),
+      ),
+    )
+  })
+
+  it("pauses a recovered workflow on the second try when the first pause fails", async () => {
+    const failPause = { remaining: 1 }
+    let dagID = ""
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failPause },
+        ({ store, childPrompts }) =>
+          Effect.gen(function* () {
+            expect(failPause.remaining).toBe(0)
+            expect((yield* store.getNode(dagID, "a"))?.status).toBe("failed")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("paused")
+            expect(Option.isNone(yield* Queue.poll(childPrompts))).toBe(true)
+          }),
+        ({ dag }) => seedCrashed(dag).pipe(Effect.map((id) => void (dagID = id))),
+      ),
+    )
+  })
+
+  it("leaves a recovered workflow unadopted when the pause for its invented failure keeps failing", async () => {
+    const failPause = { remaining: 99 }
+    let dagID = ""
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failPause },
+        ({ store, childPrompts }) =>
+          Effect.gen(function* () {
+            // Two tries, then it gives up: the invented failure stays persisted, the workflow stays running, and
+            // with no entry nothing is scheduled until the next instance load adopts it again.
+            expect(failPause.remaining).toBe(97)
+            expect((yield* store.getNode(dagID, "a"))?.status).toBe("failed")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+            expect(Option.isNone(yield* Queue.poll(childPrompts))).toBe(true)
+          }),
+        ({ dag }) => seedCrashed(dag).pipe(Effect.map((id) => void (dagID = id))),
+      ),
+    )
+  })
+
+  it("leaves a workflow with an unusable execution directory running when its failure cannot be written", async () => {
+    const failCommands = { failUnrecoverable: { remaining: 1 } }
+    await Effect.runPromise(
+      runGuardTest(
+        { instanceProject: "project-1", failCommands },
+        ({ store, childPrompts }) =>
+          Effect.gen(function* () {
+            // The startup round found the directory missing and tried to fail the workflow once; the failure of
+            // that write is logged, and the workflow is neither terminalized nor scheduled.
+            expect(failCommands.failUnrecoverable.remaining).toBe(0)
+            expect((yield* store.getWorkflow("dag_missing_directory"))?.status).toBe("running")
+            expect(Option.isNone(yield* Queue.poll(childPrompts))).toBe(true)
+          }),
+        ({ database }) =>
+          database.db
+            .insert(WorkflowTable)
+            .values({
+              id: "dag_missing_directory",
+              project_id: Project.ID.make("project-1"),
+              session_id: SessionID.make("ses_project-1"),
+              directory: process.cwd(),
+              execution_directory: path.join(tmpdir(), "dag-loop-guards-missing-directory"),
+              target_fingerprint: { kind: "none" },
+              title: "Execution directory gone",
+              status: "running",
+              config: JSON.stringify({ name: "gone", nodes: [] }),
+              seq: 10,
+            })
+            .run()
+            .pipe(Effect.orDie),
       ),
     )
   })

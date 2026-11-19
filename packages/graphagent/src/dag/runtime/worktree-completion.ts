@@ -194,12 +194,16 @@ export function settleWorkflowWorktree(
       return yield* settle({ ...base, state: "removed", reason: "worktree directory is missing" })
     }
 
-    const commit = DagIsolation.commitWorktree(
+    // #1344: this runs under the workflow lock (`exclusive`), so git is waited
+    // for without blocking the event loop; each command is bounded by its own
+    // 20 s and the whole critical section by the lock's 30 s cap.
+    const commit = yield* DagIsolation.commitWorktreeAsync(
       configured.directory,
       configured.baseHead ?? "",
       `dag: workflow ${input.dagID}`,
     )
-    const head = commit.ok && commit.change ? commit.change.commit : DagLocation.gitHead(configured.directory)
+    const head =
+      commit.ok && commit.change ? commit.change.commit : yield* DagLocation.gitHeadAsync(configured.directory)
     if (!commit.ok) {
       return yield* settle({
         ...base,

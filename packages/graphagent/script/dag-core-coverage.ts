@@ -113,7 +113,19 @@ export async function runDagCoreCoverageGate() {
         // #1455: the change facts a judging node is given.
         { file: "src/dag/runtime/change-facts.ts", lines: 100, functions: 100 },
         { file: "src/dag/control.ts", lines: 90, functions: 85 },
-        { file: "src/dag/runtime/loop.ts", lines: 90, functions: 88 },
+        // #1344: what is left of loop.ts is the wiring of the layer, so it is held to a tight floor.
+        { file: "src/dag/runtime/loop.ts", lines: 99, functions: 100 },
+        // #1344: a module moved out of loop.ts is held to at least loop.ts's old floor (90 / 88).
+        { file: "src/dag/runtime/entry.ts", lines: 100, functions: 100 },
+        { file: "src/dag/runtime/gates.ts", lines: 100, functions: 100 },
+        { file: "src/dag/runtime/control-handlers.ts", lines: 100, functions: 100 },
+        { file: "src/dag/runtime/replan-handler.ts", lines: 96, functions: 100 },
+        { file: "src/dag/runtime/message-continuation.ts", lines: 96, functions: 100 },
+        { file: "src/dag/runtime/teardown.ts", lines: 95, functions: 88 },
+        { file: "src/dag/runtime/lifecycle-handlers.ts", lines: 100, functions: 100 },
+        { file: "src/dag/runtime/node-handlers.ts", lines: 96, functions: 100 },
+        { file: "src/dag/runtime/recover-workflow.ts", lines: 100, functions: 100 },
+        { file: "src/dag/runtime/spawn-ready.ts", lines: 95, functions: 95 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },
         { file: "src/dag/runtime/spawn.ts", lines: 90, functions: 70 },
         { file: "src/dag/runtime/summary-publisher.ts", lines: 95, functions: 90 },

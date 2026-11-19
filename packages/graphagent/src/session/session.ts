@@ -58,6 +58,7 @@ import { TuiEvent } from "@graphagent/schema/tui-event"
 import { Goal } from "@/goal/goal"
 import { ExclusiveRegistry } from "./engine-process"
 import { SessionRole } from "./role"
+import { CompactionExport } from "./compaction-export"
 import { SessionStatus } from "./status"
 import { Dag } from "@/dag/dag"
 import { isTerminalWorkflowStatusValue, isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
@@ -880,6 +881,8 @@ export const layer: Layer.Layer<
         if (hookConfig) yield* hookConfig.clear(sessionID)
         yield* HookTranscript.clearEnvironment(sessionID).pipe(Effect.ignore)
         yield* HookTranscript.clearScratchpad(sessionID).pipe(Effect.ignore)
+        // The exports of compacted messages live and die with their session.
+        yield* CompactionExport.clear(sessionID).pipe(Effect.ignore)
         // Cleanup durable automation state BEFORE the Deleted publish: the
         // SessionProjector deletes the session row (and FK cascades wipe the
         // workflow rows) inside the Deleted publish transaction. Publishing

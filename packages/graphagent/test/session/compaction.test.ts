@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import path from "path"
+import fs from "node:fs/promises"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { resolveProfile } from "@graphagent/core/model-profile"
 import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-distillation"
@@ -20,6 +21,8 @@ import { Image } from "@/image/image"
 import { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { CompactionExport } from "../../src/session/compaction-export"
+import { TRUNCATION_DIR } from "../../src/tool/truncation-dir"
 import { EngineProcess } from "../../src/session/engine-process"
 import type { RequestPrefix } from "../../src/session/runtime"
 import { InstanceState } from "@/effect/instance-state"
@@ -1072,6 +1075,9 @@ describe("session.compaction.process", () => {
     `Skills loaded earlier in this conversation are no longer in context: ${names}. Call the skill tool with the name to load one again when needed.`
   const fallbackText =
     "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+  // The line after the summary: where the messages the compaction replaced were saved, named after the compaction.
+  const savedNote = (sessionID: SessionID, compactionID: MessageID) =>
+    CompactionExport.retrievalNote({ path: CompactionExport.pathOf({ sessionID, compactionID }), sessionID })
   // The latest request of the sessions below: a lone "hello" turn.
   const hello = "Latest user request:\nhello"
   // The summary the test processor stores is the template with a goal and nothing pending: the goal is all of it that
@@ -1102,17 +1108,17 @@ describe("session.compaction.process", () => {
       const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
       expect(result).toBe("continue")
       expect(last?.info.role).toBe("user")
-      // The note closes the continuation text, inside the compaction block.
+      // The skill note closes the continuation text, inside the compaction block, after the line about the export.
       expect(syntheticTexts(last)[0]).toBe(
         Injection.wrap(
           "compaction",
-          `${fallbackText}\n${hello}\n${summaryContext}\n\n${skillNote("dag-auto, git-workflow")}`,
+          `${fallbackText}\n${hello}\n${summaryContext}\n${savedNote(session.id, user.id)}\n\n${skillNote("dag-auto, git-workflow")}`,
         ),
       )
     }),
   )
 
-  it.instance("keeps the auto-continue text unchanged when no skill was loaded", () =>
+  it.instance("closes the auto-continue text with the line about the export when no skill was loaded", () =>
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const root = (yield* TestInstance).directory
@@ -1137,7 +1143,7 @@ describe("session.compaction.process", () => {
 
       const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
       expect(syntheticTexts(last)).toEqual([
-        Injection.wrap("compaction", `${fallbackText}\n${hello}\n${summaryContext}`),
+        Injection.wrap("compaction", `${fallbackText}\n${hello}\n${summaryContext}\n${savedNote(session.id, user.id)}`),
       ])
     }),
   )
@@ -1199,7 +1205,7 @@ describe("session.compaction.process", () => {
         expect(syntheticTexts(last)[0]).toBe(
           Injection.wrap(
             "compaction",
-            `${fallbackText}\nLatest user request:\nrecent\n${summaryContext}\n\n${skillNote("git-workflow")}`,
+            `${fallbackText}\nLatest user request:\nrecent\n${summaryContext}\n${savedNote(session.id, msgs.at(-1)!.info.id)}\n\n${skillNote("git-workflow")}`,
           ),
         )
       }).pipe(withCompaction({ config: cfg({ tail_turns: 1 }) })),
@@ -4616,6 +4622,7 @@ describe("session.compaction continuation text", () => {
     tool: string,
     input: Record<string, unknown>,
     metadata: Record<string, unknown> = {},
+    output = "ok",
   ) =>
     SessionNs.Service.use((ssn) =>
       ssn.updatePart({
@@ -4625,7 +4632,7 @@ describe("session.compaction continuation text", () => {
         type: "tool",
         callID: `call_${PartID.ascending()}`,
         tool,
-        state: { status: "completed", input, output: "ok", title: tool, metadata, time: { start: 1, end: 2 } },
+        state: { status: "completed", input, output, title: tool, metadata, time: { start: 1, end: 2 } },
       }),
     )
 
@@ -4646,7 +4653,7 @@ describe("session.compaction continuation text", () => {
     )
 
   itCompaction.instance(
-    "wraps the continuation in a compaction block: requests, task state, files, summary, then the skill note",
+    "wraps the continuation in a compaction block: requests, task state, files, summary, the export, then the skill note",
     () => {
       const stub = llm()
       stub.push(reply(validSummary({ goal: "Ship the fix", progress: "Waiting on CI", next: "Merge the PR" })))
@@ -4662,10 +4669,15 @@ describe("session.compaction continuation text", () => {
         yield* toolPart(session.id, answer.id, "read", { filePath: path.join(ctx.directory, "src", "lexer.ts") })
         yield* loadSkillPart(session.id, answer.id, "call_skill", "git-workflow")
         yield* createSummaryCompaction(session.id)
+        const marker = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
 
         expect(yield* compactAuto(session.id)).toBe("continue")
 
         const text = yield* continuation(session.id)
+        const exportNote = CompactionExport.retrievalNote({
+          path: CompactionExport.pathOf({ sessionID: session.id, compactionID: marker }),
+          sessionID: session.id,
+        })
         expect(text.startsWith('<system-reminder source="compaction">\n')).toBe(true)
         expect(text.endsWith("\n</system-reminder>")).toBe(true)
         const order = [
@@ -4678,11 +4690,16 @@ describe("session.compaction continuation text", () => {
           "Summary goal: Ship the fix",
           "Summary in progress (may be stale):\n- Waiting on CI",
           "Summary next steps (may be stale):\n- Merge the PR",
+          exportNote,
           SessionCompaction.skillContinuationNote(["git-workflow"])!,
           "</system-reminder>",
         ].map((part) => text.indexOf(part))
         expect(order.every((index) => index >= 0)).toBe(true)
         expect(order).toEqual([...order].sort((a, b) => a - b))
+        // The export is the last line of the body: right after the last summary line, before the skill note.
+        expect(text).toContain(
+          `Summary next steps (may be stale):\n- Merge the PR\n${exportNote}\n\n${SessionCompaction.skillContinuationNote(["git-workflow"])!}\n</system-reminder>`,
+        )
       }).pipe(
         withCompaction({
           llm: stub.layer,
@@ -4713,8 +4730,8 @@ describe("session.compaction continuation text", () => {
         expect(text).toContain("Latest user request:\nBEGIN-OF-REQUEST filler")
         expect(text).toContain("filler END-OF-REQUEST\n")
         expect(text).toMatch(/\[\.\.\. \d+ characters omitted \.\.\.\]/)
-        // 300 tokens of budget: the continuation is a fraction of the request.
-        expect(text.length).toBeLessThan(2_000)
+        // 300 tokens of budget: the continuation is a fraction of the request, the line about the export included.
+        expect(text.length).toBeLessThan(3_000)
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0, preserve_recent_tokens: 300 }) }))
     },
     { git: true },
@@ -5051,5 +5068,245 @@ describe("session.compaction continuation text", () => {
 
       expect(yield* continuation(session.id)).not.toContain("size limit")
     }),
+  )
+
+  // The exports an automatic compaction left for a session, by file name.
+  const exportsOf = (sessionID: SessionID) =>
+    Effect.promise(() => fs.readdir(TRUNCATION_DIR).catch(() => [] as string[])).pipe(
+      Effect.map((names) => names.filter((name) => name.startsWith(`compacted_${sessionID}_`)).toSorted()),
+    )
+
+  const markerOf = (sessionID: SessionID) =>
+    SessionNs.use.messages({ sessionID }).pipe(Effect.map((messages) => messages.at(-1)!.info.id))
+
+  const noteOf = (sessionID: SessionID, compactionID: MessageID) =>
+    CompactionExport.retrievalNote({ path: CompactionExport.pathOf({ sessionID, compactionID }), sessionID })
+
+  itCompaction.instance(
+    "saves what the summary replaces, whole, and ends the continuation with the line that points at it",
+    () => {
+      const stub = llm()
+      const seen: string[] = []
+      stub.push(reply(validSummary(), (input) => seen.push(JSON.stringify(input.messages))))
+      const output = Array.from({ length: 300 }, (_, index) => `grep hit ${index}: ${"y".repeat(30)}`).join("\n")
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const ctx = yield* InstanceState.context
+        const session = yield* ssn.create({})
+        const request = yield* createUserMessage(session.id, "fix the parser bug")
+        yield* filePart(session.id, request.id, "text/plain", "spec.md")
+        const answer = yield* createAssistantMessage(session.id, request.id, ctx.directory)
+        yield* textPart(session.id, answer.id, "I will read the lexer first")
+        yield* toolPart(session.id, answer.id, "read", { filePath: "src/lexer.ts" }, {}, output)
+        yield* createSummaryCompaction(session.id)
+        const marker = yield* markerOf(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const target = CompactionExport.pathOf({ sessionID: session.id, compactionID: marker })
+        expect(yield* exportsOf(session.id)).toEqual([path.basename(target)])
+        const saved = yield* Effect.promise(() => fs.readFile(target, "utf8"))
+        // The summarizer saw each tool output cut to 2000 characters; the file holds the output whole.
+        expect(output.length).toBeGreaterThan(2_000)
+        expect(seen[0]).not.toContain("grep hit 299")
+        expect(saved).toContain(`\n${output}\n`)
+        expect(saved.split("\n")[0]).toBe(
+          `# Messages compacted from session ${session.id} (compaction ${marker}). Reasoning parts are not included.`,
+        )
+        expect(saved).toContain(`\n=== user ${request.id} `)
+        expect(saved).toContain("\nfix the parser bug\n[Attached text/plain: spec.md]\n")
+        expect(saved).toContain(`\n=== assistant ${answer.id} `)
+        expect(saved).toContain('\nI will read the lexer first\n[tool read completed] {"filePath":"src/lexer.ts"}\n')
+        // The marker is no message of the conversation.
+        expect(saved).not.toContain(`=== user ${marker}`)
+        if (process.platform !== "win32")
+          expect((yield* Effect.promise(() => fs.stat(target))).mode & 0o777).toBe(0o600)
+
+        const text = yield* continuation(session.id)
+        expect(text.endsWith(`\n${noteOf(session.id, marker)}\n</system-reminder>`)).toBe(true)
+        expect(text).toContain(
+          `Earlier messages were saved verbatim in ${target}; each starts with a "=== role id time" line.`,
+        )
+        expect(text).toContain(`All exports of this session: ${TRUNCATION_DIR}/compacted_${session.id}_*.txt.`)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "leaves what the retained tail still holds out of the file",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const ctx = yield* InstanceState.context
+        const session = yield* ssn.create({})
+        const older = yield* createUserMessage(session.id, "older request")
+        const olderAnswer = yield* createAssistantMessage(session.id, older.id, ctx.directory)
+        yield* textPart(session.id, olderAnswer.id, "older answer")
+        const recent = yield* createUserMessage(session.id, "recent request")
+        const recentAnswer = yield* createAssistantMessage(session.id, recent.id, ctx.directory)
+        yield* textPart(session.id, recentAnswer.id, "recent answer")
+        yield* createSummaryCompaction(session.id)
+        const marker = yield* markerOf(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const part = (yield* ssn.messages({ sessionID: session.id }))
+          .flatMap((message) => message.parts)
+          .find((item): item is SessionV1.CompactionPart => item.type === "compaction")
+        expect(part?.tail_start_id).toBe(recent.id)
+        const saved = yield* Effect.promise(() =>
+          fs.readFile(CompactionExport.pathOf({ sessionID: session.id, compactionID: marker }), "utf8"),
+        )
+        expect(saved).toContain("\nolder request\n")
+        expect(saved).toContain("\nolder answer\n")
+        expect(saved).not.toContain("recent request")
+        expect(saved).not.toContain("recent answer")
+        // The request the continuation quotes is the retained one: it is in context, not in the file.
+        expect(yield* continuation(session.id)).toContain("Latest user request:\nrecent request\n")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps a request the continuation cut short whole in the file, the omitted middle included",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      const request = `BEGIN-OF-REQUEST ${"filler ".repeat(3_000)}MIDDLE-OF-REQUEST ${"filler ".repeat(3_000)}END-OF-REQUEST`
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, request)
+        yield* createSummaryCompaction(session.id)
+        const marker = yield* markerOf(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const text = yield* continuation(session.id)
+        expect(text).toMatch(/\[\.\.\. \d+ characters omitted \.\.\.\]/)
+        expect(text).not.toContain("MIDDLE-OF-REQUEST")
+        expect(text).toContain(noteOf(session.id, marker))
+        const saved = yield* Effect.promise(() =>
+          fs.readFile(CompactionExport.pathOf({ sessionID: session.id, compactionID: marker }), "utf8"),
+        )
+        expect(saved).toContain(`\n${request}\n`)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0, preserve_recent_tokens: 300 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "gives every automatic compaction of a session a file of its own",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "start the work")
+        yield* createSummaryCompaction(session.id)
+        const first = yield* markerOf(session.id)
+        expect(yield* compactAuto(session.id)).toBe("continue")
+        yield* createUserMessage(session.id, "keep going")
+        yield* createSummaryCompaction(session.id)
+        const second = yield* markerOf(session.id)
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        expect(first).not.toBe(second)
+        expect(yield* exportsOf(session.id)).toEqual(
+          [first, second]
+            .map((id) => path.basename(CompactionExport.pathOf({ sessionID: session.id, compactionID: id })))
+            .toSorted(),
+        )
+        expect(yield* continuation(session.id)).toContain(noteOf(session.id, second))
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "goes on without the line when the export cannot be written, and says so in the log",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary({ goal: "Ship the fix" })))
+      const logs: string[] = []
+      // The message carries the log fields, a Cause among them, which JSON cannot always write.
+      const collector = Logger.make((options) => {
+        logs.push(String(options.message))
+      })
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        yield* createSummaryCompaction(session.id)
+        const marker = yield* markerOf(session.id)
+        // A directory where the export belongs.
+        const target = CompactionExport.pathOf({ sessionID: session.id, compactionID: marker })
+        yield* Effect.promise(() => fs.mkdir(target, { recursive: true }))
+        yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(target, { recursive: true, force: true })))
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        const text = yield* continuation(session.id)
+        expect(text).toContain("Latest user request:\nhello\n")
+        expect(text).toContain("Summary goal: Ship the fix")
+        expect(text).not.toContain("saved verbatim")
+        expect(text).not.toContain(target)
+        expect(text.endsWith("\n</system-reminder>")).toBe(true)
+        expect(logs.filter((line) => line.includes("compaction export failed"))).toHaveLength(1)
+      }).pipe(Effect.withLogger(collector), withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "saves nothing for a manual compaction, an overflow replay or an empty history",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      stub.push(reply(validSummary()))
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+
+        const manual = yield* ssn.create({})
+        yield* createUserMessage(manual.id, "hello")
+        yield* createSummaryCompaction(manual.id)
+        const messages = yield* ssn.messages({ sessionID: manual.id })
+        expect(
+          yield* SessionCompaction.use.process({
+            parentID: messages.at(-1)!.info.id,
+            messages,
+            sessionID: manual.id,
+            auto: false,
+          }),
+        ).toBe("continue")
+        expect(yield* exportsOf(manual.id)).toEqual([])
+
+        // The prompt of the turn the overflow cut off is replayed, so there is no continuation text to point from.
+        const replayed = yield* ssn.create({})
+        yield* createUserMessage(replayed.id, "earlier question")
+        yield* createUserMessage(replayed.id, "current task")
+        yield* createSummaryCompaction(replayed.id)
+        expect(yield* compactAuto(replayed.id, true)).toBe("continue")
+        const last = (yield* ssn.messages({ sessionID: replayed.id })).at(-1)
+        expect(
+          last?.parts.some((part) => part.type === "text" && !part.synthetic && part.text === "current task"),
+        ).toBe(true)
+        expect(yield* exportsOf(replayed.id)).toEqual([])
+
+        const empty = yield* ssn.create({})
+        yield* createSummaryCompaction(empty.id)
+        expect(yield* compactAuto(empty.id)).toBe("continue")
+        expect(yield* continuation(empty.id)).not.toContain("saved verbatim")
+        expect(yield* exportsOf(empty.id)).toEqual([])
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
   )
 })

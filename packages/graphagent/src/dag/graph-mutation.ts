@@ -28,8 +28,23 @@ import {
   withoutSkipOk,
 } from "./workflow-config"
 import { readUserMaxTotalNodes, type DagCommandCore, type ID, type WorkflowLock } from "./command-core"
+import { DagLocation } from "./location"
 import { DagValidation, StructuralValidationError } from "./validation"
-import type { NodeConfig, NodeExecutionAttempt } from "./dag"
+import type { Interface, NodeConfig, NodeExecutionAttempt } from "./dag"
+
+/**
+ * #1344: what a graph mutation reads before its transaction opens, because it
+ * waits for something other than the database (ADR-0008 decision 3: a
+ * transaction body takes database work only): the user's node cap, which comes
+ * from the config service, and the verdicts on the workspaces its nodes name,
+ * which wait for git. The transaction applies the verdicts only while the
+ * workflow still has the owner directory they were resolved against.
+ */
+interface Prepared {
+  readonly userMaxTotalNodes: Effect.Success<ReturnType<typeof readUserMaxTotalNodes>>
+  readonly ownerDirectory: string
+  readonly workspaces: ReadonlyMap<string, DagLocation.WorkspaceResolution>
+}
 
 /**
  * The graph mutations: `_replan` reshapes a workflow's graph from a fragment of
@@ -40,10 +55,41 @@ import type { NodeConfig, NodeExecutionAttempt } from "./dag"
  */
 export const make = (environment: DagCommandCore.Core) =>
   Effect.gen(function* () {
-    const { events, store, withMailbox, guardNodeAttempt } = environment
+    const { events, store, withMailbox, withWorkflowLock, transact, guardNodeAttempt } = environment
+    // The reads of a mutation that are not database work, taken under the
+    // workflow lock before its transaction opens. `carryForward` is `extend`: it
+    // also re-pins the workspaces of the pending and queued nodes it carries
+    // forward with their stored definitions.
+    const prepare = Effect.fn("Dag.prepareMutation")(function* (
+      dagID: string,
+      nodes: readonly NodeConfig[],
+      carryForward: boolean,
+    ) {
+      const userMaxTotalNodes = yield* readUserMaxTotalNodes()
+      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+      const ownerDirectory = workflow?.directory ?? ""
+      const named = [...nodes]
+      if (workflow && carryForward) {
+        const open = new Set(
+          (yield* store.getNodes(dagID))
+            .filter((n) => n.status === NodeStatus.PENDING || n.status === NodeStatus.QUEUED)
+            .map((n) => n.id),
+        )
+        const added = new Set(nodes.map((n) => n.id))
+        const config = parseWorkflowConfig(workflow.config)
+        named.push(...(config?.nodes ?? []).filter((n) => open.has(n.id) && !added.has(n.id)))
+      }
+      const workspaces = new Map<string, DagLocation.WorkspaceResolution>()
+      for (const { workspace } of workflow ? named : []) {
+        if (workspace === undefined || workspaces.has(workspace)) continue
+        workspaces.set(workspace, yield* DagLocation.resolveWorkspaceAsync(workspace, ownerDirectory))
+      }
+      return { userMaxTotalNodes, ownerDirectory, workspaces } satisfies Prepared
+    })
     const _replan = Effect.fn("Dag._replan")(function* (
       lock: WorkflowLock,
       dagID: string,
+      prepared: Prepared,
       fragment: { nodes: NodeConfig[]; blockCompiled?: boolean },
       reopenCompleted = false,
       action: "extend" | "replan" = "replan",
@@ -62,7 +108,7 @@ export const make = (environment: DagCommandCore.Core) =>
       }
       // The persisted declaration is re-clamped against the user's CURRENT
       // global cap: lowering `dag.max_total_nodes` also bounds later growth.
-      const userMaxTotalNodes = yield* readUserMaxTotalNodes()
+      const { userMaxTotalNodes } = prepared
       // #1030 D9-g: completed settlement removes the workflow worktree while
       // keeping its branch. Reopening the graph would spawn into a missing
       // execution directory (workspace_missing) with no live worktree to
@@ -80,8 +126,19 @@ export const make = (environment: DagCommandCore.Core) =>
       // #943: direct Dag service callers bypass the authoring boundary. Pin
       // node workspaces to canonical realpaths before the definition reaches
       // the merged config; invalid values are an ordinary Effect failure.
+      // #1344: the verdicts on the workspaces were resolved before this
+      // transaction opened, against the owner directory the row had then.
+      const workspaceVerdict = (workspace: string): DagLocation.WorkspaceResolution => {
+        const verdict =
+          prepared.ownerDirectory === (workflow.directory ?? "") ? prepared.workspaces.get(workspace) : undefined
+        if (!verdict)
+          throw new Error(
+            "Replan rejected: the workflow changed while its workspaces were being resolved; inspect status and retry",
+          )
+        return verdict
+      }
       const fragmentNodes = yield* Effect.try({
-        try: () => pinNodeWorkspaces(fragment.nodes, workflow.directory ?? ""),
+        try: () => pinNodeWorkspaces(fragment.nodes, workflow.directory ?? "", undefined, workspaceVerdict),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
       const normalizedFragment = {
@@ -368,6 +425,7 @@ export const make = (environment: DagCommandCore.Core) =>
     const _extend = Effect.fn("Dag._extend")(function* (
       lock: WorkflowLock,
       dagID: string,
+      prepared: Prepared,
       newNodes: NodeConfig[],
       fence?: { nodeID: string; attempt: NodeExecutionAttempt },
       options?: { blockCompiled?: boolean },
@@ -474,14 +532,36 @@ export const make = (environment: DagCommandCore.Core) =>
       return yield* _replan(
         lock,
         dagID,
+        prepared,
         { nodes: [...preserved, ...newNodes], ...(options?.blockCompiled === true ? { blockCompiled: true } : {}) },
         reopenCompleted,
         "extend",
       )
     })
 
+    // `command`, with the reads that wait for something other than the database
+    // (#1344) between the lock and the transaction: ADR-0008 decision 3 keeps
+    // them out of the latter.
+    const replan: Interface["replan"] = (dagID, fragment) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const prepared = yield* prepare(dagID, fragment.nodes, false)
+          return yield* transact(dagID, withMailbox(dagID, undefined, _replan(lock, dagID, prepared, fragment)))
+        }),
+      )
+    const extend: Interface["extend"] = (dagID, nodes, fence, options) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const prepared = yield* prepare(dagID, nodes, true)
+          return yield* transact(
+            dagID,
+            withMailbox(dagID, undefined, _extend(lock, dagID, prepared, nodes, fence, options)),
+          )
+        }),
+      )
+
     return {
-      _replan,
-      _extend,
+      replan,
+      extend,
     }
   })

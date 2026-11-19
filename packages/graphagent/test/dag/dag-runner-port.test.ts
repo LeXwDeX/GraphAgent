@@ -744,7 +744,8 @@ describe("the loop and the delivery write runner commands through the port only 
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/.*$/gm, "")
 
-  for (const file of ["loop.ts", "delivery.ts", "reconciler.ts"])
+  // #1344: `teardown.ts` holds the plain service for the failure and the settlement of a workflow, so it is held to the same rule.
+  for (const file of ["loop.ts", "teardown.ts", "delivery.ts", "reconciler.ts"])
     test(`${file} calls no runner command on the plain service`, () => {
       const plain = new RegExp(`\\bdag\\s*\\.\\s*(${RunnerPort.COMMANDS.join("|")})\\b`, "g")
 
@@ -752,19 +753,23 @@ describe("the loop and the delivery write runner commands through the port only 
     })
 
   test("loop.ts provides the port, never the plain service, as the Dag service of the spawn, the recovery and the watchers", () => {
+    // #1344: the handlers split out of loop.ts keep their provide sites, so they are counted with the loop's.
+    const loop = ["loop.ts", "spawn-ready.ts", "recover-workflow.ts", "replan-handler.ts", "message-continuation.ts"]
+      .map(source)
+      .join("\n")
     const plain = /provideService\(\s*Dag\.Service\s*,\s*dag\s*\)/g
 
-    expect(source("loop.ts").match(plain) ?? []).toEqual([])
+    expect(loop.match(plain) ?? []).toEqual([])
     // ... and it does provide the port in each of those places: the spawn, the continuation and its watcher, the
     // adoption's reconciliation, and the watcher a replan re-arms.
-    expect(source("loop.ts").match(/provideService\(\s*Dag\.Service\s*,\s*(?:entry\.port|port)\s*\)/g)).toHaveLength(5)
+    expect(loop.match(/provideService\(\s*Dag\.Service\s*,\s*(?:entry\.port|port)\s*\)/g)).toHaveLength(5)
   })
 
   // The re-read before a child session exists is a side-effect check, not a write: a spawn that loses its slot
   // to the fence's refusal never reaches it in a loop-level case, so its wiring is pinned here and its behavior in
   // dag-spawn-pause-fence.test.ts and the `verify` cases of dag-runner-lease.test.ts.
   test("loop.ts hands every spawn the lease re-read of its entry", () => {
-    expect(source("loop.ts")).toContain("leaseHeld: runnerLease.verify(dagID, entry)")
+    expect(source("spawn-ready.ts")).toContain("leaseHeld: runnerLease.verify(dagID, entry)")
   })
 })
 

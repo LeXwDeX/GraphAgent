@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
+import { existsSync, rmSync } from "node:fs"
 import { Cause, Context, Effect, Exit, Layer, Option } from "effect"
 import { eq, inArray } from "drizzle-orm"
 import { Database } from "@graphagent/core/database/database"
@@ -13,6 +14,8 @@ import { GoalOutcomeTable, GoalStateTable } from "@graphagent/core/goal/sql"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session as SessionNs } from "@/session/session"
+import { CompactionExport } from "@/session/compaction-export"
+import { MessageID, type SessionID } from "@/session/schema"
 import { BackgroundJob } from "@/background/job"
 import { SessionAttention } from "@/notification/attention"
 import { ExclusiveRegistry } from "@/session/engine-process"
@@ -188,6 +191,41 @@ describe("Session.remove dag lease cleanup (GOAL-FP-01-06)", () => {
       // running/paused/stepping rows): the workflow must not be re-adoptable.
       const adoptable = yield* dag.store.listByStatus("running").pipe(Effect.orDie)
       expect(adoptable.map((wf) => wf.id)).not.toContain(dagID)
+    }),
+  )
+})
+
+describe("Session.remove compaction export cleanup (#1469)", () => {
+  const exportOf = (sessionID: SessionID) =>
+    CompactionExport.write({ sessionID, compactionID: MessageID.ascending(), messages: [] })
+
+  it.instance("deletes the exports of the removed session and of its children, and keeps those of other sessions", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const parent = yield* session.create({})
+      const child = yield* session.create({ parentID: parent.id })
+      const other = yield* session.create({})
+      const parentExports = [yield* exportOf(parent.id), yield* exportOf(parent.id)]
+      const childExport = yield* exportOf(child.id)
+      const otherExport = yield* exportOf(other.id)
+      yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(otherExport, { force: true })))
+      for (const file of [...parentExports, childExport, otherExport]) expect(existsSync(file)).toBe(true)
+
+      yield* session.remove(parent.id)
+
+      for (const file of [...parentExports, childExport]) expect(existsSync(file)).toBe(false)
+      expect(existsSync(otherExport)).toBe(true)
+    }),
+  )
+
+  it.instance("removes a session that has no export", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const info = yield* session.create({})
+
+      yield* session.remove(info.id)
+
+      expect((yield* session.get(info.id).pipe(Effect.exit))._tag).toBe("Failure")
     }),
   )
 })

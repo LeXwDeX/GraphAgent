@@ -71,6 +71,26 @@ it.instance("of the built-in agents, compaction, title and summary are the inter
   }),
 )
 
+// #1540: `hidden` is a display flag the user can set on any agent, so hiding a built-in agent does not make it internal.
+it.instance(
+  "a built-in agent the user hides is not an internal agent",
+  () =>
+    Effect.gen(function* () {
+      const agents = yield* load((svc) => svc.list())
+      const explore = agents.find((agent) => agent.name === "explore")
+      expect(explore?.native).toBe(true)
+      expect(explore?.hidden).toBe(true)
+      expect(isInternalAgent(explore!)).toBe(false)
+      expect(
+        agents
+          .filter((agent) => isInternalAgent(agent))
+          .map((agent) => agent.name)
+          .toSorted(),
+      ).toEqual(["compaction", "summary", "title"])
+    }),
+  { config: { agent: { explore: { hidden: true } } } },
+)
+
 it.instance("build agent has correct default properties", () =>
   Effect.gen(function* () {
     const build = yield* load((svc) => svc.get("build"))
