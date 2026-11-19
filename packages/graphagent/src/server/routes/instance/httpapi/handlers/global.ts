@@ -1,5 +1,6 @@
 import { Config } from "@/config/config"
 import { ConfigHotReload } from "@/config/hot-reload"
+import { ProviderRedact } from "@/provider/redact"
 import { GlobalBus } from "@/bus/global"
 import { EffectBridge } from "@/effect/bridge"
 import { UPDATES_DISABLED } from "@/installation"
@@ -28,8 +29,9 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return { healthy: true as const, version: InstallationVersion }
     })
 
+    // #1553: redacted on the way out, like `GET /config`.
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {
-      return yield* config.getGlobal()
+      return ProviderRedact.redactConfig(yield* config.getGlobal())
     })
 
     const configUpdate = Effect.fn("GlobalHttpApi.configUpdate")(function* (ctx) {

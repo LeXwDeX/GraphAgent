@@ -13,8 +13,8 @@ process.env.XDG_STATE_HOME = path.join(exerciseGlobalRoot, "state")
 process.env.XDG_CACHE_HOME = path.join(exerciseGlobalRoot, "cache")
 export const exerciseConfigDirectory = path.join(exerciseGlobalRoot, "config", "graphagent")
 export const exerciseDataDirectory = path.join(exerciseGlobalRoot, "data", "graphagent")
-// Requests without a directory resolve to process.cwd(). Auth probes and global
-// scenarios execute real handlers, so they must never resolve to the invoking
+// Requests without a directory resolve to process.cwd(). Global scenarios
+// execute real handlers, so they must never resolve to the invoking
 // checkout (mutating scenarios would create files and branches there).
 export const exerciseWorkingDirectory = path.join(exerciseGlobalRoot, "cwd")
 export const invokingDirectory = process.cwd()
@@ -44,11 +44,6 @@ export const exerciseDatabasePath =
   path.join(process.env.TMPDIR ?? "/tmp", `graphagent-httpapi-exercise-${process.pid}.db`)
 process.env.GRAPHAGENT_DB = exerciseDatabasePath
 Flag.GRAPHAGENT_DB = exerciseDatabasePath
-
-export const original = {
-  GRAPHAGENT_SERVER_PASSWORD: Flag.GRAPHAGENT_SERVER_PASSWORD,
-  GRAPHAGENT_SERVER_USERNAME: Flag.GRAPHAGENT_SERVER_USERNAME,
-}
 
 export const cleanupExercisePaths = Effect.promise(async () => {
   const fs = await import("fs/promises")

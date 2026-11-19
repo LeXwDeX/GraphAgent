@@ -1,5 +1,6 @@
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
+import { ProviderRedact } from "@/provider/redact"
 import * as InstanceState from "@/effect/instance-state"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/http-api"
@@ -11,8 +12,10 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
     const providerSvc = yield* Provider.Service
     const configSvc = yield* Config.Service
 
+    // #1553: `{env:}` and `{file:}` references are resolved by the time the configuration is read, so every read
+    // response is redacted on its way out; the runtime keeps reading the resolved values from the services.
     const get = Effect.fn("ConfigHttpApi.get")(function* () {
-      return yield* configSvc.get()
+      return ProviderRedact.redactConfig(yield* configSvc.get())
     })
 
     const update = Effect.fn("ConfigHttpApi.update")(function* (ctx) {
@@ -24,7 +27,8 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
     })
 
     const providers = Effect.fn("ConfigHttpApi.providers")(function* () {
-      return yield* providerSvc.publicCatalog()
+      const catalog = yield* providerSvc.publicCatalog()
+      return { ...catalog, providers: catalog.providers.map(ProviderRedact.redactProvider) }
     })
 
     return handlers.handle("get", get).handle("update", update).handle("providers", providers)

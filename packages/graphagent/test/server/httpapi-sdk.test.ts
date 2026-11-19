@@ -7,7 +7,6 @@ import { HttpServer } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
-import { Flag } from "@graphagent/core/flag/flag"
 import { createClient } from "@graphagent/sdk"
 import { validateSession } from "../../src/cli/tui/validate-session"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
@@ -40,11 +39,6 @@ const it = testEffect(
   ),
 )
 
-const original = {
-  GRAPHAGENT_SERVER_PASSWORD: Flag.GRAPHAGENT_SERVER_PASSWORD,
-  GRAPHAGENT_SERVER_USERNAME: Flag.GRAPHAGENT_SERVER_USERNAME,
-}
-
 type ServerPath = "default" | "raw"
 type Sdk = ReturnType<typeof createClient>
 type SdkResult = { response?: Response; data?: unknown; error?: unknown }
@@ -59,8 +53,6 @@ function client(
   serverPath: ServerPath,
   directory?: string,
   input?: {
-    password?: string
-    username?: string
     headers?: Record<string, string>
     workspaceID?: string
     onRequest?: (request: Request) => void
@@ -79,15 +71,10 @@ function client(
   )
 }
 
-function serverFetch(
-  serverPath: ServerPath,
-  input?: { password?: string; username?: string; onRequest?: (request: Request) => void },
-) {
+function serverFetch(serverPath: ServerPath, input?: { onRequest?: (request: Request) => void }) {
   return HttpServer.HttpServer.use((server) =>
     Effect.sync(() => {
       void serverPath
-      Flag.GRAPHAGENT_SERVER_PASSWORD = input?.password
-      Flag.GRAPHAGENT_SERVER_USERNAME = input?.username
       const baseUrl = HttpServer.formatAddress(server.address)
       return Object.assign(
         async (request: RequestInfo | URL, init?: RequestInit) => {
@@ -100,10 +87,6 @@ function serverFetch(
       ) satisfies typeof globalThis.fetch
     }),
   )
-}
-
-function authorization(username: string, password: string) {
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
 }
 
 function call<T>(request: () => Promise<T>) {
@@ -339,8 +322,6 @@ function seedChildSession(directory: string, parentID: string) {
 }
 
 afterEach(async () => {
-  Flag.GRAPHAGENT_SERVER_PASSWORD = original.GRAPHAGENT_SERVER_PASSWORD
-  Flag.GRAPHAGENT_SERVER_USERNAME = original.GRAPHAGENT_SERVER_USERNAME
   await disposeAllInstances()
   await resetDatabase()
 })
@@ -484,31 +465,6 @@ describe("HttpApi SDK", () => {
         return errorMessage(thrown)
       }),
     ),
-  )
-
-  httpapiInstance(
-    "uses generated SDK basic auth behavior",
-    { serverPath: "raw", setup: writeStandardFiles },
-    ({ directory }) =>
-      Effect.gen(function* () {
-        const missingSdk = yield* client("raw", directory, { password: "secret" })
-        const missing = yield* capture(() => missingSdk.file.read({ path: "hello.txt" }))
-        const badSdk = yield* client("raw", directory, {
-          password: "secret",
-          headers: { authorization: authorization("graphagent", "wrong") },
-        })
-        const bad = yield* capture(() => badSdk.file.read({ path: "hello.txt" }))
-        const goodSdk = yield* client("raw", directory, {
-          password: "secret",
-          headers: { authorization: authorization("graphagent", "secret") },
-        })
-        const good = yield* capture(() => goodSdk.file.read({ path: "hello.txt" }))
-
-        return {
-          statuses: statuses({ missing, bad, good }),
-          content: record(good.data).content,
-        }
-      }),
   )
 
   serverPathParity("matches generated SDK instance read routes", (serverPath) =>
