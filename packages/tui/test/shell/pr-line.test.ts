@@ -17,6 +17,7 @@ import {
   prTailText,
   type BandCandidates,
   type BandRowKind,
+  type MarkedRowKind,
 } from "../../src/shell/pr-line"
 import type { PrBandItem, ReminderBandItem } from "../../src/shell/pr-tracker-context"
 import { bandRowText, layoutDagRow, type BandRow, type BandToken } from "../../src/shell/status-band"
@@ -561,6 +562,7 @@ describe("the page a click on the PR row opens", () => {
 
 describe("which rows the band draws", () => {
   const row = (text: string): BandRow => ({ spans: [{ text, token: "text" }], cells: text.length })
+  const trust = row("trust")
   const dag = row("dag")
   const goal = row("goal")
   const reminder = row("reminder")
@@ -607,12 +609,34 @@ describe("which rows the band draws", () => {
     expect(draws({ pr: warned })).toEqual(["pr:pr!"])
   })
 
-  test("keeps only the highest row on a narrow terminal: PR warning, workflow, PR, goal, reminder", () => {
+  test("keeps only the highest row on a narrow terminal: trust, PR warning, workflow, PR, goal, reminder", () => {
+    expect(draws({ trust, pr: warned, dag, goal, reminder }, true)).toEqual(["trust:trust"])
     expect(draws({ pr: warned, dag, goal, reminder }, true)).toEqual(["pr:pr!"])
     expect(draws({ pr: quiet, dag, goal, reminder }, true)).toEqual(["dag:dag"])
     expect(draws({ pr: quiet, goal, reminder }, true)).toEqual(["pr:pr"])
     expect(draws({ goal, reminder }, true)).toEqual(["goal:goal"])
     expect(draws({ reminder }, true)).toEqual(["reminder:reminder"])
+  })
+
+  test("gives the trust warning the first row, ahead of a PR warning and the workflow, and pushes the goal out", () => {
+    expect(draws({ trust })).toEqual(["trust:trust"])
+    expect(draws({ trust, pr: warned, dag, goal, reminder })).toEqual(["trust:trust", "pr:pr!"])
+    expect(draws({ trust, dag, goal, reminder })).toEqual(["trust:trust", "dag:dag"])
+    expect(draws({ trust, pr: warned, goal })).toEqual(["trust:trust", "pr:pr!"])
+    // A quiet PR still has a row of its own only without a workflow row, and then it is the second.
+    expect(draws({ trust, pr: quiet, dag })).toEqual(["trust:trust", "dag:dag"])
+    expect(draws({ trust, pr: quiet, goal })).toEqual(["trust:trust", "pr:pr"])
+    // The goal and the reminder are what is left for the second row when nothing ranks between them and the trust row.
+    expect(draws({ trust, goal, reminder })).toEqual(["trust:trust", "goal:goal"])
+    expect(draws({ trust, reminder })).toEqual(["trust:trust", "reminder:reminder"])
+  })
+
+  test("takes no line for a trust row with nothing to draw, and changes nothing else about the choice", () => {
+    const blank: BandRow = { spans: [], cells: 0 }
+    expect(draws({ trust: blank, dag, goal })).toEqual(["dag:dag", "goal:goal"])
+    expect(draws({ trust: blank, pr: warned, dag }, true)).toEqual(["pr:pr!"])
+    // The same candidates without the trust row are the choice that was made before it.
+    expect(draws({ pr: warned, dag, goal, reminder })).toEqual(["pr:pr!", "dag:dag"])
   })
 
   test("draws the reminder only when there is room: below the rows that rank above it", () => {
@@ -626,20 +650,24 @@ describe("which rows the band draws", () => {
 
   test(`draws ${BAND_ROWS_MAX} rows at most, whatever is given`, () => {
     const kinds = new Set<BandRowKind>()
-    for (const pr of [undefined, quiet, warned]) {
-      for (const d of [undefined, dag]) {
-        for (const g of [undefined, goal]) {
-          for (const r of [undefined, reminder]) {
-            for (const narrow of [false, true]) {
-              const chosen = chooseBandRows({ pr, dag: d, goal: g, reminder: r }, narrow)
-              expect(chosen.length).toBeLessThanOrEqual(narrow ? 1 : BAND_ROWS_MAX)
-              for (const choice of chosen) kinds.add(choice.kind)
+    for (const tr of [undefined, trust]) {
+      for (const pr of [undefined, quiet, warned]) {
+        for (const d of [undefined, dag]) {
+          for (const g of [undefined, goal]) {
+            for (const r of [undefined, reminder]) {
+              for (const narrow of [false, true]) {
+                const chosen = chooseBandRows({ trust: tr, pr, dag: d, goal: g, reminder: r }, narrow)
+                expect(chosen.length).toBeLessThanOrEqual(narrow ? 1 : BAND_ROWS_MAX)
+                // The trust row, when there is one, is the first row: nothing ranks above it.
+                if (tr) expect(chosen[0].kind).toBe("trust")
+                for (const choice of chosen) kinds.add(choice.kind)
+              }
             }
           }
         }
       }
     }
-    expect(kinds).toEqual(new Set<BandRowKind>(["pr", "dag", "goal", "reminder"]))
+    expect(kinds).toEqual(new Set<BandRowKind>(["trust", "pr", "dag", "goal", "reminder"]))
   })
 })
 
@@ -701,6 +729,7 @@ describe("the background mark on the PR and reminder rows", () => {
 
 describe("where the background runs go on the band", () => {
   const row = (text: string): BandRow => ({ spans: [{ text, token: "text" }], cells: text.length })
+  const trust = row("trust")
   const dag = row("dag")
   const goal = row("goal")
   const reminder = row("reminder")
@@ -711,7 +740,7 @@ describe("where the background runs go on the band", () => {
   function runs() {
     const asked = { marked: [] as string[], own: 0 }
     const background = {
-      marked: (kind: Exclude<BandRowKind, "background">) => {
+      marked: (kind: MarkedRowKind) => {
         asked.marked.push(kind)
         return row(`${kind}◇`)
       },
@@ -746,6 +775,19 @@ describe("where the background runs go on the band", () => {
     expect(draws({ pr: warned, reminder, background })).toEqual(["pr:pr!", "reminder:reminder◇"])
   })
 
+  test("skips the trust row: the row under it takes the mark", () => {
+    const { background } = runs()
+    expect(draws({ trust, dag, background })).toEqual(["trust:trust", "dag:dag◇"])
+    expect(draws({ trust, dag, goal, background })).toEqual(["trust:trust", "dag:dag◇"])
+    expect(draws({ trust, pr: quiet, background })).toEqual(["trust:trust", "pr:pr◇"])
+    expect(draws({ trust, goal, background })).toEqual(["trust:trust", "goal:goal◇"])
+    expect(draws({ trust, reminder, background })).toEqual(["trust:trust", "reminder:reminder◇"])
+    // Under a PR warning too, the trust row first and the warning second: neither takes it.
+    expect(draws({ trust, pr: warned, dag, background })).toEqual(["trust:trust", "pr:pr!"])
+    // A workflow row at the alert band of its budget is a warning row as well.
+    expect(draws({ trust, dag, dagAlert: true, goal, background })).toEqual(["trust:trust", "dag:dag"])
+  })
+
   test("skips a workflow row at the alert band of its budget: the row under it takes the mark", () => {
     const { background } = runs()
     expect(draws({ dag, dagAlert: true, goal, background })).toEqual(["dag:dag", "goal:goal◇"])
@@ -760,6 +802,9 @@ describe("where the background runs go on the band", () => {
     expect(draws({ pr: warned, background })).toEqual(["pr:pr!"])
     expect(draws({ dag, dagAlert: true, background })).toEqual(["dag:dag"])
     expect(draws({ pr: warned, dag, dagAlert: true, background })).toEqual(["pr:pr!", "dag:dag"])
+    // The trust row is a warning row: alone, it neither takes the mark nor leaves the runs a row beside it.
+    expect(draws({ trust, background })).toEqual(["trust:trust"])
+    expect(draws({ trust, pr: warned, background })).toEqual(["trust:trust", "pr:pr!"])
     expect(asked).toEqual({ marked: [], own: 0 })
   })
 
@@ -781,6 +826,7 @@ describe("where the background runs go on the band", () => {
     expect(draws({ goal, reminder, background }, true)).toEqual(["goal:goal"])
     expect(draws({ background }, true)).toEqual([])
     expect(draws({ pr: warned, dag, background }, true)).toEqual(["pr:pr!"])
+    expect(draws({ trust, dag, goal, background }, true)).toEqual(["trust:trust"])
     expect(asked).toEqual({ marked: [], own: 0 })
   })
 
@@ -801,22 +847,29 @@ describe("where the background runs go on the band", () => {
   })
 
   test("never draws more than the rows the band has, whatever is given", () => {
-    const { background } = runs()
-    for (const pr of [undefined, quiet, warned]) {
-      for (const d of [undefined, dag]) {
-        for (const dagAlert of [false, true]) {
-          for (const g of [undefined, goal]) {
-            for (const r of [undefined, reminder]) {
-              for (const narrow of [false, true]) {
-                const chosen = chooseBandRows({ pr, dag: d, dagAlert, goal: g, reminder: r, background }, narrow)
-                expect(chosen.length).toBeLessThanOrEqual(narrow ? 1 : BAND_ROWS_MAX)
-                // The row of the runs is never drawn beside another.
-                if (chosen.some((choice) => choice.kind === "background")) expect(chosen).toHaveLength(1)
+    const { asked, background } = runs()
+    for (const tr of [undefined, trust]) {
+      for (const pr of [undefined, quiet, warned]) {
+        for (const d of [undefined, dag]) {
+          for (const dagAlert of [false, true]) {
+            for (const g of [undefined, goal]) {
+              for (const r of [undefined, reminder]) {
+                for (const narrow of [false, true]) {
+                  const chosen = chooseBandRows(
+                    { trust: tr, pr, dag: d, dagAlert, goal: g, reminder: r, background },
+                    narrow,
+                  )
+                  expect(chosen.length).toBeLessThanOrEqual(narrow ? 1 : BAND_ROWS_MAX)
+                  // The row of the runs is never drawn beside another.
+                  if (chosen.some((choice) => choice.kind === "background")) expect(chosen).toHaveLength(1)
+                }
               }
             }
           }
         }
       }
     }
+    // The trust row has no layout with the mark: it was never asked for one.
+    expect(asked.marked).not.toContain("trust")
   })
 })

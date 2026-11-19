@@ -530,6 +530,8 @@ export const zhCN = {
   "panel.mcp.disabled": "已禁用",
   "panel.mcp.loading": "切换中",
   "panel.mcp.status.failed": "失败",
+  "trust.band.changed.one": "项目命令有 {n} 处变化，未确认前暂停执行",
+  "trust.band.changed.many": "项目命令有 {n} 处变化，未确认前暂停执行",
   "trust.title.first": "先看一下这个项目会做什么",
   "trust.title.changed": "项目命令有变化",
   "trust.title.imported": "本次导入的项目命令",

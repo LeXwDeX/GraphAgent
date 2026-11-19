@@ -24,6 +24,8 @@ import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { RUN_START, endRun, seedRun } from "../fixture/background-runs"
 import { MINUTE, T0, bandItem, ciItem, prEntry, stoppedItem, unresponsiveItem, workingItem } from "../fixture/pr-band"
+import { probeStoreWrites } from "../fixture/store-write-probe"
+import { trustEntry, trusting } from "../fixture/trust"
 import { createEventSource, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { dagModeStatus, mountRoute, sessionFixture, waitFor, type MountOptions } from "../routes/dag-mode-harness"
 
@@ -2698,6 +2700,567 @@ describe("the background runs at 80 and 120 columns", () => {
           try {
             const crowded = scenario.world === running && width === BAND_NARROW_WIDTH
             const lines = await drawn(harness, scenario.rows[1], !crowded)
+            for (const line of lines) expect(cellWidth(line, 2), line).toBeLessThanOrEqual(width)
+          } finally {
+            await harness.dispose()
+          }
+        })
+      }
+    }
+  }
+})
+
+// ── The project-trust row (#1618) ───────────────────────────────────────────────────────────────────────────────
+//
+// Commands that were added or changed since the last decision are paused until a new one is made: a warning row, the
+// first the band draws, ahead of a PR warning and the workflow. It says how many, has the hint `/trust` at its right
+// edge, and a click opens that panel. It is project-wide, so it is the same in every view, and it never carries the
+// background mark. The count is what the server lists, the way the footer reminder reads it. No clock.
+
+const trustUpdated = () =>
+  event({ type: "project.trust.updated", properties: { projectID: "proj_test", entries: [], removed: [] } })
+
+/** The workflows' summaries held back until `release`, so a test sees what the band does with the trust row first. */
+function heldSummaries() {
+  let release!: () => void
+  const opened = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return {
+    release: () => release(),
+    wrap:
+      (inner: FetchHandler): FetchHandler =>
+      async (url, request) => {
+        if (url.pathname.startsWith("/dag/session/")) await opened
+        return inner(url, request)
+      },
+  }
+}
+
+/** Two commands that changed, one that is pending for the first time, and one that is trusted. */
+const mixedTrust = [
+  trustEntry("setup", "pending", "new"),
+  trustEntry("lint", "pending", "modified"),
+  trustEntry("first", "pending"),
+  trustEntry("old", "trusted"),
+]
+const changedTrust = mixedTrust.slice(0, 2)
+
+/** The sentence of the row in Chinese, whole. */
+const trustSaid = (count: number) => `⚠ 项目命令有 ${count} 处变化，未确认前暂停执行`
+
+describe("the trust row", () => {
+  test("takes the first row with the count of the commands that changed, and the hint at the right edge", async () => {
+    const trusted = trusting(mixedTrust)
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    try {
+      const lines = await band(harness, (all) => all.length === 1 && all[0].includes("项目命令有"), "the trust row")
+      // Two changed commands: the pending one with no change, and the trusted one, are not in the count.
+      expect(lines[0].trim().startsWith(trustSaid(2))).toBe(true)
+      expect(lines[0].endsWith("/trust")).toBe(true)
+      // The band's inside is 116 cells of a 120-column terminal, with two columns of padding in front of it.
+      expect(cellWidth(lines[0], 1)).toBe(118)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is not drawn for a pending command with no change or for decided ones, and takes no height", async () => {
+    const trusted = trusting([
+      trustEntry("a", "pending"),
+      trustEntry("b", "pending"),
+      trustEntry("c", "trusted"),
+      trustEntry("d", "declined"),
+      trustEntry("e", "trusted", "modified"),
+      trustEntry("f", "declined", "new"),
+    ])
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    try {
+      await waitFor(() => harness.sync().data.trust.length === 6)
+      await harness.settle()
+      expect(rows(await harness.frame())).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the server: it comes with the first change, counts them, and goes with the last decision", async () => {
+    const trusted = trusting([trustEntry("first", "pending")])
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    try {
+      await waitFor(() => harness.sync().data.trust_loaded)
+      await harness.settle()
+      expect(rows(await harness.frame())).toEqual([])
+
+      trusted.set([trustEntry("first", "pending"), trustEntry("a", "pending", "new")])
+      harness.events.emit(trustUpdated())
+      const one = await band(harness, (all) => all.length === 1, "one change")
+      expect(one[0]).toContain(trustSaid(1))
+
+      trusted.set([
+        trustEntry("a", "pending", "new"),
+        trustEntry("b", "pending", "modified"),
+        trustEntry("c", "pending", "new"),
+      ])
+      harness.events.emit(trustUpdated())
+      await band(harness, (all) => all.length === 1 && all[0].includes(trustSaid(3)), "three changes")
+
+      trusted.set([trustEntry("a", "trusted"), trustEntry("b", "declined"), trustEntry("c", "trusted")])
+      harness.events.emit(trustUpdated())
+      await band(harness, (all) => all.length === 0, "no row")
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("says it in English, in the singular for one command and in the plural for more", async () => {
+    setLanguage("en")
+    const trusted = trusting([trustEntry("a", "pending", "new")])
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler, language: "en" })
+    try {
+      const one = await band(harness, (all) => all.length === 1, "the trust row")
+      expect(one[0].trim().startsWith("⚠ 1 project command changed · paused until confirmed")).toBe(true)
+      expect(one[0].endsWith("/trust")).toBe(true)
+
+      trusted.set([trustEntry("a", "pending", "new"), trustEntry("b", "pending", "modified")])
+      harness.events.emit(trustUpdated())
+      const two = await band(harness, (all) => all.length === 1 && all[0].includes("2 project commands"), "the plural")
+      expect(two[0].trim().startsWith("⚠ 2 project commands changed · paused until confirmed")).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the interface language while it is on screen", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    try {
+      await band(harness, (all) => all.length === 1 && all[0].includes(trustSaid(2)), "the Chinese row")
+      setLanguage("en")
+      await band(harness, (all) => all.length === 1 && all[0].includes("2 project commands changed"), "the English row")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is the same in a sub-agent view: project trust belongs to the project, not to a session", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(noFlow, {
+      handler: trusted.handler,
+      route: { type: "session", sessionID: childID },
+    })
+    try {
+      const lines = await band(harness, (all) => all.length === 1, "the trust row")
+      expect(lines[0].trim().startsWith(trustSaid(2))).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("costs the band only its trust row when the server's answer is of another shape", async () => {
+    // A body that is an array has a function at `.entries`, and that is what the sync layer then keeps as the list.
+    const { harness } = await mountBand(running, {
+      handler: (url) => (url.pathname === "/project/trust" ? json([]) : undefined),
+    })
+    try {
+      await waitFor(() => harness.sync().data.trust_loaded)
+      harness.events.emit(goalEvent(rootID, goal()))
+      const lines = await band(harness, (all) => all.length === 2 && all[0].includes("◆ alpha"), "the usual two rows")
+      expect(lines[1]).toContain("◎")
+      expect(lines.join("\n")).not.toContain("项目命令")
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the trust row and the other rows", () => {
+  test("is the first row, over a PR warning, which keeps the second: the workflow gives way and is not declared", async () => {
+    const held = heldSummaries()
+    const trusted = trusting(changedTrust)
+    const tracked = fakeTracker({ items: [unresponsiveItem({ number: 1040 })] })
+    const { harness, served } = await mountTracked(running, tracked, { handler: held.wrap(trusted.handler) })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 2 && all[0].includes(trustSaid(2)), "the trust row and the warning")
+      // The trust row is on screen before the workflow's summary arrives, and then the workflow has no row.
+      held.release()
+      await waitFor(() => harness.sync().data.dag[rootID]?.length === 1)
+      await harness.settle()
+      const drawn = rows(await harness.frame())
+      expect(drawn).toHaveLength(2)
+      expect(drawn[0].trim().startsWith(trustSaid(2))).toBe(true)
+      expect(drawn[1].trim()).toBe("PR #1040  ✓ 通过 · agent 未响应")
+      expect(drawn.join("\n")).not.toContain("◆ alpha")
+      expect(drawn.join("\n")).not.toContain("◎")
+      expect(served.reads).toHaveLength(0)
+
+      // The warning clears: the workflow row takes the second row, and its table is read for it.
+      tracked.setItems([])
+      await band(harness, (all) => all.length === 2 && all[1].includes("◆ alpha"), "the workflow row")
+      await waitFor(() => served.reads.length === 1)
+    } finally {
+      held.release()
+      await harness.dispose()
+    }
+  })
+
+  test("is the first row over the workflow row, and leaves the goal to the drawer", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness, served } = await mountBand(running, { handler: trusted.handler })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 2 && all[1].includes("◆ alpha"), "the trust and workflow rows")
+      await waitFor(() => served.reads.length === 1)
+      await harness.settle()
+      const drawn = rows(await harness.frame())
+      expect(drawn).toHaveLength(2)
+      expect(drawn[0].trim().startsWith(trustSaid(2))).toBe(true)
+      expect(drawn[1]).toContain("第 2/3 波")
+      expect(drawn.join("\n")).not.toContain("◎")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("shares the band with the goal when no workflow competes for the second row, and with a quiet PR", async () => {
+    const trusted = trusting(changedTrust)
+    const tracked = fakeTracker({ items: [ciItem()] })
+    const { harness } = await mountTracked(noFlow, tracked, { handler: trusted.handler })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      // A quiet PR has a row of its own without a workflow row, and ranks over the goal.
+      const withPr = await band(harness, (all) => all.length === 2 && all[1].includes("PR #1035"), "trust and PR")
+      expect(withPr[0].trim().startsWith(trustSaid(2))).toBe(true)
+
+      tracked.setItems([])
+      const withGoal = await band(harness, (all) => all.length === 2 && all[1].includes("◎"), "trust and goal")
+      expect(withGoal[0].trim().startsWith(trustSaid(2))).toBe(true)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test(`shows only the trust row below ${BAND_NARROW_WIDTH} columns, and leaves the workflow undeclared until it clears`, async () => {
+    const held = heldSummaries()
+    const trusted = trusting(changedTrust)
+    const tracked = fakeTracker({ items: [ciItem()], reminder: wait5() })
+    const { harness, served } = await mountTracked(running, tracked, {
+      width: BAND_NARROW_WIDTH - 1,
+      handler: held.wrap(trusted.handler),
+    })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 1 && all[0].includes(trustSaid(2)), "the trust row")
+      held.release()
+      await waitFor(() => harness.sync().data.dag[rootID]?.length === 1)
+      await harness.settle()
+      const drawn = rows(await harness.frame())
+      expect(drawn).toHaveLength(1)
+      expect(drawn[0].trim().startsWith(trustSaid(2))).toBe(true)
+      // The workflow is not on screen, so its table was not asked for.
+      expect(served.reads).toHaveLength(0)
+
+      // Every change is decided: the workflow row comes back, and its table is read for it.
+      trusted.set([trustEntry("setup", "trusted"), trustEntry("lint", "trusted")])
+      harness.events.emit(trustUpdated())
+      await band(harness, (all) => all.length === 1 && all[0].includes("◆ alpha"), "the workflow row")
+      await waitFor(() => served.reads.length === 1)
+    } finally {
+      held.release()
+      await harness.dispose()
+    }
+  })
+
+  test("does not take a row from the others when nothing changed: the band is what it was", async () => {
+    const trusted = trusting([trustEntry("first", "pending"), trustEntry("old", "trusted")])
+    const { harness, served } = await mountBand(running, { handler: trusted.handler })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      const lines = await band(harness, (all) => all.length === 2 && all[0].includes("◆ alpha"), "the usual two rows")
+      await waitFor(() => served.reads.length === 1)
+      expect(lines[1]).toContain("◎")
+      expect(lines.join("\n")).not.toContain("项目命令")
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the trust row and the background runs", () => {
+  test("carries no mark, and leaves the runs no row of their own when it is the only row", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    try {
+      await band(harness, (all) => all.length === 1 && all[0].includes(trustSaid(2)), "the trust row")
+      twoRuns(harness)
+      await harness.settle()
+      const drawn = rows(await harness.frame())
+      expect(drawn).toHaveLength(1)
+      expect(drawn[0]).not.toContain("◇")
+
+      // Control: the same runs are on the band as soon as the commands are decided.
+      trusted.set([trustEntry("setup", "trusted"), trustEntry("lint", "trusted")])
+      harness.events.emit(trustUpdated())
+      await band(harness, (all) => all.length === 1 && all[0].includes("◇ 后台 2"), "the row of the runs")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("leaves the mark to the row under it: the workflow row, or the goal row", async () => {
+    const trusted = trusting(changedTrust)
+    const withFlow = await mountBand(running, { handler: trusted.handler })
+    try {
+      twoRuns(withFlow.harness)
+      const lines = await band(
+        withFlow.harness,
+        (all) => all.length === 2 && all.some((row) => row.includes(MARK)),
+        "the mark",
+      )
+      expect(lines[0].trim().startsWith(trustSaid(2))).toBe(true)
+      expect(lines[0]).not.toContain("◇")
+      expect(lines[1]).toContain("◆ alpha")
+      expect(lines[1].endsWith(`/dag  ${MARK}`)).toBe(true)
+    } finally {
+      await withFlow.harness.dispose()
+    }
+
+    const withGoal = await mountBand(noFlow, { handler: trusted.handler })
+    try {
+      withGoal.harness.events.emit(goalEvent(rootID, goal()))
+      twoRuns(withGoal.harness)
+      const lines = await band(
+        withGoal.harness,
+        (all) => all.length === 2 && all.some((row) => row.includes(MARK)),
+        "the mark",
+      )
+      expect(lines[0]).not.toContain("◇")
+      expect(lines[1]).toContain("◎ 目标")
+      expect(lines[1].endsWith(`/goal  ${MARK}`)).toBe(true)
+    } finally {
+      await withGoal.harness.dispose()
+    }
+  })
+})
+
+describe("clicking the trust row", () => {
+  test("opens /trust once per click, from anywhere on the row, and sends nothing to the server", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    const ran: Array<{ args: string; origin: string }> = []
+    const off = harness.registry().setHandler("trust.open", (ctx) => {
+      ran.push({ args: ctx.args, origin: ctx.origin })
+    })
+    try {
+      await band(harness, (all) => all.length === 1, "the trust row")
+      const row = (await harness.frame()).split("\n").findIndex((line) => line.includes("项目命令有"))
+      // On the sentence, in the gap, and on the hint at the right edge.
+      for (const [index, x] of [6, 60, 114].entries()) {
+        harness.app.renderer.clearSelection()
+        await harness.app.mockMouse.click(x, row)
+        await waitFor(() => ran.length === index + 1)
+      }
+      await harness.settle()
+      // The click picks the command the way the palette does.
+      expect(ran).toEqual([
+        { args: "", origin: "palette" },
+        { args: "", origin: "palette" },
+        { args: "", origin: "palette" },
+      ])
+      expect(harness.writes()).toEqual([])
+      expect(harness.requested.filter((entry) => entry.startsWith("POST") || entry.startsWith("PUT"))).toEqual([])
+    } finally {
+      off()
+      await harness.dispose()
+    }
+  })
+
+  test("opens nothing when a drag selected text", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(noFlow, { handler: trusted.handler })
+    let opened = 0
+    const off = harness.registry().setHandler("trust.open", () => {
+      opened++
+    })
+    try {
+      await band(harness, (all) => all.length === 1, "the trust row")
+      const row = (await harness.frame()).split("\n").findIndex((line) => line.includes("项目命令有"))
+      await harness.app.mockMouse.drag(4, row, 30, row)
+      await harness.settle()
+      expect(opened).toBe(0)
+      // The same row does open it for a plain click, so the drag above is what held it back.
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(10, row)
+      await waitFor(() => opened === 1)
+      expect(harness.writes()).toEqual([])
+    } finally {
+      off()
+      await harness.dispose()
+    }
+  })
+
+  test("keeps each row's click to itself: the trust row opens /trust, the workflow row opens /dag", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(running, { handler: trusted.handler })
+    const opened = { trust: 0, dag: 0 }
+    const offTrust = harness.registry().setHandler("trust.open", () => {
+      opened.trust++
+    })
+    const offDag = harness.registry().setHandler("dag.open", () => {
+      opened.dag++
+    })
+    try {
+      await band(harness, (all) => all.length === 2 && all[1].includes("◆ alpha"), "the trust and workflow rows")
+      const lines = (await harness.frame()).split("\n")
+      const trustRow = lines.findIndex((line) => line.includes("项目命令有"))
+      const dagRow = lines.findIndex((line) => line.includes("◆ alpha"))
+
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(10, trustRow)
+      await waitFor(() => opened.trust === 1)
+      await harness.settle()
+      expect(opened).toEqual({ trust: 1, dag: 0 })
+
+      harness.app.renderer.clearSelection()
+      await harness.app.mockMouse.click(10, dagRow)
+      await waitFor(() => opened.dag === 1)
+      expect(opened).toEqual({ trust: 1, dag: 1 })
+      expect(harness.writes()).toEqual([])
+    } finally {
+      offTrust()
+      offDag()
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the trust row is still clock-free", () => {
+  test("does not subscribe to the ticker as the commands come, change and go", async () => {
+    // What the providers around the band ask the ticker for with nothing of the band on screen.
+    const bare = counting()
+    const empty = await mountBand(noFlow, { ticker: bare.ticker })
+    await empty.harness.settle()
+    await empty.harness.dispose()
+
+    const watched = counting()
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(running, { ticker: watched.ticker, handler: trusted.handler })
+    try {
+      harness.events.emit(goalEvent(rootID, goal()))
+      await band(harness, (all) => all.length === 2 && all[0].includes(trustSaid(2)), "the trust row and the workflow")
+      trusted.set([...changedTrust, trustEntry("third", "pending", "new")])
+      harness.events.emit(trustUpdated())
+      await band(harness, (all) => all.some((row) => row.includes(trustSaid(3))), "three changes")
+      trusted.set([])
+      harness.events.emit(trustUpdated())
+      await band(harness, (all) => all.length === 2 && all[0].includes("◆ alpha"), "no trust row")
+      await harness.settle()
+      expect(watched.calls).toEqual(bare.calls)
+      expect(watched.calls.frame).toBe(0)
+      expect(watched.calls.second).toBe(0)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("writes nothing to the message or part slices as the commands come, change and go", async () => {
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountBand(running, { handler: trusted.handler })
+    try {
+      await band(harness, (all) => all.some((row) => row.includes(trustSaid(2))), "the trust row")
+      const probe = probeStoreWrites(harness.sync().data, ["message", "part"])
+      try {
+        trusted.set([...changedTrust, trustEntry("third", "pending", "new")])
+        harness.events.emit(trustUpdated())
+        await band(harness, (all) => all.some((row) => row.includes(trustSaid(3))), "three changes")
+        trusted.set([])
+        harness.events.emit(trustUpdated())
+        await band(harness, (all) => all.every((row) => !row.includes("项目命令")), "no trust row")
+        await harness.settle()
+        expect(probe.total()).toBe(0)
+      } finally {
+        probe.dispose()
+      }
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("the trust row at 80 and 120 columns", () => {
+  interface Scenario {
+    readonly name: string
+    readonly world: World
+    readonly items?: () => readonly PrBandItem[]
+    readonly goal?: boolean
+    /** Rows drawn at 80 columns (below the narrow limit) and at 120. */
+    readonly rows: readonly [number, number]
+  }
+
+  const scenarios: readonly Scenario[] = [
+    { name: "the trust row alone", world: noFlow, rows: [1, 1] },
+    { name: "the trust row over the goal", world: noFlow, goal: true, rows: [1, 2] },
+    { name: "the trust row over the workflow row", world: running, goal: true, rows: [1, 2] },
+    {
+      name: "the trust row over a PR warning",
+      world: running,
+      items: () => [unresponsiveItem({ number: 1040 })],
+      goal: true,
+      rows: [1, 2],
+    },
+  ]
+
+  async function drawScenario(scenario: Scenario, options: Partial<MountOptions> & { width: number }) {
+    const tracked = fakeTracker({ items: scenario.items?.() })
+    const trusted = trusting(changedTrust)
+    const { harness } = await mountTracked(scenario.world, tracked, { ...options, handler: trusted.handler })
+    if (scenario.goal) harness.events.emit(goalEvent(rootID, goal()))
+    return harness
+  }
+
+  /** The rows once the trust row is the first of them and the expected number is drawn. */
+  async function drawn(harness: Mount, expected: number, head: string) {
+    await band(harness, (all) => all.length === expected && all[0].includes(head), `${expected} rows`)
+    return settled(harness)
+  }
+
+  for (const language of ["zh-CN", "en"] as const) {
+    const head = language === "zh-CN" ? "项目命令有" : "project commands changed"
+    for (const [width, height] of [
+      [80, 24],
+      [120, 40],
+    ] as const) {
+      for (const scenario of scenarios) {
+        test(`draws ${scenario.name} in ${language} at ${width}x${height}`, async () => {
+          setLanguage(language)
+          const harness = await drawScenario(scenario, { width, height, language })
+          try {
+            const expected = scenario.rows[width === 80 ? 0 : 1]
+            const lines = await drawn(harness, expected, head)
+            expect(lines).toHaveLength(expected)
+            for (const line of lines) expect(cellWidth(line, 1), line).toBeLessThanOrEqual(width)
+            expect(lines.join("\n")).toMatchSnapshot()
+            expect(harness.writes()).toEqual([])
+          } finally {
+            await harness.dispose()
+          }
+        })
+      }
+    }
+
+    // Both ambiguous widths keep every row inside the terminal: at the narrow limit and above it.
+    for (const width of [80, BAND_NARROW_WIDTH, 120]) {
+      for (const scenario of scenarios) {
+        test(`keeps ${scenario.name} inside ${width} columns at ambiguous width 2 in ${language}`, async () => {
+          setLanguage(language)
+          const harness = await drawScenario(scenario, { width, height: 24, language, kv: { ambiguous_width: 2 } })
+          try {
+            const expected = scenario.rows[width < BAND_NARROW_WIDTH ? 0 : 1]
+            const lines = await drawn(harness, expected, head)
+            expect(lines).toHaveLength(expected)
             for (const line of lines) expect(cellWidth(line, 2), line).toBeLessThanOrEqual(width)
           } finally {
             await harness.dispose()

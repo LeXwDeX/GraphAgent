@@ -6,8 +6,18 @@ import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal } from "@graphagent
 import { TextareaRenderable, type Renderable } from "@opentui/core"
 import { setLanguage } from "../src/i18n"
 import { cellWidth } from "../src/ui/width"
-import { captureFrame, promptShown, promptTop, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
+import {
+  captureFrame,
+  footerRow,
+  promptShown,
+  promptTop,
+  runApp,
+  waitFor,
+  waitForFrame,
+  type Setup,
+} from "./fixture/run-app"
 import { assistantMessage, taskCall, textPart, userMessage } from "./fixture/session-records"
+import { trustEntry, trusting } from "./fixture/trust"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -536,6 +546,184 @@ test("below 100 columns the band says nothing of the runs, and the drawer lists 
     expect(open).toContain("○ explore · Scan one")
     app.setup.mockInput.pressKey("b", { ctrl: true })
     await waitForFrame(app.setup, (value) => !value.includes("后台任务"), "the drawer closed")
+    expect(app.writes()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+// ── The project-trust row (#1618) ───────────────────────────────────────────────────────────────────────────────
+//
+// Commands that were added or changed since the last decision are paused until a new one is made. The real app shows
+// a warning row above the prompt for them; the footer reminder stays beside it with its own, wider count (every
+// pending command, the first-time ones too), and a click on the row opens the project-trust panel.
+
+/** Two commands that changed, one that is pending for the first time, and one that is already trusted. */
+const trustMixed = [
+  trustEntry("setup", "pending", "new"),
+  trustEntry("lint", "pending", "modified"),
+  trustEntry("first", "pending"),
+  trustEntry("old", "trusted"),
+]
+
+test("a changed project command puts a warning row above the prompt, and a click on it opens the trust panel", async () => {
+  const trusted = trusting(trustMixed)
+  const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 30, handler: trusted.handler })
+  try {
+    await waitForFrame(app.setup, (frame) => promptShown(frame) && frame.includes("未确认前暂停执行"), "the trust row")
+    const frame = await settled(app.setup)
+    const rows = rowsOf(frame)
+    const first = composerFirst(frame)
+    // The band took the row above the prompt, and the main area went on above it.
+    expect(rows[first - 1].trim().startsWith("⚠ 项目命令有 2 处变化，未确认前暂停执行")).toBe(true)
+    expect(rows[first - 1].endsWith("/trust")).toBe(true)
+    expect(rows[first - 2]).toBe("")
+    // The footer reminder is as it was: its count is every pending command, the first-time one included.
+    expect(footerRow(frame)).toContain("⚠ 3 条项目命令未信任 · /trust")
+
+    // A click anywhere on the row opens the panel, which lists every command; nothing is written.
+    await app.setup.mockMouse.click(10, first - 1)
+    const panel = await waitForFrame(
+      app.setup,
+      (value) => value.includes("项目信任") && value.includes("本项目共 4 条可执行条目。"),
+      "the trust panel",
+    )
+    expect(promptShown(panel)).toBe(false)
+    expect(app.writes()).toEqual([])
+    expect(app.commands()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("says the row and the footer reminder in English when the interface is English", async () => {
+  const trusted = trusting(trustMixed)
+  const app = await runApp({
+    sessions,
+    args: { continue: true },
+    width: 120,
+    height: 30,
+    handler: (url, request) => (url.pathname === "/config" ? json({ language: "en" }) : trusted.handler(url, request)),
+  })
+  try {
+    await waitForFrame(
+      app.setup,
+      (frame) => promptShown(frame) && frame.includes("paused until confirmed"),
+      "the English trust row",
+    )
+    const frame = await settled(app.setup)
+    const rows = rowsOf(frame)
+    const first = composerFirst(frame)
+    expect(rows[first - 1].trim().startsWith("⚠ 2 project commands changed · paused until confirmed")).toBe(true)
+    expect(rows[first - 1].endsWith("/trust")).toBe(true)
+    expect(footerRow(frame)).toContain("⚠ 3 project commands untrusted · /trust")
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+test("the row goes with the last change decided, the footer counts what is still pending, the workflow row returns", async () => {
+  const served = workflows({ [mainID]: [ALPHA] })
+  const trusted = trusting(trustMixed)
+  const app = await runApp({
+    sessions,
+    args: { continue: true },
+    width: 120,
+    height: 30,
+    handler: async (url, request) => (await trusted.handler(url, request)) ?? served.handler(url, request),
+  })
+  try {
+    await waitForFrame(
+      app.setup,
+      (frame) => frame.includes("未确认前暂停执行") && frame.includes("◆ 依赖升级验证"),
+      "the trust row over the workflow row",
+    )
+    const both = rowsOf(await settled(app.setup))
+    const trustRow = both.findIndex((row) => row.includes("未确认前暂停执行"))
+    expect(both[trustRow + 1]).toContain("◆ 依赖升级验证")
+
+    // Both changes are decided; the command that is pending for the first time still is.
+    trusted.set([
+      trustEntry("setup", "trusted"),
+      trustEntry("lint", "declined"),
+      trustEntry("first", "pending"),
+      trustEntry("old", "trusted"),
+    ])
+    app.events.emit({
+      directory,
+      payload: {
+        id: "evt_band_trust_decided",
+        type: "project.trust.updated",
+        properties: { projectID: "proj_test", entries: [], removed: [] },
+      },
+    })
+    const frame = await waitForFrame(
+      app.setup,
+      (value) => !value.includes("未确认前暂停执行") && value.includes("◆ 依赖升级验证"),
+      "the band without the trust row",
+    )
+    expect(footerRow(frame)).toContain("⚠ 1 条项目命令未信任 · /trust")
+    expect(app.writes()).toEqual([])
+  } finally {
+    clearDrafts(app.setup)
+    await app.stop()
+  }
+})
+
+for (const aw of [1, 2] as const) {
+  test(`keeps the trust row alone on the band inside 80 columns at ambiguous width ${aw}`, async () => {
+    const served = workflows({ [mainID]: [ALPHA] })
+    const trusted = trusting(trustMixed)
+    const app = await runApp({
+      sessions,
+      args: { continue: true },
+      width: 80,
+      height: 24,
+      ambiguousWidth: aw,
+      handler: async (url, request) => (await trusted.handler(url, request)) ?? served.handler(url, request),
+    })
+    try {
+      await waitForFrame(
+        app.setup,
+        (frame) => promptShown(frame) && frame.includes("未确认前暂停执行"),
+        "the trust row",
+      )
+      app.events.emit(goalEvent(mainID, GOAL))
+      const frame = await settled(app.setup)
+      const rows = rowsOf(frame)
+      const first = composerFirst(frame)
+      // One row below 100 columns: the trust warning's, with the workflow and the goal left to the drawer.
+      expect(rows[first - 1]).toContain("⚠ 项目命令有 2 处变化")
+      expect(rows[first - 2]).toBe("")
+      expect(frame).not.toContain("◆ 依赖升级验证")
+      expect(frame).not.toContain("◎ 目标")
+      expect(cellWidth(rows[first - 1], aw)).toBeLessThanOrEqual(80)
+      expect(footerRow(frame)).toContain("⚠ 3 条项目命令未信任")
+    } finally {
+      clearDrafts(app.setup)
+      await app.stop()
+    }
+  })
+}
+
+test("home has no band: a changed project command is the first-open panel's and the footer's, not a row", async () => {
+  const trusted = trusting(trustMixed)
+  const app = await runApp({ sessions, args: {}, width: 120, height: 30, handler: trusted.handler })
+  try {
+    // The panel for changed commands opens before the first session (#1040); the band has no place on home.
+    const opened = await waitForFrame(app.setup, (frame) => frame.includes("项目命令有变化"), "the first-open panel")
+    expect(opened).not.toContain("未确认前暂停执行")
+    app.setup.mockInput.pressEscape()
+    const home = await waitForFrame(
+      app.setup,
+      (frame) => promptShown(frame) && !frame.includes("项目命令有变化"),
+      "home without the panel",
+    )
+    expect(home).not.toContain("未确认前暂停执行")
+    expect(footerRow(home)).toContain("⚠ 3 条项目命令未信任 · /trust")
     expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
