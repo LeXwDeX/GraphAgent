@@ -951,7 +951,7 @@ describe("session.llm.ai-sdk adapter", () => {
     }
   })
 
-  test("lists no tools when the SDK reports none for an unknown tool", async () => {
+  test("says the step opens no tool calls when the SDK reports no tools for an unknown tool", async () => {
     const events = await adapt([
       uncheckedAdapterEvent({
         type: "tool-call",
@@ -967,7 +967,9 @@ describe("session.llm.ai-sdk adapter", () => {
 
     const toolError = events[1]
     if (toolError.type !== "tool-error") throw new Error("expected tool-error")
-    expect(toolError.message).toBe('Unknown tool "no_such_tool". Available tools: (none). Use one of them.')
+    expect(toolError.message).toBe(
+      'Tool calls are not available on this step, so "no_such_tool" did not run. Reply with your final answer in text.',
+    )
   })
 
   test("keeps the SDK text for an invalid call whose cause has no fixed text", async () => {
