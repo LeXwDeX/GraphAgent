@@ -65,7 +65,6 @@ component/prompt/index.tsx	jsx-text	(new
 component/prompt/index.tsx	jsx-text	(new working copy)
 component/prompt/index.tsx	jsx-text	Prompt not sent · restore failed prompt from commands to retry
 component/prompt/index.tsx	jsx-text	Sending prompt…
-component/prompt/index.tsx	jsx-text	Shell
 component/prompt/index.tsx	jsx-text	Some session details could not load (
 component/prompt/index.tsx	jsx-text	Stopping…
 component/prompt/index.tsx	jsx-text	Workspace	2

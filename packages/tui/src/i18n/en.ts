@@ -40,6 +40,8 @@ export const en: Record<MessageKey, string> = {
   "prompt.edit.status": "Editing: {label} · esc to cancel",
   "prompt.edit.rename": "Rename",
   "prompt.edit.queued": "Queued message",
+  "prompt.placeholder": "Message · / for commands · @ to reference files",
+  "prompt.placeholder.shell": "Command to run",
   "prompt.workspace.unavailable.title": "Workspace unavailable",
   "prompt.workspace.unavailable.body":
     "This session is attached to a workspace that is no longer available. Restore it into a new workspace?",

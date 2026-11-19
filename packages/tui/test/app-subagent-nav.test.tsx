@@ -4,7 +4,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { TextareaRenderable, type Renderable } from "@opentui/core"
 import { setLanguage } from "../src/i18n"
-import { PROMPT_MARK, runApp, waitForFrame, type Setup } from "./fixture/run-app"
+import { promptShown, runApp, waitForFrame, type Setup } from "./fixture/run-app"
 import { directory, json } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -50,7 +50,7 @@ test("a sub-agent session deleted on screen returns the user to its parent sessi
   try {
     // The sub-agent view has no prompt; its footer says it is read-only.
     const child = await waitForFrame(app.setup, (frame) => frame.includes("只读"), "the sub-agent view")
-    expect(child).not.toContain(PROMPT_MARK)
+    expect(promptShown(child)).toBe(false)
 
     app.events.emit(deleted(childID, rootID))
     const parent = await waitForFrame(
@@ -59,7 +59,7 @@ test("a sub-agent session deleted on screen returns the user to its parent sessi
       "the notice",
     )
     // The parent session is on screen with its prompt: home would have drawn the logo instead.
-    expect(parent).toContain(PROMPT_MARK)
+    expect(promptShown(parent)).toBe(true)
     expect(parent).not.toContain("██")
     expect(app.writes()).toEqual([])
   } finally {
@@ -82,7 +82,7 @@ test("a sub-agent session deleted on screen says so in English too", async () =>
       (frame) => frame.includes("The subagent session was deleted; back in the parent session"),
       "the notice",
     )
-    expect(parent).toContain(PROMPT_MARK)
+    expect(promptShown(parent)).toBe(true)
   } finally {
     clearDrafts(app.setup)
     await app.stop()
@@ -92,7 +92,7 @@ test("a sub-agent session deleted on screen says so in English too", async () =>
 test("a main session deleted on screen still goes home with its old notice", async () => {
   const app = await runApp({ sessions: [sessionFixture(rootID)], args: { continue: true } })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the session prompt")
+    await waitForFrame(app.setup, promptShown, "the session prompt")
     app.events.emit(deleted(rootID))
     const home = await waitForFrame(
       app.setup,

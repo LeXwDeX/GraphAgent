@@ -4,7 +4,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { GlobalEvent, PrWatchEntry, SessionReminder } from "@graphagent/sdk"
 import { setLanguage, t } from "../src/i18n"
-import { PROMPT_MARK, runApp, waitForFrame } from "./fixture/run-app"
+import { promptShown, runApp, waitForFrame } from "./fixture/run-app"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -71,7 +71,7 @@ const passed = () => watch({ phase: "delivering", outcome: "success", delivery: 
 test("a PR event for the root session toasts in the footer", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 30, handler: served([]) })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     app.events.emit(prEvent(watch()))
     app.events.emit(prEvent(passed()))
     const toast = t("pr.toast", { number: 7, text: t("pr.outcome.success") })

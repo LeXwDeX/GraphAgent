@@ -48,10 +48,23 @@ export async function captureFrame(setup: Setup): Promise<string> {
 }
 
 /**
- * Text that only the prompt draws: its agent and model line. The key hints that used to mark it are the footer's
- * alone since #1032 PR6, and the footer writes the agent name in lower case.
+ * The row of `rows` that is the top edge of the input box, or -1 when there is none. The box is a rounded frame whose
+ * first inside row begins with the prompt mark, `›` (`$` in shell mode): `╭…` with `│ ›` directly under it. A panel is
+ * a rounded frame too, and its selected row begins `│ ›` as well, but its title row sits between the edge and any list
+ * row, so only the input box has the mark right under an edge. Neither the placeholder, nor the draft, nor the
+ * language is read (#1616).
  */
-export const PROMPT_MARK = "Build · "
+export function promptTop(rows: readonly string[]) {
+  for (let index = 0; index + 1 < rows.length; index++) {
+    if (rows[index].trimStart().startsWith("╭") && /^│ [›$](\s|$)/.test(rows[index + 1].trimStart())) return index
+  }
+  return -1
+}
+
+/** Whether `frame` shows the input box. */
+export function promptShown(frame: string) {
+  return promptTop(frame.split("\n")) >= 0
+}
 
 export async function waitForFrame(setup: Setup, predicate: (frame: string) => boolean, label: string, timeout = 5000) {
   const start = Date.now()

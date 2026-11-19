@@ -1022,8 +1022,9 @@ test("model picker keeps the server-accepted model when a queued replacement is 
     expect(await second).toBe(false)
     expect(requests).toEqual(["accepted", "refused"])
     expect(route.local.model.current()).toEqual({ providerID: "test", modelID: "accepted" })
-    await route.app.renderOnce()
-    expect(route.app.captureCharFrame()).toContain("Accepted model")
+    // The prompt no longer draws a model line (#1616): the top bar shows the model, from this same state, and this
+    // view mounts no top bar. What is shown is the accepted model's name.
+    expect(route.local.model.parsed().model).toBe("Accepted model")
   } finally {
     acceptFirst()
     await route.dispose()

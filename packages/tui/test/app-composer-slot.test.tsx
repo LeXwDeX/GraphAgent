@@ -5,7 +5,7 @@ import { afterEach, expect, test } from "bun:test"
 import { BoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import { setLanguage } from "../src/i18n"
 import { DRAWER_WIDTH } from "../src/shell/drawer"
-import { captureFrame, footerRow, runApp, waitForFrame, PROMPT_MARK, type Setup } from "./fixture/run-app"
+import { captureFrame, footerRow, promptShown, promptTop, runApp, waitForFrame, type Setup } from "./fixture/run-app"
 import { directory } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -33,11 +33,16 @@ function rowsOf(frame: string) {
   return frame.split("\n").map((line) => line.trimEnd())
 }
 
-/** Where the prompt is in a frame: its first row (the left border) and its last, the status row under the bottom edge. */
+/** The row under the input box's bottom edge: its status row. */
+function statusRowOf(rows: readonly string[]) {
+  return rows.findLastIndex((row) => row.trimStart().startsWith("╰")) + 1
+}
+
+/** Where the prompt is in a frame: its first row (the top edge) and its last, the status row under the bottom edge. */
 function composerSpan(frame: string) {
   const rows = rowsOf(frame)
-  const first = rows.findIndex((row, index) => index > 2 && row.trimStart().startsWith("┃"))
-  const hint = rows.findLastIndex((row) => row.trimStart().startsWith("╹")) + 1
+  const first = promptTop(rows)
+  const hint = statusRowOf(rows)
   if (first < 0 || hint < first) throw new Error(`no composer in the frame:\n${frame}`)
   return { rows, first, hint }
 }
@@ -64,11 +69,11 @@ async function settled(setup: Setup) {
 test("the session prompt sits above the footer with one blank row between them", async () => {
   const app = await runApp({ sessions: [sessionFixture(mainID)], args: { continue: true }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     const frame = await settled(app.setup)
     const rows = rowsOf(frame)
     const footer = rows.findLastIndex((row) => row.length > 0)
-    const hint = rows.findLastIndex((row) => row.trimStart().startsWith("╹")) + 1
+    const hint = statusRowOf(rows)
 
     expect(footerRow(frame)).toContain("ctrl+p 命令")
     expect(footerRow(frame)).toContain("tab 切换 agent")
@@ -92,7 +97,7 @@ test("the session prompt sits above the footer with one blank row between them",
 test("an open drawer covers the main area and leaves every composer row as it was", async () => {
   const app = await runApp({ sessions: [sessionFixture(mainID)], args: { continue: true }, width: 140, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     const closed = await settled(app.setup)
     const before = composerRows(closed)
     // The prompt's bottom edge spans its width, so it reaches under the drawer's columns: an overlay would hit it.
@@ -123,7 +128,7 @@ test("an open drawer covers the main area and leaves every composer row as it wa
 test("the home prompt sits above the footer, below the logo, at its capped width", async () => {
   const app = await runApp({ sessions: [sessionFixture(mainID)], args: {}, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     const frame = await settled(app.setup)
     const { rows, first, hint } = composerSpan(frame)
     const footer = rows.findLastIndex((row) => row.length > 0)
@@ -133,9 +138,9 @@ test("the home prompt sits above the footer, below the logo, at its capped width
     expect(logo).toBeGreaterThan(0)
     expect(logo).toBeLessThan(first)
     // The prompt keeps the width cap home gave it (75 columns by default) and stays centered.
-    const edge = rows.find((row) => row.includes("╹▀"))!
-    expect(edge.trimEnd().length - edge.indexOf("╹")).toBe(75)
-    expect(Math.abs(edge.indexOf("╹") - (120 - 75) / 2)).toBeLessThanOrEqual(1)
+    const edge = rows[first]
+    expect(edge.trimEnd().length - edge.indexOf("╭")).toBe(75)
+    expect(Math.abs(edge.indexOf("╭") - (120 - 75) / 2)).toBeLessThanOrEqual(1)
     const inputs = textareas(app.setup)
     expect(inputs).toHaveLength(1)
     expect(inputs[0].y).toBeLessThan(footer)
@@ -148,16 +153,17 @@ test("the home prompt sits above the footer, below the logo, at its capped width
 test("the slash popup at home is drawn over the logo, not under it", async () => {
   const app = await runApp({ sessions: [sessionFixture(mainID)], args: {}, width: 100, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await app.setup.mockInput.typeText("/")
     const frame = await waitForFrame(app.setup, (frame) => frame.includes("/agent"), "the command popup")
     const rows = rowsOf(frame)
-    // At 100x30 the popup reaches up into the logo. A row where both are on screen shows the popup's text
+    // At 100x30 the popup reaches up into the logo, as far as its first row: the frame is 3 rows tall, so the popup
+    // sits lower than it did over the old 5-row block. A row where both are on screen shows the popup's text
     // whole, with logo glyphs on both sides of it.
-    const overlap = rows.find((row) => row.includes("/config") && row.includes("█"))
+    const overlap = rows.find((row) => row.includes("/agent") && row.includes("█"))
     expect(overlap).toBeDefined()
-    expect(overlap!.indexOf("█")).toBeLessThan(overlap!.indexOf("/config"))
-    expect(overlap!.lastIndexOf("█")).toBeGreaterThan(overlap!.indexOf("/config"))
+    expect(overlap!.indexOf("█")).toBeLessThan(overlap!.indexOf("/agent"))
+    expect(overlap!.lastIndexOf("█")).toBeGreaterThan(overlap!.indexOf("/agent"))
     expect(rows.find((row) => row.includes("/agent"))).toContain("┃ /agent")
   } finally {
     clearDrafts(app.setup)
@@ -168,21 +174,21 @@ test("the slash popup at home is drawn over the logo, not under it", async () =>
 test("a panel takes the composer's place, and the prompt returns with its draft and focus", async () => {
   const app = await runApp({ sessions: [sessionFixture(mainID)], args: { continue: true }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     const [input] = textareas(app.setup)
     await app.setup.mockInput.typeText("keep this draft")
     await waitForFrame(app.setup, (frame) => frame.includes("keep this draft"), "the typed draft")
 
     app.setup.mockInput.pressKey("p", { ctrl: true })
     const panel = await waitForFrame(app.setup, (frame) => !frame.includes("keep this draft"), "the command panel")
-    expect(panel).not.toContain(PROMPT_MARK)
+    expect(promptShown(panel)).toBe(false)
     // The composer is hidden, not rebuilt: the same prompt is still mounted under the panel, holding the draft.
     expect(collect(app.setup.renderer.root)).toContain(input)
     expect(input.plainText).toBe("keep this draft")
 
     app.setup.mockInput.pressEscape()
     const back = await waitForFrame(app.setup, (frame) => frame.includes("keep this draft"), "the draft again")
-    expect(back).toContain(PROMPT_MARK)
+    expect(promptShown(back)).toBe(true)
     expect(textareas(app.setup)).toEqual([input])
     expect(app.setup.renderer.currentFocusedRenderable).toBe(input)
 
@@ -197,7 +203,7 @@ test("a panel takes the composer's place, and the prompt returns with its draft 
 test("a draft typed in a session follows the user home when the session goes away", async () => {
   const app = await runApp({ sessions: [sessionFixture(mainID)], args: { continue: true }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await app.setup.mockInput.typeText("unsent words")
     await waitForFrame(app.setup, (frame) => frame.includes("unsent words"), "the typed draft")
 
@@ -212,7 +218,7 @@ test("a draft typed in a session follows the user home when the session goes awa
     const home = await waitForFrame(app.setup, (frame) => frame.includes("██"), "the home logo")
     expect(textareas(app.setup)).toHaveLength(1)
     await waitForFrame(app.setup, (frame) => frame.includes("unsent words"), "the draft on home")
-    expect(home).toContain(PROMPT_MARK)
+    expect(promptShown(home)).toBe(true)
   } finally {
     clearDrafts(app.setup)
     await app.stop()
