@@ -140,8 +140,10 @@ export interface Interface {
    * control flow (its directory disappeared or was never stamped). Unlike
    * `fail`, this also legalizes the pending→running and paused→running legs
    * first, so a row abandoned in any non-terminal status can reach `failed`
-   * and open one terminal wake episode. Revalidates the durable execution
-   * location inside the workflow lock: a concurrent move to a valid directory
+   * and open one terminal wake episode. Reads the verdict on the durable
+   * execution location under the workflow lock, before the transaction opens
+   * (it waits for git), and applies it only while the row still names the
+   * directories it was read against: a concurrent move to a valid directory
    * wins and returns `ignored`. Idempotent: an already-terminal row also
    * returns `ignored`.
    */
@@ -296,7 +298,7 @@ export const layer = Layer.effect(
     const { cancel, complete, fail, failOrphan, failUnrecoverable, settleCompletion } =
       yield* DagWorkflowTerminal.make(core, { resume })
 
-    const { _replan, _extend } = yield* DagGraphMutation.make(core)
+    const { replan, extend } = yield* DagGraphMutation.make(core)
 
     const { recover, retarget } = yield* DagWorkflowRecover.make(core)
 
@@ -329,20 +331,11 @@ export const layer = Layer.effect(
       fail: (dagID, reason) => command(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
       failOrphan: (dagID, reason) =>
         command(dagID)((lock) => withMailbox(dagID, "failed", failOrphan(lock, dagID, reason))),
-      failUnrecoverable: (dagID, reason) =>
-        command(dagID)((lock) =>
-          withMailbox(
-            dagID,
-            DagWorkflowTerminal.failUnrecoverableMailboxReason,
-            failUnrecoverable(lock, dagID, reason),
-          ),
-        ),
+      failUnrecoverable,
       settleCompletion: (dagID, options) => command(dagID)((lock) => settleCompletion(lock, dagID, options)),
       exclusive,
-      replan: (dagID, fragment) =>
-        command(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
-      extend: (dagID, nodes, fence, options) =>
-        command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence, options))),
+      replan,
+      extend,
       recover,
       retarget,
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>

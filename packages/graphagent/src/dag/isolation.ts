@@ -17,6 +17,9 @@ import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, normalize, sep } from "node:path"
+import { Cause, Effect } from "effect"
+import { ChildProcess } from "effect/process"
+import { AppProcess } from "@graphagent/core/process"
 
 export type WorktreeState = "active" | "removed" | "kept"
 
@@ -72,7 +75,9 @@ export interface ParallelOverlap {
 const GIT_TIMEOUT_MS = 20_000
 const GIT_MAX_BUFFER = 64 * 1024 * 1024
 
-function git(directory: string, args: string[]): { ok: true; text: string } | { ok: false; reason: string } {
+type GitResult = { ok: true; text: string } | { ok: false; reason: string }
+
+function git(directory: string, args: string[]): GitResult {
   try {
     return {
       ok: true,
@@ -88,6 +93,42 @@ function git(directory: string, args: string[]): { ok: true; text: string } | { 
     return { ok: false, reason }
   }
 }
+
+/**
+ * #1344: `git` as a child process of the app's process runner, for a caller that
+ * holds the workflow lock: waiting for git does not block the event loop, and an
+ * interrupted caller kills the child. The command line, the limits, and the
+ * shape of a failure are `git`'s: a command that cannot be spawned, exits
+ * non-zero, times out, or overruns the output cap is `{ ok: false, reason }`,
+ * and a failing exit gives the reason the synchronous call gave (the command
+ * line and what git wrote to stderr). Only an interruption gets through.
+ */
+const gitAsync = Effect.fnUntraced(
+  function* (directory: string, args: string[]) {
+    const appProcess = yield* AppProcess.Service
+    const commandLine = ["git", "-C", directory, ...args]
+    const failed = (reason: string): GitResult => ({ ok: false, reason })
+    const result = yield* appProcess.run(
+      ChildProcess.make("git", commandLine.slice(1), {
+        extendEnv: true,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+      { timeout: GIT_TIMEOUT_MS, maxOutputBytes: GIT_MAX_BUFFER },
+    )
+    if (result.exitCode !== 0)
+      return failed(`Command failed: ${commandLine.join(" ")}\n${result.stderr.toString("utf8")}`)
+    if (result.stdoutTruncated)
+      return failed(`Command failed: ${commandLine.join(" ")}\noutput exceeds ${GIT_MAX_BUFFER} bytes`)
+    return { ok: true, text: result.stdout.toString("utf8") } satisfies GitResult
+  },
+  Effect.catchCause((cause) => {
+    if (Cause.hasInterrupts(cause)) return Effect.interrupt
+    const error = Cause.squash(cause)
+    return Effect.succeed<GitResult>({ ok: false, reason: error instanceof Error ? error.message : String(error) })
+  }),
+)
 
 /** Status paths use `/` even on Windows; normalize both sides before compare. */
 export function normalizeTouchedPath(value: string): string {
@@ -146,23 +187,26 @@ function mergePaths(a: readonly string[], b: readonly string[]): string[] {
   return [...new Set([...a, ...b])].sort()
 }
 
-/** Commit everything in an isolated worktree. No changes is a successful
- * no-op; a failed `git add`/`git commit`/`git diff` surfaces the git reason.
- * A clean working tree can still be a committed attempt from a crash before
- * the completion event was persisted; `baseHead..HEAD` then carries the work. */
-export function commitWorktree(directory: string, baseHead: string, message: string): WorktreeCommitResult {
-  const status = git(directory, ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"])
+/**
+ * `commitWorktree` written once, as a coroutine over its git commands: it
+ * yields the arguments of each command and is resumed with the result. The
+ * synchronous `commitWorktree` and the `commitWorktreeAsync` that waits for git
+ * without blocking the event loop differ only in how they run a command, so
+ * the two cannot drift apart.
+ */
+function* commitSteps(baseHead: string, message: string): Generator<string[], WorktreeCommitResult, GitResult> {
+  const status = yield ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"]
   if (!status.ok) return { ok: false, reason: `git status failed: ${status.reason}` }
   const touched = parsePorcelain(status.text)
   if (touched.length === 0) {
     if (!baseHead) return { ok: true }
-    const head = git(directory, ["rev-parse", "HEAD"])
+    const head = yield ["rev-parse", "HEAD"]
     if (!head.ok) return { ok: false, reason: `git rev-parse failed: ${head.reason}` }
     if (head.text.trim() === baseHead) return { ok: true }
-    const patch = git(directory, ["diff", "--binary", baseHead, "HEAD"])
+    const patch = yield ["diff", "--binary", baseHead, "HEAD"]
     if (!patch.ok) return { ok: false, reason: `git diff failed: ${patch.reason}` }
     if (patch.text.length === 0) return { ok: true }
-    const names = git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"])
+    const names = yield ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"]
     if (!names.ok) return { ok: false, reason: `git diff --name-only failed: ${names.reason}` }
     return {
       ok: true,
@@ -173,24 +217,24 @@ export function commitWorktree(directory: string, baseHead: string, message: str
       },
     }
   }
-  const added = git(directory, ["add", "-A"])
+  const added = yield ["add", "-A"]
   if (!added.ok) return { ok: false, reason: `git add failed: ${added.reason}` }
-  const committed = git(directory, ["commit", "-m", message])
+  const committed = yield ["commit", "-m", message]
   if (!committed.ok) return { ok: false, reason: `git commit failed: ${committed.reason}` }
-  const afterCommit = git(directory, ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"])
+  const afterCommit = yield ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"]
   if (!afterCommit.ok) return { ok: false, reason: `git status after commit failed: ${afterCommit.reason}` }
   const touchedAfterCommit = mergePaths(touched, parsePorcelain(afterCommit.text))
   if (afterCommit.text.length > 0)
     return { ok: false, reason: `git commit left uncommitted changes; touched paths: ${touchedAfterCommit.join(", ")}` }
-  const head = git(directory, ["rev-parse", "HEAD"])
+  const head = yield ["rev-parse", "HEAD"]
   if (!head.ok) return { ok: false, reason: `git rev-parse failed: ${head.reason}` }
   // #946: a child may have committed earlier in this attempt. The completion
   // status only lists what is dirty now, so union the committed range too —
   // conflict detection must see every path this attempt changed.
-  const names = baseHead ? git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"]) : undefined
+  const names = baseHead ? yield ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"] : undefined
   if (names && !names.ok) return { ok: false, reason: `git diff --name-only failed: ${names.reason}` }
   const touchedPaths = names ? mergePaths(touchedAfterCommit, parseNameList(names.text)) : touchedAfterCommit
-  const patch = git(directory, ["diff", "--binary", baseHead, "HEAD"])
+  const patch = yield ["diff", "--binary", baseHead, "HEAD"]
   if (!patch.ok) return { ok: false, reason: `git diff failed: ${patch.reason}` }
   return {
     ok: true,
@@ -201,6 +245,35 @@ export function commitWorktree(directory: string, baseHead: string, message: str
     },
   }
 }
+
+/** Commit everything in an isolated worktree. No changes is a successful
+ * no-op; a failed `git add`/`git commit`/`git diff` surfaces the git reason.
+ * A clean working tree can still be a committed attempt from a crash before
+ * the completion event was persisted; `baseHead..HEAD` then carries the work. */
+export function commitWorktree(directory: string, baseHead: string, message: string): WorktreeCommitResult {
+  const steps = commitSteps(baseHead, message)
+  let step = steps.next()
+  while (!step.done) step = steps.next(git(directory, step.value))
+  return step.value
+}
+
+/**
+ * #1344: `commitWorktree` for a caller that holds the workflow lock (workflow
+ * worktree settlement): the same commands in the same order, with the same
+ * results and failure reasons, each a child process of the app's process
+ * runner. Waiting for git does not block the event loop, and every command is
+ * bounded by `GIT_TIMEOUT_MS`. Never fails; only an interruption gets through.
+ */
+export const commitWorktreeAsync = Effect.fn("DagIsolation.commitWorktreeAsync")(function* (
+  directory: string,
+  baseHead: string,
+  message: string,
+): Effect.fn.Return<WorktreeCommitResult, never, AppProcess.Service> {
+  const steps = commitSteps(baseHead, message)
+  let step = steps.next()
+  while (!step.done) step = steps.next(yield* gitAsync(directory, step.value))
+  return step.value
+}, Effect.provide(AppProcess.defaultLayer))
 
 /** A path component written by an isolated node's own identifiers. Durable
  * event IDs are free-form strings, so reject traversal before joining them

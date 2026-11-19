@@ -19,7 +19,7 @@ import { CompletionGateError, ReviewGateError, requiredCompletionGaps } from "./
 import { ID, NodeID, type DagCommandCore, type WorkflowLock } from "./command-core"
 import type { DagWorkflowPause } from "./workflow-pause"
 import { DagLocation } from "./location"
-import type { WorkflowOwner } from "./dag"
+import type { Interface, WorkflowOwner } from "./dag"
 
 /**
  * What the terminal commands take from the pause module: `failUnrecoverable`
@@ -43,7 +43,7 @@ export const failUnrecoverableMailboxReason = (outcome: "failed" | "ignored") =>
  */
 export const make = (environment: DagCommandCore.Core, { resume }: PauseCommands) =>
   Effect.gen(function* () {
-    const { events, store, guardWorkflow, withMailbox } = environment
+    const { events, store, guardWorkflow, withMailbox, withWorkflowLock, transact } = environment
     // Publish terminal node events for any non-terminal nodes so the read
     // model stays consistent after workflow termination. Running nodes get
     // NodeFailed when the workflow fails, otherwise a distinct NodeAborted;
@@ -163,19 +163,27 @@ export const make = (environment: DagCommandCore.Core, { resume }: PauseCommands
      * before failing. The whole sequence runs under the workflow lock; a
      * concurrent terminal transition makes one leg a no-op and the attempt
      * collapses to `ignored`.
+     *
+     * #1344: `observed` is the verdict on the execution location, read before
+     * the transaction opens because it waits for git (ADR-0008 decision 3).
      */
-    const failUnrecoverable = Effect.fn("Dag.failUnrecoverable")(function* (
+    const failUnrecoverableIn = Effect.fn("Dag.failUnrecoverable")(function* (
       lock: WorkflowLock,
       dagID: string,
       reason: string,
+      observed: DagLocation.ExecutionObservation | undefined,
     ) {
       return yield* Effect.gen(function* () {
         const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
         if (!workflow || isTerminalWorkflowStatusValue(workflow.status)) return "ignored" as const
-        // Revalidate inside the lock: a SessionEvent.Moved may have re-stamped
-        // the row to a valid directory after the caller observed it missing.
-        // The moved workflow must continue, not be failed with a stale verdict.
-        if (DagLocation.resolveExecution(workflow)._tag === "ok") return "ignored" as const
+        // Revalidate inside the transaction: a SessionEvent.Moved may have
+        // re-stamped the row to a valid directory after the caller observed it
+        // missing. The moved workflow must continue, not be failed with a stale
+        // verdict. The verdict was read before the transaction opened, so it
+        // counts only while the row still names the directories it was read
+        // against; a row that moved since is left to the next evaluation.
+        if (!observed || !DagLocation.executionObservationHolds(observed, workflow) || observed.location._tag === "ok")
+          return "ignored" as const
         if (workflow.status === "pending") {
           yield* events.publish(DagEvent.WorkflowStarted, { dagID: ID.make(dagID), timestamp: yield* DateTime.now })
         } else if (workflow.status === "paused") {
@@ -185,6 +193,21 @@ export const make = (environment: DagCommandCore.Core, { resume }: PauseCommands
         return "failed" as const
       }).pipe(Effect.catchIf(isTransitionRejection, () => Effect.succeed("ignored" as const)))
     })
+
+    // `command`, with the read that waits for git between the lock and the
+    // transaction: ADR-0008 decision 3 keeps it out of the latter.
+    const failUnrecoverable: Interface["failUnrecoverable"] = (dagID, reason) =>
+      withWorkflowLock(dagID)((lock) =>
+        Effect.gen(function* () {
+          const row = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+          const observed =
+            row && !isTerminalWorkflowStatusValue(row.status) ? yield* DagLocation.observeExecution(row) : undefined
+          return yield* transact(
+            dagID,
+            withMailbox(dagID, failUnrecoverableMailboxReason, failUnrecoverableIn(lock, dagID, reason, observed)),
+          )
+        }),
+      )
 
 /** Natural terminalization shared by the owning DagLoop and the host-level
  * supervision sweep. The decision and the transition run under the same

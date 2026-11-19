@@ -193,6 +193,19 @@ const gitOutputAsync = Effect.fnUntraced(
 )
 
 /**
+ * #1344: `gitHead` for a caller that holds the workflow lock: the same command
+ * and the same degradation to `undefined`, waiting for git without blocking the
+ * event loop and bounded by the limits of the fingerprint's git commands (the
+ * synchronous call had none). Never fails; only an interruption gets through.
+ */
+export const gitHeadAsync = Effect.fn("DagLocation.gitHeadAsync")(function* (
+  directory: string,
+): Effect.fn.Return<string | undefined, never, AppProcess.Service> {
+  const text = (yield* gitOutputAsync(directory, ["rev-parse", "--verify", "HEAD"]))?.trim()
+  return text || undefined
+}, Effect.provide(AppProcess.defaultLayer))
+
+/**
  * #944: identity of the untracked file set, respecting ignore rules.
  * Paths, sizes, and mtimes are always included; content hashes (git
  * hash-object) are added for a bounded number of files so an editor touch
@@ -299,6 +312,13 @@ export const isCleanWorktree = (directory: string): boolean => {
   return status !== undefined && status.trim() === ""
 }
 
+/** The canonical directories `git worktree list --porcelain` names, the main checkout first. */
+const worktreePaths = (text: string): string[] =>
+  text
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => canonicalDirectory(line.slice("worktree ".length).trim()))
+
 /**
  * #949: every worktree of the repository that contains `directory` (the main
  * checkout first). Returns undefined outside git so callers skip the check
@@ -310,10 +330,7 @@ export const gitWorktrees = (directory: string): string[] | undefined => {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     })
-    return text
-      .split("\n")
-      .filter((line) => line.startsWith("worktree "))
-      .map((line) => canonicalDirectory(line.slice("worktree ".length).trim()))
+    return worktreePaths(text)
   } catch {
     return undefined
   }
@@ -340,37 +357,96 @@ const gitCommonDir = (directory: string): string | undefined => {
   }
 }
 
-export const resolveWorkspace = (workspace: string, ownerDirectory: string): WorkspaceResolution => {
-  const invalid = (reason: string): WorkspaceResolution => ({ _tag: "invalid", reason })
-  if (!isAbsolute(workspace)) return invalid(`workspace must be an absolute path, got "${workspace}"`)
+const invalidWorkspace = (reason: string): WorkspaceResolution => ({ _tag: "invalid", reason })
+
+/**
+ * The checks of `resolveWorkspace` that need no git: the path is absolute and
+ * names an existing directory. Returns its realpath, or the reason it is not one.
+ */
+const workspaceDirectory = (workspace: string): { readonly directory: string } | { readonly reason: string } => {
+  if (!isAbsolute(workspace)) return { reason: `workspace must be an absolute path, got "${workspace}"` }
   let directory: string
   try {
     directory = realpathSync(workspace)
   } catch {
-    return invalid(`workspace does not exist: "${workspace}"`)
+    return { reason: `workspace does not exist: "${workspace}"` }
   }
   try {
-    if (!statSync(directory).isDirectory()) return invalid(`workspace is not a directory: "${workspace}"`)
+    if (!statSync(directory).isDirectory()) return { reason: `workspace is not a directory: "${workspace}"` }
   } catch {
-    return invalid(`workspace does not exist: "${workspace}"`)
+    return { reason: `workspace does not exist: "${workspace}"` }
   }
+  return { directory }
+}
+
+export const resolveWorkspace = (workspace: string, ownerDirectory: string): WorkspaceResolution => {
+  const checked = workspaceDirectory(workspace)
+  if ("reason" in checked) return invalidWorkspace(checked.reason)
+  const { directory } = checked
   const ownerCommon = gitCommonDir(ownerDirectory)
   if (!ownerCommon) {
-    return invalid(`workspace requires the workflow owner to be a git project: "${ownerDirectory}"`)
+    return invalidWorkspace(`workspace requires the workflow owner to be a git project: "${ownerDirectory}"`)
   }
   const workspaceCommon = gitCommonDir(directory)
   if (!workspaceCommon) {
-    return invalid(`workspace is not part of a git project: "${workspace}"`)
+    return invalidWorkspace(`workspace is not part of a git project: "${workspace}"`)
   }
   if (workspaceCommon !== ownerCommon) {
-    return invalid(`workspace belongs to a different project: "${workspace}"`)
+    return invalidWorkspace(`workspace belongs to a different project: "${workspace}"`)
   }
   const worktrees = gitWorktrees(ownerDirectory)
   if (!worktrees?.includes(directory)) {
-    return invalid(`workspace is not a linked worktree of this project (see git worktree list): "${workspace}"`)
+    return invalidWorkspace(
+      `workspace is not a linked worktree of this project (see git worktree list): "${workspace}"`,
+    )
   }
   return { _tag: "ok", directory }
 }
+
+const gitCommonDirAsync = Effect.fnUntraced(function* (directory: string) {
+  const text = (yield* gitOutputAsync(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))?.trim()
+  return text ? canonicalDirectory(text) : undefined
+})
+
+const gitWorktreesAsync = Effect.fnUntraced(function* (directory: string) {
+  const text = yield* gitOutputAsync(directory, ["worktree", "list", "--porcelain"])
+  return text === undefined ? undefined : worktreePaths(text)
+})
+
+/**
+ * #1344: `resolveWorkspace` for a caller that holds the workflow lock. The
+ * verdicts, their reasons, and the order of the git commands are the
+ * synchronous version's; every command is a child process of the app's process
+ * runner, so waiting for git does not block the event loop, and each one is
+ * bounded by the fingerprint's limits (the synchronous commands had none).
+ * Never fails; only an interruption gets through.
+ */
+export const resolveWorkspaceAsync = Effect.fn("DagLocation.resolveWorkspaceAsync")(function* (
+  workspace: string,
+  ownerDirectory: string,
+): Effect.fn.Return<WorkspaceResolution, never, AppProcess.Service> {
+  const checked = workspaceDirectory(workspace)
+  if ("reason" in checked) return invalidWorkspace(checked.reason)
+  const { directory } = checked
+  const ownerCommon = yield* gitCommonDirAsync(ownerDirectory)
+  if (!ownerCommon) {
+    return invalidWorkspace(`workspace requires the workflow owner to be a git project: "${ownerDirectory}"`)
+  }
+  const workspaceCommon = yield* gitCommonDirAsync(directory)
+  if (!workspaceCommon) {
+    return invalidWorkspace(`workspace is not part of a git project: "${workspace}"`)
+  }
+  if (workspaceCommon !== ownerCommon) {
+    return invalidWorkspace(`workspace belongs to a different project: "${workspace}"`)
+  }
+  const worktrees = yield* gitWorktreesAsync(ownerDirectory)
+  if (!worktrees?.includes(directory)) {
+    return invalidWorkspace(
+      `workspace is not a linked worktree of this project (see git worktree list): "${workspace}"`,
+    )
+  }
+  return { _tag: "ok", directory }
+}, Effect.provide(AppProcess.defaultLayer))
 
 /**
  * #1344: what `retarget` reads from git and the disk. It is taken before the
@@ -404,7 +480,7 @@ export const observeTarget = Effect.fn("DagLocation.observeTarget")(function* (
   workspace: string | undefined,
 ): Effect.fn.Return<TargetObservation> {
   const ownerDirectory = row.directory
-  const resolved = workspace === undefined ? undefined : resolveWorkspace(workspace, ownerDirectory)
+  const resolved = workspace === undefined ? undefined : yield* resolveWorkspaceAsync(workspace, ownerDirectory)
   if (resolved?._tag === "invalid") return { _tag: "invalid", ownerDirectory, reason: resolved.reason }
   const toDirectory = resolved?.directory
   const executionDirectory = toDirectory ?? row.executionDirectory ?? row.directory
@@ -447,11 +523,16 @@ const invalidExecution = (directory: string, reason: string): ExecutionLocation 
   reason,
 })
 
-/** Resolve whether a workflow's execution directory can still be used. */
-export const resolveExecution = (row: {
+/**
+ * What `resolveExecution` decides without git: the verdict, or the explicitly
+ * bound directory whose identity git still has to vouch for.
+ */
+type ExecutionPrecheck = ExecutionLocation | { readonly _tag: "identity"; readonly directory: string }
+
+const executionPrecheck = (row: {
   readonly directory: string
   readonly executionDirectory?: string | null
-}): ExecutionLocation => {
+}): ExecutionPrecheck => {
   // An explicit binding is a string (including ""); null/absent means the
   // owner fallback. The two must not share the strict identity check: a
   // non-git owner directory is a valid execution location.
@@ -478,10 +559,69 @@ export const resolveExecution = (row: {
   if (row.directory === "") {
     return invalidExecution(target, "workflow has no owner directory to validate the workspace against")
   }
-  const resolved = resolveWorkspace(target, row.directory)
-  if (resolved._tag === "invalid") return invalidExecution(target, resolved.reason)
-  return { _tag: "ok", directory: target }
+  return { _tag: "identity", directory: target }
 }
+
+/** Resolve whether a workflow's execution directory can still be used. */
+export const resolveExecution = (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): ExecutionLocation => {
+  const checked = executionPrecheck(row)
+  if (checked._tag !== "identity") return checked
+  const resolved = resolveWorkspace(checked.directory, row.directory)
+  if (resolved._tag === "invalid") return invalidExecution(checked.directory, resolved.reason)
+  return { _tag: "ok", directory: checked.directory }
+}
+
+/**
+ * #1344: `resolveExecution` for a caller that holds the workflow lock. The
+ * identity check of an explicit binding waits for git without blocking the event
+ * loop (`resolveWorkspaceAsync`); the verdicts are the synchronous version's.
+ * Never fails; only an interruption gets through.
+ */
+export const resolveExecutionAsync = Effect.fn("DagLocation.resolveExecutionAsync")(function* (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): Effect.fn.Return<ExecutionLocation> {
+  const checked = executionPrecheck(row)
+  if (checked._tag !== "identity") return checked
+  const resolved = yield* resolveWorkspaceAsync(checked.directory, row.directory)
+  if (resolved._tag === "invalid") return invalidExecution(checked.directory, resolved.reason)
+  return { _tag: "ok", directory: checked.directory }
+})
+
+/**
+ * #1344: what `failUnrecoverable` reads before its transaction opens: the
+ * verdict on the execution location, which waits for git (ADR-0008 decision 3:
+ * a transaction body takes database work only), with the directories it was
+ * taken against. The transaction applies it only while the row still names them
+ * (`executionObservationHolds`), as `TargetObservation` does for `retarget`:
+ * a session move that re-stamped the row in between wins.
+ */
+export interface ExecutionObservation {
+  readonly directory: string
+  readonly executionDirectory: string | null | undefined
+  readonly location: ExecutionLocation
+}
+
+export const observeExecution = Effect.fn("DagLocation.observeExecution")(function* (row: {
+  readonly directory: string
+  readonly executionDirectory?: string | null
+}): Effect.fn.Return<ExecutionObservation> {
+  return {
+    directory: row.directory,
+    executionDirectory: row.executionDirectory,
+    location: yield* resolveExecutionAsync(row),
+  }
+})
+
+/** Whether the row still names the directories `observed` was taken against. */
+export const executionObservationHolds = (
+  observed: ExecutionObservation,
+  row: { readonly directory: string; readonly executionDirectory?: string | null },
+): boolean =>
+  observed.directory === row.directory && (observed.executionDirectory ?? null) === (row.executionDirectory ?? null)
 
 /**
  * The explicit failure reason persisted on the WorkflowFailed event (and thus

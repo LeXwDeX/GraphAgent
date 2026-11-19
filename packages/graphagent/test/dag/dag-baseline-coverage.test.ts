@@ -450,8 +450,11 @@ describe("DAG baseline branch coverage", () => {
       const dagID = yield* create(dag, sessionID, [node("n")])
 
       // The workflow's directory does not exist, so the command goes on to fail
-      // it; a concurrent cancel lands before that transition is guarded.
-      const hook = yield* readHook(2, setWorkflowStatus(dagID, "cancelled"))
+      // it; a concurrent cancel lands before that transition is guarded. The
+      // command reads the workflow three times: before its transaction (#1344,
+      // where it observes the location), at the top of the transaction, and in
+      // the guard of the transition: the cancel lands before the third.
+      const hook = yield* readHook(3, setWorkflowStatus(dagID, "cancelled"))
       const racing = yield* dagOverStore((real) => ({ getWorkflow: (id) => hook.before(real.getWorkflow(id)) }))
       hook.arm()
 
