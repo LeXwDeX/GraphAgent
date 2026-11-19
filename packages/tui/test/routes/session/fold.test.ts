@@ -367,20 +367,21 @@ test("the open row of a call draws as many lines under its result as the output 
 })
 
 test("the open row of an edit or a write draws its diff or the lines it wrote, and a patch one row per file", () => {
-  expect(openToolLines(tool("edit", completed("Edit applied.\n\nLSP check: ok", { diff: DIFF })))).toBe(DIFF_ROWS)
+  // The estimate of a tool row adds three lines to what is under the result: the call, the result and the hint that
+  // closes the row. An edit, a write and a patch have no hint, so the lines they count are one fewer than they draw.
+  expect(openToolLines(tool("edit", completed("Edit applied.\n\nLSP check: ok", { diff: DIFF })))).toBe(DIFF_ROWS - 1)
   expect(
     openToolLines(tool("write", { ...completed("ok", { diagnostics: {} }), input: { content: "a\nb\nc\n" } })),
-  ).toBe(3)
-  // The estimate of a tool row counts three lines for the call, its summary and the hint; one file has no more.
-  expect(openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update")] })))).toBe(DIFF_ROWS)
-  // Each further file adds its two lines, its diff and its hint, and the blank line between it and the one above.
+  ).toBe(3 - 1)
+  expect(openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update")] })))).toBe(DIFF_ROWS - 1)
+  // Each further file adds its two lines and its diff, and the blank line between it and the one above.
   expect(
     openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update"), patchFile("update")] }))),
-  ).toBe(DIFF_ROWS + 3 + DIFF_ROWS + 1)
-  // A deleted file is two lines and no hint.
+  ).toBe(DIFF_ROWS + 2 + 1 + DIFF_ROWS + 2 - 3)
+  // A deleted file is two lines and no diff.
   expect(
     openToolLines(tool("apply_patch", completed("ok", { files: [patchFile("update"), patchFile("delete")] }))),
-  ).toBe(DIFF_ROWS + 2 + 1)
+  ).toBe(DIFF_ROWS + 2 + 1 + 2 - 3)
   // The error of a call that failed, which its row opens, as for any tool.
   expect(openToolLines(tool("edit", failed("one\ntwo")))).toBe(2)
 })

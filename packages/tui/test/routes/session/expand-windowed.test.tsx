@@ -3,7 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import { TextRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
+import { DiffRenderable, TextRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { Part } from "@graphagent/sdk"
 import { WINDOW_MIN_ROWS } from "../../../src/routes/session/rows"
 import { createFixture, type PerfFixture } from "../../perf/fixtures"
@@ -82,6 +82,11 @@ function texts(node: Renderable): string[] {
   return [...(node instanceof TextRenderable ? [node.plainText] : []), ...node.getChildren().flatMap(texts)]
 }
 
+/** Whether `node` or something under it is a diff: an edit that is open has one under its summary, and no hint. */
+function hasDiff(node: Renderable): boolean {
+  return node instanceof DiffRenderable || node.getChildren().some(hasDiff)
+}
+
 /** The mounted child of the scroll box that holds `text`. Rows outside the window are not there. */
 function holding(scroll: ScrollBoxRenderable, text: string) {
   return scroll.getChildren().find((row) => texts(row).some((line) => line.includes(text)))
@@ -100,7 +105,7 @@ function openBlocks(scroll: ScrollBoxRenderable) {
     const reasoning = /- Thought: Block (\d+)/.exec(text)
     if (reasoning) open.push(`reasoning ${reasoning[1]}`)
     const edit = /Edit src\/edit-(\d+)\.ts/.exec(text)
-    if (edit && text.includes("ctrl+o collapse")) open.push(`edit ${edit[1]}`)
+    if (edit && hasDiff(row)) open.push(`edit ${edit[1]}`)
   }
   return open.sort()
 }

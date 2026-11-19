@@ -241,7 +241,7 @@ const EDIT_DIFF = [
   "",
 ].join("\n")
 
-test("an edit folds its diff under its summary, the key and a click open it, and the open row costs the screen nothing", async () => {
+test("an edit folds its diff under its summary and says nothing of it, the key and a click open it, and the open row costs the screen nothing", async () => {
   const harness = await mountHarness(
     transcript([1, 6], (fixture) => {
       const call = toolPart(fixture, 6)
@@ -258,17 +258,19 @@ test("an edit folds its diff under its summary, the key and a click open it, and
   try {
     const before = await until(harness, holds("+1 \u22121"), "held the summary of the edit")
     expect(before).toContain("Edit src/answer.ts")
-    expect(before).toContain(`4 ${FOLDED}`)
+    // The row is its call and its summary: no hint offers the diff, and none closes it once it is open.
+    expect(before).not.toContain(FOLDED)
     expect(before).not.toContain("const answer")
 
     // Opening and closing it is view state: no store write, and no layer.
     const counts = harness.counters.snapshot()
     pressExpand(harness)
     const opened = await until(harness, holds("const answer = 42"), "opened the diff")
-    expect(opened).toContain(OPEN)
-    await click(harness, OPEN, 3)
+    expect(opened).not.toContain(OPEN)
+    // A click on the call closes it, and a click on the summary opens it again.
+    await click(harness, "src/answer.ts", 2)
     await until(harness, lacks("const answer = 42"), "closed the diff by a click")
-    await click(harness, FOLDED, 2)
+    await click(harness, "+1", 0)
     await until(harness, holds("const answer = 42"), "opened the diff by a click")
     expect(harness.counters.delta(counts)).toMatchObject({
       storeMessageWrites: 0,

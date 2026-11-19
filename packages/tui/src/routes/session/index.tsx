@@ -2902,7 +2902,12 @@ function ToolCall(props: {
   progress?: string
   /** The lines the row leaves out of the output of a call that completed, when that output folds. */
   folds?: number
-  /** The whole output of a call that folds. */
+  /**
+   * A call that completed has a `body` to open under its summary, and its row says nothing of it: no hint under the
+   * summary, open or closed. The click and `view.expand.toggle` open it all the same (an edit, a write, a patch).
+   */
+  opens?: boolean
+  /** The whole output of a call that folds, or what the open row of a call that `opens` draws. */
   body?: JSX.Element
   /** A call that completed without doing what it was asked: its dot is that of a call that failed. */
   blocked?: boolean
@@ -2925,7 +2930,7 @@ function ToolCall(props: {
     const current = toolRowState(props.part.state, waiting())
     return current === "done" && props.blocked ? "failed" : current
   })
-  const folded = () => completed() && props.folds !== undefined
+  const folded = () => completed() && (props.folds !== undefined || Boolean(props.opens))
   const expanded = () => ctx.view.get(props.part.id, "expanded")
   const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
 
@@ -3302,8 +3307,8 @@ function Write(props: ToolProps) {
       part={props.part}
       name={toolRowName(props.tool)}
       arg={pathFormatter.format(filePath())}
-      // What a write has under its summary is the file it wrote, which it always folds.
-      folds={lines() > 0 ? lines() : undefined}
+      // What a write has under its summary is the file it wrote, which is always folded and opened with no hint.
+      opens={lines() > 0}
       done={
         <text fg={theme.text} wrapMode="none">
           {t(lines() === 1 ? "tool.row.written.one" : "tool.row.written.other", { n: lines() })}
@@ -3830,8 +3835,8 @@ function Edit(props: ToolProps) {
       part={props.part}
       name={toolRowName(props.tool)}
       arg={words(pathFormatter.format(filePath()), input({ replaceAll: props.input.replaceAll }))}
-      // What an edit has under its summary is its diff, which it always folds.
-      folds={rows() > 0 ? rows() : undefined}
+      // What an edit has under its summary is its diff, which is always folded and opened with no hint.
+      opens={rows() > 0}
       done={
         additions() === undefined && deletions() === undefined ? undefined : (
           <ChangeSummary additions={additions()} deletions={deletions()} errors={errors().length} />
@@ -3873,7 +3878,7 @@ function PatchFile(props: ToolProps & { file: PatchFileInfo }) {
       part={props.part}
       name={toolRowName(props.tool)}
       arg={arg()}
-      folds={rows() > 0 ? rows() : undefined}
+      opens={rows() > 0}
       done={
         <ChangeSummary additions={props.file.additions} deletions={props.file.deletions} errors={errors().length} />
       }

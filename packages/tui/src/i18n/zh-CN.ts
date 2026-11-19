@@ -14,7 +14,7 @@ export const zhCN = {
   "dagmode.toggle.needSession": "先开始会话，或在 /config 设置新会话默认值",
   "help.dagmode.toggle": "切换本会话的 DAG 模式",
   "help.expand.toggle": "展开或折叠最近的输出",
-  "help.expand.toggle.note": "作用于最近一个可折叠的推理、工具输出、工具错误或子 agent 任务块",
+  "help.expand.toggle.note": "作用于最近一个可折叠的推理、工具输出、工具错误、文件改动（diff）或子 agent 任务块",
   "dagmode.receipt.on":
     "DAG 模式已开启（本会话，自下一次请求起生效）；token 消耗通常成倍增加；并发上限 {cap}（所有会话共享）、单工作流节点上限 {nodes}、token 预算 {budget}；关闭：/dag-mode off 或 {key}",
   "dagmode.receipt.on.noBudget": "当前未设 token 预算",

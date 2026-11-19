@@ -54,10 +54,13 @@ export interface ToolRowProps {
   detail?: string
   /**
    * The lines the fold of the call's output leaves out, which the hint under the row counts; 0 when the fold only cuts
-   * a long line. Absent when nothing folds.
+   * a long line. Absent when nothing folds, and for a row that opens without saying so: it has no hint.
    */
   hidden?: number
-  /** Whether the row is open: its `children` stand under the result line, and the hint under them closes it. */
+  /**
+   * Whether the row is open: its `children` stand under the result line, and, when the row has a hint (`hidden`), the
+   * hint under them closes it.
+   */
   expanded?: boolean
   /** The binding of `view.expand.toggle`, which the hint names; empty while it is unbound. */
   expandKey?: string

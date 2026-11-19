@@ -117,22 +117,20 @@ export function foldOutput(output: string, width: number) {
 
 /**
  * The lines the open rows of a patch draw under the first result line, for the height of a row that is not measured
- * yet. Each file is a row of its own: the call and its summary, then its diff and the hint that closes it, and a blank
- * line between two files; the estimate of a tool row already counts three lines for the first of them.
+ * yet. Each file is a row of its own, the call and its summary and then its diff, and a blank line stands between two
+ * files. The estimate of a tool row counts three lines of its own, and these rows have no hint to close them.
  */
 function patchOpenLines(files: ReturnType<typeof parseApplyPatchFiles>) {
   let height = Math.max(0, files.length - 1)
-  for (const file of files) {
-    const rows = patchFileRows(file)
-    height += 2 + (rows > 0 ? rows + 1 : 0)
-  }
+  for (const file of files) height += 2 + patchFileRows(file)
   return Math.max(0, height - 3)
 }
 
 /**
  * The lines the open row of a call draws under its result line, for the height of a row that is not measured yet: its
  * whole output, the diff of an edit or a patch, the lines a write wrote, or the error of a call that failed (and the
- * output it printed, which a bash call keeps).
+ * output it printed, which a bash call keeps). The estimate of a tool row adds three lines to them, the call, its
+ * result and the hint that closes the row; an edit and a write have no hint, so they count one line less.
  */
 export function openToolLines(part: ToolPart) {
   const state = part.state
@@ -140,9 +138,9 @@ export function openToolLines(part: ToolPart) {
   if (state.status === "completed") {
     switch (toolDisplay(part.tool)) {
       case "edit":
-        return editRows(state.metadata ?? {})
+        return Math.max(0, editRows(state.metadata ?? {}) - 1)
       case "write":
-        return writeRows(state.input)
+        return Math.max(0, writeRows(state.input) - 1)
       case "apply_patch":
         return patchOpenLines(parseApplyPatchFiles(state.metadata?.files))
     }
@@ -155,8 +153,8 @@ export function openToolLines(part: ToolPart) {
 }
 
 /**
- * The rows a unified diff draws once it is open: the context, added and removed lines of its hunks, which the hint
- * under an edit counts. The headers above the first hunk and the marker of a missing final newline are not rows.
+ * The rows a unified diff draws once it is open: the context, added and removed lines of its hunks. The headers above
+ * the first hunk and the marker of a missing final newline are not rows, and a diff with none has nothing to open.
  */
 export function diffRows(diff: string) {
   let rows = 0
@@ -303,8 +301,8 @@ export interface FoldSource {
 /**
  * The view flag a click on `part` flips, or undefined when the part has nothing to fold right now. A reasoning
  * with a body, a tool output past its cap, and the diff of an edit or a patch or the lines of a write (which always
- * fold, under their summary) fold under `expanded`; the error of a failed call, which its row draws as one line,
- * folds under `errorExpanded`.
+ * fold, under their summary, and say nothing of it) fold under `expanded`; the error of a failed call, which its row
+ * draws as one line, folds under `errorExpanded`.
  */
 export function foldFlag(part: Part, env: FoldEnv, source: FoldSource): ViewFlag | undefined {
   if (part.type === "reasoning") return reasoningFolds(source.text(part), env.thinking) ? "expanded" : undefined
