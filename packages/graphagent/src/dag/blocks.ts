@@ -807,12 +807,17 @@ function compileBlock(
     block.kind === "synthesize" && gatingReview
       ? { [`${gatingReview.replace(/-/g, "_")}_review`]: `${gatingReview}.output` }
       : undefined
-  // A review-route verification gate reports to the parent by default: on
-  // FAIL every review lane and the decision are condition-skipped and the
-  // route settles COMPLETED. Without a reporting node the parent never sees
-  // the failed verdict and reopen-extend has no reporting checkpoint to
-  // route the correction back through. Its dependents are all gated on its
-  // verdict, so it is a well-formed reporting checkpoint.
+  // A review-route verification gate reports to the parent by default, so the
+  // wake carries its failed verdict. On FAIL every review lane and the decision
+  // are condition-skipped, and the required verify is itself a completion gap
+  // (requiredCompletionGaps), so the workflow fails (#950) and recovers through
+  // control(recover); the strict gate adds a second gap, the skipped decision
+  // (skipOk false above). A review REJECT settles differently: the decision
+  // completes (a diff review's ACCEPT/REJECT outcome is exempt from the gap),
+  // the final synthesize is condition-skipped with skip_ok, and the workflow
+  // completes, so the parent can route the correction back through
+  // reopen-extend, which only a completed workflow allows. Its dependents are
+  // all gated on its verdict, so it is a well-formed reporting checkpoint.
   const routeVerificationGate = block.report_to_parent === undefined && reportingVerifications.has(block.id)
   return [
     node({

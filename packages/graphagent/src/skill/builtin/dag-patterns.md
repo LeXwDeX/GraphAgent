@@ -40,9 +40,10 @@ config:
     - { id: design, name: design, worker_type: plan, depends_on: [gate], condition: 'gate.output.verdict == "ACCEPT"', prompt_template: { inline: "Design the change from the approved findings." } }
 ```
 
-The `required: true` gate cancels the workflow on execution or output-contract
-failure. A successful non-ACCEPT verdict does not fail the node; the condition
-skips `design` and the parent decides whether to replan or stop.
+A `required: true` gate fails the workflow on execution or output-contract
+failure. A successful non-ACCEPT verdict does not fail the node: REVISE and
+REJECT skip `design` and the parent replans or stops; FAIL, BLOCKING, BLOCKED,
+and INCOMPLETE fail the workflow.
 
 ## 2. Parallel fan-out
 
