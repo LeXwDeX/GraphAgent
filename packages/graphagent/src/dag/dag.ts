@@ -23,7 +23,6 @@ import { DagGraphMutation } from "./graph-mutation"
 import { DagNodeEvents } from "./node-events"
 import { DagWorkflowRecover } from "./workflow-recover"
 import { DagWorkflowCreate } from "./workflow-create"
-import { DagLocation } from "./location"
 import type { RecoveryPlan } from "./recovery-plan"
 
 export { StructuralValidationError } from "./validation"
@@ -477,7 +476,7 @@ export const layer = Layer.effect(
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
     const transactService = yield* DagTransact.Service
     const core = yield* DagCommandCore.make({ events, store, mailboxService, transactService })
-    const { withMailbox, withWorkflowLock, transact, command } = core
+    const { withMailbox, withWorkflowLock, command } = core
 
     const { create } = yield* DagWorkflowCreate.make(core)
 
@@ -552,16 +551,7 @@ export const layer = Layer.effect(
       extend: (dagID, nodes, fence, options) =>
         command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence, options))),
       recover,
-      // `command`, with the reads that wait for git (#1344) between the lock and
-      // the transaction: ADR-0008 decision 3 keeps them out of the latter.
-      retarget: (dagID, input) =>
-        withWorkflowLock(dagID)((lock) =>
-          Effect.gen(function* () {
-            const row = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
-            const target = row ? yield* DagLocation.observeTarget(row, input.workspace) : undefined
-            return yield* transact(dagID, withMailbox(dagID, undefined, retarget(lock, dagID, input, target)))
-          }),
-        ),
+      retarget,
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
         command(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
       nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead, targetFingerprint, worktree) =>
