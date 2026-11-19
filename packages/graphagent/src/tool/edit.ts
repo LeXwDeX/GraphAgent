@@ -20,6 +20,8 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
 import { addCorrections } from "@graphagent/core/session/outcome"
+import { Receipt } from "./receipt"
+import { WriteReceipt } from "./write-receipt"
 
 export function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -148,13 +150,23 @@ function planEdit(source: { readonly text: string; readonly bom: boolean }, para
   const diff = trimDiff(
     createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(next.text)),
   )
-  return { contentOld, contentNew: next.text, bom: source.bom || next.bom, diff, strategy: replaced.strategy }
+  return {
+    contentOld,
+    contentNew: next.text,
+    bom: source.bom || next.bom,
+    diff,
+    strategy: replaced.strategy,
+    line: replaced.line,
+    count: replaced.count,
+  }
 }
 
 /**
  * The outcome of one edit; `outside` means the disk differed from the session's last record of the file.
- * `strategy` is how `replace()` found the text, and `ctx` is what the call reports through afterwards: it
- * carries the fuzzy-match correction from the moment the text is on disk.
+ * `strategy` is how `replace()` found the text, and `found` where (the 1-based line of the first replacement) and how
+ * many spots it replaced; a created file has neither. `reformatted` means the formatter changed the text after it was
+ * written. `ctx` is what the call reports through afterwards: it carries the fuzzy-match and formatter corrections
+ * from the moment the text is on disk.
  */
 interface Applied {
   readonly contentOld: string
@@ -162,6 +174,8 @@ interface Applied {
   readonly diff: string
   readonly outside: boolean
   readonly strategy: MatchStrategy
+  readonly found?: { readonly line: number; readonly count: number }
+  readonly reformatted: boolean
   readonly ctx: Tool.Context
 }
 
@@ -188,7 +202,8 @@ export const EditTool = Tool.define(
       })
 
     // The write section, which runs under the path lock: write, let the formatter run, keep the BOM, record the
-    // final state and publish. Returns the text the file holds afterwards.
+    // final state and publish. Returns the text the file holds afterwards, and whether the formatter changed what
+    // was written.
     const commit = Effect.fnUntraced(function* (
       ctx: Tool.Context,
       filePath: string,
@@ -202,7 +217,14 @@ export const EditTool = Tool.define(
       yield* fileState.record(ctx.sessionID, filePath, "edit")
       yield* events.publish(FileSystem.Event.Edited, { file: filePath })
       yield* events.publish(Watcher.Event.Updated, { file: filePath, event })
-      return written
+      return { text: written, reformatted: written !== text }
+    })
+
+    // The call as it reports from the moment the text is on disk: what the harness did to it is on the running part.
+    // The mark made last is listed first, so the formatter's is made first to get the order of the result's metadata.
+    const marked = Effect.fnUntraced(function* (ctx: Tool.Context, strategy: MatchStrategy, reformatted: boolean) {
+      const formatted = reformatted ? yield* Tool.markCorrection(ctx, "formatted") : ctx
+      return strategy === "exact" ? formatted : yield* Tool.markCorrection(formatted, "fuzzy_match")
     })
 
     // An empty oldString creates a file. The question is asked outside the lock; under it the file must still be absent.
@@ -224,8 +246,18 @@ export const EditTool = Tool.define(
       return yield* FileState.withLocks([filePath])(
         Effect.gen(function* () {
           if (yield* afs.existsSafe(filePath)) throw new Error(FileState.changedWhileAskingMessage(filePath))
-          const contentNew = yield* commit(ctx, filePath, next.text, next.bom, "add")
-          return { contentOld: "", contentNew, diff, outside: false, strategy: "exact", ctx } satisfies Applied
+          const written = yield* commit(ctx, filePath, next.text, next.bom, "add")
+          const live = yield* marked(ctx, "exact", written.reformatted)
+          const created: Applied = {
+            contentOld: "",
+            contentNew: written.text,
+            diff,
+            outside: false,
+            strategy: "exact",
+            reformatted: written.reformatted,
+            ctx: live,
+          }
+          return created
         }),
       )
     })
@@ -263,24 +295,27 @@ export const EditTool = Tool.define(
           const outside = (yield* fileState.verify(ctx.sessionID, filePath)) === "changed"
           const settled =
             current.text === source.text && current.bom === source.bom ? plan : planEdit(current, params, filePath)
-          const contentNew = yield* commit(ctx, filePath, settled.contentNew, settled.bom, "change")
-          const live = settled.strategy === "exact" ? ctx : yield* Tool.markCorrection(ctx, "fuzzy_match")
+          const written = yield* commit(ctx, filePath, settled.contentNew, settled.bom, "change")
+          const live = yield* marked(ctx, settled.strategy, written.reformatted)
           const diff = trimDiff(
             createTwoFilesPatch(
               filePath,
               filePath,
               normalizeLineEndings(settled.contentOld),
-              normalizeLineEndings(contentNew),
+              normalizeLineEndings(written.text),
             ),
           )
-          return {
+          const changed: Applied = {
             contentOld: settled.contentOld,
-            contentNew,
+            contentNew: written.text,
             diff,
             outside,
             strategy: settled.strategy,
+            found: { line: settled.line, count: settled.count },
+            reformatted: written.reformatted,
             ctx: live,
-          } satisfies Applied
+          }
+          return changed
         }),
       )
     })
@@ -319,7 +354,7 @@ export const EditTool = Tool.define(
           const applied = yield* (
             params.oldString === "" ? create(ctx, relative, filePath, params) : modify(ctx, relative, filePath, params)
           ).pipe(Effect.orDie)
-          const { contentOld, contentNew, diff, outside, strategy } = applied
+          const { contentOld, contentNew, diff, outside, strategy, reformatted } = applied
 
           let additions = 0
           let deletions = 0
@@ -342,8 +377,18 @@ export const EditTool = Tool.define(
             },
           })
 
+          if (reformatted) yield* Receipt.logCorrection("edit", "formatted")
+          const receipt = WriteReceipt.writeReceipt({
+            file: filePath,
+            oldText: contentOld,
+            newText: contentNew,
+            reformatted,
+            replacements: applied.found?.count,
+            fuzzy: strategy === "exact" || !applied.found ? undefined : { strategy, line: applied.found.line },
+          })
           let output = "Edit applied successfully."
           if (outside) output += `\n${FileState.changedOutsideNote(relative)}`
+          if (receipt.text) output += `\n\n${receipt.text}`
           const status = yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
@@ -354,9 +399,13 @@ export const EditTool = Tool.define(
 
           const metadata = { diagnostics, diff, filediff }
           return {
-            // A fuzzy match is applied silently; the metadata records which strategy found the text.
-            metadata:
-              strategy === "exact" ? metadata : addCorrections({ ...metadata, matchStrategy: strategy }, "fuzzy_match"),
+            // The metadata records which strategy found the text when it was not an exact match, and what the
+            // harness did to the call.
+            metadata: addCorrections(
+              strategy === "exact" ? metadata : { ...metadata, matchStrategy: strategy },
+              ...(strategy === "exact" ? [] : ["fuzzy_match"]),
+              ...(reformatted ? ["formatted"] : []),
+            ),
             title: relative,
             output,
           }
@@ -872,27 +921,42 @@ function ambiguousMatches(content: string, matches: ReplacementMatch[], allowRep
   )
 }
 
-const CLOSEST_LINE_LIMIT = 2_000
+// The closest-line scan stops when the work it has done, the product of the lengths of the two lines it compares
+// summed over the lines, reaches this many cells, not at a line count: a long file of short lines is read whole.
+const CLOSEST_CELL_BUDGET = 30_000_000
 const CLOSEST_LINE_CHARS = 120
 
-function closestMatch(content: string, oldString: string): string | undefined {
+/**
+ * The line of `content` most like the first line of `oldString` that has text, with the lines around it (`text`, when
+ * one is similar enough). `compared` is how many lines the scan got through before its budget ran out and `total` how
+ * many the file has, counted as `read` counts them: the empty line a final newline leaves is not one.
+ */
+function closestMatch(
+  content: string,
+  oldString: string,
+): { text: string | undefined; compared: number; total: number } {
   const lines = content.split("\n")
+  const total = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length
   const search = oldString
     .split("\n")
     .map((line) => line.trim())
     .find((line) => line.length > 0)
-  if (!search) return undefined
+  if (!search) return { text: undefined, compared: total, total }
 
   const target = search.slice(0, CLOSEST_LINE_CHARS)
   let best = { line: 0, score: -1 }
-  for (let i = 0; i < Math.min(lines.length, CLOSEST_LINE_LIMIT); i++) {
-    const candidate = lines[i].trim().slice(0, CLOSEST_LINE_CHARS)
+  let cells = 0
+  let compared = 0
+  for (; compared < total; compared++) {
+    const candidate = lines[compared].trim().slice(0, CLOSEST_LINE_CHARS)
     if (!candidate) continue
+    cells += target.length * candidate.length
+    if (cells > CLOSEST_CELL_BUDGET) break
     const longest = Math.max(target.length, candidate.length)
     const score = longest === 0 ? 1 : 1 - levenshtein(target, candidate) / longest
-    if (score > best.score) best = { line: i, score }
+    if (score > best.score) best = { line: compared, score }
   }
-  if (best.score < 0.2) return undefined
+  if (best.score < 0.2) return { text: undefined, compared, total }
 
   const height = Math.max(1, oldString.split("\n").length)
   const start = Math.max(0, best.line - 1)
@@ -901,7 +965,36 @@ function closestMatch(content: string, oldString: string): string | undefined {
     .slice(start, end)
     .map((line) => (line.length > 160 ? `${line.slice(0, 160)}…` : line))
     .join("\n")
-  return `Closest match at line ${best.line + 1}:\n${snippet}`
+  return { text: `Closest match at line ${best.line + 1}:\n${snippet}`, compared, total }
+}
+
+/**
+ * Whether `oldString` looks like it was copied from a `read` result, whose lines start with `N: `: at least one line
+ * has text, and at least half of the lines that do start that way.
+ */
+export function looksLikeReadPrefix(oldString: string): boolean {
+  const filled = oldString.split("\n").filter((line) => line.trim() !== "")
+  if (filled.length === 0) return false
+  return filled.filter((line) => /^\s*\d+: /.test(line)).length * 2 >= filled.length
+}
+
+/** The error of an `oldString` that is nowhere in the file: how long the file is, how far the comparison got, and a hint. */
+function oldStringNotFound(content: string, oldString: string): Error {
+  const closest = closestMatch(content, oldString)
+  const compared =
+    closest.compared < closest.total
+      ? ` Only the first ${closest.compared} of ${closest.total} lines were compared.`
+      : ""
+  const hint = looksLikeReadPrefix(oldString)
+    ? ['oldString seems to include the "N: " line-number prefixes from read. Remove them and send only the file text.']
+    : []
+  return new Error(
+    [
+      `Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings. The file has ${closest.total} lines.${compared}`,
+      ...hint,
+      ...(closest.text ? [closest.text] : []),
+    ].join("\n"),
+  )
 }
 
 /** How `replace()` located `oldString`: exactly, or through one of the tolerant replacers. */
@@ -994,10 +1087,7 @@ export function replace(content: string, oldString: string, newString: string, r
     }
   }
 
-  const closest = closestMatch(content, oldString)
-  throw new Error(
-    `Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.${closest ? `\n${closest}` : ""}`,
-  )
+  throw oldStringNotFound(content, oldString)
 }
 
 function isDisproportionateMatch(search: string, oldString: string) {

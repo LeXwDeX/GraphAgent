@@ -16,6 +16,9 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
 import type { SessionID } from "@/session/schema"
+import { addCorrections } from "@graphagent/core/session/outcome"
+import { Receipt } from "./receipt"
+import { WriteReceipt } from "./write-receipt"
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -79,6 +82,8 @@ export const WriteTool = Tool.define(
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
           let contentNew = exists ? keepLineEnding(next.text, contentOld) : next.text
+          // The formatter changed the text after it was written.
+          let reformatted = false
 
           const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
           yield* ctx.ask({
@@ -98,7 +103,9 @@ export const WriteTool = Tool.define(
               if (yield* format.file(filepath)) {
                 // Keep the post-format text: diagnostics and afterEdit use disk line
                 // coordinates, so the pre-format snapshot would hide moved errors.
+                const written = contentNew
                 contentNew = yield* Bom.syncFile(fs, filepath, desiredBom)
+                reformatted = contentNew !== written
               }
               yield* fileState.record(ctx.sessionID, filepath, "write")
               yield* events.publish(FileSystem.Event.Edited, { file: filepath })
@@ -109,7 +116,15 @@ export const WriteTool = Tool.define(
             }),
           )
 
+          if (reformatted) yield* Receipt.logCorrection("write", "formatted")
+          const receipt = WriteReceipt.writeReceipt({
+            file: filepath,
+            oldText: contentOld,
+            newText: contentNew,
+            reformatted,
+          })
           let output = "Wrote file successfully."
+          if (receipt.text) output += `\n\n${receipt.text}`
           const status = yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
@@ -122,11 +137,7 @@ export const WriteTool = Tool.define(
 
           return {
             title: path.relative(instance.worktree, filepath),
-            metadata: {
-              diagnostics,
-              filepath,
-              exists: exists,
-            },
+            metadata: addCorrections({ diagnostics, filepath, exists: exists }, ...(reformatted ? ["formatted"] : [])),
             output,
           }
         }).pipe(Effect.orDie),
