@@ -14,6 +14,7 @@
     "bench:test": "bun run script/bench-test-suite.ts",
     "profile:test": "bun run script/profile-test-files.ts",
     "eval:models": "bun run test/live/model-matrix/run.ts",
+    "eval:case": "bun run test/live/model-matrix/case.ts",
     "build": "bun run script/build.ts",
     "dev": "bun run --conditions=browser ./src/index.ts",
     "dev:temporary": "bun run --conditions=browser ./src/temporary.ts"

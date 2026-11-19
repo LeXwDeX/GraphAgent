@@ -15,6 +15,10 @@
  *
  * - `--model <provider/model>`  a configured QWEN, GLM or DeepSeek model; repeat for several (required)
  * - `--scenario <id>`           run only this scenario; repeat for several (default: all)
+ * - `--case <file>`             replay a case file made by `eval:case` instead of the scenarios: the model is asked
+ *                               the step the recorded session once asked another model, every tool call it makes
+ *                               is stopped before it runs, and the first one is judged (see `case-run.ts`). It
+ *                               cannot be combined with `--scenario`.
  * - `--out <dir>`               where `results.json`, `report.md` and `transcripts/` go (default: a new directory
  *                               in the OS temporary directory; one inside this repository is refused)
  * - `--baseline <results.json>` an earlier `results.json`; a cell that passed there and does not now is a regression
@@ -42,8 +46,10 @@ import {
   type ModelRef,
   type OriginConfig,
 } from "../delegation-timing/harness"
-import { isRecord } from "../delegation-timing/classify"
 import { startScriptServer, type ScriptServer } from "../lib/script-server"
+import { caseName, loadCaseFile, type CaseFile } from "./case-file"
+import { runCaseModel } from "./case-run"
+import { insideRepo, readFlags, REPO_ROOT, resolvesIntoRepo } from "./cli"
 import { matrixHostConfig, matrixHostEnv } from "./host-config"
 import {
   buildReport,
@@ -58,20 +64,21 @@ import {
   type RunRecord,
   type Verdict,
 } from "./report"
-import { runScenario, scrubber, type MatrixContext, type RunResult } from "./runner"
+import { redactDeep, runScenario, scrubber, type MatrixContext, type RunResult } from "./runner"
 import { SCENARIOS } from "./scenarios"
 import { CONCURRENCY, PASS_MIN, RUNS_PER_CELL, STEPS, TURN_TIMEOUT_MS, type Scenario } from "./types"
 
-export const CONFIG_ENV = "GRAPHAGENT_LIVE_EVAL_CONFIG"
+export { insideRepo }
 
-/** The checkout this script is in: `packages/graphagent/test/live/model-matrix` is five levels below it. */
-const REPO_ROOT = path.resolve(import.meta.dir, "../../../../..")
+export const CONFIG_ENV = "GRAPHAGENT_LIVE_EVAL_CONFIG"
 
 export interface Options {
   readonly configFile: string
   readonly models: readonly ModelRef[]
   /** Scenario ids; every scenario when none was asked for. */
   readonly scenarios: readonly string[]
+  /** A case file to replay instead of the scenarios. */
+  readonly caseFile?: string
   readonly out?: string
   readonly baseline?: string
 }
@@ -80,13 +87,7 @@ export type Parsed = { readonly ok: true; readonly options: Options } | { readon
 
 const usageError = (error: string): Parsed => ({ ok: false, error })
 
-/** Whether `target` is the checkout's directory or below it. */
-export function insideRepo(target: string, repoRoot: string = REPO_ROOT): boolean {
-  const relative = path.relative(path.resolve(repoRoot), path.resolve(target))
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
-}
-
-const FLAGS = new Set(["--model", "--scenario", "--out", "--baseline"])
+const FLAGS = ["--model", "--scenario", "--case", "--out", "--baseline"]
 
 /**
  * The command line, or why it is wrong. `configured` are the QWEN, GLM and DeepSeek models of the configuration
@@ -100,16 +101,9 @@ export function parseOptions(
 ): Parsed {
   const configFile = env[CONFIG_ENV]
   if (!configFile) return usageError(`${CONFIG_ENV} must name the graphagent.json(c) to read the providers from`)
-  const given: Record<string, string[]> = { "--model": [], "--scenario": [], "--out": [], "--baseline": [] }
-  for (let index = 0; index < argv.length; index++) {
-    const arg = argv[index] ?? ""
-    const equals = arg.indexOf("=")
-    const flag = equals > 0 ? arg.slice(0, equals) : arg
-    if (!FLAGS.has(flag)) return usageError(`unknown argument ${arg}`)
-    const value = equals > 0 ? arg.slice(equals + 1) : argv[++index]
-    if (!value) return usageError(`${flag} needs a value`)
-    given[flag]?.push(value)
-  }
+  const flags = readFlags(argv, FLAGS)
+  if (!flags.ok) return usageError(flags.error)
+  const given = flags.value
   const wanted = [...new Set(given["--model"])]
   if (wanted.length === 0)
     return usageError("--model is required: name at least one configured model as provider/model")
@@ -118,6 +112,11 @@ export function parseOptions(
     const found = configured.find((model) => `${model.providerID}/${model.modelID}` === entry)
     if (!found) return usageError(`model ${entry} is not a configured QWEN, GLM or DeepSeek model`)
     models.push(found)
+  }
+  const cases = given["--case"] ?? []
+  if (cases.length > 1) return usageError("--case may be given once")
+  if (cases.length > 0 && (given["--scenario"] ?? []).length > 0) {
+    return usageError("--case and --scenario cannot be used together")
   }
   const known = new Set(SCENARIOS.map((scenario) => scenario.id))
   const unknown = (given["--scenario"] ?? []).filter((id) => !known.has(id))
@@ -136,6 +135,7 @@ export function parseOptions(
       configFile,
       models,
       scenarios: [...new Set(given["--scenario"])],
+      ...(cases[0] === undefined ? {} : { caseFile: path.resolve(cases[0]) }),
       ...(out === undefined ? {} : { out }),
       ...(baselines[0] === undefined ? {} : { baseline: path.resolve(baselines[0]) }),
     },
@@ -153,16 +153,6 @@ const modelId = (model: Pick<ModelRef, "providerID" | "modelID">) => `${model.pr
 export const defaultOutPrefix = (): string => path.join(os.tmpdir(), "graphagent-model-matrix-")
 
 const fileSafe = (value: string) => value.replace(/[^A-Za-z0-9._-]/g, "_")
-
-/** Every string of `value`, keys included, passed through `redact`. */
-function redactDeep(value: unknown, redact: (text: string) => string): unknown {
-  if (typeof value === "string") return redact(value)
-  if (Array.isArray(value)) return value.map((item) => redactDeep(item, redact))
-  if (isRecord(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key), redactDeep(item, redact)]))
-  }
-  return value
-}
 
 interface ModelRun {
   readonly cells: readonly Cell[]
@@ -260,6 +250,37 @@ async function runModel(input: {
   }
 }
 
+/** The label of a case's cell in the matrix: the case file's name, made safe for a table cell. */
+const caseLabel = (name: string) => `case:${fileSafe(name)}`
+
+/** A model's replay of a case: the cell, and a transcript of every run (mode 0600, it holds what the model said). */
+function runCase(input: {
+  readonly origin: OriginConfig
+  readonly model: ModelRef
+  readonly replay: { readonly name: string; readonly file: CaseFile }
+  readonly script: ScriptServer
+  readonly out: string
+  readonly log: (line: string) => void
+}): Promise<ModelRun> {
+  const { model, replay } = input
+  const scenario = caseLabel(replay.name)
+  return runCaseModel({
+    origin: input.origin,
+    model,
+    file: replay.file,
+    scenario,
+    script: input.script,
+    log: input.log,
+    onRun: async ({ run, result, redact }) => {
+      const file = `${fileSafe(model.providerID)}--${fileSafe(model.modelID)}--${fileSafe(scenario)}--run${run}.json`
+      const transcript = redactDeep({ model: modelId(model), scenario, run, ...result }, redact)
+      await fs.writeFile(path.join(input.out, "transcripts", file), JSON.stringify(transcript, null, 2), {
+        mode: 0o600,
+      })
+    },
+  })
+}
+
 async function readBaseline(file: string): Promise<ReadonlyMap<string, Verdict>> {
   const parsed = parseBaseline(JSON.parse(await fs.readFile(file, "utf8")))
   if (!parsed) throw new Error("not a results.json of this tool")
@@ -285,7 +306,7 @@ async function loadOrigin(configFile: string | undefined): Promise<OriginConfig 
 async function main(argv: readonly string[], env: Readonly<Record<string, string | undefined>>): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(
-      `usage: ${CONFIG_ENV}=<graphagent.json> bun run eval:models --model <provider/model> [--model ...] [--scenario <id> ...] [--out <dir>] [--baseline <results.json>]`,
+      `usage: ${CONFIG_ENV}=<graphagent.json> bun run eval:models --model <provider/model> [--model ...] [--scenario <id> ... | --case <file>] [--out <dir>] [--baseline <results.json>]`,
     )
     return 0
   }
@@ -313,20 +334,29 @@ async function main(argv: readonly string[], env: Readonly<Record<string, string
   } catch (error) {
     return usage(error instanceof Error ? error.message : "a provider needs credentials", configured)
   }
+  let replay: { readonly name: string; readonly file: CaseFile } | undefined
+  if (options.caseFile) {
+    const loaded = await loadCaseFile(options.caseFile)
+    if (!loaded.ok) return usage(`cannot use --case: ${loaded.error}`, configured)
+    replay = { name: caseName(options.caseFile), file: loaded.value }
+  }
   const out = options.out ?? (await fs.mkdtemp(defaultOutPrefix()))
-  if (insideRepo(out)) return usage("the output directory is inside this repository", configured)
+  if (await resolvesIntoRepo(out)) return usage("the output directory is inside this repository", configured)
   await fs.mkdir(path.join(out, "transcripts"), { recursive: true })
   const scenarios =
     options.scenarios.length > 0 ? SCENARIOS.filter((item) => options.scenarios.includes(item.id)) : SCENARIOS
   console.log(
-    `models: ${options.models.length}, scenarios: ${scenarios.length}, runs per cell: ${RUNS_PER_CELL} (pass needs ${PASS_MIN}), steps: ${STEPS}`,
+    `models: ${options.models.length}, scenarios: ${replay ? 1 : scenarios.length}, runs per cell: ${RUNS_PER_CELL} (pass needs ${PASS_MIN}), steps: ${STEPS}`,
   )
   const script = startScriptServer()
   try {
     const cells: Cell[] = []
     const profiles: Record<string, Profile | null> = {}
+    const log = (line: string) => console.log(line)
     for (const model of options.models) {
-      const run = await runModel({ origin, model, scenarios, script, out, log: (line) => console.log(line) })
+      const run = replay
+        ? await runCase({ origin, model, replay, script, out, log })
+        : await runModel({ origin, model, scenarios, script, out, log })
       cells.push(...run.cells)
       profiles[modelId(model)] = run.profile
     }

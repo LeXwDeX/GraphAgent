@@ -7,16 +7,22 @@
  * what the scenarios' `trap` and `contract` check, is tested without a model and without a credential, and the
  * scenarios themselves are proven playable before anyone spends a live call on them.
  *
- * One host serves all scenarios, `CONCURRENCY` at a time. No model, network or user configuration is involved:
- * the host starts from an allow-listed environment and a configuration made here.
+ * The hand-written cases in `cases/` are replayed the same way: the recorded reply is the whole script, only the
+ * request is sent (the case's session is not imported and no case hook is installed), and the first call must
+ * end in the state the case expects, or, for a recorded text, there must be no call.
+ *
+ * One host serves all scenarios and cases, `CONCURRENCY` at a time. No model, network or user configuration is
+ * involved: the host starts from an allow-listed environment and a configuration made here.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { readdirSync, readFileSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { pool, seedHome, startHost, stopAllHosts, type Host } from "../delegation-timing/harness"
 import { startScriptServer, type ScriptServer } from "../lib/script-server"
+import { caseName, caseScenario, parseCaseFile } from "./case-file"
 import { matrixHostConfig, matrixHostEnv, replayOrigin } from "./host-config"
 import { scriptFailures } from "./judge"
 import {
@@ -30,7 +36,24 @@ import {
   type RunResult,
 } from "./runner"
 import { SCENARIOS } from "./scenarios"
-import { CONCURRENCY, TURN_TIMEOUT_MS } from "./types"
+import { CONCURRENCY, TURN_TIMEOUT_MS, type Scenario, type ScriptFamily } from "./types"
+
+const CASES_DIR = path.join(import.meta.dir, "cases")
+
+/** The hand-written cases, each as the scenario that replays it, or the reason the file is not a case. */
+const CASES: ReadonlyArray<{ readonly name: string; readonly scenario?: Scenario; readonly error?: string }> =
+  readdirSync(CASES_DIR)
+    .filter((file) => file.endsWith(".json"))
+    .sort()
+    .map((file) => {
+      const name = caseName(file)
+      try {
+        const parsed = parseCaseFile(JSON.parse(readFileSync(path.join(CASES_DIR, file), "utf8")))
+        return parsed.ok ? { name, scenario: caseScenario(name, parsed.value) } : { name, error: parsed.error }
+      } catch (error) {
+        return { name, error: error instanceof Error ? error.message : "unreadable" }
+      }
+    })
 
 const results = new Map<string, RunResult>()
 let root = ""
@@ -69,7 +92,12 @@ beforeAll(async () => {
     ),
   }
   ctx = replay
-  const runs = SCENARIOS.flatMap((scenario) => familiesOf(scenario).map((family) => ({ scenario, family })))
+  const runs = [
+    ...SCENARIOS.flatMap((scenario) => familiesOf(scenario).map((family) => ({ scenario, family }))),
+    ...CASES.flatMap(({ scenario }): Array<{ scenario: Scenario; family: ScriptFamily }> =>
+      scenario ? [{ scenario, family: "default" }] : [],
+    ),
+  ]
   await pool(runs, CONCURRENCY, async ({ scenario, family }) => {
     results.set(caseKey(scenario.id, family), await runScenario(replay, scenario, family))
   })
@@ -95,6 +123,18 @@ describe("replay of the scenarios", () => {
         if (broken.length > 0) throw new Error(broken.join("\n"))
       })
     }
+  }
+})
+
+describe("replay of the cases", () => {
+  for (const item of CASES) {
+    test(item.name, () => {
+      if (!item.scenario) throw new Error(`${item.name}.json is not a case file: ${item.error}`)
+      const result = results.get(caseKey(item.scenario.id, "default"))
+      if (!result) throw new Error(`${item.name} did not run`)
+      if (result.status === "error") throw new Error(`run error: ${result.failures.join("; ")}`)
+      expect(result.failures).toEqual([])
+    })
   }
 })
 

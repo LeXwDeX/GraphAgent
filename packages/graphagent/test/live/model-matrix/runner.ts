@@ -89,6 +89,26 @@ export function scrubber(places: ReadonlyArray<readonly [string, string]>, redac
     redact(longestFirst.reduce((current, [place, label]) => current.replaceAll(place, label), value))
 }
 
+/** Every string of `value`, keys included, passed through `redact`. */
+export function redactDeep(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === "string") return redact(value)
+  if (Array.isArray(value)) return value.map((item) => redactDeep(item, redact))
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key), redactDeep(item, redact)]))
+  }
+  return value
+}
+
+/** Makes `dir` a git repository with one commit of what it holds (an empty commit when it holds nothing). */
+export async function initRepository(dir: string, home: string): Promise<void> {
+  const git = gitRunner(home)
+  await git(["init", "-q", "-b", "main"], dir)
+  await git(["config", "commit.gpgsign", "false"], dir)
+  await git(["config", "core.fsmonitor", "false"], dir)
+  await git(["add", "-A"], dir)
+  await git(["commit", "-q", "--allow-empty", "-m", "Initial import"], dir)
+}
+
 async function buildWorkspace(ctx: MatrixContext, scenario: Scenario): Promise<string> {
   const dir = await fs.mkdtemp(path.join(ctx.work, "w-"))
   for (const [file, content] of Object.entries(scenario.files)) {
@@ -96,12 +116,7 @@ async function buildWorkspace(ctx: MatrixContext, scenario: Scenario): Promise<s
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, content)
   }
-  const git = gitRunner(ctx.home)
-  await git(["init", "-q", "-b", "main"], dir)
-  await git(["config", "commit.gpgsign", "false"], dir)
-  await git(["config", "core.fsmonitor", "false"], dir)
-  await git(["add", "-A"], dir)
-  await git(["commit", "-q", "--allow-empty", "-m", "Initial import"], dir)
+  await initRepository(dir, ctx.home)
   return dir
 }
 
@@ -302,10 +317,15 @@ async function attempt(
   }
 }
 
-/** Runs a scenario; a run that is an `error` (not one the model failed) is tried once more. */
-export async function runScenario(ctx: MatrixContext, scenario: Scenario, family: ScriptFamily): Promise<RunResult> {
-  const first = await attempt(ctx, scenario, family, 1)
+/** Runs `once` (attempt 1); a run that is an `error` (not one the model failed) is tried once more (attempt 2). */
+export async function withRetry(once: (number: number) => Promise<RunResult>): Promise<RunResult> {
+  const first = await once(1)
   if (first.status !== "error") return first
   // The verdict is the retry's; the first attempt stays for its usage and its evidence.
-  return { ...(await attempt(ctx, scenario, family, 2)), earlier: first }
+  return { ...(await once(2)), earlier: first }
+}
+
+/** Runs a scenario; a run that is an `error` (not one the model failed) is tried once more. */
+export function runScenario(ctx: MatrixContext, scenario: Scenario, family: ScriptFamily): Promise<RunResult> {
+  return withRetry((number) => attempt(ctx, scenario, family, number))
 }
