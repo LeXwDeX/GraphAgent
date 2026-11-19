@@ -166,8 +166,8 @@ export function sessionFiles(input: {
   }
 }
 
-// Reads the compacted summary's pending-work sections. Only bullets under the exact
-// headings count; a heading or a "(none)" placeholder ends the section.
+// Reads the compacted summary's pending-work sections: the bullets under the exact heading. The next heading ends
+// the section; blank lines, text that is not a bullet and "(none)" placeholders are skipped.
 export function summaryItems(summary: string | undefined, heading: string) {
   if (!summary) return []
   const lines = summary.split("\n")

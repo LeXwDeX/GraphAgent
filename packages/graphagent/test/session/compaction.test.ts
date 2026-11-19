@@ -4438,6 +4438,64 @@ describe("session.compaction continuation text", () => {
     { git: true },
   )
 
+  // The turn's mode is read from its last user message (tools.ts, prepare.ts, loop.ts), so the follow-up carries it.
+  for (const hookMode of ["interactive", "noninteractive", undefined] as const) {
+    itCompaction.instance(
+      `keeps the hook mode of the prior turn on the continuation message: ${hookMode ?? "unset"}`,
+      () => {
+        const stub = llm()
+        stub.push(reply(validSummary()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          const turn = yield* createUserMessage(session.id, "run the node")
+          yield* ssn.updateMessage({ ...turn, hookMode })
+          yield* createSummaryCompaction(session.id)
+
+          expect(yield* compactAuto(session.id)).toBe("continue")
+
+          const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+          expect(last?.info.role).toBe("user")
+          if (last?.info.role !== "user") return
+          expect(last.parts[0]).toMatchObject({
+            type: "text",
+            synthetic: true,
+            metadata: { compaction_continue: true },
+          })
+          expect(last.info.hookMode).toBe(hookMode)
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+      },
+      { git: true },
+    )
+
+    itCompaction.instance(
+      `keeps the hook mode of the replayed turn on the overflow replay message: ${hookMode ?? "unset"}`,
+      () => {
+        const stub = llm()
+        stub.push(reply(validSummary()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          yield* createUserMessage(session.id, "earlier question")
+          const current = yield* createUserMessage(session.id, "current task")
+          yield* ssn.updateMessage({ ...current, hookMode })
+          yield* createSummaryCompaction(session.id)
+
+          expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+          const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+          expect(last?.info.role).toBe("user")
+          if (last?.info.role !== "user") return
+          expect(
+            last.parts.some((part) => part.type === "text" && !part.synthetic && part.text === "current task"),
+          ).toBe(true)
+          expect(last.info.hookMode).toBe(hookMode)
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+      },
+      { git: true },
+    )
+  }
+
   itCompaction.instance(
     "keeps the steps a turn already finished in the summary input when an overflow hits mid-turn",
     () => {

@@ -644,6 +644,7 @@ export const layer = Layer.effect(
           time: { created: Date.now() },
           agent: original.agent,
           model: original.model,
+          hookMode: original.hookMode,
           format: original.format,
           tools: original.tools,
           system: original.system,
@@ -685,8 +686,9 @@ export const layer = Layer.effect(
         overflow: input.overflow,
       })
       const text = Injection.wrap("compaction", withSkillNote(body, input.head))
-      // The turn's request settings are read from its last user message, so the message that continues the turn
-      // carries them, as the user messages a Stop hook or a DAG message appends do.
+      // The turn's mode and request settings are read from its last user message, so the message that continues the
+      // turn carries them, as the user messages a Stop hook or a DAG message appends do. They come from the turn's own
+      // last user message: the marker holds only an agent and a model.
       const prior = priorUserTurn(input.messages, input.parentID)?.info
       const continueMsg = yield* session.updateMessage({
         id: MessageID.ascending(),
@@ -695,6 +697,7 @@ export const layer = Layer.effect(
         time: { created: Date.now() },
         agent: input.userMessage.agent,
         model: input.userMessage.model,
+        hookMode: prior?.hookMode,
         format: prior?.format,
         system: prior?.system,
         tools: prior?.tools,
