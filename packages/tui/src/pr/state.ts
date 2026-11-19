@@ -13,6 +13,10 @@
  * moment it is called. A caller that keeps a line keeps the facts and asks for the words when it draws or toasts,
  * so a kept line follows a language switch and two of them compare equal across one. `prLineState` is both at once.
  *
+ * A user's stop is the user taking over, not a failure: when the latest assistant message since the notice ended in the
+ * user's own stop (`PrAssistant.aborted`, Esc), the line is `handled` and hidden at once, with no `turnError` and no
+ * three-minute clock. A turn after the stop is judged as usual: an answer is `handled`, a failure is `turnError`.
+ *
  * Only the PR number reaches the screen. The entry's `review` excerpt, `head` and `url` are not even part of the
  * input type; a later change that shows one of them must pass it through `remoteLine` (`util/remote-text`) first.
  *
@@ -43,8 +47,16 @@ export interface PrAssistant {
   readonly created: number
   /** Epoch milliseconds it finished; absent while it is still being written. */
   readonly completed?: number
-  /** It ended in an error. A message that only called tools has none and counts as an answer. */
+  /**
+   * It ended in an error, whichever (a stop of the user's is one too). A message that only called tools has none and
+   * counts as an answer.
+   */
   readonly error: boolean
+  /**
+   * The user stopped it (Esc: the server ends the message with a `MessageAbortedError`). It is also an `error`, but not
+   * a failed turn: the user has taken the session over. Only ever true together with `error`.
+   */
+  readonly aborted: boolean
 }
 
 /** The root session the watch belongs to. The caller passes every assistant message; the line picks the ones after the notice. */
@@ -54,8 +66,8 @@ export interface PrSession {
   readonly assistants: readonly PrAssistant[]
   /**
    * The root's history is not loaded (never opened, or evicted from the cache): `assistants` holds only what was
-   * last seen of it. An answer there still counts; a missing answer proves nothing, so the line neither reports a
-   * failed turn nor runs the three-minute clock.
+   * last seen of it. An answer there still counts, and so does a stop of the user's; a missing answer proves nothing,
+   * so the line neither reports a failed turn nor runs the three-minute clock.
    */
   readonly partial?: boolean
 }
@@ -67,9 +79,10 @@ export interface PrSession {
  * - `awaiting`: the outcome is known and the notice is not delivered yet.
  * - `notified`: delivered; the agent has not started on it yet.
  * - `working`: delivered; the session is busy.
- * - `handled`: delivered; the agent answered. Hidden a minute after that turn ended.
+ * - `handled`: delivered; the agent answered (hidden a minute after that turn ended), or the user stopped the latest
+ *   turn and took over (hidden at once).
  * - `noReply`: delivered without a turn, the session was stopped. Warning, sticky.
- * - `turnError`: delivered; every turn since ended in an error. Warning, sticky.
+ * - `turnError`: delivered; every turn since ended in an error and the latest was not the user's stop. Warning, sticky.
  * - `unresponsive`: the agent did not pick the notice up for three minutes. Warning, sticky.
  * - `settled`: the watch ended and the server reported no delivery; the outcome alone.
  * - `removed`: cancelled; the caller drops the row and shows nothing.
@@ -104,7 +117,10 @@ export interface PrLineFacts {
   readonly tone: "default" | "warning"
   /** A warning that stays until `prAlertDismissed` says so, and takes a row of its own. */
   readonly sticky: boolean
-  /** Do not draw the row: removed, handled for over a minute, or an ended watch with nothing to say. */
+  /**
+   * Do not draw the row: removed, handled for over a minute or taken over by the user, or an ended watch with nothing
+   * to say.
+   */
   readonly hidden: boolean
   /** The next absolute time (epoch milliseconds) at which this result changes by the clock alone. */
   readonly nextAt?: number
@@ -228,6 +244,14 @@ export function prNoticeAt(entry: Pick<PrWatchEntry, "phase" | "updatedAt" | "de
   return owed ? entry.updatedAt : finiteOr(entry.delivery?.deliveredAt, entry.updatedAt)
 }
 
+/** The message created last; of two created together, the one listed later. */
+function latestOf(messages: readonly PrAssistant[]): PrAssistant | undefined {
+  return messages.reduce<PrAssistant | undefined>(
+    (latest, message) => (latest === undefined || message.created >= latest.created ? message : latest),
+    undefined,
+  )
+}
+
 /** The outcome is known: the notice is owed, delivered, or (after a restart) unaccounted for. */
 function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineFacts {
   const { outcome, delivery } = entry
@@ -248,13 +272,21 @@ function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineFa
 
   const deliveredAt = finiteOr(delivery.deliveredAt, entry.updatedAt)
   const since = session.assistants.filter((message) => message.created > deliveredAt)
+
+  // The user stopped the latest turn since the notice (Esc): they have taken the session over. Nothing failed and
+  // nothing is awaited, so the row goes at once, with no `turnError` and no three minutes. A stop seen in a history
+  // that is not loaded counts as an answer seen there does. A turn after the stop is the latest instead and is
+  // judged below.
+  if (latestOf(since)?.aborted) return make("handled", { hidden: true })
+
   const answers = since.filter((message) => !message.error)
-  if (answers.length > 0) {
-    const last = answers.reduce((latest, message) => (message.created >= latest.created ? message : latest))
+  const last = latestOf(answers)
+  if (last !== undefined) {
     const hideAt = (last.completed ?? last.created) + PR_HANDLED_VISIBLE_MS
     return now >= hideAt ? make("handled", { hidden: true }) : make("handled", { nextAt: hideAt })
   }
   if (session.partial) return make("notified")
+  // No answer, and the latest message is not a stop: a failed turn.
   if (since.length > 0) return make("turnError")
 
   const unresponsiveAt = deliveredAt + PR_UNRESPONSIVE_MS
@@ -269,8 +301,12 @@ function settling(entry: PrLineEntry, session: PrSession, now: number): PrLineFa
  * - `watching`: the watch is still running.
  * - `noReply`: delivered, and the notice did not start a turn.
  * - `working`: delivered, the session is busy.
+ * - `handled` (the user took over): delivered, idle, and the latest assistant message after the notice, by creation, is
+ *   the user's own stop (`aborted`, Esc). Hidden at once, with no boundary: a stop is not a failed turn and nobody is
+ *   waiting for the agent any more. A stop seen in a history that is not loaded (`partial`) counts, like an answer.
  * - `handled`: delivered, idle, and an assistant message after the notice did not end in an error.
- * - `turnError`: delivered, idle, and every assistant message after the notice ended in an error.
+ * - `turnError`: delivered, idle, and every assistant message after the notice ended in an error, the latest of them
+ *   not a stop of the user's (a failure after a stop still is one).
  * - `unresponsive`: delivered, idle, nothing after the notice for 3 minutes; or owed for 3 minutes.
  * - `notified`: delivered, idle, nothing after the notice yet; or the root's history is not loaded (`partial`) and
  *   holds no answer to the notice.

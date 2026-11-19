@@ -246,6 +246,8 @@ export function createPrTracker(deps: PrTrackerDeps): PrTracker {
             created: message.time.created,
             ...(message.time.completed !== undefined ? { completed: message.time.completed } : {}),
             error: message.error !== undefined,
+            // Esc ends the turn in an error too, but not one the agent made: the user has taken over.
+            aborted: message.error?.name === "MessageAbortedError",
           })
         }
         seen.set(root, assistants)

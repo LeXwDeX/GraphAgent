@@ -120,7 +120,7 @@ import 规则：
 
 - `ui/` 可以读主题 token（现状先例：`ui/toast.tsx` 用 `useTheme`），文字由调用方经 props 传入。
 - 依赖方向检查：脚本 `script/check-tui-imports.ts`，遍历 `packages/tui/src` 的 import，按上表判错。它在 `packages/tui` 的 `bun test` 里以 `test/architecture.test.ts` 运行（CI 必跑），改上表规则必须同时改脚本与本文。脚本的 `EXEMPTIONS` 登记存量违规，F1 收口（#886 验收 34）时已清空，`test/architecture.test.ts` 断言它为空：新代码按依赖方向改 import，不得新增条目。机制保留，供用合成目录树的测试使用，过期条目仍会让测试失败。
-  - 数据层不能 import `ui/`。需要提示时由上层注入回调：先例是 `LocalProvider` 的 `notify` 属性，`app.tsx` 里的 `LocalWithToast` 把它接成 toast。`script/check-tui-text.ts` 的英文字面量棘轮把 `notify({ text })` 与 `toast.show({ text })` 同样计入，改走回调不会让文案从棘轮里消失。
+  - 数据层不能 import `ui/`。需要提示时由上层注入回调：先例是 `LocalProvider` 的 `notify` 属性，`app.tsx` 里的 `LocalWithToast` 把它接成 toast；`SDKProvider` 的 `onChildSessionReadOnly`（服务端以 409 `ChildSessionReadOnlyError` 拒绝写向子会话时，由 SDK 的 `fetch` 包装调用，#1618）同样由 `app.tsx` 里的 `SDKWithToast` 接成 toast，`context/sdk.tsx` 不 import `ui/`。`script/check-tui-text.ts` 的英文字面量棘轮把 `notify({ text })` 与 `toast.show({ text })` 同样计入，改走回调不会让文案从棘轮里消失。
   - 数据层的状态模块放 `context/`，不放 `routes/`：先例是首页新会话目标目录 `context/session-destination.tsx`，路由、`component/` 与 `app.tsx` 都从那里读。
 - 读：组件经 `useSync()` 加 `createMemo` 选择器读取，不在组件里遍历整张表。
 - 写：只允许在 `routes/`、`panel/`、`ask/`、`commands/` 的事件处理函数里（`commands/` 即命令注册表里命令的 `run` 回调，如 `session.command`），经唯一的 `useSDK()` 调 `sdk.client.*`。`ui/`、`shell/` 的展示组件、`dag/`、`pr/` 纯函数里不得调用 SDK。检查：`grep -rn "sdk.client" packages/tui/src/ui packages/tui/src/shell packages/tui/src/dag packages/tui/src/pr` 为空。
@@ -329,7 +329,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - 窄终端（< 100 列）既无标记也无后台行，抽屉的“后台任务”区块列出它们。`n` 为 0 时二者都消失，状态带因此为空则高度为 0。
   - 可见性：属于根会话，子 agent 视图同样显示。`dag_band=hidden` 与 `/dag` 面板打开只去掉 DAG 行（`target()` 的门控只管 DAG 行），标记落到余下的行上，没有余下的行时用后台行。
   - 点击：标记是行里独立的一段（`BandSpan.action` 为 `agents`，`BandLine` 把它画成自己的 `<text>`），点击标记和点击后台行都经命令注册表运行 `agent.subagents`（与点击 DAG 行运行 `dag.open` 同一做法，有选区时不触发）；点标记时该行自己的点击（`/dag`、PR 页面）不再触发。不产生任何请求。
-- 无 `setInterval`、无定时拉取。状态带不订阅任何时钟（`ticker.frame`、`second`、`at` 都不用）：运行段是静态字符；PR 的“3 分钟未响应”“60 秒隐藏”与提醒倒计时全在 PR tracker 里，每行至多一个 `ticker.at` 一次性回调，到点由 tracker 更新它给出的结果，状态带随之重排。根会话的消息历史未加载（没打开过，或已被 LRU 逐出）时，tracker 只用上次加载时见过的回复作为“已处理”的证据；没见到回复不算未响应，也不算回合出错，3 分钟计时等历史加载后再判。
+- 无 `setInterval`、无定时拉取。状态带不订阅任何时钟（`ticker.frame`、`second`、`at` 都不用）：运行段是静态字符；PR 的“3 分钟未响应”“60 秒隐藏”与提醒倒计时全在 PR tracker 里，每行至多一个 `ticker.at` 一次性回调，到点由 tracker 更新它给出的结果，状态带随之重排。根会话的消息历史未加载（没打开过，或已被 LRU 逐出）时，tracker 只用上次加载时见过的回复或用户中止作为“已处理”的证据；没见到回复不算未响应，也不算回合出错，3 分钟计时等历史加载后再判。
 - 新增一行或一类标记时：写出显示条件、颜色 token、窄屏让位位置，并在 F4/F6 对应方案里登记（修订本文）。
 
 后台运行的排队（#1407，`session/background.ts`、`context/lifecycle-mirror.ts`）：

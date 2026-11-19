@@ -74,6 +74,7 @@ export const zhCN = {
   "shell.footer.trust": "⚠ {count} 条项目命令未信任 · /trust",
   "subagent.readonly": "子 agent 只接受主 agent 的通信",
   "subagent.readonlyTag": "只读",
+  "error.child_session_read_only": "子 agent 只读：请回主会话让主 agent 调整",
   "subagent.position": "子 agent {index}/{total}",
   "subagent.hint.switch": "切换",
   "subagent.hint.back": "返回",
