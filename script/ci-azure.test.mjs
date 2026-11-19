@@ -94,6 +94,51 @@ await test("the release pipelines build Linux and macOS only", () => {
     assert.doesNotMatch(read(file), /windows/i, `${file} has no Windows target`)
 })
 
+// #1034: both release pipelines run the same smoke script against every packaged binary, on Linux and on
+// macOS, before packaging; macOS keeps its install acceptance on top of it.
+await test("both release pipelines run the shared smoke script on every platform", () => {
+  const github = read(".github/workflows/release-fork.yml")
+  const azure = read(".azure-pipelines/release.yml")
+  const call = 'bash script/release-smoke.sh "${dir%/}/bin/graphagent" "$GRAPHAGENT_VERSION"'
+
+  // The GitHub step only filters by the requested platforms; it no longer skips macOS.
+  const githubStep = github.match(/\n {6}- name: Verify CLI executable\n((?: {8}[^\n]*\n)+)/)?.[1] ?? ""
+  assert.match(githubStep, /^ {8}if: inputs\.platforms == '' \|\| contains\(inputs\.platforms, matrix\.name\)$/m)
+  assert(githubStep.includes("GRAPHAGENT_VERSION: ${{ needs.version.outputs.version }}"), "expected version")
+  assert(githubStep.includes(call), "release-fork.yml runs the smoke script")
+  // The Azure step sits directly under `steps:` (14 spaces), not inside the `${{ if ne(target.name, 'macos') }}:` block.
+  const azureStep =
+    azure.match(/\n {14}- bash: \|\n((?: {18}[^\n]*\n)+) {16}displayName: Verify CLI executable\n/)?.[1] ?? ""
+  assert(azureStep.includes(call), "release.yml runs the smoke script on every platform")
+
+  for (const [file, text, verify, pack, acceptance] of [
+    [
+      ".github/workflows/release-fork.yml",
+      github,
+      "name: Verify CLI executable\n",
+      "name: Package Artifacts\n",
+      "name: macOS Install Acceptance\n",
+    ],
+    [
+      ".azure-pipelines/release.yml",
+      azure,
+      "displayName: Verify CLI executable\n",
+      "displayName: Package artifacts\n",
+      "displayName: macOS install acceptance\n",
+    ],
+  ]) {
+    assert.equal((text.match(/bash script\/release-smoke\.sh /g) ?? []).length, 1, `${file} runs the script once`)
+    const order = [verify, pack, acceptance].map((marker) => text.indexOf(marker))
+    assert(order[0] >= 0 && order[0] < order[1] && order[1] < order[2], `${file}: smoke, package, macOS acceptance`)
+    assert(text.includes("bash script/oc-macos-acceptance.test.sh"), `${file} keeps the macOS install acceptance`)
+  }
+
+  const script = read("script/release-smoke.sh")
+  assert(script.startsWith("#!/usr/bin/env bash\n"), "a bash script")
+  assert(script.includes("\nset -euo pipefail\n"), "strict mode")
+  assert(script.includes("GRAPHAGENT_DISABLE_MODELS_FETCH=1"), "the smoke test stays offline")
+})
+
 // #1095: the Azure pool cannot route aarch64-linux and x86_64-darwin, so a GitHub workflow runs the same
 // verification there. It keeps the same triggers and the same Nix, and its actions stay pinned.
 await test("the GitHub Nix workflow mirrors the Azure Nix pipeline on the platforms Azure cannot route", () => {
