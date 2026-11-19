@@ -416,9 +416,7 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   // Providers cap breakpoints at four. Keep the semantic boundaries first so
   // the system breakpoint is never the one dropped.
   const targets = unique(
-    [systemEnd, previousEnd, currentEnd, ...ephemeralMessages].filter(
-      (msg): msg is ModelMessage => msg !== undefined,
-    ),
+    [systemEnd, previousEnd, currentEnd, ...ephemeralMessages].filter((msg): msg is ModelMessage => msg !== undefined),
   )
   for (const msg of targets.slice(0, 4)) {
     const useMessageLevelOptions =
@@ -858,15 +856,16 @@ function anthropicOpus47OrLater(apiId: string) {
   // Greedy \d+ correctly extends to multi-digit majors (e.g. "claude-10.0-opus") for forward compatibility.
   // The minor is one or two digits: a longer number after the major is a date stamp, and "claude-opus-4-20250514" is
   // Opus 4, not Opus 4.20250514 (#1540).
-  const version = /opus-(\d+)[.-](\d{1,2})(?:[.@-]|$)|claude-(\d+)[.-](\d{1,2})-opus(?:[.@-]|$)/i.exec(apiId)
-  if (version) {
-    const major = Number(version[1] ?? version[3])
-    const minor = Number(version[2] ?? version[4])
-    return major > 4 || (major === 4 && minor >= 7)
-  }
-  // A major with no minor, possibly followed by a date stamp: "claude-opus-5", "claude-opus-5-20270101".
-  const majorOnly = /opus-(\d{1,2})(?:[@-]|$)|claude-(\d{1,2})-opus(?:[.@-]|$)/i.exec(apiId)
-  return majorOnly ? Number(majorOnly[1] ?? majorOnly[2]) > 4 : false
+  // The last two forms are a major with no minor, possibly followed by a date stamp: "claude-opus-5",
+  // "claude-opus-5-20270101". At each position the forms with a minor are tried first.
+  const version =
+    /opus-(\d+)[.-](\d{1,2})(?:[.@-]|$)|claude-(\d+)[.-](\d{1,2})-opus(?:[.@-]|$)|opus-(\d{1,2})(?:[@-]|$)|claude-(\d{1,2})-opus(?:[.@-]|$)/i.exec(
+      apiId,
+    )
+  if (!version) return false
+  const major = Number(version[1] ?? version[3] ?? version[5] ?? version[6])
+  const minor = Number(version[2] ?? version[4] ?? 0)
+  return major > 4 || (major === 4 && minor >= 7)
 }
 
 function anthropicSonnet5OrLater(apiId: string) {
