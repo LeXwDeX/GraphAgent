@@ -56,5 +56,18 @@ describe("getWorkspaceRouteSessionID", () => {
     const url = new URL("http://localhost/session")
     expect(getWorkspaceRouteSessionID(url)).toBeNull()
   })
+
+  // #1552: a segment that is not a session ID used to throw from SessionID.make, which the
+  // routing middleware turned into a 500. It names no session, so there is nothing to route.
+  test("returns null instead of throwing for a segment that is not a session ID", () => {
+    for (const pathname of [
+      "/session/not-a-session-id",
+      "/session/not-a-session-id/message",
+      "/session/not-a-session-id/message/msg_abc",
+      "/experimental/session/not-a-session-id/background",
+    ]) {
+      expect(getWorkspaceRouteSessionID(new URL(`http://localhost${pathname}`))).toBeNull()
+    }
+  })
 })
 

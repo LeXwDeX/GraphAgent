@@ -5,6 +5,7 @@ import { Ripgrep } from "@graphagent/core/ripgrep"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Location } from "@graphagent/core/location"
 import { AbsolutePath, RelativePath } from "@graphagent/core/schema"
+import { Vcs } from "@/project/vcs"
 import { Effect, Layer, Option } from "effect"
 import ignore from "ignore"
 import path from "path"
@@ -15,6 +16,7 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
   Effect.gen(function* () {
     const ripgrep = yield* Ripgrep.Service
     const locations = yield* LocationServiceMap
+    const vcs = yield* Vcs.Service
 
     const filesystem = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
       return yield* effect.pipe(
@@ -126,8 +128,14 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       )
     })
 
+    // The same entries as GET /vcs/status, under this route's declared field names.
     const status = Effect.fn("FileHttpApi.status")(function* () {
-      return []
+      return (yield* vcs.status()).map((item) => ({
+        path: item.file,
+        added: item.additions,
+        removed: item.deletions,
+        status: item.status,
+      }))
     })
 
     return handlers

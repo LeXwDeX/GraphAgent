@@ -36,7 +36,7 @@ import { coverageResult, parseOptions, routeKey, routeKeys, selectedScenarios } 
 import { runScenario } from "./runner"
 import { runtime } from "./runtime"
 import { runMainWithHardExit, teardown } from "./teardown"
-import { type Options, type Scenario, type ScenarioContext } from "./types"
+import { type CallResult, type Options, type Scenario, type ScenarioContext } from "./types"
 import { startProgressWatchdog } from "./watchdog"
 
 enterExerciseWorkingDirectory()
@@ -48,6 +48,27 @@ const seedChild = (ctx: ScenarioContext) =>
   Effect.gen(function* () {
     const parent = yield* ctx.session({ title: "Child guard parent" })
     return yield* ctx.session({ title: "Child guard child", parentID: parent.id })
+  })
+
+/**
+ * #1552: the BadRequest envelope a rejected request component answers with, whichever layer rejects it: `kind` names
+ * the component (a malformed messageID gets `Params`) and the message names `field`.
+ */
+const rejectedAs = (kind: string, field: string) => (_ctx: unknown, result: CallResult) =>
+  Effect.sync(() => {
+    const body = result.body
+    object(body)
+    check(body.name === "BadRequest", `${field} should be rejected as BadRequest: ${result.text}`)
+    object(body.data)
+    check(body.data.kind === kind, `${field} should be rejected as a ${kind} error: ${result.text}`)
+    check(
+      typeof body.data.message === "string" && body.data.message.includes(field),
+      `the BadRequest message should name ${field}`,
+    )
+    check(
+      Object.keys(body.data).sort().join() === "kind,message",
+      `the BadRequest data should carry only kind and message: ${result.text}`,
+    )
   })
 
 type SessionWrite = ReturnType<typeof http.protected.post>
@@ -545,7 +566,23 @@ const scenarios: Scenario[] = [
       object(body)
       check(body.type === "text" && body.content === "", "missing file content should return an empty text result")
     }),
-  http.protected.get("/file/status", "file.status").json(200, array),
+  http.protected
+    .get("/file/status", "file.status")
+    .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
+    .json(200, (body) => {
+      array(body)
+      check(
+        body.some(
+          (item) =>
+            isRecord(item) &&
+            item.path === "hello.txt" &&
+            item.status === "added" &&
+            item.added === 1 &&
+            item.removed === 0,
+        ),
+        `an untracked file should be listed as added: ${JSON.stringify(body)}`,
+      )
+    }),
   http.protected
     .get("/find", "find.text")
     .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
@@ -771,6 +808,15 @@ const scenarios: Scenario[] = [
         "a roots listing should carry the root role on every session",
       )
     }),
+  // #1552: a workspace header that is not a workspace ID is refused (400), not a 500 and not a fallback to
+  // the default location.
+  http.protected
+    .get("/session", "session.list.malformedWorkspace")
+    .at((ctx) => ({
+      path: "/session",
+      headers: ctx.headers({ "x-graphagent-workspace": "not-a-workspace-id" }),
+    }))
+    .status(400, rejectedAs("Headers", "x-graphagent-workspace")),
   http.protected
     .get("/session/status", "session.status")
     .seeded((ctx) => ctx.session({ title: "Status session" }))
@@ -2473,6 +2519,23 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(404),
+
+  // #1552: a path segment that is not a session ID is a 400 BadRequest, not a 500.
+  http.protected
+    .get("/dag/session/{sessionID}", "dag.bySession.malformed")
+    .at((ctx) => ({
+      path: route("/dag/session/{sessionID}", { sessionID: "not-a-session-id" }),
+      headers: ctx.headers(),
+    }))
+    .status(400, rejectedAs("Params", "sessionID")),
+
+  http.protected
+    .get("/dag/session/{sessionID}/summary", "dag.summary.malformed")
+    .at((ctx) => ({
+      path: route("/dag/session/{sessionID}/summary", { sessionID: "not-a-session-id" }),
+      headers: ctx.headers(),
+    }))
+    .status(400, rejectedAs("Params", "sessionID")),
 
   // 404 scenarios (pre-existing, retained)
   http.protected

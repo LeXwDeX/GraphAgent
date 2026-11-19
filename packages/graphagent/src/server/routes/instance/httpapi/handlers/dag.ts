@@ -85,9 +85,9 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       return row
     })
 
-    const requireSession = Effect.fn("DagHttpApi.requireSession")(function* (sessionID: string) {
+    const requireSession = Effect.fn("DagHttpApi.requireSession")(function* (sessionID: SessionID) {
       const session = yield* sessions
-        .get(SessionID.make(sessionID))
+        .get(sessionID)
         .pipe(Effect.catch(() => Effect.fail(notFound(`Session not found: ${sessionID}`))))
       if (session.projectID !== (yield* InstanceState.context).project.id) {
         return yield* Effect.fail(notFound(`Session not found: ${sessionID}`))
@@ -102,13 +102,13 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       return rows.map(wf)
     })
 
-    const bySession = Effect.fn("DagHttpApi.bySession")(function* (ctx: { params: { sessionID: string } }) {
+    const bySession = Effect.fn("DagHttpApi.bySession")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
       const rows = yield* dag.store.listBySession(ctx.params.sessionID).pipe(Effect.orDie)
       return rows.map(wf)
     })
 
-    const summary = Effect.fn("DagHttpApi.summary")(function* (ctx: { params: { sessionID: string } }) {
+    const summary = Effect.fn("DagHttpApi.summary")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
       const summaries = yield* dag.store.getWorkflowSummaries(ctx.params.sessionID).pipe(Effect.orDie)
       // #1027 D6b: the same derivation the pushed event carries, so a client

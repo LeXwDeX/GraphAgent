@@ -4,6 +4,7 @@
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { DagSummary } from "@graphagent/schema/dag-summary"
+import { SessionID } from "@/session/schema"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { ApiNotFoundError } from "../errors"
@@ -66,14 +67,14 @@ export const DagApi = HttpApi.make("dag").add(
     )
     .add(
       HttpApiEndpoint.get("bySession", DagPaths.bySession, {
-        params: { sessionID: Schema.String },
+        params: { sessionID: SessionID },
         success: described(DagListResponse, "Workflows for a session"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.bySession", summary: "List workflows by session" })),
     )
     .add(
       HttpApiEndpoint.get("summary", DagPaths.summary, {
-        params: { sessionID: Schema.String },
+        params: { sessionID: SessionID },
         success: described(
           DagSummaryListResponse,
           "Aggregated per-workflow progress summaries for a session (server-side aggregation)",
