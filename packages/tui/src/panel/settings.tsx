@@ -4,21 +4,28 @@
 import { BoxRenderable, InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
+import { useTuiConfig } from "../config"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t, type MessageKey } from "../i18n"
-import { EscapePriority, useBindings } from "../keymap"
+import { EscapePriority, formatKeyBindings, useBindings, useKeymapSelector } from "../keymap"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
 interface SettingRowBase {
   id: string
   label: string
+  /** Explains the row; drawn on the line under the rows (the panel's note) while the row is selected. */
   description?: string
-  /** Muted trailing note, for example the current session state. */
+  /** Muted note after the value, for example the current session state. */
   suffix?: () => string | undefined
   /** Rendered dimmed; activation is ignored when the write path is unavailable. */
   disabled?: boolean
+  /**
+   * A row that reports rather than holds a setting. It keeps the normal colors and can be selected, to read its
+   * description, but activating it by key or click does nothing and the hint row offers no change.
+   */
+  readonly?: boolean
 }
 
 export type SettingRow =
@@ -64,10 +71,63 @@ export interface SettingsPanelProps {
   hints?: readonly PanelHint[]
 }
 
+/**
+ * A row is three columns: the selection marker, the name, then the value right after it. The last cell of the name
+ * column stays empty, so that a name cut to the column never runs into the value.
+ */
+const MARKER_WIDTH = 2
+const NAME_WIDTH = 22
+/** The border and padding of `PanelShell`, which the rows sit inside. */
+const PANEL_INSET = 4
+/** Between the value, the suffix and the hint to change the value. */
+const SEGMENT_GAP = "   "
+
+/** The name cut and padded to its column by `cellWidth`, so that the column is as wide as the terminal draws it. */
+function nameCell(label: string, ambiguousWidth: AmbiguousWidth): string {
+  const text = truncateCells(label, NAME_WIDTH - 1, ambiguousWidth)
+  return text + " ".repeat(NAME_WIDTH - cellWidth(text, ambiguousWidth))
+}
+
+interface ValueLine {
+  value: string
+  /** With its gap in front; empty when there is none. */
+  suffix: string
+  /** With its gap in front; empty when there is none. */
+  cycle: string
+}
+
+/**
+ * What follows the name: the value, then the suffix, then the hint to change the value. A line wider than `width` is
+ * cut from the tail. The hint goes first, whole (a stub of it says nothing), then the suffix is shortened until it is
+ * gone, and the value last.
+ */
+function fitValueLine(
+  width: number,
+  parts: { value: string; suffix?: string; cycle?: string },
+  ambiguousWidth: AmbiguousWidth,
+): ValueLine {
+  const value = truncateCells(parts.value, width, ambiguousWidth)
+  let room = width - cellWidth(value, ambiguousWidth)
+  let suffix = ""
+  if (parts.suffix) {
+    const gap = value === "" ? "" : SEGMENT_GAP
+    const text = truncateCells(parts.suffix, room - cellWidth(gap, ambiguousWidth), ambiguousWidth)
+    // Cut down to the ellipsis alone it says nothing: the suffix stays whole or in part, or is gone.
+    if (text.replace("…", "") !== "") {
+      suffix = `${gap}${text}`
+      room -= cellWidth(suffix, ambiguousWidth)
+    }
+  }
+  const cycle =
+    parts.cycle && cellWidth(SEGMENT_GAP + parts.cycle, ambiguousWidth) <= room ? `${SEGMENT_GAP}${parts.cycle}` : ""
+  return { value, suffix, cycle }
+}
+
 export function SettingsPanel(props: SettingsPanelProps) {
   const { theme } = useTheme()
   const kv = useKV()
   const dimensions = useTerminalDimensions()
+  const tuiConfig = useTuiConfig()
 
   const [internalTab, setInternalTab] = createSignal<string | undefined>(props.activeTab ?? props.tabs[0]?.id)
   const [selected, setSelected] = createSignal(0)
@@ -85,7 +145,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const activeTabKey = createMemo(() => currentTab()?.id)
   const rows = () => currentTab()?.rows ?? []
   const selectedRow = () => rows()[selected()]
-  const valueBudget = () => Math.max(4, Math.floor((dimensions().width - 8) / 2))
+  const valueWidth = () => Math.max(0, dimensions().width - PANEL_INSET - MARKER_WIDTH - NAME_WIDTH)
+  // A tab where some row explains itself keeps the line for it as the selection moves, blank for the rows that do not,
+  // so the panel does not change height with the selection. A tab where none does has no such line.
+  const note = () =>
+    rows().some((row) => row.description !== undefined && row.description !== "")
+      ? (selectedRow()?.description ?? "")
+      : undefined
+  // The key shown in the hint to change a value is the one `panel.submit` has now, found as the hint row finds its keys.
+  const submitBindings = useKeymapSelector((keymap) =>
+    keymap.getCommandBindings({ visibility: "registered", commands: ["panel.submit"] }),
+  )
+  const submitKey = createMemo(() => formatKeyBindings(submitBindings().get("panel.submit"), tuiConfig))
 
   createEffect(
     on(
@@ -155,22 +226,25 @@ export function SettingsPanel(props: SettingsPanelProps) {
     scrollTo(rows()[next])
   }
 
+  /** Whether activating the row does anything: not while its write path is missing, and never for a read-only row. */
+  const actionable = (row: SettingRow) => !row.disabled && !row.readonly
+
   function cycleChoice(row: Extract<SettingRow, { kind: "choice" }>) {
-    if (row.disabled || row.options.length === 0) return
+    if (!actionable(row) || row.options.length === 0) return
     const index = row.options.findIndex((option) => option.value === row.value)
     const next = row.options[(index + 1) % row.options.length]
     if (next) row.onChange(next.value)
   }
 
   function beginEdit(row: Extract<SettingRow, { kind: "text" }>) {
-    if (row.disabled) return
+    if (!actionable(row)) return
     setError(undefined)
     setEditing(row.id)
   }
 
   function activate() {
     const row = selectedRow()
-    if (!row || row.disabled) return
+    if (!row || !actionable(row)) return
     if (row.kind === "choice") cycleChoice(row)
     else if (row.kind === "toggle") row.onChange(!row.value)
     else if (row.kind === "action") row.run()
@@ -263,7 +337,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       { key: "panel.next", label: t("panel.hint.next") },
     ]
     if (props.tabs.length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
-    if (!row?.disabled) result.push({ key: "panel.submit", label: submitLabel })
+    if (!row?.disabled && !row?.readonly) result.push({ key: "panel.submit", label: submitLabel })
     result.push(...(props.hints ?? []))
     return result
   })
@@ -280,6 +354,22 @@ export function SettingsPanel(props: SettingsPanelProps) {
     return row.value || t("panel.setting.empty")
   }
 
+  /**
+   * The hint to change the selected row's value, with the place of the value among the ones it takes. A toggle's two
+   * values are on and off, in that order. None for a row that cannot be changed by the key, that has fewer than two
+   * values to take, or whose value is none of the options (a custom rule), and none when the key has no binding.
+   */
+  function cycleHint(row: SettingRow): string | undefined {
+    if (!actionable(row)) return undefined
+    const key = submitKey()
+    if (!key) return undefined
+    if (row.kind === "toggle") return t("panel.setting.cycle", { key, index: row.value ? 1 : 2, total: 2 })
+    if (row.kind !== "choice") return undefined
+    const position = row.options.findIndex((option) => option.value === row.value)
+    if (position < 0 || row.options.length < 2) return undefined
+    return t("panel.setting.cycle", { key, index: position + 1, total: row.options.length })
+  }
+
   return (
     <PanelShell
       title={props.title}
@@ -288,12 +378,25 @@ export function SettingsPanel(props: SettingsPanelProps) {
       activeTab={activeTabId()}
       onTab={selectTab}
       hints={hints()}
+      note={note()}
       scrollRef={(element) => (scroll = element)}
     >
       <For each={rows()}>
         {(row, index) => {
           const isSelected = () => selected() === index()
           const isEditing = () => editing() === row.id
+          const valueColor = () => (row.disabled ? theme.textDim : isSelected() ? theme.primary : theme.textMuted)
+          const line = createMemo(() =>
+            fitValueLine(
+              valueWidth(),
+              {
+                value: displayValue(row),
+                suffix: row.suffix?.(),
+                cycle: isSelected() ? cycleHint(row) : undefined,
+              },
+              ambiguousWidth(),
+            ),
+          )
           onCleanup(() => rowRefs.delete(row.id))
           return (
             <>
@@ -306,37 +409,50 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 onMouseDown={() => moveTo(index())}
                 onMouseUp={() => {
                   moveTo(index())
-                  if (row.disabled) return
+                  if (!actionable(row)) return
                   if (row.kind === "text") beginEdit(row)
                   else if (row.kind === "action") row.run()
                   else if (row.kind === "choice") cycleChoice(row)
                   else row.onChange(!row.value)
                 }}
               >
-                <text width={2} flexShrink={0} fg={isSelected() ? theme.primary : theme.textDim} wrapMode="none">
+                <text
+                  width={MARKER_WIDTH}
+                  flexShrink={0}
+                  fg={isSelected() ? theme.primary : theme.textDim}
+                  wrapMode="none"
+                >
                   {isSelected() ? "› " : "  "}
                 </text>
                 <text
-                  flexShrink={1}
-                  overflow="hidden"
+                  flexShrink={0}
                   wrapMode="none"
-                  fg={row.disabled ? theme.textMuted : undefined}
+                  fg={row.disabled ? theme.textMuted : theme.text}
                   attributes={isSelected() ? TextAttributes.BOLD : undefined}
                 >
-                  {row.label}
+                  {nameCell(row.label, ambiguousWidth())}
                 </text>
-                <box flexGrow={1} flexShrink={1} />
                 <Show
                   when={isEditing()}
                   fallback={
-                    <Show when={row.suffix?.()}>
-                      <text flexShrink={0} fg={theme.textDim} wrapMode="none">
-                        {truncateCells(row.suffix!()!, valueBudget(), ambiguousWidth())}{" "}
+                    <>
+                      <text flexShrink={0} fg={valueColor()} wrapMode="none">
+                        {line().value}
                       </text>
-                    </Show>
+                      <Show when={line().suffix}>
+                        <text flexShrink={0} fg={theme.textDim} wrapMode="none">
+                          {line().suffix}
+                        </text>
+                      </Show>
+                      <Show when={line().cycle}>
+                        <text flexShrink={0} fg={theme.textDim} wrapMode="none">
+                          {line().cycle}
+                        </text>
+                      </Show>
+                    </>
                   }
                 >
-                  <box width={Math.max(8, valueBudget())} flexShrink={0}>
+                  <box flexGrow={1} flexShrink={1}>
                     <input
                       ref={(element: InputRenderable) => {
                         editInput = element
@@ -351,17 +467,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                     />
                   </box>
                 </Show>
-                <Show when={!isEditing()}>
-                  <text flexShrink={0} fg={row.disabled ? theme.textDim : theme.textMuted} wrapMode="none">
-                    {truncateCells(displayValue(row), valueBudget(), ambiguousWidth())}
-                  </text>
-                </Show>
               </box>
-              <Show when={isSelected() && row.description}>
-                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
-                  {truncateCells(row.description!, Math.max(0, dimensions().width - 8), ambiguousWidth())}
-                </text>
-              </Show>
               <Show when={isEditing() && error()}>
                 <text flexShrink={0} fg={theme.warning} wrapMode="none">
                   {t(error() as MessageKey)}
