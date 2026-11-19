@@ -62,6 +62,7 @@ import { SessionInbox } from "../../src/session/inbox"
 import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
 import { estimateOverhead } from "../../src/session/overflow"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { explainFingerprintChange, fingerprintOf, StepMetricsRing } from "../../src/session/step-metrics"
 import { ReminderState } from "../../src/session/reminder-state"
 import { SessionRevert } from "../../src/session/revert"
@@ -71,6 +72,7 @@ import { SessionAbortReason } from "../../src/session/abort-reason"
 import { SessionStatus } from "../../src/session/status"
 import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { Skill } from "../../src/skill"
+import { ROOT_ONLY_SKILLS } from "../../src/skill/builtin"
 import { SystemPrompt } from "../../src/session/system"
 import { RuntimeContext } from "../../src/session/runtime-context"
 import { Shell } from "@graphagent/core/shell"
@@ -87,7 +89,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { Truncate } from "@/tool/truncate"
-import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook"
+import { SettingsHook, type HookPayload, type HookSummary, type TriggerResult } from "@/hook"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { HookTranscript } from "@/hook/transcript"
 import { Global } from "@graphagent/core/global"
@@ -2785,6 +2787,52 @@ it.instance("counts the base prompt in the request overhead and the shared prefi
       ),
     )
   }),
+)
+
+// An agent with a prompt of its own gets the Safety section in front of it (#1457), and the same two estimates count it.
+it.instance(
+  "counts the Safety section of an agent with its own prompt in the request overhead and the prefix estimate",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { build: { prompt: "Custom agent instructions." } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Overhead with an agent prompt",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* Effect.gen(function* () {
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        yield* llm.text("world")
+        yield* prompt.loop({ sessionID: chat.id })
+
+        const body = (yield* llm.hits)[0]?.body as { messages?: Array<{ role?: string; content?: unknown }> }
+        const sent = body.messages?.find((message) => message.role === "system")?.content
+        if (typeof sent !== "string") throw new Error("the request carries no system message")
+        expect(sent).toStartWith(GraphAgentPrompt.baseline())
+        expect(sent).toContain("Custom agent instructions.")
+        const prefix = EngineProcess.runtimes.requestPrefixes.get(chat.id)
+        expect(prefix).toBeDefined()
+        const floor = estimateOverhead({ system: [sent], tools: prefix!.tools, toolsJson: prefix!.toolsJson })
+        expect(EngineProcess.runtimes.requestOverheads.get(chat.id)!).toBeGreaterThanOrEqual(floor)
+        expect(prefix!.prefixTokens).toBeGreaterThanOrEqual(floor)
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            EngineProcess.runtimes.forgetRequestPrefix(chat.id)
+            EngineProcess.runtimes.requestOverheads.delete(chat.id)
+          }),
+        ),
+      )
+    }),
 )
 
 it.instance("keeps a manifest of what each request carries besides its messages (#1461)", () =>
@@ -8356,6 +8404,72 @@ it.instance("carries the DAG mechanism (L1) only for a main session with the wor
     expect(requests[0]?.system).toContain("# DAG workflows")
     expect(requests[0]?.system).toContain("Never change DAG mode or the DAG budget yourself")
     expect(requests[1]?.system).not.toContain("# DAG workflows")
+  }),
+)
+
+// #1457: what only a root session can use stays out of a child session's system: the goal note, the Active Hooks block
+// (it points at the watch_pr tool) and the skills that record the workflow tool. The base prompt's `# Hooks` stays.
+const listedHooks = Layer.effect(
+  SettingsHook.Service,
+  Effect.gen(function* () {
+    const service = yield* SettingsHook.Service
+    const entries: HookSummary[] = [{ event: "Stop", scope: "global", type: "command", descriptor: "echo done" }]
+    return SettingsHook.Service.of({ ...service, list: () => Effect.succeed(entries) })
+  }),
+).pipe(Layer.provide(hookRecorderLayer))
+const withListedHooks = testEffect(makeHttp({ settingsHookLayer: listedHooks }))
+
+withListedHooks.instance("a child session's system leaves out the root-only sections", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "main session" }],
+    })
+    yield* llm.text("main done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const parent = yield* Effect.acquireRelease(sessions.create({ title: "Root-only parent" }), (info) =>
+      sessions.remove(info.id).pipe(Effect.ignore),
+    )
+    const child = yield* Effect.acquireRelease(
+      sessions.create({ title: "Root-only child", parentID: parent.id }),
+      (info) => sessions.remove(info.id).pipe(Effect.ignore),
+    )
+    const children = (yield* prompt.children).forParent(parent.id)
+    yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID: "wf-root-only", nodeID: "child", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
+    yield* children.prompt({
+      sessionID: child.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "child session" }],
+    })
+    yield* llm.text("child done")
+    yield* prompt.loop({ sessionID: child.id }, { kind: "child_run" })
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    const [root, nested] = inputs.map((input) => requestMessages(input).system)
+    const dagSkills = [...ROOT_ONLY_SKILLS].map((name) => `- ${name}: `)
+    const rootOnly = [JSON.stringify(SystemPrompt.GOAL_NOTE).slice(1, -1), "## Active Hooks", ...dagSkills]
+    expect(dagSkills).toHaveLength(6)
+    for (const section of rootOnly) {
+      expect(root).toContain(section)
+      expect(nested).not.toContain(section)
+    }
+    // The child still gets the base prompt, with its hooks entry, and the rest of the skill list.
+    for (const system of [root, nested]) {
+      expect(system).toContain("# Hooks")
+      expect(system).toContain("- git-workflow: ")
+    }
   }),
 )
 

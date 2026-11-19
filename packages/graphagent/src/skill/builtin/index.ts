@@ -90,3 +90,16 @@ export const BUILTIN_SKILLS: readonly BuiltinSkill[] = [
     hidden: true,
   },
 ]
+
+/**
+ * The built-in skills that record how to use the `workflow` tool, which only a root session has. A child session's
+ * skill list leaves them out (#1457); a root session's list keeps all six (ADR 0005).
+ */
+export const ROOT_ONLY_SKILLS: ReadonlySet<string> = new Set([
+  "dag-auto",
+  "dag-blocks",
+  "dag-nodes",
+  "dag-recovery",
+  "dag-patterns",
+  "dag-policy",
+])

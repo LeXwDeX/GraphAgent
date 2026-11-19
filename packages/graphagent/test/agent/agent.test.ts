@@ -4,6 +4,7 @@ import path from "path"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { Agent } from "../../src/agent/agent"
+import { isInternalAgent } from "../../src/session/llm/request"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
@@ -58,6 +59,15 @@ it.instance("returns default native agents when no config", () =>
     expect(names).toContain("compaction")
     expect(names).toContain("title")
     expect(names).toContain("summary")
+  }),
+)
+
+// #1457: only the agents the application runs for itself leave out the Safety section of the base prompt.
+it.instance("of the built-in agents, compaction, title and summary are the internal ones", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    const internal = agents.filter((agent) => isInternalAgent(agent)).map((agent) => agent.name)
+    expect(internal.toSorted()).toEqual(["compaction", "summary", "title"])
   }),
 )
 
