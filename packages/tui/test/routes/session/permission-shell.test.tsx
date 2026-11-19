@@ -642,7 +642,8 @@ describe("the hint row", () => {
 
 describe("frames", () => {
   // The five requests #1619 names, each once in either language at 80x24 (AGENTS.md 8: new panel text gets an 80-column
-  // frame per language) and once in English at 120x40 laid out at ambiguous_width 2. A queue of two puts its position at the top right wherever the panel is wide enough to show it.
+  // frame per language) and once in English at 120x40 laid out at ambiguous_width 2. A queue of two puts its position
+  // at the top right wherever the panel is wide enough to show it.
   for (const scene of scenes()) {
     test(`${scene.id} at 80x24`, async () => {
       await withPrompt({ scene, language: "zh-CN", width: 80, height: 24, total: 2 }, async (app) => {
