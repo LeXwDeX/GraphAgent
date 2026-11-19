@@ -37,7 +37,14 @@ const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".agents")])),
 })
 
-const mcpTool = (server: string, name: string, baseKey?: string, deferred?: boolean, description?: string) =>
+const mcpTool = (
+  server: string,
+  name: string,
+  baseKey?: string,
+  deferred?: boolean,
+  description?: string,
+  readOnly?: boolean,
+) =>
   McpCatalog.bindTool(
     dynamicTool({
       description: description ?? `remote ${name}`,
@@ -50,6 +57,7 @@ const mcpTool = (server: string, name: string, baseKey?: string, deferred?: bool
       source: "fixture",
       ...(baseKey === undefined ? {} : { baseKey }),
       ...(deferred === true ? { deferred } : {}),
+      ...(readOnly === true ? { readOnly } : {}),
     },
   )
 
@@ -327,6 +335,156 @@ describe("tool.registry MCP resolution", () => {
       }
     }),
   )
+
+  describe("read-only MCP tools (#1454)", () => {
+    const READ_ONLY_AGENTS = ["explore", "researcher", "architect", "review", "auditor"]
+    // Two tools that declare `readOnlyHint` when `readOnly` is set and one that never does, beside the suite's own.
+    const fixture = (readOnly: boolean) => ({
+      ...mcpTools,
+      ro_lookup: mcpTool("ro", "lookup", undefined, undefined, undefined, readOnly),
+      ro_other: mcpTool("ro", "other", undefined, undefined, undefined, readOnly),
+      rw_update: mcpTool("rw", "update"),
+    })
+    // Runs `body` with `tools` as the MCP tools, and puts the suite's own back.
+    const withTools = <A, E, R>(tools: Record<string, ReturnType<typeof mcpTool>>, body: Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        const original = mcpTools
+        mcpTools = tools
+        return body.pipe(Effect.ensuring(Effect.sync(() => (mcpTools = original))))
+      })
+    const agentNamed = (name: string) =>
+      Agent.Service.use((agents) => agents.get(name)).pipe(
+        Effect.flatMap((agent) =>
+          agent ? Effect.succeed(agent) : Effect.die(new Error(`Expected the ${name} agent`)),
+        ),
+      )
+    const deny = (permission: string): PermissionV1.Rule => ({ permission, pattern: "*", action: "deny" })
+    // What the registry resolves for `agent`, with `permission` as the rules of the session.
+    const resolved = (agent: Agent.Info, permission: PermissionV1.Ruleset = []) =>
+      Effect.gen(function* () {
+        const { registry, directory, model } = yield* setup
+        return yield* registry.resolve({ model, agent, session: sessionInfo(directory), permission })
+      })
+    const idsOf = (agent: Agent.Info, permission: PermissionV1.Ruleset = []) =>
+      resolved(agent, permission).pipe(Effect.map((entries) => entries.map((entry) => entry.id)))
+
+    it.instance(
+      "the five read-only built-in subagents see a tool that declares readOnlyHint and no other MCP tool",
+      () =>
+        withTools(
+          fixture(true),
+          Effect.gen(function* () {
+            for (const name of READ_ONLY_AGENTS) {
+              const entries = yield* resolved(yield* agentNamed(name))
+              const ids = entries.map((entry) => entry.id)
+              expect(ids, name).toContain("ro_lookup")
+              expect(ids, name).toContain("ro_other")
+              // A tool that did not declare it stays hidden, the suite's own among them.
+              for (const hidden of ["rw_update", "aaa_remote", "zzz_remote"])
+                expect(ids, `${name} ${hidden}`).not.toContain(hidden)
+              // The entry says it declared the hint.
+              expect(entries.find((entry) => entry.id === "ro_lookup")?.source).toEqual({
+                kind: "mcp",
+                server: "ro",
+                tool: "lookup",
+                source: "fixture",
+                canonicalName: "mcp__ro__lookup",
+                requiresUserInteraction: false,
+                readOnly: true,
+              })
+            }
+          }),
+        ),
+    )
+
+    it.instance("every other agent resolves as before: build and general see every MCP tool, the rest none", () =>
+      Effect.gen(function* () {
+        // The same tools with and without the hint resolve to the same ids for the agents that are not among the five.
+        for (const name of ["build", "plan", "general", "prototyper", "surveyor", "mapper"]) {
+          const agent = yield* agentNamed(name)
+          const without = yield* withTools(fixture(false), idsOf(agent))
+          const declared = yield* withTools(fixture(true), idsOf(agent))
+          expect(declared, name).toEqual(without)
+        }
+        yield* withTools(
+          fixture(true),
+          Effect.gen(function* () {
+            for (const name of ["build", "general"]) {
+              const ids = yield* idsOf(yield* agentNamed(name))
+              for (const id of ["ro_lookup", "ro_other", "rw_update", "aaa_remote"])
+                expect(ids, `${name} ${id}`).toContain(id)
+            }
+            for (const name of ["prototyper", "surveyor", "mapper"]) {
+              const ids = yield* idsOf(yield* agentNamed(name))
+              for (const id of ["ro_lookup", "ro_other", "rw_update"]) expect(ids, `${name} ${id}`).not.toContain(id)
+            }
+          }),
+        )
+      }),
+    )
+
+    it.instance("a deny for the tool closes it, in the rules of the session or of the agent; its neighbours stay", () =>
+      withTools(
+        fixture(true),
+        Effect.gen(function* () {
+          for (const name of READ_ONLY_AGENTS) {
+            const agent = yield* agentNamed(name)
+            expect(yield* idsOf(agent), name).toContain("ro_lookup")
+
+            // In the rules of the session, as a deny of a parent reaches a child.
+            const session = yield* idsOf(agent, [deny("ro_lookup")])
+            expect(session, name).not.toContain("ro_lookup")
+            expect(session, name).toContain("ro_other")
+
+            // In the rules of the agent, which is where `agent.<name>.permission` puts it; a wildcard names the server.
+            const own = yield* idsOf({ ...agent, permission: [...agent.permission, deny("ro_lookup")] })
+            expect(own, name).not.toContain("ro_lookup")
+            expect(own, name).toContain("ro_other")
+            const server = yield* idsOf({ ...agent, permission: [...agent.permission, deny("ro_*")] })
+            expect(server, name).not.toContain("ro_lookup")
+            expect(server, name).not.toContain("ro_other")
+          }
+        }),
+      ),
+    )
+
+    it.instance(
+      "a rewritten key that declares readOnlyHint is seen, and a deny for the key it had before hides it",
+      () =>
+        withTools(
+          { ...mcpTools, mcp_call_1a2b3c4d: mcpTool("mcp", "call", "mcp_call", undefined, undefined, true) },
+          Effect.gen(function* () {
+            const explore = yield* agentNamed("explore")
+            const entries = yield* resolved(explore)
+            expect(entries.find((entry) => entry.id === "mcp_call_1a2b3c4d")?.source).toMatchObject({
+              baseKey: "mcp_call",
+              readOnly: true,
+            })
+            expect(yield* idsOf(explore, [deny("mcp_call")])).not.toContain("mcp_call_1a2b3c4d")
+          }),
+        ),
+    )
+
+    it.instance(
+      "the read-only tool of a deferred server is no tool of theirs: they have no mcp_describe or mcp_call",
+      () =>
+        withTools(
+          { ...mcpTools, rod_lookup: mcpTool("rod", "lookup", undefined, true, undefined, true) },
+          Effect.gen(function* () {
+            for (const name of READ_ONLY_AGENTS) {
+              const entries = yield* resolved(yield* agentNamed(name))
+              expect(
+                entries.filter((entry) => entry.source.kind === "mcp-deferred"),
+                name,
+              ).toEqual([])
+              // Whatever is left of the tool is a member of the catalog, never one of the model's tools.
+              for (const entry of entries)
+                if (entry.id === "rod_lookup") expect(entry.source, name).toMatchObject({ deferred: true })
+            }
+          }),
+        ),
+    )
+  })
 
   describe("deferred servers (#1459)", () => {
     const DESCRIBE = MCP_DEFERRED_TOOLS.describe

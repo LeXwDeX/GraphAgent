@@ -17,6 +17,7 @@ import type { ChatInput, ChatParams } from "../../src/provider/adapter/types"
 import { testEffect } from "../lib/effect"
 import { jsonSchema, streamText, tool, wrapLanguageModel, type ModelMessage } from "ai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 
 const PROMPT_IDENTITY = "You are GraphAgent, a coding agent working in the user's workspace."
@@ -128,6 +129,45 @@ describe("runtime capabilities in model requests", () => {
       })
       expect(Object.keys(prepared.tools)).toEqual(["read"])
     }),
+  )
+  it.instance(
+    "a read-only MCP tool stays advertised to a read-only built-in subagent; a deny or another agent closes it",
+    () =>
+      Effect.gen(function* () {
+        const input = yield* request()
+        const schema = jsonSchema({ type: "object", properties: {} })
+        const mcp = (readOnly: boolean) =>
+          McpCatalog.bindTool(tool({ description: "mcp", inputSchema: schema }), {
+            server: "srv",
+            tool: "t",
+            source: "unknown",
+            ...(readOnly ? { readOnly } : {}),
+          })
+        const tools = {
+          read: tool({ description: "read", inputSchema: schema }),
+          srv_lookup: mcp(true),
+          srv_update: mcp(false),
+        }
+        // An agent shaped like `explore`: built in, a subagent, everything denied but what its rules list.
+        const native = Permission.fromConfig({ "*": "deny", read: "allow" })
+        const explore = { ...input.agent, name: "explore", mode: "subagent" as const, native: true, permission: native }
+        const deny = { permission: "srv_lookup", pattern: "*", action: "deny" } as const
+        const advertised = (override: Partial<Parameters<typeof prepare>[0]>) =>
+          prepare({ ...input, tools, agent: explore, nativePermission: native, ...override }).pipe(
+            Effect.map((prepared) => Object.keys(prepared.tools)),
+          )
+
+        // The tool that declared the hint is advertised; the one that did not is not.
+        expect(yield* advertised({})).toEqual(["read", "srv_lookup"])
+        // A deny the user wrote closes it, in the rules of the agent or of the session.
+        expect(yield* advertised({ agent: { ...explore, permission: [...native, deny] } })).toEqual(["read"])
+        expect(yield* advertised({ permission: [deny] })).toEqual(["read"])
+        // An agent that is not built in, or is not a subagent, is not given the grant.
+        expect(yield* advertised({ agent: { ...explore, native: false } })).toEqual(["read"])
+        expect(yield* advertised({ agent: { ...explore, mode: "primary" } })).toEqual(["read"])
+        // Without the native rules there is no telling which of the agent's rules are its own: its `*` deny decides.
+        expect(yield* advertised({ nativePermission: undefined })).toEqual(["read"])
+      }),
   )
   for (const [provider, model, npm] of [
     ["anthropic", "claude-sonnet-4", "@ai-sdk/anthropic"],
