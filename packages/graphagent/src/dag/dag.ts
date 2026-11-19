@@ -296,7 +296,7 @@ export const layer = Layer.effect(
     const { cancel, complete, fail, failOrphan, failUnrecoverable, settleCompletion } =
       yield* DagWorkflowTerminal.make(core, { resume })
 
-    const { _replan, _extend } = yield* DagGraphMutation.make(core)
+    const { replan, extend } = yield* DagGraphMutation.make(core)
 
     const { recover, retarget } = yield* DagWorkflowRecover.make(core)
 
@@ -332,10 +332,8 @@ export const layer = Layer.effect(
       failUnrecoverable,
       settleCompletion: (dagID, options) => command(dagID)((lock) => settleCompletion(lock, dagID, options)),
       exclusive,
-      replan: (dagID, fragment) =>
-        command(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
-      extend: (dagID, nodes, fence, options) =>
-        command(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence, options))),
+      replan,
+      extend,
       recover,
       retarget,
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>

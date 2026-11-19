@@ -15,7 +15,7 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { Session } from "@graphagent/schema/session"
-import { Dag, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
+import { Dag, parseWorkflowConfig, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
 import { DagLocation } from "@/dag/location"
 import { tmpdir } from "../fixture/fixture"
 import { installGitGate, withoutGit } from "./fixture/git-shim"
@@ -346,4 +346,122 @@ describe("failUnrecoverable reads the execution location before its transaction"
       watch.dispose()
     }
   })
+})
+
+describe("replan and extend resolve node workspaces before their transaction", () => {
+  const linkedWorktree = async (owner: string, branch: string) => {
+    const linked = path.join(owner, "linked")
+    await $`git worktree add ${linked} -b ${branch}`.cwd(owner).quiet()
+    return linked
+  }
+
+  posixIt("replan pins a new node's workspace with timers firing, outside the transaction", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = await linkedWorktree(tmp.path, "lock-git-replan")
+    const watch = watchGit()
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { dag, dagID } = yield* start(tmp.path, { name: "lock-git", nodes: [node("build", "build")] })
+          const store = yield* DagStore.Service
+          yield* shimmed(watch, SLOW_RESOLVE)
+          const result = yield* Effect.promise(() =>
+            measured(() =>
+              Effect.runPromise(dag.replan(dagID, { nodes: [node("extra", "build", { workspace: linked })] })),
+            ),
+          )
+          expect(result.value.add).toEqual(["extra"])
+          expectUnblocked(result, 3)
+          expect(watch.ran()).toContain("worktree")
+          expect(watch.insideTransaction()).toEqual([])
+          const config = parseWorkflowConfig((yield* store.getWorkflow(dagID))!.config)
+          expect(config?.nodes.find((n) => n.id === "extra")?.workspace).toBe(DagLocation.canonicalDirectory(linked))
+        }).pipe(Effect.provide(spiedLayer(watch.marker)), Effect.scoped),
+      )
+    } finally {
+      watch.dispose()
+    }
+  })
+
+  posixIt("extend re-pins the workspace of a pending node it carries forward, outside the transaction", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = await linkedWorktree(tmp.path, "lock-git-extend")
+    const watch = watchGit()
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { dag, dagID } = yield* start(tmp.path, {
+            name: "lock-git",
+            nodes: [node("kept", "build", { workspace: linked })],
+          })
+          yield* shimmed(watch, SLOW_RESOLVE)
+          const result = yield* Effect.promise(() =>
+            measured(() => Effect.runPromise(dag.extend(dagID, [node("more", "build")]))),
+          )
+          expect(result.value.add).toEqual(["more"])
+          expectUnblocked(result, 3)
+          expect(watch.ran()).toContain("worktree")
+          expect(watch.insideTransaction()).toEqual([])
+        }).pipe(Effect.provide(spiedLayer(watch.marker)), Effect.scoped),
+      )
+    } finally {
+      watch.dispose()
+    }
+  })
+
+  it("reports an unusable workspace as it always did", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const watch = watchGit()
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { dag, dagID } = yield* start(tmp.path, { name: "lock-git", nodes: [node("build", "build")] })
+          const missing = path.join(tmp.path, "missing")
+          const error = yield* dag
+            .replan(dagID, { nodes: [node("extra", "build", { workspace: missing })] })
+            .pipe(Effect.flip)
+          expect(error.message).toBe(`Invalid nodes[extra].workspace: workspace does not exist: "${missing}"`)
+        }).pipe(Effect.provide(spiedLayer(watch.marker)), Effect.scoped),
+      )
+    } finally {
+      watch.dispose()
+    }
+  })
+
+  posixIt(
+    "rejects a replan whose workflow moved to another owner while its workspaces were being resolved",
+    async () => {
+      await using tmp = await tmpdir({ git: true })
+      await using elsewhere = await tmpdir()
+      const linked = await linkedWorktree(tmp.path, "lock-git-moved")
+      const watch = watchGit()
+      try {
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const { dag, dagID } = yield* start(tmp.path, { name: "lock-git", nodes: [node("build", "build")] })
+            const store = yield* DagStore.Service
+            const { db } = yield* Database.Service
+            const installed = yield* gate
+            const call = yield* dag
+              .replan(dagID, { nodes: [node("extra", "build", { workspace: linked })] })
+              .pipe(Effect.flip, Effect.forkScoped)
+            yield* Effect.promise(() => installed.started())
+            // The owner directory is re-stamped while the read is parked at git.
+            yield* db
+              .update(WorkflowTable)
+              .set({ directory: elsewhere.path })
+              .where(eq(WorkflowTable.id, dagID))
+              .run()
+              .pipe(Effect.orDie)
+            yield* Effect.promise(() => installed.release())
+            const error = yield* Fiber.join(call)
+            expect(error.message).toContain("changed while its workspaces were being resolved")
+            expect(yield* store.getNode(dagID, "extra")).toBeUndefined()
+          }).pipe(Effect.provide(spiedLayer(watch.marker)), Effect.scoped),
+        )
+      } finally {
+        watch.dispose()
+      }
+    },
+  )
 })
