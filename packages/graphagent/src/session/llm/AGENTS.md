@@ -7,6 +7,7 @@ This folder contains adapters behind that service boundary:
 - `ai-sdk.ts` converts AI SDK `fullStream` parts into `@graphagent/llm` `LLMEvent`s. This is the default runtime path.
 - `native-request.ts` converts GraphAgent's normalized session input into a native `@graphagent/llm` `LLMRequest`. It does not execute requests.
 - `native-runtime.ts` is the opt-in native runtime adapter. It decides whether a selected model is supported, builds the native request, bridges GraphAgent tools into native executable tools, and delegates transport to `LLMClient` / `RequestExecutor`.
+- `inline-reasoning.ts` splits `<tag>…</tag>` out of the text events of a native stream as reasoning events, for a model whose profile names an inline reasoning tag. The AI SDK path wraps the language model with `extractReasoningMiddleware` instead (`provider/inline-reasoning.ts`), and both read the same reasoning and answer out of the same text.
 
 ## File Structure
 
@@ -16,6 +17,7 @@ src/session/
   llm/
     AGENTS.md               boundary notes for the adapter layer
     ai-sdk.ts               AI SDK fullStream -> @graphagent/llm LLMEvent adapter
+    inline-reasoning.ts     <tag>…</tag> in native text events -> reasoning events
     native-request.ts       GraphAgent/AI SDK-shaped input -> @graphagent/llm LLMRequest
     native-runtime.ts       native runtime gate, tool bridge, and LLMClient handoff
 ```
@@ -26,6 +28,7 @@ Integration points:
 - `../llm.ts` imports `LLMAISDK` from `./llm/ai-sdk`; the AI SDK path still calls `streamText(...)` locally, then adapts `result.fullStream` into shared `LLMEvent`s.
 - `../llm.ts` imports `LLMNativeRuntime` from `./llm/native-runtime`; this is the runtime-selection seam. Unsupported native requests return a reason and fall back to AI SDK.
 - `native-runtime.ts` imports `LLMNative` from `./native-request`; this keeps request lowering separate from transport and tool execution.
+- `native-runtime.ts` imports `LLMInlineReasoning` from `./inline-reasoning` and applies it ahead of the thinking-replay binding when `inlineReasoningTag(model)` names a tag, so the split reasoning takes the same path as the endpoint's own reasoning events.
 - `native-request.ts` is the lowering boundary that constructs `LLM.request(...)`, provider-facade models, and per-type message, part, and tool-definition values from normalized session input. Use constructors such as `Message.*`, `SystemPart.make(...)`, `ToolCallPart.make(...)`, `ToolResultPart.make(...)`, and `ToolDefinition.make(...)`.
 - `ai-sdk.ts` and `native-runtime.ts` both emit `@graphagent/llm` `LLMEvent`s so downstream session processing does not care which runtime handled the request.
 

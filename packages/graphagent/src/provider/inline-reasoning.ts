@@ -8,11 +8,12 @@ import { ProviderProfile } from "./profile"
 import type { Model } from "./provider"
 
 /**
- * Models that write their reasoning into the answer text between a pair of
- * tags (`<think>…</think>`) instead of a separate reasoning field. Only an
- * endpoint known to do this belongs here: text from any other model must reach
- * the session untouched, so the table is empty by default and a model is never
- * matched by a guess from its name.
+ * Endpoints known one by one to write their reasoning into the answer text between a pair of tags
+ * (`<think>…</think>`) instead of a separate reasoning field, matched by provider and API id exactly. The table is
+ * empty by default: a model's tag comes from its profile (`reasoningMode.inlineTag`), where a built-in rule names the
+ * families whose own documentation says so (Qwen, DeepSeek and GLM behind an OpenAI-compatible endpoint) and a
+ * configuration declares a tag, or switches it off with an empty `inline_tag`. Text from any other model must reach the
+ * session untouched, so a name matches only through a rule that cites the documentation of its family, never by a guess.
  */
 export const INLINE_REASONING_TAGS: ReadonlyArray<{ providerID: string; apiID: string; tag: string }> = []
 
@@ -30,7 +31,10 @@ export function inlineReasoningTag(
   return table.find((rule) => rule.providerID === model.providerID && rule.apiID === model.api.id)?.tag
 }
 
-/** Splits `<tag>…</tag>` out of the text stream as reasoning; a model without a tag is returned as is. */
+/**
+ * Splits `<tag>…</tag>` out of the text stream as reasoning; a model without a tag is returned as is. This wraps the
+ * AI SDK path; the native runtime splits its `LLMEvent` stream in `session/llm/inline-reasoning.ts`.
+ */
 export function wrapInlineReasoning(language: LanguageModelV3, tag: string | undefined): LanguageModelV3 {
   if (tag === undefined) return language
   return wrapLanguageModel({ model: language, middleware: extractReasoningMiddleware({ tagName: tag }) })

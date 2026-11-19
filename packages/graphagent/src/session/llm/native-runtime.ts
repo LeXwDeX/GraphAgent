@@ -2,6 +2,7 @@ import type { ToolBatch } from "@/hook/tool-batch"
 import { randomUUID } from "node:crypto"
 import { Logging } from "@graphagent/core/observability/logging"
 import type { Auth } from "@/auth"
+import { inlineReasoningTag } from "@/provider/inline-reasoning"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { errorMessage } from "@/util/error"
@@ -23,6 +24,7 @@ import {
 import type { LLMClientShape } from "@graphagent/llm/route"
 import { RequestExecutor } from "@graphagent/llm/route"
 import { ToolError } from "@/tool/tool-error"
+import { LLMInlineReasoning } from "./inline-reasoning"
 import { LLMNative } from "./native-request"
 import { ThinkingReplay } from "../thinking-replay"
 import type { LLMPurpose } from "./purpose"
@@ -229,10 +231,16 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     const stream = input.sessionRetry
       ? providerStream.pipe(Stream.provideService(RequestExecutor.MaxRetries, 0))
       : providerStream
+    // A model whose reasoning arrives inside the answer text between tags gets it split out here, ahead of
+    // `thinking.bind`, so those blocks take the same path as the endpoint's own reasoning events.
+    const inlineTag = inlineReasoningTag(input.model)
+    const splitInline = <E, R>(events: Stream.Stream<LLMEvent, E, R>) =>
+      inlineTag ? events.pipe(LLMInlineReasoning.split(inlineTag)) : events
 
     return {
       ...current,
       stream: (fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream).pipe(
+        splitInline,
         Stream.map((event) => thinking?.bind(event) ?? event),
         Stream.tap((event) =>
           event.type === "provider-error"
