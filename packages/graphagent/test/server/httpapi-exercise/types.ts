@@ -94,7 +94,12 @@ export type ScenarioContext = {
   llmHang: () => Effect.Effect<void>
   llmWait: (count: number) => Effect.Effect<void>
   /** Create a DAG workflow owned by sessionID with the given node configs. Returns the dagID. */
-  dag: (input: { sessionID: SessionID; title?: string; nodes: DagNodeSeed[] }) => Effect.Effect<DagWorkflowInfo>
+  dag: (input: {
+    sessionID: SessionID
+    title?: string
+    nodes: DagNodeSeed[]
+    worktree?: DagWorktreeSeed
+  }) => Effect.Effect<DagWorkflowInfo>
   /** Fail a seeded DAG node through the Dag service (projects error_class on the wire). */
   dagFailNode: (
     dagID: string,
@@ -170,6 +175,17 @@ export type DagNodeSeed = {
   required: boolean
   /** #1158 PR5: the slot of a compose expansion that generated the node; written into the workflow's definition. */
   expanded_from?: string
+}
+
+/**
+ * #1618: a workflow-level worktree for a DAG fixture. The directory and branch are recorded as the live pointer in
+ * the persisted config; `settled` additionally writes the settlement row, the way the projection does after the
+ * terminal transition, so the summary reports what remained instead of the pointer.
+ */
+export type DagWorktreeSeed = {
+  directory: string
+  branch?: string
+  settled?: "removed" | "kept"
 }
 
 /** Result of creating a DAG workflow fixture. */

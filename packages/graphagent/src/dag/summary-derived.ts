@@ -5,7 +5,10 @@
  * The summary fields that cannot be aggregated in SQL (#1027 D6b): the coverage
  * entry count and the review quality of a workflow. Both come from the same
  * computations `inspect` runs on the same rows (`DagCoverage.workflowCoverage`,
- * `DagQuality`), so the panel and the tool result cannot disagree.
+ * `DagQuality`), so the panel and the tool result cannot disagree. The workflow
+ * worktree (#1618) is read off the workflow row and its config the way
+ * `workflow status` reads it: the settlement when there is one, else the live
+ * pointer.
  *
  * Reads stay constant in the number of workflows and nodes: the workflow rows
  * are already loaded by the caller, node rows come from one statement that
@@ -25,17 +28,42 @@ export interface Derived {
   /** `inspect` coverage entries for the workflow snapshot (not per-read page gaps). */
   readonly coverageCount: number
   readonly quality: DagSummary.WorkflowQuality | null
+  /** #1618: the workflow-level worktree as the wire carries it; absent when the workflow has none. */
+  readonly worktree?: DagSummary.WorkflowSummary["worktree"]
 }
 
-type DerivedWorkflow = Pick<DagStore.WorkflowRow, "id" | "config" | "status" | "pauseReason">
+type DerivedWorkflow = Pick<DagStore.WorkflowRow, "id" | "config" | "status" | "pauseReason" | "worktree">
 type DerivedStore = Pick<DagStore.Interface, "getSummaryNodes">
 type MemoStore = DerivedStore & Pick<DagStore.Interface, "getWorkflowRevisions" | "listBySession">
+
+/**
+ * Where the workflow's own worktree stands (#1618), by the rule `workflow status` follows: the settled
+ * `workflow.worktree` wins, and without one the live pointer the persisted config holds counts as `active`.
+ * Only what the wire declares is copied, so the settlement's patch and commit evidence stays on the row. A live
+ * pointer without a directory (a config written by hand or by an older version) names nothing and is ignored.
+ */
+function worktreeOf(
+  config: WorkflowConfig | undefined,
+  settled: DagStore.WorkflowRow["worktree"],
+): DagSummary.WorkflowSummary["worktree"] {
+  if (settled) {
+    return { directory: settled.directory, ...(settled.branch ? { branch: settled.branch } : {}), state: settled.state }
+  }
+  const live = config?.worktree
+  if (!live || typeof live.directory !== "string" || live.directory === "") return undefined
+  return {
+    directory: live.directory,
+    ...(typeof live.branch === "string" && live.branch !== "" ? { branch: live.branch } : {}),
+    state: "active",
+  }
+}
 
 function deriveWith(
   config: WorkflowConfig | undefined,
   workflow: DerivedWorkflow,
   nodes: readonly DagStore.SummaryNodeRow[],
 ): Derived {
+  const worktree = worktreeOf(config, workflow.worktree)
   return {
     coverageCount: DagCoverage.workflowCoverage({
       config,
@@ -43,6 +71,7 @@ function deriveWith(
       workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
     }).length,
     quality: DagQuality.workflowQuality({ config, workflowID: workflow.id, nodes }),
+    ...(worktree ? { worktree } : {}),
   }
 }
 
@@ -173,6 +202,7 @@ export function toWire(
     costUnknown: summary.costUnknown,
     checkpointPending: summary.checkpointPending,
     ...(derived ? { coverageCount: derived.coverageCount, quality: derived.quality } : {}),
+    ...(derived?.worktree ? { worktree: derived.worktree } : {}),
     ...(concurrencyRunning === undefined ? {} : { concurrencyRunning }),
   }
 }
