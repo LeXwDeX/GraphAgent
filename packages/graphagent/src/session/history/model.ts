@@ -26,7 +26,7 @@ import type { MessageID, SessionID } from "../schema"
 export const MODEL_HISTORY_BYTES = 32 * 1024 * 1024
 export const MODEL_HISTORY_ENTRY_BYTES = 1024 * 1024
 
-const CACHE_VERSION = "model-history-v1"
+const CACHE_VERSION = "model-history-v2"
 
 export interface ModelHistoryEntry {
   readonly sessionID: SessionID
@@ -101,6 +101,7 @@ export function bucket(
     stripOpaqueReasoning?: boolean
   },
 ) {
+  const profile = ProviderProfile.profileOf(model)
   return sha256(
     canonicalJson({
       version: CACHE_VERSION,
@@ -109,7 +110,11 @@ export function bucket(
       apiNpm: model.api.npm,
       apiID: model.api.id,
       // The conversion reads it (`supportsMediaInToolResult`), and a configuration sets it per model.
-      toolResultMedia: ProviderProfile.profileOf(model).toolResultMedia,
+      toolResultMedia: profile.toolResultMedia,
+      // The conversion reads it too (`SwitchProjection.targetOf`): after a model switch it decides what happens to
+      // earlier reasoning, and a configuration sets it per model. The tool call id constraint stays out of the key,
+      // because the ids are mapped after the conversion.
+      replay: profile.reasoningMode.replay,
       options: {
         stripMedia: options?.stripMedia === true,
         toolOutputMaxChars: options?.toolOutputMaxChars || undefined,

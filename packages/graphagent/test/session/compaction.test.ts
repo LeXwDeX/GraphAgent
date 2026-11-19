@@ -35,6 +35,7 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { SessionSummary } from "../../src/session/summary"
 
 import type { Provider } from "@/provider/provider"
+import { ProviderProfile } from "@/provider/profile"
 import * as SessionProcessorModule from "../../src/session/processor"
 import { Snapshot } from "../../src/snapshot"
 import { ProviderTest } from "../fake/provider"
@@ -105,6 +106,16 @@ function createModel(opts: {
 }
 
 const wide = () => ProviderTest.fake({ model: createModel({ context: 100_000, output: 32_000 }) })
+
+/**
+ * `model` with a profile that takes back the reasoning of its own provider as reasoning parts, as
+ * `profile.reasoning_mode.replay: "field"` does. The history of these tests was written by another model, and a model
+ * switch drops reasoning that the target does not replay.
+ */
+const replaying = (model: Provider.Model): Provider.Model => {
+  const profile = ProviderProfile.profileOf(model)
+  return { ...model, profile: { ...profile, reasoningMode: { ...profile.reasoningMode, replay: "field" } } }
+}
 
 function createUserMessage(sessionID: SessionID, text: string) {
   return Effect.gen(function* () {
@@ -1571,8 +1582,11 @@ describe("session.compaction.process", () => {
 
       expect(result).toBe("continue")
       expect(seen).toHaveLength(2)
+      // the first attempt runs on another model: reasoning with an opaque carrier has no replay path there
+      expect(seen[0]).not.toContain("opaque thinking")
+      // the fallback runs on the model that wrote the history: the carrier is gone and the reasoning becomes text
+      expect(seen[1]).toContain("opaque thinking")
       for (const input of seen) {
-        expect(input).toContain("opaque thinking")
         expect(input).not.toContain("cipher-opaque")
         expect(input).not.toContain("rs_opaque")
       }
@@ -2673,7 +2687,7 @@ describe("session.compaction.process", () => {
             const stub = llm()
             const captured: string[] = []
             const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("qwen-small") }
-            const main = { ...createModel({ context: 8_192, output: 1_000 }), id: ModelV2.ID.make(family) }
+            const main = replaying({ ...createModel({ context: 8_192, output: 1_000 }), id: ModelV2.ID.make(family) })
             const provider = ProviderTest.fake({
               getSmallModel: () => Effect.succeed(small),
               getModel: () => Effect.succeed(main),
@@ -2812,7 +2826,10 @@ describe("session.compaction.process", () => {
           () => {
             const stub = llm()
             const captured: string[] = []
-            const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("qwen-small") }
+            const small = replaying({
+              ...createModel({ context: 100_000, output: 32_000 }),
+              id: ModelV2.ID.make("qwen-small"),
+            })
             const fallback = { ...small, id: ModelV2.ID.make(family) }
             const provider = ProviderTest.fake({
               getSmallModel: () => Effect.succeed(small),

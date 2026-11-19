@@ -198,7 +198,7 @@ describe("signed thinking replay through the pinned Anthropic SDK", () => {
     expect(history).toEqual(saved)
   })
 
-  test("logical provider/model switches retain the existing reasoning-to-text compatibility policy", async () => {
+  test("logical provider/model switches drop reasoning that has no replay path", async () => {
     const history = [
       message(1, "user", [{ type: "text", text: "question" }]),
       message(2, "assistant", [thinking("opaque-switch", "visible reasoning"), { type: "text", text: "answer" }]),
@@ -210,9 +210,8 @@ describe("signed thinking replay through the pinned Anthropic SDK", () => {
     ]) {
       const wire = await capture(history, target)
       expect(signatures(wire)).toEqual([])
-      expect(wire.messages[1].content).toContainEqual(
-        expect.objectContaining({ type: "text", text: "visible reasoning" }),
-      )
+      expect(JSON.stringify(wire)).not.toContain("visible reasoning")
+      expect(wire.messages[1].content).toContainEqual(expect.objectContaining({ type: "text", text: "answer" }))
     }
   })
 

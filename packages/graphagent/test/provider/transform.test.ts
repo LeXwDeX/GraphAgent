@@ -2310,8 +2310,8 @@ describe("ProviderTransform.message - Mistral tool call IDs", () => {
       )
 
       expect(result).toMatchObject([
-        { role: "assistant", content: [{ type: "tool-call", toolCallId: "toolu01CB" }] },
-        { role: "tool", content: [{ type: "tool-result", toolCallId: "toolu01CB" }] },
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: "8dc9cde44" }] },
+        { role: "tool", content: [{ type: "tool-result", toolCallId: "8dc9cde44" }] },
       ])
     },
   )
@@ -6456,10 +6456,10 @@ describe("ProviderTransform case-insensitive family", () => {
 
   test("tool call id", () => {
     const m = relayModel("Claude-Sonnet-4")
-    expect(ProviderTransform.toolCallID("call.1:x", m)).toBe("call_1_x")
+    expect(ProviderTransform.toolCallID("call.1:x", m)).toBe("call_1_x_574a15ed")
     expect(ProviderTransform.message(toolHistory("call.1:x"), m, {})).toMatchObject([
-      { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1_x" }] },
-      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1_x" }] },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1_x_574a15ed" }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1_x_574a15ed" }] },
     ])
   })
 
@@ -6601,18 +6601,21 @@ describe("ProviderTransform.message - request shaping follows the model profile"
 
   test("the tool call id charset comes from the profile", () => {
     const length = relayModel("qwen3-max", { profile: { tool_call_id: { charset: "alnum", length: 12 } } })
-    expect(ProviderTransform.toolCallID("call.1:x", length)).toBe("call1x000000")
+    expect(ProviderTransform.toolCallID("call.1:x", length)).toBe("574a15edd7ee")
     expect(ids(ProviderTransform.message([call("call.1:x"), result("call.1:x")], length, {}))).toEqual([
-      "call1x000000",
-      "call1x000000",
+      "574a15edd7ee",
+      "574a15edd7ee",
     ])
 
     const dash = relayModel("qwen3-max", { profile: { tool_call_id: { charset: "alnum_dash" } } })
-    expect(ProviderTransform.toolCallID("a.b:c-d_e", dash)).toBe("a_b_c-d_e")
+    expect(ProviderTransform.toolCallID("a.b:c-d_e", dash)).toBe("a_b_c-d_e_038b8084")
+    // an id that already meets the charset is kept as it is
+    expect(ProviderTransform.toolCallID("a_b-c", dash)).toBe("a_b-c")
 
-    // alnum without a length only strips; it neither cuts nor pads
+    // alnum without a length strips the unfit characters and appends the digest; it neither cuts nor pads
     const strip = relayModel("qwen3-max", { profile: { tool_call_id: { charset: "alnum" } } })
-    expect(ProviderTransform.toolCallID("call.1:xyz_0123456789", strip)).toBe("call1xyz0123456789")
+    expect(ProviderTransform.toolCallID("call.1:xyz_0123456789", strip)).toBe("call1xyz012345678919297b8b")
+    expect(ProviderTransform.toolCallID("call1xyz0123456789", strip)).toBe("call1xyz0123456789")
 
     // a configured `any` switches the Claude rule off
     const any = relayModel("claude-sonnet-4", { profile: { tool_call_id: { charset: "any" } } })
@@ -6627,25 +6630,25 @@ describe("ProviderTransform.message - request shaping follows the model profile"
     const input: ModelMessage[] = [{ role: "user", content: "go" }, call("a.b:c"), result("a.b:c")]
     const before = structuredClone(input)
     const mapped = ProviderTransform.mapToolCallIDs(input, relayModel("Claude-Sonnet-4"))
-    expect(ids(mapped)).toEqual(["a_b_c", "a_b_c"])
+    expect(ids(mapped)).toEqual(["a_b_c_b2a25f70", "a_b_c_b2a25f70"])
     expect(mapped[0]).toBe(input[0])
     expect(input).toEqual(before)
     expect(ids(ProviderTransform.mapToolCallIDs(input, relayModel("codestral-latest")))).toEqual([
-      "abc000000",
-      "abc000000",
+      "b2a25f70f",
+      "b2a25f70f",
     ])
   })
 
-  test("the built-in charsets match the replaced algorithms", () => {
-    expect(ProviderTransform.toolCallID("call.1:x", relayModel("Claude-Sonnet-4"))).toBe("call_1_x")
+  test("the built-in charsets project an id that does not meet them onto a digest form", () => {
+    expect(ProviderTransform.toolCallID("call.1:x", relayModel("Claude-Sonnet-4"))).toBe("call_1_x_574a15ed")
     expect(ProviderTransform.toolCallID("toolu_01CBhTTz95qkd9LJMdC9sf8t", relayModel("Codestral-Latest"))).toBe(
-      "toolu01CB",
+      "8dc9cde44",
     )
-    expect(ProviderTransform.toolCallID("a.b", relayModel("Codestral-Latest"))).toBe("ab0000000")
-    expect(ProviderTransform.toolCallID("a.b", relayModel("anything", { providerID: "mistral" }))).toBe("ab0000000")
+    expect(ProviderTransform.toolCallID("a.b", relayModel("Codestral-Latest"))).toBe("2e7336dc8")
+    expect(ProviderTransform.toolCallID("a.b", relayModel("anything", { providerID: "mistral" }))).toBe("2e7336dc8")
     expect(ProviderTransform.toolCallID("call.1:x", relayModel("qwen3-max"))).toBe("call.1:x")
     // Claude wins over Mistral when an id names both
-    expect(ProviderTransform.toolCallID("call.1:x", relayModel("claude-mistral-x"))).toBe("call_1_x")
+    expect(ProviderTransform.toolCallID("call.1:x", relayModel("claude-mistral-x"))).toBe("call_1_x_574a15ed")
   })
 
   test("a user message after a tool result is bridged when the profile says so", () => {
@@ -6677,7 +6680,7 @@ describe("ProviderTransform.message - request shaping follows the model profile"
       {},
     )
     expect(roles(allowed)).toEqual(["user", "assistant", "tool", "user"])
-    expect(ids(allowed)).toEqual(["t10000000", "t10000000"])
+    expect(ids(allowed)).toEqual(["628b49d96", "628b49d96"])
 
     // a tool message that ends the history gets no bridge
     const trailing = ProviderTransform.message(
@@ -7121,5 +7124,93 @@ describe("ProviderTransform.schema - downgrades follow the model profile", () =>
       Reflect.deleteProperty(fixture, key)
     }
     expect(ProviderTransform.schema(fixture, integers())).toEqual(stringEnum)
+  })
+})
+
+describe("ProviderTransform.message - tool call id projection", () => {
+  const call = (id: string, name = "read") => ({
+    role: "assistant" as const,
+    content: [{ type: "tool-call" as const, toolCallId: id, toolName: name, input: {} }],
+  })
+  const result = (id: string, name = "read") => ({
+    role: "tool" as const,
+    content: [
+      {
+        type: "tool-result" as const,
+        toolCallId: id,
+        toolName: name,
+        output: { type: "text" as const, value: "ok" },
+      },
+    ],
+  })
+  const ids = (msgs: ModelMessage[]) =>
+    msgs.flatMap((msg) =>
+      Array.isArray(msg.content) ? msg.content.flatMap((part) => ("toolCallId" in part ? [part.toolCallId] : [])) : [],
+    )
+  const mistral = relayModel("codestral-latest")
+  const claude = relayModel("claude-sonnet-4")
+
+  test("keeps distinct ids distinct", () => {
+    const pairs: Array<[Provider.Model, string, string]> = [
+      [mistral, "functions.bash:0", "functions.read:1"],
+      [claude, "a.b", "a:b"],
+    ]
+    for (const [model, first, second] of pairs) {
+      const mapped = ids(
+        ProviderTransform.message([call(first), result(first), call(second), result(second)], model, {}),
+      )
+      expect(mapped[0]).toBe(mapped[1])
+      expect(mapped[2]).toBe(mapped[3])
+      expect(mapped[0]).not.toBe(mapped[2])
+    }
+    // the old rule made both of the Mistral ids "functions" and both of the Claude ids "a_b"
+    expect(ids(ProviderTransform.message([call("functions.bash:0"), call("functions.read:1")], mistral, {}))).toEqual([
+      "8497fe9cc",
+      "08bea9710",
+    ])
+    expect(ids(ProviderTransform.message([call("a.b"), call("a:b")], claude, {}))).toEqual([
+      "a_b_2e7336dc",
+      "a_b_6783a31e",
+    ])
+    // an id that already meets the constraint keeps its form, and the id that would have mapped onto it moves on
+    expect(ids(ProviderTransform.message([call("functions.bash:0"), call("8497fe9cc")], mistral, {}))).toEqual([
+      "7a7c5acf9",
+      "8497fe9cc",
+    ])
+  })
+
+  test("keeps compliant ids and earlier ids stable", () => {
+    for (const model of [mistral, claude]) {
+      const first: ModelMessage[] = [
+        { role: "user", content: "go" },
+        call("functions.bash:0", "bash"),
+        result("functions.bash:0", "bash"),
+        call("t1"),
+        result("t1"),
+      ]
+      const before = ids(ProviderTransform.message(structuredClone(first), model, {}))
+      // a later round of calls does not change what the earlier ones were sent as
+      const grown: ModelMessage[] = [
+        ...structuredClone(first),
+        { role: "user", content: "next" },
+        call("functions.read:1"),
+        result("functions.read:1"),
+      ]
+      const after = ids(ProviderTransform.message(grown, model, {}))
+      expect(after.slice(0, before.length)).toEqual(before)
+      // a tool call and its tool result carry the same id
+      expect(before[0]).toBe(before[1])
+      expect(before[2]).toBe(before[3])
+      expect(after[4]).toBe(after[5])
+    }
+    // an id that already meets the constraint is sent as it is
+    expect(ids(ProviderTransform.message([call("toolu_01CBhTTz"), result("toolu_01CBhTTz")], claude, {}))).toEqual([
+      "toolu_01CBhTTz",
+      "toolu_01CBhTTz",
+    ])
+    expect(ids(ProviderTransform.message([call("abcdefghi"), result("abcdefghi")], mistral, {}))).toEqual([
+      "abcdefghi",
+      "abcdefghi",
+    ])
   })
 })

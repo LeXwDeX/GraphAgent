@@ -4,6 +4,7 @@ import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
 import { ProviderProfile } from "./profile"
+import { ToolCallId } from "./tool-call-id"
 import type * as ModelsDev from "@graphagent/core/models-dev"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { iife } from "@/util/iife"
@@ -88,44 +89,14 @@ function sdkKey(npm: string): string | undefined {
   return undefined
 }
 
-// TODO: fix this stupid inefficient dogshit function
+/** The id the model's profile allows: the id itself when it already meets the constraint, a digest form otherwise. */
 export function toolCallID(id: string, model: Provider.Model) {
-  const shape = ProviderProfile.profileOf(model).toolCallId
-  if (shape.charset === "alnum_dash") return id.replace(/[^a-zA-Z0-9_-]/g, "_")
-  if (shape.charset === "alnum") {
-    const bare = id.replace(/[^a-zA-Z0-9]/g, "")
-    return shape.length === undefined ? bare : bare.substring(0, shape.length).padEnd(shape.length, "0")
-  }
-  return id
+  return ToolCallId.project(id, ProviderProfile.profileOf(model).toolCallId)
 }
 
-/** Rewrites the id of every tool call and tool result to the charset the model's profile asks for. */
+/** Projects the id of every tool call and tool result onto the model's profile, so that two ids never become one. */
 export function mapToolCallIDs(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
-  return msgs.map((msg) => {
-    if (msg.role === "assistant" && Array.isArray(msg.content)) {
-      return {
-        ...msg,
-        content: msg.content.map((part) => {
-          if (part.type === "tool-call" || part.type === "tool-result") {
-            return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
-          }
-          return part
-        }),
-      }
-    }
-    if (msg.role === "tool" && Array.isArray(msg.content)) {
-      return {
-        ...msg,
-        content: msg.content.map((part) => {
-          if (part.type === "tool-result") {
-            return { ...part, toolCallId: toolCallID(part.toolCallId, model) }
-          }
-          return part
-        }),
-      }
-    }
-    return msg
-  })
+  return ToolCallId.remap(msgs, ProviderProfile.profileOf(model).toolCallId)
 }
 
 /** Fix message sequence: a tool message cannot be followed by a user message, so an assistant turn goes between. */
