@@ -4,6 +4,8 @@
 import { describe, expect } from "bun:test"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Effect, Layer } from "effect"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { Command } from "@/command"
 import { Config } from "@/config/config"
 import { MCP } from "@/mcp"
@@ -49,6 +51,9 @@ function commandLayer(
     }
   > = {},
   skills: Skill.Info[] = [],
+  mcp: Layer.Layer<MCP.Service> = Layer.mock(MCP.Service, {
+    prompts: () => Effect.succeed({}),
+  }),
 ) {
   return Layer.mergeAll(
     Command.layer.pipe(
@@ -57,11 +62,7 @@ function commandLayer(
           get: () => Effect.succeed({ command: commands } as never),
         }),
       ),
-      Layer.provide(
-        Layer.mock(MCP.Service, {
-          prompts: () => Effect.succeed({}),
-        }),
-      ),
+      Layer.provide(mcp),
       Layer.provide(
         Layer.mock(Skill.Service, {
           all: () => Effect.succeed(skills),
@@ -395,4 +396,48 @@ describe("legacy command registry", () => {
       expect(expanded).not.toContain("$ARGUMENTS")
     }),
   )
+})
+
+// Issue #1575: the real MCP service sits under the Command layer, so an mcp.json that cannot be read reaches
+// `mcp.prompts()` as it does in the application. It used to fail the MCP state and, through it, the whole list.
+const withRealMcp = testEffect(
+  commandLayer({ "user-check": { template: "Check $ARGUMENTS", description: "A user command" } }, [], MCP.defaultLayer),
+)
+
+const writeProjectMcp = (text: string) => (directory: string) =>
+  Effect.promise(async () => {
+    const file = path.join(directory, ".agents", "mcp.json")
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, text)
+  })
+
+describe("command registry with an mcp.json that cannot be read", () => {
+  for (const [kind, text] of [
+    ["a syntax error", "{ not json"],
+    ["the removed V1 shape", JSON.stringify({ old: { type: "local", command: ["echo"] } })],
+  ] as const) {
+    withRealMcp.instance(
+      `still lists the built-in and the user commands: ${kind}`,
+      () =>
+        Effect.gen(function* () {
+          const commands = yield* Command.Service
+          const names = (yield* commands.list()).map((command) => command.name)
+
+          expect(names).toEqual(
+            expect.arrayContaining([
+              Command.Default.REVIEW,
+              Command.Default.MEMORY,
+              Command.Default.DAG_MODE,
+              "user-check",
+            ]),
+          )
+          expect((yield* commands.get("user-check"))?.source).toBe("command")
+          const review = yield* commands.get(Command.Default.REVIEW)
+          if (!review) throw new Error("expected built-in review command")
+          expect(Command.isBuiltin(review)).toBe(true)
+          expect((yield* commands.list()).filter((command) => command.source === "mcp")).toEqual([])
+        }),
+      { init: writeProjectMcp(text) },
+    )
+  }
 })

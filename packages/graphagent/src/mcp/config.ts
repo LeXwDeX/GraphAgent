@@ -61,6 +61,43 @@ export function load(root: string): Servers {
   return servers
 }
 
+/** A layer file `loadValid` skipped, and why it could not be read. */
+export interface Failure {
+  readonly file: string
+  readonly error: unknown
+}
+
+/** The merged servers of the layers that could be read, and the layers that could not. */
+export interface Loaded {
+  readonly servers: Servers
+  readonly failures: ReadonlyArray<Failure>
+  /**
+   * The project-layer document the servers were merged from: undefined when the project layer is absent or was
+   * skipped. Trust verdicts are taken against this document, never against a skipped one (#1575).
+   */
+  readonly project?: ProjectLayerDocument
+}
+
+/**
+ * `load` for a caller that must go on without the layer files that cannot be read (#1575): such a layer is skipped
+ * and recorded in `failures`, and the other layers merge as `load` merges them. `load` itself stays strict.
+ */
+export function loadValid(root: string): Loaded {
+  const servers: Servers = {}
+  const failures: Failure[] = []
+  let project: ProjectLayerDocument | undefined
+  for (const layer of layers(root)) {
+    if (!existsSync(layer.file)) continue
+    try {
+      Object.assign(servers, readLayer(layer.file))
+      if (layer.scope === "project") project = projectDocument(layer.file)
+    } catch (error) {
+      failures.push({ file: layer.file, error })
+    }
+  }
+  return { servers, failures, project }
+}
+
 /**
  * Signature of the layer files `load` reads: size and modification time of each, `absent` for a missing one.
  * It changes whenever a layer file is written, created or removed. A file that cannot be stat'ed reads as
@@ -84,30 +121,40 @@ function fileSignature(file: string): string {
 /** The servers of the layer files, and why they could not be read when that is the case. */
 export interface Cached {
   readonly servers: Servers
+  /**
+   * The project-layer document `servers` came from (see `Loaded.project`). A cached server keeps the provenance of
+   * the read that produced it, so a project entry stays gated after its file becomes unreadable (#1575).
+   */
+  readonly project?: ProjectLayerDocument
   /** Set by the first call that sees a layer file it cannot read; a call for the same content has none. */
   readonly error?: unknown
 }
 
 /**
  * `load` for a caller that runs on every step: the files are read again only when their signature changes.
- * A file that cannot be read leaves the last valid servers in place (none before the first valid read), and the
- * failure is reported once for that content, not on every call.
+ * A file that cannot be read leaves the last valid servers in place. Before the first valid read there are none to
+ * keep, so the servers of the layers that can be read stand in (`loadValid`, #1575). The failure is reported once
+ * for that content, not on every call, and the same content keeps returning the same servers.
  */
 export function cached(read: (root: string) => Servers = load): (root: string) => Cached {
-  let last: { readonly signature: string; readonly servers: Servers } | undefined
-  let failure: string | undefined
+  type Entry = { readonly signature: string; readonly servers: Servers; readonly project?: ProjectLayerDocument }
+  let last: Entry | undefined
+  // The content that could not be read, and the servers that stand in for it: `last`'s, else the readable layers'.
+  let failure: Entry | undefined
+  const view = (entry: Entry): Cached => ({ servers: entry.servers, project: entry.project })
   return (root) => {
     const current = signature(root)
-    if (last?.signature === current) return { servers: last.servers }
-    if (failure === current) return { servers: last?.servers ?? {} }
+    if (last?.signature === current) return view(last)
+    if (failure?.signature === current) return view(failure)
     try {
       const servers = read(root)
-      last = { signature: current, servers }
+      last = { signature: current, servers, project: projectLayer(root) }
       failure = undefined
-      return { servers }
+      return view(last)
     } catch (error) {
-      failure = current
-      return { servers: last?.servers ?? {}, error }
+      const recovered = last ?? loadValid(root)
+      failure = { signature: current, servers: recovered.servers, project: recovered.project }
+      return { ...view(failure), error }
     }
   }
 }
@@ -124,21 +171,38 @@ export interface ProjectLayerDocument {
  * The decoder applies schema defaults and rejects unknown fields, so its output
  * can never match the canonical value the enumeration fingerprinted; the gate
  * must read exactly what the file declares. Undefined when the root has no
- * project layer, the file is missing, or it does not parse — the loader reports
- * the parse error when it reads the same file.
+ * project layer, the file is missing, it cannot be read (a directory, EACCES),
+ * or it does not parse — the loader reports the failure when it reads the same
+ * file and contributes none of its servers, so nothing here needs a verdict.
  */
 export function projectLayer(root: string): ProjectLayerDocument | undefined {
   if (!hasProjectLayer(root, Global.Path.home)) return undefined
   const file = projectFile(root)
   if (!existsSync(file)) return undefined
+  return projectDocument(file)
+}
+
+function projectDocument(file: string): ProjectLayerDocument | undefined {
+  let text: string
+  try {
+    text = readFileSync(file, "utf8")
+  } catch {
+    return undefined
+  }
   const errors: ParseError[] = []
-  const value = parse(readFileSync(file, "utf8"), errors, { allowTrailingComma: true })
+  const value = parse(text, errors, { allowTrailingComma: true })
   if (errors.length) return undefined
   return { relative: "mcp.json", value }
 }
 
 function readLayer(filepath: string): Servers {
-  const text = readFileSync(filepath, "utf8")
+  let text: string
+  try {
+    text = readFileSync(filepath, "utf8")
+  } catch (error) {
+    // A directory or EACCES: name the file, as a parse error does.
+    throw invalid(filepath, `mcp.json cannot be read: ${error instanceof Error ? error.message : String(error)}`)
+  }
   return decodeDocument(text, filepath)
 }
 

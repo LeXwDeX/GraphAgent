@@ -13,8 +13,10 @@ import { MCP } from "../../mcp"
 import { McpAuth } from "../../mcp/auth"
 import { McpConfig } from "../../mcp/config"
 import { McpOAuthProvider } from "../../mcp/oauth-provider"
+import { FormatError } from "../error"
 import { InstanceRef } from "@/effect/instance-ref"
 import { assertProjectRootWritable, hasProjectLayer } from "@/project/project-root"
+import { cliErrorMessage, errorMessage } from "@/util/error"
 import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { Global } from "@graphagent/core/global"
@@ -68,12 +70,30 @@ function oauthServers(servers: McpConfig.Servers) {
   )
 }
 
-/** The project root and the merged `mcpServers` map for the current instance. */
+/**
+ * One line for a layer file that cannot be read: the file and the reason, worded as the CLI words the same error when
+ * it is fatal (a config error names its file; any other failure gets the file in front).
+ */
+function describeUnreadable(failure: McpConfig.Failure, format: (error: unknown) => string | undefined = FormatError) {
+  return format(failure.error) ?? `${failure.file}: ${errorMessage(failure.error)}`
+}
+
+/** Say, once per file, that a layer was skipped; the servers of the other layers are still used (#1575). */
+function warnUnreadable(failures: McpConfig.Loaded["failures"], format?: (error: unknown) => string | undefined) {
+  for (const failure of failures) prompts.log.warn(describeUnreadable(failure, format))
+}
+
+/**
+ * The project root and the merged `mcpServers` map for the current instance. A layer file that cannot be read is
+ * reported as a warning and skipped, so one bad file does not hide the servers of the other.
+ */
 function mcpState() {
   return Effect.gen(function* () {
     const ctx = yield* InstanceRef
     const root = ctx?.root ?? Global.Path.home
-    return { root, servers: McpConfig.load(root) }
+    const { servers, failures } = McpConfig.loadValid(root)
+    warnUnreadable(failures)
+    return { root, servers }
   })
 }
 
@@ -668,12 +688,14 @@ export const McpDebugCommand = effectCmd({
   handler: Effect.fn("Cli.mcp.debug")(function* (args) {
     const ctx = yield* InstanceRef
     const root = ctx?.root ?? Global.Path.home
-    const mcpServers = McpConfig.load(root)
+    const { servers: mcpServers, failures } = McpConfig.loadValid(root)
     const mcp = yield* MCP.Service
     const auth = yield* McpAuth.Service
     yield* Effect.promise(async () => {
       UI.empty()
       prompts.intro("MCP OAuth Debug")
+      // Developer diagnostics stay English, so the unreadable files are worded by the English formatter.
+      warnUnreadable(failures, cliErrorMessage)
 
       const serverName = args.name
 
