@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "session": {
+    "info": {
+      "id": "ses_00000000a001SyntheticCase3",
+      "slug": "synthetic-case",
+      "projectID": "synthetic",
+      "directory": "/workspace/demo",
+      "path": "",
+      "role": "root",
+      "title": "Synthetic case",
+      "agent": "build",
+      "model": {
+        "id": "scripted",
+        "providerID": "script",
+        "variant": "default"
+      },
+      "version": "local",
+      "summary": {
+        "additions": 0,
+        "deletions": 0,
+        "files": 0
+      },
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "metadata": {
+        "engine": "v1"
+      },
+      "permission": [],
+      "time": {
+        "created": 1700000000000,
+        "updated": 1700000002000
+      },
+      "dagMode": "off",
+      "dagBudgetTokens": null,
+      "dagBudgetUnlimited": false
+    },
+    "messages": [
+      {
+        "info": {
+          "role": "user",
+          "time": {
+            "created": 1700000001000,
+            "consumed": 1700000001100
+          },
+          "agent": "build",
+          "model": {
+            "providerID": "script",
+            "modelID": "scripted"
+          },
+          "id": "msg_00000000a002SyntheticUser1",
+          "sessionID": "ses_00000000a001SyntheticCase3"
+        },
+        "parts": [
+          {
+            "type": "text",
+            "text": "We use bun for everything in this project.",
+            "id": "prt_00000000a004SyntheticText1",
+            "sessionID": "ses_00000000a001SyntheticCase3",
+            "messageID": "msg_00000000a002SyntheticUser1"
+          }
+        ]
+      },
+      {
+        "info": {
+          "parentID": "msg_00000000a002SyntheticUser1",
+          "role": "assistant",
+          "mode": "build",
+          "agent": "build",
+          "path": {
+            "cwd": "/workspace/demo",
+            "root": "/workspace/demo"
+          },
+          "cost": 0,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 0
+            }
+          },
+          "modelID": "scripted",
+          "providerID": "script",
+          "time": {
+            "created": 1700000001200,
+            "completed": 1700000001900
+          },
+          "finish": "stop",
+          "id": "msg_00000000a003SyntheticAsst1",
+          "sessionID": "ses_00000000a001SyntheticCase3"
+        },
+        "parts": [
+          {
+            "type": "text",
+            "text": "Noted.",
+            "time": {
+              "start": 1700000001300,
+              "end": 1700000001800
+            },
+            "id": "prt_00000000a005SyntheticText2",
+            "sessionID": "ses_00000000a001SyntheticCase3",
+            "messageID": "msg_00000000a003SyntheticAsst1"
+          }
+        ]
+      }
+    ]
+  },
+  "request": "In one sentence, which package manager do we use?",
+  "recorded": {
+    "text": "You use bun."
+  }
+}

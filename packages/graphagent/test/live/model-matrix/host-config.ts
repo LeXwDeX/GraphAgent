@@ -10,7 +10,8 @@
  *
  * Unlike the delegation-timing host it installs no PreToolUse hook (`seedHome` without an audit file): every
  * tool call runs, the shell included, because the matrix is about what the tools answer. A live model's shell
- * command therefore runs unconfined in the temporary workspace; only the file tools are held to it.
+ * command therefore runs unconfined in the temporary workspace; only the file tools are held to it. The case
+ * replay (`case-run.ts`) is the exception: it builds a home of its own whose hook stops every tool call.
  */
 
 import { hostConfig, hostEnv, type ModelRef, type OriginConfig } from "../delegation-timing/harness"
