@@ -528,5 +528,28 @@ describe("Truncate", () => {
         expect(yield* fs.exists(recent)).toBe(true)
       }),
     )
+
+    // Exports of compacted messages (#1469) live as long as their session, so age never removes them.
+    it.live("keeps the compacted_ exports of a session however old they are", () =>
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const fs = yield* FileSystem.FileSystem
+
+        yield* fs.makeDirectory(Truncate.DIR, { recursive: true })
+
+        const exported = path.join(Truncate.DIR, "compacted_x.txt")
+        const stale = path.join(Truncate.DIR, Identifier.create("tool", "ascending", Date.now() - 10 * DAY_MS))
+        yield* writeFileStringScoped(exported, "compacted")
+        yield* writeFileStringScoped(stale, "stale")
+        const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS)
+        yield* fs.utimes(exported, tenDaysAgo, tenDaysAgo)
+        yield* fs.utimes(stale, tenDaysAgo, tenDaysAgo)
+        yield* svc.cleanup()
+
+        // The same pass removed the saved output of the same age.
+        expect(yield* fs.exists(stale)).toBe(false)
+        expect(yield* fs.exists(exported)).toBe(true)
+      }),
+    )
   })
 })
