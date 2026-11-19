@@ -147,6 +147,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* SessionError.mapStorageNotFound(session.get(sessionID))
     })
 
+    // A failed lookup that is not "not found" says nothing about the session, so it counts as still there.
+    const sessionGone = (sessionID: SessionID) =>
+      session.get(sessionID).pipe(
+        Effect.as(false),
+        Effect.catchTag("NotFoundError", () => Effect.succeed(true)),
+        Effect.catchCause(() => Effect.succeed(false)),
+      )
+
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
       return yield* requireSession(ctx.params.sessionID)
     })
@@ -317,7 +325,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const remove = Effect.fn("SessionHttpApi.remove")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* SessionError.mapStorageNotFound(session.remove(ctx.params.sessionID))
+      // Stops the session's prompt runs (and its children's) before the data goes (#1558).
+      yield* SessionError.mapStorageNotFound(promptSvc.removeSession(ctx.params.sessionID))
       return true
     })
 
@@ -480,6 +489,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       yield* submit(ctx).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
+            // A run whose session was deleted under it ends in a failed write or read of the missing rows. That is
+            // the tail of a cancellation (#1558), not a failure to report: no session is left to show it to, and a
+            // published error would recreate the event aggregate the deletion just removed.
+            if (yield* sessionGone(ctx.params.sessionID)) {
+              yield* Effect.logDebug("prompt_async ended after its session was deleted", {
+                sessionID: ctx.params.sessionID,
+              })
+              return
+            }
             yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })
             yield* events.publish(Session.Event.Error, {
               sessionID: ctx.params.sessionID,

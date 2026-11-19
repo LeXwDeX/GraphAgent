@@ -59,10 +59,12 @@ export const SessionDeleteCommand = effectCmd({
       demandOption: true,
     }),
   handler: Effect.fn("Cli.session.delete")(function* (args) {
-    const svc = yield* Session.Service
+    // Loaded here: the CLI entry imports this module for every command, and the prompt engine is heavy.
+    const { SessionPrompt } = yield* Effect.promise(() => import("@/session/prompt"))
+    const prompt = yield* SessionPrompt.Service
     const sessionID = SessionID.make(args.sessionID)
-    yield* svc
-      .remove(sessionID)
+    yield* prompt
+      .removeSession(sessionID)
       .pipe(
         Effect.catchIf(NotFoundError.isInstance, () => fail(t("cli.session.notFound", { sessionID: args.sessionID }))),
       )

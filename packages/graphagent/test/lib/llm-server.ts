@@ -440,7 +440,8 @@ function modelFrom(body: unknown) {
   return body.model
 }
 
-function send(item: Sse) {
+// A hanging stream only ends when the client drops the request, so its interruption is the abort a provider sees.
+function send(item: Sse, onAbort: Effect.Effect<void> = Effect.void) {
   const head = bytes(item.head)
   const tail = bytes([...item.tail, ...(item.hang || item.error ? [] : [done])])
   const empty = Stream.fromIterable<Uint8Array>([])
@@ -450,7 +451,8 @@ function send(item: Sse) {
     : Stream.concat(head, tail)
   let end: Stream.Stream<Uint8Array, unknown> = empty
   if (item.error) end = Stream.concat(empty, Stream.fail(item.error))
-  else if (item.hang) end = Stream.concat(empty, Stream.never)
+  else if (item.hang)
+    end = Stream.concat(empty, Stream.fromEffect(Effect.never.pipe(Effect.onInterrupt(() => onAbort))))
 
   return HttpServerResponse.stream(Stream.concat(body, end), { contentType: "text/event-stream" })
 }
@@ -673,6 +675,9 @@ namespace TestLLMServer {
     readonly hits: Effect.Effect<Hit[]>
     readonly calls: Effect.Effect<number>
     readonly wait: (count: number) => Effect.Effect<void>
+    /** Streams the client dropped before they ended: a request the provider side saw aborted. */
+    readonly aborts: Effect.Effect<number>
+    readonly waitAbort: (count: number) => Effect.Effect<void>
     readonly inputs: Effect.Effect<Record<string, unknown>[]>
     readonly pending: Effect.Effect<number>
     readonly misses: Effect.Effect<Hit[]>
@@ -690,6 +695,16 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
       let list: Queue[] = []
       let waits: Wait[] = []
       let misses: Hit[] = []
+      let aborts = 0
+      let abortWaits: Wait[] = []
+
+      const aborted = Effect.gen(function* () {
+        aborts += 1
+        const ready = abortWaits.filter((item) => aborts >= item.count)
+        if (!ready.length) return
+        abortWaits = abortWaits.filter((item) => aborts < item.count)
+        yield* Effect.forEach(ready, (item) => Deferred.succeed(item.ready, void 0))
+      })
 
       const queue = (...input: (Item | Reply)[]) => {
         list = [...list, ...input.map((value) => ({ item: item(value) }))]
@@ -738,13 +753,13 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         hits = [...hits, current]
         yield* notify()
         if (next.type !== "sse") return fail(next)
-        if (mode === "responses") return send(responses(next, modelFrom(body)))
-        if (mode === "gemini") return send(gemini(next))
+        if (mode === "responses") return send(responses(next, modelFrom(body)), aborted)
+        if (mode === "gemini") return send(gemini(next), aborted)
         if (next.reset) {
           yield* reset(next)
           return HttpServerResponse.empty()
         }
-        return send(next)
+        return send(next, aborted)
       })
 
       yield* router.add("POST", "/v1/chat/completions", handle("chat"))
@@ -815,6 +830,8 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           list = []
           waits = []
           misses = []
+          aborts = 0
+          abortWaits = []
         }),
         hits: Effect.sync(() => [...hits]),
         calls: Effect.sync(() => hits.length),
@@ -822,6 +839,13 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           if (hits.length >= count) return
           const ready = yield* Deferred.make<void>()
           waits = [...waits, { count, ready }]
+          yield* Deferred.await(ready)
+        }),
+        aborts: Effect.sync(() => aborts),
+        waitAbort: Effect.fn("TestLLMServer.waitAbort")(function* (count: number) {
+          if (aborts >= count) return
+          const ready = yield* Deferred.make<void>()
+          abortWaits = [...abortWaits, { count, ready }]
           yield* Deferred.await(ready)
         }),
         inputs: Effect.sync(() => hits.map((hit) => hit.body)),

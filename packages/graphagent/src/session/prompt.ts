@@ -83,6 +83,7 @@ import { DagMessages } from "@graphagent/core/dag/messages"
 
 import { makeCommand } from "./command"
 import { makeModelSwitch } from "./model-switch"
+import { makeRemoveSession } from "./remove-session"
 import type {
   CommandInput,
   LoopInput,
@@ -154,6 +155,12 @@ export interface Interface {
     sessionID: SessionID,
     options?: { readonly reason?: SessionAbortReason.Info },
   ) => Effect.Effect<void>
+  /**
+   * Delete a session and its children after stopping every prompt run in that
+   * tree (#1558). `Session.remove` alone leaves a run streaming into a deleted
+   * session; every delete entry point goes through this.
+   */
+  readonly removeSession: (sessionID: SessionID) => Effect.Effect<void, Session.NotFound>
   /**
    * `extras` is what `admit` takes too; a child run's driver sets the
    * credential of the run it prompts under (Issue #1026, PR3b), which
@@ -772,6 +779,7 @@ export const layer = Layer.effect(
 
     return Service.of({
       cancel: admit.cancel,
+      removeSession: makeRemoveSession({ sessions, cancel: admit.cancel }),
       prompt: admit.prompt,
       withIdle: admit.withIdle,
       prepareTurn: admit.prepareTurn,
