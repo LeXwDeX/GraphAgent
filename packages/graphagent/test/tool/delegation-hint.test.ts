@@ -81,6 +81,33 @@ describe("DelegationHint.hintOf", () => {
     }
   })
 
+  // #1573: a page the byte budget cut counts lines only up to the cut, so a file of few long lines is told by the flag.
+  test("a read the byte budget cut goes to explore whatever its line count", () => {
+    const cut = { ...BIG_FILE, totalLines: 26, byBytes: true }
+    const hint = { agent: "explore" as const, path: BIG_FILE.path }
+    expect(DelegationHint.hintOf("read", { filePath: BIG_FILE.path }, { truncated: true, display: cut })).toEqual(hint)
+    // The count is no part of it.
+    for (const totalLines of [0, 1, Truncate.MAX_LINES, Truncate.MAX_LINES + 1, undefined, "26"])
+      expect(DelegationHint.hintOf("read", {}, { truncated: true, display: { ...cut, totalLines } })).toEqual(hint)
+  })
+
+  test("a read the byte budget did not cut gets nothing for a flag that is not true", () => {
+    for (const byBytes of [undefined, false, "true", 1, null])
+      expect(
+        DelegationHint.hintOf("read", {}, { truncated: true, display: { ...BIG_FILE, totalLines: 26, byBytes } }),
+      ).toBeUndefined()
+    // The flag marks a cut page of a result that is truncated; a result that is not has no line.
+    expect(
+      DelegationHint.hintOf("read", {}, { truncated: false, display: { ...BIG_FILE, totalLines: 26, byBytes: true } }),
+    ).toBeUndefined()
+  })
+
+  test("a read the byte budget cut, with its own window, gets nothing", () => {
+    const metadata = { truncated: true, display: { ...BIG_FILE, totalLines: 26, byBytes: true } }
+    for (const args of [{ offset: 1 }, { limit: 50 }, { page: 2 }, { page: -1 }, { charOffset: 10 }])
+      expect(DelegationHint.hintOf("read", { filePath: BIG_FILE.path, ...args }, metadata)).toBeUndefined()
+  })
+
   test("a read with its own window gets nothing: the model is already paging", () => {
     const metadata = { truncated: true, display: BIG_FILE }
     for (const args of [{ offset: 1 }, { limit: 50 }, { page: 2 }, { page: -1 }, { charOffset: 10 }])
@@ -157,7 +184,8 @@ describe("DelegationHint.block", () => {
 })
 
 // The rule for `read` rests on what the real tool writes: `display.totalLines` counts the lines of the whole file
-// even when the page shows a part, and a file that fits the default page is not marked truncated.
+// even when the line limit cuts the page, a page the byte budget cuts counts only to the cut and says so in
+// `display.byBytes` (#1573), and a file that fits the default page is not marked truncated.
 describe("DelegationHint on the metadata of the real read", () => {
   const it = testEffect(
     Layer.mergeAll(
@@ -216,6 +244,30 @@ describe("DelegationHint on the metadata of the real read", () => {
       const { target, result } = yield* read("edge.log", lines(Truncate.MAX_LINES))
       expect(result.metadata.truncated).toBe(false)
       expect(DelegationHint.hintOf("read", { filePath: target }, result.metadata)).toBeUndefined()
+    }),
+  )
+
+  // 30 lines of 2000 characters: 60 KB, over the 50 KB byte budget and far under the line cap (#1573).
+  const wide = Array.from({ length: 30 }, () => "x".repeat(2_000)).join("\n")
+
+  it.instance("a file of few long lines that the byte budget cut goes to explore", () =>
+    Effect.gen(function* () {
+      const { target, result } = yield* read("wide.log", wide)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.metadata.display).toMatchObject({ type: "file", byBytes: true })
+      expect(DelegationHint.hintOf("read", { filePath: target }, result.metadata)).toEqual({
+        agent: "explore",
+        path: target,
+      })
+    }),
+  )
+
+  it.instance("the same file read with a window of its own gets nothing, though the byte budget cut it", () =>
+    Effect.gen(function* () {
+      const { target, result } = yield* read("wide-paged.log", wide, { limit: 100 })
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.metadata.display).toMatchObject({ type: "file", byBytes: true })
+      expect(DelegationHint.hintOf("read", { filePath: target, limit: 100 }, result.metadata)).toBeUndefined()
     }),
   )
 

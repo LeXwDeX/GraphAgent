@@ -274,6 +274,45 @@ Use this skill.
     }),
   )
 
+  // #1573: the name is the model's own text and the list holds every skill there is; the message bounds both.
+  it.instance("execute cuts the name it echoes and the skills it lists when the name is unknown", () =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 35 }, (_, index) => {
+            const name = `extra-${String(index).padStart(2, "0")}`
+            return Bun.write(
+              path.join(dir, ".agents", "skills", name, "SKILL.md"),
+              `---\nname: ${name}\ndescription: Extra skill ${index}.\n---\n\n# ${name}\n`,
+            )
+          }),
+        ),
+      )
+      yield* isolateHome(dir)
+      const tool = yield* skillTool
+
+      const exit = yield* tool
+        .execute({ name: "q".repeat(300) }, { ...baseCtx, ask: () => Effect.void })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause)
+        expect(error).toBeInstanceOf(Error)
+        if (error instanceof Error) {
+          expect(error.message).toStartWith(`Skill "${"q".repeat(64)}" not found. Available skills: `)
+          expect(error.message).not.toContain("q".repeat(65))
+          // The builtin skills and the 35 above are more than the 30 the list shows.
+          const total = /, \.\.\. \((\d+) in total\)$/.exec(error.message)?.[1]
+          expect(Number(total)).toBe(BUILTIN_SKILLS.length + 35)
+          const listed = error.message.slice(error.message.indexOf("Available skills: ") + "Available skills: ".length)
+          expect(listed.split(", ")).toHaveLength(31)
+        }
+      }
+    }),
+  )
+
   it.instance("execute header carries the body size and the metadata carries its hash", () =>
     Effect.gen(function* () {
       yield* isolateHome((yield* TestInstance).directory)
