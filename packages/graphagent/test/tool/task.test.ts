@@ -496,6 +496,52 @@ describe("tool.task", () => {
     }),
   )
 
+  // #1573: every field is optional on the one object root of the schema, so the description is where a model reads
+  // which fields each call shape takes.
+  it.instance("description states which fields each of the four call shapes takes", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const build = yield* agent.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({ ...ref, agent: build })
+      const description = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
+
+      expect(description).toContain(
+        'The fields are checked per call shape: a new task needs description, prompt and subagent_type and no task_id; action="resume" needs task_id plus those three; action="cancel" takes only task_id; action="read" takes task_id and an optional page.',
+      )
+    }),
+  )
+
+  // The sentence above and `validateTaskCall` have to say the same thing, shape by shape.
+  it.effect("the call shapes the description states are the ones validateTaskCall accepts", () =>
+    Effect.sync(() => {
+      const kind = (params: Schema.Schema.Type<typeof TaskParameters>) => validateTaskCall(params).kind
+      const three = { description: "d", prompt: "p", subagent_type: "general" }
+
+      // A new task: the three fields, no task_id.
+      expect(kind(three)).toBe("run")
+      expect(kind({ ...three, task_id: "ses_child" })).toBe("invalid")
+      expect(kind({ prompt: "p", subagent_type: "general" })).toBe("invalid")
+      expect(kind({ description: "d", subagent_type: "general" })).toBe("invalid")
+      expect(kind({ description: "d", prompt: "p" })).toBe("invalid")
+
+      // A resume: task_id plus the three.
+      expect(kind({ ...three, action: "resume", task_id: "ses_child" })).toBe("run")
+      expect(kind({ action: "resume", task_id: "ses_child" })).toBe("invalid")
+      expect(kind({ ...three, action: "resume" })).toBe("invalid")
+
+      // A cancel takes only task_id.
+      expect(kind({ action: "cancel", task_id: "ses_child" })).toBe("cancel")
+      expect(kind({ ...three, action: "cancel", task_id: "ses_child" })).toBe("invalid")
+
+      // A read takes task_id and an optional page.
+      expect(kind({ action: "read", task_id: "ses_child" })).toBe("read")
+      expect(kind({ action: "read", task_id: "ses_child", page: 2 })).toBe("read")
+      expect(kind({ ...three, action: "read", task_id: "ses_child" })).toBe("invalid")
+    }),
+  )
+
   it.instance(
     "workflow description lists configured subagents in stable name order",
     () =>
