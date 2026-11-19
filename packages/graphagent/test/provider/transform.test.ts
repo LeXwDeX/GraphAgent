@@ -5076,7 +5076,7 @@ describe("ProviderTransform.variants", () => {
       },
       {
         name: "opus 5.5",
-        apiIds: ["claude-opus-5-5"],
+        apiIds: ["claude-opus-5-5", "claude-opus-5", "claude-opus-5-20270101"],
         efforts: ["low", "medium", "high", "xhigh", "max"],
         expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
       },

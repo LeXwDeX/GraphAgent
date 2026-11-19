@@ -859,10 +859,14 @@ function anthropicOpus47OrLater(apiId: string) {
   // The minor is one or two digits: a longer number after the major is a date stamp, and "claude-opus-4-20250514" is
   // Opus 4, not Opus 4.20250514 (#1540).
   const version = /opus-(\d+)[.-](\d{1,2})(?:[.@-]|$)|claude-(\d+)[.-](\d{1,2})-opus(?:[.@-]|$)/i.exec(apiId)
-  if (!version) return false
-  const major = Number(version[1] ?? version[3])
-  const minor = Number(version[2] ?? version[4])
-  return major > 4 || (major === 4 && minor >= 7)
+  if (version) {
+    const major = Number(version[1] ?? version[3])
+    const minor = Number(version[2] ?? version[4])
+    return major > 4 || (major === 4 && minor >= 7)
+  }
+  // A major with no minor, possibly followed by a date stamp: "claude-opus-5", "claude-opus-5-20270101".
+  const majorOnly = /opus-(\d{1,2})(?:[@-]|$)|claude-(\d{1,2})-opus(?:[.@-]|$)/i.exec(apiId)
+  return majorOnly ? Number(majorOnly[1] ?? majorOnly[2]) > 4 : false
 }
 
 function anthropicSonnet5OrLater(apiId: string) {
