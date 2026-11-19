@@ -3,6 +3,8 @@
 
 import { afterEach, expect, test } from "bun:test"
 import { setLanguage, t } from "../src/i18n"
+import { dagIndicatorReserve } from "../src/shell/dag-indicator"
+import { LEFT_RESERVE } from "../src/shell/footer-status"
 import { cellWidth } from "../src/ui/width"
 import { captureFrame, footerRow, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
 import { json, type FetchHandler } from "./fixture/tui-sdk"
@@ -20,8 +22,8 @@ afterEach(() => {
 const mainID = "ses_refused_main"
 
 const HINT = {
-  "zh-CN": "这是子 agent 的会话，只读：要调整它，请回主会话告诉主 agent",
-  en: "This is a sub-agent session and is read-only: go back to the main session and tell the main agent",
+  "zh-CN": "子 agent 会话只读：请回主会话让主 agent 调整",
+  en: "Sub-agent is read-only; ask the main agent",
 } as const
 
 type Language = keyof typeof HINT
@@ -97,14 +99,16 @@ for (const language of ["zh-CN", "en"] as const) {
   })
 }
 
-// The hint is longer than the footer's share of an 80-column terminal, so the footer cuts it (and keeps the whole text
-// in the log). It stays one line: the cut-off tail is nowhere else on the screen.
-const LEAD = { "zh-CN": "这是子 agent 的会话，只读", en: "This is a sub-agent session" } as const
-const TAIL = { "zh-CN": "告诉主 agent", en: "tell the main agent" } as const
-
+// The footer holds back `LEFT_RESERVE` columns and the DAG indicator's for the agent cluster; the toast gets the rest:
+// at 80 columns 46 cells with the mode on or off (45 at ambiguous_width 2, where the indicator's marker is two cells
+// wide), 44 (43) while the indicator reads `◆ DAG !`. The hint is written to fit the first, so the footer does not cut
+// it at its edge and lose the half that says what to do.
 for (const language of ["zh-CN", "en"] as const) {
   for (const ambiguousWidth of [1, 2] as const) {
-    test(`${language}: at 80 columns the hint is cut to the footer and does not wrap, at ambiguous_width ${ambiguousWidth}`, async () => {
+    test(`${language}: at 80 columns the whole hint fits the footer, at ambiguous_width ${ambiguousWidth}`, async () => {
+      const share = 80 - LEFT_RESERVE - dagIndicatorReserve("on", 80, ambiguousWidth)
+      expect(cellWidth(HINT[language], ambiguousWidth)).toBeLessThanOrEqual(share)
+
       const app = await runApp({
         sessions: [sessionFixture(mainID, { dagMode: "on" })],
         args: { continue: true },
@@ -116,11 +120,10 @@ for (const language of ["zh-CN", "en"] as const) {
       try {
         await waitForFrame(app.setup, (frame) => frame.includes(MODEL_MARK), "the prompt")
         await leader(app.setup, "d")
-        const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes(LEAD[language]), "the hint")
+        const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes(HINT[language]), "the hint")
         const footer = footerRow(frame)
         expect(cellWidth(footer, ambiguousWidth)).toBeLessThanOrEqual(80)
-        expect(footer.endsWith("…")).toBe(true)
-        expect(frame).not.toContain(TAIL[language])
+        expect(footer).not.toContain("…")
       } finally {
         await app.stop()
       }
@@ -186,7 +189,7 @@ test("another 409 is not the hint: the footer says what the caller says and noth
       "the caller's toast",
     )
     expect(frame).not.toContain(HINT.en)
-    expect(frame).not.toContain("sub-agent session")
+    expect(frame).not.toContain("Sub-agent")
   } finally {
     await app.stop()
   }

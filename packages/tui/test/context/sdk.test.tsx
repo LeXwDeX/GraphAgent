@@ -230,8 +230,8 @@ const command = { sessionID: "ses_main", command: "dag-mode", arguments: "on" }
 describe("a refused write seen through the client", () => {
   test("the toast holds the hint in the language of the UI, as a warning that merges its repeats", async () => {
     for (const [language, text] of [
-      ["zh-CN", "这是子 agent 的会话，只读：要调整它，请回主会话告诉主 agent"],
-      ["en", "This is a sub-agent session and is read-only: go back to the main session and tell the main agent"],
+      ["zh-CN", "子 agent 会话只读：请回主会话让主 agent 调整"],
+      ["en", "Sub-agent is read-only; ask the main agent"],
     ] as const) {
       setLanguage(language)
       const { app, sdk, toast } = await mount(() => json(refusal("ses_main"), { status: 409 }))

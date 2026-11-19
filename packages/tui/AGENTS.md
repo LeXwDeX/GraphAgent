@@ -120,7 +120,7 @@ import 规则：
 
 - `ui/` 可以读主题 token（现状先例：`ui/toast.tsx` 用 `useTheme`），文字由调用方经 props 传入。
 - 依赖方向检查：脚本 `script/check-tui-imports.ts`，遍历 `packages/tui/src` 的 import，按上表判错。它在 `packages/tui` 的 `bun test` 里以 `test/architecture.test.ts` 运行（CI 必跑），改上表规则必须同时改脚本与本文。脚本的 `EXEMPTIONS` 登记存量违规，F1 收口（#886 验收 34）时已清空，`test/architecture.test.ts` 断言它为空：新代码按依赖方向改 import，不得新增条目。机制保留，供用合成目录树的测试使用，过期条目仍会让测试失败。
-  - 数据层不能 import `ui/`。需要提示时由上层注入回调：先例是 `LocalProvider` 的 `notify` 属性，`app.tsx` 里的 `LocalWithToast` 把它接成 toast。`script/check-tui-text.ts` 的英文字面量棘轮把 `notify({ text })` 与 `toast.show({ text })` 同样计入，改走回调不会让文案从棘轮里消失。
+  - 数据层不能 import `ui/`。需要提示时由上层注入回调：先例是 `LocalProvider` 的 `notify` 属性，`app.tsx` 里的 `LocalWithToast` 把它接成 toast；`SDKProvider` 的 `onChildSessionReadOnly`（服务端以 409 `ChildSessionReadOnlyError` 拒绝写向子会话时，由 SDK 的 `fetch` 包装调用，#1618）同样由 `app.tsx` 里的 `SDKWithToast` 接成 toast，`context/sdk.tsx` 不 import `ui/`。`script/check-tui-text.ts` 的英文字面量棘轮把 `notify({ text })` 与 `toast.show({ text })` 同样计入，改走回调不会让文案从棘轮里消失。
   - 数据层的状态模块放 `context/`，不放 `routes/`：先例是首页新会话目标目录 `context/session-destination.tsx`，路由、`component/` 与 `app.tsx` 都从那里读。
 - 读：组件经 `useSync()` 加 `createMemo` 选择器读取，不在组件里遍历整张表。
 - 写：只允许在 `routes/`、`panel/`、`ask/`、`commands/` 的事件处理函数里（`commands/` 即命令注册表里命令的 `run` 回调，如 `session.command`），经唯一的 `useSDK()` 调 `sdk.client.*`。`ui/`、`shell/` 的展示组件、`dag/`、`pr/` 纯函数里不得调用 SDK。检查：`grep -rn "sdk.client" packages/tui/src/ui packages/tui/src/shell packages/tui/src/dag packages/tui/src/pr` 为空。
