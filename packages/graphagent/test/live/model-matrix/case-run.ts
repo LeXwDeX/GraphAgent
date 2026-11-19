@@ -10,11 +10,14 @@
  * 1. an empty git workspace, and a home whose one hook is `case-hook.ts`, which stops every tool call before it
  *    runs and writes the first one to an audit file;
  * 2. the case's session is imported into the run's database with the CLI (`graphagent import`), from the workspace,
- *    so the session belongs to the workspace's project and directory. Its permission rules are replaced by the ones
- *    every matrix session has, which keep the file tools inside the workspace;
- * 3. a host starts on that database, and the case's `request` is sent to the imported session.
+ *    so the session belongs to the workspace's project and directory. It is imported as a root session of its own,
+ *    whatever it was (`replaySessionInfo`), and its permission rules are replaced by the ones every matrix session
+ *    has, which keep the file tools inside the workspace;
+ * 3. a host starts on that database, and the case's `request` is sent to the imported session, to the agent the
+ *    case recorded (`replayRequest`).
  *
- * What the judge sees is the audit's first call and the messages the run added after the imported ones.
+ * What the judge sees is the audit's first call, the messages the run added after the imported ones, and the id of
+ * the first call among them.
  */
 
 import fs from "node:fs/promises"
@@ -34,6 +37,7 @@ import {
   type ModelRef,
   type OriginConfig,
 } from "../delegation-timing/harness"
+import { isRecord } from "../delegation-timing/classify"
 import type { ScriptServer } from "../lib/script-server"
 import type { CaseFile } from "./case-file"
 import { firstStoppedCall } from "./case-hook"
@@ -85,6 +89,29 @@ async function importSession(env: Record<string, string>, work: string, file: st
   }
 }
 
+/**
+ * The session of a case as the session the replay imports. A case made from a task or DAG child names its parent,
+ * and an import restores the session and its messages and not the child binding, so a session that kept its
+ * parent would be a child that no user can prompt: the HTTP guard refuses every write to it (`SessionRole.isChild`
+ * is a parent on the row, and nothing else). The replay is a conversation of its own, so it is a root: no
+ * `parentID`, and the role of one. The permission rules are the ones every matrix session has.
+ */
+export function replaySessionInfo(info: Readonly<Record<string, unknown>>, home: string): Record<string, unknown> {
+  const { parentID: _parent, ...rest } = info
+  return { ...rest, role: "root", permission: sessionPermission(home) }
+}
+
+/** The body of the request that asks the model: the case's request, to the agent it was sent to when it says. */
+export function replayRequest(file: CaseFile, model: Pick<ModelRef, "providerID" | "modelID">) {
+  const { providerID, modelID } = model
+  return {
+    model: { providerID, modelID },
+    // Without an agent the request goes to the host's default one, as it did before cases recorded theirs.
+    ...(file.agent === undefined ? {} : { agent: file.agent }),
+    parts: [{ type: "text", text: file.request }],
+  }
+}
+
 /** What every run of one model shares. */
 export interface CaseJob {
   readonly origin: OriginConfig
@@ -117,7 +144,7 @@ async function prepare(job: CaseJob, root: string): Promise<Place> {
   const env = matrixHostEnv({ home, config, passthrough: job.passthrough })
   const { info, messages } = job.file.session
   const sessionFile = path.join(root, "session.json")
-  const session = JSON.stringify({ info: { ...info, permission: sessionPermission(home) }, messages })
+  const session = JSON.stringify({ info: replaySessionInfo(info, home), messages })
   await fs.writeFile(sessionFile, session, { mode: 0o600 })
   await importSession(env, work, sessionFile)
   return { home, work, audit, env }
@@ -138,6 +165,33 @@ function callIDsOf(messages: readonly MessageView[]): string[] {
   )
 }
 
+/** The id the model gave the first call the messages hold (the first of `callsOf`); none when it has no id. */
+function firstCallIDOf(messages: readonly MessageView[]): string | undefined {
+  for (const message of messages) {
+    if (message.role !== "assistant") continue
+    const first = message.parts.find((part) => part.type === "tool" && part.tool)
+    if (first) return first.callID
+  }
+  return undefined
+}
+
+/**
+ * Fails, in words, when the case names an agent the host does not have. The host's own refusal of an unknown agent
+ * is an unexplained 500, and the request must not go to another agent than the one the case recorded.
+ */
+async function requireAgent(api: ReturnType<typeof client>, file: CaseFile): Promise<void> {
+  if (file.agent === undefined) return
+  const list = await api("/agent")
+  const names = Array.isArray(list)
+    ? list.flatMap((item) => (isRecord(item) && typeof item.name === "string" ? [item.name] : []))
+    : []
+  if (names.includes(file.agent)) return
+  throw new Error(
+    `the case was recorded for the agent "${file.agent}", which the replay host does not have ` +
+      `(it has ${names.join(", ")}); remove "agent" from the case file to ask the default agent`,
+  )
+}
+
 type Outcome = Pick<RunResult, "status" | "failures" | "view" | "tokens">
 
 interface Asked {
@@ -150,10 +204,8 @@ async function ask(job: CaseJob, place: Place, host: Host): Promise<Asked> {
   const api = client(host, place.work)
   const sessionID = job.file.session.info.id
   const { providerID, modelID } = job.model
-  await api(`/session/${sessionID}/message`, {
-    body: { model: { providerID, modelID }, parts: [{ type: "text", text: job.file.request }] },
-    timeoutMs: job.timeoutMs,
-  })
+  await requireAgent(api, job.file)
+  await api(`/session/${sessionID}/message`, { body: replayRequest(job.file, job.model), timeoutMs: job.timeoutMs })
   await settle(api, sessionID, job.timeoutMs)
   const fresh = freshMessages(job, readMessages(await api(`/session/${sessionID}/message`)))
   const calls = callsOf(fresh)
@@ -164,7 +216,13 @@ async function ask(job: CaseJob, place: Place, host: Host): Promise<Asked> {
   const broken = fresh.find((message) => message.error)?.error
   if (broken) return { outcome: { status: "error", failures: [broken], view, tokens }, profile }
   const stopped = firstStoppedCall(await fs.readFile(place.audit, "utf8").catch(() => ""), callIDsOf(fresh))
-  const failures = caseFailures(job.file, { ...(stopped ? { stopped } : {}), calls, reply })
+  const firstCallID = firstCallIDOf(fresh)
+  const failures = caseFailures(job.file, {
+    ...(stopped ? { stopped } : {}),
+    calls,
+    ...(firstCallID ? { firstCallID } : {}),
+    reply,
+  })
   return { outcome: { status: failures.length === 0 ? "pass" : "fail", failures, view, tokens }, profile }
 }
 

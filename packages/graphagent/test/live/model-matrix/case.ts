@@ -13,8 +13,9 @@
  *                           real session up to that message and must not be committed. The file is created with
  *                           mode 0600.
  *
- * The case is `{ version: 1, session, request, recorded, expect? }`, see `case-file.ts`: the messages before the
- * user message, its text, and what the original model did first (its first tool call, or its text).
+ * The case is `{ version: 1, session, request, agent?, recorded, expect? }`, see `case-file.ts`: the messages
+ * before the user message, its text, the agent it was sent to (when the export names one), and what the original
+ * model did first (its first tool call, or its text).
  *
  * The whole case is checked for credentials before anything is written: a value shaped like a key or a token, or
  * holding the value of a secret-looking environment variable of this process, refuses the case. Only the JSON path
@@ -87,10 +88,17 @@ function recordedOf(message: ExportedMessage): { recorded: Recorded; expect?: { 
   return text.trim() === "" ? undefined : { recorded: { text } }
 }
 
+/** The agent a user message was sent to, as the export writes it in the message's `info`; none when it has no name. */
+function agentOf(message: ExportedMessage): string | undefined {
+  const { agent } = message.info
+  return typeof agent === "string" && agent.trim() !== "" ? agent : undefined
+}
+
 /**
- * The case for one user message of an export: `session` holds the messages before it, `request` its text, and
- * `recorded` (and `expect`) what the assistant message right after it did. A user message that no assistant
- * message follows (the next message is another user message, or there is none) has no reply, so it makes no case.
+ * The case for one user message of an export: `session` holds the messages before it, `request` its text, `agent`
+ * the agent it was sent to, and `recorded` (and `expect`) what the assistant message right after it did. A user
+ * message that no assistant message follows (the next message is another user message, or there is none) has no
+ * reply, so it makes no case.
  */
 export function buildCase(exported: unknown, userMessage?: number): Parsed<CaseFile> {
   if (!isRecord(exported) || !isRecord(exported.info)) {
@@ -116,12 +124,14 @@ export function buildCase(exported: unknown, userMessage?: number): Parsed<CaseF
   const next = messages[at + 1]
   const done = next?.info.role === "assistant" ? recordedOf(next) : undefined
   if (!done) return failed(`no assistant message with a tool call or text follows user message ${wanted}`)
+  const agent = agentOf(user)
   return {
     ok: true,
     value: {
       version: CASE_VERSION,
       session: { info: { ...exported.info, id }, messages: messages.slice(0, at) },
       request,
+      ...(agent === undefined ? {} : { agent }),
       recorded: done.recorded,
       ...(done.expect ? { expect: done.expect } : {}),
     },

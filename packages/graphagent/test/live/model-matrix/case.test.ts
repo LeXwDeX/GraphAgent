@@ -8,19 +8,19 @@
  * the whole live path (import, hook, judge) against the scripted server; `replay.test.ts` plays the cases the CI way.
  */
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test"
 import { readdirSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { isRecord } from "../delegation-timing/classify"
-import { stopAllHosts, type ModelRef } from "../delegation-timing/harness"
+import { sessionPermission, stopAllHosts, type ModelRef } from "../delegation-timing/harness"
 import { startScriptServer, type Reply } from "../lib/script-server"
 import { buildCase, findingLines, parseCaseOptions, runCaseCommand, type Output } from "./case"
 import { caseName, caseScenario, expectationFailures, loadCaseFile, parseCaseFile, type CaseFile } from "./case-file"
 import { firstStoppedCall, stoppedCallOf } from "./case-hook"
 import { argumentFailure, CHECKED_TOOLS, caseFailures } from "./case-judge"
-import { attemptCase, seedCaseHome, type CaseJob } from "./case-run"
+import { attemptCase, replayRequest, replaySessionInfo, seedCaseHome, type CaseJob } from "./case-run"
 import { insideRepo, REPO_ROOT } from "./cli"
 import { replayOrigin } from "./host-config"
 import { redactDeep } from "./runner"
@@ -69,6 +69,8 @@ const exportOf = (...messages: unknown[]) => ({
   info: { id: "ses_test", title: "a session", directory: "/workspace/demo" },
   messages,
 })
+/** A message of an export the way the runtime writes a user message: it names the agent it was sent to. */
+const sentTo = (entry: ReturnType<typeof message>, agent: unknown) => ({ ...entry, info: { ...entry.info, agent } })
 
 /** Three user messages: a text reply, a reply that says something and calls tools, and a bash call. */
 const SESSION = exportOf(
@@ -106,6 +108,20 @@ describe("the case file", () => {
     const plain = parseCaseFile(file({ text: "hi" }))
     expect(plain).toMatchObject({ ok: true, value: { recorded: { text: "hi" } } })
     expect(plain.ok && "expect" in plain.value).toBe(false)
+  })
+
+  test("the agent the message was sent to is optional, and a name when it is there; the version stays", () => {
+    const named = parseCaseFile(file(call, { agent: "plan" }))
+    expect(named).toMatchObject({ ok: true, value: { version: 1, agent: "plan", request: "do it" } })
+    // A case written before the field existed is still a case, and has no agent.
+    const old = parseCaseFile(file(call))
+    expect(old.ok && "agent" in old.value).toBe(false)
+    for (const bad of ["", "  ", 3, null, ["plan"], { name: "plan" }]) {
+      expect(parseCaseFile(file(call, { agent: bad }))).toEqual({
+        ok: false,
+        error: "agent must be the name of an agent",
+      })
+    }
   })
 
   test("what is not a case is refused, and says why", () => {
@@ -263,6 +279,30 @@ describe("eval:case: the case of a user message", () => {
       expect(parseCaseFile(JSON.parse(JSON.stringify(built(SESSION, number)))).ok).toBe(true)
   })
 
+  test("the agent the chosen user message was sent to is recorded, and no other message's", () => {
+    const planned = exportOf(
+      message("m1", "user", text("look around")),
+      message("m2", "assistant", text("sure")),
+      sentTo(message("m3", "user", text("make a plan")), "plan"),
+      message("m4", "assistant", text("ok")),
+      sentTo(message("m5", "user", text("now build it")), "build"),
+      message("m6", "assistant", text("done")),
+    )
+    expect(built(planned, 1).agent).toBe("plan")
+    expect(built(planned).agent).toBe("build")
+    // A message that names no agent records none, and the replay keeps asking the host's default agent.
+    expect("agent" in built(planned, 0)).toBe(false)
+    // So does one whose agent is not a name.
+    for (const agent of ["", "  ", 7, null]) {
+      const odd = exportOf(sentTo(message("m1", "user", text("hi")), agent), message("m2", "assistant", text("x")))
+      expect("agent" in built(odd)).toBe(false)
+    }
+    expect(parseCaseFile(JSON.parse(JSON.stringify(built(planned, 1))))).toMatchObject({
+      ok: true,
+      value: { agent: "plan" },
+    })
+  })
+
   test("what makes no case is refused, and says why", () => {
     expect(error("x")).toContain("expected { info, messages }")
     expect(error({ info: {}, messages: [] })).toContain("no id")
@@ -351,6 +391,16 @@ describe("eval:case: the command", () => {
     expect(lines[0]).toContain("recorded a bash call")
     for (const content of ["now run the tests", "fix the bug", "bun test"])
       expect(lines.join("\n")).not.toContain(content)
+  })
+
+  test("the file holds the agent the message was sent to, so that the replay asks the same agent", async () => {
+    const session = exportOf(
+      sentTo(message("m1", "user", text("plan it")), "plan"),
+      message("m2", "assistant", text("ok")),
+    )
+    const { from, out } = await exported(session)
+    expect(await runCaseCommand(["--from", from, "--out", out], capture().output)).toBe(0)
+    expect(JSON.parse(await fs.readFile(out, "utf8"))).toMatchObject({ version: 1, agent: "plan", request: "plan it" })
   })
 
   test.skipIf(!posix)("the file has mode 0600, also when it already existed with another mode", async () => {
@@ -645,8 +695,13 @@ describe("the judge of a live replay", () => {
       'arguments: read ["filePath"] missing required field, expected string',
     ])
     expect(caseFailures(read, { calls: [], reply: "I would read it." })).toEqual(["calls: no tool call, expected read"])
-    // Only the first call counts.
-    const both = { stopped: { tool: "read", input: { filePath: "a" } }, calls: [made("read"), made("bash")], reply: "" }
+    // Only the first call counts, and the audit has its arguments: it is the call of the transcript's first id.
+    const both = {
+      stopped: { tool: "read", input: { filePath: "a" }, id: "call_1" },
+      calls: [made("read"), made("bash")],
+      firstCallID: "call_1",
+      reply: "",
+    }
     expect(caseFailures(read, both)).toEqual([])
   })
 
@@ -657,6 +712,46 @@ describe("the judge of a live replay", () => {
     ])
     expect(caseFailures(read, { calls: [made("bash", { command: "ls" })], reply: "" })).toEqual([
       "calls: first call is bash, expected read",
+    ])
+  })
+
+  test("a first call the SDK refused before any hook ran is still the first call, whatever the hook saw after it", () => {
+    const read = recorded("read", { filePath: "a.ts" })
+    const good = { filePath: "a.ts" }
+    // The audit has only the call that reached the hook: the second one, a valid read.
+    const audited = { tool: "read", input: good, id: "call_2" }
+    const seen = (calls: Call[]) => ({ stopped: audited, calls, firstCallID: "call_1", reply: "" })
+    // An unknown tool first: the model's first call is not the recorded tool.
+    expect(caseFailures(read, seen([made("no_such_tool"), made("read", good)]))).toEqual([
+      "calls: first call is no_such_tool, expected read",
+    ])
+    // Arguments that are not JSON for the recorded tool first: the transcript has none for it.
+    expect(caseFailures(read, seen([made("read"), made("read", good)]))).toEqual([
+      'arguments: read ["filePath"] missing required field, expected string',
+    ])
+    // The same when the recorded step is a text: the call the model made first is the one named.
+    expect(caseFailures(said("hi"), seen([made("no_such_tool"), made("read", good)]))).toEqual([
+      "calls: expected no tool call, the model called no_such_tool",
+    ])
+  })
+
+  test("the audit's arguments are the first call's when the ids say so, and then they are judged as given", () => {
+    const read = recorded("read", { filePath: "a.ts" })
+    const wrong = { path: "a.ts" }
+    const right = { filePath: "a.ts" }
+    // The tool repaired the model's arguments before the transcript kept them: the audit has what was given.
+    const first = { stopped: { tool: "read", input: wrong, id: "call_1" }, calls: [made("read", right)], reply: "" }
+    expect(caseFailures(read, { ...first, firstCallID: "call_1" })).toEqual([
+      'arguments: read ["filePath"] missing required field, expected string',
+    ])
+    // An audit entry that cannot be told to be the first call (another id, or an id on one side only) is not.
+    expect(caseFailures(read, { ...first, firstCallID: "call_0" })).toEqual([])
+    expect(caseFailures(read, first)).toEqual([])
+    const unnamed = { ...first, stopped: { tool: "read", input: wrong }, firstCallID: "call_1" }
+    expect(caseFailures(read, unnamed)).toEqual([])
+    // With no call in the transcript the audit stands, as it did.
+    expect(caseFailures(read, { stopped: first.stopped, calls: [], reply: "" })).toEqual([
+      'arguments: read ["filePath"] missing required field, expected string',
     ])
   })
 
@@ -677,6 +772,49 @@ describe("the judge of a live replay", () => {
     expect(caseFailures(said("hi"), { calls: [made("bash")], reply: "text" })).toEqual([
       "calls: expected no tool call, the model called bash",
     ])
+  })
+})
+
+describe("what a live replay sends and imports", () => {
+  const model = { providerID: "script", modelID: "scripted" }
+  const base = (extra: Partial<CaseFile> = {}): CaseFile => ({
+    version: 1,
+    session: { info: { id: "ses_x" }, messages: [] },
+    request: "do it",
+    recorded: { text: "hi" },
+    ...extra,
+  })
+
+  test("the request goes to the agent the case recorded, and to the host's default one when it recorded none", () => {
+    const body = { model, parts: [{ type: "text", text: "do it" }] }
+    expect(replayRequest(base({ agent: "plan" }), model)).toEqual({ ...body, agent: "plan" })
+    // Without an agent the request is the one it was before the field existed.
+    const plain = replayRequest(base(), model)
+    expect(plain).toEqual(body)
+    expect("agent" in plain).toBe(false)
+  })
+
+  test("the session is imported as a root of its own: no parent, no child role, the permission of every matrix session", () => {
+    const child = {
+      id: "ses_x",
+      title: "a worker",
+      agent: "coding",
+      parentID: "ses_parent",
+      role: "dag_node",
+      permission: [{ permission: "*", pattern: "*", action: "deny" }],
+      metadata: { engine: "v1" },
+    }
+    const replayed = replaySessionInfo(child, "/tmp/home")
+    expect("parentID" in replayed).toBe(false)
+    expect(replayed).toMatchObject({ id: "ses_x", title: "a worker", agent: "coding", metadata: { engine: "v1" } })
+    expect(replayed.role).toBe("root")
+    expect(replayed.permission).toEqual(sessionPermission("/tmp/home"))
+    // A root keeps all it had, and the case file's own session is not changed.
+    const root = { id: "ses_y", title: "a chat", role: "root" }
+    expect(replaySessionInfo(root, "/tmp/home")).toEqual({ ...root, permission: sessionPermission("/tmp/home") })
+    expect(child.parentID).toBe("ses_parent")
+    // An export from before roles existed has none: it is a root as well.
+    expect(replaySessionInfo({ id: "ses_z" }, "/tmp/home").role).toBe("root")
   })
 })
 
@@ -806,5 +944,98 @@ describe("a live replay of a case, played end to end", () => {
       expect(item.result.view?.reply).toBe("")
     }
     expect(wrongTool.result.view?.calls.map((call) => call.tool)).toEqual(["glob", "read"])
+  }, 180_000)
+
+  test("a first call the SDK refuses before any hook runs is still the first call the model made", async () => {
+    const read = { name: "read", input: { filePath: "src/main.ts" } }
+    // An unknown tool is refused with no hook run: only the read after it is audited, and it is a valid read.
+    const refused = await attemptCase(
+      job(await marked("read-missing", "live.refused"), "live.refused", {
+        calls: [{ name: "no_such_tool", input: {} }, read],
+      }),
+      1,
+    )
+    expect(refused.result).toMatchObject({
+      status: "fail",
+      failures: ["calls: first call is no_such_tool, expected read"],
+    })
+    const calls = refused.result.view?.calls ?? []
+    expect(calls.map((call) => call.tool)).toEqual(["no_such_tool", "read"])
+    expect(calls[0]?.text).not.toContain("[Hook stopped]")
+    expect(calls[1]?.text).toContain("[Hook stopped]")
+  }, 180_000)
+
+  /** The synthetic case as the export of a child session makes it: the parent is named, and the role when given. */
+  async function childOf(key: string, role?: "task_child" | "dag_node"): Promise<CaseFile> {
+    const file = await marked("glob-call", key)
+    const { role: _exported, ...rest } = file.session.info
+    const info = { ...rest, parentID: "ses_00000000a000SyntheticRoot1", ...(role ? { role } : {}) }
+    return { ...file, session: { ...file.session, info } }
+  }
+
+  test("the session of a task or DAG child is replayed as a session of its own, and the request is admitted", async () => {
+    const glob = { calls: [{ name: "glob", input: { pattern: "**/*.ts" } }] }
+    const [dag, task, old] = await Promise.all([
+      attemptCase(job(await childOf("live.dag", "dag_node"), "live.dag", glob), 1),
+      attemptCase(job(await childOf("live.task", "task_child"), "live.task", glob), 1),
+      // An export from before roles existed names the parent only.
+      attemptCase(job(await childOf("live.old"), "live.old", glob), 1),
+    ])
+    for (const item of [dag, task, old]) expect(item.result).toMatchObject({ status: "pass", failures: [] })
+  }, 180_000)
+
+  /** What `run` returns, and the bodies of the messages this process posted to a host meanwhile: what was asked. */
+  async function posting<T>(run: () => Promise<T>): Promise<{ result: T; posted: Record<string, unknown>[] }> {
+    const posted: Record<string, unknown>[] = []
+    const real = globalThis.fetch
+    const spy = spyOn(globalThis, "fetch").mockImplementation(
+      Object.assign(
+        (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+          if (init?.method === "POST" && /\/session\/[^/]+\/message$/.test(url) && typeof init.body === "string") {
+            const body: unknown = JSON.parse(init.body)
+            if (isRecord(body)) posted.push(body)
+          }
+          return real(input, init)
+        },
+        { preconnect: (target: string | URL) => real.preconnect(target) },
+      ),
+    )
+    try {
+      return { result: await run(), posted }
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  test("the request goes to the agent the case recorded, and one the host does not have is not swapped for another", async () => {
+    const glob = { calls: [{ name: "glob", input: { pattern: "**/*.ts" } }] }
+    const planned = { ...(await marked("glob-call", "live.plan")), agent: "plan" }
+    const unknown = { ...(await marked("glob-call", "live.agent")), agent: "no-such-agent" }
+    const plain = await marked("glob-call", "live.plain")
+    const {
+      result: [planRun, unknownRun, plainRun],
+      posted,
+    } = await posting(() =>
+      Promise.all([
+        attemptCase(job(planned, "live.plan", glob), 1),
+        attemptCase(job(unknown, "live.agent", glob), 1),
+        attemptCase(job(plain, "live.plain", glob), 1),
+      ]),
+    )
+    expect(planRun.result).toMatchObject({ status: "pass", failures: [] })
+    expect(plainRun.result).toMatchObject({ status: "pass", failures: [] })
+    // The request of the case that recorded an agent carries it; the one that recorded none carries none.
+    expect(posted.filter((body) => body.agent === "plan")).toHaveLength(1)
+    expect(posted.filter((body) => !("agent" in body))).toHaveLength(1)
+    // A host without the agent is told so in words, and the request never goes to another agent.
+    expect(unknownRun.result.status).toBe("error")
+    expect(unknownRun.result.failures).toEqual([
+      expect.stringContaining(
+        'the case was recorded for the agent "no-such-agent", which the replay host does not have',
+      ),
+    ])
+    expect(unknownRun.result.failures[0]).toContain("plan")
+    expect(posted).toHaveLength(2)
   }, 180_000)
 })

@@ -6,10 +6,14 @@
  * can be asked the same thing. `eval:case` writes one from a `graphagent export`, `eval:models --case` replays it
  * against the configured models, and the hand-written synthetic cases in `cases/` are replayed in CI.
  *
- *   { version: 1, session: { info, messages }, request, recorded, expect? }
+ *   { version: 1, session: { info, messages }, request, agent?, recorded, expect? }
  *
  * - `session`: the exported session up to the user message that is replayed, the message not included.
  * - `request`: the text of that user message.
+ * - `agent`: the agent that message was sent to (`build`, `plan`, ...), when the export names one. A live replay
+ *   sends the request to it, and a run whose host has no agent of that name ends in an error that says so; a case
+ *   without one is sent to the host's default agent. The field is optional, so a case written before it existed
+ *   is still a case and the version stays 1.
  * - `recorded`: what the original model did first, as one scripted reply: its first tool call, or its text.
  * - `expect`: only with a recorded call, the state that call ended in (`completed` or `error`). The CI replay of a
  *   synthetic case runs the tool for real and compares; a live replay stops every call before it runs.
@@ -46,6 +50,8 @@ export interface CaseFile {
     readonly messages: readonly ExportedMessage[]
   }
   readonly request: string
+  /** The agent the user message was sent to; the replay sends the request to it. */
+  readonly agent?: string
   readonly recorded: Recorded
   readonly expect?: { readonly status: string }
 }
@@ -80,6 +86,13 @@ function parseRecorded(value: unknown): Parsed<Recorded> {
   return { ok: true, value: { calls: [{ name: call.name, input: call.input }] } }
 }
 
+/** The agent a case names: absent, or the name of one. */
+function parseAgent(value: unknown): Parsed<string | undefined> {
+  if (value === undefined) return { ok: true, value }
+  if (typeof value !== "string" || value.trim() === "") return failed("agent must be the name of an agent")
+  return { ok: true, value }
+}
+
 /** A case file's content, checked: the shape the other code relies on, and nothing about what the session holds. */
 export function parseCaseFile(json: unknown): Parsed<CaseFile> {
   if (!isRecord(json)) return failed("a case file is a JSON object")
@@ -91,12 +104,15 @@ export function parseCaseFile(json: unknown): Parsed<CaseFile> {
   const messages = parseMessages(session.messages)
   if (!messages) return failed("session.messages must be a list of { info, parts } with an id and a role each")
   if (typeof json.request !== "string" || json.request.trim() === "") return failed("request must be a non-empty text")
+  const agent = parseAgent(json.agent)
+  if (!agent.ok) return agent
   const recorded = parseRecorded(json.recorded)
   if (!recorded.ok) return recorded
   const value: CaseFile = {
     version: CASE_VERSION,
     session: { info: { ...session.info, id }, messages },
     request: json.request,
+    ...(agent.value === undefined ? {} : { agent: agent.value }),
     recorded: recorded.value,
   }
   if (json.expect === undefined) return { ok: true, value }
@@ -143,7 +159,8 @@ export function expectationFailures(file: CaseFile, run: RunView): string[] {
 
 /**
  * The CI replay of a case as a scenario of the matrix: an empty workspace, the request as the prompt, the recorded
- * reply as the whole script. The session is not imported; only the request is sent, behind the `[case <name>]` marker.
+ * reply as the whole script. The session is not imported and the agent is not used; only the request is sent, behind
+ * the `[case <name>]` marker.
  */
 export function caseScenario(name: string, file: CaseFile): Scenario {
   const reply: Reply = file.recorded

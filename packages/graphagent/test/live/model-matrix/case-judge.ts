@@ -10,6 +10,10 @@
  *   arguments are valid for that tool;
  * - the recorded step is text: the model made no tool call and said something.
  *
+ * The first call is the first one in the transcript. The hook sees only the calls the SDK accepted, and the SDK
+ * refuses an unknown tool or arguments that are not JSON before any hook runs, so a refused call is in the
+ * transcript and not in the audit. The audit decides only the arguments, and only of the call it belongs to.
+ *
  * The arguments are checked against the `Parameters` the tool module exports, strictly: the repair the tool
  * would try on a bad call (`repairArguments`) is not applied, because a model that needs it is the thing the
  * matrix is there to tell apart. A tool that is not in `PARAMETERS` is compared by name only.
@@ -79,17 +83,32 @@ export function argumentFailure(tool: string, input: unknown): string | undefine
 
 /** What a live replay of a case left to judge. */
 export interface Observation {
-  /** The first call the hook stopped, from the audit file. */
+  /** The call the hook stopped that comes first in the transcript, from the audit file. */
   readonly stopped?: StoppedCall
   /** The calls of the replayed step in the transcript, in order; they show a call that never reached the hook. */
   readonly calls: readonly Call[]
+  /** The id the model gave the first of `calls`: the audited call is that call only when it has this id. */
+  readonly firstCallID?: string
   /** The model's answer to the request: the last non-synthetic assistant text after it. */
   readonly reply: string
 }
 
+/**
+ * The first call the model made. It is the transcript's first call; its arguments are the audit's, as the model
+ * gave them before the tool repaired them, when the audited call is that call (the same id on both sides). An
+ * audited call is otherwise a later one (the first never reached the hook), and the transcript has the first
+ * one's arguments as they were kept. With no call in the transcript the audit stands.
+ */
+function firstCall(seen: Observation): Pick<Call, "tool" | "input"> | undefined {
+  const [first] = seen.calls
+  const { stopped } = seen
+  if (!first) return stopped
+  return stopped?.id !== undefined && stopped.id === seen.firstCallID ? stopped : first
+}
+
 /** The criteria the model did not meet, in words; empty means it made the recorded step. */
 export function caseFailures(file: CaseFile, seen: Observation): string[] {
-  const first = seen.stopped ?? seen.calls[0]
+  const first = firstCall(seen)
   if ("text" in file.recorded) {
     // A model that called a tool had its turn stopped there, so it has no reply to judge.
     if (first) return [`calls: expected no tool call, the model called ${first.tool}`]
