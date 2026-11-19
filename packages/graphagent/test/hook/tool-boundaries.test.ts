@@ -478,7 +478,7 @@ const discoveryToolLayer = Layer.mergeAll(
   FileState.defaultLayer,
   Layer.mock(Agent.Service, {}),
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
-  Layer.mock(LSP.Service, { touchFile: () => Effect.void }),
+  Layer.mock(LSP.Service, { touchFile: () => Effect.succeed<LSP.Diagnostic.CheckStatus>("checked") }),
   Layer.mock(Truncate.Service, {
     output: (text: string) => Effect.succeed({ content: text, truncated: false }),
     limits: () => Effect.succeed({ maxLines: Truncate.MAX_LINES, maxBytes: Truncate.MAX_BYTES }),

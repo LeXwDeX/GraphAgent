@@ -32,7 +32,11 @@ const ctx = {
   ask: () => Effect.void,
 }
 
+// What the mocked LSP reports about the check; afterEach puts it back.
+let mockedStatus: LSP.Diagnostic.CheckStatus = "checked"
+
 afterEach(async () => {
+  mockedStatus = "checked"
   await disposeAllInstances()
 })
 
@@ -53,7 +57,7 @@ let mockedDiagnostics: Record<string, Diagnostic[]> = {}
 const itWithDiagnostics = testEffect(
   Layer.mergeAll(
     Layer.mock(LSP.Service, {
-      touchFile: () => Effect.void,
+      touchFile: () => Effect.sync(() => mockedStatus),
       diagnostics: () => Effect.succeed(mockedDiagnostics),
     }),
     FSUtil.defaultLayer,
@@ -977,5 +981,144 @@ describe("tool.write call-local baseline (#1452)", () => {
       expect(error.message).toBe(FileState.changedWhileAskingMessage(filepath))
       expect(yield* text(filepath)).toBe("changed elsewhere\n")
     }),
+  )
+})
+
+// #1451: after a write the result says whether the language server checked the file. A check that did not run is
+// not the same as one that found nothing.
+describe("tool.write LSP check state (#1451)", () => {
+  const lines = (count: number, prefix = "line") => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`)
+  const diagnostic = (line: number, severity: Diagnostic["severity"] = 1, message = "boom"): Diagnostic => ({
+    severity,
+    message,
+    range: { start: { line: line - 1, character: 0 }, end: { line: line - 1, character: 1 } },
+  })
+
+  it.instance("says the check did not run when LSP is disabled, which is the default", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const result = yield* run({ filePath: path.join(test.directory, "new.txt"), content: "hello\n" })
+
+      expect(result.output).toBe("Wrote file successfully.\n\nnot checked: LSP disabled")
+    }),
+  )
+
+  const unchecked: [LSP.Diagnostic.CheckStatus, string][] = [
+    ["disabled", "not checked: LSP disabled"],
+    ["no_server", "not checked: no language server"],
+    ["timed_out", "not checked: timed out"],
+  ]
+  for (const [status, line] of unchecked) {
+    itWithDiagnostics.instance(`words the ${status} status as "${line}"`, () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        mockedStatus = status
+        mockedDiagnostics = {}
+
+        const result = yield* run({ filePath: path.join(test.directory, "new.txt"), content: "hello\n" })
+
+        expect(result.output).toBe(`Wrote file successfully.\n\n${line}`)
+      }),
+    )
+  }
+
+  itWithDiagnostics.instance("does not turn diagnostics left over from before into a verdict when nothing ran", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "stale.ts")
+      mockedStatus = "timed_out"
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(1)] }
+
+      const result = yield* run({ filePath: filepath, content: "const x = 1\n" })
+
+      // The block keeps its wording and its condition; the status line says the check did not finish.
+      expect(result.output).toBe(
+        [
+          "Wrote file successfully.",
+          "",
+          "not checked: timed out",
+          "",
+          "LSP errors detected in this file, please fix:",
+          `<diagnostics file="${filepath}">`,
+          "ERROR [1:1] boom",
+          "</diagnostics>",
+        ].join("\n"),
+      )
+    }),
+  )
+
+  itWithDiagnostics.instance("is clean when the check ran and found nothing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      mockedDiagnostics = {}
+
+      const result = yield* run({ filePath: path.join(test.directory, "new.ts"), content: "const x = 1\n" })
+
+      expect(result.output).toBe("Wrote file successfully.\n\nchecked: clean")
+    }),
+  )
+
+  itWithDiagnostics.instance("counts an error near the written lines and still reports it", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "broken.ts")
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(1)] }
+
+      const result = yield* run({ filePath: filepath, content: "const x: number = 'a'\n" })
+
+      expect(result.output).toBe(
+        [
+          "Wrote file successfully.",
+          "",
+          "checked: 1 error",
+          "",
+          "LSP errors detected in this file, please fix:",
+          `<diagnostics file="${filepath}">`,
+          "ERROR [1:1] boom",
+          "</diagnostics>",
+        ].join("\n"),
+      )
+    }),
+  )
+
+  itWithDiagnostics.instance("counts every error of the written lines", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "broken.ts")
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(1), diagnostic(2, 1, "again")] }
+
+      const result = yield* run({ filePath: filepath, content: "const x: number = 'a'\nconst y: string = 1\n" })
+
+      expect(result.output).toContain("\n\nchecked: 2 errors\n\nLSP errors detected in this file, please fix:\n")
+    }),
+  )
+
+  itWithDiagnostics.instance("leaves errors elsewhere in the file and warnings out of the count", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "long.ts")
+      yield* Effect.promise(() => fs.writeFile(filepath, lines(30).join("\n") + "\n"))
+      yield* markRead(filepath)
+      // Only line 1 changes. The error on line 25 predates the write; the warning on line 1 is below error severity.
+      mockedDiagnostics = { [FSUtil.normalizePath(filepath)]: [diagnostic(25), diagnostic(1, 2, "careful")] }
+
+      const result = yield* run({ filePath: filepath, content: ["changed", ...lines(30).slice(1)].join("\n") + "\n" })
+
+      expect(result.output).toBe("Wrote file successfully.\n\nchecked: clean")
+    }),
+  )
+
+  itWithDiagnostics.instance(
+    "keeps the status line out of the title",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        mockedStatus = "timed_out"
+
+        const result = yield* run({ filePath: path.join(test.directory, "new.txt"), content: "hello\n" })
+
+        expect(result.title).toBe("new.txt")
+      }),
+    { git: true },
   )
 })

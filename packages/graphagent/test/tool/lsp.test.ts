@@ -41,7 +41,7 @@ const stub = (hasClients: boolean) =>
     init: () => Effect.void,
     status: () => Effect.succeed([]),
     hasClients: () => Effect.succeed(hasClients),
-    touchFile: () => Effect.void,
+    touchFile: () => Effect.succeed<LSP.Diagnostic.CheckStatus>("checked"),
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed([]),
     definition: () => Effect.succeed(canned.definition),

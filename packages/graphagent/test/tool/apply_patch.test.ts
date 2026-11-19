@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { afterEach, describe, expect } from "bun:test"
 import path from "path"
 import { createHash } from "node:crypto"
 import * as fs from "fs/promises"
@@ -30,10 +30,15 @@ const it = testEffect(
 )
 
 let mockedDiagnostics: Record<string, Diagnostic[]> = {}
+// What the mocked LSP reports about the check of each file; afterEach puts it back.
+let statusOf: (file: string) => LSP.Diagnostic.CheckStatus = () => "checked"
+afterEach(() => {
+  statusOf = () => "checked"
+})
 const itWithDiagnostics = testEffect(
   Layer.mergeAll(
     Layer.mock(LSP.Service, {
-      touchFile: () => Effect.void,
+      touchFile: (file) => Effect.sync(() => statusOf(file)),
       diagnostics: () => Effect.succeed(mockedDiagnostics),
     }),
     FSUtil.defaultLayer,
@@ -671,7 +676,11 @@ describe("tool.apply_patch diagnostics", () => {
             active++
             peak = Math.max(peak, active)
           }),
-          () => Effect.sleep("50 millis").pipe(Effect.andThen(Effect.sync(() => touched.push(file)))),
+          () =>
+            Effect.sleep("50 millis").pipe(
+              Effect.andThen(Effect.sync(() => touched.push(file))),
+              Effect.as<LSP.Diagnostic.CheckStatus>("checked"),
+            ),
           () => Effect.sync(() => active--),
         ),
       diagnostics: () => Effect.succeed({}),
@@ -1169,6 +1178,9 @@ describe("tool.apply_patch write-point checks (#1452)", () => {
             "M changed.txt",
             "M same.txt",
             FileState.changedOutsideNote("changed.txt"),
+            "",
+            "changed.txt: not checked: LSP disabled",
+            "same.txt: not checked: LSP disabled",
           ])
         }),
       { git: true },
@@ -1186,8 +1198,10 @@ describe("tool.apply_patch write-point checks (#1452)", () => {
           const first = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, ctx)
           const second = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-two", "+dos") }, ctx)
 
-          expect(first.output).toBe("Success. Updated the following files:\nM update.txt")
-          expect(second.output).toBe("Success. Updated the following files:\nM update.txt")
+          const expected =
+            "Success. Updated the following files:\nM update.txt\n\nupdate.txt: not checked: LSP disabled"
+          expect(first.output).toBe(expected)
+          expect(second.output).toBe(expected)
         }),
       { git: true },
     )
@@ -1521,5 +1535,233 @@ describe("tool.apply_patch call-local baseline (#1452)", () => {
 
       expect(yield* readText(target)).toBe("second writer\n")
     }),
+  )
+})
+
+// #1451: after a patch the result says, for every file it wrote, whether the language server checked it. A check that
+// did not run is not the same as one that found nothing.
+describe("tool.apply_patch LSP check state (#1451)", () => {
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+  const diagnostic = (line: number, severity: Diagnostic["severity"] = 1, message = "boom"): Diagnostic => ({
+    severity,
+    message,
+    range: { start: { line: line - 1, character: 0 }, end: { line: line - 1, character: 1 } },
+  })
+
+  it.instance(
+    "says the check did not run for each written file when LSP is disabled, which is the default",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "modify.txt"), "line1\nline2\n")
+        yield* writeText(path.join(test.directory, "delete.txt"), "obsolete\n")
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Add File: nested/new.txt",
+              "+created",
+              "*** Delete File: delete.txt",
+              "*** Update File: modify.txt",
+              "@@",
+              "-line2",
+              "+changed",
+            ),
+          },
+          ctx,
+        )
+
+        // A deleted file has nothing to check, so it has no line.
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "A nested/new.txt",
+          "D delete.txt",
+          "M modify.txt",
+          "",
+          "nested/new.txt: not checked: LSP disabled",
+          "modify.txt: not checked: LSP disabled",
+        ])
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "words each file's own state",
+    () =>
+      Effect.gen(function* () {
+        const { ctx } = makeCtx()
+        const states: Record<string, LSP.Diagnostic.CheckStatus> = {
+          "a.txt": "checked",
+          "b.txt": "timed_out",
+          "c.txt": "no_server",
+          "d.txt": "disabled",
+        }
+        statusOf = (file) => states[path.basename(file)] ?? "checked"
+        mockedDiagnostics = {}
+
+        const result = yield* execute(
+          {
+            patchText: patch(...Object.keys(states).flatMap((name) => [`*** Add File: ${name}`, `+${name}`])),
+          },
+          ctx,
+        )
+
+        expect(result.output.split("\n").slice(6)).toEqual([
+          "a.txt: checked: clean",
+          "b.txt: not checked: timed out",
+          "c.txt: not checked: no language server",
+          "d.txt: not checked: LSP disabled",
+        ])
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "counts the errors of the written lines and still reports them",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "a.ts")
+        yield* writeText(file, "const a = 1\nconst b = 2\n")
+        mockedDiagnostics = { [FSUtil.normalizePath(file)]: [diagnostic(1), diagnostic(2, 1, "again")] }
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Update File: a.ts",
+              "@@",
+              "-const a = 1",
+              "-const b = 2",
+              "+const a = 'x'",
+              "+const b = 'y'",
+            ),
+          },
+          ctx,
+        )
+
+        expect(result.output).toBe(
+          [
+            "Success. Updated the following files:",
+            "M a.ts",
+            "",
+            "a.ts: checked: 2 errors",
+            "",
+            "LSP errors detected in a.ts, please fix:",
+            `<diagnostics file="${file}">`,
+            "ERROR [1:1] boom",
+            "ERROR [2:1] again",
+            "</diagnostics>",
+          ].join("\n"),
+        )
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "leaves errors elsewhere in a file and warnings out of the count",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "long.ts")
+        const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`)
+        yield* writeText(file, lines.join("\n") + "\n")
+        mockedDiagnostics = { [FSUtil.normalizePath(file)]: [diagnostic(25), diagnostic(1, 2, "careful")] }
+
+        const result = yield* execute(
+          { patchText: patch("*** Update File: long.ts", "@@", "-line 1", "+changed", " line 2") },
+          ctx,
+        )
+
+        expect(result.output).toBe("Success. Updated the following files:\nM long.ts\n\nlong.ts: checked: clean")
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "does not turn diagnostics left over from before into a verdict when nothing ran",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "a.ts")
+        statusOf = () => "timed_out"
+        mockedDiagnostics = { [FSUtil.normalizePath(file)]: [diagnostic(1)] }
+
+        const result = yield* execute({ patchText: patch("*** Add File: a.ts", "+const a = 1") }, ctx)
+
+        expect(result.output.split("\n").slice(0, 4)).toEqual([
+          "Success. Updated the following files:",
+          "A a.ts",
+          "",
+          "a.ts: not checked: timed out",
+        ])
+        expect(result.output).toContain("\n\nLSP errors detected in a.ts, please fix:\n")
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "names a moved file by its destination",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "from.txt"), "keep\nold\n")
+        const seen: string[] = []
+        statusOf = (file) => {
+          seen.push(path.relative(test.directory, file))
+          return "checked"
+        }
+        mockedDiagnostics = {}
+
+        const result = yield* execute(
+          { patchText: patch("*** Update File: from.txt", "*** Move to: moved/to.txt", "@@", " keep", "-old", "+new") },
+          ctx,
+        )
+
+        expect(seen).toEqual([path.join("moved", "to.txt")])
+        expect(result.output).toBe(
+          "Success. Updated the following files:\nM moved/to.txt\n\nmoved/to.txt: checked: clean",
+        )
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "has no status line when the patch only deletes",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "gone.txt"), "gone\n")
+
+        const result = yield* execute({ patchText: patch("*** Delete File: gone.txt") }, ctx)
+
+        expect(result.output).toBe("Success. Updated the following files:\nD gone.txt")
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "keeps the status lines out of the title",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "a.ts")
+        mockedDiagnostics = { [FSUtil.normalizePath(file)]: [diagnostic(1)] }
+
+        const result = yield* execute({ patchText: patch("*** Add File: a.ts", "+const a: string = 1") }, ctx)
+
+        // The title is what it was before the status lines: the summary and the error block, nothing more.
+        expect(result.output).toContain("\n\na.ts: checked: 1 error\n\n")
+        expect(result.title).not.toContain("checked:")
+        expect(result.title).toBe(result.output.replace("\n\na.ts: checked: 1 error", ""))
+        expect(result.title).toContain("LSP errors detected in a.ts, please fix:")
+      }),
+    { git: true },
   )
 })

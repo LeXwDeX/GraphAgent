@@ -110,17 +110,14 @@ export const WriteTool = Tool.define(
           )
 
           let output = "Wrote file successfully."
-          yield* lsp.touchFile(filepath, "document")
+          const status = yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
+          const issues = diagnostics[normalizedFilepath] ?? []
+          output += `\n\n${LSP.Diagnostic.checkLine(status, filepath, issues, contentOld, contentNew)}`
           // Writing one file cannot fix or break errors in other files; repeat
           // only the errors the written lines are responsible for.
-          const block = LSP.Diagnostic.afterEdit(
-            filepath,
-            diagnostics[normalizedFilepath] ?? [],
-            contentOld,
-            contentNew,
-          )
+          const block = LSP.Diagnostic.afterEdit(filepath, issues, contentOld, contentNew)
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {

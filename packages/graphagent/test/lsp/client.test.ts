@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { spawn } from "child_process"
 import path from "path"
 import { pathToFileURL } from "url"
 import { tmpdir, withTestInstance } from "../fixture/fixture"
@@ -13,6 +14,12 @@ function spawnFakeServer() {
       stdio: "pipe",
     }),
   }
+}
+
+/** The same fake server, typed, so a test can pass it to LSPClient.create without casts. */
+function fakeServerHandle(): LSPServer.Handle {
+  const serverPath = path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")
+  return { process: spawn(process.execPath, [serverPath], { stdio: "pipe" }) }
 }
 
 describe("LSPClient interop", () => {
@@ -220,7 +227,7 @@ describe("LSPClient interop", () => {
             },
           ],
         })
-        await wait
+        expect(await wait).toBe(true)
 
         const diagnostics = client.diagnostics.get(file) ?? []
         expect(diagnostics).toHaveLength(1)
@@ -274,7 +281,7 @@ describe("LSPClient interop", () => {
         expect(client.diagnostics.get(file)?.[0]?.message).toBe("push diagnostic")
 
         const started = Date.now()
-        await client.waitForDiagnostics({ path: file, version, mode: "document" })
+        expect(await client.waitForDiagnostics({ path: file, version, mode: "document" })).toBe(true)
         expect(Date.now() - started).toBeLessThan(1_000)
 
         await client.shutdown()
@@ -317,7 +324,7 @@ describe("LSPClient interop", () => {
         })
 
         const version = await client.notify.open({ path: file })
-        await client.waitForDiagnostics({ path: file, version, mode: "document" })
+        expect(await client.waitForDiagnostics({ path: file, version, mode: "document" })).toBe(true)
 
         const diagnostics = client.diagnostics.get(file) ?? []
         expect(diagnostics).toHaveLength(1)
@@ -372,7 +379,7 @@ describe("LSPClient interop", () => {
         await client.connection.sendRequest("test/register-configured-pull-diagnostics", {})
         await new Promise((resolve) => setTimeout(resolve, 100))
         const started = Date.now()
-        await client.waitForDiagnostics({ path: file, version, mode: "document" })
+        expect(await client.waitForDiagnostics({ path: file, version, mode: "document" })).toBe(true)
 
         expect(Date.now() - started).toBeLessThan(1_000)
         expect(client.diagnostics.get(file)?.[0]?.message).toBe("fast diagnostic")
@@ -440,7 +447,7 @@ describe("LSPClient interop", () => {
         })
 
         const version = await client.notify.open({ path: file })
-        await client.waitForDiagnostics({ path: file, version, mode: "full" })
+        expect(await client.waitForDiagnostics({ path: file, version, mode: "full" })).toBe(true)
 
         expect(client.diagnostics.get(file)?.[0]?.message).toBe("current file")
         expect(client.diagnostics.get(related)?.[0]?.message).toBe("workspace file")
@@ -477,9 +484,84 @@ describe("LSPClient interop", () => {
 
         const version = await client.notify.open({ path: file })
         const started = Date.now()
-        await client.waitForDiagnostics({ path: file, version, mode: "full" })
+        expect(await client.waitForDiagnostics({ path: file, version, mode: "full" })).toBe(true)
 
         expect(Date.now() - started).toBeLessThan(1_000)
+
+        await client.shutdown()
+      },
+    })
+  })
+
+  test("full mode falls back to push diagnostics", async () => {
+    const handle = fakeServerHandle()
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "client.ts")
+    await Bun.write(file, "const x = 1\n")
+
+    await withTestInstance({
+      directory: tmp.path,
+      fn: async (ctx) => {
+        const client = await LSPClient.create({
+          serverID: "fake",
+          server: handle,
+          root: tmp.path,
+          directory: tmp.path,
+          instance: ctx,
+        })
+
+        const version = await client.notify.open({ path: file })
+        const wait = client.waitForDiagnostics({ path: file, version, mode: "full" })
+        await client.connection.sendNotification("test/publish-diagnostics", {
+          uri: pathToFileURL(file).href,
+          version,
+          diagnostics: [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+              message: "push diagnostic",
+              severity: 1,
+            },
+          ],
+        })
+        expect(await wait).toBe(true)
+        expect(client.diagnostics.get(file)?.[0]?.message).toBe("push diagnostic")
+
+        await client.shutdown()
+      },
+    })
+  })
+
+  // The wait window runs from `after`. A touch that began just under the window ago reaches the timeout after a short
+  // wait, so the cases where nothing is ever published do not sit through the real 5 and 10 seconds. The service-level
+  // test in index.test.ts covers the full-length wait.
+  const waits: ["document" | "full", number][] = [
+    ["document", 5_000],
+    ["full", 10_000],
+  ]
+  test.each(waits)("%s mode reports false when the server publishes nothing in the window", async (mode, windowMs) => {
+    const handle = fakeServerHandle()
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "client.ts")
+    await Bun.write(file, "const x = 1\n")
+
+    await withTestInstance({
+      directory: tmp.path,
+      fn: async (ctx) => {
+        const client = await LSPClient.create({
+          serverID: "fake",
+          server: handle,
+          root: tmp.path,
+          directory: tmp.path,
+          instance: ctx,
+        })
+
+        const version = await client.notify.open({ path: file })
+        const started = Date.now()
+        const result = await client.waitForDiagnostics({ path: file, version, mode, after: started - (windowMs - 500) })
+
+        expect(result).toBe(false)
+        expect(Date.now() - started).toBeLessThan(windowMs - 500)
+        expect(client.diagnostics.get(file) ?? []).toHaveLength(0)
 
         await client.shutdown()
       },

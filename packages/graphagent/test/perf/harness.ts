@@ -105,7 +105,7 @@ export const stubLsp = (overrides: Partial<LSP.Interface> = {}) =>
       init: () => Effect.void,
       status: () => Effect.succeed([]),
       hasClients: () => Effect.succeed(false),
-      touchFile: () => Effect.void,
+      touchFile: () => Effect.succeed<LSP.Diagnostic.CheckStatus>("checked"),
       diagnostics: () => Effect.succeed({}),
       hover: () => Effect.succeed([]),
       definition: () => Effect.succeed([]),
