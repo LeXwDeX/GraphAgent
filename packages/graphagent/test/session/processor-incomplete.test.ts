@@ -40,6 +40,10 @@ import { AgentScheduler } from "@/session/agent-scheduler"
 import { ChildRegistry } from "@/session/child/registry"
 import type { ChildPermissionPolicy } from "@/session/child/types"
 import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
+import { ToolError } from "@/tool/tool-error"
+import { Stop } from "@/session/turn/stop"
+import { TOOL_OUTCOME_KINDS } from "@graphagent/core/session/outcome"
+import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -424,6 +428,165 @@ mixedExecuted.it.effect(
           expect(unfinished.state.metadata?.interrupted).toBe(true)
         }
         expect(result).toBe("continue")
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// Arguments cut off by the output limit (#1464)
+// ---------------------------------------------------------------------------
+
+/** One call whose arguments stop in the middle, and the step ends on the output limit. */
+const cutArguments: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+  LLMEvent.toolInputDelta({ id: "call-1", name: "lookup", text: '{"que' }),
+  LLMEvent.stepFinish({ index: 0, reason: "length" }),
+  LLMEvent.finish({ reason: "length" }),
+]
+
+const lengthCut = scripted([cutArguments])
+
+lengthCut.it.effect(
+  "session.processor writes a call cut off by the output limit as an error the model can answer, not as interrupted",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "write a long file")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(run)
+
+        expect(result).toBe("continue")
+        expect(lengthCut.count()).toBe(1)
+        expect(msg.finish).toBe("length")
+        const calls = toolParts(yield* MessageV2.parts(msg.id))
+        expect(calls).toHaveLength(1)
+        const cut = calls[0]
+        expect(cut?.state.status).toBe("error")
+        if (cut?.state.status !== "error") return
+        expect(cut.state.error).toBe(ToolError.render({ kind: "truncated_arguments", tool: "lookup", length: 5 }))
+        expect(cut.state.metadata?.argumentsTruncated).toBe(true)
+        expect(cut.state.metadata?.outcome).toBe("arguments_truncated")
+        expect(TOOL_OUTCOME_KINDS).toContain(cut.state.metadata?.outcome)
+        expect(cut.state.metadata?.interrupted).toBeUndefined()
+        expect(cut.state.metadata?.truncated).toBeUndefined()
+        // Not an orphan: the turn goes on with the error as the call's result.
+        expect(Stop.isOrphanedInterruptedTool(cut)).toBe(false)
+        expect(msg.error).toBeUndefined()
+        // The statistics book it as a cut-off call, not as an abort.
+        const { db } = yield* Database.Service
+        const rows = yield* db.select().from(ToolOutcomeTable).all()
+        expect(rows.map((row) => row.outcome)).toEqual(["arguments_truncated"])
+      }),
+    { config: cfg },
+  ),
+)
+
+const cutQuery = '{"query":"a long '
+
+const lengthCutBehindResult = scripted([
+  [
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+    LLMEvent.toolInputDelta({ id: "call-1", name: "lookup", text: '{"query":"x"}' }),
+    LLMEvent.toolInputEnd({ id: "call-1", name: "lookup" }),
+    LLMEvent.toolCall({ id: "call-1", name: "lookup", input: { query: "x" } }),
+    LLMEvent.toolResult({
+      id: "call-1",
+      name: "lookup",
+      result: { type: "json", value: { title: "Lookup", output: "done", metadata: {} } },
+    }),
+    LLMEvent.toolInputStart({ id: "call-2", name: "lookup" }),
+    LLMEvent.toolInputDelta({ id: "call-2", name: "lookup", text: cutQuery }),
+    LLMEvent.stepFinish({ index: 0, reason: "length" }),
+    LLMEvent.finish({ reason: "length" }),
+  ],
+])
+
+lengthCutBehindResult.it.effect(
+  "session.processor keeps the result of a call that finished before the one the output limit cut off",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "two lookups")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(run)
+
+        expect(result).toBe("continue")
+        const calls = toolParts(yield* MessageV2.parts(msg.id))
+        const done = calls.find((part) => part.callID === "call-1")
+        const cut = calls.find((part) => part.callID === "call-2")
+        expect(done?.state.status).toBe("completed")
+        expect(cut?.state.status).toBe("error")
+        if (cut?.state.status === "error") {
+          expect(cut.state.error).toBe(
+            ToolError.render({ kind: "truncated_arguments", tool: "lookup", length: cutQuery.length }),
+          )
+          expect(cut.state.metadata?.outcome).toBe("arguments_truncated")
+          expect(cut.state.metadata?.interrupted).toBeUndefined()
+        }
+      }),
+    { config: cfg },
+  ),
+)
+
+// The cut-off wording needs both the output limit and an input that never ended: an input that did end, and any
+// other way an attempt can end, keep the abort they always had.
+const lengthEndedInput = scripted([
+  [
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+    LLMEvent.toolInputDelta({ id: "call-1", name: "lookup", text: '{"query":"x"}' }),
+    LLMEvent.toolInputEnd({ id: "call-1", name: "lookup" }),
+    LLMEvent.stepFinish({ index: 0, reason: "length" }),
+    LLMEvent.finish({ reason: "length" }),
+  ],
+])
+
+lengthEndedInput.it.effect(
+  "session.processor still aborts a call whose input ended when the step stopped on the output limit",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "one lookup")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        yield* Fiber.join(run)
+
+        const calls = toolParts(yield* MessageV2.parts(msg.id))
+        expect(calls).toHaveLength(1)
+        const ended = calls[0]
+        expect(ended?.state.status).toBe("error")
+        if (ended?.state.status === "error") {
+          expect(ended.state.error).toBe("Tool execution aborted")
+          expect(ended.state.metadata?.interrupted).toBe(true)
+          expect(ended.state.metadata?.outcome).toBe("aborted")
+          expect(ended.state.metadata?.argumentsTruncated).toBeUndefined()
+        }
       }),
     { config: cfg },
   ),

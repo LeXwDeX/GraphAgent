@@ -1,4 +1,5 @@
 import { Agent } from "@/agent/agent"
+import { McpReadonly } from "@/agent/mcp-readonly"
 import { subagentRoleDefaultRuleIndices } from "@/agent/subagent-permissions"
 import { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
@@ -213,6 +214,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
               ? {
                   resolveRuleset: (mode?: "plan") =>
                     agentService.permissionPolicy(mode === "plan" ? "plan" : input.agent.name).pipe(
+                      // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454).
+                      Effect.map((policy) =>
+                        McpReadonly.adjust(input.agent, policy, McpReadonly.idsOfEntries(entries)),
+                      ),
                       Effect.map((policy) => ({
                         ...policy,
                         rules: Permission.merge(policy.rules, input.session.permission ?? []),

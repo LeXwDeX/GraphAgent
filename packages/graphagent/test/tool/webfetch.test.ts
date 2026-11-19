@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
+import { rm } from "node:fs/promises"
+import path from "node:path"
 import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { Agent } from "../../src/agent/agent"
+import { DelegationHint } from "@/tool/delegation-hint"
 import { Truncate } from "@/tool/truncate"
 import { Parameters, WebFetchTool } from "../../src/tool/webfetch"
 import { SessionID, MessageID } from "../../src/session/schema"
@@ -149,19 +152,76 @@ it.instance("honors a supported declared charset", () =>
   ),
 )
 
-it.instance("refuses binary responses instead of decoding them as text", () =>
+const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x0a, 0xff])
+const savedPath = (output: string) => /read filePath="([^"]+)"/.exec(output)?.[1]
+
+/** Fetches `body` as `contentType`, expects a saved PDF, and removes the saved file afterwards (#1454). */
+const savedPdf = (contentType: string, body: Uint8Array<ArrayBuffer> = PDF) =>
   withFetch(
-    (req) =>
-      new URL(req.url).pathname === "/doc.pdf"
-        ? new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x0a, 0xff]), {
-            headers: { "content-type": "application/pdf" },
-          })
-        : new Response(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01]), {
-            headers: { "content-type": "" },
-          }),
+    () => new Response(body, { headers: { "content-type": contentType } }),
     (url) =>
       Effect.gen(function* () {
-        for (const file of ["/doc.pdf", "/program"]) {
+        const result = yield* exec({ url: new URL("/doc", url).href, format: "text" })
+        const file = savedPath(result.output)
+        if (file === undefined) throw new Error(`no saved file in: ${result.output}`)
+        yield* Effect.addFinalizer(() => Effect.promise(() => rm(file, { force: true })))
+        expect(result.output).toBe(
+          `The response is a PDF (${body.byteLength} bytes), saved to ${file}. Read it with: read filePath="${file}"`,
+        )
+        // The tool wrapper marks a result that fits as not truncated; the PDF's note is short, so it fits.
+        expect(result.metadata).toEqual({ truncated: false })
+        expect(result.attachments).toBeUndefined()
+        expect(path.dirname(file)).toBe(Truncate.DIR)
+        expect(path.basename(file).startsWith("tool_")).toBe(true)
+        expect(file.endsWith(".pdf")).toBe(true)
+        expect(new Uint8Array(yield* Effect.promise(() => Bun.file(file).arrayBuffer()))).toEqual(body)
+      }),
+  )
+
+it.instance("saves a PDF response to a file and says how to read it (#1454)", () => savedPdf("application/pdf"))
+
+it.instance("saves a PDF served under another content type, found by its first bytes (#1454)", () =>
+  savedPdf("application/octet-stream"),
+)
+
+it.instance("saves a response declared as a PDF whatever its bytes are (#1454)", () =>
+  savedPdf("Application/PDF; charset=binary", new Uint8Array([0x00, 0x01, 0x02])),
+)
+
+it.instance(
+  "a page cut at the output cap names its saved copy, which the delegation line gives a researcher (#1454)",
+  () =>
+    withFetch(
+      () =>
+        new Response(Array.from({ length: 3000 }, (_, index) => `line ${index}`).join("\n"), {
+          headers: { "content-type": "text/plain" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const target = new URL("/long.txt", url).href
+          // The wrapper adds `truncated` and `outputPath` beyond the `{}` the tool itself returns.
+          const metadata: Record<string, unknown> = (yield* exec({ url: target, format: "text" })).metadata
+          const saved = metadata.outputPath
+          if (typeof saved !== "string") throw new Error("the cut page has no saved copy")
+          yield* Effect.addFinalizer(() => Effect.promise(() => rm(saved, { force: true })))
+          expect(metadata.truncated).toBe(true)
+          expect(DelegationHint.hintOf("webfetch", { url: target, format: "text" }, metadata)).toEqual({
+            agent: "researcher",
+            path: saved,
+          })
+        }),
+    ),
+)
+
+it.instance("refuses other binary responses instead of decoding them as text", () =>
+  withFetch(
+    (req) =>
+      new URL(req.url).pathname === "/archive.zip"
+        ? new Response(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), { headers: { "content-type": "application/zip" } })
+        : new Response(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01]), { headers: { "content-type": "" } }),
+    (url) =>
+      Effect.gen(function* () {
+        for (const file of ["/archive.zip", "/program"]) {
           const exit = yield* exec({ url: new URL(file, url).href, format: "text" }).pipe(Effect.exit)
           expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause))).toContain("The response is binary")
         }

@@ -26,6 +26,7 @@ export class Service extends ConfigService.Service<Service>()("@graphagent/Runti
   bashSilenceWarnMs: positiveInteger("GRAPHAGENT_BASH_SILENCE_WARN_MS"),
   experimentalNativeLlm: bool("GRAPHAGENT_NATIVE_LLM"),
   experimentalWebSockets: bool("GRAPHAGENT_WEBSOCKETS"),
+  debugRequests: bool("GRAPHAGENT_DEBUG_REQUESTS"),
   client: Config.String("GRAPHAGENT_CLIENT").pipe(Config.withDefault("cli")),
 }) {}
 

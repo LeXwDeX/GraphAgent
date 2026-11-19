@@ -13,6 +13,7 @@ import { ScrapCommand } from "./scrap"
 import { SkillCommand } from "./skill"
 import { SnapshotCommand } from "./snapshot"
 import { AgentCommand } from "./agent"
+import { RequestCommand } from "./request"
 import { StartupCommand } from "./startup"
 
 export const DebugCommand = cmd({
@@ -29,6 +30,7 @@ export const DebugCommand = cmd({
       .command(SnapshotCommand)
       .command(StartupCommand)
       .command(AgentCommand)
+      .command(RequestCommand)
       .command(InfoCommand)
       .command(PathsCommand)
       .command(WaitCommand)

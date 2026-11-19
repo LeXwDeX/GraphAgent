@@ -606,7 +606,7 @@ export function spawnNode(
         yield* provider.getModel(model.providerID, model.modelID).pipe(Effect.option),
       )
       if (!resolved) return undefined
-      return ProviderTransform.maxOutputTokens(
+      return ProviderTransform.requestOutputCap(
         resolved,
         flags.outputTokenMax,
         ProviderTransform.configuredOutputLimit(yield* config.get(), resolved),

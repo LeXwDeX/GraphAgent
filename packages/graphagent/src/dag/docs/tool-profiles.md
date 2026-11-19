@@ -25,10 +25,10 @@ permission; `list_mcp_resources`, `list_mcp_resource_templates`, and
 
 | Worker / block source            | Profile                                  | Advertised tools                                                                                                                                                                       | Hidden by the profile                                                                         |
 | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `explore`, `debug--evidence`     | read-only research                       | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                             | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
-| `auditor`                        | read-only verification; model tier `advanced` | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                        | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
-| `researcher`                     | read-only web research; no shell         | `read`, `grep`, `glob`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                                     | `bash`, `edit`, `write`, `apply_patch`, `lsp`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
-| `architect`                      | read-only design: the `explore` profile plus the language server | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `lsp`, `skill`, `*_initial_instructions`                                                                              | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
+| `explore`, `debug--evidence`     | read-only research                       | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`, MCP tools declaring `readOnlyHint`                                                         | `edit`, `write`, `apply_patch`, `task`, `todowrite`, MCP tools not declared read-only, `question`, `plan_exit` |
+| `auditor`                        | read-only verification; model tier `advanced` | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`, MCP tools declaring `readOnlyHint`                                                    | `edit`, `write`, `apply_patch`, `task`, `todowrite`, MCP tools not declared read-only, `question`, `plan_exit` |
+| `researcher`                     | read-only web research; no shell         | `read`, `grep`, `glob`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`, MCP tools declaring `readOnlyHint`                                                                 | `bash`, `edit`, `write`, `apply_patch`, `lsp`, `task`, `todowrite`, MCP tools not declared read-only, `question`, `plan_exit` |
+| `architect`                      | read-only design: the `explore` profile plus the language server | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `lsp`, `skill`, `*_initial_instructions`, MCP tools declaring `readOnlyHint`                                          | `edit`, `write`, `apply_patch`, `task`, `todowrite`, MCP tools not declared read-only, `question`, `plan_exit` |
 | `surveyor`, `mapper`             | composers: plan and join only, no shell or web; model tier `advanced`; `compose` blocks only, `task` refuses them | `read`, `grep`, `glob`, `skill`, `*_initial_instructions` | `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch`, `lsp`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `prototyper`                     | writer limited to `prototypes/` in the node workspace | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only `prototypes/**` passes), `skill`, `*_initial_instructions`                  | `lsp`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general` and `prototyper`), `skill`, MCP tools | `todowrite` in a child session; `question`, `plan_exit` (root-only, hidden from every child session) |
@@ -46,6 +46,18 @@ Block defaults:
 - `prototype` -> `prototyper`
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
 - review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
+
+## Read-only MCP tools
+
+An MCP tool whose server declares `annotations.readOnlyHint: true` (the boolean; a missing hint or any other value
+counts as not read-only) is advertised to, and callable by, the built-in `explore`, `researcher`, `architect`,
+`review`, and `auditor` agents, and so by the nodes that run them, without a permission question. The grant is added
+to the agent's native rules, after them and before the user's rules, so a `deny` for the tool's id in the agent's
+configuration or the session rules closes it. `general`, `prototyper`, the composers, and custom agents keep their
+profiles, and a tool of a `deferred` server stays out of reach: these agents have neither `mcp_describe` nor
+`mcp_call`. The runtime trusts the hint of a server the user configured; the MCP SDK itself says a hint is only a
+hint. Under the `ask` and `readonly` tiers of `dag.permission` the grant is not an allow the user wrote: an MCP call
+is still confirmed or refused as before.
 
 ## Writers
 

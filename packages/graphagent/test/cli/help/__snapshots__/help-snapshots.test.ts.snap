@@ -68,18 +68,19 @@ exports[`graphagent CLI help-text snapshots every documented command emits stabl
 debugging and troubleshooting tools
 
 Commands:
-  graphagent debug config        show resolved configuration
-  graphagent debug lsp           LSP debugging utilities
-  graphagent debug rg            ripgrep debugging utilities
-  graphagent debug file          file system debugging utilities
-  graphagent debug scrap         list all known projects
-  graphagent debug skill         list all available skills
-  graphagent debug snapshot      snapshot debugging utilities
-  graphagent debug startup       print startup timing
-  graphagent debug agent <name>  show agent configuration details
-  graphagent debug info          show debug information
-  graphagent debug paths         show global paths (data, config, cache, state)
-  graphagent debug wait          wait indefinitely (for debugging)
+  graphagent debug config             show resolved configuration
+  graphagent debug lsp                LSP debugging utilities
+  graphagent debug rg                 ripgrep debugging utilities
+  graphagent debug file               file system debugging utilities
+  graphagent debug scrap              list all known projects
+  graphagent debug skill              list all available skills
+  graphagent debug snapshot           snapshot debugging utilities
+  graphagent debug startup            print startup timing
+  graphagent debug agent <name>       show agent configuration details
+  graphagent debug request <session>  show a captured model request (GRAPHAGENT_DEBUG_REQUESTS=1)
+  graphagent debug info               show debug information
+  graphagent debug paths              show global paths (data, config, cache, state)
+  graphagent debug wait               wait indefinitely (for debugging)
 
 Options:
   -h, --help        show help                                                              [boolean]

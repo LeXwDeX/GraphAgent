@@ -898,6 +898,19 @@ function googleThinkingBudgetMax(apiId: string) {
   return 24_576
 }
 
+/**
+ * The budgets of the `high` and `max` tiers of the Anthropic protocol, scaled to the output limit of the model. An
+ * unknown limit reads 0 (a configured model without `limit`) and gets the full budgets: scaling by 0 gives -1, which
+ * the API rejects (#1464).
+ */
+function highThinkingBudget(output: number) {
+  return output > 0 ? Math.min(16_000, Math.floor(output / 2 - 1)) : 16_000
+}
+
+function maxThinkingBudget(output: number) {
+  return output > 0 ? Math.min(31_999, output - 1) : 31_999
+}
+
 // SAP's Zod schema drops unknown top-level keys; reasoning controls survive
 // only via `modelParams` (catchall), forwarded verbatim by the SAP SDKs.
 function wrapInSapModelParams(variants: Record<string, Record<string, any>>): Record<string, Record<string, any>> {
@@ -1189,13 +1202,13 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         high: {
           thinking: {
             type: "enabled",
-            budgetTokens: Math.min(16_000, Math.floor(model.limit.output / 2 - 1)),
+            budgetTokens: highThinkingBudget(model.limit.output),
           },
         },
         max: {
           thinking: {
             type: "enabled",
-            budgetTokens: Math.min(31_999, model.limit.output - 1),
+            budgetTokens: maxThinkingBudget(model.limit.output),
           },
         },
       }
@@ -1414,7 +1427,7 @@ export function options(input: {
   ) {
     result["thinking"] = {
       type: "enabled",
-      budgetTokens: Math.min(16_000, Math.floor(input.model.limit.output / 2 - 1)),
+      budgetTokens: highThinkingBudget(input.model.limit.output),
     }
   }
 
@@ -1586,6 +1599,93 @@ export function maxOutputTokens(model: Provider.Model, outputTokenMax?: number, 
       ? model.limit.output || configuredOutput
       : Math.min(model.limit.output, outputTokenMax ?? OUTPUT_TOKEN_MAX) || outputTokenMax || OUTPUT_TOKEN_MAX
   return outputTokenMax === undefined ? limit : Math.min(limit, outputTokenMax)
+}
+
+/** The packages of the Anthropic Messages protocol, where every request must carry `max_tokens`. */
+const ANTHROPIC_MESSAGES_NPM: ReadonlyArray<string> = ["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic"]
+
+/**
+ * The output cap a request carries (#1464). `maxOutputTokens` answers for every model whose output limit is known. For
+ * a model whose limit is unknown (0) its 32,000 is only the conservative default that reserves window room, not a
+ * statement about the model, so the request carries no cap unless one was asked for (the environment override or a
+ * configured output) or the protocol cannot go without it. Only requests use this: the window reserve keeps reading
+ * `maxOutputTokens`.
+ */
+export function requestOutputCap(
+  model: Provider.Model,
+  outputTokenMax?: number,
+  configuredOutput?: number,
+): number | undefined {
+  const cap = maxOutputTokens(model, outputTokenMax, configuredOutput)
+  if (model.limit.output > 0 || outputTokenMax !== undefined || (configuredOutput ?? 0) > 0) return cap
+  return ANTHROPIC_MESSAGES_NPM.includes(model.api.npm) ? cap : undefined
+}
+
+/** The share of a model's output capacity that a reasoning budget may take; the rest is left for the answer. */
+export const REASONING_BUDGET_SHARE = 0.75
+
+// The SDKs of these packages add the reasoning budget on top of `maxOutputTokens`, so the sum has to fit the output
+// limit of the model. Bedrock does it for Anthropic models, the only ones that take a `reasoningConfig.budgetTokens`;
+// the budget itself says so, the API id is not read (an inference profile ARN names no family).
+const BUDGET_ADDED_NPM: ReadonlyArray<string> = [...ANTHROPIC_MESSAGES_NPM, "@ai-sdk/amazon-bedrock"]
+// The budget of these packages is part of `maxOutputTokens`.
+const BUDGET_INSIDE_NPM: ReadonlyArray<string> = ["@ai-sdk/google", "@ai-sdk/google-vertex"]
+
+/** Where a request option holds a reasoning budget, in reading order; a thinking block counts only when enabled. */
+const BUDGET_PLACES: ReadonlyArray<{ readonly key: string; readonly field: string; readonly enabledOnly: boolean }> = [
+  { key: "thinking", field: "budgetTokens", enabledOnly: true },
+  { key: "reasoningConfig", field: "budgetTokens", enabledOnly: true },
+  { key: "thinkingConfig", field: "thinkingBudget", enabledOnly: false },
+]
+
+/** The first numeric reasoning budget of the request options, with the block that holds it. */
+function reasoningBudgetOf(options: JsonRecord) {
+  for (const place of BUDGET_PLACES) {
+    const block = options[place.key]
+    if (!isPlainObject(block) || (place.enabledOnly && block.type !== "enabled")) continue
+    const value = block[place.field]
+    if (typeof value === "number" && Number.isFinite(value)) return { place, block, value }
+  }
+  return undefined
+}
+
+/** Request options and output cap after a reasoning budget was fitted, with the budget before and after. */
+export interface FittedReasoning {
+  readonly options: Record<string, unknown>
+  readonly maxOutputTokens: number
+  readonly budgetBefore: number
+  readonly budgetAfter: number
+}
+
+/**
+ * Keeps the reasoning budget of a request from squeezing the answer out of the output cap (#1464). A budget above
+ * `REASONING_BUDGET_SHARE` of the output capacity is cut to it. Where the SDK adds the budget on top of the cap
+ * (the Anthropic protocol, Bedrock's Anthropic models) the capacity is the output limit of the model, and the cap is
+ * lowered until cap and budget fit it; where the budget is part of the cap (Google), the capacity is the cap. Returns
+ * undefined when nothing has to change: no cap, no numeric budget, another protocol, an output limit that is unknown,
+ * or a budget and cap that already fit. The options passed in are never changed.
+ */
+export function fitReasoningBudget(
+  model: Provider.Model,
+  options: JsonRecord,
+  cap: number | undefined,
+): FittedReasoning | undefined {
+  if (cap === undefined) return undefined
+  const found = reasoningBudgetOf(options)
+  if (!found) return undefined
+  const added = BUDGET_ADDED_NPM.includes(model.api.npm)
+  if (!added && !BUDGET_INSIDE_NPM.includes(model.api.npm)) return undefined
+  const output = model.limit.output
+  if (added && !(output > 0)) return undefined
+  const budget = Math.min(found.value, Math.floor((added ? output : cap) * REASONING_BUDGET_SHARE))
+  const fitted = added ? Math.min(cap, output - budget) : cap
+  if (budget === found.value && fitted === cap) return undefined
+  return {
+    options: { ...options, [found.place.key]: { ...found.block, [found.place.field]: budget } },
+    maxOutputTokens: fitted,
+    budgetBefore: found.value,
+    budgetAfter: budget,
+  }
 }
 
 type JsonRecord = Record<string, unknown>
