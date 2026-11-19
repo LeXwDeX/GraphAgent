@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-// #1560: DAG mode starts every workflow under the strict review gate, so the
-// start-file examples that the user guide and the dag-auto skill hand to a model
-// must pass under it as well as as authored. The cases parse every YAML fence of
-// both texts, keep the ones that are start documents (a top-level `config`), and
-// validate each under both gates, so an example that only a standard start would
-// accept fails here instead of in a DAG-mode session.
+// #1560, #1567: DAG mode starts every workflow under the strict review gate, so
+// the start-file examples that the user guide and the dag-auto, dag-blocks and
+// dag-patterns skills hand to a model must pass under it as well as as authored.
+// The cases parse every YAML fence of each text, keep the ones that are start
+// documents (a top-level `config`), and validate each under both gates, so an
+// example that only a standard start would accept fails here instead of in a
+// DAG-mode session.
 import { describe, expect, it } from "bun:test"
 import path from "node:path"
 import { Effect } from "effect"
@@ -15,16 +16,15 @@ import { BUILTIN_SKILLS } from "@/skill/builtin"
 import { isRecord } from "@/util/record"
 
 const guide = await Bun.file(path.resolve(import.meta.dir, "../../../../docs/dag-workflows.md")).text()
-const skill = BUILTIN_SKILLS.find((item) => item.name === "dag-auto")?.content ?? ""
+const skill = (name: string) => BUILTIN_SKILLS.find((item) => item.name === name)?.content ?? ""
 
-/** The start documents among one markdown text's YAML fences. */
+/** The start documents among one markdown text's YAML fences, named by `config.name`. */
 const startExamples = (markdown: string) =>
-  [...markdown.matchAll(/```yaml\n([\s\S]*?)```/g)]
-    .map((match) => match[1])
-    .filter((content) => {
-      const value: unknown = Bun.YAML.parse(content)
-      return isRecord(value) && isRecord(value.config)
-    })
+  [...markdown.matchAll(/```yaml\n([\s\S]*?)```/g)].flatMap((match) => {
+    const content = match[1]
+    const value: unknown = Bun.YAML.parse(content)
+    return isRecord(value) && isRecord(value.config) ? [{ name: String(value.config.name), content }] : []
+  })
 
 const authoring = WorkflowAuthoring.make()
 
@@ -42,7 +42,9 @@ const judge = (content: string, gate: "authored" | "strict") =>
 
 describe.each([
   ["docs/dag-workflows.md", guide],
-  ["the dag-auto skill", skill],
+  ["the dag-auto skill", skill("dag-auto")],
+  ["the dag-blocks skill", skill("dag-blocks")],
+  ["the dag-patterns skill", skill("dag-patterns")],
 ])("start examples in %s", (_name, markdown) => {
   const examples = startExamples(markdown)
 
@@ -52,10 +54,12 @@ describe.each([
 
   for (const gate of ["authored", "strict"] as const) {
     it(`passes validation under the ${gate} gate`, async () => {
-      for (const content of examples) {
+      const failures: string[] = []
+      for (const { name, content } of examples) {
         const result = await judge(content, gate)
-        expect(result.errors.map((error) => `${error.path}: ${error.message}`)).toEqual([])
+        failures.push(...result.errors.map((error) => `${name} ${error.path}: ${error.message}`))
       }
+      expect(failures).toEqual([])
     })
   }
 })

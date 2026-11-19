@@ -6,6 +6,10 @@ simplify them. Save a YAML block, validate it with
 `{ action: "run", operation: "start", spec_path }`. Load skill dag-blocks for
 fields and skill dag-policy for gates and models.
 
+Writers in `nodes` are unavailable in DAG mode (the strict gate takes read-only
+workers only), so these examples use `explore`, `plan`, and `auditor`; edit
+through `coding` blocks.
+
 ## Choosing a composition
 
 - Two or three independent read-only jobs: `task` each; no workflow.
@@ -25,7 +29,7 @@ config:
     - { id: explore, name: explore, worker_type: explore, depends_on: [], prompt_template: { inline: "Explore the auth module and report findings." }, required: true }
     - id: gate
       name: gate
-      worker_type: general
+      worker_type: auditor
       depends_on: [explore]
       input_mapping: { findings: explore }
       required: true
@@ -33,12 +37,12 @@ config:
       output_schema:
         { type: object, required: [verdict, summary], properties: { verdict: { type: string, enum: [ACCEPT, REVISE, REJECT, BLOCKED] }, summary: { type: string } } }
       prompt_template: { inline: "Review these findings and submit a structured verdict: {{findings}}" }
-    - { id: implement, name: implement, worker_type: build, depends_on: [gate], condition: 'gate.output.verdict == "ACCEPT"', prompt_template: { inline: "Implement based on approved findings." } }
+    - { id: design, name: design, worker_type: plan, depends_on: [gate], condition: 'gate.output.verdict == "ACCEPT"', prompt_template: { inline: "Design the change from the approved findings." } }
 ```
 
 The `required: true` gate cancels the workflow on execution or output-contract
 failure. A successful non-ACCEPT verdict does not fail the node; the condition
-skips `implement` and the parent decides whether to replan or stop.
+skips `design` and the parent decides whether to replan or stop.
 
 ## 2. Parallel fan-out
 
@@ -49,12 +53,12 @@ config:
   name: parallel-fan-out
   nodes:
     - { id: discover, name: discover, worker_type: explore, depends_on: [], prompt_template: { inline: "List all packages that need the API migration." }, required: true }
-    - { id: migrate-auth, name: migrate-auth, worker_type: build, depends_on: [discover], prompt_template: { inline: "Migrate the auth package to the new API." } }
-    - { id: migrate-server, name: migrate-server, worker_type: build, depends_on: [discover], prompt_template: { inline: "Migrate the server package to the new API." } }
-    - { id: assemble, name: assemble, worker_type: build, depends_on: [migrate-auth, migrate-server], prompt_template: { inline: "Run integration tests and assemble a summary." } }
+    - { id: scan-auth, name: scan-auth, worker_type: explore, depends_on: [discover], prompt_template: { inline: "Assess the auth package's API migration." } }
+    - { id: scan-server, name: scan-server, worker_type: explore, depends_on: [discover], prompt_template: { inline: "Assess the server package's API migration." } }
+    - { id: assemble, name: assemble, worker_type: auditor, depends_on: [scan-auth, scan-server], prompt_template: { inline: "Merge both assessments into one summary." } }
 ```
 
-`migrate-*` run concurrently (bounded by `max_concurrency`); `assemble` waits for
+`scan-*` run concurrently (bounded by `max_concurrency`); `assemble` waits for
 both. Non-required worker failures do not cancel the workflow; `assemble` still
 runs and reports them.
 
@@ -69,22 +73,21 @@ Verdict Disposal Contract.
 config:
   name: adversarial-review
   nodes:
-    - { id: implement, name: implement, worker_type: build, depends_on: [], prompt_template: { inline: "Implement the requested change." }, required: true }
-    - { id: review-arch, name: review-arch, worker_type: general, depends_on: [implement], prompt_template: { inline: "Review architecture. Report evidence-backed findings and unverified claims." } }
-    - { id: review-logic, name: review-logic, worker_type: general, depends_on: [implement], prompt_template: { inline: "Review logic. Report evidence-backed findings and unverified claims." } }
+    - { id: review-arch, name: review-arch, worker_type: auditor, depends_on: [], prompt_template: { inline: "Review the change's architecture. Report evidence-backed findings and unverified claims." } }
+    - { id: review-logic, name: review-logic, worker_type: auditor, depends_on: [], prompt_template: { inline: "Review the change's logic. Report evidence-backed findings and unverified claims." } }
     - id: arbitrate
       name: arbitrate
-      worker_type: general
+      worker_type: auditor
       depends_on: [review-arch, review-logic]
       required: true
       report_to_parent: true
       output_schema:
         { type: object, required: [verdict, summary, findings, required_actions], properties: { verdict: { type: string, enum: [ACCEPT, REVISE, REJECT, BLOCKED] }, summary: { type: string }, findings: { type: array }, required_actions: { type: array } } }
       prompt_template: { inline: "Merge both reviews into one structured ACCEPT, REVISE, REJECT, or BLOCKED decision with deduplicated findings and required actions." }
-    - { id: deep-dive, name: deep-dive, worker_type: general, depends_on: [arbitrate], condition: 'arbitrate.output.verdict != "ACCEPT"', report_to_parent: true, prompt_template: { inline: "Verify each required action against the code and produce a corrected action plan." } }
+    - { id: deep-dive, name: deep-dive, worker_type: auditor, depends_on: [arbitrate], condition: 'arbitrate.output.verdict != "ACCEPT"', report_to_parent: true, prompt_template: { inline: "Verify each required action against the code and produce a corrected action plan." } }
 ```
 
-Hand-written `general` nodes take `advanced` only when `required: true`: the
+Hand-written nodes take `advanced` only when `required: true`: the
 arbiter does, the reviewers do not. On ACCEPT the conditioned `deep-dive` is skipped;
 otherwise it runs with the arbiter's findings, so a non-ACCEPT outcome never
 silently terminalizes the graph.
@@ -97,9 +100,9 @@ Independent generators propose candidates; a converger selects and refines.
 config:
   name: diverge-converge
   nodes:
-    - { id: gen-a, name: gen-a, worker_type: general, depends_on: [], prompt_template: { inline: "Propose a solution for X using microservices." } }
-    - { id: gen-b, name: gen-b, worker_type: general, depends_on: [], prompt_template: { inline: "Propose a solution for X using a modular monolith." } }
-    - { id: converge, name: converge, worker_type: general, depends_on: [gen-a, gen-b], required: true, prompt_template: { inline: "Compare the approaches and select the best fit for the constraints." } }
+    - { id: gen-a, name: gen-a, worker_type: plan, depends_on: [], prompt_template: { inline: "Propose a solution for X using microservices." } }
+    - { id: gen-b, name: gen-b, worker_type: plan, depends_on: [], prompt_template: { inline: "Propose a solution for X using a modular monolith." } }
+    - { id: converge, name: converge, worker_type: plan, depends_on: [gen-a, gen-b], required: true, prompt_template: { inline: "Compare the approaches and select the best fit for the constraints." } }
 ```
 
 ## Cross-domain composition
