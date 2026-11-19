@@ -388,8 +388,53 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - C1 接口未就绪或 schema 缺失时，该行只读显示，不做空壳。
 - `text` 行用 `validate` 返回错误文案键（非空则不提交）；`suffix` 用于行尾淡色附注。需要打开前确认的（如 Claude hooks 兼容）先出询问区 `confirm` 变体。
 - 界面文字的切换（语言、主题）立即生效；语言只影响默认回复语言这一条系统提示指令。
+- 行的版式（#1617）：每行三列，标记 2 格、名称 22 格、值紧跟名称。名称最多 21 格（末格留空），超出按 `cellWidth` 截断，所以新增行名中英都要核对，超了就改短。值后面依次是 `suffix` 与选中行的“换一个（i/n）”提示；选中行的 `description` 画在面板底部的说明行里（`PanelShell` 的 `note`），一行放得下就不要写长。
+- 只汇报、不持有设置的行（快捷键）用 `readonly`：正常着色，可选中看说明，回车与点击不做任何事。写入路径不可用的行用 `disabled`：变暗且不可操作，原因写在 `suffix` 里（子 agent 视图里改会话模型的两行就是这样，因为那会向子会话发写请求）。
 
-必须写的测试："每行指出存储位置"遍历测试；C1 接口 mock 不可用时只读；值写入后的读回。
+`/config` 的标签与行（#1617）。标签顺序固定：通用（`general`）、界面（`interface`）、模型（`model`）、DAG 模式（`dag`）、权限（`permissions`）、快捷键（`shortcuts`）；`/config` 默认打开界面，`/permissions` 打开权限。每一行的存储位置：
+
+| 标签     | 行                                       | 种类                | 存储                                                                                                                                                                  |
+| -------- | ---------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 通用     | 语言                                     | choice              | 全局配置 `language`                                                                                                                                                   |
+| 通用     | 自动压缩                                 | toggle              | 全局配置 `compaction.auto`（未设置按开）；`compaction.trigger_ratio` 已设置时在行尾注明百分比，行里不带默认值                                                         |
+| 通用     | 文件上下文                               | toggle              | kv `file_context_enabled`                                                                                                                                             |
+| 通用     | 粘贴摘要                                 | toggle              | kv `paste_summary_enabled`                                                                                                                                            |
+| 通用     | 按目录过滤会话                           | toggle              | kv `session_directory_filter_enabled`                                                                                                                                 |
+| 通用     | 终端标题                                 | toggle              | kv `terminal_title_enabled`                                                                                                                                           |
+| 界面     | 主题                                     | action              | kv `theme`（推入主题面板）                                                                                                                                            |
+| 界面     | 主题模式                                 | choice              | kv `theme_mode_lock`、`theme_mode`                                                                                                                                    |
+| 界面     | 动画                                     | toggle              | kv `animations_enabled`                                                                                                                                               |
+| 界面     | 推理过程                                 | toggle              | kv `thinking_mode`（`show`、`hide`）                                                                                                                                  |
+| 界面     | 时间戳                                   | toggle              | kv `timestamps`                                                                                                                                                       |
+| 界面     | 工具详情                                 | toggle              | kv `tool_details_visibility`                                                                                                                                          |
+| 界面     | 通用工具输出                             | toggle              | kv `generic_tool_output_visibility`                                                                                                                                   |
+| 界面     | 滚动条                                   | toggle              | kv `scrollbar_visible`                                                                                                                                                |
+| 界面     | 差异换行                                 | toggle              | kv `diff_wrap_mode`                                                                                                                                                   |
+| 界面     | 抽屉                                     | choice              | kv `drawer_mode`                                                                                                                                                      |
+| 界面     | 代码块隐藏                               | toggle              | kv `conceal_code`                                                                                                                                                     |
+| 界面     | DAG 状态带                               | choice              | kv `dag_band`                                                                                                                                                         |
+| 界面     | 字符宽度                                 | choice              | kv `ambiguous_width`                                                                                                                                                  |
+| 模型     | 当前模型                                 | action              | `local.model` 的 `model.json`（按 agent 记）；回车经命令注册表运行 `model.list`，打开 `/model` 的列表面板                                                             |
+| 模型     | 推理强度                                 | choice 或 action    | `local.model.variant`：选项是 `default` 加当前模型的变体，调用与 `panel/variant.tsx` 相同；超过 6 个选项时为 action，打开 `VariantPanel`；当前模型没有变体时不可操作 |
+| 模型     | 标题模型                                 | text                | 全局配置 `small_model`（`provider/model`，必须是已连接 provider 的模型）；只能设置，合并写入没有清除一个键的语义，所以空值不能提交，清除要改配置文件                   |
+| DAG 模式 | 新会话默认 DAG 模式                      | toggle              | 全局配置 `dag.mode`                                                                                                                                                   |
+| DAG 模式 | DAG 并发上限                             | text                | 全局配置 `dag.concurrency`（生效值的显示见上）                                                                                                                        |
+| DAG 模式 | DAG token 预算                           | text                | 全局配置 `dag.budget.tokens`                                                                                                                                          |
+| 权限     | 编辑、Bash、网络请求、项目外目录         | choice              | 全局配置 `permission.<工具>`                                                                                                                                          |
+| 快捷键   | 命令标题（值是按键，说明取命令的 `desc`） | action（`readonly`） | 不存储：由 keymap 生成，与 `/help` 共用 `panel/help.tsx` 的 `useShortcutEntries()`（跳过 `hidden`、没有标题、`Panel` 分类、没有键位的命令），按分类与标题排序 |
+
+写入 `compaction`、`small_model` 与写 `language`、`permission` 一样，全局配置里除 `dag` 外的键都不在 `HOT_RELOAD_GLOBAL_KEYS` 里，写入后实例会重建。
+
+没有真实存储的行不上线。设计原型里有、现在没有可用存储的行，不为它们新增配置键，列在这里（#1617）：
+
+| 原型的行                                                                       | 现状                                                                                                                                                                                                                                                                                                                        | 处理                                                |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 完成通知（任务完成时 / 需要我输入时 / 关闭）                                   | 没有三选一的存储。`tui.json` 里有 `attention.enabled`（默认 false）、`attention.notifications`、`attention.sound` 三个布尔值，是文件配置；`/config` 目前只能写 kv 与全局配置层（`sdk.client.global.config.update` 写的是 `graphagent.json`），没有写 `tui.json` 的路径                                                          | 跳过                                                |
+| 检查更新（开 / 关）                                                            | `autoupdate` 键还在 schema 里，但描述写明“Deprecated compatibility setting; built-in application updates are disabled and this value is ignored”，旧的升级接口也只回 400（`groups/global.ts`：Built-in updates disabled），没有任何功能可开关                                                                                | 跳过；#1281（安装、升级与远程配置并入主程序）落地后再加 |
+| 窄终端（自动 / 始终紧凑）                                                      | 断点是固定常量（顶栏 `TOP_BAR_WIDE_WIDTH`、状态带 `BAND_NARROW_WIDTH`、面板 `PANEL_NARROW_WIDTH`，都是 100 列），没有设置项                                                                                                                                                                                                | 跳过                                                |
+| 推理过程、工具输出的三态（折叠 / 展开 / 隐藏，超过 6 行折叠 / 全部展开 / 只显示标题） | kv 只有两态（`thinking_mode` 的 `show`、`hide`；`tool_details_visibility`、`generic_tool_output_visibility` 两个开关）                                                                                                                                                                                                       | 保留现有的两态行，不合并成三态                      |
+
+必须写的测试："每行指出存储位置"遍历测试（`test/panel/config.test.tsx` 的 `STORES` 与上面的行表一一对应，加一行要两处一起改）；C1 接口 mock 不可用时只读；值写入后的读回。
 
 ### 6.7 新增预填模板
 
