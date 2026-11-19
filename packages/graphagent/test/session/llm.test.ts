@@ -546,6 +546,77 @@ describe("session.llm.ai-sdk adapter", () => {
     expect(stepFinish.providerMetadata?.graphagent?.rawFinishReason).toBe("constructor")
   })
 
+  describe("finish_reason table of the model profile", () => {
+    // adapterState(table) takes the profile's `finishReasons`; it is read before the shared table
+    const adaptWith = (
+      table: Parameters<typeof LLMAISDK.adapterState>[0],
+      events: ReadonlyArray<AISDKAdapterEvent>,
+    ) => {
+      const state = LLMAISDK.adapterState(table)
+      return Effect.runPromise(
+        Effect.forEach(events, (event) => LLMAISDK.toLLMEvents(state, event)).pipe(Effect.map((items) => items.flat())),
+      )
+    }
+
+    test("a value the table names is handled as the table says, over the shared table", async () => {
+      const state = LLMAISDK.adapterState({ sensitive: "stream_error" })
+      const error = await Effect.runPromise(
+        Effect.flip(LLMAISDK.toLLMEvents(state, finishStepEvent("other", "sensitive"))),
+      )
+      expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+      if (!(error instanceof ProviderError.ResponseStreamError)) throw error
+      expect(error.message).toBe("Provider finish_reason: sensitive")
+      expect(ProviderError.isRetryableResponseStreamError(error)).toBe(true)
+    })
+
+    test("without a table, or with an empty one, the shared table decides", async () => {
+      for (const table of [undefined, {}]) {
+        const events = await adaptWith(table, finishStepWith("other", "sensitive"))
+        expect(events.at(-1)).toMatchObject({ type: "step-finish", reason: "content-filter" })
+      }
+    })
+
+    test("a value only the table names is handled, and the shared table still serves the rest", async () => {
+      const table = { vendor_filter: "content-filter", vendor_overflow: "context_overflow" } as const
+      const filtered = await adaptWith(table, finishStepWith("other", "vendor_filter"))
+      expect(filtered.at(-1)).toMatchObject({ type: "step-finish", reason: "content-filter" })
+      const overflow = await adaptWith(table, finishStepWith("length", "vendor_overflow"))
+      expect(overflow.at(-1)).toMatchObject({ type: "provider-error", classification: "context-overflow" })
+      // a value neither table names stays unknown; one only the shared table names is still handled
+      const unlisted = await adaptWith(table, finishStepWith("other", "foo"))
+      expect(unlisted.at(-1)).toMatchObject({ type: "step-finish", reason: "unknown" })
+      const shared = await adaptWith(table, finishStepWith("length", "model_context_window_exceeded"))
+      expect(shared.at(-1)).toMatchObject({ type: "provider-error", classification: "context-overflow" })
+    })
+
+    test("the table does not match inherited object keys", async () => {
+      const events = await adaptWith({ sensitive: "stream_error" }, finishStepWith("other", "constructor"))
+      expect(events.at(-1)).toMatchObject({ type: "step-finish", reason: "unknown" })
+    })
+
+    test("the table stays after finish, so the next stream on the same state still reads it", async () => {
+      const state = LLMAISDK.adapterState({ sensitive: "stream_error" })
+      const usage = {
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+        inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      }
+      await Effect.runPromise(
+        LLMAISDK.toLLMEvents(
+          state,
+          uncheckedAdapterEvent({ type: "finish", finishReason: "stop", rawFinishReason: "stop", totalUsage: usage }),
+        ),
+      )
+      expect(state.finishReasons).toEqual({ sensitive: "stream_error" })
+      const error = await Effect.runPromise(
+        Effect.flip(LLMAISDK.toLLMEvents(state, finishStepEvent("other", "sensitive"))),
+      )
+      expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    })
+  })
+
   test("preserves tool-error cause", async () => {
     const error = new PermissionV1.RejectedError()
     const events = await Effect.runPromise(
@@ -1637,6 +1708,96 @@ describe("session.llm.stream", () => {
       }),
     },
   )
+
+  describe("finish_reason table of the model profile on a real stream", () => {
+    const providerID = "finish-profile"
+    const finishConfig = (): Partial<ConfigV1.Info> => ({
+      enabled_providers: [providerID],
+      provider: {
+        [providerID]: {
+          name: "Finish Profile",
+          npm: "@ai-sdk/openai-compatible",
+          models: {
+            listed: {
+              name: "Listed",
+              tool_call: true,
+              limit: { context: 8_000, output: 1_000 },
+              profile: { finish_reasons: { vendor_stop: "stream_error" } },
+            },
+            unlisted: { name: "Unlisted", tool_call: true, limit: { context: 8_000, output: 1_000 } },
+          },
+          options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+        },
+      },
+    })
+    /** Streams one chunk that ends with the vendor finish_reason `vendor_stop`, which the AI SDK folds into `other`. */
+    const streamVendorStop = (modelID: string) =>
+      Effect.gen(function* () {
+        const request = waitRequest(
+          "/chat/completions",
+          createEventResponse(
+            [
+              {
+                id: "chatcmpl-vendor-stop",
+                object: "chat.completion.chunk",
+                choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "vendor_stop" }],
+              },
+            ],
+            true,
+          ),
+        )
+        const resolved = yield* Provider.use.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make(modelID))
+        const sessionID = SessionID.make(`session-vendor-stop-${modelID}`)
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make(`msg_user-vendor-stop-${modelID}`),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderV2.ID.make(providerID), modelID: resolved.id },
+        } satisfies SessionV1.User
+        const outcome = yield* drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        }).pipe(Effect.exit)
+        yield* Effect.promise(() => request)
+        return outcome
+      })
+
+    it.instance(
+      "fails the stream as a retryable error for a value the profile of the model lists",
+      () =>
+        Effect.gen(function* () {
+          const outcome = yield* streamVendorStop("listed")
+          if (Exit.isSuccess(outcome)) throw new Error("expected the stream to fail")
+          const error = Cause.squash(outcome.cause)
+          if (!(error instanceof ProviderError.ResponseStreamError)) throw error
+          expect(error.message).toBe("Provider finish_reason: vendor_stop")
+          expect(ProviderError.isRetryableResponseStreamError(error)).toBe(true)
+        }),
+      { config: finishConfig },
+    )
+
+    it.instance(
+      "leaves the same value alone for a model whose profile does not list it",
+      () =>
+        Effect.gen(function* () {
+          expect(Exit.isSuccess(yield* streamVendorStop("unlisted"))).toBe(true)
+        }),
+      { config: finishConfig },
+    )
+  })
 
   const alibabaQwenFixture = { providerID: "alibaba", modelID: "qwen-plus" }
   it.instance(
