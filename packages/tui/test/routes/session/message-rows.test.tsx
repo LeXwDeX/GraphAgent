@@ -11,6 +11,7 @@ import { setLanguage } from "../../../src/i18n"
 import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../../src/ui/width"
 import { assistantMessage, textPart, userMessage, type MessageEntry } from "../../fixture/session-records"
+import { promptTop } from "../../fixture/run-app"
 import { json } from "../../fixture/tui-sdk"
 import { deltaEvent } from "../../perf/fixtures"
 import { sessionFixture } from "../dag-mode-harness"
@@ -140,6 +141,13 @@ const LONG_PROMPT =
   "Upgrade the toolchain first, then every dependency of the workspace one package at a time, fix whatever the " +
   "breaking changes break, run the whole of CI, and only then open the pull request for review by the team."
 
+/** The `›` marks of the transcript: the input box below it opens with its own `›` (#1616), which is not a message. */
+function marksAbovePrompt(frame: string) {
+  const rows = frame.split("\n")
+  const top = promptTop(rows)
+  return (top < 0 ? rows : rows.slice(0, top)).join("\n").match(/›/g)?.length ?? 0
+}
+
 describe("a user message", () => {
   for (const language of ["en", "zh-CN"] as const) {
     const prompt = language === "en" ? PROMPT : PROMPT_ZH
@@ -220,7 +228,7 @@ describe("a user message", () => {
       expect(second[start]).not.toBe(" ")
       expect(third.slice(0, start).trim()).toBe("")
       expect(third[start]).not.toBe(" ")
-      expect(frame.match(/›/g)).toHaveLength(1)
+      expect(marksAbovePrompt(frame)).toBe(1)
       // The ground follows the words to the last row, and stops there.
       const runs = await runsIn(shell)
       expect(groundRows(runs, first - 2, first + 5)).toEqual([first, first + 1, first + 2])
@@ -241,7 +249,7 @@ describe("a user message", () => {
       const frame = await shell.waitForFrame(says("after a blank line"), "the message")
       const start = columnOf(frame, "first line").column
       for (const line of ["second line", "after a blank line"]) expect(columnOf(frame, line).column).toBe(start)
-      expect(frame.match(/›/g)).toHaveLength(1)
+      expect(marksAbovePrompt(frame)).toBe(1)
       const runs = await runsIn(shell)
       const first = columnOf(frame, "first line").row
       expect(groundRows(runs, first - 2, first + 6)).toEqual([first, first + 1, first + 2, first + 3])
