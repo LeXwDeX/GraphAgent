@@ -31,7 +31,11 @@ export function finalAssistantText(message: SessionV1.WithParts | undefined, all
   return { ok: true, text }
 }
 
-/** Readable settlement reason for a child turn that ended at the output token cap. */
+/**
+ * Readable settlement reason for a child turn that ended at the output token cap. `cap` is the cap the request
+ * carried. `undefined` (#1581) means none is known, usually because the model declares no `limit.output` and nothing
+ * else set one: the request may have carried none, and the limit that ended the turn was the provider's own default.
+ */
 export function outputLimitReason(input: {
   cap: number | undefined
   output: number
@@ -40,10 +44,14 @@ export function outputLimitReason(input: {
 }): string {
   // Session tokens.output already excludes reasoning tokens.
   const text = Math.max(0, input.output)
-  const cap = input.cap === undefined ? "configured output limit" : String(input.cap)
+  const cap = input.cap === undefined ? "unknown" : String(input.cap)
+  const advice =
+    input.cap === undefined
+      ? "No limit.output is known for this model, so the request may have carried no cap and the provider's own default limit applied. Declare limit.output (or set GRAPHAGENT_OUTPUT_TOKEN_MAX) so requests carry an explicit cap, or use a lower reasoning variant."
+      : "Raise this model's limit.output or GRAPHAGENT_OUTPUT_TOKEN_MAX, or use a lower reasoning variant."
   return `child turn hit the output token cap (${cap}; reasoning ${input.reasoning}, text ${text})${
     input.continued ? " after one continuation" : ""
-  }. Raise this model's limit.output or GRAPHAGENT_OUTPUT_TOKEN_MAX, or use a lower reasoning variant.`
+  }. ${advice}`
 }
 
 export type ParsedFinalResponse = { ok: true; payload: unknown } | { ok: false; reason: string }

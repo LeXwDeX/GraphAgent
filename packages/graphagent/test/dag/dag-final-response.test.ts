@@ -95,6 +95,36 @@ describe("final assistant response", () => {
   })
 })
 
+describe("outputLimitReason", () => {
+  const raise = "Raise this model's limit.output or GRAPHAGENT_OUTPUT_TOKEN_MAX, or use a lower reasoning variant."
+  const declare =
+    "No limit.output is known for this model, so the request may have carried no cap and the provider's own default limit applied. Declare limit.output (or set GRAPHAGENT_OUTPUT_TOKEN_MAX) so requests carry an explicit cap, or use a lower reasoning variant."
+
+  for (const cap of [8192, 384_000])
+    it(`puts a known cap of ${cap} in the parentheses and asks to raise the limit`, () => {
+      expect(outputLimitReason({ cap, output: 885, reasoning: 31_115, continued: false })).toBe(
+        `child turn hit the output token cap (${cap}; reasoning 31115, text 885). ${raise}`,
+      )
+    })
+
+  it("adds the continuation suffix only when the turn was continued", () => {
+    expect(outputLimitReason({ cap: 8192, output: 1, reasoning: 2, continued: true })).toBe(
+      `child turn hit the output token cap (8192; reasoning 2, text 1) after one continuation. ${raise}`,
+    )
+    expect(outputLimitReason({ cap: undefined, output: 1, reasoning: 2, continued: true })).toBe(
+      `child turn hit the output token cap (unknown; reasoning 2, text 1) after one continuation. ${declare}`,
+    )
+  })
+
+  it("says the cap is unknown, and why, when the request carried none", () => {
+    const reason = outputLimitReason({ cap: undefined, output: 885, reasoning: 31_115, continued: false })
+    expect(reason).toBe(`child turn hit the output token cap (unknown; reasoning 31115, text 885). ${declare}`)
+    // There is no configured limit to name: the provider's own default ended the turn.
+    expect(reason).not.toContain("configured")
+    expect(reason).not.toContain("Raise this model's limit.output")
+  })
+})
+
 describe("correctionPrompt", () => {
   it("keeps the field-level prompt for a near-miss and quotes the detail for every other schema failure", () => {
     const fix = { kind: "enum", path: "verdict", allowed: '["ACCEPT","REJECT"]', got: '"PASS"' } as const
@@ -211,7 +241,12 @@ describe("spawn final-response protocol", () => {
     create: () => Effect.succeed({ id: "ses_final_child" as never } as never),
   })
 
-  async function run(messages: SessionV1.WithParts | SessionV1.WithParts[], schema?: Record<string, unknown>) {
+  /** `limits` are the model's output limit in the catalog (0 is unknown) and the one a config file declares for it. */
+  async function run(
+    messages: SessionV1.WithParts | SessionV1.WithParts[],
+    schema?: Record<string, unknown>,
+    limits: { catalog: number; configured?: number } = { catalog: 384_000, configured: 384_000 },
+  ) {
     const queue = Array.isArray(messages) ? [...messages] : [messages]
     const events: Array<{ type: string; output?: unknown; reason?: string }> = []
     let receipt: { present: boolean; value: unknown } | undefined
@@ -268,7 +303,7 @@ describe("spawn final-response protocol", () => {
             interleaved: false,
           },
           cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-          limit: { context: 128_000, output: 384_000 },
+          limit: { context: 128_000, output: limits.catalog },
           status: "active",
           options: {},
           headers: {},
@@ -278,7 +313,18 @@ describe("spawn final-response protocol", () => {
     const config = Layer.mock(Config.Service, {
       get: () =>
         Effect.succeed({
-          provider: { test: { models: { "test-model": { limit: { context: 128_000, output: 384_000 } } } } },
+          provider: {
+            test: {
+              models: {
+                "test-model": {
+                  limit: {
+                    context: 128_000,
+                    ...(limits.configured === undefined ? {} : { output: limits.configured }),
+                  },
+                },
+              },
+            },
+          },
         } as never),
     })
     await Effect.runPromise(
@@ -405,6 +451,24 @@ describe("spawn final-response protocol", () => {
     expect(result.events[0]?.reason).toContain("output token cap (384000; reasoning 31115, text 885)")
     expect(result.events[0]?.reason).toContain("limit.output")
     expect(result.events[0]?.reason).toContain("GRAPHAGENT_OUTPUT_TOKEN_MAX")
+  })
+
+  it("says the cap is unknown when a non-Anthropic model has no output limit and the request carried none", async () => {
+    // No catalog limit, no configured one and no environment override: `requestOutputCap` gives the spawn no cap.
+    const result = await run(
+      [assistant([{ text: "" }], "length", 885, 31_115), assistant([{ text: "" }], "length", 885, 31_115)],
+      { type: "object" },
+      { catalog: 0 },
+    )
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]?.type).toBe("failed")
+    const reason = result.events[0]?.reason ?? ""
+    expect(reason).toContain(
+      "output token cap (unknown; reasoning 31115, text 885) after one continuation. No limit.output is known for this model",
+    )
+    expect(reason).toContain("the provider's own default limit applied")
+    expect(reason).toContain("Declare limit.output (or set GRAPHAGENT_OUTPUT_TOKEN_MAX)")
+    expect(reason).not.toContain("configured")
   })
 })
 
