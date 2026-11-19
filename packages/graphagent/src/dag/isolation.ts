@@ -16,6 +16,7 @@ export * as DagIsolation from "./isolation"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { access, mkdir, writeFile } from "node:fs/promises"
 import { join, normalize, sep } from "node:path"
 import { Cause, Effect } from "effect"
 import { ChildProcess } from "effect/process"
@@ -308,6 +309,42 @@ export function writePatchArtifact(
   return { path, sha256: createHash("sha256").update(patch).digest("hex") }
 }
 
+/**
+ * #1583: `writePatchArtifact` that waits for the disk off the event loop: the same checks of the identifiers, the
+ * same file and checksum, and the same errors (what the synchronous version throws is the failure of this effect),
+ * with the directory and the patch written through `node:fs/promises`. Like the synchronous version it writes the
+ * patch in place: the path and the checksum are recorded only after this has returned, and a completion cut short is
+ * redone from the committed range.
+ */
+export const writePatchArtifactAsync = Effect.fn("DagIsolation.writePatchArtifactAsync")(function* (
+  reportsArea: string,
+  dagID: string,
+  nodeID: string,
+  patch: string,
+): Effect.fn.Return<{ path: string; sha256: string }, Error> {
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const directory = join(reportsArea, safePathComponent(dagID, "workflow ID"))
+      await mkdir(directory, { recursive: true })
+      const path = join(directory, `${safePathComponent(nodeID, "node ID")}.patch`)
+      await writeFile(path, patch)
+      return { path, sha256: createHash("sha256").update(patch).digest("hex") }
+    },
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  })
+})
+
+/** `existsSync` that waits for the disk off the event loop: a path that cannot be looked at counts as missing, as it
+ * does there. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export interface WorktreeCompletion {
   worktree: WorktreeMetadata
   touchedPaths: string[]
@@ -315,54 +352,96 @@ export interface WorktreeCompletion {
 
 export type WorktreeCompletionResult = { ok: true; completion: WorktreeCompletion } | { ok: false; reason: string }
 
-/** The shared completion step for an isolated node: commit pending work,
- * persist a patch, and return the metadata the caller records. Removal is the
- * caller's job because it needs the owner instance context. */
-export function completeWorktree(input: {
+export interface WorktreeCompletionInput {
   worktree: WorktreeMetadata
   reportsArea: string
   dagID: string
   nodeID: string
   message: string
-}): WorktreeCompletionResult {
-  if (!existsSync(input.worktree.directory)) {
-    if (input.worktree.state === "active")
-      return { ok: false, reason: `active worktree directory is missing: ${input.worktree.directory}` }
-    return {
-      ok: true,
-      completion: { worktree: { ...input.worktree, state: "removed" }, touchedPaths: [] },
-    }
+}
+
+// The three results of a completion that are not a failure of git or of the disk, written once for
+// `completeWorktree` and `completeWorktreeAsync` so that the two cannot drift apart.
+
+function missingWorktreeCompletion(input: WorktreeCompletionInput): WorktreeCompletionResult {
+  if (input.worktree.state === "active")
+    return { ok: false, reason: `active worktree directory is missing: ${input.worktree.directory}` }
+  return {
+    ok: true,
+    completion: { worktree: { ...input.worktree, state: "removed" }, touchedPaths: [] },
   }
+}
+
+function cleanWorktreeCompletion(input: WorktreeCompletionInput): WorktreeCompletionResult {
+  return {
+    ok: true,
+    completion: {
+      worktree: { ...input.worktree, touchedPaths: [], state: input.worktree.state },
+      touchedPaths: [],
+    },
+  }
+}
+
+function committedWorktreeCompletion(
+  input: WorktreeCompletionInput,
+  change: WorktreeCommit,
+  artifact: { path: string; sha256: string },
+): WorktreeCompletionResult {
+  return {
+    ok: true,
+    completion: {
+      worktree: {
+        ...input.worktree,
+        commit: change.commit,
+        patchPath: artifact.path,
+        patchSha256: artifact.sha256,
+        touchedPaths: change.touchedPaths,
+        state: input.worktree.state,
+      },
+      touchedPaths: change.touchedPaths,
+    },
+  }
+}
+
+/** The shared completion step for an isolated node: commit pending work,
+ * persist a patch, and return the metadata the caller records. Removal is the
+ * caller's job because it needs the owner instance context. */
+export function completeWorktree(input: WorktreeCompletionInput): WorktreeCompletionResult {
+  if (!existsSync(input.worktree.directory)) return missingWorktreeCompletion(input)
   const commit = commitWorktree(input.worktree.directory, input.worktree.baseHead ?? "", input.message)
   if (!commit.ok) return commit
-  if (!commit.change)
-    return {
-      ok: true,
-      completion: {
-        worktree: { ...input.worktree, touchedPaths: [], state: input.worktree.state },
-        touchedPaths: [],
-      },
-    }
+  if (!commit.change) return cleanWorktreeCompletion(input)
   try {
     const artifact = writePatchArtifact(input.reportsArea, input.dagID, input.nodeID, commit.change.patch)
-    return {
-      ok: true,
-      completion: {
-        worktree: {
-          ...input.worktree,
-          commit: commit.change.commit,
-          patchPath: artifact.path,
-          patchSha256: artifact.sha256,
-          touchedPaths: commit.change.touchedPaths,
-          state: input.worktree.state,
-        },
-        touchedPaths: commit.change.touchedPaths,
-      },
-    }
+    return committedWorktreeCompletion(input, commit.change, artifact)
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) }
   }
 }
+
+/**
+ * #1583: `completeWorktree` for the completion of a node, the live path and crash recovery alike, which runs on the
+ * event loop: the same steps in the same order with the same results and failure reasons, but git and the disk are
+ * waited for off the loop. The commit is `commitWorktreeAsync` (each git command a child process of the app's process
+ * runner, which that function provides itself, so what a caller must provide is unchanged); the directory check and
+ * the patch go through `node:fs/promises`. Never fails; only an interruption gets through.
+ */
+export const completeWorktreeAsync = Effect.fn("DagIsolation.completeWorktreeAsync")(function* (
+  input: WorktreeCompletionInput,
+): Effect.fn.Return<WorktreeCompletionResult> {
+  if (!(yield* Effect.promise(() => pathExists(input.worktree.directory)))) return missingWorktreeCompletion(input)
+  const commit = yield* commitWorktreeAsync(input.worktree.directory, input.worktree.baseHead ?? "", input.message)
+  if (!commit.ok) return commit
+  if (!commit.change) return cleanWorktreeCompletion(input)
+  const artifact = yield* writePatchArtifactAsync(
+    input.reportsArea,
+    input.dagID,
+    input.nodeID,
+    commit.change.patch,
+  ).pipe(Effect.result)
+  if (artifact._tag === "Failure") return { ok: false, reason: artifact.failure.message }
+  return committedWorktreeCompletion(input, commit.change, artifact.success)
+})
 
 /** True when two touched paths name the same file or one contains the other.
  * Git status reports files, but a writer may add a path below a directory

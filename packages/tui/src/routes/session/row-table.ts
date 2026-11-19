@@ -17,6 +17,7 @@ import {
   type SessionViewState,
   type TextFactsCache,
 } from "./rows"
+import { openToolLines } from "./fold"
 import { hideToolDetails } from "./tool-attention"
 
 /** The user message a sub-agent view draws as the task its parent delegated to it (#1033 3.4). */
@@ -259,6 +260,8 @@ function buildMessageRows(
       if (hideToolDetails(part.tool, part.state, deps.showDetails())) continue
       const key = `part:${part.id}`
       const output = part.state.status === "completed" ? part.state.output : ""
+      const expanded = deps.view.get(part.id, "expanded")
+      const errorExpanded = deps.view.get(part.id, "errorExpanded")
       rows.push({
         key,
         messageID: message.id,
@@ -268,10 +271,12 @@ function buildMessageRows(
           part.state.status,
           output.length,
           part.state.status === "pending" ? false : Boolean(part.state.metadata?.background),
-          deps.view.get(part.id, "expanded"),
-          deps.view.get(part.id, "errorExpanded"),
+          expanded,
+          errorExpanded,
         ),
       })
+      // A row that is open draws its whole output under the call, and its height is that many lines.
+      if (expanded || errorExpanded) chars.set(key, openToolLines(part))
       if (part.state.status === "pending" || part.state.status === "running") streaming.push(key)
     }
   }

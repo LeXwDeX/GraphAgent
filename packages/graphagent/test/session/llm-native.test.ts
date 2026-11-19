@@ -1577,3 +1577,111 @@ describe("session.llm-native.request: max_tokens against the thinking budget", (
     }),
   )
 })
+
+// The AI SDK's OpenAI-compatible provider copies unknown options into the request body as they are named, so
+// `ProviderTransform.options` gives the opt-in cache key (`setCacheKey: true`) by its wire name, `prompt_cache_key`,
+// under the provider's own namespace. The native Chat lowering reads `providerOptions.openai.promptCacheKey` instead:
+// both runtimes have to send the same key under the same opt-in.
+describe("session.llm-native.request prompt cache key", () => {
+  const sessionID = "ses_cache_key"
+
+  const relay = (providerID: string): Provider.Model => ({
+    ...baseModel,
+    id: ModelV2.ID.make("relay-model"),
+    providerID: ProviderV2.ID.make(providerID),
+    api: { id: "relay-model", url: "https://relay.example.test/v1", npm: "@ai-sdk/openai-compatible" },
+  })
+
+  /** The two steps `LLMNativeRuntime.stream` takes: the session's flat options, then the SDK namespace. */
+  const providerOptions = (model: Provider.Model, settings: Record<string, unknown>, cacheKey?: string) =>
+    ProviderTransform.providerOptions(
+      model,
+      ProviderTransform.options({ model, sessionID, cacheKey, providerOptions: settings }),
+    )
+
+  const prepare = (model: Provider.Model, settings: Record<string, unknown>, cacheKey?: string) =>
+    prepareNativeRequest<{ prompt_cache_key?: string }>({
+      model,
+      apiKey: "test-relay-key",
+      messages: [storedSession.user("hi")],
+      providerOptions: providerOptions(model, settings, cacheKey),
+    })
+
+  for (const providerID of ["relay", "wafer.ai"]) {
+    it.effect(`sends the opted-in cache key on the OpenAI-compatible chat route for ${providerID}`, () =>
+      Effect.gen(function* () {
+        const prepared = yield* prepare(relay(providerID), { setCacheKey: true })
+        expect(prepared.route).toBe("openai-compatible-chat")
+        expect(prepared.body.prompt_cache_key).toBe(sessionID)
+      }),
+    )
+  }
+
+  it.effect("prefers the cache key shared by sibling runs over the session ID", () =>
+    Effect.gen(function* () {
+      const prepared = yield* prepare(relay("relay"), { setCacheKey: true }, "cg_shared_prefix")
+      expect(prepared.body.prompt_cache_key).toBe("cg_shared_prefix")
+    }),
+  )
+
+  for (const [name, settings] of [
+    ["by default", {}],
+    ["when setCacheKey is false", { setCacheKey: false }],
+  ] as const) {
+    it.effect(`sends no cache key to an OpenAI-compatible provider ${name}`, () =>
+      Effect.gen(function* () {
+        const prepared = yield* prepare(relay("relay"), settings)
+        expect(prepared.route).toBe("openai-compatible-chat")
+        expect("prompt_cache_key" in prepared.body).toBe(false)
+      }),
+    )
+  }
+
+  it.live("sends the opted-in cache key in the body of a streamed native request", () =>
+    Effect.gen(function* () {
+      const bodies: Array<{ prompt_cache_key?: string }> = []
+      const server = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            async fetch(request) {
+              bodies.push(await request.json())
+              const chunks = [
+                { id: "chatcmpl_1", choices: [{ delta: { content: "ok" }, finish_reason: "stop" }], usage: null },
+                { id: "chatcmpl_1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+              ]
+              return new Response(
+                chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n",
+                { status: 200, headers: { "Content-Type": "text/event-stream" } },
+              )
+            },
+          }),
+        ),
+        (server) => Effect.sync(() => server.stop(true)),
+      )
+      const model = relay("relay")
+      const llmClient = yield* LLMClient.Service
+      const native = yield* LLMNativeRuntime.stream({
+        model,
+        provider: {
+          ...providerInfo,
+          id: model.providerID,
+          options: { apiKey: "test-relay-key", baseURL: new URL("/v1", server.url).toString() },
+        },
+        auth: undefined,
+        llmClient,
+        messages: [{ role: "user", content: "hello" }],
+        tools: {},
+        providerOptions: ProviderTransform.options({ model, sessionID, providerOptions: { setCacheKey: true } }),
+        headers: {},
+        abort: new AbortController().signal,
+        sessionID,
+      })
+      if (native.type !== "supported") throw new Error(native.reason)
+      yield* native.stream.pipe(Stream.runDrain)
+      expect(bodies).toHaveLength(1)
+      expect(bodies[0]?.prompt_cache_key).toBe(sessionID)
+    }),
+  )
+})

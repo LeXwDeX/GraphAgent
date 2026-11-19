@@ -40,6 +40,24 @@ export function toolDisplay(tool: string) {
   return toolDisplays.has(tool) ? tool : "generic"
 }
 
+/**
+ * What the row of a call leads with, by tool: the tool's identifier, which is the same in every language and so is not in
+ * the message tables (#1614). A tool that has no entry leads with its own id.
+ */
+const toolRowNames: Readonly<Record<string, string>> = {
+  bash: "Bash",
+  read: "Read",
+  grep: "Grep",
+  glob: "Glob",
+  websearch: "WebSearch",
+  webfetch: "WebFetch",
+  skill: "Skill",
+}
+
+export function toolRowName(tool: string) {
+  return toolRowNames[toolDisplay(tool)] ?? tool
+}
+
 export function recordValue(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return
   return value as Record<string, unknown>

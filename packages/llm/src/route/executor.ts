@@ -241,6 +241,29 @@ const isContentPolicy = (status: number, body: string) =>
   status !== 429 &&
   /content[-_\s]?policy|content_filter|\bsafety\b/i.test(body)
 
+/**
+ * A per-minute allocation that a provider files under a balance name (Alibaba Bailian reports it as
+ * `insufficient_quota` or `Throttling.AllocationQuota`). Waiting clears it, so a 429 that says so is a rate limit,
+ * tested before every balance name. Mirrors the first row of `ROWS` in
+ * `packages/graphagent/src/provider/error-class.ts`, which also asks for one of those two names; keep the two in step.
+ */
+const WINDOWED_ALLOCATION = /please increase your quota limit/i
+
+/**
+ * Names and wording for a spent balance or plan, which resending cannot fix: the names of the second row of `ROWS` in
+ * `packages/graphagent/src/provider/error-class.ts` (its `insufficient_quota` is covered by `QUOTA_WORDING`) and the
+ * phrase of its fourth row; keep the lists in step. The numeric Zhipu rows (a code plus Chinese wording) and the 402
+ * row are not repeated here: the session table still decides those.
+ */
+const SPENT_BALANCE =
+  /credit_balance_exhausted|exceeded_current_quota_error|enforced_spend_limit_reached|arrearage|allocationquota\.freetieronly|free allocated quota exceeded/i
+
+const QUOTA_WORDING = /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i
+
+/** A 429 body that reports a spent balance or plan. The per-minute window is read first, so it never counts. */
+const isSpentQuota = (body: string) =>
+  !WINDOWED_ALLOCATION.test(body) && (SPENT_BALANCE.test(body) || QUOTA_WORDING.test(body))
+
 const statusReason = (input: {
   readonly status: number
   readonly message: string
@@ -259,7 +282,7 @@ const statusReason = (input: {
     return new AuthenticationReason({ message: input.message, kind: "insufficient-permissions", http: input.http })
   }
   if (input.status === 429) {
-    if (/insufficient[-_\s]?quota|quota[-_\s]?exceeded/i.test(body)) {
+    if (isSpentQuota(body)) {
       return new QuotaExceededReason({ message: input.message, http: input.http })
     }
     return new RateLimitReason({

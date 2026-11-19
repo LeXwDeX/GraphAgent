@@ -389,6 +389,36 @@ describe("ProviderTransform.message - cache breakpoint layout (#1028)", () => {
     expect(anthropicOptions(assistant.content[0])?.cacheControl).toEqual({ type: "ephemeral" })
     expect(anthropicOptions(assistant.content[1])?.cacheControl).toBeUndefined()
   })
+
+  // The breakpoints used to be written into the messages the request was built from. The next request rebuilds the
+  // layout from the same history, so the old ones stayed and the new ones came on top: more than four (#1578).
+  test.each([
+    ["message-level markers", model],
+    ["part-level markers", { ...model, providerID: ProviderV2.ID.make("relay") }],
+  ])("leaves the history it was given as it was and keeps four breakpoints at most, %s", (_markers, target) => {
+    expect(ProviderProfile.profileOf(target).cacheMarker).toBe("explicit")
+    const total = (messages: ModelMessage[]) => messages.reduce((sum, message) => sum + cachePointCount(message), 0)
+    const history: ModelMessage[] = [
+      { role: "system", content: "system" },
+      { role: "user", content: [{ type: "text", text: "do work" }, reminder("[todo]")] },
+      toolCall("call_1"),
+      toolResult("call_1"),
+    ]
+
+    const first = structuredClone(history)
+    const firstRequest = ProviderTransform.message(history, target, {})
+    expect(history).toEqual(first)
+    expect(total(firstRequest)).toBeGreaterThan(0)
+    expect(total(firstRequest)).toBeLessThanOrEqual(4)
+
+    // The next request: the same history and one more message.
+    history.push({ role: "user", content: [{ type: "text", text: "next question" }] })
+    const second = structuredClone(history)
+    const secondRequest = ProviderTransform.message(history, target, {})
+    expect(history).toEqual(second)
+    expect(total(secondRequest)).toBeGreaterThan(0)
+    expect(total(secondRequest)).toBeLessThanOrEqual(4)
+  })
 })
 
 describe("ProviderTransform.sortVariants", () => {
@@ -2626,10 +2656,14 @@ describe("ProviderTransform.message - surrogate sanitization", () => {
     expect(result[2].content[1]).toEqual({ type: "image", image: "data:image/png;base64,abcd" })
   })
 
-  // Sanitizing assigned into the messages it was handed, so the caller's history changed under it (#1540). The model
-  // takes no cache breakpoints: a later step writes those into the messages in place, which this test is not about.
-  test("does not change the messages it was given", () => {
-    const plain = { ...model, id: "test/plain-model", api: { ...model.api, id: "plain-model", npm: "@ai-sdk/openai" } }
+  // Sanitizing assigned into the messages it was handed, so the caller's history changed under it (#1540), and the
+  // cache breakpoints did the same (#1578). A model that takes breakpoints and one that does not both leave it alone.
+  const plain = { ...model, id: "test/plain-model", api: { ...model.api, id: "plain-model", npm: "@ai-sdk/openai" } }
+  test.each([
+    ["without cache breakpoints", plain, false],
+    ["with explicit cache breakpoints", model, true],
+  ])("does not change the messages it was given, %s", (_label, target, breakpoints) => {
+    expect(ProviderProfile.profileOf(target).cacheMarker === "explicit").toBe(breakpoints)
     // The same history with `text` in every place the text of a message can sit.
     const history = (text: (label: string) => string): ModelMessage[] => [
       { role: "system", content: text("system") },
@@ -2666,14 +2700,24 @@ describe("ProviderTransform.message - surrogate sanitization", () => {
           },
         ],
       },
+      // Their text is clean, so sanitizing leaves them alone and the breakpoints land on the caller's own objects.
+      { role: "assistant", content: [{ type: "text", text: "clean answer" }] },
+      { role: "user", content: "clean question" },
     ]
     const msgs = history((label) => `${label} \uD83D end`)
     const before = structuredClone(msgs)
 
-    const result = ProviderTransform.message(msgs, plain, {})
+    const result = ProviderTransform.message(msgs, target, {})
 
     expect(msgs).toEqual(before)
-    expect(result).toEqual(history((label) => `${label} \uFFFD end`))
+    const expected = history((label) => `${label} \uFFFD end`)
+    if (breakpoints) {
+      // The breakpoints are the only addition to the sanitized history, and they did land on the result.
+      expect(result).toMatchObject(expected)
+      expect(JSON.stringify(result)).toContain("cacheControl")
+    } else {
+      expect(result).toEqual(expected)
+    }
   })
 })
 

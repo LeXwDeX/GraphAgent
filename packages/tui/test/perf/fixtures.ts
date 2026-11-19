@@ -1,7 +1,18 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { GlobalEvent, Message, Part, Session, SessionDagMode } from "@graphagent/sdk"
+import type {
+  DagNode,
+  DagWorkflowSummary,
+  GlobalEvent,
+  Goal,
+  Message,
+  Part,
+  PrWatchEntry,
+  Session,
+  SessionDagMode,
+  SessionReminder,
+} from "@graphagent/sdk"
 import { directory } from "../fixture/tui-sdk"
 
 export const SESSION_ID = "ses_perf_main"
@@ -25,6 +36,16 @@ export type PerfFixture = {
   backgroundParts: Part[]
   /** Rows the transcript holds once the session has loaded, before a scenario adds any. */
   rows: number
+  /**
+   * What the status band is given to draw (#1620). None is set unless a scenario sets it before it mounts the harness
+   * (`withRunningWorkflow` does the workflow), so no other scenario sees a workflow, a PR or a reminder. The
+   * workflows and their node tables answer `GET /dag/session/:id/summary` and `GET /dag/:id/nodes`, the other two
+   * `GET /session/:id/pr-watch` and `GET /session/:id/reminder`, all for the root session.
+   */
+  dagSummaries?: DagWorkflowSummary[]
+  dagTables?: Record<string, DagNode[]>
+  prWatches?: PrWatchEntry[]
+  reminders?: SessionReminder[]
 }
 
 const PART_COUNTS: Record<FixtureSize, number> = { S: 25, M: 100, L: 400, XL: 2200 }
@@ -303,11 +324,11 @@ export function richTail(fixture: PerfFixture, count: number): PerfFixture {
 }
 
 /**
- * Gives every `every`-th bash call of the fixture an output of 30 lines. A tool whose output runs past ten
- * lines shows the first ten above a hint that says how many are left out, and opens to the whole of it when
- * clicked or when `view.expand.toggle` is pressed; the bash parts of the default fixture carry no output in
- * their metadata and render as a single line, so nothing in it can be opened. It edits the fixture in place;
- * call it before mounting.
+ * Gives every `every`-th bash call of the fixture an output of 30 lines. A tool whose output runs past six
+ * lines shows its last line under the call and, under that, a hint that says how many are left out, and opens to
+ * the whole of it when clicked or when `view.expand.toggle` is pressed; the bash parts of the default fixture
+ * carry no output in their metadata and say so in the one line under the call, so nothing in it can be opened.
+ * It edits the fixture in place; call it before mounting.
  */
 export function expandableOutputs(fixture: PerfFixture, every: number): PerfFixture {
   const output = Array.from({ length: 30 }, (_, line) => `output line ${line}`).join("\n")
@@ -364,6 +385,61 @@ export function withUserMessages(fixture: PerfFixture, every: number): PerfFixtu
 }
 
 /**
+ * The workflow `withRunningWorkflow` gives the root session, and what the status band says of it: four nodes in three
+ * waves, two done, one running and one queued, the shape `test/shell/status-band.test.tsx` draws its band from.
+ */
+export const RUNNING_WORKFLOW = {
+  id: "dag_alpha",
+  title: "alpha",
+  /** The wave the running node is in, of how many. */
+  wave: { current: 2, total: 3 },
+  running: 1,
+} as const
+
+/**
+ * Gives the root session a running workflow, so the status band has a row to draw (#1620). Like `richTail` it edits
+ * the fixture in place, before mounting: the summary and the node table are read when the session is entered.
+ */
+export function withRunningWorkflow(fixture: PerfFixture): PerfFixture {
+  const { id } = RUNNING_WORKFLOW
+  const node = (name: string, status: string, depends: string[] = []): DagNode => ({
+    id: name,
+    workflow_id: id,
+    name,
+    worker_type: "task",
+    status,
+    required: false,
+    depends_on: depends,
+    replan_attempts: 0,
+  })
+  fixture.dagSummaries = [
+    {
+      id,
+      title: RUNNING_WORKFLOW.title,
+      status: "running",
+      graphRev: 1,
+      nodeCount: 4,
+      completedNodes: 2,
+      runningNodes: RUNNING_WORKFLOW.running,
+      failedNodes: 0,
+      skippedNodes: 0,
+      abortedNodes: 0,
+      queuedNodes: 1,
+      escalatedNodes: 0,
+    },
+  ]
+  fixture.dagTables = {
+    [id]: [
+      node("a", "completed"),
+      node("b", "completed"),
+      node("c", "running", ["a", "b"]),
+      node("d", "queued", ["c"]),
+    ],
+  }
+  return fixture
+}
+
+/**
  * A text part the server is still writing. It hangs off the last assistant
  * message, so it sits at the tail of the transcript like a live reply, and it
  * has no `time.end` until its terminal snapshot. The session loads only its
@@ -398,6 +474,16 @@ export function sessionUpdatedEvent(session: Session, id: string): GlobalEvent {
     project: "proj_test",
     payload: { id, type: "session.updated", properties: { sessionID: session.id, info: session } },
   }
+}
+
+/** A session's goal as the server announces it (`goal.updated`): the status band draws a row from it (#1620). */
+export function goalUpdatedEvent(sessionID: string, goal: Goal, id: string): GlobalEvent {
+  return { directory, project: "proj_test", payload: { id, type: "goal.updated", properties: { sessionID, goal } } }
+}
+
+/** The new state of a PR watch (`pr.watch.updated`), which the PR tracker and the status band draw from (#1620). */
+export function prWatchEvent(entry: PrWatchEntry, id: string): GlobalEvent {
+  return { directory, project: "proj_test", payload: { id, type: "pr.watch.updated", properties: entry } }
 }
 
 /** One streamed token. The sync layer appends it to the stream buffer; it never writes `store.part`. */
@@ -466,6 +552,15 @@ export function makeFetchFixture(fixture: PerfFixture, url: URL): Response | und
   if (url.pathname === "/command")
     return Response.json([{ name: "mode", template: "mode", source: "command", hints: [] }])
   if (url.pathname.startsWith("/experimental/workspace")) return Response.json([])
+  // What the status band reads (#1620): the root session's workflows and their node tables, its PR watches and its
+  // reminders. A fixture that sets none of them answers with empty lists, which is what the reads got before.
+  if (url.pathname === `/dag/session/${fixture.session.id}/summary`) return Response.json(fixture.dagSummaries ?? [])
+  const table = url.pathname.match(/^\/dag\/([^/]+)\/nodes$/)
+  if (table) return Response.json(fixture.dagTables?.[table[1]] ?? [])
+  if (url.pathname === `/session/${fixture.session.id}/pr-watch`)
+    return Response.json({ entries: fixture.prWatches ?? [] })
+  if (url.pathname === `/session/${fixture.session.id}/reminder`)
+    return Response.json({ entries: fixture.reminders ?? [] })
   if (url.pathname.startsWith("/dag/")) return Response.json([])
   if (url.pathname.endsWith("/status")) return Response.json({})
   if (url.pathname.startsWith("/project/")) return Response.json([])

@@ -20,9 +20,10 @@ import { settleHighlights, settleScroll, topRow, walkUp } from "../../perf/scena
 
 // `XL` is the only fixture above WINDOW_MIN_ROWS, so it is the one the windowed
 // transcript runs in; `L` is fully mounted. The strings are what a viewport at the
-// end of each shows (a bash command two rows from the last), and what the first
-// loaded message shows at the top.
-const LAST_COMMAND: Partial<Record<FixtureSize, string>> = { L: "printf perf-395", XL: "printf perf-2195" }
+// end of each shows (the last bash command: a call is a block of two lines, so the
+// one before it is already above a viewport of thirty), and what the first loaded
+// message shows at the top.
+const LAST_COMMAND: Partial<Record<FixtureSize, string>> = { L: "printf perf-397", XL: "printf perf-2197" }
 const FIRST_TEXT: Partial<Record<FixtureSize, string>> = { L: "Deterministic answer 300", XL: "Deterministic answer 0:" }
 
 async function frameContaining(harness: Awaited<ReturnType<typeof mountHarness>>, text: string) {
@@ -325,18 +326,20 @@ function texts(node: Renderable): string[] {
   return [...(node instanceof TextRenderable ? [node.plainText] : []), ...node.getChildren().flatMap(texts)]
 }
 
+/** The text node under `node` that holds `text`. */
+function textIn(node: Renderable, text: string): TextRenderable | undefined {
+  if (node instanceof TextRenderable && node.plainText.includes(text)) return node
+  for (const child of node.getChildren()) {
+    const found = textIn(child, text)
+    if (found) return found
+  }
+  return undefined
+}
+
 /** The child of the scroll box that holds `text`, and the text node itself. */
 function holding(scroll: ScrollBoxRenderable, text: string) {
-  const find = (node: Renderable): TextRenderable | undefined => {
-    if (node instanceof TextRenderable && node.plainText.includes(text)) return node
-    for (const child of node.getChildren()) {
-      const found = find(child)
-      if (found) return found
-    }
-    return undefined
-  }
   for (const row of scroll.getChildren()) {
-    const node = find(row)
+    const node = textIn(row, text)
     if (node) return { row, node }
   }
   return undefined
@@ -491,7 +494,10 @@ test("opening or closing a tool output above the viewport leaves what the reader
   try {
     const scroll = await atTheEnd(harness)
 
-    // Up to an output the reader can open, and open it.
+    // Up to an output the reader can open, from far enough above the end for a whole viewport to lie under it once
+    // it is open, and open it.
+    scroll.scrollBy(-3 * scroll.viewport.height)
+    await renderSettled(harness)
     let header: ReturnType<typeof locateText>
     for (let attempt = 0; attempt < 200 && !header; attempt++) {
       scroll.scrollBy(-10)
@@ -501,7 +507,11 @@ test("opening or closing a tool output above the viewport leaves what the reader
     expect(header).toBeDefined()
     await harness.app.mockMouse.click(header!.column + 2, header!.row)
     await renderSettled(harness)
-    expect(holding(scroll, "ctrl+o collapse")).toBeDefined()
+    const opened = holding(scroll, "ctrl+o collapse")
+    expect(opened).toBeDefined()
+    // The call is what tells the row apart, whichever of the rows that fold carries the same hint, and a row that
+    // opens or closes is a new row: it is found again by its command, not kept.
+    const command = /printf perf-\d+/.exec(texts(opened!.row).join(" "))![0]
 
     // Read on until the open output is just above the viewport. It is still mounted: it is open.
     for (let guard = 0; guard < 100; guard++) {
@@ -513,14 +523,16 @@ test("opening or closing a tool output above the viewport leaves what the reader
     await settleScroll(harness)
 
     for (const label of ["ctrl+o collapse", "more lines · ctrl+o expand"]) {
-      const output = holding(scroll, label)
+      const output = holding(scroll, command)
       expect(output).toBeDefined()
+      const node = textIn(output!.row, label)
+      expect(node).toBeDefined()
       expect(output!.row.y + output!.row.height).toBeLessThanOrEqual(scroll.viewport.y)
       const reader = topRow(scroll)!
       const line = reader.y
       const seen = viewportText(harness)
 
-      click(output!.node)
+      click(node!)
       await harness.app.renderOnce()
       // In the frame the output changes height nothing under the reader moves, and nothing is blank.
       expect(reader.y).toBe(line)

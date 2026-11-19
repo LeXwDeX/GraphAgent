@@ -51,6 +51,13 @@ export interface Row {
  * documentation (Zhipu, Alibaba Bailian, Moonshot, Anthropic, OpenAI); none was
  * measured against a live endpoint. Never branch on a provider ID: the same
  * codes show up behind gateways and compatible endpoints.
+ *
+ * The native runtime's request executor (`packages/llm/src/route/executor.ts`,
+ * `statusReason`) decides a 429 before this table runs: a retried rate limit or a
+ * final quota error. It repeats the phrase of the first row, the balance names
+ * of the second and the phrase of the fourth (`WINDOWED_ALLOCATION`,
+ * `SPENT_BALANCE`), but not the Zhipu rows or the 402 row. Keep those lists in
+ * step with this table (#1578).
  */
 export const ROWS: readonly Row[] = [
   // Bailian files its per-minute allocation under the balance names. The phrase

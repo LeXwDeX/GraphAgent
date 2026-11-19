@@ -107,6 +107,71 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
+  it.effect("sends the request-level OpenAI prompt cache key", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model: OpenAI.configure({ baseURL: "https://api.openai.test/v1/", apiKey: "test" }).chat("gpt-4o-mini"),
+          prompt: "cache me",
+          providerOptions: { openai: { promptCacheKey: "session_123" } },
+        }),
+      )
+
+      expect(prepared.body.prompt_cache_key).toBe("session_123")
+    }),
+  )
+
+  it.effect("sends the model-level OpenAI prompt cache key", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model: OpenAI.configure({
+            baseURL: "https://api.openai.test/v1/",
+            apiKey: "test",
+            providerOptions: { openai: { promptCacheKey: "model_cache" } },
+          }).chat("gpt-4o-mini"),
+          prompt: "cache me",
+        }),
+      )
+
+      expect(prepared.body.prompt_cache_key).toBe("model_cache")
+    }),
+  )
+
+  it.effect("request OpenAI prompt cache key overrides the model-level one", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model: OpenAI.configure({
+            baseURL: "https://api.openai.test/v1/",
+            apiKey: "test",
+            providerOptions: { openai: { promptCacheKey: "model_cache" } },
+          }).chat("gpt-4o-mini"),
+          prompt: "cache me",
+          providerOptions: { openai: { promptCacheKey: "request_cache" } },
+        }),
+      )
+
+      expect(prepared.body.prompt_cache_key).toBe("request_cache")
+    }),
+  )
+
+  it.effect("omits prompt_cache_key when no OpenAI prompt cache key is given", () =>
+    Effect.gen(function* () {
+      const plain = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(request)
+      const withOptions = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model: OpenAI.configure({ baseURL: "https://api.openai.test/v1/", apiKey: "test" }).chat("gpt-4o-mini"),
+          prompt: "no cache key",
+          providerOptions: { openai: { reasoningEffort: "low" } },
+        }),
+      )
+
+      expect("prompt_cache_key" in plain.body).toBe(false)
+      expect("prompt_cache_key" in withOptions.body).toBe(false)
+    }),
+  )
+
   it.effect("adds native query params to the Chat Completions URL", () =>
     LLMClient.generate(
       LLM.updateRequest(request, {

@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { DateTime, Effect, Cause, Option, Schedule, Schema } from "effect"
+import { DateTime, Effect, Cause, Fiber, Option, Schedule, Schema } from "effect"
 import type { EventV2 } from "@graphagent/core/event"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
@@ -37,23 +37,27 @@ export interface CompleteIsolatedNodeInput {
 
 /** Commit and patch an isolated node, then remove or keep its worktree. A
  * removal failure is not a node failure: the evidence stays on disk and the
- * caller records `state: "kept"`. */
+ * caller records `state: "kept"`. #1583: the commit's git and the patch write
+ * are waited for off the event loop (`completeWorktreeAsync`), so the timers
+ * and other workflows of the process keep running meanwhile. A cancel does not
+ * cut the commit and the patch short, as it could not cut the synchronous
+ * version: it waits for them, so it never leaves a worktree half committed
+ * with no patch recorded. They run on a fiber of their own that stays
+ * interruptible, so each git command's own timeout (`GIT_TIMEOUT_MS`) still
+ * interrupts and reaps its child and bounds that wait; masking interruption
+ * around them instead would mask those timeouts too. */
 export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.Effect<IsolatedNodeCompletion> {
   return Effect.gen(function* () {
-    const completed = yield* Effect.try({
-      try: () =>
-        DagIsolation.completeWorktree({
-          worktree: input.worktree,
-          reportsArea: workflowReportsArea(input.projectID),
-          dagID: input.dagID,
-          nodeID: input.nodeID,
-          message: input.message,
-        }),
-      catch: (error) => (error instanceof Error ? error.message : String(error)),
-    }).pipe(Effect.result)
-    if (completed._tag === "Failure") return { ok: false as const, reason: completed.failure }
-    if (!completed.success.ok) return completed.success
-    const { worktree, touchedPaths } = completed.success.completion
+    const completing = yield* DagIsolation.completeWorktreeAsync({
+      worktree: input.worktree,
+      reportsArea: workflowReportsArea(input.projectID),
+      dagID: input.dagID,
+      nodeID: input.nodeID,
+      message: input.message,
+    }).pipe(Effect.forkDetach)
+    const completed = yield* Fiber.join(completing).pipe(Effect.onInterrupt(() => Fiber.await(completing)))
+    if (!completed.ok) return completed
+    const { worktree, touchedPaths } = completed.completion
     const removed = yield* input.remove(worktree.directory).pipe(
       Effect.result,
       Effect.catchCause((cause) =>

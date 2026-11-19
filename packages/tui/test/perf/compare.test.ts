@@ -437,6 +437,48 @@ test("P15b requires zero idle ticks while DAG mode is on", () => {
   ])
 })
 
+test("P15c requires zero idle ticks while the status band shows a running workflow and a goal", () => {
+  const idle = (metrics: Record<string, number>) => ({
+    scenarios: { L: { P15c: { frames: 0, seconds: 0, renderRequests: 0, ...metrics } } },
+  })
+
+  expect(compareReports({ scenarios: {} }, idle({})).failures).toEqual([])
+  // A band row that subscribes to the animation ticker shows up as frames...
+  expect(compareReports({ scenarios: {} }, idle({ frames: 1 })).failures).toEqual([
+    { size: "L", id: "P15c", metric: "frames", limit: "0", value: 1 },
+  ])
+  // ...one that refreshes once a second shows up as seconds...
+  expect(compareReports({ scenarios: {} }, idle({ seconds: 2 })).failures).toEqual([
+    { size: "L", id: "P15c", metric: "seconds", limit: "0", value: 2 },
+  ])
+  // ...and one that asks the renderer to repaint shows up as render requests.
+  expect(compareReports({ scenarios: {} }, idle({ renderRequests: 2 })).failures).toEqual([
+    { size: "L", id: "P15c", metric: "renderRequests", limit: "0", value: 2 },
+  ])
+})
+
+test("P15d requires zero idle ticks while a PR is watched and while its notice waits for the agent", () => {
+  const metrics = [
+    "framesWatching",
+    "secondsWatching",
+    "renderRequestsWatching",
+    "framesAwaiting",
+    "secondsAwaiting",
+    "renderRequestsAwaiting",
+  ]
+  const idle = (over: Record<string, number>) => ({
+    scenarios: { L: { P15d: { ...Object.fromEntries(metrics.map((name) => [name, 0])), ...over } } },
+  })
+
+  expect(compareReports({ scenarios: {} }, idle({})).failures).toEqual([])
+  // Each of the six counts is its own check, so a failure says which state and which signal repainted an idle screen.
+  for (const metric of metrics) {
+    expect(compareReports({ scenarios: {} }, idle({ [metric]: 2 })).failures).toEqual([
+      { size: "L", id: "P15d", metric, limit: "0", value: 2 },
+    ])
+  }
+})
+
 test("a gate metric the report does not carry is reported, not skipped", () => {
   // The slash scenario once emitted `maxFrame` while the ceiling read `maxMs`:
   // the ceiling never ran and nothing said so.
@@ -817,6 +859,15 @@ function scenarios(size = "L"): Record<string, ScenarioMetrics> {
     },
     P15: { frames: 0 },
     P15b: { frames: 0, seconds: 0, renderRequests: 0 },
+    P15c: { frames: 0, seconds: 0, renderRequests: 0 },
+    P15d: {
+      framesWatching: 0,
+      secondsWatching: 0,
+      renderRequestsWatching: 0,
+      framesAwaiting: 0,
+      secondsAwaiting: 0,
+      renderRequestsAwaiting: 0,
+    },
     P16: { frames: 22 },
     P17: { framesEmpty: 22, framesEight: 22 },
     P17b: { frames: 0 },
