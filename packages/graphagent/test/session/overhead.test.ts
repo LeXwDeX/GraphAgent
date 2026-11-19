@@ -1,31 +1,53 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { jsonSchema, tool } from "ai"
-import { Effect, Logger } from "effect"
+import { Effect, Layer, Logger, ManagedRuntime } from "effect"
+import { Database } from "@graphagent/core/database/database"
+import { EventV2 } from "@graphagent/core/event"
 import { ModelV2 } from "@graphagent/core/model"
+import { contextWindow, DEFAULT_CONTEXT_WINDOW } from "@graphagent/core/model-profile"
+import { ProjectV2 } from "@graphagent/core/project"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { Injection } from "@graphagent/core/system-context/injection"
 import { DEFAULT_WRITING_STYLE } from "@graphagent/core/system-context/writing-style"
 import { Hash } from "@graphagent/core/util/hash"
+import { TuiEvent } from "@graphagent/schema/tui-event"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { profileOf } from "@/provider/profile"
 import { EngineProcess } from "@/session/engine-process"
 import type { LLM } from "@/session/llm"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { estimateOverhead, serializedTools } from "@/session/overflow"
 import { RuntimeContext } from "@/session/runtime-context"
 import { SessionID } from "@/session/schema"
+import type { Session } from "@/session/session"
 import type { SystemSection } from "@/session/step-metrics"
 import { SystemPrompt } from "@/session/system"
 import { Overhead } from "@/session/turn/overhead"
+import type { PrepareDeps } from "@/session/turn/prepare"
 import { Token } from "@/util/token"
 import { ProviderTest } from "../fake/provider"
 
 const sessionID = SessionID.make("ses_overhead_unit")
+const parentID = SessionID.make("ses_overhead_parent")
 const model = ProviderTest.model({ providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") })
+
+const sessionInfo = (id: SessionID = sessionID, parent?: SessionID): Session.Info => ({
+  id,
+  slug: "overhead-unit",
+  role: parent === undefined ? "root" : "task_child",
+  projectID: ProjectV2.ID.global,
+  directory: "/repo",
+  title: "overhead unit",
+  version: "1.0.0",
+  time: { created: 1, updated: 1 },
+  ...(parent === undefined ? {} : { parentID: parent }),
+})
 
 const readTool = tool({ description: "Read a file", inputSchema: jsonSchema({ type: "object", properties: {} }) })
 
@@ -82,9 +104,51 @@ const run = <A>(effect: Effect.Effect<A>) => Effect.runPromise(effect.pipe(Effec
 const infos = () => logs.filter((item) => item.message[0] === "session request manifest")
 const warnings = () => logs.filter((item) => item.message[0] === "request manifest skipped")
 
+// The toasts published through the bridge, in order, and whether publishing fails. The bridge is the real one over an
+// in-memory database, so a payload that does not fit the event's schema fails the test as it would fail the server.
+type Toast = { title?: string; message: string; variant: string; duration?: number }
+const toasts: Toast[] = []
+const publishing = { fails: false }
+
+const isToast = (data: unknown): data is Toast =>
+  typeof data === "object" && data !== null && "message" in data && "variant" in data
+
+const rawBridge = EventV2Bridge.layer.pipe(
+  Layer.provide(EventV2.layer.pipe(Layer.provide(Database.layerFromPath(":memory:")))),
+)
+const capturingBridge = Layer.effect(
+  EventV2Bridge.Service,
+  Effect.gen(function* () {
+    const original = yield* EventV2Bridge.Service
+    const publish: EventV2.Interface["publish"] = (definition, data, options) => {
+      if (definition.type === TuiEvent.ToastShow.type && isToast(data)) toasts.push(data)
+      return publishing.fails ? Effect.die(new Error("publishing failed")) : original.publish(definition, data, options)
+    }
+    return EventV2Bridge.Service.of({ ...original, publish })
+  }),
+).pipe(Layer.provide(rawBridge))
+
+const runtime = ManagedRuntime.make(capturingBridge)
+let events!: PrepareDeps["events"]
+
+beforeAll(async () => {
+  events = await runtime.runPromise(
+    Effect.gen(function* () {
+      return yield* EventV2Bridge.Service
+    }),
+  )
+})
+
+afterAll(() => runtime.dispose())
+
+// Every session a test records for, so that nothing it leaves in the process-wide registry reaches the next test.
+const touched = [sessionID, SessionID.make("ses_overhead_other")]
+
 afterEach(async () => {
   logs.length = 0
-  await Effect.runPromise(EngineProcess.runtimes.remove(sessionID))
+  toasts.length = 0
+  publishing.fails = false
+  for (const id of touched) await Effect.runPromise(EngineProcess.runtimes.remove(id))
 })
 
 describe("Overhead.buildManifest", () => {
@@ -187,13 +251,18 @@ describe("Overhead.buildManifest", () => {
 })
 
 describe("Overhead.record", () => {
-  const input = (requestOverheads = new Map<SessionID, number>()) => ({ sessionID, model, requestOverheads })
+  const input = (requestOverheads = new Map<SessionID, number>()) => ({
+    session: sessionInfo(),
+    sessionID,
+    model,
+    requestOverheads,
+  })
 
   test("records the overhead of the request as sent: base prompt, system texts, ledger blocks and tools", async () => {
     const requestOverheads = new Map<SessionID, number>()
     const processInput = streamInput()
     const ledger = [entry("goal block")]
-    await run(Overhead.record(input(requestOverheads), { processInput, toolsJson: undefined, ledger }))
+    await run(Overhead.record(events, input(requestOverheads), { processInput, toolsJson: undefined, ledger }))
 
     const recorded = requestOverheads.get(sessionID)!
     const system = LLMRequestPrep.requestSystem(processInput)
@@ -214,7 +283,7 @@ describe("Overhead.record", () => {
     const base = streamInput()
     const processInput = streamInput({ user: { ...base.user, system: "User instructions. ".repeat(40) } })
     const toolsJson = JSON.stringify(serializedTools(processInput.tools))
-    await run(Overhead.record(input(requestOverheads), { processInput, toolsJson, ledger: [] }))
+    await run(Overhead.record(events, input(requestOverheads), { processInput, toolsJson, ledger: [] }))
     expect(requestOverheads.get(sessionID)).toBe(
       estimateOverhead({ system: LLMRequestPrep.requestSystem(processInput), tools: processInput.tools, toolsJson }),
     )
@@ -224,7 +293,7 @@ describe("Overhead.record", () => {
   test("stores the manifest of the request under its session, with the model as provider/model", async () => {
     const processInput = streamInput()
     const ledger = [entry("goal block")]
-    await run(Overhead.record(input(), { processInput, toolsJson: undefined, ledger }))
+    await run(Overhead.record(events, input(), { processInput, toolsJson: undefined, ledger }))
 
     const manifest = EngineProcess.runtimes.requestManifests.get(sessionID)!
     expect(manifest.model).toBe("test/test-model")
@@ -248,7 +317,9 @@ describe("Overhead.record", () => {
   })
 
   test("measures the serialized tools it was handed instead of serializing them again", async () => {
-    await run(Overhead.record(input(), { processInput: streamInput(), toolsJson: "[cached fragment]", ledger: [] }))
+    await run(
+      Overhead.record(events, input(), { processInput: streamInput(), toolsJson: "[cached fragment]", ledger: [] }),
+    )
     const manifest = EngineProcess.runtimes.requestManifests.get(sessionID)!
     expect(manifest.entries.find((item) => item.source === "tools")?.hash).toBe(hash("[cached fragment]"))
   })
@@ -256,7 +327,7 @@ describe("Overhead.record", () => {
   test("logs the manifest at INFO the first time and whenever a source, label or hash changes, and not otherwise", async () => {
     const requestOverheads = new Map<SessionID, number>()
     const record = (processInput: LLM.StreamInput, ledger: RuntimeContext.Entry[] = []) =>
-      run(Overhead.record(input(requestOverheads), { processInput, toolsJson: undefined, ledger }))
+      run(Overhead.record(events, input(requestOverheads), { processInput, toolsJson: undefined, ledger }))
 
     await record(streamInput())
     expect(infos()).toHaveLength(1)
@@ -304,15 +375,15 @@ describe("Overhead.record", () => {
 
   test("a model change that moves no entry logs nothing but replaces the stored manifest", async () => {
     const processInput = streamInput()
-    await run(Overhead.record(input(), { processInput, toolsJson: undefined, ledger: [] }))
+    await run(Overhead.record(events, input(), { processInput, toolsJson: undefined, ledger: [] }))
     const other = ProviderTest.model({ providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("other-model") })
-    await run(Overhead.record({ ...input(), model: other }, { processInput, toolsJson: undefined, ledger: [] }))
+    await run(Overhead.record(events, { ...input(), model: other }, { processInput, toolsJson: undefined, ledger: [] }))
     expect(infos()).toHaveLength(1)
     expect(EngineProcess.runtimes.requestManifests.get(sessionID)?.model).toBe("test/other-model")
   })
 
   test("the INFO line carries the session, the model, the totals and the entries", async () => {
-    await run(Overhead.record(input(), { processInput: streamInput(), toolsJson: undefined, ledger: [] }))
+    await run(Overhead.record(events, input(), { processInput: streamInput(), toolsJson: undefined, ledger: [] }))
     const [line] = infos()
     const manifest = EngineProcess.runtimes.requestManifests.get(sessionID)!
     expect(line?.level).toBe("Info")
@@ -328,7 +399,11 @@ describe("Overhead.record", () => {
   test("skips the manifest with a warning when the system texts carry no matching labels, and still records the overhead", async () => {
     const requestOverheads = new Map<SessionID, number>()
     await run(
-      Overhead.record(input(requestOverheads), { processInput: streamInput(), toolsJson: undefined, ledger: [] }),
+      Overhead.record(events, input(requestOverheads), {
+        processInput: streamInput(),
+        toolsJson: undefined,
+        ledger: [],
+      }),
     )
     const previous = EngineProcess.runtimes.requestManifests.get(sessionID)
     expect(previous).toBeDefined()
@@ -337,7 +412,7 @@ describe("Overhead.record", () => {
       logs.length = 0
       requestOverheads.clear()
       await run(
-        Overhead.record(input(requestOverheads), {
+        Overhead.record(events, input(requestOverheads), {
           processInput: streamInput(broken),
           toolsJson: undefined,
           ledger: [],
@@ -353,10 +428,322 @@ describe("Overhead.record", () => {
 
   test("a session that was never recorded has no manifest, and forgetting a session drops it", async () => {
     expect(EngineProcess.runtimes.requestManifests.get(sessionID)).toBeUndefined()
-    await run(Overhead.record(input(), { processInput: streamInput(), toolsJson: undefined, ledger: [] }))
+    await run(Overhead.record(events, input(), { processInput: streamInput(), toolsJson: undefined, ledger: [] }))
     expect(EngineProcess.runtimes.requestManifests.get(sessionID)).toBeDefined()
     await Effect.runPromise(EngineProcess.runtimes.remove(sessionID))
     expect(EngineProcess.runtimes.requestManifests.get(sessionID)).toBeUndefined()
+  })
+})
+
+// A model that declares a context window of `tokens`, and one that declares none (the window is then assumed).
+const windowed = (tokens: number, id = "test-model") =>
+  ProviderTest.model({
+    providerID: ProviderV2.ID.make("test"),
+    id: ModelV2.ID.make(id),
+    limit: { context: tokens, output: 1_000 },
+  })
+const undeclared = (id = "test-model") => windowed(0, id)
+
+const otherID = touched[1]
+const stored = (id: SessionID = sessionID) => EngineProcess.runtimes.requestManifests.get(id)!
+
+/** One request recorded the way a step records it, for `session` (a root by default) on `model`. */
+const step = (options: { session?: Session.Info; model?: typeof model; request?: LLM.StreamInput } = {}) => {
+  const session = options.session ?? sessionInfo()
+  return run(
+    Overhead.record(
+      events,
+      { session, sessionID: session.id, model: options.model ?? model, requestOverheads: new Map() },
+      { processInput: options.request ?? streamInput(), toolsJson: undefined, ledger: [] },
+    ),
+  )
+}
+
+/** The tokens of the default request's fixed overhead; the same for every model and session. */
+const fixedTokens = async () => {
+  await step({ session: sessionInfo(otherID), model: windowed(10_000_000, "huge") })
+  return stored(otherID).tokens
+}
+
+/** A request whose system text alone is 130,000 characters: more than a quarter of the assumed window. */
+const bulky = () => streamInput({ system: ["x".repeat(130_000)], systemLabels: ["environment"] })
+
+const TITLE = "Fixed request overhead is large"
+
+describe("Overhead.record: the window of the model", () => {
+  test("keeps the window the profile of the model declares, and where it comes from, with the manifest", async () => {
+    const declared = windowed(200_000)
+    await step({ model: declared })
+    expect(stored().window).toBe(200_000)
+    expect(stored().windowSource).toBe(contextWindow(profileOf(declared)).source)
+    expect(stored().windowSource).not.toBe("default")
+  })
+
+  test("takes the assumed window, marked `default`, for a model that declares none", async () => {
+    await step({ model: undeclared() })
+    expect(stored().window).toBe(DEFAULT_CONTEXT_WINDOW)
+    expect(stored().windowSource).toBe("default")
+  })
+
+  test("follows the model of the latest request", async () => {
+    await step({ model: windowed(200_000) })
+    await step({ model: windowed(64_000, "smaller") })
+    expect(stored().window).toBe(64_000)
+    expect(stored().model).toBe("test/smaller")
+  })
+
+  test("does not change the sums or the entries of the manifest", async () => {
+    await step({ model: windowed(200_000) })
+    const manifest = stored()
+    expect(manifest.bytes).toBe(manifest.entries.reduce((sum, item) => sum + item.bytes, 0))
+    expect(manifest.tokens).toBe(manifest.entries.reduce((sum, item) => sum + item.tokens, 0))
+    expect(manifest.entries.map((item) => item.source)).toEqual([
+      "base",
+      "environment",
+      "instructions",
+      "runtime_note",
+      "tools",
+    ])
+  })
+})
+
+describe("Overhead.record: the alert about a large fixed overhead", () => {
+  test("is 25% of the window", () => {
+    expect(Overhead.OVERHEAD_WARN_RATIO).toBe(0.25)
+  })
+
+  test("tells the user once, with a warning toast, when a root session's overhead passes the share", async () => {
+    await step({ model: windowed(1_000) })
+    const { tokens } = stored()
+    // The overhead is more than the window itself here; the percentage says so.
+    expect(toasts).toEqual([
+      {
+        title: TITLE,
+        message: `≈${tokens.toLocaleString("en-US")} tokens (${Math.round((tokens / 1_000) * 100)}% of the 1,000-token window) are sent with every request.`,
+        variant: "warning",
+        duration: 8_000,
+      },
+    ])
+    expect(toasts[0]?.message).toMatch(
+      /^≈[\d,]+ tokens \(\d+% of the 1,000-token window\) are sent with every request\.$/,
+    )
+  })
+
+  test("writes the figures with thousands separators and the share as a whole percentage", async () => {
+    const tokens = await fixedTokens()
+    // A window of 2.5 times the overhead makes it 40%.
+    const window = Math.round(tokens * 2.5)
+    await step({ model: windowed(window) })
+    expect(window).toBeGreaterThanOrEqual(1_000)
+    expect(toasts.map((toast) => toast.message)).toEqual([
+      `≈${tokens.toLocaleString("en-US")} tokens (40% of the ${window.toLocaleString("en-US")}-token window) are sent with every request.`,
+    ])
+    expect(toasts[0]?.message).toContain(",")
+  })
+
+  test("says that the window is assumed, and how to declare it, when the model declares none", async () => {
+    await step({ request: bulky(), model: undeclared() })
+    const { tokens } = stored()
+    const percent = Math.round((tokens / DEFAULT_CONTEXT_WINDOW) * 100)
+    expect(percent).toBeGreaterThan(25)
+    expect(toasts).toEqual([
+      {
+        title: TITLE,
+        message: `≈${tokens.toLocaleString("en-US")} tokens (~${percent}% of an assumed 128,000-token window) are sent with every request. The model's window is not declared; set provider.test.models.test-model.limit.context in graphagent.json.`,
+        variant: "warning",
+        duration: 8_000,
+      },
+    ])
+  })
+
+  test("names the provider and the model of the request in that advice", async () => {
+    const other = ProviderTest.model({
+      providerID: ProviderV2.ID.make("acme"),
+      id: ModelV2.ID.make("big-one"),
+      limit: { context: 0, output: 1_000 },
+    })
+    await step({ request: bulky(), model: other })
+    expect(toasts[0]?.message).toEndWith("set provider.acme.models.big-one.limit.context in graphagent.json.")
+  })
+
+  test("is quiet while the overhead is a small part of the window, declared or assumed", async () => {
+    await step({ model: windowed(200_000) })
+    await step({ model: undeclared("assumed") })
+    expect(toasts).toEqual([])
+    expect(stored().tokens / stored().window!).toBeLessThan(Overhead.OVERHEAD_WARN_RATIO)
+  })
+
+  test("needs more than a quarter: exactly a quarter is quiet, one token less window is not", async () => {
+    const tokens = await fixedTokens()
+    await step({ model: windowed(tokens * 4, "exactly") })
+    expect(stored().tokens / stored().window!).toBe(0.25)
+    expect(toasts).toEqual([])
+    await step({ model: windowed(tokens * 4 - 1, "just-over") })
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]?.message).toContain(`(25% of the ${(tokens * 4 - 1).toLocaleString("en-US")}-token window)`)
+  })
+
+  test("speaks once for a model in a session: later requests with it say nothing", async () => {
+    const small = windowed(1_000)
+    await step({ model: small })
+    await step({ model: small })
+    await step({ model: small, request: bulky() })
+    expect(toasts).toHaveLength(1)
+  })
+
+  test("speaks again once for another model, and not for one it already told about", async () => {
+    const first = windowed(1_000, "first")
+    const second = windowed(1_000, "second")
+    await step({ model: first })
+    expect(toasts).toHaveLength(1)
+    await step({ model: second })
+    expect(toasts).toHaveLength(2)
+    await step({ model: first })
+    await step({ model: second })
+    expect(toasts).toHaveLength(2)
+    expect([...EngineProcess.runtimes.overheadWarned.get(sessionID)!].toSorted()).toEqual(["test/first", "test/second"])
+  })
+
+  test("keeps its memory for each session", async () => {
+    const small = windowed(1_000)
+    await step({ model: small })
+    await step({ session: sessionInfo(otherID), model: small })
+    expect(toasts).toHaveLength(2)
+  })
+
+  test("is quiet in a child session, whatever its share, and leaves no mark there", async () => {
+    await step({ session: sessionInfo(sessionID, parentID), model: windowed(1_000) })
+    expect(toasts).toEqual([])
+    expect(EngineProcess.runtimes.overheadWarned.get(sessionID)).toBeUndefined()
+    // The manifest is kept all the same: the drawer shows the session on screen, a sub-agent's included.
+    expect(stored().window).toBe(1_000)
+    // Nothing was marked, so the same session recorded as a root still speaks.
+    await step({ model: windowed(1_000) })
+    expect(toasts).toHaveLength(1)
+  })
+
+  test("forgetting the session lets it speak again", async () => {
+    const small = windowed(1_000)
+    await step({ model: small })
+    expect(EngineProcess.runtimes.overheadWarned.has(sessionID)).toBe(true)
+    await Effect.runPromise(EngineProcess.runtimes.remove(sessionID))
+    expect(EngineProcess.runtimes.overheadWarned.has(sessionID)).toBe(false)
+    await step({ model: small })
+    expect(toasts).toHaveLength(2)
+  })
+
+  test("a publish that fails is swallowed and not tried again for the same model", async () => {
+    publishing.fails = true
+    await step({ model: windowed(1_000) })
+    // The request went on: the manifest and the estimate are there, and the attempt was made once.
+    expect(stored().window).toBe(1_000)
+    expect(toasts).toHaveLength(1)
+    publishing.fails = false
+    await step({ model: windowed(1_000) })
+    expect(toasts).toHaveLength(1)
+  })
+
+  test("says nothing, and warns about the manifest only, when the system texts carry no matching labels", async () => {
+    await step({ request: streamInput({ systemLabels: undefined }), model: windowed(1_000) })
+    expect(toasts).toEqual([])
+    expect(warnings()).toHaveLength(1)
+    expect(EngineProcess.runtimes.overheadWarned.get(sessionID)).toBeUndefined()
+  })
+
+  test("does not change what the request records for the limit check", async () => {
+    const quiet = new Map<SessionID, number>()
+    const loud = new Map<SessionID, number>()
+    const processInput = streamInput()
+    const built = { processInput, toolsJson: undefined, ledger: [] }
+    await run(
+      Overhead.record(
+        events,
+        { session: sessionInfo(), sessionID, model: windowed(200_000), requestOverheads: quiet },
+        built,
+      ),
+    )
+    await Effect.runPromise(EngineProcess.runtimes.remove(sessionID))
+    await run(
+      Overhead.record(
+        events,
+        { session: sessionInfo(), sessionID, model: windowed(1_000), requestOverheads: loud },
+        built,
+      ),
+    )
+    expect(toasts).toHaveLength(1)
+    expect(quiet.get(sessionID)).toBeGreaterThan(0)
+    expect(loud.get(sessionID)).toBe(quiet.get(sessionID))
+  })
+})
+
+describe("Overhead.view", () => {
+  test("is empty for a session that has no manifest", () => {
+    expect(Overhead.view(undefined)).toEqual({ bytes: 0, tokens: 0, sources: [] })
+    expect(JSON.stringify(Overhead.view(undefined))).toBe('{"bytes":0,"tokens":0,"sources":[]}')
+  })
+
+  test("gives the totals, the model, the window and its share, and each source", async () => {
+    await step({ model: windowed(200_000) })
+    const manifest = stored()
+    const view = Overhead.view(manifest)
+    expect(view).toEqual({
+      bytes: manifest.bytes,
+      tokens: manifest.tokens,
+      model: "test/test-model",
+      window: 200_000,
+      windowSource: manifest.windowSource!,
+      ratio: manifest.tokens / 200_000,
+      sources: manifest.entries.map((item) => ({
+        source: item.source,
+        ...(item.label === undefined ? {} : { label: item.label }),
+        bytes: item.bytes,
+        tokens: item.tokens,
+        hash: item.hash,
+      })),
+    })
+    expect(view.sources.map((item) => item.source)).toEqual([
+      "base",
+      "environment",
+      "instructions",
+      "runtime_note",
+      "tools",
+    ])
+    expect(view.sources.find((item) => item.source === "instructions")?.label).toBe("/repo/AGENTS.md")
+    expect(view.sources.find((item) => item.source === "tools")?.label).toBeUndefined()
+    // A source carries exactly these members, the label only where it has one.
+    expect(Object.keys(view.sources[0] ?? {}).toSorted()).toEqual(["bytes", "hash", "source", "tokens"])
+    expect(Object.keys(view.sources[2] ?? {}).toSorted()).toEqual(["bytes", "hash", "label", "source", "tokens"])
+  })
+
+  test("is the share of the assumed window, marked `default`, for a model that declares none", async () => {
+    await step({ model: undeclared() })
+    const view = Overhead.view(stored())
+    expect(view.window).toBe(DEFAULT_CONTEXT_WINDOW)
+    expect(view.windowSource).toBe("default")
+    expect(view.ratio).toBe(view.tokens / DEFAULT_CONTEXT_WINDOW)
+  })
+
+  test("carries no window, source or share before a window is known, and survives JSON as it is", () => {
+    const manifest = manifestOf()!
+    const view = Overhead.view(manifest)
+    expect(Object.keys(view).toSorted()).toEqual(["bytes", "model", "sources", "tokens"])
+    expect(JSON.parse(JSON.stringify(view))).toEqual(view)
+  })
+
+  test("the view of a stored manifest has no undefined member, so it survives JSON unchanged", async () => {
+    await step({ model: windowed(200_000) })
+    const view = Overhead.view(stored())
+    expect(JSON.parse(JSON.stringify(view))).toEqual(view)
+  })
+
+  test("reads the manifest the process holds for the session", async () => {
+    expect(Overhead.view(EngineProcess.runtimes.requestManifests.get(sessionID))).toEqual({
+      bytes: 0,
+      tokens: 0,
+      sources: [],
+    })
+    await step({ model: windowed(200_000) })
+    expect(Overhead.view(EngineProcess.runtimes.requestManifests.get(sessionID)).tokens).toBe(stored().tokens)
   })
 })
 

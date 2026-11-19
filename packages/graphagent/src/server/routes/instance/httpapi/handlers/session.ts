@@ -20,10 +20,12 @@ import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionBtw } from "@/session/btw"
+import { EngineProcess } from "@/session/engine-process"
 import { SessionRunState } from "@/session/run-state"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { Overhead } from "@/session/turn/overhead"
 import { Todo } from "@/session/todo"
 import { Goal } from "@/goal/goal"
 import { PrWatchProgress } from "@/pr-watch/progress"
@@ -176,6 +178,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const usage = Effect.fn("SessionHttpApi.usage")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* rootUsage(db, yield* findRoot(db, ctx.params.sessionID))
+    })
+
+    // #1461: what the latest request of the session carried besides its messages, read from memory; display only.
+    const overhead = Effect.fn("SessionHttpApi.overhead")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      return Overhead.view(EngineProcess.runtimes.requestManifests.get(ctx.params.sessionID))
     })
 
     const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -679,6 +687,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("get", get)
       .handle("dagMode", dagMode)
       .handle("usage", usage)
+      .handle("overhead", overhead)
       .handle("children", children)
       .handle("todo", todo)
       .handle("goal", goal)

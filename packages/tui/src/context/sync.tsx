@@ -22,6 +22,7 @@ import type {
   Goal,
   DagWorkflowSummary,
   SessionDagMode,
+  SessionOverhead,
   SessionUsage,
   PrWatchEntry,
   SessionReminder,
@@ -244,6 +245,16 @@ export const {
         [rootSessionID: string]: SessionUsage
       }
       /**
+       * What the latest request of a session carried besides its messages, by source (`GET /session/:id/overhead`,
+       * #1461): the fixed overhead, held per session, the sub-agent on screen included. Display only. A session is
+       * read only while something on screen watches it (`overhead.watch`: the drawer while it is open), and then
+       * again on three triggers: the watch itself, the session's own `session.turn.settled` (its requests are
+       * recorded as the turn runs) and a reconnect. Nothing polls, and a session nobody watches costs no read.
+       */
+      overhead: {
+        [sessionID: string]: SessionOverhead
+      }
+      /**
        * The DAG slots running in the whole server process, as the latest report of any source says: a workflow
        * summary that carries `concurrencyRunning` (event or read), or a mode snapshot's `limits.running`, whichever
        * arrived last. The count belongs to the process, but a summary event carries it only for the session it is
@@ -318,6 +329,7 @@ export const {
       dagNodes: {},
       dagMode: {},
       usage: {},
+      overhead: {},
       dagRunning: undefined,
       dag_focus: {},
       turn_settled: {},
@@ -390,6 +402,10 @@ export const {
     const usageReads = new Map<string, symbol>()
     const usageDirty = new Set<string>()
     const usageWatchers = new Map<string, number>()
+    // #1461: the same three for the fixed overhead, held per session and not per root.
+    const overheadReads = new Map<string, symbol>()
+    const overheadDirty = new Set<string>()
+    const overheadWatchers = new Map<string, number>()
     // #1036 F6: the PR watch read in flight per root session. A newer read replaces it and the older answer is
     // dropped. `touched` names the watches that events updated since the read began: they are newer than the answer.
     const prWatchReads = new Map<string, { touched: Set<string> }>()
@@ -592,6 +608,9 @@ export const {
       usageReads.delete(sessionID)
       usageDirty.delete(sessionID)
       usageWatchers.delete(sessionID)
+      overheadReads.delete(sessionID)
+      overheadDirty.delete(sessionID)
+      overheadWatchers.delete(sessionID)
       // A read still out must not bring the session's entries back.
       prWatchReads.delete(sessionID)
       prWatchLoaded.delete(sessionID)
@@ -621,6 +640,7 @@ export const {
           delete draft.dag[sessionID]
           delete draft.dagMode[sessionID]
           delete draft.usage[sessionID]
+          delete draft.overhead[sessionID]
           delete draft.dag_focus[sessionID]
           delete draft.turn_settled[sessionID]
           delete draft.session_status[sessionID]
@@ -1078,6 +1098,70 @@ export const {
         if (count === undefined) return
         if (count > 1) usageWatchers.set(rootID, count - 1)
         else usageWatchers.delete(rootID)
+      }
+    }
+
+    /**
+     * Read the fixed overhead of the sessions named (#1461) and take the answers in, the way `fetchUsage` does for a
+     * tree: a session whose read is still out is marked and read once more when that answer is in, a read that fails
+     * leaves what the slice held and is logged, and an answer is kept only while the session is still watched and
+     * not deleted.
+     */
+    function fetchOverhead(sessionIDs: readonly string[]) {
+      const workspace = project.workspace.current()
+      return Promise.all(
+        sessionIDs.map(async (sessionID) => {
+          if (overheadReads.has(sessionID)) {
+            overheadDirty.add(sessionID)
+            return
+          }
+          const read = Symbol(sessionID)
+          overheadReads.set(sessionID, read)
+          try {
+            const response = await sdk.client.session.overhead(
+              { sessionID },
+              { headers: locationHeaders({ workspace }) },
+            )
+            if (disposed || overheadReads.get(sessionID) !== read) return
+            const snapshot = response.data
+            if (!snapshot) {
+              TuiLog.write("error", "Loading the fixed overhead failed", {
+                sessionID,
+                status: response.response?.status,
+              })
+              return
+            }
+            if (overheadWatchers.has(sessionID)) setStore("overhead", sessionID, reconcile(snapshot))
+          } catch (error) {
+            if (!disposed)
+              TuiLog.write("error", "Loading the fixed overhead failed", { sessionID, error: String(error) })
+          } finally {
+            if (overheadReads.get(sessionID) === read) {
+              overheadReads.delete(sessionID)
+              if (overheadDirty.delete(sessionID) && !disposed && overheadWatchers.has(sessionID))
+                void fetchOverhead([sessionID])
+            }
+          }
+        }),
+      ).then(() => undefined)
+    }
+
+    /**
+     * Something on screen shows the fixed overhead of `sessionID`: count it and read it once. The function it returns
+     * lets go; the last one to go ends the reads of that session. A function called twice lets go once.
+     */
+    function watchOverhead(sessionID: string) {
+      overheadWatchers.set(sessionID, (overheadWatchers.get(sessionID) ?? 0) + 1)
+      // Called from an effect: the read must not make the effect depend on what it looks at (the workspace).
+      untrack(() => void fetchOverhead([sessionID]))
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const count = overheadWatchers.get(sessionID)
+        if (count === undefined) return
+        if (count > 1) overheadWatchers.set(sessionID, count - 1)
+        else overheadWatchers.delete(sessionID)
       }
     }
 
@@ -1580,6 +1664,8 @@ export const {
           // here, whichever session of it settled and in whatever order the events came.
           const rootID = rootOf(sessionID)
           if (usageWatchers.has(rootID)) void fetchUsage([rootID])
+          // #1461: the requests of a turn are recorded as it runs, so the session's own overhead is read again now.
+          if (overheadWatchers.has(sessionID)) void fetchOverhead([sessionID])
           const previous = store.turn_settled[sessionID]
           if (previous && previous.timeEnded > timeEnded) break
           setStore("turn_settled", sessionID, { turnID, outcome: outcome.type, timeEnded })
@@ -2121,6 +2207,8 @@ export const {
     })
     // #1475: the usage of every tree something watches is read again, the answers being states, not events.
     onResync(() => fetchUsage([...usageWatchers.keys()]))
+    // #1461: so is the fixed overhead of every session something watches.
+    onResync(() => fetchOverhead([...overheadWatchers.keys()]))
     // The settled-turn slice has no read-back: a turn that settled during the
     // disconnect is unknown, and an old outcome must not pass for the latest.
     onResync(() => {
@@ -2171,6 +2259,9 @@ export const {
       usageReads.clear()
       usageDirty.clear()
       usageWatchers.clear()
+      overheadReads.clear()
+      overheadDirty.clear()
+      overheadWatchers.clear()
       prWatchReads.clear()
       prWatchLoaded.clear()
       reminderReads.clear()
@@ -2383,6 +2474,10 @@ export const {
       /** #1475: the usage of whole task trees, read while a surface watches them (`data.usage`, keyed by root). */
       usage: {
         watch: watchUsage,
+      },
+      /** #1461: the fixed overhead of a session, read while a surface watches it (`data.overhead`, keyed by session). */
+      overhead: {
+        watch: watchOverhead,
       },
       /** #1032: the node tables of the workflows the display surfaces show. */
       dag: {

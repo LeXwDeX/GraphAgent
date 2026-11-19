@@ -1943,7 +1943,7 @@ export function makePrepare(deps: PrepareDeps) {
       legacyToolsDisabled || lastUser.format?.type === "json_schema"
         ? undefined
         : SessionTools.serializedFragment(processInput.tools)
-    yield* Overhead.record(input, { processInput, toolsJson, ledger: runtime.ledger })
+    yield* Overhead.record(deps.events, input, { processInput, toolsJson, ledger: runtime.ledger })
     rememberRequestPrefix(input, { directory: ctx.directory, processInput, toolsJson })
     return { processInput }
   })

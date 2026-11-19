@@ -224,6 +224,8 @@ import type {
   SessionMessageResponses,
   SessionMessagesErrors,
   SessionMessagesResponses,
+  SessionOverheadErrors,
+  SessionOverheadResponses,
   SessionPromptAsyncErrors,
   SessionPromptAsyncResponses,
   SessionPromptErrors,
@@ -2478,6 +2480,25 @@ export class Session2 extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
     return (options?.client ?? this.client).get<SessionUsageResponses, SessionUsageErrors, ThrowOnError>({
       url: "/session/{sessionID}/usage",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session fixed overhead
+   *
+   * Read what the latest request of the session carried besides its conversation messages, by source: the base prompt, each system section, the tool definitions and the runtime-context blocks, with their bytes, estimated tokens and hashes, and the share of the model's context window. Display only; nothing is limited or blocked. A session that has sent no request yet answers with zeros and no sources.
+   */
+  public overhead<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionOverheadResponses, SessionOverheadErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<SessionOverheadResponses, SessionOverheadErrors, ThrowOnError>({
+      url: "/session/{sessionID}/overhead",
       ...options,
       ...params,
     })

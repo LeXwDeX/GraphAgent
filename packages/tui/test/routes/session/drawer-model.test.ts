@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Goal, Message, Session, SessionUsage } from "@graphagent/sdk"
+import type { Goal, Message, Session, SessionOverhead, SessionUsage } from "@graphagent/sdk"
 import { afterEach, describe, expect, test } from "bun:test"
 import type { TaskIndexEntry } from "../../../src/context/session-summary"
 import { setLanguage } from "../../../src/i18n"
@@ -14,6 +14,8 @@ import {
   contextTone,
   contextUsage,
   goalLine,
+  OVERHEAD_ROWS_MAX,
+  overheadSection,
   sameBackgroundSection,
   services,
   todoCount,
@@ -225,6 +227,153 @@ describe("the cost section's lines", () => {
     expect(last.startsWith("This session $1,000,000")).toBe(true)
     expect(last.endsWith("…")).toBe(true)
     expect(cellWidth(last, 1)).toBeLessThanOrEqual(DRAWER_TEXT_CELLS)
+  })
+})
+
+// ── The fixed-overhead section (#1461) ──────────────────────────────────────────────
+
+type OverheadSource = SessionOverhead["sources"][number]
+
+function source(name: OverheadSource["source"], tokens: number, label?: string): OverheadSource {
+  return {
+    source: name,
+    bytes: tokens * 3,
+    tokens,
+    hash: "0123456789abcdef",
+    ...(label === undefined ? {} : { label }),
+  }
+}
+
+function overhead(extra: Partial<SessionOverhead> = {}): SessionOverhead {
+  return { bytes: 0, tokens: 0, sources: [], ...extra }
+}
+
+describe("the fixed-overhead section", () => {
+  test("is hidden until the server reports an overhead: nothing held, or nothing sent yet", () => {
+    expect(overheadSection(undefined)).toBeUndefined()
+    expect(overheadSection(overhead())).toBeUndefined()
+    // Zero tokens is zero: sources that add up to nothing are not shown either.
+    expect(overheadSection(overhead({ sources: [source("base", 0)] }))).toBeUndefined()
+  })
+
+  test("is the total with its share of the window, and the largest sources, largest first", () => {
+    const section = overheadSection(
+      overhead({
+        bytes: 40_000,
+        tokens: 12_345,
+        window: 100_000,
+        windowSource: "config",
+        ratio: 0.12345,
+        sources: [
+          source("environment", 150),
+          source("tools", 8_000),
+          source("base", 2_000),
+          source("instructions", 1_200, "AGENTS.md"),
+        ],
+      }),
+    )
+    expect(section).toEqual({
+      total: "≈12,345 tokens · 12%",
+      rows: ["≈8,000 tools", "≈2,000 base", "≈1,200 instructions AGENTS.md", "≈150 environment"],
+    })
+  })
+
+  test("says the same in English", () => {
+    setLanguage("en")
+    expect(overheadSection(overhead({ tokens: 12_345, ratio: 0.12345, sources: [source("tools", 12_345)] }))).toEqual({
+      total: "≈12,345 tokens · 12%",
+      rows: ["≈12,345 tools"],
+    })
+  })
+
+  test("marks the share with a ~ when the window is the assumed one, and only then", () => {
+    const sources = [source("tools", 40_000)]
+    const total = (windowSource: string | undefined) =>
+      overheadSection(overhead({ tokens: 40_000, window: 128_000, windowSource, ratio: 0.3125, sources }))?.total
+    expect(total("default")).toBe("≈40,000 tokens · ~31%")
+    expect(total("adapter")).toBe("≈40,000 tokens · 31%")
+    expect(total("config")).toBe("≈40,000 tokens · 31%")
+    expect(total(undefined)).toBe("≈40,000 tokens · 31%")
+  })
+
+  test("rounds the share to a whole percentage, and reads a missing one as 0%", () => {
+    const total = (ratio: number | undefined) => overheadSection(overhead({ tokens: 500, ratio }))?.total
+    expect(total(0.2549)).toBe("≈500 tokens · 25%")
+    expect(total(0.2551)).toBe("≈500 tokens · 26%")
+    expect(total(1.5)).toBe("≈500 tokens · 150%")
+    expect(total(undefined)).toBe("≈500 tokens · 0%")
+  })
+
+  test("writes the figures with thousands separators in every language", () => {
+    for (const language of ["zh-CN", "en"] as const) {
+      setLanguage(language)
+      const section = overheadSection(
+        overhead({ tokens: 1_234_567, ratio: 0.5, sources: [source("tools", 1_234_567)] }),
+      )
+      expect(section?.total).toBe("≈1,234,567 tokens · 50%")
+      expect(section?.rows).toEqual(["≈1,234,567 tools"])
+    }
+  })
+
+  test("lists at most five sources, the largest, and keeps the server's order among equals", () => {
+    const names = ["environment", "language", "instructions", "skills", "hooks", "dag", "tools"] as const
+    const section = overheadSection(
+      overhead({ tokens: 100, ratio: 0.1, sources: names.map((name, index) => source(name, index === 6 ? 90 : 10)) }),
+    )
+    expect(OVERHEAD_ROWS_MAX).toBe(5)
+    expect(section?.rows).toEqual(["≈90 tools", "≈10 environment", "≈10 language", "≈10 instructions", "≈10 skills"])
+  })
+
+  test("does not touch the list the store holds", () => {
+    const sources = [source("environment", 1), source("tools", 9)]
+    const info = overhead({ tokens: 10, ratio: 0.1, sources })
+    overheadSection(info)
+    expect(info.sources.map((item) => item.source)).toEqual(["environment", "tools"])
+  })
+
+  test("names a source without a label by its source alone, no trailing space", () => {
+    const section = overheadSection(overhead({ tokens: 5, ratio: 0.1, sources: [source("runtime_context", 5)] }))
+    expect(section?.rows).toEqual(["≈5 runtime_context"])
+  })
+
+  test("takes a label as one clean line: escapes and line breaks of a remote text do not reach the screen", () => {
+    const label = "/r/\u001b[31mA\u001b[0m.md\nb\u0007"
+    const section = overheadSection(overhead({ tokens: 5, ratio: 0.1, sources: [source("instructions", 5, label)] }))
+    expect(section?.rows).toEqual(["≈5 instructions /r/A.md b"])
+  })
+
+  test("cuts a row that does not fit, with an ellipsis, in the width the user's terminal gives it", () => {
+    const long = `https://example.invalid/${"rules/".repeat(30)}AGENTS.md`
+    for (const aw of [1, 2] as const) {
+      const section = overheadSection(
+        overhead({ tokens: 5, ratio: 0.1, sources: [source("instructions", 5, long)] }),
+        aw,
+      )
+      const [row] = section!.rows
+      expect(row.startsWith("≈5 instructions https://ex")).toBe(true)
+      expect(row.endsWith("…")).toBe(true)
+      expect(cellWidth(row, aw)).toBeLessThanOrEqual(DRAWER_TEXT_CELLS)
+    }
+  })
+
+  test("keeps every line to the drawer's text width, whatever the numbers and the language", () => {
+    const worstSources: OverheadSource["source"][] = ["base", "tools", "instructions", "environment", "skills", "hooks"]
+    const worst = overhead({
+      tokens: 999_999_999_999,
+      ratio: 99_999.9,
+      window: 128_000,
+      windowSource: "default",
+      sources: worstSources.map((name) => source(name, 999_999_999_999, "/very/long/path/".repeat(8))),
+    })
+    for (const language of ["zh-CN", "en"] as const) {
+      for (const aw of [1, 2] as const) {
+        setLanguage(language)
+        const section = overheadSection(worst, aw)!
+        for (const line of [section.total, ...section.rows]) {
+          expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_TEXT_CELLS)
+        }
+      }
+    }
   })
 })
 
