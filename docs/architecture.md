@@ -71,7 +71,7 @@ TUI 使用 HTTP SDK 访问服务，在 [`context/sdk.tsx`](../packages/tui/src/c
 
 ## DAG、Goal 与模型调用
 
-DAG 的状态机、存储和投影机制位于 `packages/core/src/dag`；运行循环和调度协调位于 `packages/graphagent/src/dag`，该目录的模块划分见 [`CONTEXT.md`](../packages/graphagent/src/dag/CONTEXT.md) 的模块表。DAG Loop 负责工作流生命周期和节点调度，调度核心读取依赖状态并选择可运行节点：[`scheduling.ts`](../packages/core/src/dag/core/scheduling.ts#L18)、[`loop.ts`](../packages/graphagent/src/dag/runtime/loop.ts)（`DagLoop`）。
+DAG 的状态机、存储和投影机制位于 `packages/core/src/dag`；运行循环和调度协调位于 `packages/graphagent/src/dag`，该目录的模块划分见 [`CONTEXT.md`](../packages/graphagent/src/dag/CONTEXT.md) 的模块表。DAG Loop 负责工作流生命周期和节点调度，调度核心读取依赖状态并选择可运行节点：[`scheduling.ts`](../packages/core/src/dag/core/scheduling.ts#L18)、[`spawn-ready.ts`](../packages/graphagent/src/dag/runtime/spawn-ready.ts)（一轮调度）、[`loop.ts`](../packages/graphagent/src/dag/runtime/loop.ts)（`DagLoop` 的装配，其余的 loop 模块见 `CONTEXT.md`）。
 
 每个 DAG 节点在独立子会话中执行。创建子会话时记录父会话关系，随后调用 Session prompt 流程：[`spawn.ts`](../packages/graphagent/src/dag/runtime/spawn.ts#L565)、[`spawn.ts`](../packages/graphagent/src/dag/runtime/spawn.ts#L636)。模型层级由 DAG 配置决定，按节点角色选择：判断与验收类（`plan`、`verify`、`synthesize`、评审）、审查/仲裁 worker 以及 composer 的拆分与汇合节点使用 `advanced`，写者（含 `fan_out` 的包写者）、探索类和 compose 展开出的子节点使用 `standard`；没有块信息的手写节点沿用旧规则，标记为必需的使用 `advanced`。调度在启动节点前取得并发许可。
 

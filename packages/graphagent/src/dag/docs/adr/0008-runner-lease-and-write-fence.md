@@ -187,7 +187,8 @@ the loop pauses a workflow because recovery invented failures.
   `nodeStarted`, `nodeCompleted`, `nodeFailed`, `nodeSkipped`,
   `nodeTimeoutEscalated`, and `nodeExtendTimeout` as issued by the scheduler,
   the spawn path, the deadline watchers, and node-level recovery
-  (`src/dag/runtime/loop.ts`, `spawn.ts`, `recovery.ts`); `settleCompletion`;
+  (`src/dag/runtime/spawn-ready.ts`, `gates.ts`, `recover-workflow.ts`,
+  `replan-handler.ts`, `spawn.ts`, `recovery.ts`); `settleCompletion`;
   the `extend` that fan-out planning issues; the recovery `pause`; and `fail`
   for an orphan `pending` workflow or for `orchestrator_unresponsive`
   (`src/dag/runtime/delivery.ts`).
@@ -396,8 +397,8 @@ These PRs put new code in new files. `loop.ts` and `dag.ts` only lose lines.
 
 ## Deferred
 
-- The split of `loop.ts`: #1344, v2.1. The split of `dag.ts`, the asynchronous
-  git fingerprint of `DagLocation` (#1476) and git under the workflow lock
+- The splits of `loop.ts` and `dag.ts` (#1344), the asynchronous git
+  fingerprint of `DagLocation` (#1476) and git under the workflow lock
   (Amendment 5) are done.
 - Writing the epoch into the event payload.
 - Having the host start instances for directories that have none.
@@ -897,7 +898,7 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
 - Why. Terminal events do not cross processes: when another process ended the workflow, no handler in this
   one hears of it, and the entry has no other way out (see "a lost lease is news", above). `retire` is that
   way out. It does what the `WorkflowTerminal` handlers do for an event this process did hear of.
-- One routine, two callers. `retireTerminal` in `loop.ts` is the body of the `WorkflowTerminal` handlers,
+- One routine, two callers. `retireTerminal` in `teardown.ts` is the body of the `WorkflowTerminal` handlers,
   moved, and the reconciler's `retire` input is the same routine; the action runs in the workflow's flight, as an
   eviction does. Under the entry's `evalLock` it reads the workflow row again (a live row means that the news is
   stale, a late terminal event or a verdict made before an extend reopened the workflow, and the entry stays),
