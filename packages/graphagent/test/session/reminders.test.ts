@@ -12,8 +12,10 @@ import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Session } from "@/session/session"
 import { Injection } from "@graphagent/core/system-context/injection"
+import { ReminderState } from "@/session/reminder-state"
 import { SessionReminders } from "@/session/reminders"
-import { PartID, SessionID } from "@/session/schema"
+import { MessageID, PartID, SessionID } from "@/session/schema"
+import { Todo } from "@/session/todo"
 import { testEffect } from "../lib/effect"
 
 // The three texts the plan reminders write, each in one block with source "reminder" and kind "plan" (#1456).
@@ -463,5 +465,122 @@ describe("session.reminders experimental plan mode", () => {
         }
       }),
     { git: true },
+  )
+})
+
+describe("session.reminders todo note after an automatic compaction", () => {
+  const open: Todo.Info[] = [{ content: "write tests", status: "in_progress", priority: "high" }]
+  const older: Todo.Info[] = [{ content: "an earlier plan", status: "pending", priority: "low" }]
+  const finished: Todo.Info[] = [{ content: "write tests", status: "completed", priority: "high" }]
+  const noteOf = (items: Todo.Info[]) =>
+    Injection.wrap("reminder", SessionReminders.renderReminder(items), { kind: "todo" })
+  const NOTE = noteOf(open)
+  const CLEARED = Injection.wrap("reminder", "[todo reminder] No uncompleted todo items remain.", { kind: "todo" })
+
+  // The first request of a turn of a session that can call todowrite; the last message is the turn's user message.
+  const settleTodos = (messages: SessionV1.WithParts[], todos: Todo.Info[]) => {
+    const lastUser = messages.at(-1)?.info
+    if (lastUser?.role !== "user") throw new Error("the history does not end with a user message")
+    return SessionReminders.settle({ messages, lastUser, agent: build, tools: ["todowrite"], dagEligible: false }).pipe(
+      Effect.provide(Layer.mock(Todo.Service, { get: () => Effect.succeed(todos) })),
+    )
+  }
+
+  const syntheticText = (id: string, text: string, extra: Partial<SessionV1.TextPart> = {}): SessionV1.TextPart => ({
+    id: PartID.make(`prt_${id}`),
+    sessionID,
+    messageID: MessageID.make(id),
+    type: "text",
+    text,
+    synthetic: true,
+    ...extra,
+  })
+
+  // A note an earlier turn wrote into its message, marked as `settle` marks it.
+  const noted = (id: string, items: Todo.Info[]) => {
+    const text = noteOf(items)
+    const metadata = { [ReminderState.KEY]: { kind: "todo", digest: ReminderState.digest(text) } }
+    return user(id, [syntheticText(id, text, { metadata })])
+  }
+
+  // The message an automatic compaction appends to continue the turn: one synthetic text part, marked by the compaction.
+  const continuing = (id: string, extra: Partial<SessionV1.TextPart> = {}) =>
+    user(id, [syntheticText(id, "Open todos: ...", { metadata: { compaction_continue: true }, ...extra })])
+
+  it.effect("leaves the todo note out of the message that continues an automatic compaction", () =>
+    Effect.gen(function* () {
+      // The continuation text lists the open items itself, and the compaction took the earlier note away.
+      const messages = deepFreeze([continuing("msg_2")])
+      const next = yield* settleTodos(messages, open)
+      expect(persisted).toHaveLength(0)
+      expect(next).toBe(messages)
+    }),
+  )
+
+  it.effect("leaves it out as well when the retained tail still holds a note for another list", () =>
+    Effect.gen(function* () {
+      const messages = deepFreeze([noted("msg_1", older), assistant("msg_2", "build"), continuing("msg_3")])
+      yield* settleTodos(messages, open)
+      expect(persisted).toHaveLength(0)
+    }),
+  )
+
+  it.effect("writes the note into the next user message, once", () =>
+    Effect.gen(function* () {
+      const messages = deepFreeze([continuing("msg_2"), assistant("msg_3", "build"), user("msg_4")])
+      const next = yield* settleTodos(messages, open)
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]).toMatchObject({ type: "text", messageID: "msg_4", synthetic: true, text: NOTE })
+
+      persisted.length = 0
+      yield* settleTodos([...next, assistant("msg_5", "build"), user("msg_6")], open)
+      expect(persisted).toHaveLength(0)
+    }),
+  )
+
+  it.effect("writes the note into an ordinary user message with the same items", () =>
+    Effect.gen(function* () {
+      yield* settleTodos([user("msg_1")], open)
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]).toMatchObject({ type: "text", messageID: "msg_1", synthetic: true, text: NOTE })
+    }),
+  )
+
+  it.effect("writes the note into the replayed prompt of an overflow compaction", () =>
+    Effect.gen(function* () {
+      // The replay carries the user's own parts, with no marker: the continuation text is not part of it.
+      const replayed = user("msg_2", [syntheticText("msg_2", "current task", { synthetic: false })])
+      yield* settleTodos([replayed], open)
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]).toMatchObject({ type: "text", messageID: "msg_2", text: NOTE })
+    }),
+  )
+
+  it.effect("counts the marker only on a synthetic text part", () =>
+    Effect.gen(function* () {
+      yield* settleTodos([continuing("msg_1", { synthetic: false })], open)
+      expect(persisted).toHaveLength(1)
+      persisted.length = 0
+      yield* settleTodos([continuing("msg_2", { metadata: { other: true } })], open)
+      expect(persisted).toHaveLength(1)
+    }),
+  )
+
+  it.effect("keeps its behavior when the continuation has no open item", () =>
+    Effect.gen(function* () {
+      // No note in the history and nothing open: nothing to write.
+      yield* settleTodos([continuing("msg_1")], finished)
+      expect(persisted).toHaveLength(0)
+
+      // A note still in force when the list has no open item is withdrawn, the continuation or not.
+      yield* settleTodos([noted("msg_2", open), assistant("msg_3", "build"), continuing("msg_4")], finished)
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]).toMatchObject({
+        type: "text",
+        messageID: "msg_4",
+        text: CLEARED,
+        metadata: { [ReminderState.KEY]: { kind: "todo", digest: ReminderState.CLEARED } },
+      })
+    }),
   )
 })

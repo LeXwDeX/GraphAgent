@@ -92,7 +92,7 @@ describe("CompactionFacts.requestsOf", () => {
       user(text("  first part \n"), text("   "), text(long)),
     ]
     expect(CompactionFacts.requestsOf({ messages, child: false })).toEqual({
-      latest: { text: `first part\n${long}`, attachments: [] },
+      latest: { messageID: messages[2].info.id, text: `first part\n${long}`, attachments: [] },
     })
   })
 
@@ -105,6 +105,7 @@ describe("CompactionFacts.requestsOf", () => {
       user(text("hidden", { ignored: true })),
     ]
     expect(CompactionFacts.requestsOf({ messages, child: false }).latest).toEqual({
+      messageID: messages[0].info.id,
       text: "real request",
       attachments: [],
     })
@@ -133,6 +134,7 @@ describe("CompactionFacts.requestsOf", () => {
     expect(
       CompactionFacts.requestsOf({ messages: [user(text("old request")), attached], child: false }).latest,
     ).toEqual({
+      messageID: attached.info.id,
       text: "review the attachment",
       attachments: ["[Attached text/plain: pasted.txt]"],
     })
@@ -141,6 +143,7 @@ describe("CompactionFacts.requestsOf", () => {
   test("writes one line per file part and counts an attachment-only turn as a request", () => {
     const messages = [user(text("old request")), user(text(" "), file("image/png", "cat.png"), file("application/pdf"))]
     expect(CompactionFacts.requestsOf({ messages, child: false }).latest).toEqual({
+      messageID: messages[1].info.id,
       text: "",
       attachments: ["[Attached image/png: cat.png]", "[Attached application/pdf: file]"],
     })
@@ -166,8 +169,8 @@ describe("CompactionFacts.requestsOf", () => {
       user(text("follow-up two")),
     ]
     const found = CompactionFacts.requestsOf({ messages, child: true })
-    expect(found.first).toEqual({ text: "task prompt", attachments: [] })
-    expect(found.latest).toEqual({ text: "follow-up two", attachments: [] })
+    expect(found.first).toEqual({ messageID: messages[0].info.id, text: "task prompt", attachments: [] })
+    expect(found.latest).toEqual({ messageID: messages[3].info.id, text: "follow-up two", attachments: [] })
   })
 
   test("a child session leaves the first request out when it is the latest one", () => {
@@ -184,14 +187,50 @@ describe("CompactionFacts.requestsOf", () => {
       user(text("latest")),
     ]
     expect(CompactionFacts.requestsOf({ messages, child: true }).first).toEqual({
+      messageID: messages[2].info.id,
       text: "task prompt",
       attachments: ["[Attached text/plain: spec.md]"],
     })
   })
 })
 
+describe("CompactionFacts.quotedRequests", () => {
+  // The head is what the summary replaces; the messages after it are the retained tail.
+  const turns = [user(text("older request")), user(text("latest request"))]
+  const [older, latest] = turns
+  const requests = CompactionFacts.requestsOf({ messages: turns, child: true })
+
+  test("quotes the latest request when the summary replaces its message", () => {
+    expect(requests.latest?.messageID).toBe(latest.info.id)
+    expect(CompactionFacts.quotedRequests(requests, turns)).toBe(requests)
+  })
+
+  test("leaves the latest request out while its message is in the retained tail", () => {
+    expect(CompactionFacts.quotedRequests(requests, [older])).toEqual({ first: requests.first })
+    expect(CompactionFacts.quotedRequests(requests, [])).toEqual({ first: requests.first })
+    // A root session has no first request: nothing is quoted.
+    const root = CompactionFacts.requestsOf({ messages: turns, child: false })
+    expect(CompactionFacts.quotedRequests(root, [older])).toEqual({})
+  })
+
+  test("keeps the first request of a child whether or not the tail holds it", () => {
+    expect(CompactionFacts.quotedRequests(requests, [older]).first).toEqual(requests.first)
+    expect(CompactionFacts.quotedRequests(requests, []).first).toEqual(requests.first)
+  })
+
+  test("finds the message by its id, not by its place", () => {
+    const copy = { ...latest, parts: [] }
+    expect(CompactionFacts.quotedRequests(requests, [older, copy])).toBe(requests)
+  })
+
+  test("has nothing to leave out without a latest request", () => {
+    expect(CompactionFacts.quotedRequests({}, [older])).toEqual({})
+  })
+})
+
 describe("CompactionFacts.fitRequests", () => {
-  const request = (value: string, attachments: string[] = []) => ({ text: value, attachments })
+  const messageID = MessageID.ascending()
+  const request = (value: string, attachments: string[] = []) => ({ messageID, text: value, attachments })
   const marker = /\[\.\.\. (\d+) characters omitted \.\.\.\]/
 
   test("leaves a request that fits its budget as it is, up to the budget itself", () => {
@@ -224,8 +263,10 @@ describe("CompactionFacts.fitRequests", () => {
       first: request(text),
       latest: request(text),
     })
-    // Alone, the same request has the whole budget.
+    // Alone, the same request has the whole budget: the latest one, and the first one when the latest is not quoted.
     expect(CompactionFacts.fitRequests({ latest: request(text) }, 60)).toEqual({ latest: request(text) })
+    expect(CompactionFacts.fitRequests({ first: request(text) }, 60)).toEqual({ first: request(text) })
+    expect(CompactionFacts.fitRequests({ first: request(text) }, 30).first?.text).toMatch(marker)
   })
 
   test("counts CJK text by its own density, one character per token", () => {

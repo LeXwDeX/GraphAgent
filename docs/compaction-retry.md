@@ -49,6 +49,133 @@ nothing is committed: its message and the compaction marker are removed,
 compaction reports `Compaction produced an empty summary`, and the session
 returns to idle so the next prompt is not blocked.
 
+## Continuation after an automatic compaction
+
+A committed automatic compaction ends by adding one user message, so the turn
+goes on from the summary. A manual compaction adds none; the retained tail
+simply follows the summary. After a provider overflow that hit a turn before it
+finished any step, with an earlier turn left to summarize, the message is the
+replay of that turn's prompt. It carries no continuation text and the
+compaction writes no export. In every other automatic case the message holds
+the continuation text, a synthetic text part marked
+`metadata.compaction_continue: true` and wrapped in a `compaction`
+system-reminder block.
+
+### Structure
+
+The requests, the task state and the file lists are facts the engine reads from
+the stored messages, the todo list and the workflow store, not from the summary.
+They come from the whole stored session. The text, in this order, with each part
+present only when it has content:
+
+```text
+<overflow note>
+<opening>
+Original task prompt:
+Latest user request:
+Context:
+  Open todos:
+  Active workflows:
+  Files changed in this session:
+  Files read in this session:
+  Summary goal:
+  Summary in progress (may be stale):
+  Summary next steps (may be stale):
+<retrieval note>
+<skill note>
+```
+
+- The overflow note appears only when the compaction answered a provider
+  overflow. It names large media attachments when the latest request carries
+  files, whether or not the text quotes that request.
+- The opening says to continue the pending work only if the latest user request
+  still calls for it, and that this request takes precedence over the summary
+  and the task state below, so work it stopped or replaced is not resumed. It
+  is used when there is an open todo, an active workflow, or an `In Progress` or
+  `Next Steps` item in the summary. Otherwise it says to continue if there are
+  next steps, or to ask for clarification.
+- A request is the user's own text plus one `[Attached <mime>: <name>]` line
+  per file. It stays whole while it fits its share of a token budget: the
+  tokens the retained tail may take (`compaction.preserve_recent_tokens`, or a
+  quarter of the model's usable input budget, kept between 2,000 and 8,000).
+  The requests that are quoted share it. A longer request keeps its beginning
+  and its end with the number of omitted characters between them; the
+  attachment lines are never cut.
+- `Original task prompt` is the first request of a child session, unless it is
+  also the latest one. A root session has none.
+- `Open todos` lists the items that are neither completed nor cancelled.
+  `Active workflows` lists the workflows that are pending, running, paused or
+  stepping.
+- The file lists hold absolute paths, oldest first. Changed files come from
+  patch parts and completed `edit`, `write` and `apply_patch` calls; read files
+  come from completed `read` calls and leave out files the session changed.
+  Each list keeps the latest 100 paths and counts the older ones.
+- The summary stays in the conversation as its own message. The text repeats
+  only its first `Goal` item and its `In Progress` and `Next Steps` items, as
+  narrative, and labels the last two possibly stale.
+- The skill note names the skills the replaced messages loaded, which are no
+  longer in context, and says to load them again with the skill tool.
+
+### The latest request and the todo note
+
+The latest user request is quoted only when the summary replaced its message,
+that is, when the retained tail does not hold it: `compaction.tail_turns` is 0,
+the latest turn does not fit the tail budget, or the tail starts inside that
+turn, after the request. A request in the tail is in context exactly as the user
+wrote it, so the text neither quotes it a second time nor spends budget on it:
+a child session's task prompt then has the whole budget. The opening still
+speaks of the latest user request; it means the one in the conversation.
+
+The todo state reminder (`[todo reminder]`) joins the user message that opens a
+turn when the history holds no current note, and the compaction takes the
+earlier note away with the messages it replaces. The continuation message
+already lists the open todos, so the reminder is not written into it while open
+todos exist. The next user message gets the reminder as usual, once for a list
+that stays the same. When no todo is open, a note still in force is withdrawn as
+before. A manual compaction and an overflow replay are not affected.
+
+### Compaction export
+
+Each automatic compaction that sends the continuation text first saves the
+messages its summary replaces as one text file. The summary only narrates
+them; the file is where the model reads what was said and done word for word,
+with `grep` and `read`.
+
+- Path: `TRUNCATION_DIR/compacted_<sessionID>_<compactionID>.txt`.
+  `TRUNCATION_DIR` is the `tool-output` directory under the application data
+  directory, where saved tool outputs live. `compactionID` is the compaction
+  marker's message ID, so every compaction has its own file and a later one
+  never overwrites an earlier one. The file mode is 0600, because the messages
+  hold whatever the session read and ran.
+- Content: one header line, `# Messages compacted from session <sessionID>
+  (compaction <compactionID>). Reasoning parts are not included.`, then each
+  message as a blank line, a `=== <role> <message ID> <time>` line (the time in
+  ISO 8601) and its parts: text as stored; a tool call as `[tool <name>
+  <status>] <JSON input>` followed by its complete output or error; patch
+  parts as `[patch] <file>, <file>`; file parts as an `[Attached <mime>:
+  <name>]` placeholder, never the file itself. Reasoning and bookkeeping parts
+  are left out.
+- Scope: only the messages the summary replaced. The retained tail is still in
+  context and is not in the file. Neither are the compaction marker and the
+  summaries of earlier compactions; what an earlier automatic compaction
+  replaced is in its own file.
+- Lifetime: a file lives as long as its session. The age-based cleanup of the
+  directory removes saved tool outputs only, so nothing cleans these by age;
+  `Session.remove` deletes every export of the session. The directory is on
+  every agent's external-directory allow list unless a configuration denies that
+  path.
+- Failure: a file that cannot be written costs only the retrieval note. The
+  compaction logs a `compaction export failed` warning and goes on; the
+  continuation text then names no file. A compaction that replaced no message
+  writes none.
+
+The retrieval note closes the continuation text, ahead of the skill note. It
+names this compaction's file, says that each message in it starts with a
+`=== role id time` line, shows how to search it with `grep` and read a range
+with `read`, and ends with the pattern for every export of the session,
+`TRUNCATION_DIR/compacted_<sessionID>_*.txt`, which reaches the files of
+earlier compactions too.
+
 ## Compaction request modes
 
 `compaction.mode` accepts `small`, `shared`, and `auto`. The legacy and current

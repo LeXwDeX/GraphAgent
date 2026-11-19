@@ -8,7 +8,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MessageV2 } from "./message-v2"
 import { ReminderState } from "./reminder-state"
-import { PartID, type SessionID } from "./schema"
+import { PartID } from "./schema"
 import { Session } from "./session"
 import { Todo } from "./todo"
 import PROMPT_PLAN from "./prompt/plan.txt"
@@ -160,20 +160,29 @@ const CLEARED: Readonly<Record<ReminderState.Kind, string>> = {
 const planState = (flags: RuntimeFlags.Info, agent: Agent.Info): ReminderState.Desired =>
   flags.experimentalPlanMode ? ReminderState.SKIP : agent.name === "plan" ? PLAN_REMINDER : undefined
 
+// The message an automatic compaction appends to continue the turn: its text is marked by `SessionCompaction`.
+const isCompactionContinue = (message: SessionV1.WithParts) =>
+  message.parts.some(
+    (part) => part.type === "text" && part.synthetic === true && part.metadata?.compaction_continue === true,
+  )
+
 // The todo note: the uncompleted items. A session that cannot call todowrite, a missing Todo service and a todo list
-// that cannot be read leave the note as it is: it is decoration and never fails a turn.
-const todoState = Effect.fnUntraced(function* (sessionID: SessionID, tools: readonly string[]) {
+// that cannot be read leave the note as it is: it is decoration and never fails a turn. A turn that opens with the
+// continuation text of an automatic compaction leaves it too: that text lists the same open items, and the compaction
+// took the earlier note away, so the note would say them twice in one message. The next user message writes it.
+const todoState = Effect.fnUntraced(function* (tail: SessionV1.WithParts, tools: readonly string[]) {
   if (!tools.includes("todowrite")) return ReminderState.SKIP
   const todo = yield* Effect.serviceOption(Todo.Service)
   if (Option.isNone(todo)) return ReminderState.SKIP
   const items = yield* todo.value
-    .get(sessionID)
+    .get(tail.info.sessionID)
     .pipe(
       Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(undefined))),
     )
   if (items === undefined) return ReminderState.SKIP
   const open = items.filter((item) => item.status !== "completed" && item.status !== "cancelled")
-  return open.length === 0 ? undefined : stateBlock("todo", renderReminder(open))
+  if (open.length === 0) return undefined
+  return isCompactionContinue(tail) ? ReminderState.SKIP : stateBlock("todo", renderReminder(open))
 })
 
 // The DAG note: on while the mode is on, published and available. A turn an automation opened is not the user's.
@@ -204,7 +213,7 @@ export const settle = Effect.fn("SessionReminders.settle")(function* (input: {
     messages: input.messages,
     desired: {
       plan: planState(flags, input.agent),
-      todo: yield* todoState(tail.info.sessionID, input.tools),
+      todo: yield* todoState(tail, input.tools),
       dag: dagState(tail, input.dagEligible),
     },
     cleared: CLEARED,

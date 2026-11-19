@@ -21,6 +21,7 @@ import { Image } from "@/image/image"
 import { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { SessionReminders } from "../../src/session/reminders"
 import { CompactionExport } from "../../src/session/compaction-export"
 import { TRUNCATION_DIR } from "../../src/tool/truncation-dir"
 import { EngineProcess } from "../../src/session/engine-process"
@@ -1200,12 +1201,13 @@ describe("session.compaction.process", () => {
           .flatMap((message) => message.parts)
           .find((item): item is SessionV1.CompactionPart => item.type === "compaction")
         expect(result).toBe("continue")
-        // The recent turn stays verbatim, so its skill body is still in context.
+        // The recent turn stays verbatim, so its skill body is still in context, and so is its request: the text does
+        // not quote that a second time.
         expect(part?.tail_start_id).toBe(recent.id)
         expect(syntheticTexts(last)[0]).toBe(
           Injection.wrap(
             "compaction",
-            `${fallbackText}\nLatest user request:\nrecent\n${summaryContext}\n${savedNote(session.id, msgs.at(-1)!.info.id)}\n\n${skillNote("git-workflow")}`,
+            `${fallbackText}\n${summaryContext}\n${savedNote(session.id, msgs.at(-1)!.info.id)}\n\n${skillNote("git-workflow")}`,
           ),
         )
       }).pipe(withCompaction({ config: cfg({ tail_turns: 1 }) })),
@@ -1335,6 +1337,7 @@ describe("session.compaction.process", () => {
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
+        // With no retained tail the summary replaces both requests, so the text quotes the latest one.
         yield* createUserMessage(session.id, "finish issue 954")
         yield* createUserMessage(session.id, "also check the typecheck")
         yield* createSummaryCompaction(session.id)
@@ -1368,7 +1371,7 @@ describe("session.compaction.process", () => {
       }).pipe(
         withCompaction({
           llm: stub.layer,
-          config: cfg({ tail_turns: 1 }),
+          config: cfg({ tail_turns: 0 }),
           todo: todoLayer(todos),
           dagStore: dagStoreLayer(workflows),
         }),
@@ -1429,6 +1432,7 @@ describe("session.compaction.process", () => {
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
+        // With no retained tail the summary replaces both requests, so the text quotes the latest one.
         yield* createUserMessage(session.id, "finish the old plan")
         yield* createUserMessage(session.id, "cancel the old plan; do not continue it")
         yield* createSummaryCompaction(session.id)
@@ -1455,7 +1459,7 @@ describe("session.compaction.process", () => {
         expect(text).not.toContain("Continue with the pending plan")
         expect(text).not.toContain("Continue with the current pending work")
         expect(text).not.toContain("Continue if you have next steps")
-      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }), todo: todoLayer(todos) }))
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }), todo: todoLayer(todos) }))
     },
     { git: true },
   )
@@ -1470,6 +1474,7 @@ describe("session.compaction.process", () => {
         return Effect.gen(function* () {
           const ssn = yield* SessionNs.Service
           const session = yield* ssn.create({})
+          // With no retained tail the summary replaces both requests, so the text quotes the latest one.
           yield* createUserMessage(session.id, "old plan")
           yield* createUserMessage(session.id, request)
           yield* createSummaryCompaction(session.id)
@@ -1493,7 +1498,7 @@ describe("session.compaction.process", () => {
           expect(text).toContain("- old cancelled step")
           expect(text).not.toContain("Continue with the pending plan")
           expect(text).not.toContain("Continue if you have next steps")
-        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }), todo: todoLayer(todos) }))
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }), todo: todoLayer(todos) }))
       },
       { git: true },
     )
@@ -4849,6 +4854,188 @@ describe("session.compaction continuation text", () => {
     { git: true },
   )
 
+  // Where the retained tail of the compaction starts, when it kept one.
+  const tailStart = (sessionID: SessionID) =>
+    SessionNs.use
+      .messages({ sessionID })
+      .pipe(
+        Effect.map(
+          (messages) =>
+            messages
+              .flatMap((message) => message.parts)
+              .find((item): item is SessionV1.CompactionPart => item.type === "compaction")?.tail_start_id,
+        ),
+      )
+
+  itCompaction.instance(
+    "does not quote the latest request again while the retained tail holds it",
+    () => {
+      const stub = llm()
+      // Pending work makes the text rank the latest request over the summary; the sentence is about the request the
+      // model reads in the tail.
+      stub.push(reply(validSummary({ progress: "Waiting on CI" })))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "older request")
+        const recent = yield* createUserMessage(session.id, "recent request")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        expect(yield* tailStart(session.id)).toBe(recent.id)
+        const text = yield* continuation(session.id)
+        expect(text).toContain("The latest user request takes precedence over the summary and task state below")
+        expect(text).toContain("Summary in progress (may be stale):\n- Waiting on CI")
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain("recent request")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }) }))
+    },
+    { git: true },
+  )
+
+  for (const [name, compaction] of [
+    ["the config keeps no tail", { tail_turns: 0 }],
+    // No message of the latest turn fits the tail budget, so the tail is empty.
+    ["the tail budget cannot hold the latest turn", { tail_turns: 1, preserve_recent_tokens: 300 }],
+  ] as const)
+    itCompaction.instance(
+      `quotes the latest request once the summary replaced it: ${name}`,
+      () => {
+        const stub = llm()
+        stub.push(reply(validSummary()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const ctx = yield* InstanceState.context
+          const session = yield* ssn.create({})
+          yield* createUserMessage(session.id, "older request")
+          const recent = yield* createUserMessage(session.id, "recent request")
+          const answer = yield* createAssistantMessage(session.id, recent.id, ctx.directory)
+          yield* textPart(session.id, answer.id, "long answer ".repeat(200))
+          yield* createSummaryCompaction(session.id)
+
+          expect(yield* compactAuto(session.id)).toBe("continue")
+
+          expect(yield* tailStart(session.id)).toBeUndefined()
+          const text = yield* continuation(session.id)
+          expect(text).toContain("Latest user request:\nrecent request\n")
+          expect(text).not.toContain("older request")
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg(compaction) }))
+      },
+      { git: true },
+    )
+
+  itCompaction.instance(
+    "quotes the latest request when the retained tail starts inside its turn",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const ctx = yield* InstanceState.context
+        const session = yield* ssn.create({})
+        const request = yield* createUserMessage(session.id, "migrate the schema")
+        const longStep = yield* createAssistantMessage(session.id, request.id, ctx.directory)
+        yield* textPart(session.id, longStep.id, "long step ".repeat(500))
+        const lastStep = yield* createAssistantMessage(session.id, request.id, ctx.directory)
+        yield* textPart(session.id, lastStep.id, "short step")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        // The turn does not fit the tail budget, so the tail begins after the request: the summary replaced it.
+        expect(yield* tailStart(session.id)).toBe(lastStep.id)
+        expect(yield* continuation(session.id)).toContain("Latest user request:\nmigrate the schema\n")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 300 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "a child session keeps its whole task prompt and leaves the latest request to the tail that holds it",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      // 242 tokens: whole within the budget of 300, cut within the half of it the two requests would share.
+      const prompt = `BEGIN-OF-TASK ${"detail ".repeat(100)}END-OF-TASK`
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const parent = yield* ssn.create({})
+        const child = yield* ssn.create({ parentID: parent.id })
+        yield* createUserMessage(child.id, prompt)
+        const latest = yield* createUserMessage(child.id, "also include the lexer")
+        yield* createSummaryCompaction(child.id)
+
+        expect(yield* compactAuto(child.id)).toBe("continue")
+
+        expect(yield* tailStart(child.id)).toBe(latest.id)
+        const text = yield* continuation(child.id)
+        expect(text).toContain(`Original task prompt:\n${prompt}\n`)
+        expect(text).not.toContain("characters omitted")
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain("also include the lexer")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 300 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "the turn that opens with the continuation text gets no todo note beside its open todos, the next one gets it once",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      const todos: Todo.Info[] = [{ content: "write tests", status: "in_progress", priority: "high" }]
+      const build: Agent.Info = {
+        name: "build",
+        mode: "primary",
+        permission: Permission.fromConfig({ "*": "allow" }),
+        options: {},
+      }
+      // What the prompt loop does for the first request of a turn, on the history the model reads.
+      const settle = (sessionID: SessionID) =>
+        Effect.gen(function* () {
+          const stored = yield* SessionNs.use.messages({ sessionID })
+          const visible = MessageV2.filterCompacted([...stored].reverse())
+          const lastUser = visible.at(-1)?.info
+          if (lastUser?.role !== "user") throw new Error("the history does not end with a user message")
+          return yield* SessionReminders.settle({
+            messages: visible,
+            lastUser,
+            agent: build,
+            tools: ["todowrite"],
+            dagEligible: false,
+          })
+        }).pipe(Effect.provide(Layer.mergeAll(todoLayer(todos), RuntimeFlags.layer({ experimentalPlanMode: false }))))
+      const textsOf = (message: SessionV1.WithParts | undefined) =>
+        message?.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])) ?? []
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const ctx = yield* InstanceState.context
+        const session = yield* ssn.create({})
+        // The first turn carries the note, as the engine writes it. It sits in the part the summary replaces.
+        const older = yield* createUserMessage(session.id, "older request")
+        const first = yield* settle(session.id)
+        expect(textsOf(first.at(-1)).filter((text) => text.includes("[todo reminder]"))).toHaveLength(1)
+        yield* createAssistantMessage(session.id, older.id, ctx.directory)
+        const recent = yield* createUserMessage(session.id, "recent request")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id)).toBe("continue")
+
+        expect(yield* tailStart(session.id)).toBe(recent.id)
+        const continued = textsOf((yield* settle(session.id)).at(-1))
+        expect(continued.some((text) => text.includes("Open todos:\n- in_progress: write tests"))).toBe(true)
+        expect(continued.some((text) => text.includes("[todo reminder]"))).toBe(false)
+
+        // The compaction took the note away, so the next user message sends it, once.
+        yield* createUserMessage(session.id, "next question")
+        const next = textsOf((yield* settle(session.id)).at(-1))
+        expect(next.filter((text) => text.includes("[todo reminder] 1 uncompleted todo item"))).toHaveLength(1)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }), todo: todoLayer(todos) }))
+    },
+    { git: true },
+  )
+
   itCompaction.instance(
     "keeps the system text, tool switches and output format of the prior turn on the continuation message",
     () => {
@@ -5056,6 +5243,38 @@ describe("session.compaction continuation text", () => {
     }),
   )
 
+  itCompaction.instance(
+    "keeps the media explanation of an overflow when the retained tail holds the request with the attachments",
+    () => {
+      const stub = llm()
+      stub.push(reply(validSummary()))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const root = (yield* TestInstance).directory
+        const session = yield* ssn.create({})
+        const earlier = yield* createUserMessage(session.id, "earlier question")
+        const earlierAnswer = yield* createAssistantMessage(session.id, earlier.id, root)
+        yield* textPart(session.id, earlierAnswer.id, "earlier answer")
+        const picture = yield* createUserMessage(session.id, "what is in this picture?")
+        yield* filePart(session.id, picture.id, "image/png", "cat.png")
+        // The turn finished a step, so nothing is replayed and the follow-up is the continuation text.
+        const step = yield* createAssistantMessage(session.id, picture.id, root)
+        yield* textPart(session.id, step.id, "looking at it")
+        yield* createSummaryCompaction(session.id)
+
+        expect(yield* compactAuto(session.id, true)).toBe("continue")
+
+        expect(yield* tailStart(session.id)).toBe(picture.id)
+        const text = yield* continuation(session.id)
+        expect(text).toContain("due to large media attachments")
+        expect(text).toContain("explain that the attachments were too large to process")
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain("what is in this picture?")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }) }))
+    },
+    { git: true },
+  )
+
   it.instance(
     "does not add the overflow sentence to a continuation that is not an overflow",
     Effect.gen(function* () {
@@ -5164,8 +5383,10 @@ describe("session.compaction continuation text", () => {
         expect(saved).toContain("\nolder answer\n")
         expect(saved).not.toContain("recent request")
         expect(saved).not.toContain("recent answer")
-        // The request the continuation quotes is the retained one: it is in context, not in the file.
-        expect(yield* continuation(session.id)).toContain("Latest user request:\nrecent request\n")
+        // The retained request is in context, not in the file, and the continuation does not quote it either.
+        const text = yield* continuation(session.id)
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain("recent request")
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }) }))
     },
     { git: true },
