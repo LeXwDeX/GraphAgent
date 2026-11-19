@@ -99,9 +99,12 @@ steps:
             # Hosted agents occasionally lose DNS for the apt mirror. Retry the
             # whole update+install sequence with backoff; one transient failure
             # must not fail every unit job.
+            # apt can also hang (waiting on the dpkg lock or a silent mirror): every
+            # command has a time limit, so a hang fails and is retried as well.
+            apt_opts=(-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o DPkg::Lock::Timeout=60)
             for attempt in 1 2 3 4 5; do
-              if sudo apt-get -o Acquire::Retries=5 update -qq \
-                && sudo apt-get -o Acquire::Retries=5 install -y -qq ripgrep; then
+              if sudo timeout 90 apt-get "${apt_opts[@]}" update -qq \
+                && sudo timeout 90 apt-get "${apt_opts[@]}" install -y -qq ripgrep; then
                 break
               fi
               if [ "$attempt" -eq 5 ]; then
@@ -113,6 +116,9 @@ steps:
           fi
           rg --version | head -1
         displayName: Setup ripgrep
+        # Five attempts of at most three minutes each fit; a step that still hangs
+        # past this is stopped and retried instead of holding the job.
+        timeoutInMinutes: 20
         retryCountOnTaskFailure: 2
 
   - ${{ if parameters.gitIdentity }}:
