@@ -3,6 +3,7 @@
 
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -17,6 +18,7 @@ import type { ChatInput, ChatParams } from "../../src/provider/adapter/types"
 import { testEffect } from "../lib/effect"
 import { jsonSchema, streamText, tool, wrapLanguageModel, type ModelMessage } from "ai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 
 const PROMPT_IDENTITY = "You are GraphAgent, a coding agent working in the user's workspace."
@@ -128,6 +130,45 @@ describe("runtime capabilities in model requests", () => {
       })
       expect(Object.keys(prepared.tools)).toEqual(["read"])
     }),
+  )
+  it.instance(
+    "a read-only MCP tool stays advertised to a read-only built-in subagent; a deny or another agent closes it",
+    () =>
+      Effect.gen(function* () {
+        const input = yield* request()
+        const schema = jsonSchema({ type: "object", properties: {} })
+        const mcp = (readOnly: boolean) =>
+          McpCatalog.bindTool(tool({ description: "mcp", inputSchema: schema }), {
+            server: "srv",
+            tool: "t",
+            source: "unknown",
+            ...(readOnly ? { readOnly } : {}),
+          })
+        const tools = {
+          read: tool({ description: "read", inputSchema: schema }),
+          srv_lookup: mcp(true),
+          srv_update: mcp(false),
+        }
+        // An agent shaped like `explore`: built in, a subagent, everything denied but what its rules list.
+        const native = Permission.fromConfig({ "*": "deny", read: "allow" })
+        const explore = { ...input.agent, name: "explore", mode: "subagent" as const, native: true, permission: native }
+        const deny = { permission: "srv_lookup", pattern: "*", action: "deny" } as const
+        const advertised = (override: Partial<Parameters<typeof prepare>[0]>) =>
+          prepare({ ...input, tools, agent: explore, nativePermission: native, ...override }).pipe(
+            Effect.map((prepared) => Object.keys(prepared.tools)),
+          )
+
+        // The tool that declared the hint is advertised; the one that did not is not.
+        expect(yield* advertised({})).toEqual(["read", "srv_lookup"])
+        // A deny the user wrote closes it, in the rules of the agent or of the session.
+        expect(yield* advertised({ agent: { ...explore, permission: [...native, deny] } })).toEqual(["read"])
+        expect(yield* advertised({ permission: [deny] })).toEqual(["read"])
+        // An agent that is not built in, or is not a subagent, is not given the grant.
+        expect(yield* advertised({ agent: { ...explore, native: false } })).toEqual(["read"])
+        expect(yield* advertised({ agent: { ...explore, mode: "primary" } })).toEqual(["read"])
+        // Without the native rules there is no telling which of the agent's rules are its own: its `*` deny decides.
+        expect(yield* advertised({ nativePermission: undefined })).toEqual(["read"])
+      }),
   )
   for (const [provider, model, npm] of [
     ["anthropic", "claude-sonnet-4", "@ai-sdk/anthropic"],
@@ -260,6 +301,178 @@ describe("output token override", () => {
         },
       })
       expect(prepared.params.maxOutputTokens).toBe(64_000)
+    }),
+  )
+})
+
+describe("output cap of a model whose output limit is unknown (#1464)", () => {
+  const unknown = { context: 128_000, output: 0 }
+
+  it.instance("sends no cap on the chat protocol", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({ ...input, model: { ...input.model, limit: unknown } })
+      expect(prepared.params.maxOutputTokens).toBeUndefined()
+    }),
+  )
+
+  it.instance("keeps the cap the Anthropic protocol requires", () =>
+    Effect.gen(function* () {
+      const input = yield* request("anthropic", "claude-sonnet-4", "@ai-sdk/anthropic")
+      const prepared = yield* prepare({ ...input, model: { ...input.model, limit: unknown } })
+      expect(prepared.params.maxOutputTokens).toBe(32_000)
+    }),
+  )
+
+  it.instance("sends an output configured for the model", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: unknown },
+        cfg: {
+          provider: { deepseek: { models: { "deepseek-chat": { limit: { context: 128_000, output: 100_000 } } } } },
+        },
+      })
+      expect(prepared.params.maxOutputTokens).toBe(100_000)
+    }),
+  )
+
+  itOutputOverride.instance("sends the environment override", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({ ...input, model: { ...input.model, limit: unknown } })
+      expect(prepared.params.maxOutputTokens).toBe(64_000)
+    }),
+  )
+
+  it.instance("sends the cap a request asks for", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({ ...input, model: { ...input.model, limit: unknown }, maxOutputTokens: 2_000 })
+      expect(prepared.params.maxOutputTokens).toBe(2_000)
+    }),
+  )
+
+  it.instance("does not change the cap of a model with a known limit", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare(input)
+      expect(prepared.params.maxOutputTokens).toBe(8_192)
+    }),
+  )
+})
+
+describe("reasoning budget against the output cap (#1464)", () => {
+  const maxVariant = (budget: Record<string, unknown>) => ({ max: budget })
+  const selecting = (user: Parameters<typeof prepare>[0]["user"]) => ({
+    ...user,
+    model: { ...user.model, variant: "max" },
+  })
+
+  it.instance("the max variant of a 32k Anthropic-protocol model leaves room for the answer", () =>
+    Effect.gen(function* () {
+      const input = yield* request("anthropic", "claude-opus-4", "@ai-sdk/anthropic")
+      const prepared = yield* prepare({
+        ...input,
+        model: {
+          ...input.model,
+          limit: { context: 200_000, output: 32_000 },
+          variants: maxVariant({ thinking: { type: "enabled", budgetTokens: 31_999 } }),
+        },
+        user: selecting(input.user),
+      })
+      expect(prepared.params.options.thinking).toEqual({ type: "enabled", budgetTokens: 24_000 })
+      expect(prepared.params.maxOutputTokens).toBe(8_000)
+      expect(
+        prepared.params.options.thinking.budgetTokens + (prepared.params.maxOutputTokens ?? 0),
+      ).toBeLessThanOrEqual(32_000)
+      expect(JSON.stringify(yield* logLines)).toContain("reasoning budget fitted")
+    }),
+  )
+
+  it.instance("the log names the session, the model and both values", () =>
+    Effect.gen(function* () {
+      const input = yield* request("anthropic", "claude-opus-4", "@ai-sdk/anthropic")
+      yield* prepare({
+        ...input,
+        model: {
+          ...input.model,
+          limit: { context: 200_000, output: 32_000 },
+          variants: maxVariant({ thinking: { type: "enabled", budgetTokens: 31_999 } }),
+        },
+        user: selecting(input.user),
+      })
+      const logs = JSON.stringify(yield* logLines)
+      expect(logs).toContain("ses_test")
+      expect(logs).toContain("claude-opus-4")
+      expect(logs).toContain("31999")
+      expect(logs).toContain("24000")
+    }),
+  )
+
+  it.instance("a Gemini 2.5 budget above the cap is cut inside the cap", () =>
+    Effect.gen(function* () {
+      const input = yield* request("google", "gemini-2.5-flash", "@ai-sdk/google")
+      const prepared = yield* prepare({
+        ...input,
+        model: {
+          ...input.model,
+          variants: maxVariant({ thinkingConfig: { includeThoughts: true, thinkingBudget: 24_576 } }),
+        },
+        user: selecting(input.user),
+      })
+      expect(prepared.params.options.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 6_144 })
+      expect(prepared.params.maxOutputTokens).toBe(8_192)
+    }),
+  )
+
+  it.instance("a request-level cap is applied before the budget is fitted", () =>
+    Effect.gen(function* () {
+      const input = yield* request("anthropic", "claude-opus-4", "@ai-sdk/anthropic")
+      const prepared = yield* prepare({
+        ...input,
+        maxOutputTokens: 2_000,
+        model: {
+          ...input.model,
+          limit: { context: 200_000, output: 32_000 },
+          variants: maxVariant({ thinking: { type: "enabled", budgetTokens: 31_999 } }),
+        },
+        user: selecting(input.user),
+      })
+      expect(prepared.params.options.thinking).toEqual({ type: "enabled", budgetTokens: 24_000 })
+      expect(prepared.params.maxOutputTokens).toBe(2_000)
+    }),
+  )
+
+  it.instance("a budget the limit already holds is not touched and not logged", () =>
+    Effect.gen(function* () {
+      const input = yield* request("anthropic", "claude-opus-4", "@ai-sdk/anthropic")
+      const prepared = yield* prepare({
+        ...input,
+        model: {
+          ...input.model,
+          limit: { context: 200_000, output: 64_000 },
+          variants: maxVariant({ thinking: { type: "enabled", budgetTokens: 31_999 } }),
+        },
+        user: selecting(input.user),
+      })
+      expect(prepared.params.options.thinking).toEqual({ type: "enabled", budgetTokens: 31_999 })
+      expect(prepared.params.maxOutputTokens).toBe(32_000)
+      expect(JSON.stringify(yield* logLines)).not.toContain("reasoning budget fitted")
+    }),
+  )
+
+  it.instance("a request without a reasoning budget is not touched", () =>
+    Effect.gen(function* () {
+      const input = yield* request("anthropic", "claude-opus-4", "@ai-sdk/anthropic")
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: { context: 200_000, output: 32_000 } },
+      })
+      expect(prepared.params.options.thinking).toBeUndefined()
+      expect(prepared.params.maxOutputTokens).toBe(32_000)
+      expect(JSON.stringify(yield* logLines)).not.toContain("reasoning budget fitted")
     }),
   )
 })

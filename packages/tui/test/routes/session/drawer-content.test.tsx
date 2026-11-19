@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import type { GlobalEvent, Goal, Message, Session, SessionUsage } from "@graphagent/sdk"
+import type { GlobalEvent, Goal, Message, Session, SessionOverhead, SessionUsage } from "@graphagent/sdk"
 import type { CapturedFrame, RGBA } from "@opentui/core"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createSignal, Show } from "solid-js"
@@ -16,6 +16,7 @@ import { Drawer, DRAWER_WIDTH } from "../../../src/shell/drawer"
 import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth } from "../../../src/ui/width"
 import { RUN_START, endRun, runSessionID, seedRun } from "../../fixture/background-runs"
+import { probeStoreWrites } from "../../fixture/store-write-probe"
 import { loggedLines } from "../../fixture/tui-log"
 import { directory, json } from "../../fixture/tui-sdk"
 import { mountRoute, sessionFixture, usageFixture, waitFor, type MountOptions } from "../dag-mode-harness"
@@ -120,6 +121,8 @@ type Data = {
   mcp?: Record<string, unknown>
   /** What the server sums for the tree, whichever session of it is asked about; nothing used without it. */
   usage?: SessionUsage
+  /** What the server reports of each session's fixed overhead, by session; nothing reported without an entry. */
+  overhead?: Record<string, SessionOverhead>
 }
 
 async function mountDrawer(
@@ -139,6 +142,7 @@ async function mountDrawer(
       sessionFixture(CHILD, { parentID: ROOT, title: "子任务", cost: 0.25, ...child }),
     ],
     usage: () => data.usage,
+    overhead: (id) => data.overhead?.[id],
     handler: (url) => {
       if (url.pathname === "/config/providers") return json(data.model ? providersWith(data.model) : providers)
       if (url.pathname === "/lsp") return json(data.lsp ?? [])
@@ -187,6 +191,14 @@ async function column(harness: Mount, width: number, ready: (lines: string[]) =>
 }
 
 const has = (needle: string) => (lines: string[]) => lines.some((line) => line.includes(needle))
+
+/** The reads of the fixed-overhead endpoint the fake server has heard of, in order. */
+const overheadRequests = (harness: { requested: readonly string[] }) =>
+  harness.requested.filter((request) => request.endsWith("/overhead"))
+
+/** What the failure path of a fixed-overhead read writes to the TUI log for a session: one file for the process. */
+const overheadFailedFor = (sessionID: string) =>
+  loggedLines(`Loading the fixed overhead failed { sessionID: '${sessionID}'`)
 
 /** The reads of the usage endpoint the fake server has heard of, in order. */
 const usageRequests = (harness: { requested: readonly string[] }) =>
@@ -721,6 +733,381 @@ describe("the cost section", () => {
     }
   })
 })
+
+// ── The fixed-overhead section (#1461) ──────────────────────────────────────────────────────────────────────────────
+//
+// What every request of the session on screen carries besides its messages: the total with its share of the model's
+// window, and the five largest sources under it. It sits after the context and follows the session on screen, a
+// sub-agent's included. It is hidden until the server reports an overhead, and read only while the drawer is open.
+
+const hash = "0123456789abcdef"
+
+/** What the server reports for the root's latest request: the tools are the largest source, seven in all. */
+const OVERHEAD_ROOT: SessionOverhead = {
+  bytes: 52_200,
+  tokens: 17_400,
+  model: "test/window",
+  window: 100_000,
+  windowSource: "config",
+  ratio: 0.174,
+  sources: [
+    { source: "base", bytes: 6_000, tokens: 2_000, hash },
+    { source: "tools", bytes: 36_000, tokens: 12_000, hash },
+    { source: "instructions", label: "AGENTS.md", bytes: 3_600, tokens: 1_200, hash },
+    { source: "environment", bytes: 900, tokens: 300, hash },
+    { source: "runtime_note", bytes: 2_700, tokens: 900, hash },
+    { source: "skills", bytes: 2_100, tokens: 700, hash },
+    { source: "hooks", bytes: 900, tokens: 300, hash },
+  ],
+}
+
+/** What it reports for the sub-agent: a smaller request, and not the root's. */
+const OVERHEAD_CHILD: SessionOverhead = {
+  bytes: 7_500,
+  tokens: 2_500,
+  model: "test/window",
+  window: 100_000,
+  windowSource: "config",
+  ratio: 0.03,
+  sources: [{ source: "tools", bytes: 6_000, tokens: 2_000, hash }],
+}
+
+const OVERHEAD_ROWS = [
+  "≈12,000 tools",
+  "≈2,000 base",
+  "≈1,200 instructions AGENTS.md",
+  "≈900 runtime_note",
+  "≈700 skills",
+]
+
+/** The `count` lines of a drawer column from the fixed-overhead heading on, trimmed: the heading and what is under it. */
+function overheadBlock(lines: string[], count: number) {
+  const from = lines.findIndex((line) => line.trim() === "固定开销" || line.trim() === "Fixed overhead")
+  return from === -1 ? [] : lines.slice(from, from + count).map((line) => line.trim())
+}
+
+describe("the fixed-overhead section", () => {
+  for (const width of [80, 120]) {
+    test(`sits after the context and before the cost, with the total and the five largest sources, ${width} columns`, async () => {
+      const harness = await mountDrawer({ width, data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } } })
+      try {
+        const lines = await column(harness, width, (all) => has("≈17,400")(all) && has("缓存 读")(all), "the section")
+        expect(lines).toMatchSnapshot()
+        expect(overheadBlock(lines, 7)).toEqual(["固定开销", "≈17,400 tokens · 17%", ...OVERHEAD_ROWS])
+        const at = (needle: string) => lines.findIndex((line) => line.includes(needle))
+        const order = ["依赖升级", "上下文", "固定开销", "费用", "DAG 模式", "目标"].map(at)
+        expect(order.every((index) => index >= 0)).toBe(true)
+        expect([...order].sort((a, b) => a - b)).toEqual(order)
+        // The two smallest sources are left out.
+        expect(has("hooks")(lines)).toBe(false)
+        expect(harness.writes()).toEqual([])
+      } finally {
+        await harness.dispose()
+      }
+    })
+  }
+
+  test("says the same in English", async () => {
+    setLanguage("en")
+    const harness = await mountDrawer({ language: "en", data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } } })
+    try {
+      const lines = await column(harness, 120, (all) => has("≈17,400")(all) && has("Cache r")(all), "the section")
+      expect(lines).toMatchSnapshot()
+      expect(overheadBlock(lines, 7)).toEqual(["Fixed overhead", "≈17,400 tokens · 17%", ...OVERHEAD_ROWS])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is hidden, and takes no gap, while the server reports nothing", async () => {
+    const harness = await mountDrawer({ data: FULL })
+    try {
+      await column(harness, 120, has("缓存 读"), "the drawer")
+      // The server was asked, and said that nothing had been sent: zeros.
+      await harness.overheadReads.answered()
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      const rows = rowsOf(await harness.waitForFrame(() => true, "the frame")).map((line) =>
+        line.slice(120 - DRAWER_WIDTH).trimEnd(),
+      )
+      expect(rows.some((line) => line.includes("固定开销"))).toBe(false)
+      // The cost follows the context after the one blank row every section is set off by.
+      const cost = rows.findIndex((line) => line.trim() === "费用")
+      expect(rows[cost - 1]?.trim()).toBe("")
+      expect(rows[cost - 2]).toContain("85%")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("marks the share with a ~ when the window is the assumed one", async () => {
+    const assumed: SessionOverhead = { ...OVERHEAD_ROOT, window: 128_000, windowSource: "default", ratio: 0.3 }
+    const harness = await mountDrawer({ data: { ...FULL, overhead: { [ROOT]: assumed } } })
+    try {
+      const lines = await column(harness, 120, has("≈17,400"), "the section")
+      expect(overheadBlock(lines, 2)).toEqual(["固定开销", "≈17,400 tokens · ~30%"])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the session on screen: a sub-agent shows its own, read for that session and not for the root", async () => {
+    const harness = await mountDrawer({
+      sessionID: CHILD,
+      data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT, [CHILD]: OVERHEAD_CHILD } },
+    })
+    try {
+      const lines = await column(harness, 120, has("≈2,500"), "the sub-agent's section")
+      expect(overheadBlock(lines, 3)).toEqual(["固定开销", "≈2,500 tokens · 3%", "≈2,000 tools"])
+      expect(has("≈17,400")(lines)).toBe(false)
+      expect(harness.overheadReads.asked()).toEqual([CHILD])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toEqual([`GET /session/${CHILD}/overhead`])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is read again when a turn settles in the session, and shows the new figures", async () => {
+    let tokens = 17_400
+    const harness = await mountDrawer({
+      data: FULL,
+      overhead: () => ({ ...OVERHEAD_ROOT, tokens, ratio: tokens / 100_000 }),
+    })
+    try {
+      await column(harness, 120, has("≈17,400 tokens"), "the first figures")
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      tokens = 21_000
+      harness.deliver(settledTurn(ROOT))
+      // Asked for in the handler of the event.
+      expect(harness.overheadReads.asked()).toEqual([ROOT, ROOT])
+      const lines = await column(harness, 120, has("≈21,000 tokens"), "the new figures")
+      expect(has("≈17,400 tokens")(lines)).toBe(false)
+      expect(has("21%")(lines)).toBe(true)
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toEqual([`GET /session/${ROOT}/overhead`, `GET /session/${ROOT}/overhead`])
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a turn that settles in another session of the tree asks for nothing", async () => {
+    const harness = await mountDrawer({ data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } } })
+    try {
+      await column(harness, 120, has("≈17,400"), "the section")
+      harness.deliver(settledTurn(CHILD))
+      expect(harness.sync().data.turn_settled[CHILD]).toBeDefined()
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toHaveLength(1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("is read only while the drawer is open: closed, a settled turn asks for nothing; opened again, it reads", async () => {
+    const [open, setOpen] = createSignal(true)
+    const harness = await mountDrawer({
+      data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } },
+      view: () => (
+        <>
+          <Bindings />
+          <Show when={open()}>
+            <Drawer>
+              <SessionDrawer sessionID={ROOT} />
+            </Drawer>
+          </Show>
+        </>
+      ),
+    })
+    try {
+      await column(harness, 120, has("≈17,400"), "the open drawer")
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+
+      setOpen(false)
+      await harness.waitForFrame((frame) => !frame.includes("上下文"), "the closed drawer")
+      // Delivered now, so the handlers have run when `deliver` returns: a read they would have triggered is asked for.
+      harness.deliver(settledTurn(ROOT))
+      harness.deliver(settledTurn(CHILD))
+      // A reconnect while it is closed asks for nothing either.
+      harness.events.reconnect()
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toEqual([`GET /session/${ROOT}/overhead`])
+
+      setOpen(true)
+      await column(harness, 120, has("≈17,400"), "the drawer opened again")
+      expect(harness.overheadReads.asked()).toEqual([ROOT, ROOT])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toHaveLength(2)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("follows the screen: another session's overhead is read when it comes up, and the old one is let go", async () => {
+    const OTHER = "ses_content_other"
+    const [shown, setShown] = createSignal(ROOT)
+    const harness = await mountDrawer({
+      data: {
+        ...FULL,
+        overhead: { [ROOT]: OVERHEAD_ROOT, [OTHER]: { ...OVERHEAD_CHILD, tokens: 3_300, ratio: 0.033 } },
+      },
+      sessions: [
+        sessionFixture(ROOT, { title: "依赖升级", cost: 1.5, time: { created: 1, updated: 9 } }),
+        sessionFixture(CHILD, { parentID: ROOT, title: "子任务", cost: 0.25 }),
+        sessionFixture(OTHER, { title: "另一个会话", cost: 7.5 }),
+      ],
+      view: () => (
+        <>
+          <Bindings />
+          <Drawer>
+            <SessionDrawer sessionID={shown()} />
+          </Drawer>
+        </>
+      ),
+    })
+    try {
+      await column(harness, 120, has("≈17,400"), "the first session")
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+
+      setShown(OTHER)
+      await column(harness, 120, has("≈3,300"), "the other session")
+      expect(harness.overheadReads.asked()).toEqual([ROOT, OTHER])
+
+      // The first session is let go: a turn settling in it asks for nothing, one in the session on screen does.
+      harness.deliver(settledTurn(ROOT))
+      expect(harness.overheadReads.asked()).toEqual([ROOT, OTHER])
+      harness.deliver(settledTurn(OTHER))
+      expect(harness.overheadReads.asked()).toEqual([ROOT, OTHER, OTHER])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toEqual([
+        `GET /session/${ROOT}/overhead`,
+        `GET /session/${OTHER}/overhead`,
+        `GET /session/${OTHER}/overhead`,
+      ])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a failed read leaves it hidden, says so in the log, and the next turn reads again", async () => {
+    const before = overheadFailedFor(ROOT).length
+    let answer: Response | SessionOverhead = new Response("nope", { status: 500 })
+    const harness = await mountDrawer({ data: FULL, overhead: () => answer })
+    try {
+      await harness.overheadReads.answered()
+      await waitFor(() => overheadFailedFor(ROOT).length > before, 5000)
+      expect(overheadFailedFor(ROOT).at(-1)).toContain(
+        `Loading the fixed overhead failed { sessionID: '${ROOT}', status: 500 }`,
+      )
+      const lines = await column(harness, 120, has("缓存 读"), "the drawer")
+      expect(has("固定开销")(lines)).toBe(false)
+
+      answer = OVERHEAD_ROOT
+      harness.deliver(settledTurn(ROOT))
+      await column(harness, 120, has("≈17,400"), "the section after the next turn")
+      expect(harness.overheadReads.asked()).toEqual([ROOT, ROOT])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("listens to no clock: with the section on screen the ticker has no subscriber, and the figures arrive once", async () => {
+    const clock = clockTicker(NOW)
+    const harness = await mountDrawer({ data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } }, ticker: clock.ticker })
+    try {
+      await column(harness, 120, has("≈17,400"), "the section")
+      expect(clock.calls).toEqual({ frame: 0, second: 0, released: 0 })
+      // Ten minutes go by on the clock the drawer would listen to. Nothing polls: the one read the section made as it
+      // opened is the only one.
+      clock.advance(10 * 60_000)
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toHaveLength(1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a click anywhere in the section sends nothing and asks for nothing more", async () => {
+    const harness = await mountDrawer({ data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } } })
+    try {
+      const before = await column(harness, 120, has("≈17,400"), "the section")
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      for (let row = 1; row <= 16; row++) await harness.app.mockMouse.click(120 - DRAWER_WIDTH + 4, row)
+      expect(harness.overheadReads.asked()).toEqual([ROOT])
+      expect(columnOf(await harness.waitForFrame(() => true, "the frame"), 120)).toEqual(before)
+      expect(harness.writes()).toEqual([])
+      expect(harness.commands()).toEqual([])
+      await harness.overheadReads.answered()
+      expect(overheadRequests(harness)).toHaveLength(1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("writes only its own slice: no message or part of the store changes", async () => {
+    const harness = await mountDrawer({ data: { ...FULL, overhead: { [ROOT]: OVERHEAD_ROOT } } })
+    try {
+      await column(harness, 120, has("≈17,400"), "the section")
+      const probe = probeStoreWrites(harness.sync().data, ["message", "part"])
+      try {
+        harness.deliver(settledTurn(ROOT))
+        await harness.overheadReads.answered()
+        await harness.settle()
+        expect(probe.total()).toBe(0)
+      } finally {
+        probe.dispose()
+      }
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+/** The worst the server can say: sources of the largest figures under a path that fills a line several times over. */
+const OVERHEAD_WORST: SessionOverhead = {
+  bytes: 999_999_999_999,
+  tokens: 999_999_999_999,
+  model: "test/window",
+  window: 128_000,
+  windowSource: "default",
+  ratio: 7_812_499.99,
+  sources: ["base", "tools", "instructions", "mcp_instructions", "skills", "hooks"].map((name) => ({
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the fixture names real sources.
+    source: name as SessionOverhead["sources"][number]["source"],
+    label: "/very/long/path/to/some/rules/".repeat(4),
+    bytes: 999_999_999_999,
+    tokens: 999_999_999_999,
+    hash,
+  })),
+}
+
+for (const aw of [1, 2] as const) {
+  for (const language of ["zh-CN", "en"] as const) {
+    test(`every row of the fixed-overhead section fits its 40 columns at 80 columns, ${language}, ambiguous_width ${aw}`, async () => {
+      setLanguage(language)
+      const heading = language === "en" ? "Fixed overhead" : "固定开销"
+      const harness = await mountDrawer({
+        width: 80,
+        language,
+        kv: { ambiguous_width: aw },
+        data: { ...FULL, overhead: { [ROOT]: OVERHEAD_WORST } },
+      })
+      try {
+        const lines = await column(harness, 80, has("≈999,999,999,999 tokens"), "the section")
+        expect(overheadBlock(lines, 7)[0]).toBe(heading)
+        for (const line of lines) expect(cellWidth(line, aw)).toBeLessThanOrEqual(DRAWER_WIDTH)
+        // The columns left of the drawer are the main area's: nothing of the drawer spills into them.
+        const frame = await harness.waitForFrame(() => true, "the frame")
+        for (const row of rowsOf(frame)) expect(row.slice(0, 80 - DRAWER_WIDTH).trim()).toBe("")
+      } finally {
+        await harness.dispose()
+      }
+    })
+  }
+}
 
 /** The worst a tree can say: a cost with a part nobody priced and figures that need every digit. */
 const WORST = usageFixture(ROOT, {

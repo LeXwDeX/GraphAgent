@@ -45,6 +45,7 @@ function signals(overrides: Partial<Decide.Signals> = {}): Decide.Signals {
     userBeforeAssistant: true,
     assistantFinish: "stop",
     pseudoToolCall: false,
+    truncatedText: false,
     ...overrides,
   }
 }
@@ -249,8 +250,13 @@ describe("decide: runtime hints", () => {
 
   test("State.recordHint counts one kind without touching the others", () => {
     const once = State.recordHint(State.initial({ stopCap: 3 }), "pseudo_tool_call")
-    expect(once.hints).toEqual({ pseudo_tool_call: 1 })
-    expect(State.initial({ stopCap: 3 }).hints).toEqual({ pseudo_tool_call: 0 })
+    expect(once.hints).toEqual({ pseudo_tool_call: 1, output_truncated: 0 })
+    expect(State.initial({ stopCap: 3 }).hints).toEqual({ pseudo_tool_call: 0, output_truncated: 0 })
+    const cut = State.recordHint(
+      State.recordHint(State.initial({ stopCap: 3 }), "output_truncated"),
+      "output_truncated",
+    )
+    expect(cut.hints).toEqual({ pseudo_tool_call: 0, output_truncated: 2 })
   })
 
   test("a tool call written as text earns a hint before any Stop hook runs", () => {
@@ -286,6 +292,64 @@ describe("decide: runtime hints", () => {
     expect(Decide.hintFor(state({ error: apiError() }), call)).toBeUndefined()
     expect(Decide.hintFor(State.blockAgentInput(state()), call)).toBeUndefined()
     expect(Decide.hintFor(State.markClosed(state()), call)).toBeUndefined()
+  })
+})
+
+describe("decide: a reply cut off by the output limit (#1464)", () => {
+  const hint = { kind: "hint", hint: "output_truncated" } as const
+  const cut = (overrides: Partial<Decide.Signals> = {}) =>
+    signals({ truncatedText: true, assistantFinish: "length", ...overrides })
+  const withCount = (count: number) => {
+    let current = state()
+    for (let i = 0; i < count; i++) current = State.recordHint(current, "output_truncated")
+    return current
+  }
+
+  test("a truncated text answers with the hint before any Stop hook runs", () => {
+    expect(Decide.decide(state(), cut())).toEqual(hint)
+    expect(Decide.hintFor(state(), cut())).toBe("output_truncated")
+  })
+
+  test("the hint is written up to three times in a turn, counted across steps", () => {
+    for (const count of [0, 1, 2]) expect(Decide.decide(withCount(count), cut())).toEqual(hint)
+    // The fourth reply that is still cut off earns no hint: the turn ends as it does today.
+    expect(Decide.decide(withCount(3), cut())).toEqual({ kind: "run_stop_hooks", event: "Stop" })
+    expect(Decide.decide(withCount(3), cut({ stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "length" },
+    })
+  })
+
+  test("the counts of the two kinds are separate", () => {
+    const pseudo = State.recordHint(state(), "pseudo_tool_call")
+    expect(Decide.decide(pseudo, cut())).toEqual(hint)
+  })
+
+  test("a finish other than length earns no hint", () => {
+    for (const finish of ["stop", "unknown", "tool-calls", "content-filter", undefined]) {
+      expect(Decide.hintFor(state(), cut({ assistantFinish: finish }))).toBeUndefined()
+    }
+  })
+
+  test("a reply that is not a truncated text earns no hint", () => {
+    expect(Decide.hintFor(state(), cut({ truncatedText: false }))).toBeUndefined()
+    expect(Decide.decide(state(), cut({ truncatedText: false }))).toEqual({ kind: "run_stop_hooks", event: "Stop" })
+  })
+
+  test("hintFor refuses a stopped, errored, blocked or final-step turn", () => {
+    expect(Decide.hintFor(State.markStopped(state()), cut())).toBeUndefined()
+    expect(Decide.hintFor(state({ error: apiError() }), cut())).toBeUndefined()
+    expect(Decide.hintFor(State.blockAgentInput(state()), cut())).toBeUndefined()
+    expect(Decide.hintFor(State.markClosed(state()), cut())).toBeUndefined()
+  })
+
+  test("a step with local tool work is not a completion candidate, so it earns no hint", () => {
+    expect(Decide.decide(state(), cut({ pendingLocalTools: true }))).toEqual({ kind: "step" })
+  })
+
+  test("the finish reason keeps the two hint kinds apart", () => {
+    expect(Decide.hintFor(state(), cut({ pseudoToolCall: true }))).toBe("output_truncated")
+    expect(Decide.hintFor(state(), signals({ pseudoToolCall: true, truncatedText: true }))).toBe("pseudo_tool_call")
   })
 })
 

@@ -98,6 +98,8 @@ export const en: Record<MessageKey, string> = {
   "drawer.mcp.failed": "MCP not connected: {names}",
   "drawer.closeHint": "{key} close",
   "drawer.context": "Context",
+  "drawer.overhead": "Fixed overhead",
+  "drawer.overhead.total": "≈{tokens} tokens · {percent}%",
   "drawer.cost": "Cost",
   "drawer.cost.session": "This session {cost}",
   "drawer.usage.io": "In {input} · Out {output}",

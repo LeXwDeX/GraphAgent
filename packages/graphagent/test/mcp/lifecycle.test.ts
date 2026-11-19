@@ -27,7 +27,13 @@ interface MockClientState {
   capabilities: { tools?: object; prompts?: object; resources?: object }
   capabilitiesShouldThrow: boolean
   instructions?: string
-  tools: Array<{ name: string; description?: string; inputSchema: object; outputSchema?: object }>
+  tools: Array<{
+    name: string
+    description?: string
+    inputSchema: object
+    outputSchema?: object
+    annotations?: object
+  }>
   listToolsCalls: number
   listPromptsCalls: number
   listResourcesCalls: number
@@ -770,6 +776,70 @@ it.instance(
       forced: { type: "local", command: ["echo", "test"], deferred: true },
     },
   },
+)
+
+// Issue #1454: a tool is read-only when its annotations say `readOnlyHint: true`, the boolean, and in no other case.
+it.instance(
+  "tools() binds readOnly for a tool that declares readOnlyHint true, and for no other",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "ro"
+        getOrCreateClientState("ro").tools = [
+          { name: "yes", description: "ro/yes", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "no", description: "ro/no", inputSchema: emptyInput, annotations: { readOnlyHint: false } },
+          { name: "bare", description: "ro/bare", inputSchema: emptyInput },
+          { name: "other", description: "ro/other", inputSchema: emptyInput, annotations: { idempotentHint: true } },
+          // A server that sends something else than a boolean does not make its tool read-only.
+          { name: "text", description: "ro/text", inputSchema: emptyInput, annotations: { readOnlyHint: "true" } },
+          { name: "one", description: "ro/one", inputSchema: emptyInput, annotations: { readOnlyHint: 1 } },
+        ]
+        yield* mcp.add("ro", { type: "local", command: ["echo", "test"] })
+
+        const tools = yield* mcp.tools()
+        const binding = (key: string) => McpCatalog.toolBinding(tools[key])
+        expect(binding("ro_yes")).toEqual({
+          server: "ro",
+          tool: "yes",
+          source: "unknown",
+          requiresUserInteraction: false,
+          readOnly: true,
+        })
+        // Nothing else carries the field: their bindings are what they were before.
+        for (const key of ["ro_no", "ro_bare", "ro_other", "ro_text", "ro_one"]) {
+          expect(binding(key)?.readOnly, key).toBeUndefined()
+          expect(binding(key), key).toEqual({
+            server: "ro",
+            tool: key.slice("ro_".length),
+            source: "unknown",
+            requiresUserInteraction: false,
+          })
+        }
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "tools() binds readOnly and deferred together on a read-only tool of a deferred server",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "lazyro"
+        getOrCreateClientState("lazyro").tools = [
+          { name: "r", description: "lazyro/r", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "w", description: "lazyro/w", inputSchema: emptyInput },
+        ]
+        yield* mcp.add("lazyro", { type: "local", command: ["echo", "test"], deferred: true })
+
+        const tools = yield* mcp.tools()
+        const binding = (key: string) => McpCatalog.toolBinding(tools[key])
+        expect(binding("lazyro_r")).toMatchObject({ readOnly: true, deferred: true })
+        expect(binding("lazyro_w")?.readOnly).toBeUndefined()
+        expect(binding("lazyro_w")?.deferred).toBe(true)
+      }),
+    ),
+  { mcp: {} },
 )
 
 // ========================================================================

@@ -217,6 +217,12 @@ export interface ToolBinding {
   /** The server marked this tool `_meta["anthropic/requiresUserInteraction"] === true`. */
   readonly requiresUserInteraction?: boolean
   /**
+   * The server declared this tool `annotations.readOnlyHint: true` (#1454); set only on such a tool, so a missing hint,
+   * `false` and any other value all leave a tool not read-only. The hint is the server's own word: it comes from a
+   * server the user configured and is trusted as it is.
+   */
+  readonly readOnly?: boolean
+  /**
    * The key this tool had before `assignToolKeys` shortened it or made it unique (#1459); set only on such a tool.
    * A deny or ask rule written for that key still applies to the tool.
    */

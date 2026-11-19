@@ -80,6 +80,18 @@ describe("RuntimeFlags", () => {
     }),
   )
 
+  it.effect("enables request capture via GRAPHAGENT_DEBUG_REQUESTS (1 or true) and defaults to off", () =>
+    Effect.gen(function* () {
+      const one = yield* readFlags.pipe(Effect.provide(fromConfig({ GRAPHAGENT_DEBUG_REQUESTS: "1" })))
+      const word = yield* readFlags.pipe(Effect.provide(fromConfig({ GRAPHAGENT_DEBUG_REQUESTS: "true" })))
+      const absent = yield* readFlags.pipe(Effect.provide(fromConfig({})))
+
+      expect(one.debugRequests).toBe(true)
+      expect(word.debugRequests).toBe(true)
+      expect(absent.debugRequests).toBe(false)
+    }),
+  )
+
   it.effect("layer accepts partial test overrides and fills defaults from Config definitions", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 1_000 })))

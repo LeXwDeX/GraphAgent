@@ -29,6 +29,7 @@ import {
   contextTone,
   contextUsage,
   goalLine,
+  overheadSection,
   sameBackgroundSection,
   services,
   todoCount,
@@ -38,12 +39,12 @@ import {
 } from "./drawer-model"
 
 /**
- * The drawer's sections (#1032 5.2), in their fixed order: session, context, cost, the DAG mode line, goal,
- * background runs, todo, services. Each is a plain display component over `useSync()`; nothing in the drawer is
- * clickable. The context and todo follow the session on screen, a sub-agent's included; the cost is the whole task
- * tree's, with a line of the session's own on a sub-agent's screen (#1475); the goal and the background runs are
- * always the root session's; LSP and MCP are global. The modified-files section is left out for now (#1032 D8): since
- * H5 its data source is mostly empty.
+ * The drawer's sections (#1032 5.2), in their fixed order: session, context, fixed overhead, cost, the DAG mode line,
+ * goal, background runs, todo, services. Each is a plain display component over `useSync()`; nothing in the drawer is
+ * clickable. The context, the fixed overhead (#1461) and todo follow the session on screen, a sub-agent's included;
+ * the cost is the whole task tree's, with a line of the session's own on a sub-agent's screen (#1475); the goal and
+ * the background runs are always the root session's; LSP and MCP are global. The modified-files section is left out
+ * for now (#1032 D8): since H5 its data source is mostly empty.
  */
 
 function Heading(props: { title: string; detail?: string }) {
@@ -139,6 +140,45 @@ function DrawerContext(props: { sessionID: string }) {
         )}
       </Show>
     </box>
+  )
+}
+
+/**
+ * What every request of the session on screen carries besides its messages (#1461): the total with its share of the
+ * model's window, and the largest sources under it. It follows the session on screen, a sub-agent's included. Hidden
+ * until the server reports an overhead, and gone with it: no empty heading, no gap. Display only, nothing to click.
+ * The overhead is read only while this section is mounted, that is while the drawer is open: the effect below counts
+ * the session as watched and lets go of it when the drawer closes or another session comes on screen. Its body writes
+ * nothing; the answer is written by `sync` into its own slice once the read is done.
+ */
+function DrawerOverhead(props: { sessionID: string }) {
+  const sync = useSync()
+  const kv = useKV()
+  const { theme } = useTheme()
+  createEffect(() => {
+    onCleanup(sync.overhead.watch(props.sessionID))
+  })
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
+  const section = createMemo(() => overheadSection(sync.data.overhead[props.sessionID], ambiguousWidth()))
+
+  return (
+    <Show when={section()}>
+      {(current) => (
+        <box>
+          <Heading title={t("drawer.overhead")} />
+          <text fg={theme.textMuted} wrapMode="none">
+            {current().total}
+          </text>
+          <For each={current().rows}>
+            {(row) => (
+              <text fg={theme.textMuted} wrapMode="none">
+                {row}
+              </text>
+            )}
+          </For>
+        </box>
+      )}
+    </Show>
   )
 }
 
@@ -395,6 +435,7 @@ export function SessionDrawer(props: { sessionID: string }) {
           <box flexShrink={0} gap={1} paddingRight={1}>
             <DrawerSession sessionID={props.sessionID} />
             <DrawerContext sessionID={props.sessionID} />
+            <DrawerOverhead sessionID={props.sessionID} />
             <DrawerCost sessionID={props.sessionID} rootID={rootID()} />
             <DrawerDagMode sessionID={props.sessionID} />
             <DrawerGoal rootID={rootID()} />
