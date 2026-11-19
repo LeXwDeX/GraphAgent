@@ -15,7 +15,8 @@ export const en: Record<MessageKey, string> = {
   "dagmode.toggle.needSession": "Start a session first, or set the new-session default in /config",
   "help.dagmode.toggle": "Toggle DAG mode for this session",
   "help.expand.toggle": "Expand or collapse the latest output",
-  "help.expand.toggle.note": "Acts on the latest foldable reasoning, tool output, tool error or sub-agent task block",
+  "help.expand.toggle.note":
+    "Acts on the latest foldable reasoning, tool output, tool error, file change (diff) or sub-agent task block",
   "dagmode.receipt.on":
     "DAG mode is on for this session, starting with the next request. Token usage usually multiplies; concurrency cap {cap} (shared by all sessions), per-workflow node cap {nodes}, token budget {budget}. Turn it off with /dag-mode off or {key}.",
   "dagmode.receipt.on.noBudget": "No token budget is configured.",
@@ -120,6 +121,13 @@ export const en: Record<MessageKey, string> = {
   "tool.row.results.other": "{n} results",
   "tool.row.loaded": "Loaded {path}",
   "tool.row.inPath": "in {path}",
+  "tool.row.written.one": "Wrote {n} line",
+  "tool.row.written.other": "Wrote {n} lines",
+  "tool.row.diagnostics.one": "{n} diagnostic error",
+  "tool.row.diagnostics.other": "{n} diagnostic errors",
+  "tool.row.patch.created": "Created {path}",
+  "tool.row.patch.deleted": "Deleted {path}",
+  "tool.row.patch.moved": "Moved {from} → {to}",
   "message.queued": "QUEUED",
   "message.interrupted": "interrupted",
   "message.compaction": "Compaction",

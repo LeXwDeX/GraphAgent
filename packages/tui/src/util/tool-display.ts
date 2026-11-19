@@ -1,7 +1,13 @@
+/** The provider a web search went through, by name; none when the call does not say, or says one this build does not know. */
+export function webSearchProviderName(provider: unknown) {
+  if (provider === "parallel") return "Parallel"
+  if (provider === "exa") return "Exa"
+  return undefined
+}
+
 export function webSearchProviderLabel(provider: unknown) {
-  if (provider === "parallel") return "Parallel Web Search"
-  if (provider === "exa") return "Exa Web Search"
-  return "Web Search"
+  const name = webSearchProviderName(provider)
+  return name ? `${name} Web Search` : "Web Search"
 }
 
 export function toolDisplayMetadata(state: unknown): Record<string, unknown> {
@@ -52,6 +58,9 @@ const toolRowNames: Readonly<Record<string, string>> = {
   websearch: "WebSearch",
   webfetch: "WebFetch",
   skill: "Skill",
+  write: "Write",
+  edit: "Edit",
+  apply_patch: "Patch",
 }
 
 export function toolRowName(tool: string) {
@@ -74,7 +83,18 @@ export function parseApplyPatchFiles(value: unknown) {
     const patch = stringValue(file.patch)
     const deletions = numberValue(file.deletions)
     if (!type || !relativePath || !filePath || patch === undefined || deletions === undefined) return []
-    return [{ type, relativePath, filePath, patch, deletions, movePath: stringValue(file.movePath) }]
+    // A server that does not count the added lines leaves `additions` out: the row then says only what was removed.
+    return [
+      {
+        type,
+        relativePath,
+        filePath,
+        patch,
+        additions: numberValue(file.additions),
+        deletions,
+        movePath: stringValue(file.movePath),
+      },
+    ]
   })
 }
 
@@ -103,7 +123,11 @@ export function parseQuestionAnswers(value: unknown) {
   )
 }
 
-export function parseDiagnostics(value: unknown, filePath: string) {
+/** The errors of a file a row lists under its summary; the others are only counted. */
+export const DIAGNOSTIC_LINES = 3
+
+/** The errors the language server found in `filePath`: the first `DIAGNOSTIC_LINES`, or the first `limit`. */
+export function parseDiagnostics(value: unknown, filePath: string, limit = DIAGNOSTIC_LINES) {
   const diagnostics = recordValue(value)?.[filePath]
   if (!Array.isArray(diagnostics)) return []
   return diagnostics
@@ -116,5 +140,5 @@ export function parseDiagnostics(value: unknown, filePath: string) {
       if (diagnostic?.severity !== 1 || line === undefined || character === undefined || !message) return []
       return [{ range: { start: { line, character } }, message }]
     })
-    .slice(0, 3)
+    .slice(0, limit)
 }
