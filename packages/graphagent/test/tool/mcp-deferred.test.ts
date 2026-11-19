@@ -112,6 +112,74 @@ describe("catalogLine", () => {
   })
 })
 
+describe("serverLine", () => {
+  const line = McpDeferred.serverLine
+
+  test("is the key, a dash and the first sentence of the description, as a catalog line has it", () => {
+    expect(line("srv_a", "Does it. Then more.")).toBe("srv_a — Does it.")
+    expect(line("srv_a", "\n  First line\nsecond line. Third.")).toBe("srv_a — First line")
+    expect(line("srv_a", "")).toBe("srv_a — (no description)")
+    expect(line("srv_a", "没有句号的一行")).toBe("srv_a — 没有句号的一行")
+  })
+
+  test("is cut to 119 code points and an ellipsis when it is over 120", () => {
+    const long = "A".repeat(200)
+    const expected = `${Array.from(`srv_a — ${long}`).slice(0, 119).join("")}…`
+    expect(line("srv_a", long)).toBe(expected)
+    expect(Array.from(expected)).toHaveLength(120)
+    // 120 code points exactly is kept whole.
+    const exact = "B".repeat(120 - "srv_a — ".length)
+    expect(line("srv_a", exact)).toBe(`srv_a — ${exact}`)
+  })
+})
+
+describe("serverListing", () => {
+  test("is a line for each tool, by key whatever order they come in", () => {
+    const items = [
+      { id: "srv_b", description: "Second. More." },
+      { id: "srv_a", description: "" },
+      { id: "srv_c", description: "Third\nmore" },
+    ]
+    const expected = "srv_a — (no description)\nsrv_b — Second.\nsrv_c — Third"
+    expect(McpDeferred.serverListing(items)).toBe(expected)
+    expect(McpDeferred.serverListing(items.toReversed())).toBe(expected)
+    expect(McpDeferred.serverListing([])).toBe("")
+  })
+})
+
+describe("unknownServer", () => {
+  test("names the server asked for and lists the servers that have a deferred tool", () => {
+    expect(McpDeferred.unknownServer("nope", ["alpha", "beta"])).toBe(
+      'Unknown MCP server "nope". Servers with deferred tools: alpha, beta. Use one of them.',
+    )
+  })
+
+  test("cuts a long name at 64 code points and a long list at 30 servers, and says how many there are", () => {
+    const servers = Array.from({ length: 31 }, (_, index) => `s${String(index).padStart(2, "0")}`)
+    const text = McpDeferred.unknownServer("x".repeat(100), servers)
+    expect(text).toContain(`Unknown MCP server "${"x".repeat(64)}".`)
+    expect(text).not.toContain("x".repeat(65))
+    expect(text).toContain("s29, ... (31 in total).")
+    expect(text).not.toContain("s30")
+  })
+})
+
+describe("describeRequest", () => {
+  const request = McpDeferred.describeRequest
+
+  test("is the names asked, each one once in the order asked, or the server asked", () => {
+    expect(request({ tools: ["b", "a", "b"] })).toEqual({ kind: "tools", names: ["b", "a"] })
+    expect(request({ server: "srv" })).toEqual({ kind: "server", server: "srv" })
+  })
+
+  test("is nothing for both and for neither", () => {
+    expect(request({})).toBeUndefined()
+    expect(request({ tools: ["a"], server: "srv" })).toBeUndefined()
+    // A value of no type the schema allows is no request either.
+    expect(request({ server: 5 })).toBeUndefined()
+  })
+})
+
 describe("makeChecker", () => {
   const schema: JSONSchema7 = {
     type: "object",
@@ -296,7 +364,7 @@ describe("settle", () => {
     const describe = settled.find((item) => item.id === "mcp_describe")
     expect(describe?.description).toBe(
       [
-        "Read the input schema of deferred MCP tools before calling them with mcp_call.",
+        "Read the input schema of deferred MCP tools before calling them with mcp_call. Pass tools (1 to 10 names from the list below), or server (a server name) to list all tools of that server; not both.",
         "Deferred tools:",
         "- a_one: remote a_one",
         "- b_two: remote b_two",
@@ -366,17 +434,19 @@ describe("settle", () => {
     ])
   })
 
-  test("the helpers' parameters: describe takes 1 to 10 names, call a name and optional arguments", () => {
+  test("the helpers' parameters: describe takes 1 to 10 names or a server, call a name and optional arguments", () => {
     const settled = settleEntries({ entries: [entry("a_one", true)], visible: everything, transform: identity })
     const schemas = Object.fromEntries(settled.map((item) => [item.id, item.jsonSchema]))
     const describeProps = schemas.mcp_describe.properties as Record<string, JSONSchema7>
-    expect(schemas.mcp_describe).toMatchObject({
-      type: "object",
-      required: ["tools"],
-      additionalProperties: false,
-    })
+    // An object root with neither property required and no combinator: exactly one is checked when the call runs.
+    expect(schemas.mcp_describe).toMatchObject({ type: "object", additionalProperties: false })
+    expect(schemas.mcp_describe).not.toHaveProperty("required")
+    for (const combinator of ["anyOf", "oneOf", "allOf"]) expect(schemas.mcp_describe).not.toHaveProperty(combinator)
+    expect(Object.keys(describeProps)).toEqual(["tools", "server"])
     expect(describeProps.tools).toMatchObject({ type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 })
     expect(typeof describeProps.tools.description).toBe("string")
+    expect(describeProps.server).toMatchObject({ type: "string" })
+    expect(typeof describeProps.server.description).toBe("string")
     const callProps = schemas.mcp_call.properties as Record<string, JSONSchema7>
     expect(schemas.mcp_call).toMatchObject({ type: "object", required: ["tool"], additionalProperties: false })
     expect(callProps.tool).toMatchObject({ type: "string" })
@@ -444,8 +514,8 @@ describe("settle with the limits of a model", () => {
 
   test("takes a pattern that does not compile as none, and an empty one as matching everything", () => {
     const entries = [entry("a_one", undefined), entry("b_two", undefined)]
-    expect(run(entries, { namePattern: "(" })).toEqual({ entries, moved: { byCount: 0, byName: 0 } })
-    expect(run(entries, { namePattern: "" })).toEqual({ entries, moved: { byCount: 0, byName: 0 } })
+    expect(run(entries, { namePattern: "(" })).toEqual({ entries, moved: { byCount: 0, byName: 0 }, unlisted: 0 })
+    expect(run(entries, { namePattern: "" })).toEqual({ entries, moved: { byCount: 0, byName: 0 }, unlisted: 0 })
   })
 
   test("does not count a tool its server deferred as moved, whatever its key", () => {
@@ -540,13 +610,150 @@ describe("settle with the limits of a model", () => {
     expect(settled.entries.slice(-2).map((item) => item.id)).toEqual(["mcp_describe", "mcp_call"])
     expect(settled.entries.find((item) => item.id === "mcp_describe")?.description).toBe(
       [
-        "Read the input schema of deferred MCP tools before calling them with mcp_call.",
+        "Read the input schema of deferred MCP tools before calling them with mcp_call. Pass tools (1 to 10 names from the list below), or server (a server name) to list all tools of that server; not both.",
         "Deferred tools:",
         "- m_long_name: remote m_long_name",
       ].join("\n"),
     )
     // A limit nothing breaks adds no helper.
     expect(run(entries, { nameMaxLength: 20 }).entries.map((item) => item.id)).toEqual(entries.map((item) => item.id))
+  })
+})
+
+describe("the cap on the catalog (#1574)", () => {
+  const identity = (schema: JSONSchema7) => schema
+  const everything = () => true
+  // Keys that sort as they count, so the first ones by number are the ones the list reaches.
+  const key = (index: number, prefix = "k") => `${prefix}_${String(index).padStart(3, "0")}`
+  const keys = (count: number, prefix = "k") => Array.from({ length: count }, (_, index) => key(index, prefix))
+  // A deferred tool of `server`.
+  const onServer = (id: string, server: string) => {
+    const base = entry(id, true)
+    return { ...base, source: { ...base.source, server } }
+  }
+  const run = (entries: ToolEntry[], visible: (id: string) => boolean = everything) =>
+    McpDeferred.settle({ entries, visible, transform: identity, limits: {} })
+  type Settled = ReturnType<typeof run>
+  // What follows the two lines that head the description: the lines of tools, then the lines that sum up the rest.
+  const linesOf = (settled: Settled) =>
+    (settled.entries.find((item) => item.id === "mcp_describe")?.description ?? "").split("\n").slice(2)
+  const listed = (ids: string[]) => ids.map((id) => `- ${id}: remote ${id}`)
+  const markedDeferred = (settled: Settled) =>
+    settled.entries.filter((item) => item.source.kind === "mcp" && item.source.deferred === true)
+
+  test("is 200 lines and 16 KB", () => {
+    expect(McpDeferred.CATALOG_MAX_LINES).toBe(200)
+    expect(McpDeferred.CATALOG_MAX_BYTES).toBe(16384)
+  })
+
+  test("lists every tool at exactly the line cap, and cuts at one tool more", () => {
+    const at = run(keys(200).map((id) => entry(id, true)))
+    expect(linesOf(at)).toEqual(listed(keys(200)))
+    expect(at.unlisted).toBe(0)
+
+    const over = run(keys(201).map((id) => entry(id, true)))
+    expect(linesOf(over)).toEqual([
+      ...listed(keys(200)),
+      '... srv: 1 more tool not listed — call mcp_describe with {"server": "srv"} to list it.',
+    ])
+    expect(over.unlisted).toBe(1)
+    // Only the description is cut: the tool past the cap is an entry still, deferred, and the helpers follow.
+    expect(over.entries.map((item) => item.id)).toEqual([...keys(201), "mcp_describe", "mcp_call"])
+    expect(markedDeferred(over)).toHaveLength(201)
+  })
+
+  test("lists every tool at exactly the byte cap, and cuts at one tool more", () => {
+    // 36 characters of 3 bytes and 10 of 1 make a line of 127 bytes, 128 with its newline: 128 of them are 16 KB.
+    const description = "漢".repeat(36) + "x".repeat(10)
+    expect(Buffer.byteLength(McpDeferred.catalogLine(key(0), description)) + 1).toBe(128)
+    expect(128 * 128).toBe(McpDeferred.CATALOG_MAX_BYTES)
+    const make = (count: number) => run(keys(count).map((id) => entry(id, true, description)))
+
+    const at = make(128)
+    expect(linesOf(at)).toEqual(keys(128).map((id) => McpDeferred.catalogLine(id, description)))
+    expect(at.unlisted).toBe(0)
+
+    const over = make(129)
+    expect(linesOf(over)).toEqual([
+      ...keys(128).map((id) => McpDeferred.catalogLine(id, description)),
+      '... srv: 1 more tool not listed — call mcp_describe with {"server": "srv"} to list it.',
+    ])
+    expect(over.unlisted).toBe(1)
+  })
+
+  test("reaches the byte cap long before the line cap when the descriptions are CJK", () => {
+    // 100 characters of 3 bytes: a line of 109 code points and 310 bytes with its newline.
+    const description = "漢".repeat(100)
+    const size = Buffer.byteLength(McpDeferred.catalogLine(key(0), description)) + 1
+    expect(size).toBe(310)
+    const fits = Math.floor(McpDeferred.CATALOG_MAX_BYTES / size)
+    expect(fits).toBe(52)
+    expect(fits).toBeLessThan(McpDeferred.CATALOG_MAX_LINES)
+
+    const settled = run(keys(150).map((id) => entry(id, true, description)))
+    const lines = linesOf(settled)
+    expect(lines).toEqual([
+      ...keys(fits).map((id) => McpDeferred.catalogLine(id, description)),
+      `... srv: ${150 - fits} more tools not listed — call mcp_describe with {"server": "srv"} to list them.`,
+    ])
+    expect(Buffer.byteLength(lines.slice(0, fits).join("\n") + "\n")).toBeLessThanOrEqual(McpDeferred.CATALOG_MAX_BYTES)
+    expect(settled.unlisted).toBe(150 - fits)
+  })
+
+  test("sums up the tools past the cap by server, in server order, and a server with none past it has no line", () => {
+    // 251 tools by key: the 100 of `a_srv` come first, then the 150 of `b_srv`, then the one of `0_srv`, whose name sorts
+    // before the others' though its key is the last.
+    const entries = [
+      ...keys(100, "a").map((id) => onServer(id, "a_srv")),
+      ...keys(150, "b").map((id) => onServer(id, "b_srv")),
+      onServer("c_000", "0_srv"),
+    ]
+    // Whatever order they come in.
+    const settled = run(entries.toReversed())
+    expect(linesOf(settled)).toEqual([
+      ...listed([...keys(100, "a"), ...keys(100, "b")]),
+      '... 0_srv: 1 more tool not listed — call mcp_describe with {"server": "0_srv"} to list it.',
+      '... b_srv: 50 more tools not listed — call mcp_describe with {"server": "b_srv"} to list them.',
+    ])
+    expect(settled.unlisted).toBe(51)
+    expect(markedDeferred(settled)).toHaveLength(251)
+  })
+
+  test("writes a server's name on one line in front, and as JSON in the call to make", () => {
+    const name = 'my "odd"\nserver'
+    const settled = run([...keys(200).map((id) => entry(id, true)), onServer("z_000", name)])
+    expect(linesOf(settled).slice(200)).toEqual([
+      `... my "odd" server: 1 more tool not listed — call mcp_describe with {"server": ${JSON.stringify(name)}} to list it.`,
+    ])
+  })
+
+  test("counts only the tools the agent can see, and the ones a limit of the model moved into the catalog", () => {
+    // 201 tools of which one is hidden: 200 are listed and none is cut.
+    const hidden = run(
+      keys(201).map((id) => entry(id, true)),
+      (id) => id !== key(5),
+    )
+    expect(linesOf(hidden)).toEqual(listed(keys(201).filter((id) => id !== key(5))))
+    expect(hidden.unlisted).toBe(0)
+
+    // 201 tools that a limit of the model moves, by their names, into the catalog.
+    const moved = McpDeferred.settle({
+      entries: keys(201).map((id) => entry(id, undefined)),
+      visible: everything,
+      transform: identity,
+      limits: { nameMaxLength: 4 },
+    })
+    expect(moved.moved).toEqual({ byCount: 0, byName: 201 })
+    expect(moved.unlisted).toBe(1)
+    expect(linesOf(moved)).toHaveLength(201)
+  })
+
+  test("is 0 where there are no helpers: a helper that is not visible, no deferred tool, no tool", () => {
+    const entries = keys(201).map((id) => entry(id, true))
+    for (const hidden of MCP_DEFERRED_IDS) expect(run(entries, (id) => id !== hidden).unlisted).toBe(0)
+    expect(run(keys(201).map((id) => entry(id, undefined))).unlisted).toBe(0)
+    expect(run(entries, (id) => id.startsWith("mcp_")).unlisted).toBe(0)
+    expect(run([]).unlisted).toBe(0)
   })
 })
 
@@ -591,6 +798,10 @@ const makeMcp = (
     baseKey?: string
     /** The server answers every call with this error. */
     fails?: string
+    /** The server the tool is of; `srv` when it is not given. */
+    server?: string
+    /** The server declared `annotations.readOnlyHint` for the tool. */
+    readOnly?: boolean
   } = {},
 ) =>
   McpCatalog.bindTool(
@@ -604,10 +815,11 @@ const makeMcp = (
       },
     }),
     {
-      server: "srv",
+      server: options.server ?? "srv",
       tool: name,
       source: "unknown",
       ...(options.requiresUserInteraction ? { requiresUserInteraction: true } : {}),
+      ...(options.readOnly ? { readOnly: true } : {}),
       ...(options.baseKey === undefined ? {} : { baseKey: options.baseKey }),
     },
   )
@@ -620,6 +832,8 @@ let deferredKeys = DEFERRED_KEYS
 let toolLimits: McpDeferred.ToolLimits = {}
 // The provider's rewrite of a schema; the registry applies it to the entries it returns.
 let rewrite: (schema: JSONSchema7) => JSONSchema7 = (schema) => schema
+// What the agent can see: the registry leaves out the tools its rules hide, and `settle` keeps the rest.
+let visibleIds: (id: string) => boolean = () => true
 
 /** What the registry returns for the tools above: its entries, with the deferred ones marked and the helpers added. */
 const resolvedEntries = () =>
@@ -627,7 +841,7 @@ const resolvedEntries = () =>
     entries: mcpEntries(mcpTools, (schema) => rewrite(schema)).map((item) =>
       deferredKeys.has(item.id) ? { ...item, source: { ...item.source, deferred: true } } : item,
     ),
-    visible: () => true,
+    visible: (id) => visibleIds(id),
     transform: (schema) => rewrite(schema),
     limits: toolLimits,
   }).entries
@@ -692,6 +906,8 @@ const resolveTools = (
     limits?: McpDeferred.ToolLimits
     /** Server tools beside the suite's own. */
     tools?: Record<string, ReturnType<typeof makeMcp>>
+    /** What the agent can see; every tool when it is not given. */
+    visible?: (id: string) => boolean
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -704,6 +920,7 @@ const resolveTools = (
     deferredKeys = options.keys ?? DEFERRED_KEYS
     rewrite = options.rewrite ?? ((schema) => schema)
     toolLimits = options.limits ?? {}
+    visibleIds = options.visible ?? (() => true)
     mcpTools = {
       srv_lookup: makeMcp("lookup", {
         description: "Look things up in the index. Second sentence.",
@@ -847,7 +1064,6 @@ describe("mcp_describe", () => {
     Effect.gen(function* () {
       const tools = yield* resolveTools()
       const cases: Array<[unknown, string]> = [
-        [{}, "(root) must have required property 'tools'"],
         [{ tools: [] }, "/tools must NOT have fewer than 1 items"],
         [
           { tools: Array.from({ length: 11 }, (_, index) => `srv_${index}`) },
@@ -855,6 +1071,7 @@ describe("mcp_describe", () => {
         ],
         [{ tools: ["srv_lookup", 7] }, "/tools/1 must be string"],
         [{ tools: "srv_lookup" }, "/tools must be array"],
+        [{ server: 5 }, "/server must be string"],
         [{ tools: ["srv_lookup"], note: "SECRET_NOTE" }, "(root) must NOT have additional properties"],
       ]
       for (const [args, detail] of cases) {
@@ -904,6 +1121,192 @@ describe("mcp_describe", () => {
       // Nothing was cut or run for a call that failed.
       expect(seen.truncations).toEqual([])
     }),
+  )
+
+  it.instance(
+    "takes exactly one of tools and server: both, and neither, are refused with how each is used (#1574)",
+    () =>
+      Effect.gen(function* () {
+        const tools = yield* resolveTools()
+        for (const args of [{}, { tools: ["srv_lookup"], server: "srv" }]) {
+          const error = failureOf(yield* attempt(tools, "mcp_describe", args))
+          expect(error.message).toBe(
+            "The mcp_describe tool was called with invalid arguments: (root) must have exactly one of 'tools' and 'server': 'tools' reads the schemas of tools, 'server' lists the tools of a server. Fix them and call mcp_describe again.",
+          )
+          expect(error).toBeInstanceOf(ArgumentsError)
+          expect(error.name).toBe("ToolInvalidArgumentsError")
+          expect(classifyToolError(error)).toBe("validation_error")
+        }
+        // Nothing was cut or run for a call that was refused.
+        expect(seen.truncations).toEqual([])
+        expect(seen.runs).toEqual([])
+        // One of them is a call, whichever it is.
+        expect((yield* attempt(tools, "mcp_describe", { tools: ["srv_lookup"] })).ok).toBe(true)
+        expect((yield* attempt(tools, "mcp_describe", { server: "srv" })).ok).toBe(true)
+      }),
+  )
+})
+
+// Three deferred tools of a second server, `zeta`: one with a long description and one with none.
+const ZETA = () => ({
+  zeta_one: makeMcp("one", { server: "zeta", description: "Does one thing. And more." }),
+  zeta_three: makeMcp("three", { server: "zeta", description: "A".repeat(200) }),
+  zeta_two: makeMcp("two", { server: "zeta" }),
+})
+const ZETA_KEYS = new Set([...DEFERRED_KEYS, "zeta_one", "zeta_three", "zeta_two"])
+const UNKNOWN_SERVER = (requested: string, available: string[]) =>
+  `Unknown MCP server "${requested}". Servers with deferred tools: ${available.join(", ")}. Use one of them.`
+
+describe("mcp_describe for a server (#1574)", () => {
+  it.instance("lists every deferred tool of the server, by key, a line each, and no other tool", () =>
+    Effect.gen(function* () {
+      const tools = yield* resolveTools(ALLOW_ALL, { tools: ZETA(), keys: ZETA_KEYS })
+      const zeta = yield* attempt(tools, "mcp_describe", { server: "zeta" })
+      expect(zeta.ok).toBe(true)
+      if (!zeta.ok) return
+      expect(zeta.value.output).toBe(
+        [
+          "zeta_one — Does one thing.",
+          `${Array.from(`zeta_three — ${"A".repeat(200)}`)
+            .slice(0, 119)
+            .join("")}…`,
+          "zeta_two — (no description)",
+        ].join("\n"),
+      )
+      expect(zeta.value.metadata).toMatchObject({ count: 3, truncated: false })
+
+      // The server of the suite: its deferred tools, and not `srv_live`, which is a tool of the list.
+      const srv = yield* attempt(tools, "mcp_describe", { server: "srv" })
+      expect(srv.ok && srv.value.output).toBe(
+        [
+          "srv_blank — (no description)",
+          "srv_broken — (no description)",
+          `${REWRITTEN} — Rewritten key.`,
+          "srv_guarded — Guarded tool.",
+          "srv_lookup — Look things up in the index.",
+          "srv_open — Takes anything.",
+        ].join("\n"),
+      )
+      // It runs no tool and no hook, and what it returns is cut as the output of any tool is.
+      expect(seen.runs).toEqual([])
+      expect(seen.hooks).toEqual([])
+      expect(seen.truncations.map((item) => item.options)).toEqual([
+        { context: ModelContext.contextOfModel(model) },
+        { context: ModelContext.contextOfModel(model) },
+      ])
+      expect(seen.truncations[0].text).toBe(zeta.value.output ?? "")
+    }),
+  )
+
+  it.instance("lists only the tools the agent can see: for an agent that may only read, the read-only ones", () =>
+    Effect.gen(function* () {
+      const tools = yield* resolveTools(ALLOW_ALL, {
+        tools: {
+          zeta_read: makeMcp("read", { server: "zeta", description: "Reads.", readOnly: true }),
+          zeta_write: makeMcp("write", { server: "zeta", description: "Writes." }),
+          zeta_look: makeMcp("look", { server: "zeta", description: "Looks.", readOnly: true }),
+        },
+        keys: new Set([...DEFERRED_KEYS, "zeta_read", "zeta_write", "zeta_look"]),
+        // What such an agent sees of the MCP tools: those whose server declared the hint. The helpers are not among them.
+        visible: (id) => !(id in mcpTools) || McpCatalog.toolBinding(mcpTools[id])?.readOnly === true,
+      })
+      const zeta = yield* attempt(tools, "mcp_describe", { server: "zeta" })
+      expect(zeta.ok && zeta.value.output).toBe("zeta_look — Looks.\nzeta_read — Reads.")
+      expect(zeta.ok && zeta.value.metadata).toMatchObject({ count: 2 })
+
+      // A tool it cannot see is in no catalog, and a server none of whose tools it can see is no server of its own.
+      expect(failureOf(yield* attempt(tools, "mcp_describe", { tools: ["zeta_write"] })).message).toBe(
+        UNKNOWN("zeta_write", ["zeta_look", "zeta_read"]),
+      )
+      expect(failureOf(yield* attempt(tools, "mcp_describe", { server: "srv" })).message).toBe(
+        UNKNOWN_SERVER("srv", ["zeta"]),
+      )
+    }),
+  )
+
+  it.instance("refuses a server with no tool in the catalog, and lists the servers that have one", () =>
+    Effect.gen(function* () {
+      const tools = yield* resolveTools(ALLOW_ALL, {
+        // `eager` has a tool that is not deferred, `hidden` one the agent cannot see, and the name of `odd server` is
+        // not the start of its key.
+        tools: {
+          ...ZETA(),
+          eager_one: makeMcp("one", { server: "eager" }),
+          hidden_one: makeMcp("one", { server: "hidden" }),
+          odd_server_one: makeMcp("one", { server: "odd server" }),
+        },
+        keys: new Set([...ZETA_KEYS, "hidden_one", "odd_server_one"]),
+        visible: (id) => id !== "hidden_one",
+      })
+      for (const name of ["nope", "SRV", "eager", "hidden", ""]) {
+        const error = failureOf(yield* attempt(tools, "mcp_describe", { server: name }))
+        expect(error.message).toBe(UNKNOWN_SERVER(name, ["odd server", "srv", "zeta"]))
+        expect(error).toBeInstanceOf(ArgumentsError)
+        expect(error.name).toBe("ToolInvalidArgumentsError")
+        expect(classifyToolError(error)).toBe("validation_error")
+      }
+      // Nothing was cut or run for a call that failed.
+      expect(seen.truncations).toEqual([])
+      expect(seen.runs).toEqual([])
+      // The name is the server's own, spaces and all.
+      const odd = yield* attempt(tools, "mcp_describe", { server: "odd server" })
+      expect(odd.ok && odd.value.output).toBe("odd_server_one — (no description)")
+    }),
+  )
+})
+
+describe("a tool past the cap on the catalog (#1574)", () => {
+  // 210 deferred tools of a server `big`, whose keys sort before the suite's own: the description reaches the first 200.
+  const bigKey = (index: number) => `big_${String(index).padStart(3, "0")}`
+  const BIG = () =>
+    Object.fromEntries(
+      Array.from({ length: 210 }, (_, index) => [
+        bigKey(index),
+        makeMcp(`t${index}`, { server: "big", description: `Tool ${index}. More.` }),
+      ]),
+    )
+  const BIG_KEYS = () => new Set([...DEFERRED_KEYS, ...Array.from({ length: 210 }, (_, index) => bigKey(index))])
+  const descriptionNow = () => resolvedEntries().find((item) => item.id === "mcp_describe")?.description ?? ""
+
+  it.instance(
+    "is not in the description, and is described, listed by its server and called by its key all the same",
+    () =>
+      Effect.gen(function* () {
+        const tools = yield* resolveTools(ALLOW_ALL, { tools: BIG(), keys: BIG_KEYS() })
+        const text = descriptionNow()
+        // `big_000` to `big_199` are listed; the ten after them and the six of `srv` are summed up, by server.
+        expect(text).toContain("- big_199: Tool 199.")
+        expect(text).not.toContain("big_200")
+        expect(text).not.toContain("srv_lookup")
+        expect(text.split("\n").slice(-2)).toEqual([
+          '... big: 10 more tools not listed — call mcp_describe with {"server": "big"} to list them.',
+          '... srv: 6 more tools not listed — call mcp_describe with {"server": "srv"} to list them.',
+        ])
+
+        // Its schema is read by its key, as any other's.
+        const described = yield* attempt(tools, "mcp_describe", { tools: [bigKey(205), "srv_lookup"] })
+        expect(described.ok && described.value.output).toContain(
+          `${bigKey(205)}\nTool 205. More.\nInput schema: {"type":"object","properties":{}}`,
+        )
+        expect(described.ok && described.value.output).toContain("srv_lookup\nLook things up in the index.")
+
+        // Its server lists it, with all the others.
+        const listing = yield* attempt(tools, "mcp_describe", { server: "big" })
+        expect(listing.ok).toBe(true)
+        const lines = listing.ok ? (listing.value.output ?? "").split("\n") : []
+        expect(lines).toHaveLength(210)
+        expect(lines[0]).toBe("big_000 — Tool 0.")
+        expect(lines[205]).toBe("big_205 — Tool 205.")
+        expect(lines[209]).toBe("big_209 — Tool 209.")
+
+        // And it is called by its key.
+        const called = yield* attempt(tools, "mcp_call", { tool: bigKey(205), arguments: {} })
+        expect(called.ok && called.value.output).toBe("RAN t205 {}")
+        expect(seen.runs).toEqual([{ tool: "t205", args: {} }])
+        // A tool of the suite's own `srv`, which the list does not reach either.
+        const lookup = yield* attempt(tools, "mcp_call", { tool: "srv_lookup", arguments: { query: "x" } })
+        expect(lookup.ok && lookup.value.output).toBe('RAN lookup {"query":"x"}')
+      }),
   )
 })
 
