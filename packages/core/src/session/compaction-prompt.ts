@@ -9,7 +9,7 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 - [single-sentence task summary]
 
 ## Constraints & Preferences
-- [user constraints, preferences, specs, or "(none)"]
+- [each explicit user constraint, preference or spec as its own bullet, in the user's words, or "(none)"]
 
 ## Progress
 ### Done
@@ -38,7 +38,8 @@ Rules:
 - Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs.
 - Preserve exact file paths, commands, error strings, and identifiers when known.
-- Do not mention the summary process or that context was compacted.`
+- Do not mention the summary process or that context was compacted.
+- List every explicit user constraint as its own bullet; never merge or drop one.`
 
 export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) =>
   [

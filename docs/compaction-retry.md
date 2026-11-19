@@ -8,13 +8,22 @@ stalled connection and is subject to the same inactivity deadline.
 
 On inactivity or a provider request timeout (including HTTP 408/504), the current
 attempt is cancelled and cleaned up before immediately switching models. There
-is no retry backoff for these compaction timeouts. The model order is:
+is no retry backoff for these compaction timeouts. When `compaction.mode` is
+not set, the model order is:
 
-1. The provider's small model, honoring `small_model` when configured.
-2. The model configured for `agent.compaction`.
-3. The model on the conversation's compaction request.
+1. The model configured for `agent.compaction`.
+2. The model on the conversation's compaction request.
+3. The provider's small model, honoring `small_model` when configured.
 
-Unconfigured optional stages and duplicate provider/model pairs are skipped.
+The small model comes last because a summary is only as precise as the model
+that writes it. With `compaction.mode` set to `small`, `shared`, or `auto`, the
+order is the earlier one: the provider's small model first, then the
+`agent.compaction` model, then the conversation's model.
+
+Unconfigured optional stages and duplicate provider/model pairs are skipped,
+and a duplicate keeps its earliest role. An `agent.compaction` model that the
+model catalog does not list counts as unconfigured: compaction logs a
+`compaction agent model unavailable` warning and goes on with the other stages.
 Context overflow also advances this ladder. Other failures retain the existing
 retry policy. User cancellation does not retry. Once the ladder is exhausted,
 compaction reports an error and releases the busy state rather than looping.
@@ -27,16 +36,30 @@ The first three stages above form the clean ladder: each sends a clean request
 with no tools, no system text, and size-reduced history. `compaction.mode`
 selects whether compaction uses only that ladder or also tries a shared request.
 
+## Summary check
+
+A finished summary must have the template's shape: the `## Goal`, `### In
+Progress`, and `## Next Steps` headings, each on a line of its own, and at least
+one goal item. Those are the sections the continuation text reads. A summary
+without them, an empty one included, is removed and asked for once more on the
+same model; the retry takes one more slot of the ladder without using up the
+models behind it. If the retry is still incomplete but has text, compaction
+keeps it and logs a `compaction summary incomplete` warning. If it has no text,
+nothing is committed: its message and the compaction marker are removed,
+compaction reports `Compaction produced an empty summary`, and the session
+returns to idle so the next prompt is not blocked.
+
 ## Compaction request modes
 
-`compaction.mode` accepts `small` (default), `shared`, and `auto`. The legacy
-and current configuration formats both accept it, and migration preserves the
-value.
+`compaction.mode` accepts `small`, `shared`, and `auto`. The legacy and current
+configuration formats both accept it, and migration preserves the value. Leaving
+it unset sends a clean request, never a shared one.
 
 | Mode | Request shape | Attempt order |
 | --- | --- | --- |
-| `small` | Clean request. | The clean ladder, unchanged. |
-| `shared` | Reuses the main request's cached system and tool prefix. | The shared request first, then the clean ladder. |
+| unset | Clean request. | The clean ladder, small model last. |
+| `small` | Clean request. | The clean ladder, small model first. |
+| `shared` | Reuses the main request's cached system and tool prefix. | The shared request first, then the clean ladder with the small model first. |
 | `auto` | Prices both shapes. | Estimated cost ascending. |
 
 ```jsonc
@@ -47,7 +70,8 @@ value.
 }
 ```
 
-`small` is the default and needs no configuration.
+Without `compaction.mode`, compaction sends a clean request and needs no
+configuration. Set `small` to try the provider's small model first.
 
 ### Shared prefix
 

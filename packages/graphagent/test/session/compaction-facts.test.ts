@@ -415,3 +415,50 @@ describe("CompactionFacts.summaryItems", () => {
     expect(CompactionFacts.summaryItems(undefined, "## Goal")).toEqual([])
   })
 })
+
+describe("CompactionFacts.validateSummary", () => {
+  const valid = [
+    "## Goal",
+    "- Ship the fix",
+    "",
+    "## Progress",
+    "### In Progress",
+    "- (none)",
+    "",
+    "## Next Steps",
+    "- (none)",
+  ].join("\n")
+
+  test("accepts a summary with the three sections the continuation reads and one goal item", () => {
+    expect(CompactionFacts.validateSummary(valid)).toBe(true)
+  })
+
+  test("tolerates indented headings, extra sections and text around them", () => {
+    expect(
+      CompactionFacts.validateSummary(`preamble\n  ## Goal  \n- Ship\n\n   ### In Progress\n## Next Steps\n- go\nmore`),
+    ).toBe(true)
+  })
+
+  test("needs each of the three headings on a line of its own", () => {
+    for (const heading of ["## Goal", "### In Progress", "## Next Steps"])
+      expect(CompactionFacts.validateSummary(valid.replace(heading, "heading removed"))).toBe(false)
+    // A heading inside a sentence or with more text on its line is not a heading line.
+    expect(CompactionFacts.validateSummary(valid.replace("### In Progress", "see ### In Progress below"))).toBe(false)
+    expect(CompactionFacts.validateSummary(valid.replace("## Next Steps", "## Next Steps and more"))).toBe(false)
+  })
+
+  test("needs at least one goal item, and a (none) goal is none", () => {
+    expect(CompactionFacts.validateSummary(valid.replace("- Ship the fix", "- (none)"))).toBe(false)
+    expect(CompactionFacts.validateSummary(valid.replace("- Ship the fix", "Ship the fix without a bullet"))).toBe(
+      false,
+    )
+    expect(CompactionFacts.validateSummary(valid.replace("- Ship the fix\n", ""))).toBe(false)
+  })
+
+  test("rejects text without headings, an empty text and a missing text", () => {
+    expect(CompactionFacts.validateSummary("summary")).toBe(false)
+    expect(CompactionFacts.validateSummary("")).toBe(false)
+    expect(CompactionFacts.validateSummary("  \n ")).toBe(false)
+    expect(CompactionFacts.validateSummary(undefined)).toBe(false)
+  })
+})
