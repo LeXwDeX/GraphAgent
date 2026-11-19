@@ -7,7 +7,7 @@ import { EventV2 } from "@graphagent/core/event"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { describe, expect, test } from "bun:test"
-import { jsonSchema, tool, type ToolExecutionOptions } from "ai"
+import { asSchema, jsonSchema, tool, type Tool, type ToolExecutionOptions } from "ai"
 import { Effect, Exit, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import type { SettingsHook } from "@/hook"
@@ -15,6 +15,8 @@ import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { SafetyGuard } from "@/permission/safety-guard"
+import { ProviderProfile } from "@/provider/profile"
+import { ProviderTransform } from "@/provider/transform"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionTools } from "@/session/tools"
 import { classifyToolError } from "@/session/tool-outcome"
@@ -250,6 +252,7 @@ const entry = (id: string, deferred: boolean | undefined, description = `remote 
     effects: "unknown" as const,
     description,
     jsonSchema: { type: "object", properties: {} } satisfies JSONSchema7,
+    rawSchema: { type: "object", properties: {} } satisfies JSONSchema7,
     tool: tool({ inputSchema: jsonSchema({ type: "object", properties: {} }) }),
   }) satisfies ToolEntry
 
@@ -621,7 +624,7 @@ let rewrite: (schema: JSONSchema7) => JSONSchema7 = (schema) => schema
 /** What the registry returns for the tools above: its entries, with the deferred ones marked and the helpers added. */
 const resolvedEntries = () =>
   McpDeferred.settle({
-    entries: mcpEntries(mcpTools).map((item) =>
+    entries: mcpEntries(mcpTools, (schema) => rewrite(schema)).map((item) =>
       deferredKeys.has(item.id) ? { ...item, source: { ...item.source, deferred: true } } : item,
     ),
     visible: () => true,
@@ -687,6 +690,8 @@ const resolveTools = (
     keys?: Set<string>
     rewrite?: (schema: JSONSchema7) => JSONSchema7
     limits?: McpDeferred.ToolLimits
+    /** Server tools beside the suite's own. */
+    tools?: Record<string, ReturnType<typeof makeMcp>>
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -713,6 +718,7 @@ const resolveTools = (
         schema: { type: "object", properties: {}, additionalProperties: true },
         description: "Takes anything.",
       }),
+      ...options.tools,
     }
     return (yield* SessionTools.resolve({
       agent: { name: "general", permission: rules, options: {} } as never,
@@ -998,6 +1004,82 @@ describe("mcp_call", () => {
       expect(error).not.toBeInstanceOf(ArgumentsError)
       expect(classifyToolError(error)).toBe("execution_error")
       expect(seen.runs).toEqual([{ tool: "broken", args: {} }])
+    }),
+  )
+})
+
+describe("a deferred tool under a provider that rewrites schemas (#1576)", () => {
+  // A server's schema that the OpenAI downgrade changes in meaning: an array without `items`, an enum of numbers
+  // without a `type`, and a boolean sub-schema.
+  const LOOSE_SCHEMA: JSONSchema7 = {
+    type: "object",
+    properties: { rows: { type: "array" }, level: { enum: [1, 2, 3] }, anything: true },
+  }
+  const LOOSE_TEXT = '{"type":"object","properties":{"rows":{"type":"array"},"level":{"enum":[1,2,3]},"anything":true}}'
+  // What the model is sent: the rewrite of a model whose profile asks for the OpenAI downgrade.
+  const openai = ProviderTest.model()
+  const downgrade = (schema: JSONSchema7) => ProviderTransform.schema(openai, schema)
+  // Arguments the server's schema accepts and the rewritten one does not.
+  const FITS = { rows: [{ id: 1 }, { id: 2 }], level: 2, anything: 7 }
+  const loose = (keys: string[] = ["srv_loose"]) =>
+    resolveTools(ALLOW_ALL, {
+      keys: new Set(keys),
+      rewrite: downgrade,
+      tools: { srv_loose: makeMcp("loose", { description: "Takes loose arguments.", schema: LOOSE_SCHEMA }) },
+    })
+
+  test("the rewrite does change what the server wrote", () => {
+    expect(ProviderProfile.profileOf(openai).schemaFixes).toContain("openai")
+    expect(downgrade(LOOSE_SCHEMA)).toEqual({
+      type: "object",
+      properties: {
+        rows: { type: "array", items: { type: "string" } },
+        level: { type: "string", enum: [1, 2, 3] },
+        anything: { type: "string" },
+      },
+    })
+  })
+
+  it.instance("mcp_call holds the arguments to the server's own schema, not to the rewrite of it", () =>
+    Effect.gen(function* () {
+      const tools = yield* loose()
+      const result = yield* attempt(tools, "mcp_call", { tool: "srv_loose", arguments: FITS })
+      expect(result.ok).toBe(true)
+      expect(seen.runs).toEqual([{ tool: "loose", args: FITS }])
+    }),
+  )
+
+  it.instance("mcp_call still refuses what the server's own schema refuses", () =>
+    Effect.gen(function* () {
+      const tools = yield* loose()
+      const cases: Array<[unknown, string]> = [
+        [{ rows: "x" }, "/rows must be array"],
+        [{ level: 4 }, "/level must be one of 1, 2, 3"],
+      ]
+      for (const [args, detail] of cases) {
+        const error = failureOf(yield* attempt(tools, "mcp_call", { tool: "srv_loose", arguments: args }))
+        expect(error.message).toBe(INVALID("srv_loose", detail) + SCHEMA_HINT)
+      }
+      expect(seen.runs).toEqual([])
+    }),
+  )
+
+  it.instance("mcp_describe shows the server's own schema, without what the rewrite added", () =>
+    Effect.gen(function* () {
+      const tools = yield* loose()
+      const result = yield* attempt(tools, "mcp_describe", { tools: ["srv_loose"] })
+      expect(result.ok && result.value.output).toBe(
+        ["srv_loose", "Takes loose arguments.", `Input schema: ${LOOSE_TEXT}`].join("\n"),
+      )
+      expect(result.ok && result.value.output).not.toContain('"items"')
+    }),
+  )
+
+  it.instance("a tool that is not deferred is still sent the rewritten schema", () =>
+    Effect.gen(function* () {
+      const tools = yield* loose([])
+      const sent = asSchema((tools.srv_loose as unknown as Tool).inputSchema).jsonSchema
+      expect(sent).toEqual(downgrade(LOOSE_SCHEMA))
     }),
   )
 })

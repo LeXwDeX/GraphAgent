@@ -1541,7 +1541,9 @@ export const mcpDeferredTools = Effect.fn("ToolPipeline.mcpDeferredTools")(funct
       if (!target?.execute || !targetEntry)
         throw refuse({ kind: "unknown_tool", requested: key, available: available() })
       const callArgs = isRecord(record.arguments) ? record.arguments : {}
-      const mismatch = check(targetEntry.jsonSchema, callArgs)
+      // The server's own schema, the one `mcp_describe` shows; the provider's rewrite of it is not what the tool takes
+      // (#1576).
+      const mismatch = check(targetEntry.rawSchema, callArgs)
       if (mismatch !== undefined) throw refuse({ kind: "invalid_arguments", tool: key, detail: mismatch }, SCHEMA_HINT)
       // The target's wrapper cuts its own result, so this one is not cut again.
       proxiedCalls.set(opts, key)
