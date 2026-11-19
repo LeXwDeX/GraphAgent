@@ -43,7 +43,10 @@ export const modelsData = await loadModelsData()
  * (local dev), the binary has no curated templates and falls back to the
  * project/global workflow library scopes. The engine's own stage specs
  * (src/dag/builtin-workflows) are imported by src/dag/workflows.ts, so they
- * are in every build and are not part of this snapshot.
+ * are in every build and are not part of this snapshot. Every embedded
+ * template must pass as authored and under the strict review gate that DAG
+ * mode applies to every start (#1560), so the snapshot's version has to be one
+ * that does.
  */
 async function loadDagTemplatesData() {
   const templatesDir = process.env.DAG_TEMPLATES_DIR

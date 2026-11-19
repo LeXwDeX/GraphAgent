@@ -20,6 +20,17 @@ export interface MutationSessionContext {
   readonly model: { id: string; providerID: string } | undefined
 }
 
+/**
+ * The review gate the calling session fixes for every workflow it starts: DAG
+ * mode on makes it strict whatever the spec's source or declaration, because
+ * the mode runs unattended (ADR-0006). `run.start` and every spec action (list,
+ * read, validate, draft) spread this into the authoring call, so a spec that
+ * validates here is one the start accepts. Mutations never use it: they are
+ * checked against the gate their workflow froze at start.
+ */
+export const sessionReviewGate = (session: { readonly dagMode?: "on" | "off" }) =>
+  session.dagMode === "on" ? ({ review_gate: "strict" } as const) : ({} as const)
+
 /** The review loop stops after five rounds, or once two consecutive rounds
  * raise no new upheld finding; the remaining open items are reported instead
  * of starting another round. */

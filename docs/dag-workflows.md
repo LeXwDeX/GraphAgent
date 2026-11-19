@@ -98,30 +98,30 @@ dir). A minimal spec:
 title: Dependency audit
 config:
   name: dependency-audit
-  nodes:
+  objective: Flag outdated or duplicated dependencies and propose an upgrade order.
+  blocks:
     - id: inventory
-      name: inventory
-      worker_type: explore
-      depends_on: []
-      required: true
-      prompt_template:
-        id: config-explore
-        input:
-          target: "package.json files and lockfiles"
-
+      kind: explore
+      instruction: Inventory the package.json files and lockfiles with their dependency versions.
     - id: report
-      name: report
-      worker_type: general
+      kind: synthesize
       depends_on: [inventory]
-      report_to_parent: true
-      prompt_template:
-        inline: "Flag outdated or duplicated dependencies in {{inventory}} and propose an upgrade order."
+      instruction: Flag outdated or duplicated dependencies and propose an upgrade order.
 ```
 
 Then just say "run the dependency-audit workflow" — the agent starts it by
 name, no path needed. Ad-hoc specs still work exactly as before: a `spec_path`
 that looks like a path (has a separator or a `.yaml`/`.yml` extension) is read
 relative to the session directory instead of the library.
+
+With DAG mode on, every start runs under the strict review gate, whatever the
+spec declares, and `spec validate`, `read`, `list` and `draft` judge a spec
+under that same gate. The spec above is valid under both gates. Under strict, a
+spec written as `nodes` may only use read-only workers (`explore`, `plan`,
+`auditor`, ...); a writer is a `coding` or `prototype` block followed by a
+`verify` block, a `review` block whose `lenses` include `completeness`, and a
+`synthesize` block that depends on the review, with `config.acceptance` listing
+what the completeness lane judges.
 
 #### Template inputs
 

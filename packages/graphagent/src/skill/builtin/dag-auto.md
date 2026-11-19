@@ -85,7 +85,7 @@ config:
   blocks:
     - { id: survey, kind: explore }
     - { id: checks, kind: verify, depends_on: [survey] }
-    - { id: decision, kind: review, depends_on: [survey, checks] }
+    - { id: decision, kind: review, depends_on: [survey, checks], lenses: [standards, intent, completeness] }
 ```
 
 Use blocks for the common routes; drop to `nodes` only for custom bindings,
@@ -94,6 +94,7 @@ deep diff-review metadata (skill dag-blocks). Never declare both.
 
 Rules a saved spec must respect:
 
+- DAG mode is strict: `review` lenses need `completeness`; `nodes` stay read-only.
 - Never write `model` on a node or in `node_defaults`: `dag.model` in
   `.agents/settings.json` owns both tiers; the node's role picks one (skill
   dag-policy).

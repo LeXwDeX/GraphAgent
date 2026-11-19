@@ -34,6 +34,20 @@ const INVALID_TEMPLATE = `config:
       depends_on: [proto]
 `
 
+// A review block with the default lenses has no completeness lens: valid as
+// authored, where the standard gate only warns, but rejected under the strict
+// gate that DAG mode applies to every start (#1560).
+const STANDARD_ONLY_TEMPLATE = `config:
+  name: standard-only
+  objective: Review the bounded change
+  blocks:
+    - id: survey
+      kind: explore
+    - id: decision
+      kind: review
+      depends_on: [survey]
+`
+
 async function runGenerate(templatesDir: string, modelsSnapshot: string) {
   const result = Bun.spawnSync({
     cmd: ["bun", path.join("script", "generate.ts")],
@@ -94,6 +108,24 @@ describe("dag template generation validates before embedding", () => {
           expect(result.exitCode).not.toBe(0)
           expect(result.output).toContain("invalid-route.yaml [block.compile_failed]")
           expect(result.output).toContain("block.compile_failed")
+        },
+      )
+    },
+    { timeout: 60_000 },
+  )
+
+  it(
+    "aborts when a template passes as authored but fails under the strict review gate",
+    async () => {
+      await withTemplatesDir(
+        { "valid-route.yaml": VALID_TEMPLATE, "standard-only.yaml": STANDARD_ONLY_TEMPLATE },
+        async (dir, modelsSnapshot) => {
+          const result = await runGenerate(dir, modelsSnapshot)
+          expect(result.exitCode).not.toBe(0)
+          expect(result.output).toContain("standard-only.yaml [block.compile_failed]")
+          expect(result.output).toContain("must include the completeness lens")
+          expect(result.output).toContain("[strict review gate: DAG mode applies it to every start]")
+          expect(result.output).not.toContain("valid-route.yaml [")
         },
       )
     },

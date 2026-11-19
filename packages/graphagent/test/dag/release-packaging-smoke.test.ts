@@ -30,12 +30,15 @@ const VALID_TEMPLATE_A = `config:
       kind: plan
 `
 
+// Node form on a read-only worker: the validator also judges every template
+// under the strict gate DAG mode applies (#1560), which rejects a hand-written
+// node on a write-capable worker.
 const VALID_TEMPLATE_B = `config:
   name: route-b
   nodes:
     - id: work
       name: work
-      worker_type: build
+      worker_type: explore
       depends_on: []
       prompt_template:
         inline: Do the work.
