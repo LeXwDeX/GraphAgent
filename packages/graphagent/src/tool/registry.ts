@@ -66,8 +66,9 @@ import { DagMessages } from "@graphagent/core/dag/messages"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { ProviderTransform } from "@/provider/transform"
+import { TuiEvent } from "@/server/tui-event"
 import { ToolJsonSchema } from "./json-schema"
-import { MCP_DEFERRED_IDS, settle } from "./mcp-deferred"
+import { MCP_DEFERRED_IDS, movedNotice, settle, type Moved } from "./mcp-deferred"
 import { MCP_RESOURCE_DEFINITIONS, MCP_RESOURCE_ORDER, type McpResourceOp } from "./mcp-resource"
 import { ROOT_ONLY_TOOLS, type DirectTool } from "./pipeline"
 import { RequestCache } from "../session/request-cache"
@@ -159,6 +160,8 @@ type State = {
   readonly definitions: RequestCache.CacheState<CachedBuiltin[]>
   /** One agent-tool visibility decision per session turn (Issue #1022, HS6b). */
   agentUsable: Map<string, { readonly turnID: string; readonly value: boolean }>
+  /** The models (`<provider>/<id>`) the user was told tools were moved into the deferred catalog for (#1459). */
+  warned: Set<string>
 }
 
 type AgentCatalogOptions = {
@@ -370,6 +373,7 @@ export const layer = Layer.effect(
           origin: randomUUID(),
           definitions: RequestCache.make<CachedBuiltin[]>(DEFINITION_CACHE_BYTES),
           agentUsable,
+          warned: new Set<string>(),
         }
       }),
     )
@@ -469,6 +473,22 @@ export const layer = Layer.effect(
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       return (yield* registrations(input)).map((item) => item.definition)
+    })
+
+    // Tells the user, once for each model, that MCP tools were moved into the deferred catalog to meet the limits of
+    // the model (#1459).
+    const warnMoved = Effect.fnUntraced(function* (s: State, model: Provider.Model, moved: Moved) {
+      const count = moved.byCount + moved.byName
+      const name = `${model.providerID}/${model.id}`
+      if (count === 0 || s.warned.has(name)) return
+      s.warned.add(name)
+      yield* Effect.logWarning("MCP tools moved into the deferred catalog for the limits of the model", {
+        model: name,
+        ...moved,
+      })
+      yield* events
+        .publish(TuiEvent.ToastShow, { ...movedNotice(count, name), variant: "warning", duration: 8000 })
+        .pipe(Effect.ignore)
     })
 
     const resolve: Interface["resolve"] = Effect.fn("ToolRegistry.resolve")(function* (input) {
@@ -684,7 +704,13 @@ RequestCache.set(
         configuredPermission,
       )
       const visible = (id: string) => input.user?.tools?.[id] !== false && !disabled.has(id)
-      const resolved = settle({ entries: entries.values(), visible, transform })
+      const { entries: resolved, moved } = settle({
+        entries: entries.values(),
+        visible,
+        transform,
+        limits: ProviderProfile.profileOf(model).toolLimits,
+      })
+      yield* warnMoved(s, model, moved)
       Object.defineProperty(resolved, RESOLVE_KEY, { value: definitionsKey })
       return resolved
     })

@@ -112,3 +112,38 @@ describe("fetch with sanitized keys (B3)", () => {
     expect(result).toBeUndefined()
   })
 })
+
+describe("definitionBytes (#1459)", () => {
+  test("warns above 16384 bytes", () => {
+    expect(McpCatalog.MCP_DEFINITION_WARN_BYTES).toBe(16384)
+  })
+
+  test("is the bytes of the description plus the bytes of the schema as JSON", () => {
+    const inputSchema = { type: "object" as const, properties: { q: { type: "string" } }, required: ["q"] }
+    expect(McpCatalog.definitionBytes({ description: "find it", inputSchema })).toBe(
+      Buffer.byteLength("find it") + Buffer.byteLength(JSON.stringify(inputSchema)),
+    )
+    expect(McpCatalog.definitionBytes({ description: "find it", inputSchema })).toBe(
+      "find it".length + '{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}'.length,
+    )
+  })
+
+  test("counts bytes and not characters, in the description and in the schema", () => {
+    // é is 2 bytes, € is 3 and an emoji is 4.
+    const inputSchema = { type: "object" as const, properties: { "€": {} } }
+    expect(McpCatalog.definitionBytes({ description: "é€\u{1F600}", inputSchema })).toBe(
+      2 + 3 + 4 + Buffer.byteLength('{"type":"object","properties":{"€":{}}}'),
+    )
+    expect(Buffer.byteLength('{"type":"object","properties":{"€":{}}}')).toBe(
+      '{"type":"object","properties":{"€":{}}}'.length + 2,
+    )
+  })
+
+  test("takes a missing description as empty", () => {
+    const inputSchema = { type: "object" as const }
+    expect(McpCatalog.definitionBytes({ inputSchema })).toBe(Buffer.byteLength('{"type":"object"}'))
+    expect(McpCatalog.definitionBytes({ description: "", inputSchema })).toBe(
+      McpCatalog.definitionBytes({ inputSchema }),
+    )
+  })
+})

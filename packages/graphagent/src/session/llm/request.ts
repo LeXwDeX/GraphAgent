@@ -88,16 +88,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     } satisfies Pick<ProviderAdapters.Interface, "chatParams" | "chatHeaders">)
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const tools = resolveTools(input)
-  const system = [
-    [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(Object.keys(tools))),
-      DEFAULT_WRITING_STYLE,
-      ...input.system,
-      ...(input.user.system ? [input.user.system] : []),
-    ]
-      .filter((x) => x)
-      .join("\n"),
-  ]
+  const system = [requestSystem(input).join("\n")]
 
   const header = system[0]
   if (system.length > 2 && system[0] === header) {
@@ -236,9 +227,25 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
 })
 
-export function resolveTools(
-  input: Pick<PrepareInput, "tools" | "agent" | "permission" | "nativePermission" | "user">,
-) {
+type ToolsInput = Pick<PrepareInput, "tools" | "agent" | "permission" | "nativePermission" | "user">
+
+/**
+ * The base of a request's system text: the agent's own prompt, or the provider prompt for the tools the request
+ * advertises, then the writing style. Request preparation and the fixed-overhead estimate share it (#1461).
+ */
+export function baseSystem(input: ToolsInput): string[] {
+  return [
+    ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(Object.keys(resolveTools(input)))),
+    DEFAULT_WRITING_STYLE,
+  ]
+}
+
+/** The texts `prepare` joins into the system message: the base, the turn's system texts, the per-message text. */
+export function requestSystem(input: ToolsInput & Pick<PrepareInput, "system">): string[] {
+  return [...baseSystem(input), ...input.system, ...(input.user.system ? [input.user.system] : [])].filter((x) => x)
+}
+
+export function resolveTools(input: ToolsInput) {
   const disabled = Permission.disabledTools(
     // A rewritten MCP key also answers to the deny rules of the key it had before (#1459).
     Object.entries(input.tools).map(([id, item]) => ({ id, alias: McpCatalog.toolBinding(item)?.baseKey })),
