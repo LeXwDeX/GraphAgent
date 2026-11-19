@@ -219,14 +219,16 @@ test("the Task row renders the child summary without hydrating the child session
   try {
     await waitForFrame(app, "Inspect renderer")
     // Cold start: no tool-call count is known, so the row shows an em dash.
-    const cold = await waitForFrame(app, "↳ —")
-    expect(cold).toContain("Explore Task — Inspect renderer · main agent · foreground")
+    const cold = await waitForFrame(app, "running · — ·")
+    expect(cold).toContain("Task explore · Inspect renderer")
+    expect(cold).toContain("main agent · foreground")
 
     // A child tool event is delivered as a summary even though the child is not
     // hydrated; the visible row follows it without a child session fetch.
     events.emit(childToolEvent("evt_child_tool", "bash", "run tests"))
-    const frame = await waitForFrame(app, "↳ Bash run tests")
-    expect(frame).toContain("Explore Task — Inspect renderer · main agent · foreground")
+    const frame = await waitForFrame(app, "running · 1 tool call ·")
+    expect(frame).toContain("Task explore · Inspect renderer")
+    expect(frame).toContain("main agent · foreground")
     expect(sync.data.summary[childID]).toMatchObject({ toolCalls: 1, current: { tool: "bash", title: "run tests" } })
     expect(sync.data.message[childID]).toBeUndefined()
     expect(childMessageFetches).toBe(0)

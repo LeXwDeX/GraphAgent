@@ -283,20 +283,9 @@ function buildMessageRows(
   facts.retain(live)
 
   if (parts.some((part) => part.type === "tool" && part.tool === "task")) {
-    rows.push({
-      key: `task:${message.id}`,
-      messageID: message.id,
-      kind: "notice",
-      revision: rowRevision(
-        parts.some(
-          (part) =>
-            part.type === "tool" &&
-            part.tool === "task" &&
-            part.state.status === "running" &&
-            part.state.metadata?.background !== true,
-        ),
-      ),
-    })
+    // The line says how to view the sub-agents and nothing that follows a run (the way to move a foreground run to the
+    // background is on the run's own row, #1614), so one revision stands for it.
+    rows.push({ key: `task:${message.id}`, messageID: message.id, kind: "notice", revision: rowRevision() })
   }
 
   if (message.error && message.error.name !== "MessageAbortedError") {

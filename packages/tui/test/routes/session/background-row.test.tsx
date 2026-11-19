@@ -3,11 +3,12 @@
 
 /** @jsxImportSource @opentui/solid */
 import { afterEach, expect, test } from "bun:test"
-import { TextRenderable, type Renderable } from "@opentui/core"
+import { TextAttributes, TextRenderable, type Renderable } from "@opentui/core"
 import { createSignal } from "solid-js"
 import { produce } from "solid-js/store"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import type { GlobalEvent, Session, TextPart, ToolPart } from "@graphagent/sdk"
+import { SPINNER_FRAMES } from "../../../src/component/spinner"
 import { DEFAULT_THEME } from "../../../src/context/theme"
 import type { Ticker } from "../../../src/context/ticker"
 import { setLanguage } from "../../../src/i18n"
@@ -26,8 +27,9 @@ import { directory, json, type FetchHandler } from "../../fixture/tui-sdk"
 import { mountRoute, sessionFixture, waitFor } from "../dag-mode-harness"
 
 /**
- * The Task row of a background run (#1058): the title says who asked for the run and where it runs, the line under it
- * says what the run is doing, and the time on it moves with the one-second clock only while the row is on screen.
+ * The Task row (#1614, #1058): the first line is the tool, the kind and what the run was asked to do, and at its right
+ * end who asked for it and where it runs; the line under it says what the run is doing, and ends with the word that
+ * opens its sub-agent. The time on it moves with the one-second clock only while the row is on screen.
  */
 
 afterEach(() => {
@@ -51,7 +53,12 @@ const child = (key: string) =>
     time: { created: 1_000, updated: 2_000 },
   })
 
-type TaskOptions = { initiator?: "user" | "agent"; promoted?: boolean; background?: boolean; status?: "running" }
+type TaskOptions = {
+  initiator?: "user" | "agent"
+  promoted?: boolean
+  background?: boolean
+  status?: "running" | "error"
+}
 
 /** The Task call that started the run `key`; its description is `Scan <key>`. */
 function task(key: string, options: TaskOptions = {}) {
@@ -161,6 +168,7 @@ function bulk(): Entry[] {
 type MountOptions = {
   language?: "zh-CN" | "en"
   ambiguousWidth?: 1 | 2
+  keybinds?: Parameters<typeof mountRoute>[0]["keybinds"]
   width?: number
   height?: number
   /** The runs, by key: one Task call and one child session each. */
@@ -194,6 +202,7 @@ async function mount(options: MountOptions) {
     sessions: [root, ...keys.map(child)] satisfies Session[],
     handler: (url, request) => (url.pathname === `/session/${ROOT}/message` ? json(entries) : answers(url, request)),
     language: options.language,
+    keybinds: options.keybinds,
     kv: options.ambiguousWidth ? { ambiguous_width: options.ambiguousWidth } : undefined,
     ticker: options.ticker,
     width: options.width ?? 80,
@@ -210,11 +219,42 @@ async function mount(options: MountOptions) {
 
 type Harness = Awaited<ReturnType<typeof mount>>
 
-/** The first line that holds `needle`, without its margins; the row under it is `after`. */
-function rowOf(frame: string, needle: string, after = 0) {
+/** The first line that holds `needle`, as it is on screen; the row under it is `after`. */
+function lineOf(frame: string, needle: string, after = 0) {
   const lines = frame.split("\n")
   const index = lines.findIndex((line) => line.includes(needle))
-  return index < 0 ? undefined : lines[index + after]?.trim()
+  return index < 0 ? undefined : lines[index + after]
+}
+
+/** The first line that holds `needle`, without its margins; the row under it is `after`. */
+function rowOf(frame: string, needle: string, after = 0) {
+  return lineOf(frame, needle, after)?.trim()
+}
+
+/** Where the sub-agent a click opens is, by what the route shows. */
+function viewing(harness: Harness) {
+  const data = harness.route().data
+  return data.type === "session" ? data.sessionID : data.type
+}
+
+/** A permission the session asks for, for the call `callID`. */
+function permissionEvent(callID: string): GlobalEvent {
+  return {
+    directory,
+    payload: {
+      id: `evt_bgrow_permission_${callID}`,
+      type: "permission.asked",
+      properties: {
+        id: "per_000000000098",
+        sessionID: ROOT,
+        permission: "task",
+        patterns: ["*"],
+        metadata: {},
+        always: [],
+        tool: { messageID: "msg_bgrow_assistant", callID },
+      },
+    },
+  }
 }
 
 /** The color of the first span that holds `needle`. */
@@ -223,6 +263,25 @@ async function colorOf(harness: Harness, needle: string) {
   for (const line of frame.lines) {
     const span = line.spans.find((item) => item.text.includes(needle))
     if (span) return span.fg
+  }
+  return undefined
+}
+
+/** The dot of the row of the run `key`: its glyph and its color. */
+async function dotOf(harness: Harness, key: string) {
+  const frame = await harness.spans()
+  for (const line of frame.lines) {
+    if (
+      !line.spans
+        .map((item) => item.text)
+        .join("")
+        .includes(`Scan ${key} `)
+    )
+      continue
+    const span = line.spans.find(
+      (item) => item.text.includes("⏺") || SPINNER_FRAMES.some((glyph) => item.text.includes(glyph)),
+    )
+    return span ? { glyph: span.text.trim(), fg: span.fg } : undefined
   }
   return undefined
 }
@@ -260,6 +319,10 @@ function clockTicker(start = NOW) {
   }
 }
 
+const ENTER = { en: "open", zh: "进入" } as const
+type Lang = keyof typeof ENTER
+const langOf = (language: "zh-CN" | "en"): Lang => (language === "en" ? "en" : "zh")
+
 /** One run of each status, and what the line under its title says in each language. */
 const RUNS = [
   { key: "queued", en: "queued · waiting for a slot", zh: "排队中 · 等待并发槽位" },
@@ -271,7 +334,7 @@ const RUNS = [
   { key: "interrupted", en: "interrupted · can be run again", zh: "已中断 · 可重新运行" },
   { key: "cancelled", en: "cancelled", zh: "已取消" },
   // Nothing says how it stands: the line of a call that has ended, with the span the child's own times give.
-  { key: "unknown", en: "— · 1.0s", zh: "— · 1.0s" },
+  { key: "unknown", en: "done · — · 1.0s", zh: "完成 · — · 1.0s" },
 ] as const
 
 const STATES: States = {
@@ -286,7 +349,7 @@ const STATES: States = {
 }
 
 /** The runs of `RUNS` on screen, with what the child sessions say of them. */
-async function mountRuns(options: Pick<MountOptions, "language" | "ambiguousWidth" | "ticker"> = {}) {
+async function mountRuns(options: Pick<MountOptions, "language" | "ambiguousWidth" | "ticker" | "width"> = {}) {
   const harness = await mount({
     ticker: clockTicker().ticker,
     ...options,
@@ -301,22 +364,30 @@ async function mountRuns(options: Pick<MountOptions, "language" | "ambiguousWidt
   return harness
 }
 
+/** Every run of `RUNS` has the line of its status under its title: the frame is ready to be read. */
+const allStatusLines = (language: "zh-CN" | "en") => (value: string) =>
+  RUNS.every((run) => rowOf(value, `Scan ${run.key} `, 1) === `⎿ ${run[langOf(language)]}  ${ENTER[langOf(language)]}`)
+
 for (const language of ["zh-CN", "en"] as const) {
   for (const ambiguousWidth of [1, 2] as const) {
-    test(`every status is one line under the title, and all of it fits 80 columns, in ${language} at ambiguous_width ${ambiguousWidth}`, async () => {
+    test(`every status is the second line of a two-line row, and all of it fits 80 columns, in ${language} at ambiguous_width ${ambiguousWidth}`, async () => {
       const harness = await mountRuns({ language, ambiguousWidth })
       try {
-        const lang = language === "en" ? "en" : "zh"
         const labels = language === "en" ? "main agent · background" : "主 agent · 后台"
-        const frame = await harness.waitForFrame(
-          (value) => RUNS.every((run) => rowOf(value, `Scan ${run.key} `, 1) === `↳ ${run[lang]}`),
-          "every status line",
-        )
+        const frame = await harness.waitForFrame(allStatusLines(language), "every status line")
+        const ends = new Set<number>()
         for (const run of RUNS) {
-          expect(rowOf(frame, `Scan ${run.key} `)).toEndWith(`Explore Task — Scan ${run.key} · ${labels}`)
-          // The line is one row: the row after it is the gap before the next run.
+          // The first line: the tool, the kind and what it was asked to do, and at its right end who asked for the run
+          // and where it runs.
+          const first = lineOf(frame, `Scan ${run.key} `) ?? ""
+          expect(first.trim()).toMatch(/^(⏺|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]) Task explore · Scan /)
+          expect(first.trim()).toEndWith(labels)
+          ends.add(cellWidth(first.trimEnd(), ambiguousWidth))
+          // The status is one line: the row after it is the gap before the next run.
           expect(rowOf(frame, `Scan ${run.key} `, 2)).toBe("")
         }
+        // The labels end at one column, the right end of the content, whatever the title before them says.
+        expect(ends.size).toBe(1)
         // The rows of the runs, from the first title to the last status line; the prompt's own border below them is
         // drawn with glyphs whose width the setting changes, and is not what is measured here.
         const lines = frame.split("\n")
@@ -334,7 +405,7 @@ for (const language of ["zh-CN", "en"] as const) {
   }
 }
 
-test("a call that cancels a task names the task it stops, not a run of its own", async () => {
+test("a call that cancels a task names the task it stops, in one line, not a run of its own", async () => {
   const started = task("target")
   const cancel = task("cancel")
   // The cancel call carries the task it stops and no description; its metadata points at that task's child.
@@ -349,8 +420,11 @@ test("a call that cancels a task names the task it stops, not a run of its own",
       const expected = language === "en" ? "cancel background task “Scan target”" : "取消后台任务「Scan target」"
       const frame = await harness.waitForFrame((value) => value.includes(expected), "the cancel call")
       expect(frame).not.toContain(language === "en" ? "Delegating..." : "委派中…")
+      // `Task` and what the call does to which task, and no line under it: the row after it is the gap before the next.
+      expect(rowOf(frame, expected)).toBe(`⏺ Task ${expected}`)
+      expect(rowOf(frame, expected, 1)).toBe("")
       // The started task keeps its own row: the cancel call did not overwrite its link.
-      expect(frame).toContain("Explore Task — Scan target")
+      expect(frame).toContain("Task explore · Scan target")
       expect(harness.writes()).toEqual([])
     } finally {
       await harness.dispose()
@@ -365,7 +439,7 @@ test("a streamed call whose arguments arrive after it mounted becomes the cancel
   streamed.state = { ...streamed.state, status: "running", input: {}, metadata: {} } as typeof streamed.state
   const harness = await mount({ language: "en", tasks: [started, streamed] })
   try {
-    await harness.waitForFrame((value) => value.includes("Explore Task — Scan target"), "the started task")
+    await harness.waitForFrame((value) => value.includes("Task explore · Scan target"), "the started task")
     const cancel = {
       ...streamed,
       state: {
@@ -425,9 +499,11 @@ test("a call that reads a task's log names the task it reads, in one line, not a
       // Not the waiting state a call with no description would keep in a run's row.
       expect(frame).not.toContain(language === "en" ? "Delegating..." : "委派中…")
       // The started task keeps its own row: the read call did not overwrite its link.
-      expect(frame).toContain("Explore Task — Scan target")
-      // One line: no run title, no status line under it.
-      expect(rowOf(frame, forNamed, 1) ?? "").not.toStartWith("↳")
+      expect(frame).toContain("Task explore · Scan target")
+      // One line: `Task` and the task it reads, no status line under it.
+      expect(rowOf(frame, forNamed)).toBe(`⏺ Task ${forNamed}`)
+      expect(rowOf(frame, forNamed, 1)).toBe("")
+      expect(rowOf(frame, forID)).toBe(`⏺ Task ${forID}`)
       expect(harness.writes()).toEqual([])
     } finally {
       await harness.dispose()
@@ -462,7 +538,7 @@ test("a streamed call whose arguments arrive after it mounted becomes the read r
   const streamed = readCall("read", {}, {}, "running")
   const harness = await mount({ language: "en", tasks: [started, streamed] })
   try {
-    await harness.waitForFrame((value) => value.includes("Explore Task — Scan target"), "the started task")
+    await harness.waitForFrame((value) => value.includes("Task explore · Scan target"), "the started task")
     const read = readCall("read", { action: "read", task_id: childID("target") }, { taskID: childID("target") })
     harness.events.emit(partEvent(read))
     await harness.waitForFrame((value) => value.includes("read the log of task “Scan target”"), "the read row")
@@ -472,23 +548,57 @@ test("a streamed call whose arguments arrive after it mounted becomes the read r
   }
 })
 
-test("a run's color and icon say how it stands", async () => {
+test("a call that cancels or reads a task says what keeps it from going well, under its line", async () => {
+  const waiting = readCall(
+    "waiting",
+    { action: "read", task_id: childID("target") },
+    { taskID: childID("target") },
+    "running",
+  )
+  const refused = task("refused")
+  refused.state = {
+    status: "error",
+    input: { action: "cancel", task_id: childID("target") },
+    error: "The user rejected permission to use this specific tool call.",
+    metadata: {},
+    time: { start: START, end: START + 1 },
+  }
+  const failed = task("failed")
+  failed.state = {
+    status: "error",
+    input: { action: "read", task_id: childID("target") },
+    error: "No such task\nat read (task.ts:9)",
+    metadata: {},
+    time: { start: START, end: START + 1 },
+  }
+  const harness = await mount({ language: "en", tasks: [task("target"), waiting, refused, failed] })
+  try {
+    harness.deliver(permissionEvent(waiting.callID))
+    const frame = await harness.waitForFrame(
+      (value) => value.includes("Waiting for permission") && value.includes("Failed · No such task"),
+      "the abnormal states",
+    )
+    expect(rowOf(frame, "Waiting for permission", -1)).toStartWith("⏺ Task read the log of task")
+    expect(rowOf(frame, "Denied", -1)).toStartWith("⏺ Task cancel background task")
+    expect(rowOf(frame, "Failed · No such task", -1)).toStartWith("⏺ Task read the log of task")
+    // The error of the call that failed opens under it on a click, and the sub-agent stays shut.
+    const rows = frame.split("\n")
+    const at = rows.findIndex((line) => line.includes("Failed · No such task"))
+    await harness.app.mockMouse.click(rows[at].indexOf("Failed") + 2, at)
+    const open = await harness.waitForFrame((value) => value.includes("at read (task.ts:9)"), "the error")
+    expect(rowOf(open, "Failed · No such task", 1)).toBe("No such task")
+    expect(viewing(harness)).toBe(ROOT)
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a run's dot and line say how it stands", async () => {
   const harness = await mountRuns({ language: "en" })
   try {
-    const frame = await harness.waitForFrame(
-      (value) => RUNS.every((run) => rowOf(value, `Scan ${run.key} `, 1) === `↳ ${run.en}`),
-      "every status line",
-    )
-    const icon = (key: string) => rowOf(frame, `Scan ${key} `)?.slice(0, 1)
-    // A finished run keeps its mark; one that has not started or has not ended, or ended without a verdict, keeps the
-    // bar of a call in progress; a running one has the spinner instead.
-    expect(icon("done")).toBe("✓")
-    expect(icon("bare")).toBe("✓")
-    expect(icon("failed")).toBe("✗")
-    expect(icon("nocause")).toBe("✗")
-    for (const key of ["queued", "interrupted", "cancelled"]) expect(icon(key)).toBe("│")
-    expect(icon("running")).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$/)
-
+    await harness.waitForFrame(allStatusLines("en"), "every status line")
+    // A run that goes on has the spinner for its dot; the others a dot that does not move, in the color of their state.
     const expected = {
       queued: palette().statusQueued,
       running: palette().statusRunning,
@@ -498,19 +608,42 @@ test("a run's color and icon say how it stands", async () => {
       nocause: palette().error,
       interrupted: palette().warning,
       cancelled: palette().textMuted,
+      unknown: palette().success,
     }
     for (const [key, color] of Object.entries(expected)) {
-      expect({ key, title: (await colorOf(harness, `Scan ${key} `))?.equals(color) }).toEqual({ key, title: true })
+      const dot = await dotOf(harness, key)
+      expect({ key, color: dot?.fg.equals(color) }).toEqual({ key, color: true })
+      if (key === "running") expect(dot?.glyph).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$/)
+      else expect({ key, glyph: dot?.glyph }).toEqual({ key, glyph: "⏺" })
     }
-    // The line under the title is drawn in the same color as the title.
-    expect((await colorOf(harness, "↳ queued"))?.equals(palette().statusQueued)).toBe(true)
-    expect((await colorOf(harness, "↳ failed · boom"))?.equals(palette().error)).toBe(true)
+    // The line under the title is drawn in the same color as the dot.
+    const lines = {
+      "queued · waiting for a slot": palette().statusQueued,
+      "running · 3 tool calls": palette().statusRunning,
+      "done · 1m 5s · result below": palette().success,
+      "failed · boom": palette().error,
+      "interrupted · can be run again": palette().warning,
+      cancelled: palette().textMuted,
+    }
+    for (const [text, color] of Object.entries(lines)) {
+      expect({ text, color: (await colorOf(harness, text))?.equals(color) }).toEqual({ text, color: true })
+    }
+    // The tool is in bold and the text color, what it was asked to do muted, who asked and where it runs dim.
+    const spans = await harness.spans()
+    const tool = spans.lines.flatMap((line) => line.spans).find((item) => item.text === "Task")
+    expect(tool?.fg.equals(palette().text)).toBe(true)
+    expect(((tool?.attributes ?? 0) & TextAttributes.BOLD) !== 0).toBe(true)
+    expect((await colorOf(harness, "explore · Scan queued"))?.equals(palette().textMuted)).toBe(true)
+    expect((await colorOf(harness, "main agent · background"))?.equals(palette().textDim)).toBe(true)
+    // The `⎿` is dim, and the word at the end of the line muted.
+    expect((await colorOf(harness, "⎿"))?.equals(palette().textDim)).toBe(true)
+    expect((await colorOf(harness, "open"))?.equals(palette().textMuted)).toBe(true)
   } finally {
     await harness.dispose()
   }
 })
 
-test("the title says who asked for the run and where it runs", async () => {
+test("the first line says who asked for the run and where it runs", async () => {
   const labels = {
     en: [
       "you · background",
@@ -537,11 +670,34 @@ test("the title says who asked for the run and where it runs", async () => {
         "every title",
       )
       keys.forEach((key, index) => {
-        expect(rowOf(frame, `Scan ${key} `)).toEndWith(`Explore Task — Scan ${key} · ${labels[language][index]}`)
+        expect(rowOf(frame, `Scan ${key} `)).toEndWith(labels[language][index])
+        expect(rowOf(frame, `Scan ${key} `)).toContain(`Task explore · Scan ${key}`)
       })
     } finally {
       await harness.dispose()
     }
+  }
+})
+
+test("the labels give way before the title does: they are left out where the title leaves them no room", async () => {
+  // At 60 columns a row has 53 cells. The first title fits and the labels, which need 25 more, do not; the second title
+  // does not fit, and is cut.
+  const fits = "a title that leaves no room"
+  const long = `a title that is far longer than the row can hold, ${"and on ".repeat(8)}`
+  const harness = await mount({ language: "en", width: 60, tasks: [task(fits), task(long)] })
+  try {
+    const frame = await harness.waitForFrame(
+      (value) => value.includes(fits) && value.includes("Task explore"),
+      "the rows",
+    )
+    expect(rowOf(frame, fits)).toBe(`⏺ Task explore · Scan ${fits}`)
+    const cut = rowOf(frame, "Scan a title that is far longer") ?? ""
+    expect(cut).toStartWith("⏺ Task explore · Scan a title that is far longer")
+    expect(cut).toEndWith("…")
+    expect(cut).not.toContain("main agent")
+    expect(cellWidth(lineOf(frame, "Scan a title that is far longer")?.trimEnd() ?? "", 1)).toBeLessThanOrEqual(58)
+  } finally {
+    await harness.dispose()
   }
 })
 
@@ -550,16 +706,16 @@ test("the title reads the link the data layer holds, and the part's own metadata
   try {
     const title = (value: string) => rowOf(value, "Scan byuser ")
     expect(await harness.waitForFrame((value) => title(value) !== undefined, "the row").then(title)).toEndWith(
-      "· you · background",
+      "you · background",
     )
 
     // The link wins over the part while it is there...
     harness.sync().set("taskIndex", childID("byuser"), "initiator", "agent")
     const linked = await harness.waitForFrame(
-      (value) => title(value)?.endsWith("· main agent · background") === true,
+      (value) => title(value)?.endsWith("main agent · background") === true,
       "the link",
     )
-    expect(title(linked)).toEndWith("· main agent · background")
+    expect(title(linked)).toEndWith("main agent · background")
 
     // ...and the part says it again once the link is gone.
     harness.sync().set(
@@ -569,10 +725,25 @@ test("the title reads the link the data layer holds, and the part's own metadata
       }),
     )
     const unlinked = await harness.waitForFrame(
-      (value) => title(value)?.endsWith("· you · background") === true,
+      (value) => title(value)?.endsWith("you · background") === true,
       "the part",
     )
-    expect(title(unlinked)).toEndWith("· you · background")
+    expect(title(unlinked)).toEndWith("you · background")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("the kind and the description read as they do in the top bar and in /agents", async () => {
+  // The session's own agent names the kind, ahead of the call's own word for it.
+  const harness = await mount({ language: "en", tasks: [task("named")] })
+  try {
+    await harness.waitForFrame((value) => value.includes("Scan named"), "the row")
+    expect(rowOf(await harness.frame(), "Scan named ")).toContain("⏺ Task explore · Scan named")
+    const index = harness.sync().data.session.findIndex((session) => session.id === childID("named"))
+    harness.sync().set("session", index, "agent", "review")
+    const renamed = await harness.waitForFrame((value) => value.includes("Task review · Scan named"), "the agent")
+    expect(rowOf(renamed, "Scan named ")).toContain("⏺ Task review · Scan named")
   } finally {
     await harness.dispose()
   }
@@ -580,8 +751,8 @@ test("the title reads the link the data layer holds, and the part's own metadata
 
 test("a running run in retry says so, in the color of an error", async () => {
   for (const [language, line] of [
-    ["en", "↳ Retrying (attempt 2) · rate limited"],
-    ["zh-CN", "↳ 重试中（第 2 次）· rate limited"],
+    ["en", "⎿ Retrying (attempt 2) · rate limited  open"],
+    ["zh-CN", "⎿ 重试中（第 2 次）· rate limited  进入"],
   ] as const) {
     const harness = await mount({
       language,
@@ -596,7 +767,8 @@ test("a running run in retry says so, in the color of an error", async () => {
         .set("session_status", childID("retry"), { type: "retry", attempt: 2, message: "rate limited", next: NOW })
       const frame = await harness.waitForFrame((value) => rowOf(value, "Scan retry ", 1) === line, "the retry line")
       expect(rowOf(frame, "Scan retry ", 1)).toBe(line)
-      expect((await colorOf(harness, "Scan retry "))?.equals(palette().error)).toBe(true)
+      expect((await colorOf(harness, "rate limited"))?.equals(palette().error)).toBe(true)
+      expect((await dotOf(harness, "retry"))?.fg.equals(palette().error)).toBe(true)
     } finally {
       await harness.dispose()
     }
@@ -624,19 +796,19 @@ for (const ambiguousWidth of [1, 2] as const) {
           harness.sync().set("summary", childID(key), "error", reason)
         }
         const frame = await harness.waitForFrame(
-          (value) => Object.keys(reasons).every((key) => rowOf(value, `Scan ${key} `, 1)?.startsWith("↳ failed · ")),
+          (value) => Object.keys(reasons).every((key) => rowOf(value, `Scan ${key} `, 1)?.startsWith("⎿ failed · ")),
           "the reasons",
         )
-        expect(rowOf(frame, "Scan one ", 1)).toBe("↳ failed · first real line")
-        expect(rowOf(frame, "Scan two ", 1)).toBe("↳ failed · red boom")
+        expect(rowOf(frame, "Scan one ", 1)).toBe("⎿ failed · first real line  open")
+        expect(rowOf(frame, "Scan two ", 1)).toBe("⎿ failed · red boom  open")
 
+        // The reason is cut so that the word at the end of the line stays: it is not pushed out of the row.
         const line = rowOf(frame, "Scan cut ", 1) ?? ""
-        expect(line).toEndWith("…")
-        expect(line.length).toBeGreaterThan("↳ failed · ".length + 10)
-        // One row: nothing of it is left under it, and it fits what the row has: the width less the transcript's
-        // padding (4) and the row's indent and icon (5).
+        expect(line).toEndWith("…  open")
+        expect(line.length).toBeGreaterThan("⎿ failed · ".length + 10)
+        // One row: nothing of it is left under it, and it fits what the row has.
         expect(rowOf(frame, "Scan cut ", 2)).toBe("")
-        expect(cellWidth(line, ambiguousWidth)).toBeLessThanOrEqual(width - 4 - 5)
+        expect(cellWidth(lineOf(frame, "Scan cut ", 1)?.trimEnd() ?? "", ambiguousWidth)).toBeLessThanOrEqual(width - 2)
       } finally {
         await harness.dispose()
       }
@@ -659,35 +831,68 @@ test("the time of a running row moves with the one-second clock, and only that r
     const line = (frame: string, key: string) => rowOf(frame, `Scan ${key} `, 1)
     const first = await harness.waitForFrame(
       (value) =>
-        line(value, "running") === "↳ running · 3 tool calls · 1m 5s" &&
-        line(value, "done")?.startsWith("↳ done") === true,
+        line(value, "running") === "⎿ running · 3 tool calls · 1m 5s  open" &&
+        line(value, "done")?.startsWith("⎿ done") === true,
       "the lines",
     )
     // The queued row, the finished one and the foreground one show nothing that moves: they do not listen.
-    expect(line(first, "queued")).toBe("↳ queued · waiting for a slot")
+    expect(line(first, "queued")).toBe("⎿ queued · waiting for a slot  open")
     await waitFor(() => clock.listeners() === 1)
     expect(clock.calls.second).toBe(1)
 
     clock.advance(5_000)
-    await harness.waitForFrame((value) => line(value, "running") === "↳ running · 3 tool calls · 1m 10s", "5s later")
+    await harness.waitForFrame(
+      (value) => line(value, "running") === "⎿ running · 3 tool calls · 1m 10s  open",
+      "5s later",
+    )
     clock.advance(60_000)
     const later = await harness.waitForFrame(
-      (value) => line(value, "running") === "↳ running · 3 tool calls · 2m 10s",
+      (value) => line(value, "running") === "⎿ running · 3 tool calls · 2m 10s  open",
       "a minute later",
     )
     // What has ended keeps the span the server reported, whatever the clock says.
-    expect(line(later, "done")).toBe("↳ done · 1m 5s · result below")
+    expect(line(later, "done")).toBe("⎿ done · 1m 5s · result below  open")
 
     // The result of the running one arrives: the line is the span it reports, and nobody listens any longer.
     harness.events.emit(partEvent(resultPart("running", "completed")))
     const ended = await harness.waitForFrame(
-      (value) => line(value, "running") === "↳ done · 1m 5s · result below",
+      (value) => line(value, "running") === "⎿ done · 1m 5s · result below  open",
       "the result",
     )
     await waitFor(() => clock.listeners() === 0)
     clock.advance(30_000)
     await harness.settle()
     expect(line(await harness.frame(), "running")).toBe(line(ended, "running"))
+    expect(clock.calls.second).toBe(1)
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a foreground run that goes on shows its time and listens to the clock too, and lets go when it ends", async () => {
+  const clock = clockTicker()
+  const running = task("front", { background: false, status: "running" })
+  const harness = await mount({ language: "en", tasks: [running], ticker: clock.ticker })
+  try {
+    harness.sync().set("summary", childID("front"), "toolCalls", 2)
+    const line = (frame: string) => rowOf(frame, "Scan front ", 1)
+    await harness.waitForFrame(
+      (value) => line(value)?.startsWith("⎿ running · 2 tool calls · 1m 5s") === true,
+      "the line",
+    )
+    await waitFor(() => clock.listeners() === 1)
+    clock.advance(10_000)
+    await harness.waitForFrame(
+      (value) => line(value)?.startsWith("⎿ running · 2 tool calls · 1m 15s") === true,
+      "10s later",
+    )
+    expect(clock.calls.second).toBe(1)
+
+    // The call returns: the run ends, the line is the child's own span, and nobody listens any longer.
+    harness.events.emit(partEvent(task("front", { background: false })))
+    await harness.waitForFrame((value) => line(value)?.startsWith("⎿ done · 2 tool calls") === true, "the end")
+    await waitFor(() => clock.listeners() === 0)
     expect(clock.calls.second).toBe(1)
     expect(harness.writes()).toEqual([])
   } finally {
@@ -710,7 +915,7 @@ test("a running row that is scrolled out of the viewport stops listening to the 
     harness.sync().set("summary", childID("running"), "toolCalls", 3)
     // At the end the transcript follows its tail, which holds the row.
     await harness.waitForFrame(
-      (value) => rowOf(value, "Scan running ", 1) === "↳ running · 3 tool calls · 1m 5s",
+      (value) => rowOf(value, "Scan running ", 1) === "⎿ running · 3 tool calls · 1m 5s  open",
       "the row",
     )
     await waitFor(() => clock.listeners() === 1)
@@ -727,7 +932,7 @@ test("a running row that is scrolled out of the viewport stops listening to the 
 
     harness.app.mockInput.pressKey("g", { ctrl: true, meta: true })
     await harness.waitForFrame(
-      (value) => rowOf(value, "Scan running ", 1) === "↳ running · 3 tool calls · 1m 15s",
+      (value) => rowOf(value, "Scan running ", 1) === "⎿ running · 3 tool calls · 1m 15s  open",
       "the row again",
     )
     await waitFor(() => clock.listeners() === 1)
@@ -736,31 +941,155 @@ test("a running row that is scrolled out of the viewport stops listening to the 
   }
 })
 
-test("the hints under a Task call are words in both languages", async () => {
-  for (const [language, view, move] of [
-    ["en", "view subagents", "background"],
-    ["zh-CN", "查看子 agent", "转后台"],
+test("a foreground run that goes on says how to move it to the background, in its own row and not under the message", async () => {
+  for (const [language, hint, view] of [
+    ["en", /^⎿ running · — · 1m 5s · background \S.*  open$/, "view subagents"],
+    ["zh-CN", /^⎿ 运行中 · — · 1m 5s · 转后台 \S.*  进入$/, "查看子 agent"],
   ] as const) {
     const harness = await mount({
       language,
-      tasks: [task("front", { background: false, status: "running" })],
+      tasks: [
+        task("front", { background: false, status: "running" }),
+        task("running"),
+        task("done", { background: false }),
+        task("queued"),
+      ],
+      states: { [childID("running")]: RUNNING, [childID("queued")]: RUNNING },
       ticker: clockTicker().ticker,
     })
     try {
-      const frame = await harness.waitForFrame((value) => value.includes(view), "the hint")
-      // A foreground run that is still going can be moved to the background; the hint says how.
-      const hint = rowOf(frame, view) ?? ""
-      expect(hint).toMatch(new RegExp(`${view} · \\S.* ${move}$`))
+      const frame = await harness.waitForFrame(
+        (value) => rowOf(value, "Scan front ", 1)?.includes("1m 5s") === true,
+        "the row",
+      )
+      expect(rowOf(frame, "Scan front ", 1)).toMatch(hint)
+      // The runs that are not a foreground run that goes on have no such hint.
+      for (const key of ["running", "done", "queued"]) {
+        expect(rowOf(frame, `Scan ${key} `, 1)).not.toMatch(/转后台|background \S/)
+      }
+      // What stands under the message is the way to the sub-agents, and only that.
+      expect(rowOf(frame, view)).toMatch(new RegExp(`^\\S.* ${view}$`))
+      expect(rowOf(frame, view)).not.toContain(" · ")
     } finally {
       await harness.dispose()
     }
   }
 })
 
+test("the hint names the key the user bound, and is left out while none is", async () => {
+  const bound = await mount({
+    language: "en",
+    keybinds: { keybinds: { session_background: "f9" } },
+    tasks: [task("front", { background: false, status: "running" })],
+    ticker: clockTicker().ticker,
+  })
+  try {
+    const frame = await bound.waitForFrame(
+      (value) => rowOf(value, "Scan front ", 1)?.includes("1m 5s") === true,
+      "the row",
+    )
+    expect(rowOf(frame, "Scan front ", 1)).toMatch(/ · background [fF]9  open$/)
+  } finally {
+    await bound.dispose()
+  }
+  const unbound = await mount({
+    language: "en",
+    keybinds: { keybinds: { session_background: "none" } },
+    tasks: [task("front", { background: false, status: "running" })],
+    ticker: clockTicker().ticker,
+  })
+  try {
+    const frame = await unbound.waitForFrame(
+      (value) => rowOf(value, "Scan front ", 1)?.includes("1m 5s") === true,
+      "the row",
+    )
+    // No `· background {key}` with no key: the line is the status and the word that opens the sub-agent.
+    expect(rowOf(frame, "Scan front ", 1)).toBe("⎿ running · — · 1m 5s  open")
+  } finally {
+    await unbound.dispose()
+  }
+})
+
+test("a click on a Task row opens its sub-agent, from anywhere on the row, and asks the server for nothing", async () => {
+  for (const needle of ["Scan done", "open"]) {
+    const harness = await mount({
+      language: "en",
+      tasks: [task("done"), task("queued")],
+      states: { [childID("done")]: COMPLETED, [childID("queued")]: RUNNING },
+      ticker: clockTicker().ticker,
+    })
+    try {
+      const frame = await harness.waitForFrame(
+        (value) => value.includes("Scan done") && value.includes("open"),
+        "the rows",
+      )
+      const rows = frame.split("\n")
+      // The title of the first run, or the word at the end of its status line.
+      const at = rows.findIndex((line) => line.includes(needle === "open" ? "done ·" : needle))
+      const column = needle === "open" ? rows[at].lastIndexOf("open") : rows[at].indexOf(needle)
+      expect(viewing(harness)).toBe(ROOT)
+      await harness.app.mockMouse.click(column + 1, at)
+      await waitFor(() => viewing(harness) === childID("done"))
+      await harness.settle()
+      expect(viewing(harness)).toBe(childID("done"))
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  }
+})
+
+test("the word that opens the sub-agent is muted, and in the text color under the pointer", async () => {
+  const harness = await mount({
+    language: "zh-CN",
+    tasks: [task("done")],
+    states: { [childID("done")]: COMPLETED },
+    ticker: clockTicker().ticker,
+  })
+  try {
+    const frame = await harness.waitForFrame((value) => value.includes("进入"), "the row")
+    expect(frame).toContain("⎿ 完成 · —  进入")
+    expect((await colorOf(harness, "进入"))?.equals(palette().textMuted)).toBe(true)
+    const rows = frame.split("\n")
+    const at = rows.findIndex((line) => line.includes("进入"))
+    await harness.app.mockMouse.moveTo(rows[at].indexOf("进入") + 1, at)
+    await harness.app.renderOnce()
+    expect((await colorOf(harness, "进入"))?.equals(palette().text)).toBe(true)
+    // The title too: the pointer is on the row, which is what a click opens.
+    expect((await colorOf(harness, "explore · Scan done"))?.equals(palette().text)).toBe(true)
+    await harness.app.mockMouse.moveTo(78, 2)
+    await harness.app.renderOnce()
+    expect((await colorOf(harness, "进入"))?.equals(palette().textMuted)).toBe(true)
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("a call that failed has its error under the row, not a sub-agent to open", async () => {
+  const failed = task("front", { background: false, status: "error" })
+  const harness = await mount({ language: "en", tasks: [failed], ticker: clockTicker().ticker })
+  try {
+    const frame = await harness.waitForFrame((value) => value.includes("Failed · boom"), "the row")
+    // The line has no word that opens the sub-agent: a click opens the error.
+    expect(rowOf(frame, "Scan front ", 1)).toBe("⎿ Failed · boom")
+    expect((await dotOf(harness, "front"))?.fg.equals(palette().error)).toBe(true)
+    const rows = frame.split("\n")
+    const at = rows.findIndex((line) => line.includes("Failed · boom"))
+    await harness.app.mockMouse.click(rows[at].indexOf("Failed") + 1, at)
+    const open = await harness.waitForFrame((value) => rowOf(value, "Failed · boom", 1) === "boom", "the error")
+    expect(open).toContain("boom")
+    expect(viewing(harness)).toBe(ROOT)
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
 test("a foreground row keeps its lines, in both languages", async () => {
   for (const [language, retryLine, callsLine] of [
-    ["en", "↳ Retrying (attempt 3) · slow", "↳ 2 tool calls · 1.0s"],
-    ["zh-CN", "↳ 重试中（第 3 次）· slow", "↳ 2 次工具调用 · 1.0s"],
+    ["en", /^⎿ Retrying \(attempt 3\) · slow · background \S.*  open$/, "⎿ done · 2 tool calls · 1.0s  open"],
+    ["zh-CN", /^⎿ 重试中（第 3 次）· slow · 转后台 \S.*  进入$/, "⎿ 完成 · 2 次工具调用 · 1.0s  进入"],
   ] as const) {
     const harness = await mount({
       language,
@@ -772,14 +1101,17 @@ test("a foreground row keeps its lines, in both languages", async () => {
       harness.sync().set("summary", childID("retry"), "status", "retry")
       harness.sync().set("session_status", childID("retry"), { type: "retry", attempt: 3, message: "slow", next: NOW })
       const frame = await harness.waitForFrame(
-        (value) => rowOf(value, "Scan front ", 1) === callsLine && rowOf(value, "Scan retry ", 1) === retryLine,
+        (value) => rowOf(value, "Scan front ", 1) === callsLine && retryLine.test(rowOf(value, "Scan retry ", 1) ?? ""),
         "the lines",
       )
-      expect(rowOf(frame, "Scan front ")).toStartWith("✓ ")
-      expect((await colorOf(harness, "Scan retry "))?.equals(palette().error)).toBe(true)
-      expect(rowOf(frame, "Scan retry ")).toEndWith(
-        language === "en" ? "· main agent · foreground" : "· 主 agent · 前台",
-      )
+      expect(rowOf(frame, "Scan front ")).toStartWith("⏺ Task explore · ")
+      expect((await dotOf(harness, "front"))?.fg.equals(palette().success)).toBe(true)
+      expect(
+        (await colorOf(harness, "2 tool calls"))?.equals(palette().success) ??
+          (await colorOf(harness, "2 次工具调用"))?.equals(palette().success),
+      ).toBe(true)
+      expect((await colorOf(harness, "slow"))?.equals(palette().error)).toBe(true)
+      expect(rowOf(frame, "Scan retry ")).toEndWith(language === "en" ? "main agent · foreground" : "主 agent · 前台")
     } finally {
       await harness.dispose()
     }

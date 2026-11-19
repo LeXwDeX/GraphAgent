@@ -27,7 +27,7 @@ import { lifecycleKey } from "../../context/lifecycle-mirror"
 import { backgroundResultOf, type TaskIndexEntry } from "../../context/session-summary"
 import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
-import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
+import { truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
@@ -98,9 +98,11 @@ import {
 import {
   subagentChildren,
   subagentDescription,
+  subagentKind,
   subagentMarkerToken,
   subagentSiblings,
   subagentSource,
+  subagentTitle,
 } from "../../session/subagents"
 import { isSyntheticMessage } from "../../session/synthetic-message"
 import { filetype } from "../../util/filetype"
@@ -2542,19 +2544,6 @@ function AssistantTaskHint(props: { parts: Part[] }) {
         <text fg={theme.text}>
           {ctx.shortcuts.childFirst()}
           <span style={{ fg: theme.textMuted }}> {t("background.hint.view")}</span>
-          <Show
-            when={props.parts.some(
-              (x) =>
-                x.type === "tool" &&
-                x.tool === "task" &&
-                x.state.status === "running" &&
-                x.state.metadata?.background !== true,
-            )}
-          >
-            <span style={{ fg: theme.textMuted }}> · </span>
-            {ctx.shortcuts.background()}
-            <span style={{ fg: theme.textMuted }}> {t("background.hint.move")}</span>
-          </Show>
         </text>
       </box>
     </Show>
@@ -2916,12 +2905,8 @@ function ToolCall(props: {
 }) {
   const { theme } = useTheme()
   const ctx = use()
-  const sync = useSync()
 
-  const waiting = createMemo(() => {
-    const callID = sync.data.permission[ctx.sessionID]?.at(0)?.tool?.callID
-    return Boolean(callID) && callID === props.part.callID
-  })
+  const waiting = useWaiting(() => props.part)
   const error = createMemo(() => toolError(props.part.state))
   // A call the user or the rules turned down is not a failure: it has no error to open.
   const failed = createMemo(() => toolFailed(props.part.state))
@@ -3458,12 +3443,10 @@ function initiatorValue(value: unknown): "user" | "agent" | undefined {
   return value === "user" || value === "agent" ? value : undefined
 }
 
-/** Columns the status line of a Task row starts at: the row's padding, the icon cell and the `↳ `. */
-const TASK_DETAIL_INDENT = 3 + INLINE_TOOL_ICON_WIDTH + 2
 /** The most cells of an error the status line of a background run shows. */
 const TASK_REASON_CELLS = 80
 
-/** The theme token a background run is drawn in, by how it stands; the icon tells the finished ones apart as well. */
+/** The theme token a background run is drawn in, by how it stands; the dot tells the finished ones apart as well. */
 const BACKGROUND_COLOR = {
   queued: "statusQueued",
   running: "statusRunning",
@@ -3473,10 +3456,79 @@ const BACKGROUND_COLOR = {
   cancelled: "textMuted",
 } as const satisfies Record<Exclude<BackgroundStatus, "unknown">, string>
 
+/**
+ * Whether the permission the session asks for now is the one of this call: the row then says it waits, since what the
+ * reader has to do is answer.
+ */
+function useWaiting(part: () => ToolPart) {
+  const ctx = use()
+  const sync = useSync()
+  return createMemo(() => {
+    const callID = sync.data.permission[ctx.sessionID]?.at(0)?.tool?.callID
+    return Boolean(callID) && callID === part().callID
+  })
+}
+
+/**
+ * The row of a call that acts on a task that exists already (cancels it, reads its log, #1453): one line, `Task` and
+ * what the call does to which task. It starts no run, so while it goes well it has no result line; a call that waits for
+ * a permission, was turned down or failed says so under itself. A click on a call that failed opens its error, on one
+ * that did not it opens the task's sub-agent, which asks the server for nothing.
+ */
+function TaskCall(props: { part: ToolPart; text: string | undefined; target: string | undefined }) {
+  const { theme } = useTheme()
+  const ctx = use()
+  const openSubAgent = useOpenSubAgent()
+  const waiting = useWaiting(() => props.part)
+  const state = createMemo(() => toolRowState(props.part.state, waiting()))
+  const error = createMemo(() => toolError(props.part.state))
+  const failed = createMemo(() => toolFailed(props.part.state))
+  const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
+  const result = (): string | undefined => {
+    switch (state()) {
+      case "waiting":
+        return t("tool.row.waiting")
+      case "denied":
+        return t("tool.row.denied")
+      case "failed": {
+        const line = errorLine(error())
+        return line ? t("tool.row.failedWith", { error: line }) : t("tool.row.failed")
+      }
+      default:
+        return undefined
+    }
+  }
+  const open = () => {
+    const id = props.target
+    if (id) openSubAgent(id)
+  }
+
+  return (
+    <ToolRow
+      state={state()}
+      name={toolRowName(props.part.tool)}
+      // A call whose arguments have not arrived names nothing yet.
+      arg={props.text ?? t("subagent.row.pending")}
+      width={ctx.width}
+      result={result()}
+      expanded={failed() ? errorExpanded() : false}
+      visible={() => ctx.isVisible(props.part.id)}
+      onClick={
+        failed()
+          ? () => ctx.view.set(props.part.id, "errorExpanded", !errorExpanded())
+          : props.target
+            ? open
+            : undefined
+      }
+    >
+      <text fg={theme.error}>{error()}</text>
+    </ToolRow>
+  )
+}
+
 /** A call that cancels a background task (`action: "cancel"`) names the task it stops; it starts no run. */
 function TaskCancel(props: ToolProps) {
   const sync = useSync()
-  const openSubAgent = useOpenSubAgent()
   const target = createMemo(() => stringValue(props.input.task_id))
   const name = createMemo(() => {
     const id = target()
@@ -3484,20 +3536,7 @@ function TaskCancel(props: ToolProps) {
     // The description and the id are remote text: one line, no escapes or control characters.
     return t("background.row.cancelCall", { description: remoteLine(sync.data.taskIndex[id]?.description ?? id) })
   })
-  return (
-    <InlineTool
-      icon="│"
-      complete={name()}
-      pending={t("subagent.row.pending")}
-      part={props.part}
-      onClick={() => {
-        const id = target()
-        if (id) openSubAgent(id)
-      }}
-    >
-      {name()}
-    </InlineTool>
-  )
+  return <TaskCall part={props.part} text={name()} target={target()} />
 }
 
 /**
@@ -3506,7 +3545,6 @@ function TaskCancel(props: ToolProps) {
  */
 function TaskRead(props: ToolProps) {
   const sync = useSync()
-  const openSubAgent = useOpenSubAgent()
   const target = createMemo(() => stringValue(props.input.task_id))
   const name = createMemo(() => {
     const id = target()
@@ -3514,20 +3552,7 @@ function TaskRead(props: ToolProps) {
     // The description and the id are remote text: one line, no escapes or control characters.
     return t("background.row.readCall", { description: remoteLine(sync.data.taskIndex[id]?.description ?? id) })
   })
-  return (
-    <InlineTool
-      icon="│"
-      complete={name()}
-      pending={t("subagent.row.pending")}
-      part={props.part}
-      onClick={() => {
-        const id = target()
-        if (id) openSubAgent(id)
-      }}
-    >
-      {name()}
-    </InlineTool>
-  )
+  return <TaskCall part={props.part} text={name()} target={target()} />
 }
 
 function Task(props: ToolProps) {
@@ -3544,6 +3569,13 @@ function Task(props: ToolProps) {
   )
 }
 
+/**
+ * The row of a Task call that starts a run (#1614, #1058): `Task` and the run's kind and description on the first line,
+ * with who asked for it and where it runs at the end; what the run is doing under it, `status · tool calls · time`,
+ * and at the end of that line the word that opens the sub-agent. A foreground run that goes on says how to move it to
+ * the background before that word. How a run stands comes from `backgroundStatus` when it runs in the background, and
+ * from the call and the child's summary otherwise; the dot and the line are drawn in the color of that state.
+ */
 function TaskRun(props: ToolProps) {
   const { theme } = useTheme()
   const sync = useSync()
@@ -3551,6 +3583,7 @@ function TaskRun(props: ToolProps) {
   const kv = useKV()
   const ticker = useOptionalTicker()
   const openSubAgent = useOpenSubAgent()
+  const waiting = useWaiting(() => props.part)
 
   // `sessionID` is the current key; `sessionId` keeps tabs for messages
   // persisted before the rename (#1069 P9).
@@ -3605,24 +3638,49 @@ function TaskRun(props: ToolProps) {
     return state === "unknown" ? undefined : state
   })
 
-  // Only a running line shows a time that moves, so only a running row that is on screen listens to the one-second
+  const error = createMemo(() => toolError(props.part.state))
+  // A call that failed on its own account keeps its error folded under the row; a click opens it, as `ctrl+o` does.
+  const failed = createMemo(() => toolFailed(props.part.state))
+  const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
+  // How the run stands, in the words of a tool row: a background run by its own status, the others by their call.
+  const state = createMemo((): ToolRowState => {
+    switch (backgroundState()) {
+      case "running":
+        return "running"
+      case "completed":
+        return "done"
+      case "error":
+        return "failed"
+      // Waiting for a slot, interrupted, cancelled: a dot that does not move, which the color tells apart.
+      case "queued":
+      case "interrupted":
+      case "cancelled":
+        return "pending"
+    }
+    const current = toolRowState(props.part.state, waiting())
+    // A call that has not returned, or whose child still works after it did, is running as long as the child works.
+    return (current === "done" || current === "pending") && isRunning() ? "running" : current
+  })
+  const running = createMemo(() => state() === "running")
+
+  // Only a run that goes on shows a time that moves, so only a running row that is on screen listens to the one-second
   // clock; a row that is queued, finished or scrolled away keeps what it shows and costs no timer.
-  const ticking = createMemo(() => backgroundState() === "running" && ctx.isVisible(props.part.id))
+  const ticking = createMemo(() => running() && ctx.isVisible(props.part.id))
   createEffect(() => {
     if (!ticking() || !ticker) return
     onCleanup(ticker.subscribeSecond())
   })
   const elapsed = createMemo(() => {
-    const state = backgroundState()
-    if (state === undefined) return undefined
+    const run = backgroundState() ?? (running() ? "running" : undefined)
+    if (run === undefined) return undefined
     if (ticking()) ticker?.second()
     // The time of a run that began is counted from then, not from the Task call that queued it (#1407).
-    const runningAt = state === "running" ? backgroundRunningAt(job()) : undefined
+    const runningAt = run === "running" ? backgroundRunningAt(job()) : undefined
     return backgroundElapsed(
       {
         sessionID: sessionID() ?? "",
         entry: entry(),
-        status: state,
+        status: run,
         ...(runningAt === undefined ? {} : { runningAt }),
       },
       ticker?.now() ?? Date.now(),
@@ -3630,97 +3688,120 @@ function TaskRun(props: ToolProps) {
   })
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  // The error is cut so that its line stays one row at the content width the transcript has.
-  const reason = () => {
-    const prefix = cellWidth(t("background.row.error", { reason: "" }), ambiguousWidth())
-    const room = Math.min(TASK_REASON_CELLS, ctx.width - TASK_DETAIL_INDENT - prefix)
-    return backgroundReason(summary()?.error, Math.max(10, room), ambiguousWidth())
+  // The row cuts the line to the room it has, so the error is cut only to the most a line shows of it.
+  const reason = () => backgroundReason(summary()?.error, TASK_REASON_CELLS, ambiguousWidth())
+  const calls = () => formatSubagentToolcalls(summary()?.toolCalls)
+  const time = () => {
+    const value = elapsed()
+    return value === undefined ? UNKNOWN : Locale.duration(value)
   }
 
-  // The line under the title. A foreground run, or one nothing is known of, has its retry, what it is doing, or how
-  // the call ended; a background run says how it stands.
-  const detail = createMemo(() => {
-    const state = backgroundState()
+  // The line under the first one: how the run stands, in words.
+  const line = createMemo((): string => {
+    const run = backgroundState()
     const retrying = retry()
     const retryLine = retrying && formatSubagentRetry(retrying.attempt, Locale.truncate(retrying.message, 80))
-    if (state === undefined) {
-      if (isRunning()) {
-        if (retryLine) return retryLine
-        const current = summary()?.current
-        if (current) return `${Locale.titlecase(current.tool)} ${current.title ?? ""}`.trimEnd()
-        return formatSubagentToolcalls(summary()?.toolCalls)
-      }
-      if (props.part.state.status === "completed") {
-        return formatCompletedSubagentDetail(summary()?.toolCalls, Locale.duration(duration()))
-      }
-      return undefined
+    if (run !== undefined) {
+      if (run === "running" && retryLine) return retryLine
+      return formatBackgroundStatus({
+        status: run,
+        reported: link()?.result !== undefined,
+        calls: calls(),
+        elapsed: time(),
+        reason: run === "error" ? reason() : undefined,
+      })
     }
-    if (state === "running" && retryLine) return retryLine
-    const time = elapsed()
-    return formatBackgroundStatus({
-      status: state,
-      reported: link()?.result !== undefined,
-      calls: formatSubagentToolcalls(summary()?.toolCalls),
-      elapsed: time === undefined ? UNKNOWN : Locale.duration(time),
-      reason: state === "error" ? reason() : undefined,
-    })
-  })
-
-  const content = createMemo(() => {
-    const description = stringValue(props.input.description)
-    if (!description) return ""
-    const lines = [
-      formatSubagentTitle(Locale.titlecase(stringValue(props.input.subagent_type) ?? "General"), description, {
-        initiator: initiator(),
-        background: background(),
-        promoted: promoted(),
-      }),
-    ]
-    const line = detail()
-    if (line) lines.push(`↳ ${line}`)
-    return lines.join("\n")
-  })
-
-  const color = createMemo(() => {
-    const state = backgroundState()
-    if (state === undefined) return retry() ? theme.error : undefined
-    // A run that is retrying says so in the color of an error, as a foreground one does.
-    if (state === "running" && retry()) return theme.error
-    return theme[BACKGROUND_COLOR[state]]
-  })
-  const icon = createMemo(() => {
-    switch (backgroundState()) {
-      case "completed":
-        return "✓"
-      case "error":
-        return "✗"
-      case undefined:
-        return props.part.state.status === "completed" ? "✓" : "│"
+    switch (state()) {
+      case "waiting":
+        return t("tool.row.waiting")
+      case "denied":
+        return t("tool.row.denied")
+      case "failed": {
+        const text = errorLine(error())
+        return text ? t("tool.row.failedWith", { error: text }) : t("tool.row.failed")
+      }
+      case "running":
+        return (
+          retryLine || formatBackgroundStatus({ status: "running", reported: false, calls: calls(), elapsed: time() })
+        )
+      case "done":
+        return t("subagent.row.done", {
+          detail: formatCompletedSubagentDetail(summary()?.toolCalls, Locale.duration(duration())),
+        })
       default:
-        return "│"
+        return t("subagent.row.pending")
     }
   })
-  const spinning = createMemo(() => {
-    const state = backgroundState()
-    return state === undefined ? isRunning() : state === "running"
+
+  // The kind and what it was asked to do read as they do in the top bar and in `/agents`.
+  const title = createMemo(() => {
+    const child = sync.session.get(sessionID() ?? "")
+    const session = { title: child?.title ?? "", agent: child?.agent }
+    const task = {
+      kind: link()?.kind ?? stringValue(props.input.subagent_type),
+      description: link()?.description ?? stringValue(props.input.description),
+    }
+    const description = subagentDescription(session, task)
+    return description ? subagentTitle({ kind: subagentKind(session, task), description }) : ""
   })
+  const tags = createMemo(() =>
+    title()
+      ? formatSubagentTags({ initiator: initiator(), background: background(), promoted: promoted() })
+      : undefined,
+  )
+
+  const tone = createMemo((): RGBA => {
+    const run = backgroundState()
+    // A run that is retrying says so in the color of an error, as a foreground one does.
+    if (run !== undefined) return run === "running" && retry() ? theme.error : theme[BACKGROUND_COLOR[run]]
+    switch (state()) {
+      case "running":
+        return retry() ? theme.error : theme.primary
+      case "done":
+        return theme.success
+      case "failed":
+      case "denied":
+        return theme.error
+      case "waiting":
+        return theme.warning
+      default:
+        return theme.textMuted
+    }
+  })
+
+  // A foreground run that goes on can be moved to the background: the row says which key does it, unless none does.
+  const move = createMemo(() => {
+    if (state() !== "running" || background() || props.part.state.status !== "running") return undefined
+    const key = ctx.shortcuts.background()
+    return key ? t("background.hint.move", { key }) : undefined
+  })
+  // The word at the end of the line: what a click does, which a call that failed does not (it opens its error).
+  const enter = createMemo(() => !failed() && Boolean(sessionID()))
+  const open = () => {
+    const id = sessionID()
+    if (id) openSubAgent(id)
+  }
 
   return (
-    <InlineTool
-      icon={icon()}
-      separate={true}
-      color={color()}
-      spinner={spinning()}
-      complete={stringValue(props.input.description)}
-      pending={t("subagent.row.pending")}
-      part={props.part}
-      onClick={() => {
-        const id = sessionID()
-        if (id) openSubAgent(id)
-      }}
+    <ToolRow
+      state={state()}
+      name={toolRowName(props.tool)}
+      arg={title()}
+      tag={tags()}
+      width={ctx.width}
+      result={line()}
+      resultColor={tone()}
+      dotColor={tone()}
+      note={move()}
+      action={enter() ? t("background.row.enter") : undefined}
+      expanded={failed() ? errorExpanded() : false}
+      visible={() => ctx.isVisible(props.part.id)}
+      onClick={
+        failed() ? () => ctx.view.set(props.part.id, "errorExpanded", !errorExpanded()) : enter() ? open : undefined
+      }
     >
-      {content()}
-    </InlineTool>
+      <text fg={theme.error}>{error()}</text>
+    </ToolRow>
   )
 }
 
@@ -3731,12 +3812,12 @@ export function formatSubagentToolcalls(count: number | undefined) {
   return t(count === 1 ? "subagent.end.tools.one" : "subagent.end.tools.other", { count })
 }
 
-/** `Explore Task — description`, then who asked for the run and whether it runs in the background (#1058). */
-export function formatSubagentTitle(
-  agent: string,
-  description: string,
-  labels: { initiator: "user" | "agent" | undefined; background: boolean; promoted: boolean },
-) {
+/** Who asked for the run and whether it runs in the background, which the first line of a Task row ends with (#1058). */
+export function formatSubagentTags(labels: {
+  initiator: "user" | "agent" | undefined
+  background: boolean
+  promoted: boolean
+}) {
   const initiator = t(labels.initiator === "user" ? "background.row.byUser" : "background.row.byAgent")
   const execution = t(
     labels.promoted
@@ -3745,7 +3826,7 @@ export function formatSubagentTitle(
         ? "background.row.background"
         : "background.row.foreground",
   )
-  return [t("subagent.row.title", { agent, description }), initiator, execution].join(" · ")
+  return `${initiator} · ${execution}`
 }
 
 export function formatSubagentRetry(attempt: number, message: string) {

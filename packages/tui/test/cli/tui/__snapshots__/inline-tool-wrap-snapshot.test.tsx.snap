@@ -79,14 +79,15 @@ exports[`TUI inline tool wrapping keeps separation after a padded user message 1
      ⎿ 115 matches"
 `;
 
-exports[`TUI inline tool wrapping separates after a multi-line task row 1`] = `
+exports[`TUI inline tool wrapping separates after a task row 1`] = `
 "   ⏺ Grep "Task"
      ⎿ 2 matches
 
-   ⠙ Explore Task — Inspect active task spacing
+   ⏺ Task explore · Inspect active task spacing  main agent · background
+     ⎿ queued · waiting for a slot
 
-   ✓ General Task — Confirm completed task spacing
-     ↳ 1 toolcall · 501ms
+   ⏺ Task general · Confirm completed task spacing
+     ⎿ done · 1 tool call · 501ms  open
 
    ⏺ Read src/cli/cmd/tui/routes/session/index.tsx
      ⎿ Read 40 lines"
@@ -97,22 +98,20 @@ exports[`TUI inline tool wrapping separates a task row from a preceding tool row
      ⎿ Read 40 lines
        ↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx
 
-   ✓ Explore Task — Inspect active task spacing
-     ↳ 1 toolcall · 501ms"
+   ⏺ Task explore · Inspect active task spacing  main agent · foreground
+     ⎿ done · 1 tool call · 501ms"
 `;
 
-exports[`TUI inline tool wrapping separates an inline row from the previous assistant summary 1`] = `
+exports[`TUI inline tool wrapping separates a one-line row from the previous assistant summary 1`] = `
 "   ▣ Build · Little Frank · 53.1s
 
-   ✓ Build Task — Review changes
-     ↳ 48 toolcalls · 1m 40s"
+   → Asked 2 questions"
 `;
 
-exports[`TUI inline tool wrapping separates an inline row from the previous assistant error 1`] = `
+exports[`TUI inline tool wrapping separates a one-line row from the previous assistant error 1`] = `
 "│
 │  Managed inference requires an active Member plan
 │
 
-   ✓ Build Task — Review changes
-     ↳ 48 toolcalls · 1m 40s"
+   → Asked 2 questions"
 `;

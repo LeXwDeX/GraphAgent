@@ -207,12 +207,20 @@ describe("cold start", () => {
     })
 
     try {
-      const cold = await waitForFrame(view, "↳ —")
-      const unknown = (frame: string) => frame.split("\n").filter((line) => line.includes("↳ —")).length
+      const cold = await waitForFrame(view, "done · — ·")
+      const unknown = (frame: string) => frame.split("\n").filter((line) => line.includes("done · — ·")).length
       // Every finished child shows the em dash, never 0 tool calls.
-      expect(cold).toContain("Explore Task — Inspect area 1 · main agent · foreground")
-      expect(cold).toContain("Explore Task — Inspect area 2 · main agent · background")
-      expect(cold).toContain("Explore Task — Inspect area 3 · main agent · foreground")
+      const title = (frame: string, area: number) =>
+        frame
+          .split("\n")
+          .find((line) => line.includes(`Inspect area ${area}`))
+          ?.trimEnd()
+      expect(title(cold, 1)).toContain("Task explore · Inspect area 1")
+      expect(title(cold, 1)).toEndWith("main agent · foreground")
+      expect(title(cold, 2)).toContain("Task explore · Inspect area 2")
+      expect(title(cold, 2)).toEndWith("main agent · background")
+      expect(title(cold, 3)).toContain("Task explore · Inspect area 3")
+      expect(title(cold, 3)).toEndWith("main agent · foreground")
       expect(cold).not.toContain("0 tool calls")
       expect(unknown(cold)).toBe(3)
 
