@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test"
 import { $ } from "bun"
 import { eq } from "drizzle-orm"
 import { Effect, Exit, Fiber } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -1048,6 +1049,55 @@ describe("completing a node waits for git without blocking the event loop", () =
       expect(git(tree.directory, "status", "--porcelain")).toBe("")
       expect(existsSync(path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"))).toBe(true)
       // The removal after the commit is still interruptible, so the worktree stays for recovery.
+      expect(removed).toEqual([])
+    } finally {
+      tree.dispose()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("lets the git timeout end an interrupted node completion whose git hangs", async () => {
+    const projectID = `proj-lock-git-hang-${process.pid}`
+    const tree = changed()
+    const removed: string[] = []
+    try {
+      const installed = await installGitGate()
+      try {
+        const exit = await Effect.runPromise(
+          Effect.gen(function* () {
+            const fiber = yield* completeIsolatedNode({
+              worktree: {
+                directory: tree.directory,
+                state: "active",
+                touchedPaths: [],
+                conflictsWith: [],
+                baseHead: tree.baseHead,
+              },
+              ownerDirectory: tree.directory,
+              projectID,
+              dagID: "dag_1",
+              nodeID: "node-1",
+              message: "dag: node-1",
+              remove: (directory) =>
+                Effect.sync(() => {
+                  removed.push(directory)
+                  return true
+                }),
+            }).pipe(Effect.forkChild)
+            yield* Effect.promise(() => installed.started())
+            yield* Fiber.interrupt(fiber).pipe(Effect.forkChild)
+            // The gate is never released: only the git command's own timeout can let the waiting cancel finish.
+            yield* TestClock.adjust("21 seconds")
+            return yield* Fiber.await(fiber)
+          }).pipe(Effect.provide(TestClock.layer())),
+        )
+        expect(Exit.hasInterrupts(exit)).toBe(true)
+      } finally {
+        await installed.dispose()
+      }
+      // The timed-out commit recorded nothing and nothing was removed, so recovery redoes the node.
+      expect(git(tree.directory, "rev-parse", "HEAD")).toBe(tree.baseHead)
+      expect(existsSync(path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"))).toBe(false)
       expect(removed).toEqual([])
     } finally {
       tree.dispose()
