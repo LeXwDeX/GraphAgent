@@ -7,7 +7,7 @@ import * as path from "path"
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
-import { createTwoFilesPatch, diffLines } from "diff"
+import { diffLines } from "diff"
 import DESCRIPTION from "./edit.txt"
 import { FileSystem } from "@graphagent/core/filesystem"
 import { Watcher } from "@graphagent/core/filesystem/watcher"
@@ -147,14 +147,15 @@ function planEdit(source: { readonly text: string; readonly bom: boolean }, para
 
   const replaced = replace(contentOld, old, replacement, params.replaceAll)
   const next = Bom.split(replaced.content)
-  const diff = trimDiff(
-    createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(next.text)),
-  )
+  // The one diff of the edit before it is written: the text of the permission request, and the hunks the receipt of
+  // the result is made from when the formatter leaves the text as it was written.
+  const unified = WriteReceipt.unifiedDiff(filePath, normalizeLineEndings(contentOld), normalizeLineEndings(next.text))
   return {
     contentOld,
     contentNew: next.text,
     bom: source.bom || next.bom,
-    diff,
+    diff: trimDiff(unified.text),
+    changes: unified.changes,
     strategy: replaced.strategy,
     line: replaced.line,
     count: replaced.count,
@@ -165,13 +166,15 @@ function planEdit(source: { readonly text: string; readonly bom: boolean }, para
  * The outcome of one edit; `outside` means the disk differed from the session's last record of the file.
  * `strategy` is how `replace()` found the text, and `found` where (the 1-based line of the first replacement) and how
  * many spots it replaced; a created file has neither. `reformatted` means the formatter changed the text after it was
- * written. `ctx` is what the call reports through afterwards: it carries the fuzzy-match and formatter corrections
- * from the moment the text is on disk.
+ * written. `diff` is the diff of the text that is on disk, in the text of the permission request, and `changes` its
+ * hunks, which the receipt is made from. `ctx` is what the call reports through afterwards: it carries the
+ * fuzzy-match and formatter corrections from the moment the text is on disk.
  */
 interface Applied {
   readonly contentOld: string
   readonly contentNew: string
   readonly diff: string
+  readonly changes?: WriteReceipt.Changes
   readonly outside: boolean
   readonly strategy: MatchStrategy
   readonly found?: { readonly line: number; readonly count: number }
@@ -240,7 +243,7 @@ export const EditTool = Tool.define(
         )
       }
       const next = Bom.split(params.newString)
-      const diff = trimDiff(createTwoFilesPatch(filePath, filePath, "", next.text))
+      const diff = trimDiff(WriteReceipt.unifiedDiff(filePath, "", next.text).text)
       yield* askEdit(ctx, relative, filePath, diff)
 
       return yield* FileState.withLocks([filePath])(
@@ -297,18 +300,19 @@ export const EditTool = Tool.define(
             current.text === source.text && current.bom === source.bom ? plan : planEdit(current, params, filePath)
           const written = yield* commit(ctx, filePath, settled.contentNew, settled.bom, "change")
           const live = yield* marked(ctx, settled.strategy, written.reformatted)
-          const diff = trimDiff(
-            createTwoFilesPatch(
-              filePath,
-              filePath,
-              normalizeLineEndings(settled.contentOld),
-              normalizeLineEndings(written.text),
-            ),
-          )
+          // What is on disk is what was planned unless the formatter changed it, and then the diff is run again.
+          const final = written.reformatted
+            ? WriteReceipt.unifiedDiff(
+                filePath,
+                normalizeLineEndings(settled.contentOld),
+                normalizeLineEndings(written.text),
+              )
+            : undefined
           const changed: Applied = {
             contentOld: settled.contentOld,
             contentNew: written.text,
-            diff,
+            diff: final ? trimDiff(final.text) : settled.diff,
+            changes: final ? final.changes : settled.changes,
             outside,
             strategy: settled.strategy,
             found: { line: settled.line, count: settled.count },
@@ -385,6 +389,7 @@ export const EditTool = Tool.define(
             reformatted,
             replacements: applied.found?.count,
             fuzzy: strategy === "exact" || !applied.found ? undefined : { strategy, line: applied.found.line },
+            changes: applied.changes,
           })
           let output = "Edit applied successfully."
           if (outside) output += `\n${FileState.changedOutsideNote(relative)}`

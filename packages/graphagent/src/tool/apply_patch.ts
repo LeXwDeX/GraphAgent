@@ -32,6 +32,8 @@ interface FileChange {
   type: "add" | "update" | "delete" | "move"
   movePath?: string
   diff: string
+  /** The hunks of the diff, which the receipt is made from when the formatter leaves the text as it was written. */
+  changes?: WriteReceipt.Changes
   additions: number
   deletions: number
   bom: boolean
@@ -213,7 +215,8 @@ export const ApplyPatchTool = Tool.define(
               return yield* Effect.fail(new Error(`apply_patch verification failed: ${error}`))
             }
 
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, newContent))
+            const planned = WriteReceipt.unifiedDiff(filePath, oldContent, newContent)
+            const diff = trimDiff(planned.text)
 
             let additions = 0
             let deletions = 0
@@ -237,6 +240,7 @@ export const ApplyPatchTool = Tool.define(
               type: movePath ? "move" : "update",
               movePath,
               diff,
+              changes: planned.changes,
               additions,
               deletions,
               bom,
@@ -420,6 +424,7 @@ export const ApplyPatchTool = Tool.define(
           newText: change.newContent,
           reformatted: change.reformatted,
           diffBudget: budget,
+          changes: change.reformatted ? undefined : change.changes,
         })
         budget -= receipt.diffLines
         if (receipt.text) receiptBlocks.push(`${rel}\n${receipt.text}`)

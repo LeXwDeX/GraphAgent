@@ -2009,6 +2009,33 @@ describe("tool.edit write receipt (#1451)", () => {
   )
 
   it.instance(
+    "keeps the counts and the diff of a large edit that the formatter rewrote, which the tool ran the diff for",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "large.ts")
+        yield* put(filepath, lines(600).join("\n") + "\n")
+
+        const result = yield* run({
+          filePath: filepath,
+          oldString: lines(600).join("\n"),
+          newString: lines(600, "changed").join("\n"),
+        })
+
+        const out = result.output.split("\n")
+        expect(out.slice(0, 4)).toEqual([
+          "Edit applied successfully.",
+          "",
+          "Lines 1-601 changed. Replacements: 1. Additions: 601. Deletions: 600.",
+          "File was reformatted by the formatter after this write.",
+        ])
+        expect(out.some((line) => line.startsWith("[diff cut at 40 of"))).toBe(true)
+        expect(result.output).not.toContain("too large")
+      }),
+    { config: expand },
+  )
+
+  it.instance(
     "says the formatter rewrote a file that the edit created",
     () =>
       Effect.gen(function* () {

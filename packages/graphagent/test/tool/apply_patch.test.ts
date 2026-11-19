@@ -2070,6 +2070,41 @@ describe("tool.apply_patch write receipt (#1451)", () => {
   )
 
   it.instance(
+    "gives the counts and the diff of a large change, and says when the formatter's rewrite makes it too large to compare",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "big.md"), numbered(600).join("\n") + "\n")
+        yield* writeText(path.join(test.directory, "big.txt"), numbered(600).join("\n") + "\n")
+        const rewrite = (name: string) => [
+          `*** Update File: ${name}`,
+          "@@",
+          ...numbered(600).map((item) => `-${item}`),
+          ...numbered(600, "changed").map((item) => `+${item}`),
+        ]
+
+        const result = yield* execute({ patchText: patch(...rewrite("big.md"), ...rewrite("big.txt")) }, ctx)
+
+        const [, blockMd, blockTxt] = result.output.split("\n\n")
+        // The diff the tool ran for the request is what the receipt of the unformatted file is made from.
+        expect(blockMd.split("\n").slice(0, 3)).toEqual([
+          "big.md",
+          "Lines 1-600 changed. Additions: 600. Deletions: 600.",
+          "@@ -1,600 +1,600 @@",
+        ])
+        // The formatter added a line to the other, so its receipt cannot come from that diff.
+        expect(blockTxt.split("\n")).toEqual([
+          "big.txt",
+          "Lines 1-601 changed. The change is too large to compare line by line, so counts and diff are left out.",
+          "File was reformatted by the formatter after this write.",
+        ])
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+      }),
+    { git: true, config: expand },
+  )
+
+  it.instance(
     "says nothing about the formatter when there is none to rewrite the file",
     () =>
       Effect.gen(function* () {

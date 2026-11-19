@@ -3,7 +3,6 @@ import * as path from "path"
 import { Effect } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
-import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FileSystem } from "@graphagent/core/filesystem"
@@ -85,7 +84,10 @@ export const WriteTool = Tool.define(
           // The formatter changed the text after it was written.
           let reformatted = false
 
-          const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
+          // The one diff of the write before it is written: the text of the permission request, and the hunks the
+          // receipt of the result is made from when the formatter leaves the text as it was written.
+          const planned = WriteReceipt.unifiedDiff(filepath, contentOld, contentNew)
+          const diff = trimDiff(planned.text)
           yield* ctx.ask({
             permission: "edit",
             patterns: [path.relative(instance.worktree, filepath)],
@@ -122,6 +124,7 @@ export const WriteTool = Tool.define(
             oldText: contentOld,
             newText: contentNew,
             reformatted,
+            changes: reformatted ? undefined : planned.changes,
           })
           let output = "Wrote file successfully."
           if (receipt.text) output += `\n\n${receipt.text}`

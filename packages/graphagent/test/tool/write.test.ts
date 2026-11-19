@@ -1325,6 +1325,56 @@ describe("tool.write write receipt (#1451)", () => {
     { config: untouched },
   )
 
+  // The diff of a rewrite of every line is the costly one, so the receipt takes it from the diff the tool ran for the
+  // permission request, however many lines that has, instead of running one of its own.
+  it.instance("gives the counts and the diff of a rewrite of every line, however many lines that is", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, lines(600).join("\n") + "\n", "utf-8"))
+      yield* markRead(filepath)
+
+      const result = yield* run({ filePath: filepath, content: lines(600, "changed").join("\n") + "\n" })
+
+      const out = result.output.split("\n")
+      expect(out.slice(0, 5)).toEqual([
+        "Wrote file successfully.",
+        "",
+        "Lines 1-600 changed. Additions: 600. Deletions: 600.",
+        "@@ -1,600 +1,600 @@",
+        "-line 1",
+      ])
+      expect(out).toContain(`[diff cut at 40 of 1201 lines; read ${filepath} from line 1 to see the rest.]`)
+    }),
+  )
+
+  it.instance(
+    "does not compare line by line a rewrite of every line that the formatter then rewrote as well",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.ts")
+        yield* Effect.promise(() => fs.writeFile(filepath, lines(600).join("\n") + "\n", "utf-8"))
+        yield* markRead(filepath)
+
+        const result = yield* run({ filePath: filepath, content: lines(600, "changed").join("\n") + "\n" })
+
+        // What the formatter left is 601 lines that share none with the 600 before: too many edits to count cheaply.
+        expect(result.output).toBe(
+          [
+            "Wrote file successfully.",
+            "",
+            "Lines 1-601 changed. The change is too large to compare line by line, so counts and diff are left out.",
+            "File was reformatted by the formatter after this write.",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+      }),
+    { config: expand },
+  )
+
   itWithDiagnostics.instance("puts the receipt ahead of the status line and the error block", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

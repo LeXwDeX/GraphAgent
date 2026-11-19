@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
+import { createTwoFilesPatch, diffLines, structuredPatch } from "diff"
+import { LSP } from "@/lsp/lsp"
 import { WriteReceipt } from "@/tool/write-receipt"
 
 const file = "/project/src/sample.ts"
@@ -284,5 +286,178 @@ describe("WriteReceipt.writeReceipt", () => {
 
     expect(receipt.diffLines).toBe(40)
     expect(receipt.text).toContain("[diff cut at 40 of 121 lines;")
+  })
+})
+
+// #1451: the diff of a write is run once, by the tool for its permission request, and the receipt is made from the
+// hunks of that run instead of running the diff again. A rewrite in which every line changes costs seconds to diff.
+describe("WriteReceipt from the diff the tool ran", () => {
+  const unified = (oldText: string, newText: string) => WriteReceipt.unifiedDiff(file, oldText, newText)
+
+  test("unifiedDiff writes the patch createTwoFilesPatch writes", () => {
+    const cases: [string, string][] = [
+      [text(lines(20)), withChanged(20, [10])],
+      ["", "a\nb\nc\n"],
+      ["a\nb\nc\n", ""],
+      ["a\nb", "a\nB\n"],
+      ["a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n"],
+      [text(lines(40)), withChanged(40, [2, 30])],
+    ]
+    for (const [oldText, newText] of cases) {
+      expect(unified(oldText, newText).text).toBe(createTwoFilesPatch(file, file, oldText, newText))
+    }
+  })
+
+  test("unifiedDiff keeps the hunks as the diff found them, not as the patch text numbers them", () => {
+    // The patch text writes the start of a hunk without old lines one lower; the hunks keep the number of the line.
+    const created = unified("", "a\nb\nc\n")
+
+    expect(created.text).toContain("@@ -0,0 +1,3 @@")
+    expect(created.changes.hunks).toEqual(structuredPatch(file, file, "", "a\nb\nc\n").hunks)
+    expect(created.changes.hunks[0]).toMatchObject({ oldStart: 1, oldLines: 0, newStart: 1, newLines: 3 })
+  })
+
+  /** A deterministic pseudo-random source, so that a failing case can be run again. */
+  const random = (seed: number) => {
+    let state = seed >>> 0
+    return (below: number) => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0
+      return Math.floor((state / 2 ** 32) * below)
+    }
+  }
+  const vocabulary = ["", "a", "b", "c", "}", "{", "  x = 1", "  x = 2", "return", "end"]
+  /** Two texts of one line ending, the second made from the first by a few edits; either may lack the final newline. */
+  const pair = (seed: number, ending: string) => {
+    const pick = random(seed)
+    const before = Array.from({ length: pick(26) }, () => vocabulary[pick(vocabulary.length)])
+    const after = [...before]
+    for (let edits = pick(6); edits > 0; edits--) {
+      const at = pick(after.length + 1)
+      const kind = pick(3)
+      if (kind === 0) after.splice(at, 1)
+      else if (kind === 1) after.splice(at, 0, vocabulary[pick(vocabulary.length)])
+      else after.splice(at, 1, vocabulary[pick(vocabulary.length)])
+    }
+    const join = (items: string[]) => (items.length === 0 ? "" : items.join(ending) + (pick(4) === 0 ? "" : ending))
+    return [join(before), join(after)] as const
+  }
+  const cases = Array.from({ length: 600 }, (_, i) => [i, i % 2 === 0 ? "\n" : "\r\n"] as const)
+
+  test("the diff of the receipt is the one it would have run itself, whatever the line ending", () => {
+    for (const [seed, ending] of cases) {
+      const [oldText, newText] = pair(seed, ending)
+      const reference = structuredPatch(file, file, oldText, newText, "", "", {
+        context: 3,
+        stripTrailingCr: true,
+      }).hunks.flatMap((hunk) => [
+        `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+        ...hunk.lines,
+      ])
+
+      const diff = WriteReceipt.boundedDiff(file, oldText, newText, Infinity, unified(oldText, newText).changes)
+
+      expect({ seed, lines: diff.text === "" ? [] : diff.text.split("\n") }).toEqual({ seed, lines: reference })
+      expect(diff.shown).toBe(reference.length)
+    }
+  })
+
+  test("the landing lines and the counts of the receipt are the ones changedRanges and diffLines give", () => {
+    for (const [seed, ending] of cases) {
+      const [oldText, newText] = pair(seed, ending)
+      const counted = diffLines(oldText, newText).reduce(
+        (sum, change) => ({
+          additions: sum.additions + (change.added ? change.count : 0),
+          deletions: sum.deletions + (change.removed ? change.count : 0),
+        }),
+        { additions: 0, deletions: 0 },
+      )
+
+      const summary = WriteReceipt.summarize(unified(oldText, newText).changes, newText)
+
+      expect({ seed, ...summary }).toEqual({
+        seed,
+        ranges: LSP.Diagnostic.changedRanges(oldText, newText, file),
+        ...counted,
+      })
+    }
+  })
+
+  test("a receipt made from the diff of the tool is the receipt the receipt would have made itself", () => {
+    for (const [seed, ending] of cases) {
+      const [oldText, newText] = pair(seed, ending)
+      const input = { file, oldText, newText, reformatted: false, replacements: 1 }
+
+      const reused = WriteReceipt.writeReceipt({ ...input, changes: unified(oldText, newText).changes })
+
+      expect({ seed, ...reused }).toEqual({ seed, ...WriteReceipt.writeReceipt(input) })
+    }
+  })
+
+  test("a diff of the tool above the cap still gives counts and a diff, since the tool paid for it already", () => {
+    const oldText = text(lines(600))
+    const newText = text(lines(600, "changed"))
+
+    const receipt = WriteReceipt.writeReceipt({
+      file,
+      oldText,
+      newText,
+      reformatted: false,
+      changes: unified(oldText, newText).changes,
+    })
+
+    expect(receipt.text.split("\n").slice(0, 2)).toEqual([
+      "Lines 1-600 changed. Additions: 600. Deletions: 600.",
+      "@@ -1,600 +1,600 @@",
+    ])
+    expect(receipt.diffLines).toBe(40)
+  })
+
+  test("without a diff of the tool, a change above the cap is not compared line by line", () => {
+    const oldText = text(lines(600))
+    const newText = text(lines(600, "changed"))
+
+    const receipt = WriteReceipt.writeReceipt({ file, oldText, newText, reformatted: true })
+
+    expect(receipt).toEqual({
+      text: [
+        "Lines 1-600 changed. The change is too large to compare line by line, so counts and diff are left out.",
+        "File was reformatted by the formatter after this write.",
+      ].join("\n"),
+      diffLines: 0,
+    })
+  })
+
+  test("the lines named for a change that is too large run from the first to the last that differ", () => {
+    const head = lines(50, "keep")
+    const tail = lines(50, "end")
+    const oldText = text([...head, ...lines(600), ...tail])
+    const newText = text([...head, ...lines(600, "changed"), ...tail])
+
+    const receipt = WriteReceipt.writeReceipt({ file, oldText, newText, reformatted: false })
+
+    expect(receipt.text.split("\n")[0]).toMatch(/^Lines 51-650 changed\. The change is too large/)
+  })
+
+  test("a change just under the cap is compared line by line, and gives the same receipt as the diff of the tool", () => {
+    const oldText = text(lines(240))
+    const newText = text(lines(240, "changed"))
+    const input = { file, oldText, newText, reformatted: false }
+
+    const own = WriteReceipt.writeReceipt(input)
+
+    expect(own.text.split("\n")[0]).toBe("Lines 1-240 changed. Additions: 240. Deletions: 240.")
+    expect(own).toEqual(WriteReceipt.writeReceipt({ ...input, changes: unified(oldText, newText).changes }))
+  })
+
+  test("a new file is counted without a diff, however long it is", () => {
+    const receipt = WriteReceipt.writeReceipt({ file, oldText: "", newText: text(lines(5000)), reformatted: false })
+
+    expect(receipt).toEqual({ text: "Lines 1-5000 changed. Additions: 5000. Deletions: 0.", diffLines: 0 })
+  })
+
+  test("a new file without a final newline counts its last line", () => {
+    const receipt = WriteReceipt.writeReceipt({ file, oldText: "", newText: "a\nb\nc", reformatted: false })
+
+    expect(receipt.text).toBe("Lines 1-3 changed. Additions: 3. Deletions: 0.")
   })
 })
