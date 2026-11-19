@@ -235,7 +235,8 @@ describe.skipIf(process.platform === "win32")("RuntimeAsset system executable ve
     expect(attemptReason(result)).toContain(`timed out after ${PROBE_TIMEOUT_MS} ms`)
     expect(elapsed).toBeLessThan(PROBE_TIMEOUT_MS + 2_500)
     expect(await gone(Number(await readFile(path.join(root, "pid"), "utf8")))).toBe(true)
-  })
+    // The probe deadline alone is 5 s, the same as bun's default per-test timeout that the package script keeps.
+  }, 15_000)
 
   test("the pinned ripgrep descriptor skips a system rg too old for the engine's flags", async () => {
     await fakeRg('echo "ripgrep 0.9.0"')
