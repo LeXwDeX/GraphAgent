@@ -49,6 +49,12 @@ type DiagnosticRequestResult = {
   byFile: Map<string, Diagnostic[]>
 }
 
+/**
+ * A wait that can be called off: `cancel` clears its timers, drops its listener and settles it with false. It does
+ * nothing when called again or after the wait is over.
+ */
+type CancelableWait = { promise: Promise<boolean>; cancel: () => void }
+
 type CapabilityRegistration = {
   id: string
   method: string
@@ -443,57 +449,62 @@ export async function create(input: {
     )
   }
 
-  function waitForRegistrationChange(timeout: number) {
-    if (timeout <= 0) return Promise.resolve(false)
-    return new Promise<boolean>((resolve) => {
-      let finished = false
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (result: boolean) => {
-        if (finished) return
-        finished = true
-        if (timer) clearTimeout(timer)
-        registrationListeners.delete(listener)
-        resolve(result)
-      }
-      const listener = () => finish(true)
-      registrationListeners.add(listener)
-      timer = setTimeout(() => finish(false), timeout)
-    })
+  function waitForRegistrationChange(timeout: number): CancelableWait {
+    if (timeout <= 0) return { promise: Promise.resolve(false), cancel: () => {} }
+    const { promise, resolve } = Promise.withResolvers<boolean>()
+    let finished = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (result: boolean) => {
+      if (finished) return
+      finished = true
+      if (timer) clearTimeout(timer)
+      registrationListeners.delete(listener)
+      resolve(result)
+    }
+    const listener = () => finish(true)
+    registrationListeners.add(listener)
+    timer = setTimeout(() => finish(false), timeout)
+    return { promise, cancel: () => finish(false) }
   }
 
-  function waitForFreshPush(request: { path: string; version: number; after: number; timeout: number }) {
-    if (request.timeout <= 0) return Promise.resolve(false)
-    return new Promise<boolean>((resolve) => {
-      let finished = false
-      let debounceTimer: ReturnType<typeof setTimeout> | undefined
-      let timeoutTimer: ReturnType<typeof setTimeout> | undefined
-      let unsub: (() => void) | undefined
-      const finish = (result: boolean) => {
-        if (finished) return
-        finished = true
-        if (debounceTimer) clearTimeout(debounceTimer)
-        if (timeoutTimer) clearTimeout(timeoutTimer)
-        unsub?.()
-        resolve(result)
-      }
-      const schedule = () => {
-        const hit = published.get(request.path)
-        if (!hit) return
-        if (typeof hit.version === "number" && hit.version !== request.version) return
-        if (hit.at < request.after && hit.version !== request.version) return
-        if (debounceTimer) clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => finish(true), Math.max(0, DIAGNOSTICS_DEBOUNCE_MS - (Date.now() - hit.at)))
-      }
+  function waitForFreshPush(request: {
+    path: string
+    version: number
+    after: number
+    timeout: number
+  }): CancelableWait {
+    if (request.timeout <= 0) return { promise: Promise.resolve(false), cancel: () => {} }
+    const { promise, resolve } = Promise.withResolvers<boolean>()
+    let finished = false
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+    let unsub: (() => void) | undefined
+    const finish = (result: boolean) => {
+      if (finished) return
+      finished = true
+      if (debounceTimer) clearTimeout(debounceTimer)
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      unsub?.()
+      resolve(result)
+    }
+    const schedule = () => {
+      const hit = published.get(request.path)
+      if (!hit) return
+      if (typeof hit.version === "number" && hit.version !== request.version) return
+      if (hit.at < request.after && hit.version !== request.version) return
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => finish(true), Math.max(0, DIAGNOSTICS_DEBOUNCE_MS - (Date.now() - hit.at)))
+    }
 
-      timeoutTimer = setTimeout(() => finish(false), request.timeout)
-      const listener = (event: { path: string; serverID: string }) => {
-        if (event.path !== request.path || event.serverID !== input.serverID) return
-        schedule()
-      }
-      diagnosticListeners.add(listener)
-      unsub = () => diagnosticListeners.delete(listener)
+    timeoutTimer = setTimeout(() => finish(false), request.timeout)
+    const listener = (event: { path: string; serverID: string }) => {
+      if (event.path !== request.path || event.serverID !== input.serverID) return
       schedule()
-    })
+    }
+    diagnosticListeners.add(listener)
+    unsub = () => diagnosticListeners.delete(listener)
+    schedule()
+    return { promise, cancel: () => finish(false) }
   }
 
   /** Whether the server answered for the file within the wait: false means the wait ran out with no diagnostics. */
@@ -506,18 +517,25 @@ export async function create(input: {
       timeout: DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS,
     })
 
-    while (Date.now() - startedAt < DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS) {
-      const result = await requestDocumentDiagnostics(request.path)
-      if (result.matched) return true
-      const remaining = DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
-      if (remaining <= 0) return false
-      const next = await Promise.race([
-        pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
-        waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
-      ])
-      if (next !== "registration") return next === "push"
+    // Every way out of the loop cancels what is still waiting. The push wait lives for the whole call and the
+    // registration wait for one round; left running, each would keep its timer and listener until its own timeout.
+    try {
+      while (Date.now() - startedAt < DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS) {
+        const result = await requestDocumentDiagnostics(request.path)
+        if (result.matched) return true
+        const remaining = DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
+        if (remaining <= 0) return false
+        const registrationWait = waitForRegistrationChange(remaining)
+        const next = await Promise.race([
+          pushWait.promise.then((ready) => (ready ? "push" : ("timeout" as const))),
+          registrationWait.promise.then((changed) => (changed ? "registration" : ("timeout" as const))),
+        ]).finally(registrationWait.cancel)
+        if (next !== "registration") return next === "push"
+      }
+      return false
+    } finally {
+      pushWait.cancel()
     }
-    return false
   }
 
   /** Same answer as the document wait, for a wait that also takes workspace diagnostics. */
@@ -530,18 +548,23 @@ export async function create(input: {
       timeout: DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS,
     })
 
-    while (Date.now() - startedAt < DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS) {
-      const result = await requestFullDiagnostics(request.path)
-      if (result.handled || result.matched) return true
-      const remaining = DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
-      if (remaining <= 0) return false
-      const next = await Promise.race([
-        pushWait.then((ready) => (ready ? "push" : ("timeout" as const))),
-        waitForRegistrationChange(remaining).then((changed) => (changed ? "registration" : ("timeout" as const))),
-      ])
-      if (next !== "registration") return next === "push"
+    try {
+      while (Date.now() - startedAt < DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS) {
+        const result = await requestFullDiagnostics(request.path)
+        if (result.handled || result.matched) return true
+        const remaining = DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS - (Date.now() - startedAt)
+        if (remaining <= 0) return false
+        const registrationWait = waitForRegistrationChange(remaining)
+        const next = await Promise.race([
+          pushWait.promise.then((ready) => (ready ? "push" : ("timeout" as const))),
+          registrationWait.promise.then((changed) => (changed ? "registration" : ("timeout" as const))),
+        ]).finally(registrationWait.cancel)
+        if (next !== "registration") return next === "push"
+      }
+      return false
+    } finally {
+      pushWait.cancel()
     }
-    return false
   }
 
   // --- Public API ---

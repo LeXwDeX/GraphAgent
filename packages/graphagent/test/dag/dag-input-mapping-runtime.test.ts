@@ -840,6 +840,46 @@ describe("DagLoop input_mapping execution boundary", () => {
     ),
   )
 
+  it.live("hands a judging node an isolated writer's absolute path as the path the engine recorded", () =>
+    runLoopTest(({ dag, loop, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const verify: NodeConfig = {
+          ...node("verify", ["implement"]),
+          block: "verify",
+          output_schema: { type: "object", required: ["verdict"], properties: { verdict: { enum: ["PASS", "FAIL"] } } },
+        }
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Engine facts, absolute paths",
+          config: { name: "engine-facts-absolute", nodes: [node("implement"), verify] },
+        })
+        yield* awaitWithTimeout(Queue.take(records), "implement did not start")
+        // The writer ran in a worktree that is gone by now and named its files by absolute path. The engine recorded
+        // src/b.ts against that worktree's root; the other file is below no root the engine knows.
+        const worktree = path.join(os.tmpdir(), "graphagent-1581-removed-worktree")
+        yield* dag.nodeCompleted(
+          dagID,
+          "implement",
+          {
+            summary: "done",
+            changed_files: [path.join(worktree, "src", "b.ts"), "/elsewhere/x.ts"],
+            fingerprint: "fp",
+          },
+          undefined,
+          undefined,
+          { directory: worktree, touchedPaths: ["src/b.ts"], state: "removed", conflictsWith: [] },
+        )
+        const judged = (yield* awaitWithTimeout(Queue.take(records), "verify did not start")).text
+        expect(judged).toContain("reported, not recorded: /elsewhere/x.ts (outside the repository)")
+        expect(judged.match(/reported, not recorded/g)).toHaveLength(1)
+        expect(judged).not.toContain("recorded, not reported")
+        expect(judged).toContain("recorded paths (1):\n- src/b.ts (no line counts)\n</engine-facts>")
+      }),
+    ),
+  )
+
   it.live("bounds an oversized upstream report and still hands a judging node the engine's change facts whole", () =>
     runLoopTest(({ dag, loop, records }) =>
       Effect.gen(function* () {

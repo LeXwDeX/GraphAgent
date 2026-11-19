@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DagIsolation } from "@/dag/isolation"
@@ -140,6 +140,32 @@ describe("DagIsolation.numstat", () => {
     roots.push(empty)
     git(empty, ["init"])
     expect(DagIsolation.numstat(empty)).toBeUndefined()
+  })
+})
+
+describe("DagIsolation.repoRoot", () => {
+  // git answers with the real path of the directory, the root `touchedPaths` and `numstat` paths are relative to.
+  const answer = (directory: string) => DagIsolation.repoRoot(directory)?.split("/").join(path.sep)
+
+  it("is the top-level directory of the repository, from the root or from a subdirectory", () => {
+    const root = repo()
+    mkdirSync(path.join(root, "pkg", "deep"), { recursive: true })
+    expect(answer(root)).toBe(realpathSync(root))
+    expect(answer(path.join(root, "pkg", "deep"))).toBe(realpathSync(root))
+  })
+
+  it("is the root of a linked worktree, not of the repository it belongs to", () => {
+    const root = repo()
+    const linked = worktree(root, "root")
+    expect(answer(linked)).toBe(realpathSync(linked))
+    expect(answer(linked)).not.toBe(realpathSync(root))
+  })
+
+  it("is undefined where git cannot answer: outside a repository, or in a directory that does not exist", () => {
+    const plain = mkdtempSync(path.join(tmpdir(), "dag-isolation-plain-"))
+    roots.push(plain)
+    expect(DagIsolation.repoRoot(plain)).toBeUndefined()
+    expect(DagIsolation.repoRoot(path.join(plain, "missing"))).toBeUndefined()
   })
 })
 
