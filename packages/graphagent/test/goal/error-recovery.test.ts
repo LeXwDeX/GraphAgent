@@ -21,6 +21,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { NamedError } from "@graphagent/core/util/error"
 import { Provider } from "@/provider/provider"
 import { testEffect, pollWithTimeout } from "../lib/effect"
+import { summaryText } from "../lib/fake-provider"
 import { TestLLMServer, httpError, reply } from "../lib/llm-server"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -1257,7 +1258,7 @@ describe("GoalLoop — #892 real encrypted-reasoning rejection sequence", () => 
             httpError(400, reasoningBody),
           )
           // The automatic compaction summarizes without opaque reasoning.
-          yield* llm.push(reply().text("compact summary: preserve standing goal intent 7f3a").stop())
+          yield* llm.push(reply().text(summaryText("compact summary: preserve standing goal intent 7f3a")).stop())
           // The post-compaction continuation is clean but is rejected again;
           // the reset budget must already be spent, so this pauses.
           yield* llm.pushMatch(

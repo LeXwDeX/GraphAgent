@@ -101,6 +101,7 @@ import { Format } from "../../src/format"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
+import { summaryText } from "../lib/fake-provider"
 import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -1946,7 +1947,7 @@ it.instance("compacts a large new user message before sending it on the same mod
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(10_000))
     // The summary fits the model's usable window, so the next request is not compacted again.
-    yield* llm.text("long summary ".repeat(200))
+    yield* llm.text(summaryText("long summary ".repeat(200)))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -1999,7 +2000,7 @@ it.instance("compacts a large unique tool output before sending it on the same m
         time: { start: 1, end: 2 },
       },
     })
-    yield* llm.text("compact summary")
+    yield* llm.text(summaryText("compact summary"))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -2051,7 +2052,7 @@ it.instance("checks a smaller switched model after an earlier compaction summary
       ...next,
       model: { providerID: ref.providerID, modelID: ModelV2.ID.make("small-model") },
     })
-    yield* llm.text("smaller summary")
+    yield* llm.text(summaryText("smaller summary"))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -2104,7 +2105,7 @@ withOversizedToolSchema.instance(
         ...next,
         model: { providerID: ref.providerID, modelID: ModelV2.ID.make("small-model") },
       })
-      yield* llm.text("short summary")
+      yield* llm.text(summaryText("short summary"))
       yield* llm.text("continued answer")
 
       yield* prompt.loop({ sessionID: chat.id })
@@ -2188,8 +2189,8 @@ it.instance("recompacts an oversized summary before sending it to a smaller mode
     const chat = yield* sessions.create({ title: "Oversized compaction summary" })
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(3_000))
-    yield* llm.text("oversized summary ".repeat(3_000))
-    yield* llm.text("short summary")
+    yield* llm.text(summaryText("oversized summary ".repeat(3_000)))
+    yield* llm.text(summaryText("short summary"))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -2227,7 +2228,7 @@ it.instance("stops after repeated automatic summaries remain above the model lim
     const chat = yield* sessions.create({ title: "Bounded compaction" })
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(3_000))
-    for (let attempt = 0; attempt < 3; attempt++) yield* llm.text("oversized summary ".repeat(3_000))
+    for (let attempt = 0; attempt < 3; attempt++) yield* llm.text(summaryText("oversized summary ".repeat(3_000)))
 
     const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
 
@@ -2259,9 +2260,9 @@ it.instance("stops when the provider still rejects the request after two consecu
       parts: [{ type: "text", text: "hello" }],
     })
     yield* llm.error(413, { error: { message: "request entity too large" } })
-    yield* llm.text("s1")
+    yield* llm.text(summaryText("s1"))
     yield* llm.error(413, { error: { message: "request entity too large" } })
-    yield* llm.text("s2")
+    yield* llm.text(summaryText("s2"))
     yield* llm.error(413, { error: { message: "request entity too large" } })
 
     const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
@@ -2307,7 +2308,7 @@ it.instance("counts provider-rejected recoveries only while no step gets through
     })
     for (let round = 0; round < 3; round++) {
       yield* llm.error(413, { error: { message: "request entity too large" } })
-      yield* llm.text("s")
+      yield* llm.text(summaryText("s"))
       yield* llm.tool("glob", { pattern: "**/overflow-recovery-missing" })
     }
     yield* llm.text("done")
@@ -5920,7 +5921,7 @@ for (const [runtime, runner] of [
       })
       yield* llm.push(
         reply().tool("write", { filePath: first, content: "allowed" }).usage({ input: 30_000, output: 10 }),
-        reply().text("One file was written. Summarize the remaining work.").stop(),
+        reply().text(summaryText("One file was written. Summarize the remaining work.")).stop(),
         reply().tool("write", { filePath: blocked, content: "must not execute" }),
         reply().text("The budget is exhausted after compaction.").stop(),
       )
@@ -6224,7 +6225,7 @@ const automaticCompactionLifecycle = (runtime: "ai-sdk" | "native") =>
       parts: [{ type: "text", text: "trigger threshold automatic compaction" }],
     })
     yield* fixture.llm.text(`s08-threshold-trigger-${runtime}`, { usage: { input: 11_500, output: 10 } })
-    yield* fixture.llm.text(`s08-threshold-summary-${runtime}`)
+    yield* fixture.llm.text(summaryText(`s08-threshold-summary-${runtime}`))
     yield* fixture.llm.text(`s08-threshold-continued-${runtime}`)
     const result = yield* fixture.prompt.loop({ sessionID: fixture.session.id })
     const hits = (yield* fixture.llm.hits).slice(before)
@@ -6260,7 +6261,7 @@ const overflowRecoveryLifecycle = (runtime: "ai-sdk" | "native", recovery: "succ
     const before = (yield* fixture.llm.hits).length
     yield* fixture.llm.error(413, { error: { message: "request entity too large" } })
     if (recovery === "success") {
-      yield* fixture.llm.text(`s08-auto-summary-${runtime}`)
+      yield* fixture.llm.text(summaryText(`s08-auto-summary-${runtime}`))
       yield* fixture.llm.text(`s08-overflow-recovered-${runtime}`)
     } else {
       yield* fixture.llm.error(413, { error: { message: "request entity too large during summary" } })
@@ -7419,7 +7420,7 @@ it.instance("claims ordinary users before a manual compaction request", () =>
     const earlier = yield* user(chat.id, "queued before compaction")
     const latest = yield* user(chat.id, "also queued before compaction")
     yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
-    yield* llm.text("summary")
+    yield* llm.text(summaryText("summary"))
     yield* prompt.loop({ sessionID: chat.id })
 
     const messages = yield* sessions.messages({ sessionID: chat.id })
@@ -9883,7 +9884,7 @@ it.instance("review: repeated identical tool results count toward the next reque
         },
       })
     }
-    yield* llm.text("compact summary")
+    yield* llm.text(summaryText("compact summary"))
     yield* llm.text("continued answer")
     yield* prompt.loop({ sessionID: chat.id })
     const messages = yield* sessions.messages({ sessionID: chat.id })
@@ -11656,7 +11657,7 @@ it.instance("manual compaction strips persisted encrypted reasoning from the sum
     yield* prompt.loop({ sessionID: chat.id })
 
     yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
-    yield* llm.text("compaction summary")
+    yield* llm.text(summaryText("compaction summary"))
     yield* prompt.loop({ sessionID: chat.id })
 
     const summarizer = JSON.stringify((yield* llm.inputs).at(-1))
@@ -11715,7 +11716,7 @@ it.instance("manual compaction recovers a session whose upstream rejects persist
     expect(JSON.stringify((yield* llm.inputs).at(-1))).toContain("bad-cipher")
 
     yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
-    yield* llm.text("compaction summary")
+    yield* llm.text(summaryText("compaction summary"))
     yield* prompt.loop({ sessionID: chat.id })
 
     const stored = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
