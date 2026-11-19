@@ -441,6 +441,34 @@ description: A skill in the .claude/skills directory.
     ),
   )
 
+  // #1573: the name is the model's own text and the list holds every skill there is; both are bounded like the names
+  // an unknown-tool error echoes (64 code points a name, 30 names).
+  test("the not-found message cuts the echoed name and the list of skills", () => {
+    const skills = Array.from({ length: 45 }, (_, index) => `skill-${String(index).padStart(2, "0")}`)
+    const message = new Skill.NotFoundError({ name: "n".repeat(200), available: skills }).message
+    expect(message).toStartWith(`Skill "${"n".repeat(64)}" not found. Available skills: skill-00, skill-01, `)
+    expect(message).not.toContain("n".repeat(65))
+    expect(message).toContain("skill-29")
+    expect(message).not.toContain("skill-30")
+    expect(message).toEndWith("skill-29, ... (45 in total)")
+
+    // A name is cut by code points, not UTF-16 units, in the echo and in the list.
+    const emoji = new Skill.NotFoundError({ name: "😀".repeat(100), available: ["😀".repeat(100)] }).message
+    const [echoed, listed] = [...emoji.matchAll(/😀+/gu)].map((match) => match[0])
+    expect(Array.from(echoed)).toHaveLength(64)
+    expect(Array.from(listed)).toHaveLength(64)
+    expect(emoji).not.toContain("in total")
+  })
+
+  test("the not-found message lists 30 skills whole, and says none when there are none", () => {
+    const thirty = Array.from({ length: 30 }, (_, index) => `skill-${String(index).padStart(2, "0")}`)
+    const whole = new Skill.NotFoundError({ name: "missing", available: thirty }).message
+    expect(whole).toBe(`Skill "missing" not found. Available skills: ${thirty.join(", ")}`)
+    expect(new Skill.NotFoundError({ name: "missing", available: [] }).message).toBe(
+      'Skill "missing" not found. Available skills: none',
+    )
+  })
+
   it.effect("exposes tagged expected skill failure classes", () =>
     Effect.sync(() => {
       const invalid = new Skill.InvalidError({ path: "/tmp/SKILL.md", message: "Invalid skill frontmatter" })
