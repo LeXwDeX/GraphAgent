@@ -39,7 +39,10 @@ export interface CompleteIsolatedNodeInput {
  * removal failure is not a node failure: the evidence stays on disk and the
  * caller records `state: "kept"`. #1583: the commit's git and the patch write
  * are waited for off the event loop (`completeWorktreeAsync`), so the timers
- * and other workflows of the process keep running meanwhile. */
+ * and other workflows of the process keep running meanwhile. The commit and
+ * the patch run uninterruptibly, as the synchronous version did: a cancel that
+ * lands between two git commands waits for them, so it never leaves a worktree
+ * half committed with no patch recorded. */
 export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.Effect<IsolatedNodeCompletion> {
   return Effect.gen(function* () {
     const completed = yield* DagIsolation.completeWorktreeAsync({
@@ -48,7 +51,7 @@ export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.E
       dagID: input.dagID,
       nodeID: input.nodeID,
       message: input.message,
-    })
+    }).pipe(Effect.uninterruptible)
     if (!completed.ok) return completed
     const { worktree, touchedPaths } = completed.completion
     const removed = yield* input.remove(worktree.directory).pipe(

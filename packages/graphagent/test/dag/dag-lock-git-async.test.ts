@@ -1000,6 +1000,61 @@ describe("completing a node waits for git without blocking the event loop", () =
     }
   })
 
+  posixIt("finishes a node's commit and patch before an interruption lands, then keeps the worktree", async () => {
+    const projectID = `proj-lock-git-interrupt-${process.pid}`
+    const tree = changed()
+    const removed: string[] = []
+    try {
+      const installed = await installGitGate()
+      try {
+        const controller = new AbortController()
+        const running = Effect.runPromiseExit(
+          completeIsolatedNode({
+            worktree: {
+              directory: tree.directory,
+              state: "active",
+              touchedPaths: [],
+              conflictsWith: [],
+              baseHead: tree.baseHead,
+            },
+            ownerDirectory: tree.directory,
+            projectID,
+            dagID: "dag_1",
+            nodeID: "node-1",
+            message: "dag: node-1",
+            remove: (directory) =>
+              Effect.sync(() => {
+                removed.push(directory)
+                return true
+              }),
+          }),
+          { signal: controller.signal },
+        )
+        let settled = false
+        void running.then(() => {
+          settled = true
+        })
+        await installed.started()
+        controller.abort()
+        await Bun.sleep(100)
+        // The interruption waits for the commit instead of cutting it between two git commands.
+        expect(settled).toBe(false)
+        await installed.release()
+        expect(Exit.hasInterrupts(await running)).toBe(true)
+      } finally {
+        await installed.dispose()
+      }
+      expect(git(tree.directory, "rev-parse", "HEAD")).not.toBe(tree.baseHead)
+      expect(git(tree.directory, "status", "--porcelain")).toBe("")
+      expect(existsSync(path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"))).toBe(true)
+      // The removal after the commit is still interruptible, so the worktree stays for recovery.
+      expect(removed).toEqual([])
+    } finally {
+      tree.dispose()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
   posixIt("completes an isolated node with timers firing, and removes its worktree after the commit", async () => {
     const projectID = `proj-lock-git-complete-${process.pid}`
     const tree = changed()
