@@ -4,9 +4,11 @@ import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
+import { WorkflowTable } from "@graphagent/core/dag/sql"
 import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { DagMessages } from "@graphagent/core/dag/messages"
+import { eq } from "drizzle-orm"
 import { Cause, Duration, Effect, Layer, Scope } from "effect"
 import { TestLLMServer } from "../../lib/llm-server"
 
@@ -22,6 +24,7 @@ import type {
   ScenarioContext,
   SeededContext,
   DagNodeSeed,
+  DagWorktreeSeed,
 } from "./types"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
@@ -263,7 +266,7 @@ function withContext<A, E>(
           llmText: (value) => Effect.suspend(() => llm().text(value)),
           llmHang: () => Effect.suspend(() => llm().hang),
           llmWait: (count) => Effect.suspend(() => llm().wait(count)),
-          dag: (input) => run(createDagFixture(input.sessionID, input.title, input.nodes)),
+          dag: (input) => run(createDagFixture(input.sessionID, input.title, input.nodes, input.worktree)),
           dagFailNode: (dagID, nodeID, reason, errorClass) =>
             run(failDagNodeFixture(dagID, nodeID, reason, errorClass)),
           dagAgentMessage: (dagID, nodeID, ownerSessionID) => run(seedDagAgentMessage(dagID, nodeID, ownerSessionID)),
@@ -428,7 +431,12 @@ function seedDagAgentMessage(dagID: string, nodeID: string, ownerSessionID: Sess
  * Creates the workflow owned by the session, using the instance's real project ID
  * so the FK constraint on workflow.project_id is satisfied.
  */
-function createDagFixture(sessionID: SessionID, title: string | undefined, nodes: DagNodeSeed[]) {
+function createDagFixture(
+  sessionID: SessionID,
+  title: string | undefined,
+  nodes: DagNodeSeed[],
+  worktree?: DagWorktreeSeed,
+) {
   return Effect.gen(function* () {
     const modules = yield* Effect.promise(() => runtime())
     const dag = yield* modules.Dag.Service
@@ -449,9 +457,32 @@ function createDagFixture(sessionID: SessionID, title: string | undefined, nodes
             prompt_template: { inline: n.id },
             ...(n.expanded_from !== undefined ? { expanded_from: n.expanded_from } : {}),
           })),
+          // #1618: the live pointer a created isolated workflow carries. The directory is only named, never created.
+          ...(worktree
+            ? { worktree: { directory: worktree.directory, ...(worktree.branch ? { branch: worktree.branch } : {}) } }
+            : {}),
         },
       })
       .pipe(Effect.orDie)
+    if (worktree?.settled) {
+      // The settlement row, written the way the projection writes it: the column alone, no seq and no update time.
+      const { db } = yield* Database.Service
+      yield* db
+        .update(WorkflowTable)
+        .set({
+          worktree: {
+            directory: worktree.directory,
+            ...(worktree.branch ? { branch: worktree.branch } : {}),
+            head: "head-sha",
+            patchPath: "/reports/workflow.patch",
+            touchedPaths: ["src/a.ts"],
+            state: worktree.settled,
+          },
+        })
+        .where(eq(WorkflowTable.id, dagID))
+        .run()
+        .pipe(Effect.orDie)
+    }
     return { dagID, sessionID } as const
   })
 }

@@ -78,6 +78,7 @@ export const en: Record<MessageKey, string> = {
   "shell.footer.trust": "⚠ {count} project commands untrusted · /trust",
   "subagent.readonly": "only the main agent can message it",
   "subagent.readonlyTag": "read-only",
+  "error.child_session_read_only": "Sub-agent is read-only; ask the main agent",
   "subagent.position": "subagent {index}/{total}",
   "subagent.hint.switch": "switch",
   "subagent.hint.back": "back",
@@ -471,6 +472,9 @@ export const en: Record<MessageKey, string> = {
   "dagmode.panel.mode.nodes": "node cap {max}",
   "dagmode.panel.mode.tokens": "tokens {used}/{budget}",
   "dagmode.panel.mode.tokensOpen": "tokens {used} (no budget)",
+  "dagmode.panel.worktree": "Worktree {path} · branch {branch}",
+  "dagmode.panel.worktree.noBranch": "Worktree {path}",
+  "dagmode.panel.worktree.removed": "branch {branch} · directory cleaned up",
   "dagmode.panel.usage":
     "Usage in {input} · out {output} · reasoning {reasoning} · cache r {read} w {write} · cost {cost}",
   "dagmode.panel.quality.reviews": "reviews {n}",

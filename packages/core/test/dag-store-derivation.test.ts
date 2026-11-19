@@ -197,6 +197,48 @@ describe("DagStore.getWorkflowRevisions (#1027 D6b)", () => {
     }),
   )
 
+  // #1618: the settlement of a workflow-level worktree is the one projected write that leaves the workflow's seq and
+  // update time alone, so the marker has a segment of its own for it. Without one a value derived before the
+  // settlement (the live pointer) would be served after it (the directory is gone).
+  it.live("moves when a worktree settlement is written, though the write moves neither seq nor update time", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      const events = yield* EventV2.Service
+      yield* seed()
+      const dagID = DagEvent.DagID.make("dag_a")
+      const marker = (id: string) => store.getWorkflowRevisions("ses_parent").pipe(Effect.map((all) => all.get(id)))
+      const before = yield* marker("dag_a")
+      const untouched = yield* marker("dag_b")
+      const row = yield* store.getWorkflow(dagID)
+      const settle = (state: "removed" | "kept") =>
+        events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: {
+            directory: "/repo/.agents/worktree/dag-dag_a-workflow",
+            branch: "graphagent/dag-dag_a-workflow",
+            touchedPaths: [],
+            state,
+          },
+          episode: { graphRev: row!.graphRev, seq: row!.seq },
+          timestamp: at(10),
+        })
+
+      yield* settle("removed")
+      const settled = yield* store.getWorkflow(dagID)
+      // The premise: the settlement is invisible to the two stamps the marker folds in.
+      expect(settled).toMatchObject({ seq: row!.seq, timeUpdated: row!.timeUpdated })
+      expect(settled?.worktree).toMatchObject({ state: "removed" })
+      const after = yield* marker("dag_a")
+      expect(after).not.toBe(before)
+      expect(yield* marker("dag_b")).toBe(untouched)
+
+      // Write-once: a second settlement folds to a no-op, and the marker stays where the first put it.
+      yield* settle("kept")
+      expect((yield* store.getWorkflow(dagID))?.worktree).toMatchObject({ state: "removed" })
+      expect(yield* marker("dag_a")).toBe(after)
+    }),
+  )
+
   it.effect("ignores superseded rows, whose changes never reach the current graph", () =>
     Effect.gen(function* () {
       const store = yield* DagStore.Service

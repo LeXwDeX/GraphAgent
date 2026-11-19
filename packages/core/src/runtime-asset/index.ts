@@ -31,6 +31,9 @@ export namespace RuntimeAsset {
     readonly version: string
     readonly required: boolean
     readonly targets: readonly Target[]
+    // A system executable is accepted only when `args` (default `--version`) prints a version of at least `minimum`
+    // (`major.minor.patch`). Without this field, any executable found on PATH is accepted.
+    readonly system?: { readonly minimum: string; readonly args?: readonly string[] }
   }
   export type Policy = {
     readonly sources?: readonly Source[]
@@ -255,6 +258,7 @@ function managedCandidates(input: RuntimeAsset.ManagedInput): RuntimeAsset.Candi
           if (!found || !(await Bun.file(found).exists())) {
             throw new Error(`system executable is unavailable: ${request.target.executable}`)
           }
+          await verifySystemVersion(found, request)
           return { path: found }
         },
         catch: unavailable,
@@ -290,6 +294,76 @@ async function verifiedCache(root: string, request: RuntimeAsset.CandidateReques
     throw new Error(`cache executable digest mismatch: ${executable}`)
   }
   return { path: executable }
+}
+
+const SYSTEM_PROBE_TIMEOUT_MS = 5_000
+const SYSTEM_PROBE_MAX_OUTPUT_BYTES = 64 * 1024
+
+async function verifySystemVersion(found: string, request: RuntimeAsset.CandidateRequest) {
+  const system = request.descriptor.system
+  if (!system) return
+  const name = request.target.executable
+  const minimum = parseVersion(system.minimum)
+  if (!minimum) throw new Error(`system executable minimum version is invalid: ${system.minimum}`)
+  const output = await probeVersion(found, system.args ?? ["--version"]).catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`system executable version is unreadable: ${name} (${detail})`)
+  })
+  const reported = parseVersion(output)
+  if (!reported) throw new Error(`system executable version is unreadable: ${name}`)
+  if (compareVersions(reported, minimum) < 0) {
+    throw new Error(`system executable is too old: ${name} reports ${reported.join(".")}, needs >= ${system.minimum}`)
+  }
+}
+
+// One deadline bounds the whole probe, including reading stdout: after the child is killed, a grandchild of a wrapper
+// script can still hold the pipe open, so the read is abandoned instead of waited out.
+async function probeVersion(executable: string, args: readonly string[]) {
+  const child = Bun.spawn([executable, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })
+  const reader = child.stdout.getReader()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out after ${SYSTEM_PROBE_TIMEOUT_MS} ms`)),
+      SYSTEM_PROBE_TIMEOUT_MS,
+    )
+  })
+  const output = (async () => {
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      size += chunk.value.byteLength
+      if (size > SYSTEM_PROBE_MAX_OUTPUT_BYTES) {
+        throw new Error(`output exceeds ${SYSTEM_PROBE_MAX_OUTPUT_BYTES} bytes`)
+      }
+      chunks.push(chunk.value)
+    }
+    const exitCode = await child.exited
+    if (exitCode !== 0) throw new Error(`exit ${exitCode}`)
+    return Buffer.concat(chunks).toString("utf8")
+  })()
+  try {
+    return await Promise.race([output, deadline])
+  } finally {
+    clearTimeout(timer)
+    child.kill("SIGKILL")
+    reader.cancel().catch(() => {})
+  }
+}
+
+// The first `major.minor.patch` in the text, e.g. "ripgrep 14.1.0 (rev af60c2de9d)" -> [14, 1, 0].
+function parseVersion(text: string) {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text)
+  return match ? match.slice(1).map(Number) : undefined
+}
+
+function compareVersions(left: readonly number[], right: readonly number[]) {
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return left[index] - right[index]
+  }
+  return 0
 }
 
 async function download(
