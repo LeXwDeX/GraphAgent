@@ -348,12 +348,17 @@ optional `$schema`:
   read as a project layer.
 - `type` is required and is `"local"` or `"remote"`.
 - Local: `command` is an array of strings; optional `cwd`, `environment`,
-  `disabled`, and `timeout`.
+  `disabled`, `deferred`, and `timeout`.
 - Remote: `url` is required; optional `headers`, `oauth` (an object, or `false`
-  to disable OAuth), `disabled`, and `timeout`.
+  to disable OAuth), `disabled`, `deferred`, and `timeout`.
 - `timeout.startup` and `timeout.request` are milliseconds and default to
   30000 each.
 - `disabled: true` turns a server off. The old `enabled` field is rejected.
+- `deferred: true` keeps the server's tool definitions out of every request, for a
+  server with many tools. The model then sees one catalog line per tool in the
+  description of `mcp_describe`, loads a tool's schema with `mcp_describe`, and
+  calls the tool with `mcp_call`. Permission rules and hooks name the tool itself,
+  not `mcp_call`. The default is `false`: every tool is loaded.
 - `protocol` is rejected; protocol negotiation is automatic. The removed
   `experimental.mcp_timeout` is replaced by per-server `timeout.request`.
 - MCP entries are not interpolated: `{env:VAR}`, `{file:path}`, and `${VAR}`

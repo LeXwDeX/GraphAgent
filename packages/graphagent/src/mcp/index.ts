@@ -810,6 +810,8 @@ export const layer = Layer.effect(
           continue
         }
         const timeout = requestTimeout(s, clientName, mcpConfig)
+        // A runtime entry's choice wins over the file's.
+        const deferred = (s.config[clientName]?.deferred ?? mcpConfig?.deferred) === true
         for (const mcpTool of listed) {
           const key = keys.get(toolID(clientName, mcpTool.name)) ?? ""
           // A tool is never dropped silently: one with no key, or one a server lists twice, is skipped and said so.
@@ -837,6 +839,8 @@ export const layer = Layer.effect(
             requiresUserInteraction: mcpTool._meta?.["anthropic/requiresUserInteraction"] === true,
             // A rewritten key remembers the key it had, so the deny and ask rules written for that key still apply.
             ...(key === plain ? {} : { baseKey: plain }),
+            // Only a deferred server's tools carry the mark; the tool list leaves them out (#1459).
+            ...(deferred ? { deferred: true } : {}),
           })
         }
       }

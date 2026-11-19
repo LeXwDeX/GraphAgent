@@ -1842,6 +1842,7 @@ export type ConfigMcpLocal = {
     [key: string]: string
   }
   disabled?: boolean
+  deferred?: boolean
   timeout?: ConfigMcpTimeout
 }
 
@@ -1861,6 +1862,7 @@ export type ConfigMcpRemote = {
   }
   oauth?: ConfigMcpoAuth | false
   disabled?: boolean
+  deferred?: boolean
   timeout?: ConfigMcpTimeout
 }
 

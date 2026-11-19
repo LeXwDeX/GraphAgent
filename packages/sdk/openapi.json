@@ -14368,6 +14368,9 @@
           "disabled": {
             "type": "boolean"
           },
+          "deferred": {
+            "type": "boolean"
+          },
           "timeout": {
             "$ref": "#/components/schemas/ConfigMCPTimeout"
           }
@@ -14426,6 +14429,9 @@
             ]
           },
           "disabled": {
+            "type": "boolean"
+          },
+          "deferred": {
             "type": "boolean"
           },
           "timeout": {
