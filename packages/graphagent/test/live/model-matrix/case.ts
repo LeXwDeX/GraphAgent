@@ -15,14 +15,17 @@
  *
  * The case is `{ version: 1, session, request, agent?, recorded, expect? }`, see `case-file.ts`: the messages
  * before the user message, its text, the agent it was sent to (when the export names one), and what the original
- * model did first (its first tool call, or its text).
+ * model did first (its first tool call, or its text). It holds the text of the user message and nothing else, so a
+ * message that carries an attachment (a source file, an image, a PDF) makes no case: the replay would not be the
+ * same task.
  *
  * The whole case is checked for credentials before anything is written: a value shaped like a key or a token, or
  * holding the value of a secret-looking environment variable of this process, refuses the case. Only the JSON path
  * and the kind of the finding are printed, never the value.
  *
  * Exit code: 0 when the case was written, 1 when it was refused (a finding, or `--out` inside this repository), 2
- * for a usage error (bad arguments, an unreadable export, a user message the export does not have).
+ * for a usage error (bad arguments, an unreadable export, a user message the export does not have or one that
+ * carries an attachment).
  */
 
 import { HttpRecorderInternal } from "@graphagent/http-recorder/internal"
@@ -65,6 +68,34 @@ function textOf(message: ExportedMessage): string {
     .join("\n")
 }
 
+/**
+ * How the text the prompt reads an attachment into starts (`resolvePart` and `resolveMcpResource` in
+ * `session/turn/prepare.ts`). A file, a directory or an MCP resource is read into synthetic text, mostly next to a
+ * file part, and a read that fails (or an MCP resource that is only text) leaves nothing but that text. Reminders
+ * and hook notes are synthetic text on a user message too, so the mark alone does not say what a part is.
+ */
+export const ATTACHMENT_TEXT: readonly string[] = [
+  "Called the Read tool with the following input:",
+  "Read tool failed to read ",
+  "Reading MCP resource:",
+  "Failed to read MCP resource ",
+  "[Binary MCP resource ",
+]
+
+/** Whether a message carries an attachment: a file part, or the synthetic text the prompt read one into. */
+function hasAttachment(message: ExportedMessage): boolean {
+  return message.parts.some((part) => {
+    const { text } = part
+    if (part.type === "file") return true
+    return (
+      part.type === "text" &&
+      part.synthetic === true &&
+      typeof text === "string" &&
+      ATTACHMENT_TEXT.some((start) => text.startsWith(start))
+    )
+  })
+}
+
 /** The first tool part of a message: the tool and the state it ended in. */
 function firstTool(message: ExportedMessage): { name: string; state: Record<string, unknown> } | undefined {
   for (const part of message.parts) {
@@ -98,7 +129,7 @@ function agentOf(message: ExportedMessage): string | undefined {
  * The case for one user message of an export: `session` holds the messages before it, `request` its text, `agent`
  * the agent it was sent to, and `recorded` (and `expect`) what the assistant message right after it did. A user
  * message that no assistant message follows (the next message is another user message, or there is none) has no
- * reply, so it makes no case.
+ * reply, so it makes no case; nor does one that carries an attachment, which `request` cannot hold.
  */
 export function buildCase(exported: unknown, userMessage?: number): Parsed<CaseFile> {
   if (!isRecord(exported) || !isRecord(exported.info)) {
@@ -121,6 +152,12 @@ export function buildCase(exported: unknown, userMessage?: number): Parsed<CaseF
   }
   const request = textOf(user)
   if (request.trim() === "") return failed(`user message ${wanted} has no text to ask again`)
+  if (hasAttachment(user)) {
+    return failed(
+      `user message ${wanted} carries an attachment (a source file, an image or a PDF), which the case format ` +
+        "does not support yet; pick another turn with --user-message",
+    )
+  }
   const next = messages[at + 1]
   const done = next?.info.role === "assistant" ? recordedOf(next) : undefined
   if (!done) return failed(`no assistant message with a tool call or text follows user message ${wanted}`)

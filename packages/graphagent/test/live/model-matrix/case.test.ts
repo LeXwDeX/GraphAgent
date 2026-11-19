@@ -16,7 +16,7 @@ import path from "node:path"
 import { isRecord } from "../delegation-timing/classify"
 import { sessionPermission, stopAllHosts, type ModelRef } from "../delegation-timing/harness"
 import { startScriptServer, type Reply } from "../lib/script-server"
-import { buildCase, findingLines, parseCaseOptions, runCaseCommand, type Output } from "./case"
+import { ATTACHMENT_TEXT, buildCase, findingLines, parseCaseOptions, runCaseCommand, type Output } from "./case"
 import { caseName, caseScenario, expectationFailures, loadCaseFile, parseCaseFile, type CaseFile } from "./case-file"
 import { firstStoppedCall, stoppedCallOf } from "./case-hook"
 import { argumentFailure, CHECKED_TOOLS, caseFailures } from "./case-judge"
@@ -71,6 +71,8 @@ const exportOf = (...messages: unknown[]) => ({
 })
 /** A message of an export the way the runtime writes a user message: it names the agent it was sent to. */
 const sentTo = (entry: ReturnType<typeof message>, agent: unknown) => ({ ...entry, info: { ...entry.info, agent } })
+/** The file part of an image attached to a user message, as the prompt stores it. */
+const IMAGE = { type: "file", mime: "image/png", filename: "shot.png", url: "data:image/png;base64,iVBORw0KGgo=" }
 
 /** Three user messages: a text reply, a reply that says something and calls tools, and a bash call. */
 const SESSION = exportOf(
@@ -327,6 +329,50 @@ describe("eval:case: the case of a user message", () => {
       "has no text",
     )
   })
+
+  // The file parts of a source file and a PDF as the prompt stores them, next to the image.
+  const SOURCE = { type: "file", mime: "text/plain", filename: "a.ts", url: "file:///work/src/a.ts" }
+  const PDF = {
+    type: "file",
+    mime: "application/pdf",
+    filename: "spec.pdf",
+    url: "data:application/pdf;base64,JVBERi0=",
+  }
+  // What the prompt reads an attachment into is synthetic text; a read that fails leaves only that text.
+  const READ_TEXTS = [
+    'Called the Read tool with the following input: {"filePath":"/work/src/a.ts"}',
+    "Read tool failed to read /work/src/a.ts with the following error: ENOENT",
+    "Reading MCP resource: notes (mcp://docs/notes)",
+    "Failed to read MCP resource notes: the server is down",
+    "[Binary MCP resource omitted: x.bin (application/octet-stream, 3 B) is not a supported attachment type]",
+  ]
+
+  test("a user message that carries an attachment makes no case: the case holds its text only", () => {
+    const asked = (...parts: Record<string, unknown>[]) =>
+      exportOf(message("m1", "user", text("what is wrong here?"), ...parts), message("m2", "assistant", text("x")))
+    for (const file of [SOURCE, IMAGE, PDF])
+      expect(error(asked(file))).toContain("user message 0 carries an attachment")
+    for (const read of READ_TEXTS) {
+      expect(error(asked(text(read, { synthetic: true })))).toContain("user message 0 carries an attachment")
+    }
+    // Other synthetic text (a reminder, a hook's note) is no attachment: it is left out of the request.
+    const reminder = text("<system-reminder>plan mode</system-reminder>", { synthetic: true })
+    expect(built(asked(reminder)).request).toBe("what is wrong here?")
+    // Only the chosen message counts: an earlier one with an attachment stays in the history the case holds.
+    const earlier = exportOf(
+      message("m1", "user", text("look at this"), IMAGE),
+      message("m2", "assistant", text("a cat")),
+      message("m3", "user", text("and now?")),
+      message("m4", "assistant", text("x")),
+    )
+    expect(built(earlier).request).toBe("and now?")
+    expect(error(earlier, 0)).toContain("user message 0 carries an attachment")
+  })
+
+  test("the text it takes for an attachment is still the wording of the prompt", async () => {
+    const prompt = await fs.readFile(path.join(import.meta.dir, "../../../src/session/turn/prepare.ts"), "utf8")
+    for (const start of ATTACHMENT_TEXT) expect(prompt).toContain(start)
+  })
 })
 
 describe("eval:case: the command line", () => {
@@ -506,6 +552,13 @@ describe("eval:case: the command", () => {
       code: 2,
       text: expect.stringContaining("out of range"),
     })
+    // A turn that carries an attachment is not one a case can hold.
+    const attached = exportOf(message("m1", "user", text("see"), IMAGE), message("m2", "assistant", text("x")))
+    await fs.writeFile(path.join(dir, "attached.json"), JSON.stringify(attached))
+    expect(await run(["--from", path.join(dir, "attached.json"), "--out", out])).toMatchObject({
+      code: 2,
+      text: expect.stringContaining("carries an attachment"),
+    })
     expect(await run(["--from", from, "--out", path.join(dir, "no", "such", "dir", "c.json")])).toMatchObject({
       code: 2,
       text: expect.stringContaining("cannot write --out"),
@@ -640,6 +693,12 @@ describe("the judge of a live replay", () => {
     outcome: "ok",
     text: "",
   })
+  /** A call the SDK refused: it ends as an error in the transcript, and no hook ever saw it. */
+  const refused = (tool: string, input: Record<string, unknown> = {}): Call => ({
+    ...made(tool, input),
+    status: "error",
+    outcome: "validation_error",
+  })
 
   test("the tools whose arguments are checked are the ones the parameters test covers, the engine's own apart", () => {
     expect([...CHECKED_TOOLS].sort()).toEqual(
@@ -725,14 +784,41 @@ describe("the judge of a live replay", () => {
     expect(caseFailures(read, seen([made("no_such_tool"), made("read", good)]))).toEqual([
       "calls: first call is no_such_tool, expected read",
     ])
-    // Arguments that are not JSON for the recorded tool first: the transcript has none for it.
-    expect(caseFailures(read, seen([made("read"), made("read", good)]))).toEqual([
-      'arguments: read ["filePath"] missing required field, expected string',
+    // Arguments that are not JSON for the recorded tool first: the SDK refused that call, and the valid one after
+    // it, which the hook saw, does not make it one that ran.
+    expect(caseFailures(read, seen([refused("read", { value: '{"filePath":' }), made("read", good)]))).toEqual([
+      "arguments: read refused before it ran: the SDK did not accept the call",
     ])
     // The same when the recorded step is a text: the call the model made first is the one named.
     expect(caseFailures(said("hi"), seen([made("no_such_tool"), made("read", good)]))).toEqual([
       "calls: expected no tool call, the model called no_such_tool",
     ])
+  })
+
+  test("a first call the SDK refused is an arguments failure, whatever its arguments decode to", () => {
+    // `plan_exit` takes no arguments: what the model sent that was not JSON is kept as { value }, which decodes.
+    const plan = recorded("plan_exit")
+    const broken = refused("plan_exit", { value: '{"unfinished":' })
+    expect(argumentFailure("plan_exit", broken.input)).toBeUndefined()
+    const failure = ["arguments: plan_exit refused before it ran: the SDK did not accept the call"]
+    expect(caseFailures(plan, { calls: [broken], reply: "" })).toEqual(failure)
+    // A tool that is not checked is compared by name, and a refused call is not a call that was made.
+    const mcp = recorded("mcp__docs__search", { q: "x" })
+    expect(caseFailures(mcp, { calls: [refused("mcp__docs__search", { q: "x" })], reply: "" })).toEqual([
+      "arguments: mcp__docs__search refused before it ran: the SDK did not accept the call",
+    ])
+    // A call of another tool is still told by its name first.
+    expect(caseFailures(plan, { calls: [refused("no_such_tool")], reply: "" })).toEqual([
+      "calls: first call is no_such_tool, expected plan_exit",
+    ])
+  })
+
+  test("a call with no arguments that the hook stopped is valid, and so is one whose audit line was lost", () => {
+    const plan = recorded("plan_exit")
+    const stopped = { tool: "plan_exit", input: {}, id: "call_1" }
+    expect(caseFailures(plan, { stopped, calls: [made("plan_exit")], firstCallID: "call_1", reply: "" })).toEqual([])
+    // The transcript holds a call the hook stopped as completed, so with no audit line it is judged as it is.
+    expect(caseFailures(plan, { calls: [made("plan_exit")], reply: "" })).toEqual([])
   })
 
   test("the audit's arguments are the first call's when the ids say so, and then they are judged as given", () => {
@@ -815,6 +901,23 @@ describe("what a live replay sends and imports", () => {
     expect(child.parentID).toBe("ses_parent")
     // An export from before roles existed has none: it is a root as well.
     expect(replaySessionInfo({ id: "ses_z" }, "/tmp/home").role).toBe("root")
+  })
+
+  test("a revert the session was exported with is dropped: the first prompt would run its cleanup on the history", () => {
+    const undone = {
+      id: "ses_x",
+      title: "undone",
+      revert: {
+        messageID: "msg_00000000a002SyntheticUser1",
+        partID: "prt_00000000a004SyntheticText1",
+        snapshot: "abc",
+      },
+    }
+    const replayed = replaySessionInfo(undone, "/tmp/home")
+    expect("revert" in replayed).toBe(false)
+    expect(replayed).toMatchObject({ id: "ses_x", title: "undone", role: "root" })
+    // The case file's own session is not changed.
+    expect(undone.revert.messageID).toBe("msg_00000000a002SyntheticUser1")
   })
 })
 
@@ -982,6 +1085,35 @@ describe("a live replay of a case, played end to end", () => {
       attemptCase(job(await childOf("live.old"), "live.old", glob), 1),
     ])
     for (const item of [dag, task, old]) expect(item.result).toMatchObject({ status: "pass", failures: [] })
+  }, 180_000)
+
+  test("a session exported with a revert pending is replayed with its whole history, and the request is admitted", async () => {
+    // The prompt cleans up a revert by removing every message from the reverted one on; this one is the first.
+    // The scripted model answers from the history it is sent, so a pass means all of it reached the model.
+    const source = await marked("glob-call", "live.revert")
+    const first = source.session.messages[0]
+    if (!first) throw new Error("the case has no history to revert")
+    const info = { ...source.session.info, revert: { messageID: first.info.id } }
+    const file: CaseFile = { ...source, session: { ...source.session, info } }
+    const glob = { calls: [{ name: "glob", input: { pattern: "**/*.ts" } }] }
+    const run = await attemptCase(job(file, "live.revert", glob), 1)
+    expect(run.result).toMatchObject({ status: "pass", failures: [] })
+  }, 180_000)
+
+  test("a call the SDK refuses is no pass, even when it is the recorded tool", async () => {
+    // The host has no such tool, so the SDK refuses the call before any hook runs: it ends as an error in the
+    // transcript and has no line in the audit. A tool that is not checked against a schema used to pass on its name.
+    const file: CaseFile = {
+      ...(await marked("glob-call", "live.refused-same")),
+      recorded: { calls: [{ name: "no_such_tool", input: {} }] },
+    }
+    const run = await attemptCase(job(file, "live.refused-same", { calls: [{ name: "no_such_tool", input: {} }] }), 1)
+    expect(run.result).toMatchObject({
+      status: "fail",
+      failures: ["arguments: no_such_tool refused before it ran: the SDK did not accept the call"],
+    })
+    const calls = run.result.view?.calls ?? []
+    expect(calls.map((call) => [call.tool, call.status])).toEqual([["no_such_tool", "error"]])
   }, 180_000)
 
   /** What `run` returns, and the bodies of the messages this process posted to a host meanwhile: what was asked. */

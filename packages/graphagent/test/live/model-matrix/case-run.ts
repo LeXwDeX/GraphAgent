@@ -11,8 +11,8 @@
  *    runs and writes the first one to an audit file;
  * 2. the case's session is imported into the run's database with the CLI (`graphagent import`), from the workspace,
  *    so the session belongs to the workspace's project and directory. It is imported as a root session of its own,
- *    whatever it was (`replaySessionInfo`), and its permission rules are replaced by the ones every matrix session
- *    has, which keep the file tools inside the workspace;
+ *    whatever it was, without a pending revert (`replaySessionInfo`), and its permission rules are replaced by the
+ *    ones every matrix session has, which keep the file tools inside the workspace;
  * 3. a host starts on that database, and the case's `request` is sent to the imported session, to the agent the
  *    case recorded (`replayRequest`).
  *
@@ -95,9 +95,13 @@ async function importSession(env: Record<string, string>, work: string, file: st
  * parent would be a child that no user can prompt: the HTTP guard refuses every write to it (`SessionRole.isChild`
  * is a parent on the row, and nothing else). The replay is a conversation of its own, so it is a root: no
  * `parentID`, and the role of one. The permission rules are the ones every matrix session has.
+ *
+ * A `revert` the session was exported with is dropped as well. It is the one pending state that changes the history
+ * when a prompt is admitted: the admission cleans a revert up (`SessionRevert.cleanup`, `dropReverted`) by deleting
+ * every message from the reverted one on, and the replay needs the history whole.
  */
 export function replaySessionInfo(info: Readonly<Record<string, unknown>>, home: string): Record<string, unknown> {
-  const { parentID: _parent, ...rest } = info
+  const { parentID: _parent, revert: _revert, ...rest } = info
   return { ...rest, role: "root", permission: sessionPermission(home) }
 }
 
