@@ -6,33 +6,8 @@ export * as DagLoopEntry from "./entry"
 import { Cause, Effect, Exit } from "effect"
 import type { Fiber, Semaphore } from "effect"
 import type { DagLease } from "@graphagent/core/dag/lease"
-import type { DagStore } from "@graphagent/core/dag/store"
 import type { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import type { Dag, WorkflowConfig } from "../dag"
-
-/** State the schema's enum values at the end of the output contract so the
- * runtime answer wins over conflicting verdict wording in the instruction. */
-export function allowedVerdictHint(schema: Record<string, unknown>): string {
-  const properties = schema.properties
-  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) return ""
-  const allowed = Object.entries(properties).flatMap(([field, value]) => {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return []
-    const values = (value as Record<string, unknown>).enum
-    if (!Array.isArray(values) || !values.every((item) => typeof item === "string")) return []
-    return [`${field} in ${JSON.stringify(values)}`]
-  })
-  return allowed.length === 0
-    ? ""
-    : ` Allowed values: ${allowed.join("; ")}. This output contract overrides any conflicting verdict wording in the instruction or objective.`
-}
-
-/** Explicit input text for a dependency that settled without output. */
-export function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
-  if (node?.status === "failed") return `Dependency "${node.id}" failed: ${node.errorReason ?? "unknown error"}`
-  if (node?.status === "skipped") return `Dependency "${node.id}" skipped: ${node.errorReason ?? "no output"}`
-  if (node?.status === "aborted") return `Dependency "${node.id}" aborted`
-  return undefined
-}
 
 export interface WorkflowEntry {
   /** ADR-0008: the runner lease this entry drives the workflow under. Renewed every period; losing it evicts the entry. */
