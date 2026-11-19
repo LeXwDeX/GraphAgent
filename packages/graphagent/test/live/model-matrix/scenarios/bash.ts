@@ -44,7 +44,10 @@ export const BASH_SCENARIOS: readonly Scenario[] = [
       // The last completed run of the build script, so a later check such as `git status` does not count.
       const last = run.calls.findLast(
         (item) =>
-          item.tool === "bash" && item.status === "completed" && String(item.input.command ?? "").includes("build.sh"),
+          item.tool === "bash" &&
+          item.status === "completed" &&
+          typeof item.input.command === "string" &&
+          item.input.command.includes("build.sh"),
       )
       return [
         ...ranTool(run, "bash"),
