@@ -37,23 +37,20 @@ export interface CompleteIsolatedNodeInput {
 
 /** Commit and patch an isolated node, then remove or keep its worktree. A
  * removal failure is not a node failure: the evidence stays on disk and the
- * caller records `state: "kept"`. */
+ * caller records `state: "kept"`. #1583: the commit's git and the patch write
+ * are waited for off the event loop (`completeWorktreeAsync`), so the timers
+ * and other workflows of the process keep running meanwhile. */
 export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.Effect<IsolatedNodeCompletion> {
   return Effect.gen(function* () {
-    const completed = yield* Effect.try({
-      try: () =>
-        DagIsolation.completeWorktree({
-          worktree: input.worktree,
-          reportsArea: workflowReportsArea(input.projectID),
-          dagID: input.dagID,
-          nodeID: input.nodeID,
-          message: input.message,
-        }),
-      catch: (error) => (error instanceof Error ? error.message : String(error)),
-    }).pipe(Effect.result)
-    if (completed._tag === "Failure") return { ok: false as const, reason: completed.failure }
-    if (!completed.success.ok) return completed.success
-    const { worktree, touchedPaths } = completed.success.completion
+    const completed = yield* DagIsolation.completeWorktreeAsync({
+      worktree: input.worktree,
+      reportsArea: workflowReportsArea(input.projectID),
+      dagID: input.dagID,
+      nodeID: input.nodeID,
+      message: input.message,
+    })
+    if (!completed.ok) return completed
+    const { worktree, touchedPaths } = completed.completion
     const removed = yield* input.remove(worktree.directory).pipe(
       Effect.result,
       Effect.catchCause((cause) =>
