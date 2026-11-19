@@ -2,6 +2,7 @@ import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
 import { Instruction } from "./instruction"
+import { CompactionExport } from "./compaction-export"
 import { CompactionFacts } from "./compaction-facts"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -153,6 +154,7 @@ const pathLines = (label: string, paths: readonly string[], omitted: number) =>
 
 // What the model resumes from after an automatic compaction. The requests, the task state and the files are facts the
 // harness read; the summary lines after them are narrative and may be stale, so the latest request outranks them.
+// The last line says where the compacted messages can be read in full.
 function continuationText(input: {
   summary: string | undefined
   requests: CompactionFacts.Requests
@@ -160,6 +162,7 @@ function continuationText(input: {
   workflows: readonly Pick<DagStore.WorkflowRow, "id" | "title" | "status">[]
   files: CompactionFacts.SessionFiles
   overflow: boolean
+  exportNote?: string
 }) {
   const openTodos = input.todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled")
   const workflows = input.workflows.filter((workflow) => ACTIVE_WORKFLOW_STATUSES.has(workflow.status))
@@ -190,6 +193,7 @@ function continuationText(input: {
   if (progress.length) context.push("Summary in progress (may be stale):", ...progress.map((item) => `- ${item}`))
   if (next.length) context.push("Summary next steps (may be stale):", ...next.map((item) => `- ${item}`))
   if (context.length) lines.push("Context:", ...context)
+  if (input.exportNote) lines.push(input.exportNote)
   const text = lines.join("\n")
   if (!input.overflow) return text
   return `${latest?.attachments.length ? MEDIA_OVERFLOW_NOTE : OVERFLOW_NOTE}\n\n${text}`
@@ -219,6 +223,25 @@ function withSkillNote(text: string, head: readonly SessionV1.WithParts[]) {
   const note = skillContinuationNote(loadedSkillNames(head))
   return note === undefined ? text : `${text}\n\n${note}`
 }
+
+// Saves the messages the summary replaces and returns the note that tells the model where they are. An export that
+// fails costs only the note: a path the model could not open is not worth giving, and the compaction still stands.
+const exportHead = Effect.fnUntraced(function* (input: {
+  sessionID: SessionID
+  compactionID: MessageID
+  messages: readonly SessionV1.WithParts[]
+}) {
+  // Nothing was replaced, so there is nothing to read back.
+  if (input.messages.length === 0) return undefined
+  const saved = yield* CompactionExport.write(input).pipe(Effect.exit)
+  if (Exit.isSuccess(saved)) return CompactionExport.retrievalNote({ path: saved.value, sessionID: input.sessionID })
+  yield* Effect.logWarning("compaction export failed", {
+    sessionID: input.sessionID,
+    compactionID: input.compactionID,
+    cause: saved.cause,
+  })
+  return undefined
+})
 
 function completedCompactions(messages: SessionV1.WithParts[]) {
   const users = new Map<MessageID, number>()
@@ -741,6 +764,13 @@ export const layer = Layer.effect(
       // A session that cannot be read counts as a root.
       const info = yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
       const ctx = yield* InstanceState.context
+      // The retained tail stays in context; what the summary replaces is saved word for word, and the continuation
+      // names the file, so a request cut short above or a detail the summary dropped can be read back.
+      const exportNote = yield* exportHead({
+        sessionID: input.sessionID,
+        compactionID: input.parentID,
+        messages: input.head,
+      })
       const body = continuationText({
         summary: input.summary,
         requests: CompactionFacts.fitRequests(
@@ -751,6 +781,7 @@ export const layer = Layer.effect(
         workflows,
         files: CompactionFacts.sessionFiles({ messages: history, directory: ctx.directory }),
         overflow: input.overflow,
+        exportNote,
       })
       const text = Injection.wrap("compaction", withSkillNote(body, input.head))
       // The turn's mode and request settings are read from its last user message, so the message that continues the
