@@ -165,11 +165,16 @@ export function pinNodeWorkspaces(
   nodes: readonly NodeConfig[],
   ownerDirectory: string,
   resolutions = new Map<string, string>(),
+  // #1344: how a workspace is resolved. A caller that holds the workflow lock
+  // passes the verdicts it read before its transaction opened, because the
+  // resolution waits for git.
+  resolve: (workspace: string) => DagLocation.WorkspaceResolution = (workspace) =>
+    DagLocation.resolveWorkspace(workspace, ownerDirectory),
 ): NodeConfig[] {
   const pin = (workspace: string, path: string) => {
     const cached = resolutions.get(workspace)
     if (cached !== undefined) return cached
-    const resolved = DagLocation.resolveWorkspace(workspace, ownerDirectory)
+    const resolved = resolve(workspace)
     if (resolved._tag === "invalid") throw new Error(`Invalid ${path}: ${resolved.reason}`)
     resolutions.set(workspace, resolved.directory)
     return resolved.directory
