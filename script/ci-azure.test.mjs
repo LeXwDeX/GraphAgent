@@ -3,7 +3,11 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const read = (name) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8")
 const ci = read(".azure-pipelines/ci.yml")
@@ -92,6 +96,121 @@ await test("Azure Pipelines runs development CI and GitHub Actions runs release 
 await test("the release pipelines build Linux and macOS only", () => {
   for (const file of [".github/workflows/release-fork.yml", ".azure-pipelines/release.yml"])
     assert.doesNotMatch(read(file), /windows/i, `${file} has no Windows target`)
+})
+
+// #1034: both release pipelines run the same smoke script against every packaged binary, on Linux and on
+// macOS, before packaging; macOS keeps its install acceptance on top of it.
+await test("both release pipelines run the shared smoke script on every platform", () => {
+  const github = read(".github/workflows/release-fork.yml")
+  const azure = read(".azure-pipelines/release.yml")
+  const call = 'bash script/release-smoke.sh "${dir%/}/bin/graphagent" "$GRAPHAGENT_VERSION"'
+
+  // The GitHub step only filters by the requested platforms; it no longer skips macOS.
+  const githubStep = github.match(/\n {6}- name: Verify CLI executable\n((?: {8}[^\n]*\n)+)/)?.[1] ?? ""
+  assert.match(githubStep, /^ {8}if: inputs\.platforms == '' \|\| contains\(inputs\.platforms, matrix\.name\)$/m)
+  assert(githubStep.includes("GRAPHAGENT_VERSION: ${{ needs.version.outputs.version }}"), "expected version")
+  assert(githubStep.includes(call), "release-fork.yml runs the smoke script")
+  // The Azure step sits directly under `steps:` (14 spaces), not inside the `${{ if ne(target.name, 'macos') }}:` block.
+  const azureStep =
+    azure.match(/\n {14}- bash: \|\n((?: {18}[^\n]*\n)+) {16}displayName: Verify CLI executable\n/)?.[1] ?? ""
+  assert(azureStep.includes(call), "release.yml runs the smoke script on every platform")
+
+  for (const [file, text, verify, pack, acceptance] of [
+    [
+      ".github/workflows/release-fork.yml",
+      github,
+      "name: Verify CLI executable\n",
+      "name: Package Artifacts\n",
+      "name: macOS Install Acceptance\n",
+    ],
+    [
+      ".azure-pipelines/release.yml",
+      azure,
+      "displayName: Verify CLI executable\n",
+      "displayName: Package artifacts\n",
+      "displayName: macOS install acceptance\n",
+    ],
+  ]) {
+    assert.equal((text.match(/bash script\/release-smoke\.sh /g) ?? []).length, 1, `${file} runs the script once`)
+    const order = [verify, pack, acceptance].map((marker) => text.indexOf(marker))
+    assert(order[0] >= 0 && order[0] < order[1] && order[1] < order[2], `${file}: smoke, package, macOS acceptance`)
+    assert(text.includes("bash script/oc-macos-acceptance.test.sh"), `${file} keeps the macOS install acceptance`)
+  }
+
+  const script = read("script/release-smoke.sh")
+  assert(script.startsWith("#!/usr/bin/env bash\n"), "a bash script")
+  assert(script.includes("\nset -euo pipefail\n"), "strict mode")
+  assert(script.includes("GRAPHAGENT_DISABLE_MODELS_FETCH=1"), "the smoke test stays offline")
+})
+
+// The smoke script itself, against a stand-in CLI that prints the real output formats. The release pipelines
+// only run it when a release is cut, so its pass and fail paths are exercised here on every pull request.
+// STUB_FAULT picks one regression for the stand-in to inject.
+const smokeStub = `#!/usr/bin/env bash
+if [ "$STUB_FAULT" = old-dir ]; then mkdir -p "$XDG_CONFIG_HOME/opencode"; fi
+case "$*" in
+  --version) echo 9.9.9 ;;
+  --help)
+    {
+      if [ "$STUB_FAULT" = no-logo ]; then echo "OpenCode"; else echo "◇─◆ GraphAgent"; fi
+      echo
+      echo "Commands:"
+      echo "  graphagent completion          generate shell completion script"
+      echo "  graphagent [project]           start graphagent tui                       [default]"
+      echo "  graphagent run [message..]     run graphagent with a message"
+      echo "  graphagent debug               debugging and troubleshooting tools"
+      echo "  graphagent providers           manage AI providers                   [aliases: auth]"
+      echo "  graphagent pr <number>         fetch and checkout a GitHub PR branch, then run graphagent"
+      if [ "$STUB_FAULT" = removed ]; then echo "  graphagent serve               start a server"; fi
+    } >&2
+    ;;
+  "run --help") echo "graphagent run [message..]" >&2 ;;
+  "debug paths")
+    config="$XDG_CONFIG_HOME/graphagent"
+    if [ -n "$GRAPHAGENT_CONFIG_DIR" ]; then config="$GRAPHAGENT_CONFIG_DIR"; fi
+    if [ "$STUB_FAULT" = legacy-env ] && [ -n "$OPENCODE_CONFIG_DIR" ]; then config="$OPENCODE_CONFIG_DIR"; fi
+    printf '%-10s %s\\n' home "$HOME" data "$XDG_DATA_HOME/graphagent" bin "$XDG_CACHE_HOME/graphagent/bin" \\
+      log "$XDG_DATA_HOME/graphagent/log" repos "$XDG_DATA_HOME/graphagent/repos" cache "$XDG_CACHE_HOME/graphagent" \\
+      config "$config" state "$XDG_STATE_HOME/graphagent" tmp "$TMPDIR/graphagent"
+    ;;
+esac
+`
+
+await test("release-smoke.sh passes a conforming CLI and names the step of each regression", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-smoke-test-"))
+  try {
+    const script = fileURLToPath(new URL("./release-smoke.sh", import.meta.url))
+    const cli = join(dir, "graphagent")
+    writeFileSync(cli, smokeStub, { mode: 0o755 })
+    const smoke = (fault, { version = "9.9.9", env = {} } = {}) =>
+      spawnSync("bash", [script, cli, version], {
+        encoding: "utf8",
+        env: { ...process.env, ...env, STUB_FAULT: fault },
+      })
+
+    const pass = smoke("none")
+    assert.equal(pass.status, 0, pass.stderr)
+    assert.match(pass.stdout, /release-smoke: OK/)
+    // Variables of the caller that move paths must not reach the CLI.
+    const inherited = { GRAPHAGENT_CONFIG_DIR: join(dir, "elsewhere"), OPENCODE_CONFIG_DIR: join(dir, "legacy") }
+    const hermetic = smoke("none", { env: inherited })
+    assert.equal(hermetic.status, 0, hermetic.stderr)
+
+    const regressions = [
+      { regression: "a different version", result: smoke("none", { version: "2.0.0" }), step: 1 },
+      { regression: "the old logo", result: smoke("no-logo"), step: 2 },
+      { regression: "a removed command", result: smoke("removed"), step: 3 },
+      { regression: "a directory named after the old brand", result: smoke("old-dir"), step: 4 },
+      { regression: "a legacy variable that is honored", result: smoke("legacy-env"), step: 5 },
+    ]
+    for (const { regression, result, step } of regressions) {
+      assert.equal(result.status, 1, `${regression}: ${result.stderr}`)
+      assert(result.stderr.includes(`FAIL (step ${step})`), `${regression}: ${result.stderr}`)
+    }
+    assert.equal(spawnSync("bash", [script, cli], { encoding: "utf8" }).status, 2, "arguments are checked")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // #1095: the Azure pool cannot route aarch64-linux and x86_64-darwin, so a GitHub workflow runs the same
