@@ -13,7 +13,8 @@
  * analyze      mark `analyzing`, run the background analysis, commit it under a fence, decide again with it
  * dispatch     one write that counts the round, committed together with the round's message
  * wait         `waiting`, with the object being waited for
- * recover      retry or reset: dispatch the failed step again; probe: `waiting` until `probe_at`
+ * recover      retry or reset: dispatch the failed step again; probe: `waiting` until `probe_at`. The chain records
+ *              which step failed, a turn or the analysis, and the probe redoes that one
  * stop         the stop record, then `stopped` or the terminal snapshot, as the reason's `ends` says
  * none         housekeeping only
  *
@@ -25,9 +26,12 @@
  * - Every write carries the identity (`loop_id`, `revision`) the decision was made against; a write that no
  *   longer matches is dropped. A dispatch or a wake writes inside the admission of its message
  *   (`Request.commit`), so a refused message never counts a round, and a process that dies before the
- *   admission leaves the loop as it was.
+ *   admission leaves the loop as it was. A probe that has come due sends its round the same way: it stays owed
+ *   until the message is admitted.
  * - An analysis commits only if the loop and the boundary are still the ones it started at. A discarded
- *   result re-triggers the boundary through the host at once.
+ *   result re-triggers the boundary through the host at once. The result handed on to the step that carries it out
+ *   is held to the same: that step reads the session again, and a result made for another loop or boundary decides
+ *   nothing. It is dropped, and what is in front of the decision is decided as it is.
  * - A resume masks the boundary the loop stopped at: its signals were handled when it stopped. The mask is that
  *   boundary's, whatever becomes of the decision on it (a retried analysis, a probe, a result that lost its fence);
  *   it ends when the loop reaches another boundary. It lives in memory only.
@@ -143,8 +147,14 @@ interface Work {
   fiber: Fiber.Fiber<void> | undefined
 }
 
-/** The result of an analysis, handed to the next step of the same decision. */
+/**
+ * The result of an analysis, handed to the next step of the same decision. It is the result for one boundary of one
+ * loop (`loopID`, and `boundary` as `LoopDecision.identityOf` tells it): the next step reads the session afresh, and
+ * drops the result when what it finds in front of it is another loop or another boundary.
+ */
 interface Carry {
+  readonly loopID: string
+  readonly boundary: string
   readonly analysis: StopCondition.Analysis
   readonly failure?: StopCondition.Failure
 }
@@ -394,10 +404,17 @@ export const layer = Layer.effect(
           ),
         )
 
-      const failed = (cause: StopCondition.AnalysisFailure, failure?: StopCondition.Failure): Next => ({
+      const carry = (concluded: StopCondition.Analysis, failure?: StopCondition.Failure): Next => ({
         kind: "analyzed",
-        carry: { analysis: { type: "failed", cause }, ...(failure !== undefined ? { failure } : {}) },
+        carry: {
+          loopID: state.loop_id,
+          boundary: LoopDecision.identityOf(boundary),
+          analysis: concluded,
+          ...(failure !== undefined ? { failure } : {}),
+        },
       })
+      const failed = (cause: StopCondition.AnalysisFailure, failure?: StopCondition.Failure) =>
+        carry({ type: "failed", cause }, failure)
       if (outcome.type === "failed") {
         const reason = outcome.failure
         switch (reason.kind) {
@@ -446,9 +463,7 @@ export const layer = Layer.effect(
         return undefined satisfies Next
       }
       const mapped = LoopDecision.analysisOf(outcome.result)
-      return mapped === undefined
-        ? failed("invalid_output")
-        : ({ kind: "analyzed", carry: { analysis: mapped } } satisfies Next)
+      return mapped === undefined ? failed("invalid_output") : carry(mapped)
     })
 
     // ── carrying out the other verdicts ─────────────────────────
@@ -476,7 +491,10 @@ export const layer = Layer.effect(
 
     const recover = Effect.fnUntraced(function* (ctx: Exec, action: StopCondition.RecoverAction) {
       const { sessionID, state } = ctx
-      const recovery = LoopDecision.recoveryAfter(ctx.chain, action, ctx.boundary, ctx.now)
+      // The decision carries a failed analysis when that is what failed; otherwise it is the round's turn. The chain
+      // records which, so a probe later redoes the right one.
+      const failedStep: StopCondition.RecoveryStep = ctx.carry?.analysis.type === "failed" ? "analysis" : "round"
+      const recovery = LoopDecision.recoveryAfter(ctx.chain, action, ctx.boundary, ctx.now, failedStep)
       if (action.type === "probe") {
         // Level three: nothing runs until `probe_at`, and the loop is not waiting for an object.
         yield* loops.update(sessionID, LoopState.expected(state), {
@@ -488,7 +506,7 @@ export const layer = Layer.effect(
         })
         return undefined satisfies Next
       }
-      if (ctx.carry?.analysis.type === "failed") {
+      if (failedStep === "analysis") {
         // The failed step is the analysis: record the attempt, then analyse again.
         const written = yield* loops.update(sessionID, LoopState.expected(state), { recovery, analyzing: undefined })
         return written === undefined ? (undefined satisfies Next) : ({ kind: "retry" } satisfies Next)
@@ -535,6 +553,12 @@ export const layer = Layer.effect(
      * chain and returns the loop to an ordinary boundary. One that failed leaves the plan as it is, spends no
      * probe and does not cancel one: the probe is still due at `probe_at`, and then redoes the failed step
      * without asking `evaluate`, at the latest boundary, whichever turn that was.
+     *
+     * The step is the one the chain recorded (`LoopDecision.stepOf`). A round goes out with the probe still owed:
+     * `probe_at` is cleared and the loop turns `active` in the admission of the message, like every dispatch. A message
+     * the session refuses, or a process that dies before it, leaves the probe due for the next decision, and the
+     * attempt that never started has not used it up. An analysis has no message to admit: the loop turns `active`
+     * first, and a restart analyses the same boundary again, which is the attempt.
      */
     const probe = Effect.fnUntraced(function* (ctx: Ctx, recovery: LoopState.Recovery & { readonly probe_at: number }) {
       const { sessionID, state, boundary } = ctx
@@ -544,13 +568,10 @@ export const layer = Layer.effect(
       }
       if (ctx.now < recovery.probe_at) return undefined satisfies Next
       const next: LoopState.Recovery = { ...recovery, probe_at: undefined }
+      if (LoopDecision.stepOf(recovery, boundary) === "round") return yield* redispatch(ctx, next, false)
       const active = yield* loops.update(sessionID, LoopState.expected(state), { status: "active", recovery: next })
       if (active === undefined) return undefined satisfies Next
-      const woken = { ...ctx, state: active }
-      // The step that failed was the round when its turn ended on an error or left nothing to analyse; else the analysis.
-      return boundary.turn.type === "error" || boundary.message === undefined
-        ? yield* redispatch(woken, next, false)
-        : yield* analyze(woken)
+      return yield* analyze({ ...ctx, state: active })
     })
 
     // ── one decision ────────────────────────────────────────────
@@ -575,17 +596,26 @@ export const layer = Layer.effect(
     ) {
       let state = yield* loops.load(sessionID)
       if (!isLive(state)) return undefined
+      const now = yield* Clock.currentTimeMillis
+      const observation = yield* host.observe(sessionID, queryOf(state))
+      const boundary = observation.boundary
+      // A result carried over was made for one boundary of one loop, and the session may have moved on since it was
+      // committed: a turn may have ended, or the loop been replaced. It never decides another boundary or loop. It is
+      // dropped, and what is in front of the decision is decided as if nothing had been carried.
+      const carried =
+        carry !== undefined &&
+        carry.loopID === state.loop_id &&
+        boundary !== undefined &&
+        carry.boundary === LoopDecision.identityOf(boundary)
+          ? carry
+          : undefined
       // This decision is the only one analysing the session, so a mark it did not set is left from before a
-      // restart, or from a result that lost its fence.
-      if (state.analyzing !== undefined && carry === undefined) {
+      // restart, or from a result that lost its fence, or a failed result that was dropped.
+      if (state.analyzing !== undefined && carried === undefined) {
         const cleared = yield* loops.update(sessionID, LoopState.expected(state), { analyzing: undefined })
         if (cleared === undefined) return undefined
         state = cleared
       }
-
-      const now = yield* Clock.currentTimeMillis
-      const observation = yield* host.observe(sessionID, queryOf(state))
-      const boundary = observation.boundary
       // Only an idle boundary is decided, and not while a human message waits for its reply.
       if (!observation.idle || boundary === undefined || observation.preempted) return undefined
       // A loop started or replaced just now has not run its first round: the boundary in front is an older one.
@@ -596,15 +626,16 @@ export const layer = Layer.effect(
       const ctx: Ctx = { sessionID, work, epoch, now, state, observation, boundary }
 
       const recovery = state.recovery
-      if (state.status === "waiting" && recovery?.probe_at !== undefined && carry === undefined)
+      if (state.status === "waiting" && recovery?.probe_at !== undefined && carried === undefined)
         return yield* probe(ctx, { ...recovery, probe_at: recovery.probe_at })
 
       const chain = LoopDecision.chainOf(recovery, boundary)
-      const failure = carry !== undefined ? carry.failure : mask ? undefined : LoopDecision.turnFailure(boundary, now)
+      const failure =
+        carried !== undefined ? carried.failure : mask ? undefined : LoopDecision.turnFailure(boundary, now)
       const health = state.wait === undefined ? undefined : yield* host.health(sessionID, state.wait)
       const waited =
         state.wait === undefined || health === undefined ? undefined : LoopDecision.waitingOf(state.wait, now, health)
-      let result = carry?.analysis
+      let result = carried?.analysis
       if (result === undefined && boundary.message !== undefined && state.last_analyzed_msg === boundary.message) {
         const stored = yield* committed(state, boundary.message)
         // A continue whose prompt was already sent is waiting for its turn's boundary, not for another dispatch.
@@ -636,7 +667,7 @@ export const layer = Layer.effect(
           masked: mask,
         }),
       )
-      return yield* execute({ ...ctx, chain, carry, waited, waitable }, verdict)
+      return yield* execute({ ...ctx, chain, carry: carried, waited, waitable }, verdict)
     })
 
     const decide = Effect.fnUntraced(function* (sessionID: SessionID, work: Work, epoch: number) {

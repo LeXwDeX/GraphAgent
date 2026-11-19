@@ -30,6 +30,30 @@ const it = testEffect(
   LoopRuntime.layer.pipe(Layer.provideMerge(hostLayer), Layer.provideMerge(analysisLayer), Layer.provideMerge(base)),
 )
 
+/**
+ * The same runtime over a state layer that runs `afterCommit` once an analysis has committed: the moment between the
+ * commit and the next time the decision that made it reads the session. Nothing else sits there to put a test in.
+ */
+const afterCommit: { run: Effect.Effect<void> | undefined } = { run: undefined }
+const hookedState = Layer.effect(
+  LoopState.Service,
+  Effect.gen(function* () {
+    const inner = yield* LoopState.Service
+    return LoopState.Service.of({
+      ...inner,
+      commitAnalysis: (sessionID, expected, commit) =>
+        inner.commitAnalysis(sessionID, expected, commit).pipe(Effect.tap(() => afterCommit.run ?? Effect.void)),
+    })
+  }),
+).pipe(Layer.provide(base))
+const hooked = testEffect(
+  LoopRuntime.layer.pipe(
+    Layer.provideMerge(hostLayer),
+    Layer.provideMerge(analysisLayer),
+    Layer.provideMerge(hookedState),
+  ),
+)
+
 const waitFor = (overrides: Partial<LoopState.Wait> = {}): LoopState.Wait => ({
   source: "background_job",
   wait_id: "job_1",
@@ -995,6 +1019,87 @@ describe("LoopRuntime fence", () => {
     }),
   )
 
+  it.effect("does not count a failed analysis against a turn that ended while it ran", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      t.script(
+        // A human turn ends while the first analysis runs, and the provider fails that analysis.
+        () =>
+          Effect.sync(() => {
+            t.session.human("Also add the changelog.")
+            t.session.begin()
+            t.session.finish({ humanTurn: true })
+          }).pipe(Effect.as(unavailable)),
+        unavailable,
+        unavailable,
+        ok(result({ next_prompt: "Add the changelog." })),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      // The failure belongs to the boundary that was left behind, not to the analysis of the new one: both retries the
+      // ladder allows are still there for it, so the third analysis of that turn works and the loop goes on.
+      expect(t.calls()).toHaveLength(4)
+      const state = yield* t.current()
+      expect([state.status, state.round, state.recovery]).toEqual(["active", 2, undefined])
+      expect(t.session.sent.at(-1)?.text).toContain("Add the changelog.")
+    }),
+  )
+
+  hooked.effect("does not apply an analysis to a turn that ended after it was analysed", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.script(
+        ok(result({ verdict: "done", next_prompt: undefined })),
+        ok(result({ next_prompt: "Add the changelog." })),
+      )
+      t.session.finish({ humanTurn: true })
+
+      // A human turn ends just as that analysis commits, before the decision has looked at the session again.
+      afterCommit.run = Effect.sync(() => {
+        afterCommit.run = undefined
+        t.session.human("Also add the changelog.")
+        t.session.begin()
+        t.session.finish({ humanTurn: true })
+      })
+      yield* t.tick
+
+      // `done` was the verdict on the first turn. The new turn is a boundary of its own, and is analysed as one.
+      expect(afterCommit.run).toBeUndefined()
+      expect(t.calls()).toHaveLength(2)
+      expect(t.calls()[1].humans).toEqual([{ id: expect.any(String), text: "Also add the changelog." }])
+      const state = yield* t.current()
+      expect([state.status, state.round]).toEqual(["active", 2])
+      expect(t.session.sent.at(-1)?.text).toContain("Add the changelog.")
+    }),
+  )
+
+  hooked.effect("does not apply an analysis to a loop that replaced the one it was made for", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.script(
+        ok(result({ verdict: "done", next_prompt: undefined })),
+        ok(result({ next_prompt: "Start on the new goal." })),
+      )
+      t.session.finish({ humanTurn: true })
+
+      // A loop that has no first message, so holds no boundary back, replaces this one just as its analysis commits.
+      afterCommit.run = Effect.suspend(() => {
+        afterCommit.run = undefined
+        return t.runtime.start(t.sessionID, { prompt: "A new goal." })
+      })
+      yield* t.tick
+
+      // The old loop's `done` is not the new loop's: the new loop is not completed, and analyses the boundary itself.
+      expect(afterCommit.run).toBeUndefined()
+      expect(t.calls()).toHaveLength(2)
+      const state = yield* t.current()
+      expect([state.origin.prompt, state.status, state.round]).toEqual(["A new goal.", "active", 2])
+      expect(t.session.sent.at(-1)?.text).toContain("Start on the new goal.")
+    }),
+  )
+
   it.effect("ignores the boundary of a loop it replaced until the new loop has run", () =>
     Effect.gen(function* () {
       const t = yield* boot()
@@ -1301,6 +1406,90 @@ describe("LoopRuntime failures", () => {
     }),
   )
 
+  /**
+   * Fails the round until the loop waits for its `index`th delayed probe, each probe before it having been sent and
+   * having failed too. Resolves to that probe's delay.
+   */
+  const waitingForProbe = (t: Harness, index: 1 | 2 | 3) =>
+    Effect.gen(function* () {
+      const delays = [60_000, 300_000, 900_000] as const
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      for (let probe = 1; probe < index; probe++) {
+        yield* TestClock.adjust(delays[probe - 1])
+        yield* t.tick
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      expect((yield* t.current()).recovery?.probes).toBe(index)
+      return delays[index - 1]
+    })
+
+  for (const { name, index } of [
+    { name: "the first delayed probe", index: 1 },
+    { name: "the last one", index: 3 },
+  ] as const) {
+    it.effect(`keeps ${name} owed until its message is admitted, so a process that dies before that still probes`, () =>
+      Effect.gen(function* () {
+        const t = yield* atRound2
+        const delay = yield* waitingForProbe(t, index)
+        const waiting = yield* t.current()
+        const sent = t.session.sent.length
+        yield* TestClock.adjust(delay)
+
+        // The probe is due, and the process dies while the host has not yet admitted its message.
+        const entered = yield* Deferred.make<void>()
+        t.session.gate = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
+        const dying = yield* Effect.scoped(t.runtime.claim(t.sessionID).pipe(Effect.andThen(Effect.never))).pipe(
+          Effect.forkChild,
+        )
+        yield* Deferred.await(entered)
+        yield* Fiber.interrupt(dying)
+
+        // Nothing was written: the probe is still owed, with the chain as it was.
+        expect(yield* t.current()).toEqual(waiting)
+        expect(t.session.sent).toHaveLength(sent)
+
+        // After the restart it is still due, and it runs: the attempt that never started did not use it up.
+        t.session.gate = undefined
+        host.liveSessions.splice(0, host.liveSessions.length, { sessionID: t.sessionID, status: "waiting" })
+        yield* t.runtime.init("/repo")
+        yield* t.runtime.settled(t.sessionID)
+        const state = yield* t.current()
+        expect(t.session.sent).toHaveLength(sent + 1)
+        expect(t.session.sent.at(-1)?.marker.kind).toBe("recovery")
+        expect([state.status, state.round]).toEqual(["active", 2])
+        expect(state.recovery).toMatchObject({ attempts: 2, probes: index })
+        expect(state.recovery?.probe_at).toBeUndefined()
+      }),
+    )
+  }
+
+  it.effect("leaves a due probe owed when the session refuses its message, and sends it at the next decision", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      const delay = yield* waitingForProbe(t, 1)
+      const waiting = yield* t.current()
+      const sent = t.session.sent.length
+      yield* TestClock.adjust(delay)
+
+      // The session cannot take the message: nothing is written, and the probe stays owed rather than spent.
+      t.session.answer = "refused"
+      yield* t.tick
+      expect(yield* t.current()).toEqual(waiting)
+      expect(t.session.sent).toHaveLength(sent)
+
+      t.session.answer = undefined
+      yield* t.tick
+      const state = yield* t.current()
+      expect(t.session.sent).toHaveLength(sent + 1)
+      expect(t.session.sent.at(-1)?.marker.kind).toBe("recovery")
+      expect([state.status, state.recovery?.probes]).toEqual(["active", 1])
+    }),
+  )
+
   it.effect("retries a failed analysis, probes, and analyses again when the probe is due", () =>
     Effect.gen(function* () {
       const t = yield* boot()
@@ -1323,6 +1512,42 @@ describe("LoopRuntime failures", () => {
       expect(state.status).toBe("active")
       expect(state.round).toBe(2)
       expect(state.recovery).toBeUndefined()
+      expect(t.session.sent[0].text).toContain("Recovered.")
+    }),
+  )
+
+  it.effect("analyses the boundary again when a restart interrupted the analysis of a probe", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      const entered = yield* Deferred.make<void>()
+      t.script(
+        unavailable,
+        unavailable,
+        unavailable,
+        () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        ok(result({ next_prompt: "Recovered." })),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+      expect((yield* t.current()).recovery).toMatchObject({ probes: 1, step: "analysis" })
+
+      // The probe is due and its analysis is running when the process dies. An analysis has no message to admit, so the
+      // loop is already active; what a restart finds is an ordinary boundary that has not been analysed.
+      yield* TestClock.adjust(60_000)
+      const dying = yield* Effect.scoped(t.runtime.claim(t.sessionID).pipe(Effect.andThen(Effect.never))).pipe(
+        Effect.forkChild,
+      )
+      yield* Deferred.await(entered)
+      yield* Fiber.interrupt(dying)
+      expect((yield* t.current()).status).toBe("active")
+
+      host.liveSessions.splice(0, host.liveSessions.length, { sessionID: t.sessionID, status: "active" })
+      yield* t.runtime.init("/repo")
+      yield* t.runtime.settled(t.sessionID)
+      const state = yield* t.current()
+      expect(t.calls()).toHaveLength(5)
+      expect([state.status, state.round, state.analyzing]).toEqual(["active", 2, undefined])
       expect(t.session.sent[0].text).toContain("Recovered.")
     }),
   )
@@ -1680,6 +1905,80 @@ describe("LoopRuntime resume", () => {
       expect(state.stop).toBeUndefined()
       expect([state.status, state.round, state.max_rounds]).toEqual(["active", 3, 30])
       expect(t.session.sent.at(-1)?.text).toContain("Carry on after the hook.")
+    }),
+  )
+
+  it.effect("probes by analysing again when the analysis of a resumed error boundary is the step that failed", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      // The round ends on an error that waiting cannot fix: the loop stops at that boundary.
+      t.session.fail(providerError(401))
+      yield* t.tick
+      expect((yield* t.current()).stop?.reason).toBe("provider_unavailable")
+      const calls = t.calls().length
+      const sent = t.session.sent.length
+
+      // Resumed, the boundary is analysed first. The provider is down for that: two retries, then a probe is planned.
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      t.script(unavailable, unavailable, unavailable, ok(result({ next_prompt: "Carry on." })))
+      expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("resumed")
+      yield* t.runtime.settled(t.sessionID)
+      let state = yield* t.current()
+      expect([state.status, state.recovery?.probes, state.recovery?.step]).toEqual(["waiting", 1, "analysis"])
+      expect(t.calls().length - calls).toBe(3)
+
+      // The probe comes due at the boundary whose turn ended on the error. What failed was the analysis, so that is what
+      // runs again: sending the round would run into the old error and stop the loop with the analysis's retries unspent.
+      yield* TestClock.adjust(60_000)
+      yield* t.tick
+      state = yield* t.current()
+      expect(t.calls().length - calls).toBe(4)
+      expect(t.session.sent.slice(sent).map((request) => request.marker.kind)).toEqual(["next"])
+      expect([state.status, state.round]).toEqual(["active", 3])
+      expect(state.stop).toBeUndefined()
+      expect(t.session.sent.at(-1)?.text).toContain("Carry on.")
+    }),
+  )
+
+  it.effect("probes by sending the round again when a failed round is what the chain recorded", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      expect((yield* t.current()).recovery?.step).toBe("round")
+      const calls = t.calls().length
+      const sent = t.session.sent.length
+
+      yield* TestClock.adjust(60_000)
+      yield* t.tick
+      expect(t.calls().length).toBe(calls)
+      expect(t.session.sent.slice(sent).map((request) => request.marker.kind)).toEqual(["recovery"])
+    }),
+  )
+
+  it.effect("reads the step off the boundary for a probe planned before the chain recorded one", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      const { recovery } = yield* t.current()
+      if (recovery === undefined) throw new Error("no probe was planned")
+      // The same plan as an older build wrote it: no step.
+      yield* t.loops.update(t.sessionID, undefined, { recovery: { ...recovery, step: undefined } })
+      expect((yield* t.current()).recovery?.step).toBeUndefined()
+      const sent = t.session.sent.length
+
+      // A turn that ended on an error is a round to send again.
+      yield* TestClock.adjust(60_000)
+      yield* t.tick
+      expect(t.session.sent.slice(sent).map((request) => request.marker.kind)).toEqual(["recovery"])
     }),
   )
 

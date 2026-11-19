@@ -27,7 +27,7 @@ export function isOkTurn(turn: TurnOutcome): boolean {
 }
 
 /** Identifies a boundary in `Recovery.boundary`; a turn that left no assistant message has the empty key. */
-export const keyOf = (boundary: LoopHost.Boundary) => boundary.message ?? ""
+export const keyOf = (boundary: Pick<LoopHost.Boundary, "message">) => boundary.message ?? ""
 
 /**
  * Tells one boundary from another where `keyOf` cannot: the closing message, or for a turn that left none, when it
@@ -63,17 +63,36 @@ export function chainOf(recovery: LoopState.Recovery | undefined, boundary: Loop
   return { attempts: recovery.attempts, reset: recovery.reset, probes: recovery.probes }
 }
 
-/** The failure chain after one more action of the ladder, anchored at the boundary that failed. */
+/**
+ * The failure chain after one more action of the ladder, anchored at the boundary that failed, with the step that
+ * did. A probe redoes that step later, and the boundary alone does not say which it was.
+ */
 export function recoveryAfter(
   chain: StopCondition.Chain,
   action: StopCondition.RecoverAction,
   boundary: LoopHost.Boundary,
   now: number,
+  step: StopCondition.RecoveryStep,
 ): LoopState.Recovery {
   const at = keyOf(boundary)
-  if (action.type === "retry") return { ...chain, attempts: chain.attempts + 1, boundary: at }
-  if (action.type === "reset") return { ...chain, reset: chain.reset + 1, boundary: at }
-  return { ...chain, probes: chain.probes + 1, probe_at: now + action.after_ms, boundary: at }
+  if (action.type === "retry") return { ...chain, attempts: chain.attempts + 1, boundary: at, step }
+  if (action.type === "reset") return { ...chain, reset: chain.reset + 1, boundary: at, step }
+  return { ...chain, probes: chain.probes + 1, probe_at: now + action.after_ms, boundary: at, step }
+}
+
+/**
+ * The step a probe that has come due redoes. The chain's record is trusted at the boundary it was made at: the
+ * analysis of a boundary whose turn ended on an error (a loop resumed there analyses it first) is not a round to
+ * send again. At any other boundary, where a turn ended meanwhile and failed or was cut short, and in a chain that
+ * recorded no step, the boundary tells: a turn that ended on an error or left no message is a round, any other is
+ * analysed.
+ */
+export function stepOf(
+  recovery: Pick<LoopState.Recovery, "boundary" | "step">,
+  boundary: Pick<LoopHost.Boundary, "message" | "turn">,
+): StopCondition.RecoveryStep {
+  if (recovery.step !== undefined && recovery.boundary === keyOf(boundary)) return recovery.step
+  return boundary.turn.type === "error" || boundary.message === undefined ? "round" : "analysis"
 }
 
 /** The provider failure a boundary's turn ended on, when it ended on one and the error is on record. */

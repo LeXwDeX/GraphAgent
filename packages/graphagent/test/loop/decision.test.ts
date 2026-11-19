@@ -52,16 +52,78 @@ describe("LoopDecision failure chain", () => {
   test("each rung of the ladder adds to its own count and anchors the chain at the failed boundary", () => {
     const chain = { attempts: 1, reset: 0, probes: 0 }
     const at = boundary({ message: "msg_7" })
-    expect(LoopDecision.recoveryAfter(chain, { type: "retry" }, at, 50)).toEqual({ attempts: 2, reset: 0, probes: 0, boundary: "msg_7" })
-    expect(LoopDecision.recoveryAfter(chain, { type: "reset" }, at, 50)).toEqual({ attempts: 1, reset: 1, probes: 0, boundary: "msg_7" })
-    expect(LoopDecision.recoveryAfter(chain, { type: "probe", after_ms: 60_000 }, at, 50)).toEqual({
+    expect(LoopDecision.recoveryAfter(chain, { type: "retry" }, at, 50, "round")).toEqual({
+      attempts: 2,
+      reset: 0,
+      probes: 0,
+      boundary: "msg_7",
+      step: "round",
+    })
+    expect(LoopDecision.recoveryAfter(chain, { type: "reset" }, at, 50, "round")).toEqual({
+      attempts: 1,
+      reset: 1,
+      probes: 0,
+      boundary: "msg_7",
+      step: "round",
+    })
+    expect(LoopDecision.recoveryAfter(chain, { type: "probe", after_ms: 60_000 }, at, 50, "round")).toEqual({
       attempts: 1,
       reset: 0,
       probes: 1,
       probe_at: 60_050,
       boundary: "msg_7",
+      step: "round",
     })
-    expect(LoopDecision.recoveryAfter(chain, { type: "retry" }, boundary({ message: undefined }), 0).boundary).toBe("")
+    const left = LoopDecision.recoveryAfter(chain, { type: "retry" }, boundary({ message: undefined }), 0, "round")
+    expect(left.boundary).toBe("")
+  })
+
+  test("records the step that failed, whichever rung of the ladder it is", () => {
+    const chain = { attempts: 2, reset: 0, probes: 0 }
+    const at = boundary({ message: "msg_7" })
+    for (const action of [{ type: "retry" }, { type: "reset" }, { type: "probe", after_ms: 60_000 }] as const) {
+      expect(LoopDecision.recoveryAfter(chain, action, at, 0, "analysis").step).toBe("analysis")
+      expect(LoopDecision.recoveryAfter(chain, action, at, 0, "round").step).toBe("round")
+    }
+  })
+})
+
+describe("LoopDecision probe step", () => {
+  const planned = (step: LoopState.Recovery["step"], at = "msg_5"): LoopState.Recovery => ({
+    attempts: 2,
+    reset: 0,
+    probes: 1,
+    probe_at: 10,
+    boundary: at,
+    ...(step !== undefined ? { step } : {}),
+  })
+  const failedTurn = { type: "error", code: "APIError", retryable: false } as const
+
+  test("is the recorded one at the boundary it was recorded at, whatever that boundary's turn looks like", () => {
+    // A loop resumed at a boundary whose turn ended on an error analyses it first: the analysis is what failed.
+    expect(LoopDecision.stepOf(planned("analysis"), boundary({ message: "msg_5", turn: failedTurn }))).toBe("analysis")
+    expect(LoopDecision.stepOf(planned("analysis"), boundary({ message: "msg_5" }))).toBe("analysis")
+    expect(LoopDecision.stepOf(planned("round"), boundary({ message: "msg_5", turn: failedTurn }))).toBe("round")
+    expect(LoopDecision.stepOf(planned("round"), boundary({ message: "msg_5" }))).toBe("round")
+  })
+
+  test("is read off the boundary at any other one: an error or no message is a round, anything else is analysed", () => {
+    const interrupted = { type: "interrupted" } as const
+    for (const step of ["round", "analysis"] as const) {
+      const recovery = planned(step)
+      expect(LoopDecision.stepOf(recovery, boundary({ message: "msg_6", turn: failedTurn }))).toBe("round")
+      expect(LoopDecision.stepOf(recovery, boundary({ message: undefined, turn: interrupted }))).toBe("round")
+      expect(LoopDecision.stepOf(recovery, boundary({ message: "msg_6", turn: interrupted }))).toBe("analysis")
+    }
+  })
+
+  test("is read off the boundary for a chain that recorded none, also at the boundary it is anchored at", () => {
+    expect(LoopDecision.stepOf(planned(undefined), boundary({ message: "msg_5", turn: failedTurn }))).toBe("round")
+    expect(LoopDecision.stepOf(planned(undefined), boundary({ message: "msg_5" }))).toBe("analysis")
+  })
+
+  test("a round that left no message is anchored at the empty key, and is a round", () => {
+    expect(LoopDecision.stepOf(planned("round", ""), boundary({ message: undefined }))).toBe("round")
   })
 })
 

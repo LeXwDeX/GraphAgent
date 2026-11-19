@@ -774,13 +774,23 @@ describe("LoopState.Info", () => {
     last_analyzed_msg: "msg_8",
     last_verdict: "continue",
     last_reason: "One item left.",
-    recovery: { attempts: 1, reset: 1, probes: 2, probe_at: 1000, boundary: "msg_7" },
+    recovery: { attempts: 1, reset: 1, probes: 2, probe_at: 1000, boundary: "msg_7", step: "analysis" },
     stop: { reason: "needs_user", detail: { code: "rejected" }, at: 3 },
   })
 
   test("round-trips through its JSON payload with every field", () => {
     const payload = JSON.stringify(Schema.encodeSync(LoopState.Info)(full))
     expect(Schema.decodeUnknownSync(LoopState.Info)(JSON.parse(payload))).toEqual(full)
+  })
+
+  test("reads a failure chain written before it recorded its step, and writes it back without one", () => {
+    const older = { attempts: 1, reset: 1, probes: 2, probe_at: 1000, boundary: "msg_7" }
+    const encoded = Schema.encodeSync(LoopState.Info)(full)
+    const decoded = Schema.decodeUnknownSync(LoopState.Info)({ ...encoded, recovery: older })
+    expect(decoded.recovery).toEqual(older)
+    expect(Schema.encodeSync(LoopState.Info)(decoded).recovery).toEqual(older)
+    const unknown = { ...encoded, recovery: { ...older, step: "probe" } }
+    expect(() => Schema.decodeUnknownSync(LoopState.Info)(unknown)).toThrow()
   })
 
   test("round-trips a fresh loop whose optional fields are all absent", () => {
