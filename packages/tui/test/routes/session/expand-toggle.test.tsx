@@ -6,7 +6,7 @@ import { expect, test } from "bun:test"
 import type { Part } from "@graphagent/sdk"
 import { createFixture, expandableOutputs, type PerfFixture } from "../../perf/fixtures"
 import { mountHarness, type PerfHarness } from "../../perf/harness"
-import { settleScroll } from "../../perf/scenarios"
+import { settleHighlights, settleScroll } from "../../perf/scenarios"
 import { readFrame, readSpans } from "../dag-mode-harness"
 
 /**
@@ -231,6 +231,73 @@ const toolPart = (fixture: PerfFixture, index: number) =>
 
 const printed = (prefix: string, count = 30) =>
   Array.from({ length: count }, (_, line) => `${prefix} ${line}`).join("\n")
+
+/** The diff of an edit that changed one line of a function: four rows. */
+const EDIT_DIFF = [
+  "Index: src/answer.ts",
+  "===================================================================",
+  "--- src/answer.ts",
+  "+++ src/answer.ts",
+  "@@ -1,3 +1,3 @@",
+  " export function value() {",
+  "-  const answer = 41",
+  "+  const answer = 42",
+  " }",
+  "",
+].join("\n")
+
+test("an edit folds its diff under its summary and says nothing of it, the key and a click open it, and the open row costs the screen nothing", async () => {
+  const harness = await mountHarness(
+    transcript([1, 6], (fixture) => {
+      const call = toolPart(fixture, 6)
+      if (call.state.status !== "completed") throw new Error("the read call did not complete")
+      call.tool = "edit"
+      call.state.input = { filePath: "src/answer.ts", oldString: "41", newString: "42" }
+      call.state.metadata = {
+        diff: EDIT_DIFF,
+        filediff: { file: "src/answer.ts", patch: EDIT_DIFF, additions: 1, deletions: 1 },
+        diagnostics: {},
+      }
+    }),
+  )
+  try {
+    const before = await until(harness, holds("+1 \u22121"), "held the summary of the edit")
+    expect(before).toContain("Edit src/answer.ts")
+    // The row is its call and its summary: no hint offers the diff, and none closes it once it is open.
+    expect(before).not.toContain(FOLDED)
+    expect(before).not.toContain("const answer")
+
+    // Opening and closing it is view state: no store write, and no layer.
+    const counts = harness.counters.snapshot()
+    pressExpand(harness)
+    const opened = await until(harness, holds("const answer = 42"), "opened the diff")
+    expect(opened).not.toContain(OPEN)
+    // A click on the call closes it, and a click on the summary opens it again.
+    await click(harness, "src/answer.ts", 2)
+    await until(harness, lacks("const answer = 42"), "closed the diff by a click")
+    await click(harness, "+1", 0)
+    await until(harness, holds("const answer = 42"), "opened the diff by a click")
+    expect(harness.counters.delta(counts)).toMatchObject({
+      storeMessageWrites: 0,
+      storePartWrites: 0,
+      registerLayer: 0,
+    })
+
+    // With the diff open and the screen idle nothing is drawn: no animation frame, no second, no render request.
+    await settleHighlights(harness)
+    await harness.app.renderOnce()
+    const idle = harness.counters.snapshot()
+    const frames = harness.ticker.frame()
+    const seconds = harness.ticker.second()
+    harness.clock.advance(2_000)
+    await harness.app.renderOnce()
+    expect(harness.ticker.frame() - frames).toBe(0)
+    expect(harness.ticker.second() - seconds).toBe(0)
+    expect(harness.counters.delta(idle).renderRequests).toBe(0)
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)
 
 test("a reasoning that has only a title has nothing to open, so the key goes past it", async () => {
   const harness = await mountHarness(

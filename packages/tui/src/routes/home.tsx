@@ -15,10 +15,6 @@ import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { useToast } from "../ui/toast"
 
 let once = false
-const placeholder = {
-  normal: ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"],
-  shell: ["ls -la", "git status", "pwd"],
-}
 
 export function Home() {
   const sync = useSync()
@@ -101,7 +97,7 @@ export function Home() {
         paddingBottom={1}
       >
         <box width="100%" maxWidth={promptMaxWidth()} flexShrink={0}>
-          <Prompt ref={bind} placeholders={placeholder} />
+          <Prompt ref={bind} />
         </box>
       </box>
     ),

@@ -12,10 +12,12 @@ import { AppFrame, type AppFrameProps } from "../../src/shell/app-frame"
 import { BottomZone, createBottomZoneState } from "../../src/shell/bottom-zone"
 import type { DagIndicatorState } from "../../src/shell/dag-indicator"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
+import { promptTop } from "../fixture/run-app"
+import { AppRoutes } from "../fixture/route-frame"
 import { renderPanel } from "../panel/contexts"
 import { assistantMessage, textPart, userMessage, type MessageEntry } from "../fixture/session-records"
 import { json } from "../fixture/tui-sdk"
-import { sessionFixture } from "../routes/dag-mode-harness"
+import { mountRoute, sessionFixture } from "../routes/dag-mode-harness"
 import { mountSessionShell } from "../routes/session-shell"
 import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
@@ -25,7 +27,7 @@ import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
  * other token. This file checks the rendered skeleton: it paints the frame, collects every run
  * of cells colored with the brand value and compares the runs with the whitelist.
  *
- * Whitelist item -> where it is checked (the input prompt `›` left the list at the #886 close-out):
+ * Whitelist item -> where it is checked:
  * 1. logo AGENT face and top bar `◆`  top bar here; the wordmark is in test/component/logo.test.tsx
  * 2. selected row and panel title     the list panel scenario here
  * 3. running spinner, DAG run segment spinners take their color from the caller; the DAG bar is in
@@ -33,7 +35,10 @@ import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
  * 4. footer agent name                here
  * 5. footer `◆ DAG` (on)              here
  * 6. status band leading `◆`          test/shell/status-band.test.tsx
- * 7. user message line mark `›` (#1615) a real transcript here: the `›` of each user message and nothing else of the
+ * 7. input prompt `›` (`$` in shell mode, #1616)
+ *                                     the real input box of the home and session routes, here: the skeleton scenes
+ *                                     fill the bottom zone with stand-in text, which has no prompt
+ * 8. user message line mark `›` (#1615) a real transcript here: the `›` of each user message and nothing else of the
  *                                     transcript, whose `⏺` of the assistant and `∴` of a thought stay gray
  */
 
@@ -336,3 +341,50 @@ test("paints the › that opens a user message in the brand color, and nothing e
     await shell.dispose()
   }
 })
+
+/**
+ * The real input box, mounted in the app frame the way `app.tsx` does, not the skeleton's stand-in text: the runs of
+ * brand color on the rows of the box (its edges and the input row). The harness paints the dark theme.
+ */
+async function inputBoxRuns(harness: Awaited<ReturnType<typeof mountRoute>>) {
+  const rows = (await harness.frame()).split("\n").map((line) => line.trimEnd())
+  const top = promptTop(rows)
+  if (top < 0) throw new Error(`no input box in the frame:\n${rows.join("\n")}`)
+  const runs = brandRuns(await harness.spans(), brandOf("dark")).filter((run) => run.row >= top && run.row <= top + 2)
+  return { runs, row: top + 1 }
+}
+
+for (const route of ["home", "session"] as const) {
+  for (const size of SIZES) {
+    test(`paints the input box's prompt mark in the brand color and nothing else of the box (${route} ${size.width}x${size.height})`, async () => {
+      const harness = await mountRoute({
+        route: route === "home" ? { type: "home" } : { type: "session", sessionID: "ses_brand" },
+        view: () => <AppRoutes />,
+        frame: true,
+        sessions: [sessionFixture("ses_brand")],
+        withAgentAndModel: true,
+        ...size,
+      })
+      try {
+        await harness.settle()
+        // The normal mode marks the input with `›`: the border, the placeholder and the status row are gray.
+        let { runs, row } = await inputBoxRuns(harness)
+        expect(labels(runs)).toEqual([`row ${row}:›`])
+
+        // Shell mode swaps the mark for `$`, in the same color and the same place.
+        harness.app.mockInput.pressKey("!")
+        await harness.settle()
+        ;({ runs, row } = await inputBoxRuns(harness))
+        expect(labels(runs)).toEqual([`row ${row}:$`])
+
+        // A typed draft is plain text: the box still holds only the mark.
+        await harness.app.mockInput.typeText("ls")
+        await harness.settle()
+        ;({ runs, row } = await inputBoxRuns(harness))
+        expect(labels(runs)).toEqual([`row ${row}:$`])
+      } finally {
+        await harness.dispose()
+      }
+    })
+  }
+}

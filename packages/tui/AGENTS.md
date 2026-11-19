@@ -213,12 +213,12 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 行数 ≥ `WINDOW_MIN_ROWS`（2000，依据见 `test/perf/README.md` 的“窗口化阈值”：OpenTUI 0.8.3 上约 2000 行以内全挂载满足全部延迟预算，窗口化的滚动反而更贵）时窗口化：视口上下各 `PART_OVERSCAN = 6` 行，末尾 `TAIL_ALWAYS = 4` 行始终挂载，`streaming` 行、选中行、展开中的行始终挂载。未挂载的连续行合并成一个占位盒。
 - 行模型是 `Row { key, messageID, partID?, kind, revision, attached? }`（`attached` 只有 `user` 行带：消息带文件或目录，它们的标签在正文下占一行；并入 `revision`），`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice | delegation | handback | result`；`delegation`、`handback` 只在子 agent 视图出现，`result` 是后台结果卡，键 `part:<partID>`（part 是那条合成文本），折叠 id 就是该 part id，所以 `foldRowKey` 不变；`delegation` 是该会话第一条用户消息（会话窗口里的第一条）改画成的“任务 · 来自主会话”块，取代同一条消息的 `user` 行，`handback` 是结束后追加在表尾的一行，二者都由 `createRowTable` 的 `delegation`、`handback` 入参给出；`revision` 分别取被取代的 `user` 行的 revision 加 Task 描述和展开标志、取那一行的文字（切换语言会重新测量）。`delegation` 行没有 part：它的 `partID` 就是它的 key，也是它在 `SessionViewState` 里的折叠 id（`delegation:<messageID>`，`delegationFoldID`），所以提示词按 `ctrl+o` 或点击都能展开（见下）。
-- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以（内容宽度 − `ROW_INDENT` 3 − `MARK_CELLS` 2）向上取整加 1 行间隔，`tool` 折叠态 2 行（调用行与结果行），打开时按输出行数加 3（行表给打开的工具行记输出行数），`reasoning` 折叠态 2 行（间隔与头行），打开时按正文折行数（宽度同 `text`）加 3，`user` 按字符数除以（内容宽度 − 左右内边距各 `USER_PADDING` 1 − `MARK_CELLS` 2）向上取整，加 1 行间隔，有附件标签（`attached`）再加 1，`delegation` 按提示词折行数加 5 行（折叠态至多 `DELEGATION_PROMPT_LINES` 行加一行省略号，展开态取全部折行数；会折叠的提示词在其下另有空行加提示行共 2 行，展开与否都在），`handback` 2 行，`result` 折叠态 5 行（上方空行、上下内边距、标题、预览）、展开态按正文折行数加 7 行，其余 3 行（F2 3.3）。
+- 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以（内容宽度 − `ROW_INDENT` 3 − `MARK_CELLS` 2）向上取整加 1 行间隔，`tool` 折叠态 2 行（调用行与结果行），打开时按输出行数加 3（行表给打开的工具行记输出行数：Edit、Write 没有收起提示，记 diff 或写入的行数减 1；apply_patch 每个文件是两行加它的 diff，文件之间隔一个空行，总高度再减去估算已加的 3 行），`reasoning` 折叠态 2 行（间隔与头行），打开时按正文折行数（宽度同 `text`）加 3，`user` 按字符数除以（内容宽度 − 左右内边距各 `USER_PADDING` 1 − `MARK_CELLS` 2）向上取整，加 1 行间隔，有附件标签（`attached`）再加 1，`delegation` 按提示词折行数加 5 行（折叠态至多 `DELEGATION_PROMPT_LINES` 行加一行省略号，展开态取全部折行数；会折叠的提示词在其下另有空行加提示行共 2 行，展开与否都在），`handback` 2 行，`result` 折叠态 5 行（上方空行、上下内边距、标题、预览）、展开态按正文折行数加 7 行，其余 3 行（F2 3.3）。
 - 行表按消息增量维护（`routes/session/row-table.ts`）：每条消息一个 memo，只读自己的 parts，store 写入或一帧流式只重算它所属的那一条消息，`rowData` 只在某条消息贡献的行变了时重算。已结束的 part（有 `time.end`）读快照（`settledPartText`），不订阅 stream version；正在写入的 part 只在还没有可显示的文字时订阅，出现首批文字后不再订阅。新代码不得在行表或行内组件里对已结束的 part 调用 `readPartText`，也不得在行表里为未变化的 part 重新派生文本（`createTextFacts` 按文本缓存）。
 - 正在写入的 text/reasoning 行，`revision` 不含正文，只含 `done` 等标志，结束时按全文计算一次。正文变化会让每帧都产生新的 `Row`，使该行每帧重挂载、其后的行全部失效；它的高度靠挂载后的实测（`streaming` 行始终挂载）。`chars`（高度估算）因此只在该行出现与结束时更新。
 - 窗口化的行是否挂载经 `createSelector` 逐行询问（`pinned`、末尾、视口三个选择器），视口移动一行只唤醒进出窗口的那几行；`gaps` 用普通循环计算，内容相同的 map 不替换。不要让每一行都读同一个会随滚动变化的 signal。
 - 组件内局部状态（展开、选中）一律提升到 `SessionViewState = Map<partID, …>`，卸载后再挂载不丢。滚动定位走行表，不依赖渲染节点。
-- 可折叠的块（点击展开的推理、工具输出、工具错误，子 agent 视图任务块的提示词，以及后台结果卡）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空；任务块没有 part，判定是 `delegationFolds(text, width)`（提示词超过 `DELEGATION_PROMPT_LINES` 行或这些行在内容宽度下的字符上限，与工具输出同一个 `outputOverflows`；块用 `ctx.width`，`foldOfRow` 用同一个 `contentWidth()`），`foldOfRow` 对 `delegation` 行在它为真时返回 `expanded`；结果卡的判定是 `resultCardFolds(card, width, ambiguousWidth)`（正文不止一行，或首行比预览行的余宽宽；余宽随 `ambiguous_width`，因为卡的左边框 `┃` 是 Ambiguous 字形），`foldOfRow` 对 `result` 行同样返回 `expanded`，点击卡不折叠它，而是进入子 agent。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份；工具输出统一在超过 `TOOL_FOLD_LINES`（6）行或这些行的字符上限时折叠（`foldOutput`），折叠后调用行下只留一行结果（bash 取最后一行，通用工具取第一行），其下一行写被折掉的行数与展开键。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定（折叠 id 经 `foldRowKey` 换成行 key：part 行是 `part:<partID>`，任务块就是它自己的 id），挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
+- 可折叠的块（点击展开的推理、工具输出、工具错误，子 agent 视图任务块的提示词，以及后台结果卡）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空；任务块没有 part，判定是 `delegationFolds(text, width)`（提示词超过 `DELEGATION_PROMPT_LINES` 行或这些行在内容宽度下的字符上限，与工具输出同一个 `outputOverflows`；块用 `ctx.width`，`foldOfRow` 用同一个 `contentWidth()`），`foldOfRow` 对 `delegation` 行在它为真时返回 `expanded`；结果卡的判定是 `resultCardFolds(card, width, ambiguousWidth)`（正文不止一行，或首行比预览行的余宽宽；余宽随 `ambiguous_width`，因为卡的左边框 `┃` 是 Ambiguous 字形），`foldOfRow` 对 `result` 行同样返回 `expanded`，点击卡不折叠它，而是进入子 agent。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份；工具输出统一在超过 `TOOL_FOLD_LINES`（6）行或这些行的字符上限时折叠（`foldOutput`），折叠后调用行下只留一行结果（bash 取最后一行，通用工具取第一行），其下一行写被折掉的行数与展开键。Edit、Write、apply_patch 不按行数折叠，也不画提示行：已完成的调用一律是两行块（调用行与汇总行，汇总是 `+N −N`，Write 是“写入 N 行”，诊断错误数接在后面），diff 或写入的文件只在展开（`ctrl+o` 或点击）后画在汇总行下，展开后也没有收起提示；判定是 `editRows`、`writeRows`、`patchFileRows`（`diffRows` 数 diff 的行），组件给 `ToolCall` 传 `opens`，不传 `folds`；apply_patch 每个文件是自己的两行块，整个调用共用一个展开标志，被删除的文件没有 diff 可展开；这三类失败的调用与其他工具一样画成一行，错误走 `errorExpanded`。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定（折叠 id 经 `foldRowKey` 换成行 key：part 行是 `part:<partID>`，任务块就是它自己的 id），挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
 - 宽度变化使缓存失效。
 - 窗口化转录保持视口内容不动：视口之上的行高变化（未测过的行首次挂载并被测量、行被展开或收起）用 OpenTUI 原生的 `scroll.anchor(行节点)` 保持锚点，由布局在同一帧里调整偏移；不用 `scroll.scrollBy(delta)`，它要等下一帧测到新高度才补偿，每次修正先跳一帧再跳回（#1277 实测 44 次跳动变成 96 次）。`SessionTranscript` 的窗口控制器每个 pass 锚定视口顶部所在的行（该行须已被上一次布局放好）；贴底时不锚定，让滚动盒继续跟随新内容。
 - 窗口按布局之后的偏移取：行表已经知道、布局尚未应用的变化（行集合变了，或某行的 `revision` 变了，例如展开）折算进偏移再算窗口，否则视口里的行会被卸载一帧，屏幕上出现空白。测量不在其中，它读的是已被锚定的布局。
@@ -388,8 +388,53 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - C1 接口未就绪或 schema 缺失时，该行只读显示，不做空壳。
 - `text` 行用 `validate` 返回错误文案键（非空则不提交）；`suffix` 用于行尾淡色附注。需要打开前确认的（如 Claude hooks 兼容）先出询问区 `confirm` 变体。
 - 界面文字的切换（语言、主题）立即生效；语言只影响默认回复语言这一条系统提示指令。
+- 行的版式（#1617）：每行三列，标记 2 格、名称 22 格、值紧跟名称。名称最多 21 格（末格留空），超出按 `cellWidth` 截断，所以新增行名中英都要核对，超了就改短。值后面依次是 `suffix` 与选中行的“换一个（i/n）”提示；选中行的 `description` 画在面板底部的说明行里（`PanelShell` 的 `note`），一行放得下就不要写长。
+- 只汇报、不持有设置的行（快捷键）用 `readonly`：正常着色，可选中看说明，回车与点击不做任何事。写入路径不可用的行用 `disabled`：变暗且不可操作，原因写在 `suffix` 里（子 agent 视图里改会话模型的两行就是这样，因为那会向子会话发写请求）。
 
-必须写的测试："每行指出存储位置"遍历测试；C1 接口 mock 不可用时只读；值写入后的读回。
+`/config` 的标签与行（#1617）。标签顺序固定：通用（`general`）、界面（`interface`）、模型（`model`）、DAG 模式（`dag`）、权限（`permissions`）、快捷键（`shortcuts`）；`/config` 默认打开界面，`/permissions` 打开权限。每一行的存储位置：
+
+| 标签     | 行                                       | 种类                | 存储                                                                                                                                                                  |
+| -------- | ---------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 通用     | 语言                                     | choice              | 全局配置 `language`                                                                                                                                                   |
+| 通用     | 自动压缩                                 | toggle              | 全局配置 `compaction.auto`（未设置按开）；`compaction.trigger_ratio` 已设置时在行尾注明百分比，行里不带默认值                                                         |
+| 通用     | 文件上下文                               | toggle              | kv `file_context_enabled`                                                                                                                                             |
+| 通用     | 粘贴摘要                                 | toggle              | kv `paste_summary_enabled`                                                                                                                                            |
+| 通用     | 按目录过滤会话                           | toggle              | kv `session_directory_filter_enabled`                                                                                                                                 |
+| 通用     | 终端标题                                 | toggle              | kv `terminal_title_enabled`                                                                                                                                           |
+| 界面     | 主题                                     | action              | kv `theme`（推入主题面板）                                                                                                                                            |
+| 界面     | 主题模式                                 | choice              | kv `theme_mode_lock`、`theme_mode`                                                                                                                                    |
+| 界面     | 动画                                     | toggle              | kv `animations_enabled`                                                                                                                                               |
+| 界面     | 推理过程                                 | toggle              | kv `thinking_mode`（`show`、`hide`）                                                                                                                                  |
+| 界面     | 时间戳                                   | toggle              | kv `timestamps`                                                                                                                                                       |
+| 界面     | 工具详情                                 | toggle              | kv `tool_details_visibility`                                                                                                                                          |
+| 界面     | 通用工具输出                             | toggle              | kv `generic_tool_output_visibility`                                                                                                                                   |
+| 界面     | 滚动条                                   | toggle              | kv `scrollbar_visible`                                                                                                                                                |
+| 界面     | 差异换行                                 | toggle              | kv `diff_wrap_mode`                                                                                                                                                   |
+| 界面     | 抽屉                                     | choice              | kv `drawer_mode`                                                                                                                                                      |
+| 界面     | 代码块隐藏                               | toggle              | kv `conceal_code`                                                                                                                                                     |
+| 界面     | DAG 状态带                               | choice              | kv `dag_band`                                                                                                                                                         |
+| 界面     | 字符宽度                                 | choice              | kv `ambiguous_width`                                                                                                                                                  |
+| 模型     | 当前模型                                 | action              | `local.model` 的 `model.json`（按 agent 记）；回车经命令注册表运行 `model.list`，打开 `/model` 的列表面板                                                             |
+| 模型     | 推理强度                                 | choice 或 action    | `local.model.variant`：选项是 `default` 加当前模型的变体，调用与 `panel/variant.tsx` 相同；超过 6 个选项时为 action，打开 `VariantPanel`；当前模型没有变体时不可操作 |
+| 模型     | 标题模型                                 | text                | 全局配置 `small_model`（`provider/model`，必须是已连接 provider 的模型）；只能设置，合并写入没有清除一个键的语义，所以空值不能提交，清除要改配置文件                   |
+| DAG 模式 | 新会话默认 DAG 模式                      | toggle              | 全局配置 `dag.mode`                                                                                                                                                   |
+| DAG 模式 | DAG 并发上限                             | text                | 全局配置 `dag.concurrency`（生效值的显示见上）                                                                                                                        |
+| DAG 模式 | DAG token 预算                           | text                | 全局配置 `dag.budget.tokens`                                                                                                                                          |
+| 权限     | 编辑、Bash、网络请求、项目外目录         | choice              | 全局配置 `permission.<工具>`                                                                                                                                          |
+| 快捷键   | 命令标题（值是按键，说明取命令的 `desc`） | action（`readonly`） | 不存储：由 keymap 生成，与 `/help` 共用 `panel/help.tsx` 的 `useShortcutEntries()`（跳过 `hidden`、没有标题、`Panel` 分类、没有键位的命令），按分类与标题排序 |
+
+写入 `compaction`、`small_model` 与写 `language`、`permission` 一样，全局配置里除 `dag` 外的键都不在 `HOT_RELOAD_GLOBAL_KEYS` 里，写入后实例会重建。
+
+没有真实存储的行不上线。设计原型里有、现在没有可用存储的行，不为它们新增配置键，列在这里（#1617）：
+
+| 原型的行                                                                       | 现状                                                                                                                                                                                                                                                                                                                        | 处理                                                |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 完成通知（任务完成时 / 需要我输入时 / 关闭）                                   | 没有三选一的存储。`tui.json` 里有 `attention.enabled`（默认 false）、`attention.notifications`、`attention.sound` 三个布尔值，是文件配置；`/config` 目前只能写 kv 与全局配置层（`sdk.client.global.config.update` 写的是 `graphagent.json`），没有写 `tui.json` 的路径                                                          | 跳过                                                |
+| 检查更新（开 / 关）                                                            | `autoupdate` 键还在 schema 里，但描述写明“Deprecated compatibility setting; built-in application updates are disabled and this value is ignored”，旧的升级接口也只回 400（`groups/global.ts`：Built-in updates disabled），没有任何功能可开关                                                                                | 跳过；#1281（安装、升级与远程配置并入主程序）落地后再加 |
+| 窄终端（自动 / 始终紧凑）                                                      | 断点是固定常量（顶栏 `TOP_BAR_WIDE_WIDTH`、状态带 `BAND_NARROW_WIDTH`、面板 `PANEL_NARROW_WIDTH`，都是 100 列），没有设置项                                                                                                                                                                                                | 跳过                                                |
+| 推理过程、工具输出的三态（折叠 / 展开 / 隐藏，超过 6 行折叠 / 全部展开 / 只显示标题） | kv 只有两态（`thinking_mode` 的 `show`、`hide`；`tool_details_visibility`、`generic_tool_output_visibility` 两个开关）                                                                                                                                                                                                       | 保留现有的两态行，不合并成三态                      |
+
+必须写的测试："每行指出存储位置"遍历测试（`test/panel/config.test.tsx` 的 `STORES` 与上面的行表一一对应，加一行要两处一起改）；C1 接口 mock 不可用时只读；值写入后的读回。
 
 ### 6.7 新增预填模板
 
@@ -419,9 +464,10 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   4. 页脚里当前 agent 名。
   5. 页脚 DAG 指示的 `◆ DAG`（开，F1 3.9）。
   6. 状态带行首的 `◆`（F4 1）。
-  7. 用户消息行首的 `›`（#1615）。
+  7. 输入框提示符 `›`（shell 模式为 `$`，#1616）。
+  8. 用户消息行首的 `›`（#1615）。
 
-  输入框提示符 `›` 原为白名单第 2 项，#886 收口时决定不做并从白名单删去：输入框的输入门禁与光标几何风险高，收益只是一个装饰字符。用户消息行首的 `›`（第 7 项）是只读的转录文字，没有输入门禁与光标，那条理由不适用。条目总数以合并顺序为准（同批 #1616 的输入框 `›` 也走这一节）。
+  输入框提示符 `›` 在 #886 收口时曾决定不做并从白名单删去（输入门禁与光标几何风险高，收益只是一个装饰字符），由 #1616 按设计原型恢复，现为第 7 项。风险靠结构守住：`›` 是与 textarea 并排的独立 `<text>`（宽 2 的一列），画在 textarea 之外，不进 textarea 的内容与光标坐标；`test/prompt/composer-chrome.test.tsx` 逐项守住输入门禁与光标位置，`test/shell/brand-color.test.tsx` 用真实渲染的输入框核对 `›` 与 `$` 为 `primary`。用户消息行首的 `›`（第 8 项）是只读的转录文字，没有输入门禁与光标，那条理由不适用。
 
   新增白名单位置需维护者批准，先停下提出。
 
@@ -555,7 +601,7 @@ Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033�
 - Q4 `context/ticker.ts`（F1 实现，F2 迁移现有动画）提供 `frame`、`second`、`at(time, cb)`；`setTimeout`/`setInterval` 只允许出现在 `ticker.ts`、`frame-clock.ts`、`terminal-win32.ts`。
 - Q5 页脚右侧一个共享位置，优先级 leader 提示 > toast > hook 进度。
 - Q6 `esc` 链层号以 F1 4.5 为准。
-- Q7 品牌色白名单扩为 7 项，新增页脚 `◆ DAG` 与状态带行首 `◆`；#886 收口时删去输入框 `›`，现为 6 项；#1615 加入用户消息行首的 `›`，现为 7 项（总数随同批 #1616 的合并顺序再计）。
+- Q7 品牌色白名单扩为 7 项，新增页脚 `◆ DAG` 与状态带行首 `◆`；#886 收口时删去输入框 `›`（降为 6 项），#1616 按设计原型恢复（`›`，shell 模式为 `$`，第 7 项），#1615 加入用户消息行首的 `›`（第 8 项），现为 8 项。
 - Q8 `ui/width.ts` 的 `cellWidth(text)` 按 `ambiguous_width`（1 默认 / 2）计算；对齐敏感布局两种设置下 80 列都不溢出；PR 压缩标记只用 ASCII 与 `✓`、`✗`。
 - Q9 预填文本在功能目录生成，落地统一经 `session/prefill.ts` 的 `prefillRootPrompt(text)`。
 - Q10 骨架补 `ask/`、`session/`、`attention/`、`context/`；`component/` 冻结。

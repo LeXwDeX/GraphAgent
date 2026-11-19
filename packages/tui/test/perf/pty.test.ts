@@ -15,7 +15,7 @@ const repoRoot = realpathSync(path.resolve(import.meta.dir, "../../../.."))
 
 /** What the real TUI prints first: the renderer's terminal query, a `>` long before any frame. */
 const QUERY = String.raw`printf '\033[>0q'`
-const INPUT_BOX = `printf 'Ask anything... "Fix broken tests"'`
+const INPUT_BOX = `printf '│ › Message · / for commands · @ to reference files'`
 
 /** Runs `pty.ts` against a shell script that stands in for the TUI, so the measurement logic is tested without it. */
 async function measure(directory: string, body: string, env: Record<string, string> = {}) {
@@ -62,7 +62,7 @@ ptyTest("the wait ends at the input box, not at the first `>` of the terminal qu
   await using directory = await tmpdir()
   const { code, report } = await measure(directory.path, `${QUERY}\nsleep 0.8\n${INPUT_BOX}\nexec sleep 30`)
   expect(code).toBe(0)
-  expect(report).toMatchObject({ scenario: "boot-to-prompt", expected: "Ask anything", nightly: true })
+  expect(report).toMatchObject({ scenario: "boot-to-prompt", expected: "›", nightly: true })
   // The query arrives at once; the input box 800 ms later. A `>` match would report a few milliseconds.
   expect(report.elapsedMs).toBeGreaterThanOrEqual(800)
   expect(report.elapsedMs).toBeLessThan(15_000)

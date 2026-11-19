@@ -9,7 +9,7 @@
     2277.11,
     2155.9
   ],
-  "expected": "Ask anything",
+  "expected": "›",
   "commit": "dbf5429ccf26a0fe0841f19957f1c264083c0b70",
   "generatedAt": "2026-11-16T14:59:03.426Z",
   "bun": "1.4.4",

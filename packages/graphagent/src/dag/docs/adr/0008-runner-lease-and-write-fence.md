@@ -1098,7 +1098,63 @@ which stopped being true with #1476; it now describes this rule.
 With the commands above, this holds for git in every command that waits for it
 under the lock: `nodeCompleted` and `retarget` (#1476), `failUnrecoverable`,
 `replan` and `extend`. `_replan` no longer waits on a dynamic import inside its
-transaction either. Filesystem calls that are not git are not covered: the
-canonical-path and `stat` checks of `resolveWorkspace` and `resolveExecution`,
-and the existence check, the patch artifact and the settlement evidence that the
-worktree settlement writes under `exclusive`, are still synchronous.
+transaction either.
+
+The filesystem calls under the lock that are not git were left synchronous by
+#1344. They are asynchronous now (#1583), written with `node:fs/promises`:
+
+- `resolveWorkspaceAsync`: the realpath and `stat` of the workspace
+  (`workspaceDirectoryAsync`) and the canonical paths of what git names, the
+  common directory and the list of worktrees. `resolveExecutionAsync`: the
+  `stat` and the canonical path of its precheck (`executionPrecheckAsync`).
+- `fingerprintTarget`: the `stat` of every untracked file, a batch of them at a
+  time and decided in the order of the paths, so the value is the one it had.
+- The worktree settlement under `exclusive` (`runtime/worktree-completion.ts`):
+  the existence check, the read of the evidence an earlier settlement left, the
+  patch (`writePatchArtifactAsync`) and the evidence it persists (a temporary
+  file and a rename, as before).
+
+The asynchronous functions answer what the synchronous ones answer, with the same
+reasons and the same order of checks; `test/dag/dag-lock-git-async.test.ts`,
+`test/dag/dag-workflow-worktree-settlement.test.ts` and
+`test/dag/dag-fingerprint-async.test.ts` hold them to it, and probe that none of
+them makes a synchronous `node:fs` call on the paths it was given. One input is
+answered with another reason: a workspace that is a regular file written with a
+trailing separator or `/.` is refused either way, as "is not a directory" by
+`realpathSync` and as "does not exist" by the `realpath` of `node:fs/promises`.
+
+An interruption (the cap above, a cancel) stops the wait and never an fs step in
+the middle: each step is one async function that runs to its end once it has
+started, as the synchronous call did, so a cut-short settlement leaves no
+half-written file and strands no temporary file, and the retry redoes what was cut
+short from the committed range. The cap reaches these waits, which it could not
+while they were synchronous, and a slow disk no longer holds the whole process.
+
+What the synchronous call could not do is outlive the critical section, and an
+asynchronous write can: the tail of a write whose caller was interrupted runs after
+the lock was released, and by then a recovery can have reopened the workflow and
+the next settlement written the same `_workflow.patch` and
+`_workflow.settlement.json`. The old write would land over the new file, and the
+`patchSha256` recorded for it would not be the file's checksum; the episode fence
+of the publish cannot fence a file write. So the writes to one file are ordered in
+this process by its absolute path (`DagIsolation.writeInOrder`, used by
+`writePatchArtifactAsync` and by the evidence's temporary file and rename): a
+write starts only after every earlier write to the same file has ended, whether it
+succeeded, failed or lost its caller, and the entry of a file leaves the table when
+its last write ends. The wait for the earlier writes belongs to the caller's wait,
+so an interruption ends it and the cap bounds it as it bounds every other wait
+under the lock. A write whose caller was interrupted before its turn is not
+started (nobody records it, and a later one follows it anyway); a write that has
+started is never cut and keeps its place, and the later writes queue behind it.
+The order is by file and within the process; it does not order the writes of
+another process.
+
+The synchronous versions stay for the callers outside the lock: `canonicalDirectory`,
+`resolveWorkspace` and `resolveExecution` (validation, workspace pinning at
+create, the write guard, spawn, recovery, the reconciler and the supervision
+sweep), and `completeWorktree` and `writePatchArtifact` (no runtime caller is
+left; `test/dag/dag-isolation.test.ts` keeps them as the reference). Two commands
+still compare canonical paths synchronously inside their transaction, a `realpath`
+of two directories each with no timeout of their own, which this change does not
+cover: `retarget` (`workflow-recover.ts`, whether the target moved) and the owner
+re-check of `settleCompletion` (`workflow-terminal.ts`).

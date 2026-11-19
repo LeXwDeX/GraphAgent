@@ -9,7 +9,7 @@
  * instance-aware remove operation in.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { DateTime, Effect, Cause, Fiber, Option, Schedule, Schema } from "effect"
 import type { EventV2 } from "@graphagent/core/event"
@@ -187,20 +187,29 @@ export function settleWorkflowWorktree(
       ...(configured.baseHead ? { baseHead: configured.baseHead } : {}),
       touchedPaths: [] as string[],
     }
-    if (!existsSync(configured.directory)) {
+    if (!(yield* pathExists(configured.directory))) {
       // #1030 D9-g: a completed settlement removes the directory after
       // persisting its evidence but before publishing. A process that stops in
       // that window retries here with the checkout gone — publish the saved
       // head/patch/checksum/touched paths instead of an empty tombstone (the
       // write-once projection would make that loss permanent).
-      const evidence = readSettlementEvidence(input.projectID, input.dagID, configured.directory)
+      const evidence = yield* readSettlementEvidence(input.projectID, input.dagID, configured.directory)
       if (evidence) return yield* settle(evidence)
       return yield* settle({ ...base, state: "removed", reason: "worktree directory is missing" })
     }
 
     // #1344: this runs under the workflow lock (`exclusive`), so git is waited
     // for without blocking the event loop; each command is bounded by its own
-    // 20 s and the whole critical section by the lock's 30 s cap.
+    // 20 s and the whole critical section by the lock's 30 s cap. #1583: so is
+    // the disk (the existence check, the patch, the settlement evidence), which
+    // the cap now reaches too. An interruption stops the wait, never an fs
+    // step in the middle: each one is a single async function that runs to its
+    // end, as the synchronous call it replaced did, so it leaves no half-written
+    // file and no stranded temporary file, and a retry redoes what was cut short.
+    // The one thing the synchronous call could not do is outlive the critical
+    // section, and a write that does must not land over the next settlement's:
+    // the patch and the evidence take their turn behind the earlier writes to
+    // the same file (`DagIsolation.writeInOrder`).
     const commit = yield* DagIsolation.commitWorktreeAsync(
       configured.directory,
       configured.baseHead ?? "",
@@ -219,22 +228,22 @@ export function settleWorkflowWorktree(
     const touchedPaths = commit.change?.touchedPaths ?? []
     let patch: { path: string; sha256: string } | undefined
     if (commit.change) {
-      try {
-        patch = DagIsolation.writePatchArtifact(
-          workflowReportsArea(input.projectID),
-          input.dagID,
-          "_workflow",
-          commit.change.patch,
-        )
-      } catch (error) {
+      const written = yield* DagIsolation.writePatchArtifactAsync(
+        workflowReportsArea(input.projectID),
+        input.dagID,
+        "_workflow",
+        commit.change.patch,
+      ).pipe(Effect.result)
+      if (written._tag === "Failure") {
         return yield* settle({
           ...base,
           ...(head ? { head } : {}),
           touchedPaths,
           state: "kept",
-          reason: error instanceof Error ? error.message : String(error),
+          reason: written.failure.message,
         })
       }
+      patch = written.success
     }
     const settledBase = {
       ...base,
@@ -252,13 +261,15 @@ export function settleWorkflowWorktree(
     // Failing to persist it is treated like a failed removal — keep the
     // worktree, publish the evidence we have, never remove without a recovery
     // record.
-    try {
-      persistSettlementEvidence(input.projectID, input.dagID, { ...settledBase, state: "removed" })
-    } catch (error) {
+    const persisted = yield* persistSettlementEvidence(input.projectID, input.dagID, {
+      ...settledBase,
+      state: "removed",
+    }).pipe(Effect.result)
+    if (persisted._tag === "Failure") {
       return yield* settle({
         ...settledBase,
         state: "kept",
-        reason: error instanceof Error ? error.message : String(error),
+        reason: persisted.failure.message,
       })
     }
 
@@ -293,39 +304,83 @@ function settlementEvidencePath(projectID: string, dagID: string): string | unde
   return join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
 }
 
+/** Whether a path exists, waiting for the disk off the event loop (#1583): a
+ * path that cannot be looked at counts as missing, as with the synchronous check
+ * this replaced. */
+function pathExists(path: string): Effect.Effect<boolean> {
+  return Effect.promise(() =>
+    access(path).then(
+      () => true,
+      () => false,
+    ),
+  )
+}
+
 /** Atomically persist the evidence a completed settlement is about to publish.
- * A torn write must not make the retry publish half-decoded metadata. */
-function persistSettlementEvidence(projectID: string, dagID: string, worktree: DagEvent.WorkflowWorktree): void {
-  const file = settlementEvidencePath(projectID, dagID)
-  if (!file) throw new Error(`invalid workflow ID for settlement evidence: ${JSON.stringify(dagID)}`)
-  mkdirSync(dirname(file), { recursive: true })
-  const temporary = `${file}.tmp-${process.pid}`
-  try {
-    writeFileSync(temporary, JSON.stringify(worktree))
-    renameSync(temporary, file)
-  } catch (error) {
-    rmSync(temporary, { force: true })
-    throw error
-  }
+ * A torn write must not make the retry publish half-decoded metadata.
+ *
+ * #1583: the directory, the temporary file and the rename wait for the disk off
+ * the event loop, as one async function: once it has started it runs to its end
+ * whatever happens to the fiber waiting for it, so an interruption cannot leave
+ * a half-written temporary file or strand it, as it could not between the
+ * synchronous calls it replaces. A failed write or rename removes the temporary
+ * file and fails with the error's message, the reason the synchronous throw
+ * gave. What the synchronous calls could not do is outlive the critical section:
+ * the tail of an interrupted call can still be running when a recovery has
+ * reopened the workflow and the next settlement persists its evidence, and its
+ * rename would land over the newer file. So the whole sequence takes its turn
+ * behind the earlier writes to the same file (`DagIsolation.writeInOrder`), which
+ * also keeps two calls from sharing the temporary file. */
+function persistSettlementEvidence(
+  projectID: string,
+  dagID: string,
+  worktree: DagEvent.WorkflowWorktree,
+): Effect.Effect<void, Error> {
+  return Effect.tryPromise({
+    try: async (signal) => {
+      const file = settlementEvidencePath(projectID, dagID)
+      if (!file) throw new Error(`invalid workflow ID for settlement evidence: ${JSON.stringify(dagID)}`)
+      await DagIsolation.writeInOrder(
+        file,
+        async () => {
+          await mkdir(dirname(file), { recursive: true })
+          const temporary = `${file}.tmp-${process.pid}`
+          try {
+            await writeFile(temporary, JSON.stringify(worktree))
+            await rename(temporary, file)
+          } catch (error) {
+            await rm(temporary, { force: true })
+            throw error
+          }
+        },
+        signal,
+      )
+    },
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  })
 }
 
 /** Read back the evidence persisted before removal. Anything unreadable or
  * scoped to a different worktree is discarded: an empty tombstone is worse
- * than the reason-bearing fallback but better than foreign evidence. */
+ * than the reason-bearing fallback but better than foreign evidence. #1583:
+ * the read waits for the disk off the event loop; a file that is missing is as
+ * unreadable as any other, so it needs no existence check of its own. */
 function readSettlementEvidence(
   projectID: string,
   dagID: string,
   directory: string,
-): DagEvent.WorkflowWorktree | undefined {
-  const file = settlementEvidencePath(projectID, dagID)
-  if (!file || !existsSync(file)) return undefined
-  try {
-    const evidence = Schema.decodeUnknownSync(DagEvent.WorkflowWorktree)(JSON.parse(readFileSync(file, "utf8")))
-    if (evidence.directory !== directory) return undefined
-    return { ...evidence, state: "removed" }
-  } catch {
-    return undefined
-  }
+): Effect.Effect<DagEvent.WorkflowWorktree | undefined> {
+  return Effect.promise(async (): Promise<DagEvent.WorkflowWorktree | undefined> => {
+    const file = settlementEvidencePath(projectID, dagID)
+    if (!file) return undefined
+    try {
+      const evidence = Schema.decodeUnknownSync(DagEvent.WorkflowWorktree)(JSON.parse(await readFile(file, "utf8")))
+      if (evidence.directory !== directory) return undefined
+      return { ...evidence, state: "removed" }
+    } catch {
+      return undefined
+    }
+  })
 }
 
 export interface SettleTerminalWorkflowInput {

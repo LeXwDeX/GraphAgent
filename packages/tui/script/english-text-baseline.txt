@@ -65,7 +65,6 @@ component/prompt/index.tsx	jsx-text	(new
 component/prompt/index.tsx	jsx-text	(new working copy)
 component/prompt/index.tsx	jsx-text	Prompt not sent · restore failed prompt from commands to retry
 component/prompt/index.tsx	jsx-text	Sending prompt…
-component/prompt/index.tsx	jsx-text	Shell
 component/prompt/index.tsx	jsx-text	Some session details could not load (
 component/prompt/index.tsx	jsx-text	Stopping…
 component/prompt/index.tsx	jsx-text	Workspace	2
@@ -129,12 +128,8 @@ panel/settings.tsx	prop	Previous tab
 routes/session/index.tsx	jsx-attr	# Questions
 routes/session/index.tsx	jsx-attr	# Todos
 routes/session/index.tsx	jsx-text	Asked
-routes/session/index.tsx	jsx-text	Edit
 routes/session/index.tsx	jsx-text	Error [
-routes/session/index.tsx	jsx-text	Patch
 routes/session/index.tsx	jsx-text	Updating todos...
-routes/session/index.tsx	jsx-text	Write
-routes/session/index.tsx	jsx-text	line
 routes/session/index.tsx	jsx-text	message reverted	2
 routes/session/index.tsx	jsx-text	or /redo to restore	2
 routes/session/index.tsx	jsx-text	question

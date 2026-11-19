@@ -8,7 +8,7 @@ import { createStore } from "solid-js/store"
 import { setLanguage, t } from "../src/i18n"
 import { createPrTracker } from "../src/shell/pr-tracker"
 import type { ToastOptions } from "../src/ui/toast"
-import { footerRow, PROMPT_MARK, runApp, waitFor, waitForFrame } from "./fixture/run-app"
+import { footerRow, promptShown, promptTop, runApp, waitFor, waitForFrame } from "./fixture/run-app"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -75,7 +75,7 @@ const passed = () => watch({ phase: "delivering", outcome: "success", delivery: 
 test("a PR event for the root session toasts in the footer", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 30, handler: served([]) })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     app.events.emit(prEvent(watch()))
     app.events.emit(prEvent(passed()))
     const toast = t("pr.toast", { number: 7, text: t("pr.outcome.success") })
@@ -194,11 +194,11 @@ function stoppable(handler: FetchHandler): FetchHandler {
 /** The one write a stop makes. */
 const abort = { method: "POST", path: `/session/${mainID}/abort`, body: undefined }
 
-/** The rows the band can take (at most two), right above the first row of the prompt. */
+/** The rows the band can take (at most two), right above the top edge of the input box. */
 function bandOf(frame: string) {
   const rows = frame.split("\n").map((row) => row.trimEnd())
-  const first = rows.findIndex((row, index) => index > 2 && row.trimStart().startsWith("┃"))
-  if (first < 0) throw new Error(`no prompt in the frame:\n${frame}`)
+  const first = promptTop(rows)
+  if (first < 2) throw new Error(`no prompt in the frame:\n${frame}`)
   return rows.slice(first - 2, first).join("\n")
 }
 
@@ -222,7 +222,7 @@ test("Esc stops a busy session and leaves the watching PR row, the band and the 
       label,
     )
   try {
-    await next((frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await next(promptShown, "the prompt")
     app.events.emit(prEvent(watch()))
     const idle = await next((frame) => frame.includes("PR #7"), "the PR row")
     const before = bandOf(idle)
