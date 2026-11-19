@@ -301,57 +301,66 @@ function interruptedTurn(stopped: boolean): Message {
 }
 
 test("the tracker lists the same PR rows through an interrupt, and neither toasts nor starts a timer", () => {
-  createRoot((dispose) => {
-    try {
-      const toasts: ToastOptions[] = []
-      const timers: number[] = []
-      const [data, setData] = createStore<TrackedData>({
-        pr_watch: {},
-        reminder: {},
-        session_status: {},
-        message: {},
-        part: {},
-        hydrated: [mainID],
-      })
-      // The tracker as `app.tsx` wires it, over a store of its own and a clock that stands still.
-      const tracker = createPrTracker({
-        data,
-        ticker: {
-          now: () => 1_700_000_000_000,
-          at(time) {
-            timers.push(time)
-            return () => {}
-          },
+  // The root only builds the fixture: the steps run outside it, so the tracker's effects (the one that arms
+  // `ticker.at` and announces clock-driven toasts) run between them, as they do in the app.
+  const fixture = createRoot((dispose) => {
+    const toasts: ToastOptions[] = []
+    const timers: number[] = []
+    const [data, setData] = createStore<TrackedData>({
+      pr_watch: {},
+      reminder: {},
+      session_status: {},
+      message: {},
+      part: {},
+      hydrated: [mainID],
+    })
+    // The tracker as `app.tsx` wires it, over a store of its own and a clock that stands still.
+    const tracker = createPrTracker({
+      data,
+      ticker: {
+        now: () => 1_700_000_000_000,
+        at(time) {
+          timers.push(time)
+          return () => {}
         },
-        toast: { show: (options) => void toasts.push(options) },
-        onPrWatchEvent: () => () => {},
-        currentRoot: () => mainID,
-      })
-      setData("pr_watch", mainID, { w1: watch({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } }) })
-      // Plain copies: what was listed before must not move with the later reads.
-      const before = structuredClone(tracker.items(mainID))
-      expect(before.map((item) => `${item.watchID}:${item.state.kind}`)).toEqual(["w1:watching"])
-
-      // What the store holds of an interrupt, in order: the turn runs, it is stopped with an abort error, it is idle.
-      const steps: ReadonlyArray<readonly [string, () => void]> = [
-        [
-          "the turn runs",
-          () => {
-            setData("session_status", mainID, { type: "busy" })
-            setData("message", mainID, [interruptedTurn(false)])
-          },
-        ],
-        ["the turn is stopped", () => setData("message", mainID, [interruptedTurn(true)])],
-        ["the session is idle", () => setData("session_status", mainID, { type: "idle" })],
-      ]
-      for (const [label, step] of steps) {
-        step()
-        expect(structuredClone(tracker.items(mainID)), label).toEqual(before)
-      }
-      expect(toasts).toEqual([])
-      expect(timers).toEqual([])
-    } finally {
-      dispose()
-    }
+      },
+      toast: { show: (options) => void toasts.push(options) },
+      onPrWatchEvent: () => () => {},
+      currentRoot: () => mainID,
+    })
+    return { toasts, timers, setData, tracker, dispose }
   })
+  const { toasts, timers, setData, tracker } = fixture
+  try {
+    setData("pr_watch", mainID, { w1: watch({ checks: { total: 6, pending: 2, failed: 0, passed: 4 } }) })
+    // Plain copies: what was listed before must not move with the later reads.
+    const before = structuredClone(tracker.items(mainID))
+    expect(before.map((item) => `${item.watchID}:${item.state.kind}`)).toEqual(["w1:watching"])
+
+    // What the store holds of an interrupt, in order: the turn runs, it is stopped with an abort error, it is idle.
+    const steps: ReadonlyArray<readonly [string, () => void]> = [
+      [
+        "the turn runs",
+        () => {
+          setData("session_status", mainID, { type: "busy" })
+          setData("message", mainID, [interruptedTurn(false)])
+        },
+      ],
+      ["the turn is stopped", () => setData("message", mainID, [interruptedTurn(true)])],
+      ["the session is idle", () => setData("session_status", mainID, { type: "idle" })],
+    ]
+    for (const [label, step] of steps) {
+      step()
+      expect(structuredClone(tracker.items(mainID)), label).toEqual(before)
+    }
+    expect(toasts).toEqual([])
+    expect(timers).toEqual([])
+
+    // The control: the effects do run here. A watch that has an outcome owed to the agent arms its three-minute
+    // clock, which the steps above never did.
+    setData("pr_watch", mainID, "w1", watch({ phase: "delivering", outcome: "success" }))
+    expect(timers.length).toBeGreaterThan(0)
+  } finally {
+    fixture.dispose()
+  }
 })
