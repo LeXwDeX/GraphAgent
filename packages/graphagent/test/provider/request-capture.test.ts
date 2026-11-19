@@ -3,8 +3,10 @@
 
 // GRAPHAGENT_DEBUG_REQUESTS=1 writes every request of the AI SDK path to the data directory (#1461). The writer is
 // exercised against temp directories through its `dir` parameter, then end to end through a real Provider with the
-// flag on, off, and on but unable to write. Only fake credentials appear here.
-import { afterEach, describe, expect, test } from "bun:test"
+// flag on, off, on but unable to write, and on with slow storage. The interleavings of writing and pruning are set up
+// by hooking the file system calls, so they are deterministic. Only fake credentials appear here.
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
+import type { Stats } from "node:fs"
 import fs from "node:fs/promises"
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http"
 import path from "node:path"
@@ -25,7 +27,7 @@ import { Provider } from "@/provider/provider"
 import { RequestCapture } from "@/provider/request-capture"
 import * as Log from "@/util/log"
 import { disposeAllInstances, provideTmpdirInstance, tmpdir } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { testProviderConfig } from "../lib/test-provider"
 
 afterEach(async () => {
@@ -50,6 +52,12 @@ function send(dir: string, call: Call = {}) {
 }
 
 const stepFile = (step: number) => `${String(step).padStart(4, "0")}.json`
+
+/** The `node:fs/promises` calls the tests hook: the very object the code under test calls through, with one signature each. */
+const hooked: {
+  stat: (file: string) => Promise<Stats>
+  readdir: (dir: string, options?: { withFileTypes?: false }) => Promise<string[]>
+} = fs
 
 async function readStep(dir: string, session: string, step: number) {
   return JSON.parse(await fs.readFile(path.join(dir, session, stepFile(step)), "utf8"))
@@ -297,17 +305,53 @@ describe("RequestCapture.record", () => {
     expect(input.href).toBe("https://user:pass@api.example.test/v1/x?key=FAKE-KEY")
   })
 
-  test("a request for a new session first removes sessions idle for over 7 days; one for an existing session does not", async () => {
+  test("never prunes: a request scans no directory but its own session's, and old sessions are left to cleanup", async () => {
     await using tmp = await tmpdir()
     await send(tmp.path, { headers: { "x-session-id": "ses_old" } })
     await age(tmp.path, "ses_old", 8)
-    await send(tmp.path, { headers: { "x-session-id": "ses_new" } })
-    expect(await fs.readdir(tmp.path)).toEqual(["ses_new"])
+    const realReaddir = fs.readdir
+    const scanned: string[] = []
+    const spy = spyOn(hooked, "readdir").mockImplementation(async (dir, options) => {
+      scanned.push(dir)
+      return realReaddir(dir, options)
+    })
+    try {
+      await send(tmp.path, { headers: { "x-session-id": "ses_new" } })
+    } finally {
+      spy.mockRestore()
+    }
 
-    await send(tmp.path, { headers: { "x-session-id": "ses_old_again" } })
-    await age(tmp.path, "ses_old_again", 8)
-    await send(tmp.path, { headers: { "x-session-id": "ses_new" } })
-    expect((await fs.readdir(tmp.path)).sort()).toEqual(["ses_new", "ses_old_again"])
+    expect(scanned).not.toContain(tmp.path)
+    expect((await fs.readdir(tmp.path)).sort()).toEqual(["ses_new", "ses_old"])
+  })
+
+  test("recovers when pruning removes the session directory between the check and the write", async () => {
+    await using tmp = await tmpdir()
+    await send(tmp.path)
+    const sessionDir = path.join(tmp.path, SESSION)
+    const realWrite = fs.writeFile
+    let removed = false
+    const spy = spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+      if (!removed && typeof file === "string" && file.startsWith(sessionDir)) {
+        removed = true
+        // The pruning wins the race: the directory is gone when the request tries to write into it.
+        await fs.rm(sessionDir, { recursive: true, force: true })
+      }
+      return realWrite(file, data, options)
+    })
+    const entries: Log.Entry[] = []
+    const restore = Log.setSink((entry) => entries.push(entry))
+    try {
+      await send(tmp.path)
+      await Log.flush()
+    } finally {
+      spy.mockRestore()
+      restore()
+    }
+
+    expect(removed).toBe(true)
+    expect(await RequestCapture.list(SESSION, tmp.path)).toEqual([1])
+    expect(entries.filter((entry) => entry.level === "warn")).toHaveLength(0)
   })
 })
 
@@ -400,6 +444,30 @@ describe("RequestCapture.cleanup", () => {
     expect(await fs.readdir(tmp.path)).toEqual(["ses_empty_new"])
   })
 
+  test("a request written while a session is being pruned survives: only files seen to be old are deleted", async () => {
+    await using tmp = await tmpdir()
+    await seedSession(tmp.path, SESSION, [9, 9, 9])
+    const sessionPrefix = path.join(tmp.path, SESSION) + path.sep
+    const realStat = fs.stat
+    let looked = 0
+    const spy = spyOn(hooked, "stat").mockImplementation(async (file) => {
+      const info = await realStat(file)
+      // The pruning has now looked at all three old files and decided the session is idle; before it deletes
+      // anything the session resumes and a new request is written.
+      if (file.startsWith(sessionPrefix) && ++looked === 3) await send(tmp.path)
+      return info
+    })
+    try {
+      await RequestCapture.cleanup(Date.now(), tmp.path)
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(looked).toBeGreaterThanOrEqual(3)
+    expect(await RequestCapture.list(SESSION, tmp.path)).toContain(4)
+    expect(await readStep(tmp.path, SESSION, 4)).toMatchObject({ sessionID: SESSION, step: 4 })
+  })
+
   test("ignores errors: a missing or unreadable directory is not a failure", async () => {
     await using tmp = await tmpdir()
     const file = path.join(tmp.path, "a-file")
@@ -448,8 +516,17 @@ async function replyingServer(): Promise<{ server: Server; url: string; received
 
 const uniqueSession = (label: string) => `ses_capture_${label}_${Math.random().toString(36).slice(2, 10)}`
 
+/** The `test` provider pointed at `url`, with `options` (a timeout, say) added to its provider options. */
+const providerConfig = (url: string, options: Record<string, unknown>) => {
+  const base = testProviderConfig(url)
+  return {
+    ...base,
+    provider: { test: { ...base.provider.test, options: { ...base.provider.test.options, ...options } } },
+  }
+}
+
 /** One `streamText` call through the real Provider and the `test` provider pointed at `url`, tagged with `sessionID`. */
-const callProvider = (url: string, sessionID: string) =>
+const callProvider = (url: string, sessionID: string, options: Record<string, unknown> = {}) =>
   provideTmpdirInstance(
     () =>
       Effect.gen(function* () {
@@ -462,7 +539,7 @@ const callProvider = (url: string, sessionID: string) =>
         })
         return yield* Effect.promise(() => result.text)
       }),
-    { config: testProviderConfig(url) },
+    { config: providerConfig(url, options) },
   )
 
 const sessionDirOf = (sessionID: string) => path.join(RequestCapture.DIR, sessionID)
@@ -552,4 +629,87 @@ capturing.live(
         entries.filter((entry) => entry.level === "warn" && entry.service === "provider.request-capture"),
       ).toHaveLength(1)
     }),
+)
+
+/** Every write below the capture directory takes `ms` longer, as on slow storage. */
+const slowCaptureWrites = (ms: number) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const realWrite = fs.writeFile
+      return spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+        if (typeof file === "string" && file.startsWith(RequestCapture.DIR)) await Bun.sleep(ms)
+        return realWrite(file, data, options)
+      })
+    }),
+    (spy) => Effect.sync(() => spy.mockRestore()),
+  )
+
+for (const [name, options] of [
+  ["response-header timeout", { headerTimeout: 300 }],
+  ["overall timeout", { timeout: 500 }],
+] as const) {
+  capturing.live(`with the flag on, a capture slower than the ${name} does not spend it`, () =>
+    Effect.gen(function* () {
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(() => replyingServer()),
+        (value) => Effect.sync(() => value.server.close()),
+      )
+      const sessionID = uniqueSession("slow")
+      yield* Effect.addFinalizer(() => removeSession(sessionID))
+      yield* slowCaptureWrites(800)
+
+      // The provider answers at once; with the capture inside the timers the request would go out already aborted.
+      expect(yield* callProvider(server.url, sessionID, options)).toBe("ok")
+
+      expect(server.received).toHaveLength(1)
+      expect(yield* Effect.promise(() => RequestCapture.list(sessionID))).toEqual([1])
+    }),
+  )
+}
+
+const exists = (target: string) =>
+  fs.stat(target).then(
+    () => true,
+    () => false,
+  )
+
+/** A session directory under the capture directory whose only file is 8 days old. */
+async function seedIdleCapture(sessionID: string) {
+  const dir = sessionDirOf(sessionID)
+  await fs.mkdir(dir, { recursive: true })
+  const file = path.join(dir, stepFile(1))
+  await fs.writeFile(file, "{}")
+  const old = new Date(Date.now() - 8 * DAY)
+  await fs.utimes(file, old, old)
+  await fs.utimes(dir, old, old)
+}
+
+const bare = testEffect(Layer.mergeAll(Env.defaultLayer, CrossSpawnSpawner.defaultLayer))
+
+bare.live("with the flag on, starting the provider prunes captures idle for over 7 days, in the background", () =>
+  Effect.gen(function* () {
+    const sessionID = uniqueSession("idle_on")
+    yield* Effect.addFinalizer(() => removeSession(sessionID))
+    yield* Effect.promise(() => seedIdleCapture(sessionID))
+
+    yield* Layer.build(providerLayer({ debugRequests: true }))
+
+    yield* pollWithTimeout(
+      Effect.promise(() => exists(sessionDirOf(sessionID))).pipe(Effect.map((there) => (there ? undefined : true))),
+      "the idle session was not pruned",
+    )
+  }),
+)
+
+bare.live("with the flag off, starting the provider leaves old captures alone", () =>
+  Effect.gen(function* () {
+    const sessionID = uniqueSession("idle_off")
+    yield* Effect.addFinalizer(() => removeSession(sessionID))
+    yield* Effect.promise(() => seedIdleCapture(sessionID))
+
+    yield* Layer.build(providerLayer({ debugRequests: false }))
+    yield* Effect.sleep("300 millis")
+
+    expect(yield* Effect.promise(() => exists(sessionDirOf(sessionID)))).toBe(true)
+  }),
 )

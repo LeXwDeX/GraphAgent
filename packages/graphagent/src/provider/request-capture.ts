@@ -6,6 +6,9 @@
  * `<data>/debug-requests/<session>/<NNNN>.json` (#1461), so a bad answer can be traced to what the engine actually
  * sent instead of to a proxy capture. The body is kept as sent; header values and URL secrets are redacted before
  * anything reaches the disk. Writing is best effort: a failure is a warning and the request still goes out.
+ *
+ * Retention is `cleanup`, which is never on a request's path: the Provider runs it once per process in the background,
+ * and `graphagent debug request` runs it before it looks.
  */
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -23,7 +26,7 @@ const SESSION_NAME = /^[A-Za-z0-9_-]{1,128}$/
 const STEP_FILE = /^(\d{4,})\.json$/
 /** Names whose values are credentials: header names and URL query parameters. */
 const SECRET_NAME = /auth|cookie|key|token|secret|credential|signature|password/
-/** Free step numbers are found by listing the directory; concurrent writers of one session retry on a collision. */
+/** Free step numbers are found by listing the directory; writers of one session retry on a collision or a pruned directory. */
 const MAX_ATTEMPTS = 64
 
 /** The arguments of the `fetch` call being captured. Only a string or URL input and a string body are recorded. */
@@ -110,20 +113,27 @@ async function steps(sessionDir: string): Promise<number[]> {
     .toSorted((a, b) => a - b)
 }
 
-/** The mtime of the newest file in a session directory, or of the directory itself while it has no files yet. */
-async function newestMtime(sessionDir: string): Promise<number | undefined> {
+/**
+ * The files of a session directory when the newest of them (the directory itself while it has none) is older than
+ * `cutoff`; undefined when the session is not idle or cannot be read.
+ */
+async function idleFiles(sessionDir: string, cutoff: number): Promise<string[] | undefined> {
   try {
     const names = await fs.readdir(sessionDir)
-    const times = await Promise.all(
+    const seen = await Promise.all(
       names.map((name) =>
         fs.stat(path.join(sessionDir, name)).then(
-          (info) => (info.isFile() ? info.mtimeMs : undefined),
+          (info) => (info.isFile() ? { name, mtime: info.mtimeMs } : undefined),
           () => undefined,
         ),
       ),
     )
-    const files = times.filter((time) => time !== undefined)
-    return files.length > 0 ? Math.max(...files) : (await fs.stat(sessionDir)).mtimeMs
+    const files = seen.filter((file) => file !== undefined)
+    const newest =
+      files.length > 0
+        ? files.reduce((latest, file) => Math.max(latest, file.mtime), 0)
+        : (await fs.stat(sessionDir)).mtimeMs
+    return newest < cutoff ? files.map((file) => file.name) : undefined
   } catch {
     return undefined
   }
@@ -132,6 +142,10 @@ async function newestMtime(sessionDir: string): Promise<number | undefined> {
 /**
  * Removes the session directories whose newest file is over 7 days older than `now`. Only directories named like a
  * session are touched, and every error is ignored: this is housekeeping for a debug aid.
+ *
+ * It deletes the files it saw to be old, one by one, and then the directory itself without recursion. A request written
+ * after the age check is not in that list and keeps the directory from being empty, so the pruning can run beside
+ * writers, of this process or of another, and never takes a fresh request with it.
  */
 export async function cleanup(now: number, dir = DIR): Promise<void> {
   const cutoff = now - RETENTION_MS
@@ -139,9 +153,10 @@ export async function cleanup(now: number, dir = DIR): Promise<void> {
   for (const entry of entries) {
     if (!entry.isDirectory() || !SESSION_NAME.test(entry.name)) continue
     const sessionDir = path.join(dir, entry.name)
-    const newest = await newestMtime(sessionDir)
-    if (newest === undefined || newest >= cutoff) continue
-    await fs.rm(sessionDir, { recursive: true, force: true }).catch(() => undefined)
+    const idle = await idleFiles(sessionDir, cutoff)
+    if (!idle) continue
+    for (const name of idle) await fs.unlink(path.join(sessionDir, name)).catch(() => undefined)
+    await fs.rmdir(sessionDir).catch(() => undefined)
   }
 }
 
@@ -154,23 +169,25 @@ async function exists(target: string) {
   }
 }
 
-/** Creates the session directory 0700. Sessions idle for over a week are removed first, once per new directory. */
+/** Creates the session directory, and the capture directory above it, 0700 when they are not there yet. */
 async function ensureSessionDir(dir: string, sessionDir: string) {
   if (await exists(sessionDir)) return
-  await cleanup(Date.now(), dir)
   await fs.mkdir(dir, { recursive: true, mode: 0o700 })
   await fs.mkdir(sessionDir, { recursive: true, mode: 0o700 })
 }
 
 /** Writes the next step file (0600, never over an existing one) and returns its number. */
-async function writeNext(sessionDir: string, render: (step: number) => string): Promise<number> {
+async function writeNext(dir: string, sessionDir: string, render: (step: number) => string): Promise<number> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const step = ((await steps(sessionDir)).at(-1) ?? 0) + 1
     try {
       await fs.writeFile(path.join(sessionDir, stepName(step)), render(step), { flag: "wx", mode: 0o600 })
       return step
     } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error
+      const code = error instanceof Error && "code" in error ? error.code : undefined
+      // EEXIST: another writer took this number. ENOENT: the pruning removed the session directory just now.
+      if (code === "ENOENT") await ensureSessionDir(dir, sessionDir)
+      else if (code !== "EEXIST") throw error
     }
   }
   throw new Error(`no free step number in ${sessionDir}`)
@@ -194,7 +211,7 @@ export async function record(call: FetchCall, dir = DIR): Promise<void> {
     const url = redactUrl(input)
     const redacted = redactHeaders(headers)
     const body = parseBody(init.body)
-    await writeNext(sessionDir, (step) =>
+    await writeNext(dir, sessionDir, (step) =>
       JSON.stringify({ sessionID, step, time, method, url, headers: redacted, body }),
     )
   } catch (error) {
