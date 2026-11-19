@@ -3,13 +3,25 @@
 
 import { performance } from "node:perf_hooks"
 import { CodeRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
-import type { Part } from "@graphagent/sdk"
+import type { Goal, Part, PrWatchEntry } from "@graphagent/sdk"
 import { TICK_MS } from "../../src/context/ticker"
+import { t } from "../../src/i18n"
 import { isWindowed } from "../../src/routes/session/rows"
 import { dagIndicatorCompact, dagIndicatorText } from "../../src/shell/dag-indicator"
+import { FRAME_WAIT_MS, pause } from "../fixture/frames"
+import { MINUTE, prEntry } from "../fixture/pr-band"
 import { readFrame } from "../routes/dag-mode-harness"
-import { type FixtureSize, updatePartEvent } from "./fixtures"
-import type { PerfHarness, PerfStream } from "./harness"
+import {
+  createFixture,
+  goalUpdatedEvent,
+  prWatchEvent,
+  RUNNING_WORKFLOW,
+  type FixtureSize,
+  type PerfFixture,
+  updatePartEvent,
+  withRunningWorkflow,
+} from "./fixtures"
+import { mountHarness, type PerfHarness, type PerfStream } from "./harness"
 import { within } from "./settle"
 
 export const SCENARIO_IDS = [
@@ -31,6 +43,8 @@ export const SCENARIO_IDS = [
   "P14",
   "P15",
   "P15b",
+  "P15c",
+  "P15d",
   "P16",
   "P17",
   "P17b",
@@ -262,27 +276,14 @@ async function tickerFrames(harness: PerfHarness, ms: number) {
 }
 
 /**
- * P15b: idle with the session in DAG mode, the footer indicator and the prompt
- * usage segment on screen (#1280). The mode arrives as one `session.updated`
- * and the footer answers it with an availability read; both land before the
- * window opens, because a frame they cause is not an idle frame. A run with DAG
- * mode still off would count zero frames for any session, so the scenario fails
- * unless the mode and its indicator are really there.
- *
- * It counts every ticker signal an idle screen could repaint from: `frames` is
- * the animation ticker, `seconds` the one-second signal (a footer that shows
- * elapsed time or re-reads its usage once a second subscribes to that one and
- * never touches `frames`), and `renderRequests` what the components ask the
- * renderer for directly.
+ * What an idle screen is held to (P15b, P15c and P15d): two seconds of virtual time with nothing happening, in which
+ * it counts every signal an idle screen could repaint from. `frames` is the animation ticker, `seconds` the
+ * one-second signal (a component that shows elapsed time or re-reads itself once a second subscribes to that one and
+ * never touches `frames`), and `renderRequests` what the components ask the renderer for directly. The caller has
+ * already checked that what the scenario is about is on screen: a window over a screen without it counts zero for
+ * any component.
  */
-async function dagIdleFrames(harness: PerfHarness) {
-  await harness.setDagMode("on")
-  const frame = await readFrame(harness.app)
-  if (harness.sync.session.get(harness.fixture.session.id)?.dagMode !== "on") {
-    invalid("P15b", "the session did not enter DAG mode", frame)
-  }
-  const label = dagIndicatorText("on", dagIndicatorCompact(harness.app.renderer.width))
-  if (!frame.includes(label)) invalid("P15b", `the footer does not show ${label}`, frame)
+async function idleCounters(harness: PerfHarness) {
   await harness.app.renderOnce()
   const before = harness.snapshot()
   const frameBefore = harness.ticker.frame()
@@ -294,6 +295,179 @@ async function dagIdleFrames(harness: PerfHarness) {
     seconds: harness.ticker.second() - secondBefore,
     renderRequests: harness.counters.delta(before).renderRequests,
   }
+}
+
+/**
+ * P15b: idle with the session in DAG mode, the footer indicator and the prompt
+ * usage segment on screen (#1280). The mode arrives as one `session.updated`
+ * and the footer answers it with an availability read; both land before the
+ * window opens, because a frame they cause is not an idle frame. A run with DAG
+ * mode still off would count zero frames for any session, so the scenario fails
+ * unless the mode and its indicator are really there.
+ */
+async function dagIdleFrames(harness: PerfHarness) {
+  await harness.setDagMode("on")
+  const frame = await readFrame(harness.app)
+  if (harness.sync.session.get(harness.fixture.session.id)?.dagMode !== "on") {
+    invalid("P15b", "the session did not enter DAG mode", frame)
+  }
+  const label = dagIndicatorText("on", dagIndicatorCompact(harness.app.renderer.width))
+  if (!frame.includes(label)) invalid("P15b", `the footer does not show ${label}`, frame)
+  return idleCounters(harness)
+}
+
+/** Virtual time a freshly mounted harness is given before it is measured. */
+const MOUNT_SETTLE_MS = 100
+/** Rounds in a row without a render request before the status band counts as at rest. */
+const BAND_QUIET_ROUNDS = 20
+
+/** The goal P15c puts under the workflow row. */
+const BAND_GOAL: Goal = { goal: "ship the upgrade", status: "active", turnsUsed: 6, maxTurns: 30 }
+
+/** The PR P15d watches: four of its six checks have passed. */
+const WATCHED_PR = { number: 7, url: "https://forge.test/acme/app/pull/7" }
+const WATCHED_CHECKS = { total: 6, pending: 2, failed: 0, passed: 4 }
+
+/**
+ * A harness that draws the status band, past the moment it was mounted. Components arm one-shots for "soon" when they
+ * mount (the prompt applies its cursor color on the next tick of the clock, the session route scrolls to the bottom 50
+ * ms on); a harness that has run other scenarios has let them fall due, but here they would fall due on the first
+ * advance of the clock, which is the window's own.
+ */
+async function mountBanded(fixture: PerfFixture) {
+  const harness = await mountHarness(fixture, { statusBand: true })
+  harness.clock.advance(MOUNT_SETTLE_MS)
+  await settleHighlights(harness)
+  return harness
+}
+
+/**
+ * Brings the screen to rest with the status band on it, and checks that the band is what the scenario is about. Its
+ * rows come in through events and reads (the workflow's node table, the goal, the PR), so the screen is drawn until
+ * every piece named in `pieces` is on it and nothing has asked the renderer for a frame for a while: an answer that
+ * lands inside the window would count as an idle repaint. A screen without the band's rows repaints nothing, so a
+ * window over it would count zero for whatever draws them, however it is written; this fails like `invalid` instead,
+ * with the frame.
+ */
+async function settleBand(harness: PerfHarness, scenario: ScenarioID, pieces: Record<string, string>) {
+  const missing = (frame: string) =>
+    Object.entries(pieces)
+      .filter(([, text]) => !frame.includes(text))
+      .map(([name]) => name)
+  const deadline = performance.now() + FRAME_WAIT_MS
+  let quiet = 0
+  for (let round = 0; ; round++) {
+    const requests = harness.counters.renderRequests
+    await harness.app.renderOnce()
+    const frame = await readFrame(harness.app)
+    const absent = missing(frame)
+    quiet = absent.length === 0 && harness.counters.renderRequests === requests ? quiet + 1 : 0
+    if (quiet >= BAND_QUIET_ROUNDS) return
+    if (performance.now() >= deadline) {
+      const reason =
+        absent.length > 0 ? `the status band does not show ${absent.join(", ")}` : "the screen keeps asking for frames"
+      invalid(scenario, reason, frame)
+    }
+    await pause(round)
+  }
+}
+
+/**
+ * P15c: idle with a workflow running and a goal set, the status band showing both rows (#1620). The band is on every
+ * idle path of a session and reads the workflows, the goal and the PR tracker; it has to draw them without a clock
+ * and without asking for frames. The workflow comes with the session (its summary and its node table are read when
+ * the session is entered), the goal as one `goal.updated`. `P15` and `P15b` never draw the band, so only this window
+ * can see a band that repaints on its own.
+ */
+async function workflowBandIdle(harness: PerfHarness) {
+  harness.emit(goalUpdatedEvent(harness.fixture.session.id, BAND_GOAL, "evt_idle_band_goal"))
+  await settleBand(harness, "P15c", {
+    "the workflow row": `◆ ${RUNNING_WORKFLOW.title}`,
+    "its wave": t("dagmode.panel.count.wave", RUNNING_WORKFLOW.wave),
+    "its running count": t("dagmode.panel.count.running", { n: RUNNING_WORKFLOW.running }),
+    "the goal row": `◎ ${t("goal.title")}`,
+  })
+  return idleCounters(harness)
+}
+
+/**
+ * P15d: idle with a PR being watched, the status band showing its row (#1620). The PR tracker owns every clock the
+ * row has, at most one `ticker.at` a watch, so there are two windows: the PR is watched (nothing is pending), then
+ * its outcome is known and the notice is owed to the agent, which arms the tracker's one-shot for the three minutes
+ * after which the agent counts as not responding. Both have to be idle, and the metrics say which one was not. The
+ * session is idle throughout, as it is when it left the PR to its watch. The PR arrives as the events the server
+ * sends (`pr.watch.updated`); the manual clock stands still between them but for the window itself, so the minutes
+ * never fall due.
+ */
+async function prBandIdle(harness: PerfHarness) {
+  const root = harness.fixture.session.id
+  harness.sync.set("session_status", root, { type: "idle" })
+  const state = (over: Partial<PrWatchEntry>, id: string) => {
+    const now = harness.clock.now()
+    return prWatchEvent(
+      prEntry({
+        ...WATCHED_PR,
+        sessionID: root,
+        watchID: "watch_idle_band",
+        startedAt: now - 10 * MINUTE,
+        updatedAt: now,
+        deadlineAt: now + 60 * MINUTE,
+        ...over,
+      }),
+      id,
+    )
+  }
+  const row = `${t("pr.label")} ${t("pr.number", { number: WATCHED_PR.number })}`
+
+  harness.emit(state({ phase: "watching", outcome: undefined, checks: WATCHED_CHECKS }, "evt_idle_band_pr_watching"))
+  await settleBand(harness, "P15d", {
+    "the PR row": row,
+    "its CI count": t("pr.ci", { passed: WATCHED_CHECKS.passed, total: WATCHED_CHECKS.total }),
+  })
+  const watching = await idleCounters(harness)
+
+  harness.emit(
+    state({ phase: "delivering", outcome: "success", delivery: { state: "pending" } }, "evt_idle_band_pr_awaiting"),
+  )
+  await settleBand(harness, "P15d", {
+    "the PR row": row,
+    "its outcome": t("pr.outcome.success"),
+    "the wait for the agent": t("pr.status.awaiting"),
+  })
+  const awaiting = await idleCounters(harness)
+
+  return {
+    framesWatching: watching.frames,
+    secondsWatching: watching.seconds,
+    renderRequestsWatching: watching.renderRequests,
+    framesAwaiting: awaiting.frames,
+    secondsAwaiting: awaiting.seconds,
+    renderRequestsAwaiting: awaiting.renderRequests,
+  }
+}
+
+/**
+ * P15c and P15d: the idle windows with the status band on screen. The shared harness draws no band and has no PR
+ * tracker (the band takes two rows of its screen, and every other scenario was measured without them), so each
+ * mounts a harness of its own over a fresh fixture of the same size. They run after everything else has been
+ * measured: the theme's `ready` flag belongs to the module, so mounting a second harness makes the first one destroy
+ * and rebuild its tree.
+ */
+async function runBandScenarios(size: FixtureSize): Promise<ScenarioResult[]> {
+  const all: ScenarioResult[] = []
+  const workflow = await mountBanded(withRunningWorkflow(createFixture(size)))
+  try {
+    all.push(result("P15c", size, await workflowBandIdle(workflow)))
+  } finally {
+    await workflow.dispose()
+  }
+  const pr = await mountBanded(createFixture(size))
+  try {
+    all.push(result("P15d", size, await prBandIdle(pr)))
+  } finally {
+    await pr.dispose()
+  }
+  return all
 }
 
 function runningToolPart(index: number, sessionID: string, messageID: string): Part {
@@ -867,5 +1041,6 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
     all.push(result("P20", size, { nodes2: 0, nodes3: 0, growth: 0, heap2: 0, heap3: 0, heapGrowth: 0 }))
   }
 
+  all.push(...(await runBandScenarios(size)))
   return all
 }
