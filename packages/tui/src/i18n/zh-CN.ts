@@ -37,6 +37,8 @@ export const zhCN = {
   "prompt.edit.status": "正在编辑：{label} · esc 取消",
   "prompt.edit.rename": "重命名",
   "prompt.edit.queued": "排队消息",
+  "prompt.placeholder": "输入消息；/ 打开命令，@ 引用文件",
+  "prompt.placeholder.shell": "输入要运行的命令",
   "prompt.workspace.unavailable.title": "工作区不可用",
   "prompt.workspace.unavailable.body": "此会话关联的工作区已不可用。要恢复到新工作区吗？",
   "prompt.workspace.unavailable.restore": "恢复",

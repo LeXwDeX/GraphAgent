@@ -463,8 +463,9 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   4. 页脚里当前 agent 名。
   5. 页脚 DAG 指示的 `◆ DAG`（开，F1 3.9）。
   6. 状态带行首的 `◆`（F4 1）。
+  7. 输入框提示符 `›`（shell 模式为 `$`，#1616）。
 
-  输入框提示符 `›` 原为白名单第 2 项，#886 收口时决定不做并从白名单删去：输入框的输入门禁与光标几何风险高，收益只是一个装饰字符。
+  输入框提示符 `›` 在 #886 收口时曾决定不做并从白名单删去（输入门禁与光标几何风险高，收益只是一个装饰字符），由 #1616 按设计原型恢复，现为第 7 项。风险靠结构守住：`›` 是与 textarea 并排的独立 `<text>`（宽 2 的一列），画在 textarea 之外，不进 textarea 的内容与光标坐标；`test/prompt/composer-chrome.test.tsx` 逐项守住输入门禁与光标位置，`test/shell/brand-color.test.tsx` 用真实渲染的输入框核对 `›` 与 `$` 为 `primary`。
 
   新增白名单位置需维护者批准，先停下提出。
 
@@ -598,7 +599,7 @@ Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033�
 - Q4 `context/ticker.ts`（F1 实现，F2 迁移现有动画）提供 `frame`、`second`、`at(time, cb)`；`setTimeout`/`setInterval` 只允许出现在 `ticker.ts`、`frame-clock.ts`、`terminal-win32.ts`。
 - Q5 页脚右侧一个共享位置，优先级 leader 提示 > toast > hook 进度。
 - Q6 `esc` 链层号以 F1 4.5 为准。
-- Q7 品牌色白名单扩为 7 项，新增页脚 `◆ DAG` 与状态带行首 `◆`；#886 收口时删去输入框 `›`，现为 6 项。
+- Q7 品牌色白名单扩为 7 项，新增页脚 `◆ DAG` 与状态带行首 `◆`；#886 收口时删去输入框 `›`（降为 6 项），#1616 按设计原型恢复（`›`，shell 模式为 `$`），现为 7 项。
 - Q8 `ui/width.ts` 的 `cellWidth(text)` 按 `ambiguous_width`（1 默认 / 2）计算；对齐敏感布局两种设置下 80 列都不溢出；PR 压缩标记只用 ASCII 与 `✓`、`✗`。
 - Q9 预填文本在功能目录生成，落地统一经 `session/prefill.ts` 的 `prefillRootPrompt(text)`。
 - Q10 骨架补 `ask/`、`session/`、`attention/`、`context/`；`component/` 冻结。

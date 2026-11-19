@@ -6,7 +6,7 @@ import type { DagNode, DagWorkflowSummary, GlobalEvent, Goal } from "@graphagent
 import { TextareaRenderable, type Renderable } from "@opentui/core"
 import { setLanguage } from "../src/i18n"
 import { cellWidth } from "../src/ui/width"
-import { captureFrame, runApp, waitFor, waitForFrame, PROMPT_MARK, type Setup } from "./fixture/run-app"
+import { captureFrame, promptShown, promptTop, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
 import { assistantMessage, taskCall, textPart, userMessage } from "./fixture/session-records"
 import { directory, json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
@@ -86,10 +86,9 @@ function rowsOf(frame: string) {
   return frame.split("\n").map((line) => line.trimEnd())
 }
 
-/** The first row of the prompt: its left border, below the top bar. */
+/** The first row of the prompt: its top edge, below the top bar. */
 function composerFirst(frame: string) {
-  const rows = rowsOf(frame)
-  const first = rows.findIndex((row, index) => index > 2 && row.trimStart().startsWith("┃"))
+  const first = promptTop(rowsOf(frame))
   if (first < 0) throw new Error(`no prompt in the frame:\n${frame}`)
   return first
 }
@@ -120,7 +119,7 @@ test("the band takes the row above the prompt and the prompt stays where it was"
   let where: number
   let above: string
   try {
-    await waitForFrame(bare.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(bare.setup, promptShown, "the prompt")
     const frame = await settled(bare.setup)
     where = composerFirst(frame)
     above = rowsOf(frame)[where - 1]
@@ -172,7 +171,7 @@ test("a goal adds a second row under the workflow row, still above the prompt", 
 test("a goal alone takes one row and no workflow row", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     app.events.emit(goalEvent(mainID, GOAL))
     await waitForFrame(app.setup, (frame) => frame.includes("◎ 目标"), "the goal row")
     const frame = await settled(app.setup)
@@ -191,7 +190,7 @@ test("home shows no band, whatever the sessions hold", async () => {
   const served = workflows({ [mainID]: [ALPHA] })
   const app = await runApp({ sessions, args: {}, width: 120, height: 30, handler: served.handler })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the home prompt")
+    await waitForFrame(app.setup, promptShown, "the home prompt")
     app.events.emit(goalEvent(mainID, GOAL))
     const frame = await settled(app.setup)
     expect(frame).not.toContain("依赖升级验证")
@@ -315,7 +314,7 @@ test("hidden keeps the workflow row away, always shows an empty one", async () =
     handler: served.handler,
   })
   try {
-    await waitForFrame(hidden.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(hidden.setup, promptShown, "the prompt")
     const frame = await settled(hidden.setup)
     expect(frame).not.toContain("依赖升级验证")
     expect(served.reads).toEqual([])
@@ -462,12 +461,12 @@ test("the runs have a row of their own just above the prompt, and a click on it 
     expect(rows[own]).toContain("◇ 后台 2 · explore Scan two · explore Scan one")
     expect(rows[own].trimEnd().endsWith("/agents")).toBe(true)
     // The prompt starts on the next row: the band took a line of the main area, none of the prompt's.
-    expect(rows[own + 1].trimStart().startsWith("┃")).toBe(true)
+    expect(promptTop(rows)).toBe(own + 1)
     expect(rows.filter((line) => line.includes("◇ 后台")).length).toBe(1)
 
     await app.setup.mockMouse.click(10, own)
     const panel = await waitForFrame(app.setup, (value) => value.includes("explore · Scan one"), "the sub-agent list")
-    expect(panel).not.toContain(PROMPT_MARK)
+    expect(promptShown(panel)).toBe(false)
     expect(app.writes()).toEqual([])
   } finally {
     clearDrafts(app.setup)
@@ -496,12 +495,12 @@ test("the mark rides on the goal row, and a click on it opens /agents while one 
     // A click on the goal row has no handler: a few renders are enough to see that nothing opened.
     await app.setup.mockMouse.click(10, at.row)
     for (let pass = 0; pass < 3; pass++) await app.setup.renderOnce()
-    expect(await captureFrame(app.setup)).toContain(PROMPT_MARK)
+    expect(promptShown(await captureFrame(app.setup))).toBe(true)
 
     app.setup.renderer.clearSelection()
     await app.setup.mockMouse.click(at.x + 1, at.row)
     const panel = await waitForFrame(app.setup, (value) => value.includes("explore · Scan two"), "the sub-agent list")
-    expect(panel).not.toContain(PROMPT_MARK)
+    expect(promptShown(panel)).toBe(false)
     expect(app.writes()).toEqual([])
     expect(app.commands()).toEqual([])
   } finally {
@@ -519,7 +518,7 @@ test("below 100 columns the band says nothing of the runs, and the drawer lists 
     handler: backgroundServer(),
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     app.events.emit(goalEvent(mainID, GOAL))
     // The goal has the one row of a narrow band; the runs are not on it. Their Task rows say they wait for a slot once
     // the data layer holds them, which is when the band would have drawn them.

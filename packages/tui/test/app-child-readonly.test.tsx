@@ -6,7 +6,7 @@ import { setLanguage, t } from "../src/i18n"
 import { dagIndicatorReserve } from "../src/shell/dag-indicator"
 import { LEFT_RESERVE } from "../src/shell/footer-status"
 import { cellWidth } from "../src/ui/width"
-import { captureFrame, footerRow, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
+import { captureFrame, footerRow, promptShown, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
 import { json, type FetchHandler } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -48,9 +48,6 @@ async function leader(setup: Setup, key: string) {
   setup.mockInput.pressKey(key)
 }
 
-/** The prompt shows the model once it is loaded, which a write that names the model needs. */
-const MODEL_MARK = "Test model"
-
 for (const language of ["zh-CN", "en"] as const) {
   test(`${language}: <leader>d sends one command, the footer says why it was refused and the app keeps taking keys`, async () => {
     const app = await runApp({
@@ -61,7 +58,7 @@ for (const language of ["zh-CN", "en"] as const) {
       handler: refusing(language, ["command"], refusal),
     })
     try {
-      await waitForFrame(app.setup, (frame) => frame.includes(MODEL_MARK), "the prompt")
+      await waitForFrame(app.setup, promptShown, "the prompt")
       await leader(app.setup, "d")
       await waitFor(() => app.commands().length > 0)
 
@@ -118,7 +115,7 @@ for (const language of ["zh-CN", "en"] as const) {
         handler: refusing(language, ["command"], refusal),
       })
       try {
-        await waitForFrame(app.setup, (frame) => frame.includes(MODEL_MARK), "the prompt")
+        await waitForFrame(app.setup, promptShown, "the prompt")
         await leader(app.setup, "d")
         const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes(HINT[language]), "the hint")
         const footer = footerRow(frame)
@@ -145,7 +142,7 @@ test("three refused writes in a row are one toast: when it has run its course, t
   })
   const summarize = () => app.writes().filter((write) => write.path === `/session/${mainID}/summarize`)
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(MODEL_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     for (const sent of [1, 2, 3]) {
       await leader(app.setup, "c")
       await waitFor(() => summarize().length === sent)
@@ -179,7 +176,7 @@ test("another 409 is not the hint: the footer says what the caller says and noth
     handler: refusing("en", ["command"], busy),
   })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes(MODEL_MARK), "the prompt")
+    await waitForFrame(app.setup, promptShown, "the prompt")
     await leader(app.setup, "d")
     await waitFor(() => app.commands().length > 0)
     // The toasts come in the order they are raised, so a hint raised by this refusal would be the first on the footer.

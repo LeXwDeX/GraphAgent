@@ -7,7 +7,7 @@ import type { DagNode, DagWorkflowSummary } from "@graphagent/sdk"
 import { setLanguage } from "../src/i18n"
 import { RENDERER_LISTENER_LIMIT } from "../src/util/renderer"
 import { nextTurn, renderUntilFrame } from "./fixture/frames"
-import { runApp, PROMPT_MARK, type Setup } from "./fixture/run-app"
+import { runApp, promptShown, type Setup } from "./fixture/run-app"
 import { json } from "./fixture/tui-sdk"
 import { sessionFixture } from "./routes/dag-mode-harness"
 
@@ -99,7 +99,7 @@ test("the resize listeners stay under the renderer's limit with /dag open, and c
   const app = await mountApp()
   try {
     const { renderer } = app.setup
-    await renderUntilFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the prompt")
+    await renderUntilFrame(app.setup, promptShown, "the prompt")
     // Bounded, not lifted: 0 would mean unlimited and mute a real leak.
     expect(renderer.getMaxListeners()).toBe(RENDERER_LISTENER_LIMIT)
     const idle = renderer.listenerCount("resize")
@@ -120,7 +120,7 @@ test("the resize listeners stay under the renderer's limit with /dag open, and c
       expect(open).toBeLessThanOrEqual(RENDERER_LISTENER_LIMIT)
 
       app.setup.mockInput.pressEscape()
-      await renderUntilFrame(app.setup, (frame) => frame.includes(PROMPT_MARK), "the input again")
+      await renderUntilFrame(app.setup, promptShown, "the input again")
       expect(renderer.listenerCount("resize")).toBe(idle)
     }
 
