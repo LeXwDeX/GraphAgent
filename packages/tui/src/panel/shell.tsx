@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BoxRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
+import type { ActiveBinding } from "@opentui/keymap"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { useTuiConfig } from "../config"
@@ -21,8 +22,68 @@ export interface PanelTab {
 export interface PanelHint {
   /** Keymap command name; the displayed keys come from the registered bindings. */
   key: string
+  /**
+   * The command of the opposite direction, when one entry stands for both ("↑↓ select": `key` moves up, `also` moves
+   * down; the tab keys write "←→"). The keys of the two sit side by side while they are the arrow keys of one pair, up
+   * then down or left then right. Bound to anything else (a rebound key) the two are written as separate entries, each
+   * with this label, so a wrong "↑↓" is never drawn.
+   */
+  also?: string
   label: string
   when?: () => boolean
+}
+
+type HintBinding = Pick<ActiveBinding, "sequence">
+
+/** The arrow keys that read as one pair when written side by side, the first one then the second one. */
+const ARROW_PAIRS: ReadonlyMap<string, string> = new Map([
+  ["up", "down"],
+  ["left", "right"],
+])
+
+/** A key written as one symbol, such as an arrow: it can run into the next one without a separator. */
+const SYMBOL_KEY = /^[^\p{L}\p{N}\s]$/u
+
+/** The name of the key a command is bound to when that is a single unmodified key, however many layers bind it. */
+function bareKeyName(bindings: readonly HintBinding[] | undefined): string | undefined {
+  let name: string | undefined
+  for (const { sequence } of bindings ?? []) {
+    const [part] = sequence
+    if (sequence.length !== 1 || !part || part.tokenName || part.patternName) return undefined
+    const { stroke } = part
+    if (stroke.ctrl || stroke.shift || stroke.meta || stroke.super || stroke.hyper) return undefined
+    if (name !== undefined && name !== stroke.name) return undefined
+    name = stroke.name
+  }
+  return name
+}
+
+/** Writes the keys of a pair side by side: symbols run together ("↑↓", "←→"), key names are told apart ("up/down"). */
+export function joinPairKeys(first: string, second: string) {
+  return SYMBOL_KEY.test(first) && SYMBOL_KEY.test(second) ? first + second : `${first}/${second}`
+}
+
+/**
+ * What a hint writes in the hint row, one string for each entry: the keys, then the label. A hint with `also` is one
+ * entry while its two commands are bound to the two arrow keys of a pair, two entries otherwise. A command with no
+ * binding writes nothing.
+ */
+export function hintEntries(
+  hint: PanelHint,
+  bindings: ReadonlyMap<string, readonly HintBinding[]>,
+  format: (bindings: readonly HintBinding[] | undefined) => string | undefined,
+): string[] {
+  const first = bindings.get(hint.key)
+  const keys = format(first)
+  if (!hint.also) return keys ? [`${keys} ${hint.label}`] : []
+  const second = bindings.get(hint.also)
+  const alsoKeys = format(second)
+  const firstName = bareKeyName(first)
+  const secondName = bareKeyName(second)
+  if (keys && alsoKeys && firstName && secondName && ARROW_PAIRS.get(firstName) === secondName) {
+    return [`${joinPairKeys(keys, alsoKeys)} ${hint.label}`]
+  }
+  return [keys, alsoKeys].flatMap((text) => (text ? [`${text} ${hint.label}`] : []))
 }
 
 export interface PanelShellProps {
@@ -84,6 +145,7 @@ export function PanelShell(props: PanelShellProps) {
     for (const hint of props.hints) {
       if (seen.has(hint.key)) continue
       seen.add(hint.key)
+      if (hint.also) seen.add(hint.also)
       result.push(hint)
     }
     if (hostDepth > 0 && !seen.has("panel.close")) {
@@ -92,17 +154,14 @@ export function PanelShell(props: PanelShellProps) {
     return result
   })
 
-  const hintCommands = createMemo(() => hints().map((hint) => hint.key))
+  const hintCommands = createMemo(() => hints().flatMap((hint) => (hint.also ? [hint.key, hint.also] : [hint.key])))
   const hintBindings = useKeymapSelector((keymap) =>
     keymap.getCommandBindings({ visibility: "registered", commands: hintCommands() }),
   )
   const hintText = createMemo(() =>
     hints()
       .filter((hint) => hint.when?.() !== false)
-      .flatMap((hint) => {
-        const keys = formatKeyBindings(hintBindings().get(hint.key), tuiConfig)
-        return keys ? [`${keys} ${hint.label}`] : []
-      })
+      .flatMap((hint) => hintEntries(hint, hintBindings(), (found) => formatKeyBindings(found, tuiConfig)))
       .join(HINT_SEPARATOR),
   )
 

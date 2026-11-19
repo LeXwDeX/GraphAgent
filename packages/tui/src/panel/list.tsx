@@ -282,10 +282,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
   }))
 
   const hints = createMemo<PanelHint[]>(() => {
-    const result: PanelHint[] = [
-      { key: "panel.previous", label: t("panel.hint.previous") },
-      { key: "panel.next", label: t("panel.hint.next") },
-    ]
+    const result: PanelHint[] = [{ key: "panel.previous", also: "panel.next", label: t("panel.hint.move") }]
     if ((props.tabs?.length ?? 0) > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
     result.push({ key: "panel.submit", label: t("panel.hint.activate") })
     for (const action of actions()) {

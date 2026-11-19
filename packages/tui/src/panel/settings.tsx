@@ -332,11 +332,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
           : row?.kind === "choice" || row?.kind === "toggle"
             ? t("panel.hint.change")
             : t("panel.hint.activate")
-    const result: PanelHint[] = [
-      { key: "panel.previous", label: t("panel.hint.previous") },
-      { key: "panel.next", label: t("panel.hint.next") },
-    ]
-    if (props.tabs.length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
+    const result: PanelHint[] = [{ key: "panel.previous", also: "panel.next", label: t("panel.hint.move") }]
+    if (props.tabs.length > 1) {
+      result.push({ key: "panel.tab.previous", also: "panel.tab.next", label: t("panel.hint.tab") })
+    }
     if (!row?.disabled && !row?.readonly) result.push({ key: "panel.submit", label: submitLabel })
     result.push(...(props.hints ?? []))
     return result
