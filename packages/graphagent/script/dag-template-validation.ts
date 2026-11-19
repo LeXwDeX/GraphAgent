@@ -18,7 +18,45 @@ function declaredInputs(content: string) {
   }
 }
 
-/** One directory-to-validation-result boundary shared by CI and generation. */
+type Authoring = ReturnType<typeof WorkflowAuthoring.make>
+
+/** One template judged under one review gate: "authored" leaves the template's
+ * own declaration in force, "strict" is the gate DAG mode applies to every
+ * start (the caller override of `run.start`). */
+async function judgeTemplate(
+  authoring: Authoring,
+  source: { kind: "yaml"; source: string; content: string },
+  declares: boolean,
+  gate: "authored" | "strict",
+) {
+  const override = gate === "strict" ? { review_gate: "strict" as const } : {}
+  // A template is judged on its own: required inputs stand in as samples.
+  const result = await Effect.runPromise(
+    authoring.prepare({ action: "start", source, profile: "portable", template: { kind: "sample" }, ...override }),
+  )
+  // #1073: a template that declares inputs must start from `objective`
+  // alone, the way `run.start { spec_path, inputs: { objective } }` does.
+  const objectiveOnly =
+    result.valid && declares
+      ? await Effect.runPromise(
+          authoring.prepare({
+            action: "start",
+            source,
+            profile: "portable",
+            template: { kind: "values", values: { objective: "Template validation request" } },
+            ...override,
+          }),
+        )
+      : undefined
+  return { result, errors: [...result.errors, ...(objectiveOnly?.errors ?? [])] }
+}
+
+const errorKey = (diagnostic: DagValidation.Diagnostic) =>
+  `${diagnostic.code}\0${diagnostic.path}\0${diagnostic.message}`
+
+/** One directory-to-validation-result boundary shared by CI and generation.
+ * #1560: DAG mode makes every start strict, so each template is judged twice,
+ * as authored and under the strict gate, and fails when either fails. */
 export async function validateDagTemplateDirectory(directory: string) {
   const compat = await readRuntimeCompat(directory).then(
     (value) => ({ value, error: undefined }),
@@ -39,25 +77,20 @@ export async function validateDagTemplateDirectory(directory: string) {
     discovery.files.map(async (file) => {
       const content = await Bun.file(path.join(directory, file)).text()
       const source = { kind: "yaml" as const, source: file, content }
-      // A template is judged on its own: required inputs stand in as samples.
-      const result = await Effect.runPromise(
-        authoring.prepare({ action: "start", source, profile: "portable", template: { kind: "sample" } }),
-      )
       const declares = declaredInputs(content).length > 0
-      // #1073: a template that declares inputs must start from `objective`
-      // alone, the way `run.start { spec_path, inputs: { objective } }` does.
-      const objectiveOnly =
-        result.valid && declares
-          ? await Effect.runPromise(
-              authoring.prepare({
-                action: "start",
-                source,
-                profile: "portable",
-                template: { kind: "values", values: { objective: "Template validation request" } },
-              }),
-            )
-          : undefined
-      const errors = [...result.errors, ...(objectiveOnly?.errors ?? [])]
+      const authored = await judgeTemplate(authoring, source, declares, "authored")
+      const strict = await judgeTemplate(authoring, source, declares, "strict")
+      // What the strict pass adds to the authored one: the same finding under
+      // both gates is reported once, and the rest says which gate raised it.
+      const known = new Set(authored.errors.map(errorKey))
+      const strictOnly = strict.errors
+        .filter((diagnostic) => !known.has(errorKey(diagnostic)))
+        .map((diagnostic) => ({
+          ...diagnostic,
+          message: `${diagnostic.message} [strict review gate: DAG mode applies it to every start]`,
+        }))
+      const result = authored.result
+      const errors = [...authored.errors, ...strictOnly]
       // Without inputs a template cannot start from run.start; the curated set is
       // moving to declared inputs, so this is a note, not a failure.
       const noInputs =

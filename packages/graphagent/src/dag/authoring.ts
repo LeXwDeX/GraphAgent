@@ -109,6 +109,9 @@ type DecodedAction =
 
 interface EffectiveReviewConfig {
   review_gate: ReviewGate
+  /** Where the gate came from: a strict failure only suggests lowering the gate
+   * when the spec declared it. */
+  source: DagValidation.ReviewGateSource
   acceptance?: readonly AcceptanceItem[]
 }
 
@@ -121,6 +124,7 @@ function effectiveReviewConfig(decoded: DecodedAction, input: PrepareInput): Eff
   if (decoded.action !== "start") {
     return {
       review_gate: input.review_gate ?? "standard",
+      source: "workflow",
       ...(input.acceptance !== undefined ? { acceptance: input.acceptance } : {}),
     }
   }
@@ -129,8 +133,10 @@ function effectiveReviewConfig(decoded: DecodedAction, input: PrepareInput): Eff
   if (acceptance === undefined && spec.mode === "deep" && spec.admission) {
     acceptance = acceptanceFromCriteria(spec.admission.brief.acceptance_criteria)
   }
+  const deep = spec.mode === "deep"
   return {
-    review_gate: spec.mode === "deep" ? "strict" : (input.review_gate ?? spec.config.review_gate ?? "standard"),
+    review_gate: deep ? "strict" : (input.review_gate ?? spec.config.review_gate ?? "standard"),
+    source: deep ? "deep" : input.review_gate !== undefined ? "session" : "authored",
     ...(acceptance !== undefined ? { acceptance } : {}),
   }
 }
@@ -495,6 +501,7 @@ function compileAction(
   const options: DagValidation.BlockCompileOptions = {
     known_dependencies: knownDependencies,
     review_gate: review.review_gate,
+    review_gate_source: review.source,
     ...(review.acceptance !== undefined ? { acceptance: review.acceptance } : {}),
     ...(Object.keys(priorRounds).length > 0 ? { prior_rounds: priorRounds } : {}),
     ...(liveGateMap !== undefined && liveGateMap.size > 0 ? { live_gates: liveGateMap } : {}),

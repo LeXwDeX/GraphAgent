@@ -144,7 +144,7 @@ export const WorkflowTool = Tool.define<
             case "spec":
               switch (params.operation) {
                 case "list":
-                  return yield* listSpecs(authoring, callingSession.directory)
+                  return yield* listSpecs(authoring, session)
                 case "read":
                   return yield* readSpec(authoring, params.spec_path, session, ctx)
                 case "draft":

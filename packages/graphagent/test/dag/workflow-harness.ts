@@ -37,7 +37,7 @@ import { controlWorkflow } from "@/tool/workflow/control"
 import { inspectWorkflow } from "@/tool/workflow/inspect"
 import { runWorkflow } from "@/tool/workflow/run"
 import type { ControlParams, InspectParams, RunParams } from "@/tool/workflow/schema"
-import { listSpecs, readSpec, validateSpec } from "@/tool/workflow/spec"
+import { draftSpec, listSpecs, readSpec, validateSpec } from "@/tool/workflow/spec"
 import { Worktree } from "@/worktree"
 
 export const projectID = "project-1"
@@ -175,9 +175,16 @@ export interface Caller {
   readonly session: string
   readonly directory: string
   readonly agent?: string
+  /** The calling session's DAG mode; "on" fixes the strict review gate (#1560). */
+  readonly dagMode?: "on" | "off"
 }
 
-const session = (caller: Caller) => ({ directory: caller.directory, projectID, model: undefined })
+const session = (caller: Caller) => ({
+  directory: caller.directory,
+  projectID,
+  model: undefined,
+  ...(caller.dagMode !== undefined ? { dagMode: caller.dagMode } : {}),
+})
 
 const runContext = (caller: Caller) =>
   Effect.gen(function* () {
@@ -249,10 +256,13 @@ export const control = (caller: Caller, workflowID: string, operation: "cancel" 
     } as ControlParams)
   })
 
-export const list = (caller: Caller) => listSpecs(authoring, caller.directory)
+export const list = (caller: Caller) => listSpecs(authoring, session(caller))
 
 export const read = (caller: Caller, specPath: string) =>
   readSpec(authoring, specPath, session(caller), toolContext(caller.session, caller.agent ?? "build"))
+
+export const draft = (caller: Caller, config: Parameters<typeof draftSpec>[1], title?: string) =>
+  draftSpec(authoring, config, title, session(caller), toolContext(caller.session, caller.agent ?? "build"))
 
 export const validate = (caller: Caller, specPath: string, inputs?: Record<string, unknown>) =>
   validateSpec(

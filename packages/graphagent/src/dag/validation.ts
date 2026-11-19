@@ -664,12 +664,74 @@ export function mixedGraphDiagnostic(
 export type BlockSource =
   { objective: string; blocks: readonly DagBlocks.WorkflowBlock[] } | { nodes: readonly NodeSpec[] }
 
+/** Where the effective review gate came from. Only a gate the spec itself
+ * declared (`authored`) can be lowered by editing the spec: DAG mode (`session`)
+ * and a deep workflow (`deep`) fix strict at start, and a mutation (`workflow`)
+ * is checked against the gate its workflow froze at start. */
+export type ReviewGateSource = "session" | "deep" | "authored" | "workflow"
+
+const FIXED_GATE_REASON: Record<Exclude<ReviewGateSource, "authored">, string> = {
+  session: "DAG mode fixes the strict review gate at start, so the spec cannot lower it",
+  deep: "A deep workflow always runs under the strict review gate",
+  workflow: "The workflow's strict review gate was frozen at start, so a fragment cannot lower it",
+}
+
+/** What satisfies each strict rule `DagBlocks.requireReviewCoverage` enforces,
+ * matched on the rule's message (a test pins every pair against the real
+ * message). Acceptance items belong to the start document, so a fragment can
+ * only be told to start a successor. */
+const STRICT_BLOCK_REPAIRS: ReadonlyArray<readonly [rule: RegExp, repair: (source: ReviewGateSource) => string]> = [
+  [
+    /has no downstream review gate/,
+    () =>
+      "give each writer block a verify block that depends on it, a review block that depends on that verify, and a synthesize block that depends on the review",
+  ],
+  [
+    /overrides its worker to write-capable/,
+    () => "drop worker_type from that block; only coding and prototype blocks may write",
+  ],
+  [/must set required: true/, () => "drop required: false from the review block"],
+  [
+    /must include the completeness lens/,
+    () => "add completeness to the review block's lenses, for example lenses: [standards, intent, completeness]",
+  ],
+  [/use write-capable worker/, () => "drop worker_type from the review block; the read-only auditor is its default"],
+  [
+    /config\.acceptance/,
+    (source) =>
+      source === "workflow"
+        ? "start a successor workflow that declares config.acceptance, because the items are fixed at start"
+        : "declare config.acceptance as 1-50 items { id, text } with unique ids",
+  ],
+]
+
+/** The hint for a strict failure of a gate the spec cannot lower: why, and what
+ * satisfies the rules the compile broke. Nothing when the gate is the spec's own
+ * or the failure is not one of the strict rules, so those keep their hint. */
+function fixedGateBlockHint(options: BlockCompileOptions, message: string): string | undefined {
+  const source = options.review_gate_source
+  if (options.review_gate !== "strict" || source === undefined || source === "authored") return undefined
+  const repairs = STRICT_BLOCK_REPAIRS.filter(([rule]) => rule.test(message)).map(([, repair]) => repair(source))
+  return repairs.length === 0 ? undefined : `${FIXED_GATE_REASON[source]}; to satisfy it: ${repairs.join("; ")}.`
+}
+
+/** The hint for a node-form writer under strict: lowering the gate is only on
+ * offer when the spec declared it. */
+function strictWriterHint(source: ReviewGateSource | undefined): string {
+  if (source === undefined || source === "authored")
+    return "Use the blocks form (objective + blocks) or lower config.review_gate to standard"
+  return `${FIXED_GATE_REASON[source]}; use the blocks form (objective + blocks), where each writer is a coding or prototype block followed by a verify block, a review block with the completeness lens, and a synthesize block that depends on the review, or give this node a read-only worker_type such as explore, plan, or auditor`
+}
+
 /** Options forwarded to the block compiler; the effective review gate and
  * acceptance items are fixed before compilation so lanes and validation see
  * the same contract. */
 export interface BlockCompileOptions {
   known_dependencies?: string[]
   review_gate?: DagBlocks.ReviewGate
+  /** Where `review_gate` came from; it only shapes the repair hints of a strict
+   * failure. Absent counts as `authored`. */
+  review_gate_source?: ReviewGateSource
   acceptance?: readonly DagBlocks.AcceptanceItem[]
   /** Prior-round findings resolved from stored workflow outputs. */
   prior_rounds?: Readonly<Record<string, DagBlocks.PriorRound>>
@@ -695,13 +757,16 @@ export function compileBlockSource(
       )
       return { nodes, diagnostics: [] }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
       return {
         diagnostics: [
           diagnostic({
             code: DIAGNOSTIC_CODES.blockCompileFailed,
             path: "config.blocks",
-            message: error instanceof Error ? error.message : String(error),
-            hint: "Blocks must satisfy the writer-serialization and review-route contracts; inline compiled nodes if you need a shape blocks cannot express",
+            message,
+            hint:
+              fixedGateBlockHint(options, message) ??
+              "Blocks must satisfy the writer-serialization and review-route contracts; inline compiled nodes if you need a shape blocks cannot express",
           }),
         ],
       }
@@ -721,7 +786,7 @@ export function compileBlockSource(
         code: DIAGNOSTIC_CODES.dagInvalid,
         path: `nodes[${node.id}].worker_type`,
         message: `node "${node.id}" is write-capable ("${node.worker_type}"); under the strict review gate writers must use a coding, prototype, or build block so they produce a fingerprint`,
-        hint: "Use the blocks form (objective + blocks) or lower config.review_gate to standard",
+        hint: strictWriterHint(options.review_gate_source),
       }),
     ),
   }
@@ -1648,6 +1713,10 @@ function ceilingDiagnostics(input: StructuralInput): Diagnostic[] {
   )
 }
 
+/** How to give a strict diff review the required final gate it is missing. */
+const FINAL_GATE_HINT =
+  'Add a block that depends on the review, such as a synthesize block (the compiler makes it required and runs it only on verdict ACCEPT); with nodes, a required node that maps the review output and has condition `<review>.output.verdict == "ACCEPT"`'
+
 /** Review-lifecycle diagnostics for one config. Shared by the structural
  * validator and Dag.replan's merged-config check. */
 export function reviewLifecycleDiagnostics(input: {
@@ -1682,7 +1751,9 @@ export function reviewLifecycleDiagnostics(input: {
         code: DIAGNOSTIC_CODES.dagInvalid,
         path: "nodes",
         message: `Invalid review lifecycle: ${error}`,
-        hint: "Diff reviews need implementation + verification wiring; deep review workers must declare review.phase",
+        hint: error.includes("must feed a required final gate")
+          ? FINAL_GATE_HINT
+          : "Diff reviews need implementation + verification wiring; deep review workers must declare review.phase",
       }),
     ),
     warnings: reviewLifecycle.warnings.map((warning) =>

@@ -8,19 +8,26 @@ import { WorkflowAuthoring } from "@/dag/authoring"
 import type { Tool } from "../tool"
 import { WORKFLOW_RECOVERY, blockedMetadata, validationOutput } from "./render"
 import { entryContent, loadSpecFile, readDraftSpec, writeDraftSpec } from "./files"
+import { sessionReviewGate } from "./prepare"
 import type { DraftGraphType, Metadata } from "./schema"
 
 type Authoring = ReturnType<typeof WorkflowAuthoring.make>
 
 /** Fields shared by every spec action; the calling session owns the project
- * and directory a relative spec path resolves against. */
+ * and directory a relative spec path resolves against, and its DAG mode fixes
+ * the review gate every check here is judged under (`sessionReviewGate`). */
 export interface SessionContext {
   readonly projectID: string
   readonly directory: string
   readonly model: { readonly id: string; readonly providerID: string } | undefined
+  readonly dagMode?: "on" | "off"
 }
 
-export const portableEntryCheck = (authoring: Authoring, entry: DagWorkflows.Entry) =>
+export const portableEntryCheck = (
+  authoring: Authoring,
+  entry: DagWorkflows.Entry,
+  session: Pick<SessionContext, "dagMode">,
+) =>
   Effect.gen(function* () {
     const content = yield* Effect.promise(() => entryContent(entry))
     if (content === undefined) {
@@ -33,6 +40,7 @@ export const portableEntryCheck = (authoring: Authoring, entry: DagWorkflows.Ent
       source: { kind: "yaml", source: entry.path, content },
       profile: "portable",
       template: { kind: "sample" },
+      ...sessionReviewGate(session),
     })
     const summary = result.valid
       ? ""
@@ -43,14 +51,17 @@ export const portableEntryCheck = (authoring: Authoring, entry: DagWorkflows.Ent
     return { valid: result.valid, summary }
   })
 
-export const listSpecs = (authoring: Authoring, directory: string): Effect.Effect<Tool.ExecuteResult> =>
+export const listSpecs = (
+  authoring: Authoring,
+  session: Pick<SessionContext, "directory" | "dagMode">,
+): Effect.Effect<Tool.ExecuteResult> =>
   Effect.gen(function* () {
     // The builtin scope always holds the engine's stage specs, so the listing
     // is never empty.
-    const entries = yield* DagWorkflows.list(directory)
+    const entries = yield* DagWorkflows.list(session.directory)
     const rows: string[] = []
     for (const entry of entries) {
-      const check = yield* portableEntryCheck(authoring, entry)
+      const check = yield* portableEntryCheck(authoring, entry, session)
       rows.push(
         [
           `${entry.name} [${entry.scope}]${check.valid ? "" : " [invalid — not startable]"}`,
@@ -93,6 +104,7 @@ export const readSpec = (
       profile: "portable",
       // Read shows a template as written; its validity is judged with sample inputs.
       template: { kind: "sample" },
+      ...sessionReviewGate(session),
     })
     return {
       title: `Workflow spec: ${specPath}`,
@@ -156,8 +168,9 @@ export const validateSpec = (
             source: loaded.source,
             profile,
             environment: { directory: session.directory, parent: session.model },
-            // Validate answers "would this start?", so a template is checked
-            // against the inputs the start call would carry.
+            // Validate answers "would this start?", so it is judged under the
+            // gate the start would use, against the inputs the call would carry.
+            ...sessionReviewGate(session),
             template: { kind: "values" as const, values: inputs ?? {} },
           })
     return {
@@ -188,6 +201,7 @@ export const draftSpec = (
       action: "start",
       source: { kind: "yaml", source: specPath, content: yield* readDraftSpec(specPath).pipe(Effect.orDie) },
       profile: "portable",
+      ...sessionReviewGate(session),
     })
     if (!result.valid) {
       return {

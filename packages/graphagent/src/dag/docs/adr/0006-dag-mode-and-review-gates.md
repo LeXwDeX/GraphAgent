@@ -276,6 +276,21 @@ graphs without that marker keep the check. With DAG mode on,
 start: extend and replan fragments are checked against it, so a later mode
 switch neither loosens nor tightens a running workflow.
 
+The rule does not depend on where a spec came from or what it declares: a
+builtin name, a project or global library name, a path and a draft all start
+under `strict` in a DAG-mode session. `spec validate`, `read`, `list`, and
+`draft` take the same gate from the session (`sessionReviewGate`,
+`src/tool/workflow/prepare.ts`), so a spec that validates in a DAG-mode session
+is one the start accepts. The gate's source is not persisted. Authoring derives
+it for one purpose (`effectiveReviewConfig` in `src/dag/authoring.ts`, typed
+`ReviewGateSource` in `src/dag/validation.ts`): a strict failure suggests
+lowering `config.review_gate` only when the spec declared the gate itself, and
+when DAG mode, a deep workflow or the workflow's own frozen gate fixed it, the
+diagnostic says how to satisfy strict instead. The release snapshot of curated
+templates is checked as authored and under strict
+(`script/dag-template-validation.ts`), so a template that passes only under
+`standard` cannot ship.
+
 A `review` block takes `lenses`, `skeptics` (0-4 lanes that assume the change is
 wrong), and `prior_round`, which continues a stored review decision. The
 workflow tool resolves it into `prior_findings` before authoring; the model
@@ -386,6 +401,12 @@ ordinary delivery leaf.
 - Bundle or download a command guard: rejected. Installing one is the user's own
   choice and responsibility, and the repository ships only the guide that
   explains how.
+- Let a DAG-mode start keep a spec's `standard` gate by its source or its
+  declaration (a curated or builtin template, a spec that declares `standard`):
+  rejected (#1560). The main path of the `dag-auto` skill reads a template,
+  rewrites it, drafts and starts, so what starts is a model-written draft. A rule
+  keyed on source misses that path, and one keyed on the declaration is bypassed
+  by copying it. The curated templates are made strict-valid instead.
 
 ## Deferred
 

@@ -14,7 +14,7 @@ import { createAdmissionRecord } from "@/dag/admission"
 import type { Tool } from "../tool"
 import { authoringWarnings, blockedMetadata, validationOutput } from "./render"
 import { loadAuthoringSource } from "./files"
-import { prepareMutation, priorRoundLoader } from "./prepare"
+import { prepareMutation, priorRoundLoader, sessionReviewGate } from "./prepare"
 import { requireOwnedWorkflow, rejectDiagnostics, runMutation } from "./mutation"
 import type { Metadata, RunParams } from "./schema"
 
@@ -93,7 +93,7 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
         // The gate level is fixed at run.start: DAG mode on (or a deep spec,
         // handled inside authoring) upgrades it to strict and overrides an
         // authored standard. Later mode switches cannot change it.
-        ...(session.dagMode === "on" ? { review_gate: "strict" as const } : {}),
+        ...sessionReviewGate(session),
         prior_rounds: priorRoundLoader(dag, sessionID),
         // #1073: a spec that declares inputs is filled from the call; a call
         // without inputs still reports the required ones as missing.
