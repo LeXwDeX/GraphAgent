@@ -28,6 +28,34 @@ exports[`frames bash at 80x24 1`] = `
 "
 `;
 
+exports[`frames bash at 80x24 in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Bash needs permission                                                        │
+│  $ bun install                                                               │
+│                                                                              │
+│ › 1. Allow once                                                              │
+│   2. Allow bun install for this session                                      │
+│   3. Reject, and tell the agent what to do instead                           │
+│ up/down or number keys to pick · enter Confirm · escape Reject               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
 exports[`frames bash at 120x40 in English with ambiguous_width 2 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Bash needs permission                                                                                            1/2 │
@@ -100,6 +128,34 @@ exports[`frames edit at 80x24 1`] = `
 "
 `;
 
+exports[`frames edit at 80x24 in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Edit needs permission                                                        │
+│  Path: /repo/src/app.ts                                                      │
+│                                                                              │
+│  1   export function value() {                                               │
+│  2 -   return 41                                                             │
+│  2 +   return 42                                                             │
+│  3   }                                                                       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Ful… │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
 exports[`frames edit at 120x40 in English with ambiguous_width 2 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Edit needs permission                                                                                            1/2 │
@@ -153,6 +209,34 @@ exports[`frames read at 80x24 1`] = `
 │   2. 本会话内都允许 *                                                        │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
 │ up/down 或数字键选择 · enter 确认 · escape 拒绝                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`frames read at 80x24 in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Read needs permission                                                        │
+│  Path: /repo/src/index.ts                                                    │
+│                                                                              │
+│ › 1. Allow once                                                              │
+│   2. Allow * for this session                                                │
+│   3. Reject, and tell the agent what to do instead                           │
+│ up/down or number keys to pick · enter Confirm · escape Reject               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -244,6 +328,34 @@ exports[`frames task at 80x24 1`] = `
 "
 `;
 
+exports[`frames task at 80x24 in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Task needs permission                                                        │
+│  Subagent: Explore                                                           │
+│ 扫描破坏性变更                                                               │
+│                                                                              │
+│ › 1. Allow once                                                              │
+│   2. Allow explore for this session                                          │
+│   3. Reject, and tell the agent what to do instead                           │
+│ up/down or number keys to pick · enter Confirm · escape Reject               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
 exports[`frames task at 120x40 in English with ambiguous_width 2 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Task needs permission                                                                                            1/2 │
@@ -300,6 +412,34 @@ exports[`frames external_directory at 80x24 1`] = `
 │   2. 本会话内都允许 /opt/data/*                                              │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
 │ up/down 或数字键选择 · enter 确认 · escape 拒绝                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`frames external_directory at 80x24 in English 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ External directory needs permission                                          │
+│  Path: /opt/data                                                             │
+│                                                                              │
+│ Patterns                                                                     │
+│ - /opt/data/*                                                                │
+│                                                                              │
+│ › 1. Allow once                                                              │
+│   2. Allow /opt/data/* for this session                                      │
+│   3. Reject, and tell the agent what to do instead                           │
+│ up/down or number keys to pick · enter Confirm · escape Reject               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
