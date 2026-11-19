@@ -93,27 +93,32 @@ function syncedBase(profile: ModelProfile, own: Partial<ModelProfile>): Partial<
   return changed ? base : undefined
 }
 
+/** Whether two profiles say the same. A profile is plain JSON and `resolveProfile` builds its keys in one fixed order. */
+function sameProfile(a: ModelProfile, b: ModelProfile) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
 /**
  * An adapter often returns a copy of a catalog model that still carries the catalog's profile while it changes the
- * model's own `limit` or `capabilities` (the Codex adapter narrows a window). The copied profile is then out of date,
- * and whoever reads the profile would see the catalog's window instead of the adapter's. Where the model's own
- * value differs from what its profile says, the profile takes the model's value with the source `adapter`; the
- * rest of the profile stays. A model without a profile is returned as it is, `profileOf` derives one for it.
+ * model's own `limit` or `capabilities` (the Codex adapter narrows a window) or the package and id it is reached
+ * through (the Copilot adapter moves it to its own package). The copied profile is then out of date, and whoever
+ * reads the profile would see the catalog's window instead of the adapter's, or rule results worked out for the
+ * old package. Where the model's own value differs from what its profile says, the profile takes the model's value
+ * with the source `adapter`; the fields a built-in rule produced are worked out again for the model's current
+ * `api.id` and `api.npm` (the other sources keep their fields), and the rest of the profile stays. A model whose
+ * profile comes out the same is returned as it is; a model without a profile is returned as it is, `profileOf`
+ * derives one for it.
  */
 export function syncProfile(model: Model): Model {
   if (!model.profile) return model
-  const base = syncedBase(model.profile, adapterProfile(model))
-  if (!base) return model
-  return {
-    ...model,
-    profile: resolveProfile({
-      providerID: model.providerID,
-      apiID: model.api?.id ?? model.id,
-      npm: model.api?.npm,
-      releaseDate: model.release_date,
-      base,
-    }),
-  }
+  const profile = resolveProfile({
+    providerID: model.providerID,
+    apiID: model.api?.id ?? model.id,
+    npm: model.api?.npm,
+    releaseDate: model.release_date,
+    base: syncedBase(model.profile, adapterProfile(model)) ?? model.profile,
+  })
+  return sameProfile(profile, model.profile) ? model : { ...model, profile }
 }
 
 /**

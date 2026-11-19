@@ -24,6 +24,7 @@ import { Provider } from "@/provider/provider"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import type { ProviderAdapter } from "@/provider/adapter/types"
 import { ProviderProfile } from "@/provider/profile"
+import { ProviderTransform } from "@/provider/transform"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Filesystem } from "@/util/filesystem"
@@ -2506,4 +2507,87 @@ narrowing.instance(
     expect(model.profile?.sources.context).toBe("adapter")
   }),
   { config: acmeConfig({ "acme-sonnet-4": { name: "Renamed" } }) },
+)
+
+// The catalog names the package a Copilot model's protocol needs (OpenAI for gpt-5, Anthropic for claude), and the
+// Copilot adapter hands every model back through its own package. What was worked out for the catalog's package, the
+// profile fields a rule derives from it and the variants, has to be worked out again for the package the model uses.
+const copilotEntry = (id: string, npm: string): ModelsDev.Model => ({
+  id,
+  name: id,
+  release_date: "2025-09-29",
+  attachment: true,
+  reasoning: true,
+  temperature: true,
+  tool_call: true,
+  cost: { input: 1, output: 2 },
+  limit: { context: 128_000, output: 32_000 },
+  modalities: { input: ["text", "image"], output: ["text"] },
+  provider: { npm },
+})
+
+const copilotCatalog = {
+  "github-copilot": {
+    id: "github-copilot",
+    name: "GitHub Copilot",
+    env: [],
+    api: "https://api.githubcopilot.com",
+    models: {
+      "gpt-5": copilotEntry("gpt-5", "@ai-sdk/openai"),
+      "claude-sonnet-4.5": copilotEntry("claude-sonnet-4.5", "@ai-sdk/anthropic"),
+    },
+  },
+} satisfies Record<string, ModelsDev.Provider>
+
+const copilotCatalogLayer = Layer.succeed(
+  ModelsDev.Service,
+  ModelsDev.Service.of({
+    get: () => Effect.succeed(copilotCatalog),
+    refresh: () => Effect.void,
+  }),
+)
+
+const copilot = testEffect(
+  Layer.mergeAll(
+    Provider.layer.pipe(
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(Env.defaultLayer),
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Auth.defaultLayer),
+      Layer.provide(ProviderAdapters.defaultLayer),
+      Layer.provide(copilotCatalogLayer),
+      Layer.provide(RuntimeFlags.layer({})),
+      Layer.provide(EventV2Bridge.defaultLayer),
+    ),
+    Env.defaultLayer,
+    copilotCatalogLayer,
+  ),
+)
+
+copilot.instance(
+  "a Copilot model has the profile and the variants of the Copilot package, not of the catalog's",
+  Effect.gen(function* () {
+    const copilotID = ProviderV2.ID.make("github-copilot")
+    const gpt = yield* modelOf(copilotID, "gpt-5")
+    const claude = yield* modelOf(copilotID, "claude-sonnet-4.5")
+    for (const model of [gpt, claude]) expect(model.api.npm).toBe("@ai-sdk/github-copilot")
+
+    // What the catalog's own package gave the two models.
+    const cataloged = Provider.fromModelsDevProvider(copilotCatalog["github-copilot"]).models
+    expect(cataloged["gpt-5"].profile?.schemaFixes).toEqual(["openai"])
+    expect(cataloged["gpt-5"].profile?.toolResultMedia).toBe("all")
+    expect(cataloged["claude-sonnet-4.5"].profile?.toolResultMedia).toBe("all")
+    expect(cataloged["claude-sonnet-4.5"].variants?.high).toHaveProperty("thinking")
+
+    // The profile has no rule result of the old package left ...
+    expect(ProviderProfile.profileOf(gpt).schemaFixes).toEqual([])
+    expect(ProviderProfile.profileOf(gpt).toolResultMedia).toBe("none")
+    expect(ProviderProfile.profileOf(claude).toolResultMedia).toBe("none")
+    // ... and the variants are the ones the Copilot package builds, not the Anthropic thinking budgets.
+    for (const model of [gpt, claude])
+      expect(model.variants).toEqual(ProviderTransform.sortVariants(ProviderTransform.variants(model)))
+    expect(Object.keys(claude.variants ?? {}).sort()).toEqual(["high", "low", "medium"])
+    expect(claude.variants?.high).toEqual({ reasoningEffort: "high" })
+  }),
+  { config: { provider: { "github-copilot": { options: { apiKey: "test-key" } } } } },
 )

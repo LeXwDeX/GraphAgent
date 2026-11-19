@@ -124,6 +124,9 @@ export function classifyRequest(url: string, rawBody: unknown): { isVision: bool
   return { isVision: false, isAgent: false }
 }
 
+// The catalog entry names the package its protocol needs (OpenAI for gpt-5, Anthropic for claude). The model is
+// handed over through the Copilot package, so the variants worked out for the old one no longer fit: empty variants
+// are built again for the current `api.npm`, and the profile follows through `ProviderProfile.syncProfile`.
 function fix(model: Provider.Model, url: string): Provider.Model {
   return {
     ...model,
@@ -132,6 +135,7 @@ function fix(model: Provider.Model, url: string): Provider.Model {
       url,
       npm: "@ai-sdk/github-copilot",
     },
+    variants: {},
   }
 }
 
