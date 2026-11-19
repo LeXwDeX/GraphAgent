@@ -51,6 +51,8 @@ const SESSION_SUMMARY_TYPES = new Set([
   "question.v2.timed_out",
   "goal.updated",
   "goal.cleared",
+  "loop.updated",
+  "loop.cleared",
   "dag.workflow.summary.updated",
   "lifecycle.transitioned",
   "pr.watch.updated",
