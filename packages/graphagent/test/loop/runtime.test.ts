@@ -1,0 +1,1304 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
+import { describe, expect } from "bun:test"
+import { Clock, Deferred, Effect, Layer } from "effect"
+import * as TestClock from "effect/testing/TestClock"
+import { Database } from "@graphagent/core/database/database"
+import type { StopReason } from "@graphagent/schema/stop-reason"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import type { LoopAnalysis } from "@/loop/analysis"
+import { LoopRuntime } from "@/loop/runtime"
+import { LoopState } from "@/loop/state"
+import { SessionID } from "@/session/schema"
+import { testEffect } from "../lib/effect"
+import { intent, progress, result } from "./fixture"
+import {
+  analysis,
+  analysisLayer,
+  failed,
+  host,
+  hostLayer,
+  ok,
+  providerError,
+  reasoningError,
+  type FakeSession,
+} from "./runtime.fixture"
+
+const base = LoopState.layer.pipe(Layer.provideMerge(Database.defaultLayer), Layer.provideMerge(EventV2Bridge.defaultLayer))
+const it = testEffect(
+  LoopRuntime.layer.pipe(Layer.provideMerge(hostLayer), Layer.provideMerge(analysisLayer), Layer.provideMerge(base)),
+)
+
+const waitFor = (overrides: Partial<LoopState.Wait> = {}): LoopState.Wait => ({
+  source: "background_job",
+  wait_id: "job_1",
+  ref: { domain: "job", id: "job_1" },
+  deadline: 3_600_000,
+  max_wakes: 1,
+  wakes: 0,
+  reviewed: false,
+  ...overrides,
+})
+
+const stalled = result({ progress: progress({ advanced: false }) })
+
+/**
+ * One loop on its own session, with its round 1 running. `end` finishes the running turn and lets the
+ * runtime decide the boundary it left; the first one is the user's own turn.
+ */
+const boot = (options: { maxRounds?: number } = {}) =>
+  Effect.gen(function* () {
+    const runtime = yield* LoopRuntime.Service
+    const loops = yield* LoopState.Service
+    const sessionID = SessionID.descending()
+    const session = host.session(sessionID)
+    const prompt = "Ship the loop analysis service."
+    const created = yield* runtime.start(sessionID, {
+      prompt,
+      messageID: session.human(prompt),
+      ...(options.maxRounds !== undefined ? { maxRounds: options.maxRounds } : {}),
+    })
+    session.begin()
+    let first = true
+
+    const load = () => loops.load(sessionID)
+    const current = () =>
+      load().pipe(
+        Effect.map((state) => {
+          if (state === undefined) throw new Error("the loop is gone")
+          return state
+        }),
+      )
+    const tick = runtime.claim(sessionID).pipe(Effect.andThen(runtime.settled(sessionID)))
+    const script = (...steps: Parameters<typeof analysis.script> extends [unknown, ...infer Rest] ? Rest : never) =>
+      analysis.script(sessionID, ...steps)
+    const end = (steps?: Parameters<typeof script>, boundary: Parameters<FakeSession["finish"]>[0] = {}) =>
+      Effect.gen(function* () {
+        if (steps !== undefined) script(...steps)
+        session.finish({ humanTurn: first, ...boundary })
+        first = false
+        yield* tick
+      })
+    return {
+      runtime,
+      loops,
+      sessionID,
+      session,
+      created,
+      prompt,
+      load,
+      current,
+      tick,
+      script,
+      end,
+      calls: () => analysis.calls(sessionID),
+      rows: () => loops.analyses(created.state.loop_id),
+      outcome: () => loops.lastOutcome(sessionID),
+    }
+  })
+
+type Harness = Effect.Success<ReturnType<typeof boot>>
+
+/** Ends the running turn with one scripted analysis, as most tests do. */
+const round = (t: Harness, outcome: LoopAnalysis.Outcome = ok(result()), boundary: Parameters<typeof t.end>[1] = {}) =>
+  t.end([outcome], boundary)
+
+describe("LoopRuntime rounds", () => {
+  it.effect("waits for round 1 to end, analyses it, and dispatches round 2 in three segments", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      // Round 1 is the user's own message: there is nothing to analyse while it runs.
+      yield* t.tick
+      expect(t.calls()).toHaveLength(0)
+      expect(t.session.requests).toHaveLength(0)
+
+      yield* round(t)
+
+      const [call] = t.calls()
+      expect(t.calls()).toHaveLength(1)
+      expect(call.firstDescription).toBe(t.prompt)
+      expect(call.prior).toBeUndefined()
+      expect(call.outcome).toEqual({ type: "completed" })
+      expect(call.humans).toEqual([])
+
+      const state = yield* t.current()
+      expect(state.round).toBe(2)
+      expect(state.status).toBe("active")
+      expect(state.origin.analysis).toEqual(intent())
+      expect(state.intent_revision).toBe(1)
+      expect(state.next_prompt).toBeUndefined()
+      expect(state.analyzing).toBeUndefined()
+      expect(state.last_analyzed_msg).toBe(t.session.boundary?.message)
+      expect(yield* t.rows()).toHaveLength(1)
+
+      expect(t.session.sent).toHaveLength(1)
+      const [sent] = t.session.sent
+      expect(sent.marker).toEqual({ loopID: state.loop_id, round: 2, kind: "next" })
+      const text = sent.text
+      expect(text.startsWith("[Loop round 2/20: continuing]")).toBe(true)
+      const prompt = text.indexOf("## This round\nImplement the validator and run its tests.")
+      const tail = text.indexOf("## Final goal")
+      expect(prompt).toBeGreaterThan(0)
+      expect(tail).toBeGreaterThan(prompt)
+      expect(text.slice(tail)).toContain("Objective: Ship the loop analysis service")
+      expect(text.slice(tail)).toContain("- Do not touch the shared runner")
+      expect(text.slice(tail)).toContain("- No new configuration keys")
+    }),
+  )
+
+  it.effect("sends a different prompt each round and shows the analysis its own history", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t, ok(result({ next_prompt: "Write the schema." })))
+      yield* round(t, ok(result({ next_prompt: "Write the validator.", reason: "Schema is in." })))
+      yield* round(t, ok(result({ next_prompt: "Write the tests." })))
+
+      expect(t.session.sent.map((sent) => sent.marker.round)).toEqual([2, 3, 4])
+      expect(t.session.sent[0].text).toContain("## This round\nWrite the schema.")
+      expect(t.session.sent[1].text).toContain("## This round\nWrite the validator.")
+      expect(t.session.sent[2].text).toContain("## This round\nWrite the tests.")
+
+      const [, second, third] = t.calls()
+      expect(second.prior?.firstAnalysis).toEqual(intent())
+      expect(second.prior?.prompt).toBe("Write the schema.")
+      expect(third.prior?.recent.map((item) => item.reason)).toEqual([
+        "Two acceptance items are still unmet.",
+        "Schema is in.",
+      ])
+      expect((yield* t.current()).origin.analysis).toEqual(intent())
+    }),
+  )
+
+  it.effect("marks the loop as analysing while the analysis runs, then clears the mark and appends the row", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const events = yield* EventV2Bridge.Service
+      const analysing: boolean[] = []
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          const data: any = event.data
+          if (event.type === "loop.updated" && data.sessionID === t.sessionID) analysing.push(data.loop.analyzing)
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+
+      let during: LoopState.Info | undefined
+      t.script(() =>
+        t.load().pipe(
+          Effect.tap((state) =>
+            Effect.sync(() => {
+              during = state
+            }),
+          ),
+          Effect.as(ok(result())),
+        ),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      expect(during?.analyzing).toEqual({ boundary: t.session.boundary?.message ?? "", started_at: 0 })
+      // The interface is told when the analysis starts and when it ends: mark, commit, then the round's dispatch.
+      expect(analysing).toEqual([true, false, false])
+      const after = yield* t.current()
+      expect(after.analyzing).toBeUndefined()
+      expect(after.last_reason).toBe("Two acceptance items are still unmet.")
+      expect(yield* t.rows()).toHaveLength(1)
+    }),
+  )
+
+  it.effect("dispatches nothing when the analysis fails", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t, failed({ kind: "invalid_output", detail: "no submission", violations: [] }))
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop).toMatchObject({ reason: "analysis_failed", detail: { code: "invalid_output" } })
+      expect(state.round).toBe(1)
+      expect(state.analyzing).toBeUndefined()
+      expect(t.session.requests).toHaveLength(0)
+      expect(yield* t.rows()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("analyses a boundary once and dispatches its stored prompt when the first dispatch was refused", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.session.answer = "refused"
+      yield* round(t, ok(result({ next_prompt: "Pick up the validator." })))
+      // The analysis is committed, the prompt is kept, no round was counted.
+      let state = yield* t.current()
+      expect(state.round).toBe(1)
+      expect(state.next_prompt).toBe("Pick up the validator.")
+      expect(state.last_analyzed_msg).toBe(t.session.boundary?.message)
+      expect(t.calls()).toHaveLength(1)
+
+      t.session.answer = undefined
+      yield* t.tick
+      yield* t.tick
+
+      expect(t.calls()).toHaveLength(1)
+      state = yield* t.current()
+      expect(state.round).toBe(2)
+      expect(state.next_prompt).toBeUndefined()
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].text).toContain("## This round\nPick up the validator.")
+    }),
+  )
+
+  it.effect("counts a round only with the message that starts it", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      // The host refuses while a turn runs: nothing is written, nothing is counted.
+      yield* round(t)
+      expect((yield* t.current()).round).toBe(2)
+      t.session.begin()
+      yield* t.tick
+      yield* t.tick
+      expect((yield* t.current()).round).toBe(2)
+      expect(t.session.sent).toHaveLength(1)
+    }),
+  )
+})
+
+describe("LoopRuntime triggers", () => {
+  it.effect("decides once more after a trigger that arrived mid-decision, without dispatching twice", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      t.script(() =>
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as(ok(result()))),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.runtime.claim(t.sessionID)
+      yield* Deferred.await(started)
+      // Two more idle events while the analysis runs.
+      expect(yield* t.runtime.claim(t.sessionID)).toBe(true)
+      expect(yield* t.runtime.claim(t.sessionID)).toBe(true)
+      expect(t.calls()).toHaveLength(1)
+
+      yield* Deferred.succeed(release, undefined)
+      yield* t.runtime.settled(t.sessionID)
+
+      expect(t.calls()).toHaveLength(1)
+      expect(t.session.sent).toHaveLength(1)
+      expect((yield* t.current()).round).toBe(2)
+    }),
+  )
+
+  it.effect("reads the agent's declaration into the analysis and clears it when the boundary is over", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "done", evidence: "tests pass: 12/12" } })
+      yield* round(t, ok(result({ next_prompt: "Verify the claim." })), { humanTurn: true })
+
+      expect(t.calls()[0]?.declaration).toEqual({ kind: "done", text: "tests pass: 12/12" })
+      const state = yield* t.current()
+      expect(state.declaration).toBeUndefined()
+      expect(state.round).toBe(2)
+    }),
+  )
+
+  it.effect("goes back to waiting when it is resumed while its object is still alive", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      yield* t.runtime.act(t.sessionID, "stop")
+      expect((yield* t.current()).status).toBe("stopped")
+
+      yield* t.runtime.resume(t.sessionID)
+      yield* t.runtime.settled(t.sessionID)
+
+      const state = yield* t.current()
+      expect(state.status).toBe("waiting")
+      expect(state.wait?.wait_id).toBe("job_1")
+      expect(t.calls()).toHaveLength(0)
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+})
+
+describe("LoopRuntime limits", () => {
+  it.effect("stops with budget_exhausted at the round limit and keeps the prompt for a resume", () =>
+    Effect.gen(function* () {
+      const t = yield* boot({ maxRounds: 2 })
+      yield* round(t)
+      expect((yield* t.current()).round).toBe(2)
+      yield* round(t, ok(result({ next_prompt: "The last prompt." })))
+
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop?.reason).toBe("budget_exhausted")
+      expect(state.round).toBe(2)
+      expect(state.next_prompt).toBe("The last prompt.")
+      expect(t.session.sent).toHaveLength(1)
+    }),
+  )
+
+  it.effect("stops with no_progress after three analyses in a row without progress", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t, ok(stalled))
+      expect((yield* t.current()).no_progress_streak).toBe(1)
+      yield* round(t, ok(stalled))
+      expect((yield* t.current()).no_progress_streak).toBe(2)
+      expect((yield* t.current()).status).toBe("active")
+      yield* round(t, ok(stalled))
+
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop?.reason).toBe("no_progress")
+      expect(state.no_progress_streak).toBe(3)
+      expect(t.session.sent).toHaveLength(2)
+    }),
+  )
+
+  it.effect("resets the streak when a round makes progress", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t, ok(stalled))
+      yield* round(t, ok(stalled))
+      yield* round(t, ok(result()))
+      expect((yield* t.current()).no_progress_streak).toBe(0)
+      yield* round(t, ok(stalled))
+      const state = yield* t.current()
+      expect(state.no_progress_streak).toBe(1)
+      expect(state.status).toBe("active")
+    }),
+  )
+
+  it.effect("does not move the streak for the analysis that follows a user turn", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      // Round 2 declares await and the loop waits.
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      t.session.finish()
+      yield* t.tick
+      expect((yield* t.current()).status).toBe("waiting")
+
+      t.session.human("how is it going?")
+      t.session.begin()
+      t.script(ok(stalled))
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      const state = yield* t.current()
+      expect(state.no_progress_streak).toBe(0)
+      expect(state.status).toBe("waiting")
+      expect(t.calls()).toHaveLength(2)
+    }),
+  )
+})
+
+describe("LoopRuntime waiting", () => {
+  it.effect("waits on an agent's await without analysing, however often the session goes idle", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      yield* t.tick
+      yield* t.tick
+      yield* t.tick
+
+      const state = yield* t.current()
+      expect(state.status).toBe("waiting")
+      expect(state.declaration).toBeUndefined()
+      expect(state.wait?.wait_id).toBe("job_1")
+      expect(state.round).toBe(1)
+      expect(t.calls()).toHaveLength(0)
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+
+  it.effect("wakes with a turn of its own, counts the round and clears the wait", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+
+      expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["other_job"] }, "no")).toBe(false)
+      expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "job_1 finished: ok")).toBe(
+        true,
+      )
+
+      const state = yield* t.current()
+      expect(state.status).toBe("active")
+      expect(state.round).toBe(2)
+      expect(state.wait).toBeUndefined()
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].marker).toEqual({ loopID: state.loop_id, round: 2, kind: "wake" })
+      expect(t.session.sent[0].text).toContain("## Why this round started\njob_1 finished: ok")
+    }),
+  )
+
+  it.effect("with evaluate false only flips the state and leaves the turn to the caller", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "done", { evaluate: false })).toBe(
+        true,
+      )
+      const state = yield* t.current()
+      expect([state.status, state.round, state.wait]).toEqual(["active", 2, undefined])
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+
+  it.effect("keeps a wake that lands while a turn runs, and leaves the turn to the next boundary", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      // A user turn is running when the job finishes.
+      t.session.human("meanwhile, a question")
+      t.session.begin()
+      expect(yield* t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "job_1 finished")).toBe(true)
+
+      let state = yield* t.current()
+      expect([state.status, state.round, state.wait]).toEqual(["active", 2, undefined])
+      expect(t.session.sent).toHaveLength(0)
+
+      yield* round(t, ok(result({ next_prompt: "Use the finished job." })), { humanTurn: true })
+      state = yield* t.current()
+      expect(state.round).toBe(3)
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].text).toContain("Use the finished job.")
+    }),
+  )
+
+  it.effect("ends at budget_exhausted when the agent keeps awaiting after every wake", () =>
+    Effect.gen(function* () {
+      const t = yield* boot({ maxRounds: 3 })
+      const awaitAgain = () => t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* awaitAgain()
+      yield* t.end()
+      const wake = () => t.runtime.wake(t.sessionID, { source: "background_job", ids: ["job_1"] }, "finished")
+
+      for (const expected of [2, 3]) {
+        expect(yield* wake()).toBe(true)
+        expect((yield* t.current()).round).toBe(expected)
+        yield* awaitAgain()
+        yield* t.end()
+        expect((yield* t.current()).status).toBe("waiting")
+      }
+      expect(yield* wake()).toBe(true)
+
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop?.reason).toBe("budget_exhausted")
+      expect(state.round).toBe(3)
+      expect(t.calls()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("reviews an expired wait once, then stops with wait_expired if nothing moved", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor({ deadline: 0 }) })
+      yield* t.end()
+      expect((yield* t.current()).status).toBe("waiting")
+      expect(t.session.requests).toHaveLength(0)
+
+      // The periodic scan finds the deadline passed.
+      yield* t.tick
+      let state = yield* t.current()
+      expect(state.round).toBe(2)
+      expect(state.status).toBe("active")
+      expect(state.wait?.reviewed).toBe(true)
+      const review = t.session.sent[0]
+      expect(review.marker.kind).toBe("review")
+      expect(review.text).toContain("Waiting for background_job:job_1 timed out.")
+      expect(review.text).toContain("Do one bounded check")
+
+      yield* round(t, ok(stalled))
+      state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop?.reason).toBe("wait_expired")
+      expect(t.session.sent).toHaveLength(1)
+    }),
+  )
+
+  it.effect("goes on after a review that made progress, and drops the wait", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor({ deadline: 0 }) })
+      yield* t.end()
+      yield* t.tick
+      yield* round(t, ok(result({ next_prompt: "Finish the job's work." })))
+
+      const state = yield* t.current()
+      expect(state.status).toBe("active")
+      expect(state.round).toBe(3)
+      expect(state.wait).toBeUndefined()
+      expect(t.session.sent.map((sent) => sent.marker.kind)).toEqual(["review", "next"])
+    }),
+  )
+
+  it.effect("reviews a wait whose object is gone, and tells the agent why", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      t.session.gone.set("job_1", "The background job job_1 was lost in a restart.")
+      yield* t.tick
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].marker.kind).toBe("review")
+      expect(t.session.sent[0].text).toContain("The background job job_1 was lost in a restart.")
+    }),
+  )
+
+  it.effect("turns a blocked analysis into a wait when something running can still unblock it", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.session.waitable = waitFor({ source: "watch_pr", wait_id: "watch_1", ref: { domain: "pr_watch", id: "watch_1" } })
+      yield* round(t, ok(result({ verdict: "blocked", next_prompt: undefined })))
+      const state = yield* t.current()
+      expect(state.status).toBe("waiting")
+      expect(state.wait?.wait_id).toBe("watch_1")
+      expect(state.stop).toBeUndefined()
+      expect(t.session.sent).toHaveLength(0)
+    }),
+  )
+
+  it.effect("stops a blocked analysis with needs_user when nothing is running", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t, ok(result({ verdict: "blocked", next_prompt: undefined })))
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop).toMatchObject({ reason: "needs_user", detail: { code: "open_question" } })
+    }),
+  )
+
+  it.effect("analyses a user turn in a waiting loop and keeps waiting when it says continue", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+      expect((yield* t.current()).status).toBe("waiting")
+
+      const message = t.session.human("also keep the lockfile untouched")
+      t.session.begin()
+      t.script(
+        ok(
+          result({
+            intent: intent({ constraints: ["Do not touch the shared runner", "Keep the lockfile untouched"] }),
+            intent_change: { changed: true, basis_message_id: message, summary: "A constraint was added." },
+          }),
+        ),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      expect(t.calls()).toHaveLength(1)
+      expect(t.calls()[0]?.humans).toEqual([{ id: message, text: "also keep the lockfile untouched" }])
+      const state = yield* t.current()
+      expect(state.status).toBe("waiting")
+      expect(state.wait?.wait_id).toBe("job_1")
+      // The first analysis of the loop, so the first revision of the intent whatever it reports as changed.
+      expect(state.intent_revision).toBe(1)
+      expect(state.intent?.constraints).toContain("Keep the lockfile untouched")
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+})
+
+describe("LoopRuntime user messages", () => {
+  it.effect("analyses a human message merged into a running turn, and never stops for it", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      const message = t.session.human("also cover the empty case")
+      yield* round(
+        t,
+        ok(
+          result({
+            intent: intent({ constraints: ["Do not touch the shared runner", "Cover the empty case"] }),
+            intent_change: { changed: true, basis_message_id: message, summary: "Empty case added." },
+            next_prompt: "Cover the empty case too.",
+          }),
+        ),
+      )
+
+      expect(t.calls()[1]?.humans).toEqual([{ id: message, text: "also cover the empty case" }])
+      const state = yield* t.current()
+      expect(state.status).toBe("active")
+      expect(state.round).toBe(3)
+      expect(state.intent_revision).toBe(2)
+      expect(t.session.sent[1].text).toContain("Cover the empty case too.")
+      expect(t.session.sent[1].text).toContain("- Cover the empty case")
+    }),
+  )
+
+  it.effect("sends nothing until a waiting human message has its reply, then analyses it", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      t.session.finish()
+      const message = t.session.human("wait, use the other approach")
+
+      yield* t.tick
+      yield* t.tick
+      expect(t.calls()).toHaveLength(1)
+      expect(t.session.sent).toHaveLength(1)
+      expect((yield* t.current()).status).toBe("active")
+
+      t.session.begin()
+      yield* round(t, ok(result({ next_prompt: "Use the other approach." })), { humanTurn: true })
+      expect(t.calls()[1]?.humans).toEqual([{ id: message, text: "wait, use the other approach" }])
+      expect(t.session.sent).toHaveLength(2)
+      expect(t.session.sent[1].text).toContain("Use the other approach.")
+      expect((yield* t.current()).status).toBe("active")
+    }),
+  )
+
+  it.effect("aborts the analysis when a new turn starts and commits nothing", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const started = yield* Deferred.make<void>()
+      t.script(
+        (input) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined)
+            yield* Effect.callback<void>((resume) => {
+              input.abort.addEventListener("abort", () => resume(Effect.void), { once: true })
+            })
+            return failed({ kind: "cancelled" })
+          }),
+        ok(result({ next_prompt: "After the user's turn." })),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.runtime.claim(t.sessionID)
+      yield* Deferred.await(started)
+      expect((yield* t.current()).analyzing).toBeDefined()
+
+      // The user types: the turn starts, the analysis is abandoned.
+      t.session.human("one more thing")
+      t.session.begin()
+      yield* t.runtime.turnStarted(t.sessionID)
+      yield* t.runtime.settled(t.sessionID)
+
+      expect(yield* t.rows()).toHaveLength(0)
+      expect((yield* t.current()).analyzing).toBeUndefined()
+      expect(t.session.nudges).toBe(1)
+
+      yield* round(t, undefined, { humanTurn: true })
+      expect(t.calls()[1]?.humans).toHaveLength(1)
+      expect((yield* t.current()).round).toBe(2)
+    }),
+  )
+
+  it.effect("clears the previous boundary's declaration when a new turn starts", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "done", evidence: "all green" } })
+      yield* t.runtime.turnStarted(t.sessionID)
+      expect((yield* t.current()).declaration).toBeUndefined()
+    }),
+  )
+})
+
+describe("LoopRuntime fence", () => {
+  it.effect("drops an analysis whose loop was written to meanwhile, and decides the boundary again", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.script(
+        () =>
+          t.loops.update(t.sessionID, undefined, { max_rounds: 30 }).pipe(Effect.as(ok(result({ next_prompt: "stale" })))),
+        ok(result({ next_prompt: "fresh" })),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      expect(yield* t.rows()).toHaveLength(0)
+      expect(t.session.nudges).toBe(1)
+      expect(t.session.sent).toHaveLength(0)
+      expect((yield* t.current()).round).toBe(1)
+
+      // The nudge runs the boundary again: the stale mark is cleared and the boundary analysed afresh.
+      yield* t.tick
+      const state = yield* t.current()
+      expect(t.calls()).toHaveLength(2)
+      expect(yield* t.rows()).toHaveLength(1)
+      expect(state.round).toBe(2)
+      expect(state.max_rounds).toBe(30)
+      expect(t.session.sent[0].text).toContain("fresh")
+      expect(t.session.sent[0].text).not.toContain("stale")
+    }),
+  )
+
+  it.effect("drops an analysis whose boundary moved on", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.script(() =>
+        Effect.sync(() => {
+          t.session.begin()
+          t.session.finish()
+        }).pipe(Effect.as(ok(result()))),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+      expect(yield* t.rows()).toHaveLength(0)
+      expect(t.session.nudges).toBe(1)
+      expect((yield* t.current()).last_analyzed_msg).toBeUndefined()
+    }),
+  )
+
+  it.effect("ignores the boundary of a loop it replaced until the new loop has run", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      t.session.finish()
+      // The user starts a new loop: its first message has not been sent yet.
+      yield* t.runtime.start(t.sessionID, { prompt: "A new goal.", messageID: t.session.human("A new goal.") })
+      yield* t.tick
+      expect(t.calls()).toHaveLength(1)
+    }),
+  )
+})
+
+describe("LoopRuntime failures", () => {
+  /** A loop at round 2, whose turn is running. */
+  const atRound2 = Effect.gen(function* () {
+    const t = yield* boot()
+    yield* round(t)
+    return t
+  })
+
+  it.effect("heals an interface error with two retries and three delayed probes before it stops", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      const failRound = () => {
+        t.session.fail(providerError(503))
+        return t.tick
+      }
+
+      // Level two: the failed round again, twice. A recovery is not a round.
+      yield* failRound()
+      yield* failRound()
+      let state = yield* t.current()
+      expect(t.session.sent.map((sent) => sent.marker.kind)).toEqual(["next", "recovery", "recovery"])
+      expect(t.session.sent.every((sent) => sent.marker.round === 2)).toBe(true)
+      expect(state.round).toBe(2)
+      expect(state.recovery).toMatchObject({ attempts: 2, reset: 0, probes: 0 })
+
+      // Level three: probes at 60 s, 300 s and 900 s. In between the loop is waiting for nothing but the clock.
+      for (const [index, delay] of [60_000, 300_000, 900_000].entries()) {
+        yield* failRound()
+        state = yield* t.current()
+        expect(state.status).toBe("waiting")
+        expect(state.wait).toBeUndefined()
+        expect(state.recovery?.probe_at).toBe((yield* Clock.currentTimeMillis) + delay)
+        expect(state.recovery?.probes).toBe(index + 1)
+        const sent = t.session.sent.length
+
+        yield* t.tick
+        expect(t.session.sent).toHaveLength(sent)
+        yield* TestClock.adjust(delay - 1)
+        yield* t.tick
+        expect(t.session.sent).toHaveLength(sent)
+        yield* TestClock.adjust(1)
+        yield* t.tick
+        expect(t.session.sent).toHaveLength(sent + 1)
+        state = yield* t.current()
+        expect(state.status).toBe("active")
+        expect(state.recovery?.probe_at).toBeUndefined()
+        expect(state.round).toBe(2)
+      }
+
+      // The last probe failed too: the ladder is spent.
+      yield* failRound()
+      state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop).toMatchObject({ reason: "provider_unavailable", detail: { status: 503 } })
+      expect(state.round).toBe(2)
+      expect(t.session.sent.map((sent) => sent.marker.kind)).toEqual([
+        "next",
+        "recovery",
+        "recovery",
+        "recovery",
+        "recovery",
+        "recovery",
+      ])
+    }),
+  )
+
+  it.effect("goes on when a retry works: the chain is over and the round count did not move", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      t.session.fail(providerError(503))
+      yield* t.tick
+      expect((yield* t.current()).recovery?.attempts).toBe(1)
+
+      yield* round(t, ok(result({ next_prompt: "Next after the retry." })))
+      const state = yield* t.current()
+      expect(state.recovery).toBeUndefined()
+      expect(state.round).toBe(3)
+      expect(t.session.sent.map((sent) => sent.marker.kind)).toEqual(["next", "recovery", "next"])
+    }),
+  )
+
+  it.effect("resets the reasoning state once, and gives up when the provider still refuses it", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      t.session.fail(reasoningError())
+      yield* t.tick
+      expect(t.session.sent).toHaveLength(2)
+      expect(t.session.sent[1].marker.kind).toBe("recovery")
+      expect(t.session.sent[1].reset).toBe(true)
+      expect((yield* t.current()).recovery).toMatchObject({ reset: 1, attempts: 0 })
+
+      t.session.fail(reasoningError())
+      yield* t.tick
+      const state = yield* t.current()
+      expect(state.stop?.reason).toBe("provider_unavailable")
+      expect(t.session.sent).toHaveLength(2)
+    }),
+  )
+
+  it.effect("stops at once on an error that waiting cannot fix", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      t.session.fail(providerError(401))
+      yield* t.tick
+      const state = yield* t.current()
+      expect(state.stop).toMatchObject({ reason: "provider_unavailable", detail: { status: 401 } })
+      expect(t.session.sent).toHaveLength(1)
+    }),
+  )
+
+  it.effect("does not redispatch a turn the user is present for", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.session.fail(providerError(503), { humanTurn: true })
+      yield* t.tick
+      const state = yield* t.current()
+      expect(state.stop).toMatchObject({ reason: "provider_unavailable", detail: { status: 503 } })
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+
+  it.effect("ends the probe wait when another turn works, and decides its boundary as an ordinary one", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      expect((yield* t.current()).recovery?.probe_at).toBeDefined()
+
+      t.session.human("are you there?")
+      t.session.begin()
+      t.script(ok(result({ next_prompt: "Back to work." })))
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      const state = yield* t.current()
+      expect(state.recovery).toBeUndefined()
+      expect(state.status).toBe("active")
+      expect(state.round).toBe(3)
+      expect(t.session.sent.at(-1)?.text).toContain("Back to work.")
+    }),
+  )
+
+  it.effect("leaves the probe plan alone when another turn fails meanwhile", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      const before = yield* t.current()
+      const sent = t.session.sent.length
+
+      t.session.human("hello?")
+      t.session.begin()
+      t.session.fail(providerError(503), { humanTurn: true })
+      yield* t.tick
+
+      const after = yield* t.current()
+      expect(after.recovery).toEqual(before.recovery)
+      expect(after.status).toBe("waiting")
+      expect(t.session.sent).toHaveLength(sent)
+    }),
+  )
+
+  it.effect("retries a failed analysis, probes, and analyses again when the probe is due", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      t.script(unavailable, unavailable, unavailable, ok(result({ next_prompt: "Recovered." })))
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+
+      let state = yield* t.current()
+      expect(t.calls()).toHaveLength(3)
+      expect(state.status).toBe("waiting")
+      expect(state.recovery).toMatchObject({ attempts: 2, probes: 1 })
+      expect(state.analyzing).toBeUndefined()
+      expect(t.session.requests).toHaveLength(0)
+
+      yield* TestClock.adjust(60_000)
+      yield* t.tick
+      state = yield* t.current()
+      expect(t.calls()).toHaveLength(4)
+      expect(state.status).toBe("active")
+      expect(state.round).toBe(2)
+      expect(state.recovery).toBeUndefined()
+      expect(t.session.sent[0].text).toContain("Recovered.")
+    }),
+  )
+
+  const stops: ReadonlyArray<{
+    name: string
+    boundary: Parameters<FakeSession["finish"]>[0]
+    expected: object
+  }> = [
+    { name: "a refused permission prompt", boundary: { userRejected: true }, expected: { reason: "needs_user", detail: { code: "rejected" } } },
+    { name: "a hook that stopped the turn", boundary: { hookStop: { message: "blocked by policy" } }, expected: { reason: "hook_stopped", detail: { message: "blocked by policy" } } },
+    { name: "a context overflow", boundary: { turn: { type: "context_overflow" } }, expected: { reason: "context_exhausted" } },
+    { name: "a content filter", boundary: { turn: { type: "content_filter" } }, expected: { reason: "content_refused" } },
+    { name: "a turn that died on a defect", boundary: { turn: { type: "error", code: "UnknownError", retryable: false } }, expected: { reason: "internal_error", detail: { code: "UnknownError" } } },
+  ]
+  for (const { name, boundary, expected } of stops) {
+    it.effect(`stops, and does not analyse, on ${name}`, () =>
+      Effect.gen(function* () {
+        const t = yield* atRound2
+        t.session.finish(boundary)
+        yield* t.tick
+        const state = yield* t.current()
+        expect(state.status).toBe("stopped")
+        expect(state.stop).toMatchObject(expected)
+        expect(t.calls()).toHaveLength(1)
+      }),
+    )
+  }
+
+  it.effect("stops with analysis_failed when the analysis overruns its limits", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t, failed({ kind: "limit", limit: "steps" }))
+      expect((yield* t.current()).stop).toMatchObject({ reason: "analysis_failed", detail: { code: "limit" } })
+    }),
+  )
+
+  it.effect("stops the loop when starting the turn fails, instead of leaving it active", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.session.die = true
+      yield* round(t)
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop).toMatchObject({ reason: "internal_error", detail: { code: "dispatch_failed" } })
+    }),
+  )
+
+  it.effect("maps the analysis's other verdicts to their stop reasons", () =>
+    Effect.gen(function* () {
+      const cases = [
+        { verdict: "done", reason: "completed", status: "completed" },
+        { verdict: "goal_changed", reason: "goal_changed", status: "cancelled" },
+        { verdict: "user_stop", reason: "user_stopped", status: "stopped" },
+      ] as const
+      for (const item of cases) {
+        const t = yield* boot()
+        const message = t.session.human("a message that moves the goal")
+        t.session.finish({ humanTurn: true })
+        t.script(
+          ok(
+            result({
+              verdict: item.verdict,
+              next_prompt: undefined,
+              intent_change: { changed: item.verdict === "goal_changed", basis_message_id: message },
+            }),
+          ),
+        )
+        yield* t.tick
+        if (item.status === "stopped") {
+          const state = yield* t.current()
+          expect(state.stop).toMatchObject({ reason: item.reason })
+        } else {
+          const outcome = yield* t.outcome()
+          expect(outcome?.status).toBe(item.status)
+          expect(outcome?.stop?.reason).toBe(item.reason)
+          expect(yield* t.load()).toBeUndefined()
+        }
+      }
+    }),
+  )
+})
+
+describe("LoopRuntime commands", () => {
+  it.effect("stops, completes and clears as the commands say", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+
+      expect((yield* t.runtime.act(t.sessionID, "stop")).tag).toBe("stopped")
+      expect((yield* t.current()).stop).toMatchObject({ reason: "user_stopped" })
+      // Stopping a stopped loop keeps what it stopped with.
+      expect((yield* t.runtime.act(t.sessionID, "stop")).tag).toBe("unchanged")
+      expect((yield* t.runtime.act(t.sessionID, "interrupt")).tag).toBe("unchanged")
+      expect((yield* t.current()).stop?.reason).toBe("user_stopped")
+
+      const done = yield* t.runtime.act(t.sessionID, "done")
+      expect(done.tag).toBe("ended")
+      expect(yield* t.load()).toBeUndefined()
+      expect(yield* t.outcome()).toMatchObject({ status: "completed", stop: { reason: "completed" } })
+      expect((yield* t.runtime.act(t.sessionID, "stop")).tag).toBe("none")
+    }),
+  )
+
+  it.effect("clears a live loop as user_stopped and a stopped one with the reason it had", () =>
+    Effect.gen(function* () {
+      const live = yield* boot()
+      yield* live.runtime.clear(live.sessionID)
+      expect(yield* live.load()).toBeUndefined()
+      expect(yield* live.outcome()).toMatchObject({ status: "cancelled", stop: { reason: "user_stopped" } })
+
+      const stopped = yield* boot({ maxRounds: 1 })
+      yield* round(stopped)
+      expect((yield* stopped.current()).stop?.reason).toBe("budget_exhausted")
+      yield* stopped.runtime.clear(stopped.sessionID)
+      expect(yield* stopped.load()).toBeUndefined()
+      expect(yield* stopped.outcome()).toMatchObject({ status: "cancelled", stop: { reason: "budget_exhausted" } })
+    }),
+  )
+
+  it.effect("interrupts as user_interrupted, whatever is running", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      t.session.begin()
+      expect((yield* t.runtime.act(t.sessionID, "interrupt")).tag).toBe("stopped")
+      expect((yield* t.current()).stop?.reason).toBe("user_interrupted")
+    }),
+  )
+
+  it.effect("aborts the analysis in flight when a command stops the loop, and commits nothing", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const started = yield* Deferred.make<void>()
+      t.script((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Effect.callback<void>((resume) => {
+            input.abort.addEventListener("abort", () => resume(Effect.void), { once: true })
+          })
+          return failed({ kind: "cancelled" })
+        }),
+      )
+      t.session.finish({ humanTurn: true })
+      yield* t.runtime.claim(t.sessionID)
+      yield* Deferred.await(started)
+
+      yield* t.runtime.act(t.sessionID, "stop")
+      yield* t.runtime.settled(t.sessionID)
+
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.analyzing).toBeUndefined()
+      expect(yield* t.rows()).toHaveLength(0)
+      expect(t.session.sent).toHaveLength(0)
+    }),
+  )
+
+  it.effect("ends a live loop as goal_changed when a new one starts", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      const replacement = yield* t.runtime.start(t.sessionID, { prompt: "A different goal." })
+      expect(replacement.replaced?.stop).toMatchObject({ reason: "goal_changed", detail: { code: "explicit" } })
+      expect(replacement.state.loop_id).not.toBe(t.created.state.loop_id)
+      expect(yield* t.outcome()).toMatchObject({ status: "cancelled" })
+    }),
+  )
+
+  it.effect("treats an ESC that lands before the dispatch as an interrupt", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.script(ok(result()))
+      t.session.finish({ humanTurn: true })
+      // The inbox observed the epoch, then the user pressed ESC.
+      const observed = t.session.epoch
+      t.session.epoch += 1
+      yield* t.runtime.claim(t.sessionID, { claimEpoch: observed })
+      yield* t.runtime.settled(t.sessionID)
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop?.reason).toBe("user_interrupted")
+      expect(state.round).toBe(1)
+    }),
+  )
+
+  it.effect("ends a loop whose session was archived", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.runtime.archive(t.sessionID)
+      expect(yield* t.load()).toBeUndefined()
+      expect(yield* t.outcome()).toMatchObject({ status: "cancelled", stop: { reason: "session_archived" } })
+    }),
+  )
+})
+
+describe("LoopRuntime resume", () => {
+  const stoppedBy: ReadonlyArray<{ name: string; reason: StopReason; fail: (t: Harness) => void }> = [
+    { name: "an interface error", reason: "provider_unavailable", fail: (t) => t.session.fail(providerError(401)) },
+    { name: "a context overflow", reason: "context_exhausted", fail: (t) => t.session.finish({ turn: { type: "context_overflow" } }) },
+    { name: "a hook", reason: "hook_stopped", fail: (t) => t.session.finish({ hookStop: { message: "no" } }) },
+    { name: "a refused prompt", reason: "needs_user", fail: (t) => t.session.finish({ userRejected: true }) },
+  ]
+  for (const item of stoppedBy) {
+    it.effect(`analyses first and does not stop again for ${item.name}`, () =>
+      Effect.gen(function* () {
+        const t = yield* boot()
+        yield* round(t)
+        item.fail(t)
+        yield* t.tick
+        expect((yield* t.current()).stop?.reason).toBe(item.reason)
+
+        t.script(ok(result({ next_prompt: "Carry on after the stop." })))
+        const resumed = yield* t.runtime.resume(t.sessionID)
+        expect(resumed.tag).toBe("resumed")
+        yield* t.runtime.settled(t.sessionID)
+
+        const next = yield* t.current()
+        expect(next.status).toBe("active")
+        expect(next.stop).toBeUndefined()
+        expect(next.recovery).toBeUndefined()
+        expect(next.no_progress_streak).toBe(0)
+        expect(next.round).toBe(3)
+        expect(t.calls()).toHaveLength(2)
+        // What the stopped turn did is still told to the analysis.
+        expect(t.calls()[1].outcome).toEqual(t.session.boundary?.turn ?? { type: "completed" })
+        expect(t.session.sent.at(-1)?.text).toContain("Carry on after the stop.")
+      }),
+    )
+  }
+
+  it.effect("dispatches the stored prompt without analysing when the boundary was already analysed", () =>
+    Effect.gen(function* () {
+      const t = yield* boot({ maxRounds: 2 })
+      yield* round(t)
+      yield* round(t, ok(result({ next_prompt: "One more round." })))
+      expect((yield* t.current()).stop?.reason).toBe("budget_exhausted")
+      const calls = t.calls().length
+
+      const resumed = yield* t.runtime.resume(t.sessionID)
+      yield* t.runtime.settled(t.sessionID)
+
+      // No limit given and the budget was spent: exactly one more round.
+      expect(resumed.tag === "resumed" && resumed.state.max_rounds).toBe(3)
+      expect(t.calls()).toHaveLength(calls)
+      const state = yield* t.current()
+      expect(state.round).toBe(3)
+      expect(t.session.sent.at(-1)?.text).toContain("One more round.")
+    }),
+  )
+
+  it.effect("takes a new round limit only above the current round", () =>
+    Effect.gen(function* () {
+      const t = yield* boot({ maxRounds: 1 })
+      yield* round(t)
+      expect((yield* t.runtime.resume(t.sessionID, { maxRounds: 1 })).tag).toBe("invalid")
+      expect((yield* t.current()).status).toBe("stopped")
+      const resumed = yield* t.runtime.resume(t.sessionID, { maxRounds: 5 })
+      yield* t.runtime.settled(t.sessionID)
+      expect(resumed.tag === "resumed" && resumed.state.max_rounds).toBe(5)
+      expect((yield* t.current()).round).toBe(2)
+    }),
+  )
+
+  it.effect("resumes only a stopped loop", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("running")
+      yield* t.runtime.clear(t.sessionID)
+      expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("none")
+    }),
+  )
+})
+
+describe("LoopRuntime startup", () => {
+  it.effect("clears a mark left by a dead process and analyses the boundary once", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.session.finish({ humanTurn: true })
+      yield* t.loops.update(t.sessionID, undefined, {
+        analyzing: { boundary: t.session.boundary?.message ?? "", started_at: 1 },
+      })
+      t.script(ok(result()))
+      host.liveSessions.splice(0, host.liveSessions.length, { sessionID: t.sessionID, status: "active" })
+
+      yield* t.runtime.init("/repo")
+      yield* t.runtime.settled(t.sessionID)
+
+      expect(t.calls()).toHaveLength(1)
+      const state = yield* t.current()
+      expect(state.analyzing).toBeUndefined()
+      expect(state.round).toBe(2)
+      expect(yield* t.rows()).toHaveLength(1)
+    }),
+  )
+
+  it.effect("dispatches an analysed boundary's stored prompt without analysing again", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.session.answer = "refused"
+      yield* round(t, ok(result({ next_prompt: "Left over from before the crash." })))
+      t.session.answer = undefined
+      host.liveSessions.splice(0, host.liveSessions.length, { sessionID: t.sessionID, status: "active" })
+
+      yield* t.runtime.init("/repo")
+      yield* t.runtime.settled(t.sessionID)
+
+      expect(t.calls()).toHaveLength(1)
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].text).toContain("Left over from before the crash.")
+    }),
+  )
+
+  it.effect("fires a probe that came due while the process was down", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        t.session.fail(providerError(503))
+        yield* t.tick
+      }
+      const sent = t.session.sent.length
+      expect((yield* t.current()).recovery?.probe_at).toBeDefined()
+      yield* TestClock.adjust(61_000)
+      host.liveSessions.splice(0, host.liveSessions.length, { sessionID: t.sessionID, status: "waiting" })
+
+      yield* t.runtime.init("/repo")
+      yield* t.runtime.settled(t.sessionID)
+      expect(t.session.sent).toHaveLength(sent + 1)
+    }),
+  )
+
+  it.effect("lists only waiting loops for the periodic scan", () =>
+    Effect.gen(function* () {
+      const runtime = yield* LoopRuntime.Service
+      const waiting = SessionID.descending()
+      const active = SessionID.descending()
+      host.liveSessions.splice(
+        0,
+        host.liveSessions.length,
+        { sessionID: waiting, status: "waiting" },
+        { sessionID: active, status: "active" },
+      )
+      expect(yield* runtime.scan("/repo")).toEqual([waiting])
+    }),
+  )
+
+  it.effect("does not take a session that has no live loop", () =>
+    Effect.gen(function* () {
+      const runtime = yield* LoopRuntime.Service
+      expect(yield* runtime.claim(SessionID.descending())).toBe(false)
+    }),
+  )
+})
