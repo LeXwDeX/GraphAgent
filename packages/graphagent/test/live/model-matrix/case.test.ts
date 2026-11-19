@@ -369,7 +369,7 @@ describe("eval:case: the case of a user message", () => {
     expect(error(earlier, 0)).toContain("user message 0 carries an attachment")
   })
 
-  test("a turn that is more than its text makes no case: structured output, an agent mention, a subtask", () => {
+  test("a turn that is more than its text makes no case: structured output, own system text, an agent mention, a subtask", () => {
     const asked = (info: Record<string, unknown>, ...parts: Record<string, unknown>[]) =>
       exportOf(
         { ...message("m1", "user", text("what is wrong here?"), ...parts), info: { id: "m1", role: "user", ...info } },
@@ -381,7 +381,11 @@ describe("eval:case: the case of a user message", () => {
     expect(error(asked({}, { type: "subtask", agent: "explore", prompt: "p" }))).toContain(
       "mentions an agent or starts a subtask",
     )
-    // A text format is the default and asks for nothing more.
+    expect(error(asked({ system: "You are node n1 of workflow w1." }))).toContain(
+      "user message 0 carries its own system instructions",
+    )
+    // A text format is the default and asks for nothing more; an empty system text adds nothing.
+    expect(built(asked({ system: "" })).request).toBe("what is wrong here?")
     expect(built(asked({ format: { type: "text" } })).request).toBe("what is wrong here?")
   })
 
