@@ -7,6 +7,7 @@ Delegate a self-contained task to a subagent.
 - Launch independent agents concurrently in one message. Do not repeat a delegated task; wait or continue other work.
 - The agent returns one message that the user cannot see; summarize it. Check key claims, such as changed files or test results, before relying on or reporting them.
 - Pass action="resume" with task_id to continue a previous task with its history.
+- The fields are checked per call shape: a new task needs description, prompt and subagent_type and no task_id; action="resume" needs task_id plus those three; action="cancel" takes only task_id; action="read" takes task_id and an optional page.
 
 Choosing foreground or background:
 - When the user says they will keep working on something else while this is done ("meanwhile",

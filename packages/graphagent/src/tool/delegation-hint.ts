@@ -34,21 +34,24 @@ function savedPath(metadata: Record<string, unknown>) {
   return typeof path === "string" && path !== "" ? path : undefined
 }
 
-// A file longer than the line cap, read without a window. The default page of an ordinary source file is not a
-// reason to delegate, and a directory has no text to hand over.
+// A file longer than the line cap, or one the byte budget cut, read without a window. The default page of an
+// ordinary source file is not a reason to delegate, and a directory has no text to hand over. A page the byte
+// budget cut counts lines only up to the cut (#1573), so a file of few, long lines (minified code, a log of long
+// records) is told by `byBytes`, not by its line count.
 function readHint(args: Readonly<Record<string, unknown>>, metadata: Record<string, unknown>): Hint | undefined {
   const display = metadata.display
   if (!isRecord(display) || display.type !== "file") return undefined
   if (typeof display.path !== "string" || display.path === "") return undefined
-  if (typeof display.totalLines !== "number" || display.totalLines <= MAX_LINES) return undefined
+  const long = typeof display.totalLines === "number" && display.totalLines > MAX_LINES
+  if (!long && display.byBytes !== true) return undefined
   if (READ_WINDOW.some((key) => args[key] !== undefined)) return undefined
   return { agent: "explore", path: display.path }
 }
 
 /**
  * Who should read the truncated result of this call, or `undefined` when the call gets no line: its result was not
- * truncated, it has no saved copy, it is a read with a window or of a directory or a short file, or it is another
- * tool. `args` are the arguments the tool ran with, `metadata` is its result's.
+ * truncated, it has no saved copy, it is a read with a window or of a directory or of a short file the byte budget did
+ * not cut, or it is another tool. `args` are the arguments the tool ran with, `metadata` is its result's.
  */
 export function hintOf(tool: string, args: Readonly<Record<string, unknown>>, metadata: unknown): Hint | undefined {
   if (!isRecord(metadata) || metadata.truncated !== true) return undefined
