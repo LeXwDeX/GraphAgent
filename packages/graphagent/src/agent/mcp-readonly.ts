@@ -15,6 +15,11 @@ import { AgentContract } from "./contract"
  *
  * The hint is the word of a server the user configured, and it is trusted as given. The MCP SDK says a hint is no more
  * than a hint, so a server that misreports a tool opens it to these agents; a deny for the tool shuts it.
+ *
+ * A read-only tool of a deferred server is reached through `mcp_describe` and `mcp_call`, which the native `*` deny
+ * hides like every tool a read-only agent does not list. So while there is such a tool, the grant covers the two
+ * helpers as well (#1574). They reach only the tools the agent can see, which are the read-only ones, so the grant
+ * opens nothing else; a deny for either helper shuts both, as it does for any agent.
  */
 
 /** What `qualifies` reads of an agent. */
@@ -71,21 +76,38 @@ export function adjust(agent: Subject, policy: Policy, ids: readonly string[]): 
 }
 
 /**
- * The ids of the MCP server tools among `entries` that declare themselves read-only. A tool of a deferred server is one
- * of them: the grant is for the key of the tool, as it is for a direct call, and the agents it is made for have no
- * `mcp_describe` or `mcp_call` to reach such a tool with.
+ * The ids of the MCP server tools among `entries` that declare themselves read-only. When one of them is a tool of a
+ * deferred server, the two helpers that reach it, `mcp_describe` and `mcp_call`, are among the ids too: the tool is
+ * granted by its key, as it is for a direct call, and the helpers are how a call gets to it.
  */
 export function idsOfEntries(
-  entries: Iterable<{ readonly id: string; readonly source: { readonly kind: string; readonly readOnly?: boolean } }>,
+  entries: Iterable<{
+    readonly id: string
+    readonly source: { readonly kind: string; readonly readOnly?: boolean; readonly deferred?: boolean }
+  }>,
 ): string[] {
   const ids: string[] = []
-  for (const entry of entries) if (entry.source.kind === "mcp" && entry.source.readOnly === true) ids.push(entry.id)
-  return ids
+  let deferred = false
+  for (const entry of entries) {
+    if (entry.source.kind !== "mcp" || entry.source.readOnly !== true) continue
+    ids.push(entry.id)
+    if (entry.source.deferred === true) deferred = true
+  }
+  return deferred ? [...ids, ...McpCatalog.RESERVED_TOOL_KEYS] : ids
 }
 
-/** The keys of the MCP server tools among `tools` whose binding says they declare themselves read-only. */
+/**
+ * The keys of the MCP server tools among `tools` whose binding says they declare themselves read-only. A deferred tool
+ * is none of the tools a request carries; the two helpers stand for it. When `tools` holds both, the registry has put
+ * them there for a deferred read-only tool, and they are among the ids as `idsOfEntries` has them.
+ */
 export function idsOfTools(tools: Readonly<Record<string, object>>): string[] {
-  return Object.entries(tools).flatMap(([id, item]) => (McpCatalog.toolBinding(item)?.readOnly === true ? [id] : []))
+  const ids = Object.entries(tools).flatMap(([id, item]) =>
+    McpCatalog.toolBinding(item)?.readOnly === true ? [id] : [],
+  )
+  return McpCatalog.RESERVED_TOOL_KEYS.every((key) => Object.hasOwn(tools, key))
+    ? [...ids, ...McpCatalog.RESERVED_TOOL_KEYS]
+    : ids
 }
 
 export * as McpReadonly from "./mcp-readonly"

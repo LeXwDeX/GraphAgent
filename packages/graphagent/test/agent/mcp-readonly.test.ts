@@ -227,6 +227,68 @@ describe("McpReadonly.adjust", () => {
   )
 })
 
+describe("McpReadonly.adjust for the helpers of a deferred server (#1574)", () => {
+  const HELPERS = ["mcp_describe", "mcp_call"]
+  const lazy = { kind: "mcp", readOnly: true, deferred: true }
+
+  it.instance("the native rules of each of the five hide the helpers, and the grant opens both and nothing else", () =>
+    Effect.gen(function* () {
+      for (const name of READ_ONLY_AGENTS) {
+        const agent = yield* agentNamed(name)
+        const policy = yield* policyOf(name)
+        const ids = McpReadonly.idsOfEntries([{ id: "srv_a", source: lazy }])
+        expect(Permission.disabledByPolicy([...HELPERS, "srv_a"], policy.native, policy.rules), name).toEqual(
+          new Set([...HELPERS, "srv_a"]),
+        )
+
+        const adjusted = McpReadonly.adjust(agent, policy, ids)
+        expect(Permission.disabledByPolicy([...HELPERS, "srv_a"], adjusted.native, adjusted.rules), name).toEqual(
+          new Set(),
+        )
+        // The grant is for the ids it was given: a tool of another server and another `mcp_` name stay closed.
+        expect(Permission.disabledByPolicy(["srv_z", "mcp_other"], adjusted.native, adjusted.rules), name).toEqual(
+          new Set(["srv_z", "mcp_other"]),
+        )
+        // The allows follow the native rules, the helpers' beside the tool's, so the user's rules come after them.
+        expect(adjusted.rules.slice(policy.native.length, policy.native.length + ids.length), name).toEqual(
+          ids.map((id) => rule(id, "allow")),
+        )
+      }
+    }),
+  )
+
+  it.instance("a deny the user wrote for either helper still closes it, and a deny for mcp_* closes both", () =>
+    Effect.gen(function* () {
+      const explore = yield* agentNamed("explore")
+      const { native } = yield* policyOf("explore")
+      const ids = McpReadonly.idsOfEntries([{ id: "srv_a", source: lazy }])
+      const closed = (...user: PermissionV1.Rule[]) => {
+        const adjusted = McpReadonly.adjust(explore, { native, rules: [...native, ...user] }, ids)
+        return Permission.disabledByPolicy([...HELPERS, "srv_a"], adjusted.native, adjusted.rules)
+      }
+      expect(closed()).toEqual(new Set())
+      expect(closed(rule("mcp_call", "deny"))).toEqual(new Set(["mcp_call"]))
+      expect(closed(rule("mcp_describe", "deny"))).toEqual(new Set(["mcp_describe"]))
+      expect(closed(rule("mcp_*", "deny"))).toEqual(new Set(HELPERS))
+      // The tool is its own key: a deny for it leaves the helpers open, and the other way round.
+      expect(closed(rule("srv_a", "deny"))).toEqual(new Set(["srv_a"]))
+    }),
+  )
+
+  it.instance("an agent that is not one of the five gets no helper", () =>
+    Effect.gen(function* () {
+      const { native } = yield* policyOf("explore")
+      const policy = { native, rules: [...native] }
+      const ids = McpReadonly.idsOfEntries([{ id: "srv_a", source: lazy }])
+      const custom = { ...(yield* agentNamed("explore")), native: false }
+      expect(McpReadonly.adjust(custom, policy, ids)).toBe(policy)
+      for (const name of ["general", "build", "prototyper", "surveyor"]) {
+        expect(McpReadonly.adjust(yield* agentNamed(name), policy, ids), name).toBe(policy)
+      }
+    }),
+  )
+})
+
 describe("McpReadonly ids", () => {
   const source = (kind: string, readOnly?: boolean) => ({ kind, ...(readOnly === undefined ? {} : { readOnly }) })
 
@@ -258,5 +320,80 @@ describe("McpReadonly ids", () => {
       McpReadonly.idsOfTools({ yes: bound(true), no: bound(false), unmarked: bound(), unbound, also: bound(true) }),
     ).toEqual(["yes", "also"])
     expect(McpReadonly.idsOfTools({})).toEqual([])
+  })
+
+  describe("the helpers of a deferred server (#1574)", () => {
+    const lazy = (readOnly?: boolean, kind = "mcp") => ({
+      kind,
+      deferred: true,
+      ...(readOnly === undefined ? {} : { readOnly }),
+    })
+
+    test("idsOfEntries adds mcp_describe and mcp_call while a read-only tool belongs to a deferred server", () => {
+      expect(
+        McpReadonly.idsOfEntries([
+          { id: "eager", source: source("mcp", true) },
+          { id: "lazy", source: lazy(true) },
+        ]),
+      ).toEqual(["eager", "lazy", "mcp_describe", "mcp_call"])
+      // Once, however many such tools there are, and whatever their order.
+      expect(
+        McpReadonly.idsOfEntries([
+          { id: "a", source: lazy(true) },
+          { id: "b", source: source("mcp", true) },
+          { id: "c", source: lazy(true) },
+        ]),
+      ).toEqual(["a", "b", "c", "mcp_describe", "mcp_call"])
+      expect(McpReadonly.idsOfEntries([{ id: "lazy", source: lazy(true) }])).toEqual([
+        "lazy",
+        ...McpCatalog.RESERVED_TOOL_KEYS,
+      ])
+    })
+
+    test("idsOfEntries adds no helper without a deferred read-only MCP tool", () => {
+      // A tool of an eager server is reached by its key, with no helper.
+      expect(McpReadonly.idsOfEntries([{ id: "eager", source: source("mcp", true) }])).toEqual(["eager"])
+      // A deferred tool that did not declare the hint, or declared something else, is no grant of any kind.
+      for (const readOnly of [undefined, false]) {
+        expect(McpReadonly.idsOfEntries([{ id: "lazy", source: lazy(readOnly) }])).toEqual([])
+        expect(
+          McpReadonly.idsOfEntries([
+            { id: "eager", source: source("mcp", true) },
+            { id: "lazy", source: lazy(readOnly) },
+          ]),
+        ).toEqual(["eager"])
+      }
+      // Only a server tool counts: not a built-in, a resource helper or a helper entry that carries the same fields.
+      for (const kind of ["builtin", "mcp-resource", "mcp-deferred", "direct-shell"]) {
+        expect(McpReadonly.idsOfEntries([{ id: "x", source: lazy(true, kind) }]), kind).toEqual([])
+      }
+      expect(McpReadonly.idsOfEntries([])).toEqual([])
+    })
+
+    test("idsOfTools adds the helpers when the tools hold both of them", () => {
+      const schema = jsonSchema({ type: "object", properties: {} })
+      const bound = (readOnly?: boolean) =>
+        McpCatalog.bindTool(tool({ inputSchema: schema }), {
+          server: "srv",
+          tool: "t",
+          source: "unknown",
+          ...(readOnly === undefined ? {} : { readOnly }),
+        })
+      const plain = () => tool({ inputSchema: schema })
+      expect(McpReadonly.idsOfTools({ yes: bound(true), mcp_describe: plain(), mcp_call: plain() })).toEqual([
+        "yes",
+        "mcp_describe",
+        "mcp_call",
+      ])
+      // The helpers stand for the deferred tools, which are not among the tools themselves: both there, nothing else.
+      expect(McpReadonly.idsOfTools({ no: bound(), mcp_call: plain(), mcp_describe: plain() })).toEqual([
+        "mcp_describe",
+        "mcp_call",
+      ])
+      // One of them is no pair: the registry never adds one alone, so nothing is granted for it.
+      expect(McpReadonly.idsOfTools({ yes: bound(true), mcp_describe: plain() })).toEqual(["yes"])
+      expect(McpReadonly.idsOfTools({ yes: bound(true), mcp_call: plain() })).toEqual(["yes"])
+      expect(McpReadonly.idsOfTools({ no: bound(), other: plain() })).toEqual([])
+    })
   })
 })

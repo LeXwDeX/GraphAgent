@@ -6,7 +6,7 @@ import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { describe, expect } from "bun:test"
-import { jsonSchema, tool } from "ai"
+import { jsonSchema, tool, type Tool as AITool } from "ai"
 import { Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -16,7 +16,9 @@ import { Permission } from "@/permission"
 import { SafetyGuard } from "@/permission/safety-guard"
 import { ChildRegistry } from "@/session/child/registry"
 import { MessageID, SessionID } from "@/session/schema"
+import { resolveTools as advertisedTools } from "@/session/llm/request"
 import { SessionTools } from "@/session/tools"
+import * as McpDeferred from "@/tool/mcp-deferred"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { ProviderTest } from "../fake/provider"
@@ -30,6 +32,10 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
  * made where the call is judged (`SessionTools`' ask), on top of the agent's own rules: a deny the user wrote still
  * refuses the call, and for an unattended run the `ask` and `readonly` tiers of `dag.permission` do not take the
  * grant for an allow the user wrote.
+ *
+ * #1574: for a deferred server the call goes through `mcp_call`, and the two helpers are granted with the tool. The
+ * request's tool list (`resolveTools`) keeps them, the call is still the target's own, and a tool that did not declare
+ * the hint is refused as before.
  */
 
 const config: { tier: "allow" | "ask" | "readonly" | undefined } = { tier: undefined }
@@ -41,6 +47,8 @@ const configLayer = TestConfig.layer({
   dagGlobal: () => Effect.sync(() => (config.tier ? { permission: config.tier } : {})),
 })
 
+// The keys of `mcpTools` that belong to a deferred server; none unless a case sets them.
+let deferredKeys = new Set<string>()
 let mcpRuns = 0
 const makeMcp = (name: string, options: { readOnly?: boolean; baseKey?: string } = {}) =>
   McpCatalog.bindTool(
@@ -81,7 +89,19 @@ const it = testEffect(
     Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([]),
-      resolve: () => Effect.sync(() => mcpEntries(mcpTools)),
+      // What the registry returns: the entries, the deferred ones marked, and the two helpers while there are any.
+      resolve: () =>
+        Effect.sync(
+          () =>
+            McpDeferred.settle({
+              entries: mcpEntries(mcpTools).map((entry) =>
+                deferredKeys.has(entry.id) ? { ...entry, source: { ...entry.source, deferred: true } } : entry,
+              ),
+              visible: () => true,
+              transform: (schema) => schema,
+              limits: {},
+            }).entries,
+        ),
     }),
     Layer.mock(Agent.Service, {
       // What `Agent.permissionPolicy` returns for an agent: its native rules, then the user's, and which are the user's.
@@ -111,11 +131,13 @@ const resolveTools = (
   sessionID: SessionID,
   user: PermissionV1.Rule[] = [],
   agent: { native?: boolean; mode?: "subagent" | "primary" } = {},
+  deferred: string[] = [],
 ) =>
   Effect.gen(function* () {
     const instance = yield* TestInstance
     mcpRuns = 0
     userRules = user
+    deferredKeys = new Set(deferred)
     mcpTools = {
       srv_lookup: makeMcp("lookup", { readOnly: true }),
       srv_other: makeMcp("other", { readOnly: true }),
@@ -150,16 +172,16 @@ const options = (name: string) => ({
 })
 
 /** What one call of a tool comes to: its output, or the message of the error the pipeline rejects with. */
-const settle = (tools: Tools, name: string) =>
+const settle = (tools: Tools, name: string, args: unknown = {}) =>
   Effect.promise(() =>
-    tools[name].execute({}, options(name)).then(
+    tools[name].execute(args, options(name)).then(
       (value) => ({ ok: true as const, output: value.output ?? "" }),
       (error: unknown) => ({ ok: false as const, message: error instanceof Error ? error.message : String(error) }),
     ),
   )
 
-const start = (tools: Tools, name: string) =>
-  Effect.tryPromise(() => tools[name].execute({}, options(name))).pipe(Effect.forkScoped)
+const start = (tools: Tools, name: string, args: unknown = {}) =>
+  Effect.tryPromise(() => tools[name].execute(args, options(name))).pipe(Effect.forkScoped)
 
 /** Registers a DAG node run for the session, so its asks are the unattended kind. */
 const asNode = (sessionID: SessionID) =>
@@ -319,5 +341,167 @@ describe("a read-only MCP tool and the agents that may call it (#1454)", () => {
         expect(mcpRuns).toBe(1)
       }),
     ),
+  )
+})
+
+describe("the helpers of a deferred server and the read-only agents (#1574)", () => {
+  // The tools a request carries for a read-only agent with a deferred read-only tool: eager tools and both helpers.
+  const schema = jsonSchema({ type: "object", properties: {} })
+  const plain = () => tool({ description: "plain", inputSchema: schema })
+  const requestTools = () => ({
+    read: plain(),
+    srv_lookup: makeMcp("lookup", { readOnly: true }),
+    srv_update: makeMcp("update"),
+    mcp_describe: plain(),
+    mcp_call: plain(),
+  })
+  const agentOf = (override: { native?: boolean; mode?: "subagent" | "primary"; permission?: PermissionV1.Ruleset }) =>
+    ({
+      name: "explore",
+      native: true,
+      mode: "subagent",
+      permission: NATIVE,
+      options: {},
+      ...override,
+    }) as never
+  // What `resolveTools` keeps of `tools`, as `prepare` asks it for a request; `override` replaces any input.
+  const advertised = (
+    override: {
+      agent?: ReturnType<typeof agentOf>
+      native?: PermissionV1.Ruleset | undefined
+      permission?: PermissionV1.Ruleset
+      tools?: Record<string, AITool>
+      user?: { tools?: Record<string, boolean> }
+    } = {},
+  ) =>
+    Object.keys(
+      advertisedTools({
+        agent: override.agent ?? agentOf({}),
+        nativePermission: "native" in override ? override.native : NATIVE,
+        permission: override.permission ?? [],
+        tools: override.tools ?? requestTools(),
+        user: (override.user ?? {}) as never,
+      }),
+    )
+  const without = (...omitted: string[]) =>
+    Object.fromEntries(Object.entries(requestTools()).filter(([id]) => !omitted.includes(id)))
+
+  it.instance("resolveTools keeps the two helpers for a read-only agent, with the tools it is granted", () =>
+    Effect.sync(() => {
+      expect(advertised()).toEqual(["read", "srv_lookup", "mcp_describe", "mcp_call"])
+      // The tool that did not declare the hint is no tool of the agent, as before.
+      expect(advertised()).not.toContain("srv_update")
+    }),
+  )
+
+  it.instance("a deny the user wrote for a helper closes it, in the rules of the session or of the agent", () =>
+    Effect.sync(() => {
+      for (const id of ["mcp_describe", "mcp_call"]) {
+        expect(advertised({ permission: [rule(id, "deny")] }), id).not.toContain(id)
+        expect(advertised({ agent: agentOf({ permission: [...NATIVE, rule(id, "deny")] }) }), id).not.toContain(id)
+        // An ask leaves it, and so does an allow.
+        for (const action of ["ask", "allow"] as const)
+          expect(advertised({ permission: [rule(id, action)] }), `${id} ${action}`).toContain(id)
+      }
+      // A wildcard for the helpers closes both, and leaves the tool.
+      expect(advertised({ permission: [rule("mcp_*", "deny")] })).toEqual(["read", "srv_lookup"])
+      // The per-message switch of the user closes it too.
+      expect(advertised({ user: { tools: { mcp_call: false } } })).not.toContain("mcp_call")
+    }),
+  )
+
+  it.instance("one helper alone is no pair: nothing is granted for it", () =>
+    Effect.sync(() => {
+      expect(advertised({ tools: without("mcp_call") })).toEqual(["read", "srv_lookup"])
+      expect(advertised({ tools: without("mcp_describe") })).toEqual(["read", "srv_lookup"])
+      expect(advertised({ tools: without("mcp_describe", "mcp_call") })).toEqual(["read", "srv_lookup"])
+    }),
+  )
+
+  it.instance("an agent that is not one of the read-only built-ins is given neither the tool nor the helpers", () =>
+    Effect.sync(() => {
+      // A custom agent and a primary one with the same rules: the native deny stays. Without the native rules there is
+      // no telling which of the agent's rules are its own, and its `*` deny decides.
+      for (const override of [
+        { agent: agentOf({ native: false }) },
+        { agent: agentOf({ mode: "primary" }) },
+        { native: undefined },
+      ])
+        expect(advertised(override), JSON.stringify(Object.keys(override))).toEqual(["read"])
+      // An agent whose rules allow everything keeps everything, the helpers included.
+      const open = Permission.fromConfig({ "*": "allow" })
+      expect(advertised({ agent: agentOf({ native: false, permission: open }), native: open })).toEqual(
+        Object.keys(requestTools()),
+      )
+    }),
+  )
+
+  it.instance("a read-only agent calls a deferred read-only tool through mcp_call without a question", () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      const tools = yield* resolveTools(SessionID.descending(), [], {}, ["srv_lookup", "srv_update", REWRITTEN])
+      // Both helpers are among the tools, and so is the read-only tool of an eager server; the deferred ones are not.
+      expect(Object.keys(tools).toSorted()).toEqual(["mcp_call", "mcp_describe", "srv_other"])
+
+      const lookup = yield* settle(tools, "mcp_call", { tool: "srv_lookup", arguments: {} })
+      expect(lookup.ok).toBe(true)
+      expect(lookup.ok ? lookup.output : "").toContain("MCP_RAN")
+      expect(mcpRuns).toBe(1)
+      expect(yield* permission.list()).toEqual([])
+      // A rewritten key is called by the key it has, as before.
+      expect((yield* settle(tools, "mcp_call", { tool: REWRITTEN, arguments: {} })).ok).toBe(true)
+      expect(mcpRuns).toBe(2)
+
+      // The call is the target's own: a tool that did not declare the hint is refused by its own permission, even
+      // where the catalog (a stand-in here, the registry's visible filter in the app) lets it through.
+      const update = yield* settle(tools, "mcp_call", { tool: "srv_update", arguments: {} })
+      expect(update.ok).toBe(false)
+      expect(update.ok ? "" : update.message).toContain("prevents you from using this specific tool call")
+      expect(mcpRuns).toBe(2)
+      expect(yield* permission.list()).toEqual([])
+    }),
+  )
+
+  it.instance("a deny the user wrote for the tool refuses the call through mcp_call", () =>
+    Effect.gen(function* () {
+      const tools = yield* resolveTools(SessionID.descending(), [rule("srv_lookup", "deny")], {}, ["srv_lookup"])
+      const refused = yield* settle(tools, "mcp_call", { tool: "srv_lookup", arguments: {} })
+      expect(refused.ok).toBe(false)
+      expect(refused.ok ? "" : refused.message).toContain("prevents you from using this specific tool call")
+      expect(mcpRuns).toBe(0)
+    }),
+  )
+
+  it.instance("under the ask tier a call through mcp_call still waits for the user, under readonly it is refused", () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      yield* withTier(
+        "ask",
+        Effect.gen(function* () {
+          const id = SessionID.descending()
+          yield* asNode(id)
+          const tools = yield* resolveTools(id, [], {}, ["srv_lookup"])
+          const call = yield* start(tools, "mcp_call", { tool: "srv_lookup", arguments: {} })
+          const request = yield* pendingRequest
+          expect(request.permission).toBe("srv_lookup")
+          expect(mcpRuns).toBe(0)
+          yield* permission.reply({ requestID: request.id, reply: "once" })
+          expect(Exit.isSuccess(yield* Fiber.await(call))).toBe(true)
+          expect(mcpRuns).toBe(1)
+        }),
+      )
+      yield* withTier(
+        "readonly",
+        Effect.gen(function* () {
+          const id = SessionID.descending()
+          yield* asNode(id)
+          const tools = yield* resolveTools(id, [], {}, ["srv_lookup"])
+          const refused = yield* settle(tools, "mcp_call", { tool: "srv_lookup", arguments: {} })
+          expect(refused.ok).toBe(false)
+          expect(refused.ok ? "" : refused.message).toContain('dag.permission is "readonly"')
+          expect(mcpRuns).toBe(0)
+        }),
+      )
+    }),
   )
 })
