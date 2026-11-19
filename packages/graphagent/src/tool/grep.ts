@@ -73,12 +73,17 @@ function withCorrection<M extends Record<string, unknown>>(
   return report.skipped > 0 ? addCorrections(metadata, "long_lines_skipped") : metadata
 }
 
+/** What a model that meant plain text is told after ripgrep's complaint about a pattern it could not parse (#1573). */
+const ESCAPE_HINT =
+  "Escape literal metacharacters with a backslash (for example \\( or \\[); the pattern is a regex, not plain text."
+
 /**
  * ripgrep's complaint about look-around or a backreference ends with advice to enable PCRE2, a flag this tool does
- * not have. Keep the complaint and say what to do here instead; any other complaint stands as it is.
+ * not have. Keep the complaint and say what to do here instead. Any other complaint stands as ripgrep wrote it, with
+ * the usual cause named after it: a literal metacharacter in a pattern that is a regex.
  */
 function explainPattern(message: string) {
-  if (!message.includes("look-around") && !message.includes("backreferences")) return message
+  if (!message.includes("look-around") && !message.includes("backreferences")) return `${message}\n\n${ESCAPE_HINT}`
   const [reason = message] = message.split(/\r?\n\r?\n/, 1)
   return (
     `${reason}\n\ngrep uses Rust regex (no look-around or backreferences). ` +
@@ -187,11 +192,13 @@ export const GrepTool = Tool.define(
             if (seen++ === scan) probe = i
           }
           const kept = probe >= 0 ? found.slice(0, probe) : found
+          // ripgrep hands each line over with its terminator and the listing joins rows with "\n" itself, so one left
+          // on would put a blank line after every match. A line cut at the text limit has none.
           const rows = kept.map((row) => ({
             kind: row.kind,
             path: path.resolve(cwd, row.match.entry.path),
             line: row.match.line,
-            text: row.match.text,
+            text: row.match.text.replace(/\r?\n$/u, ""),
             textLength: row.match.textLength,
           }))
 
@@ -270,11 +277,12 @@ export const GrepTool = Tool.define(
 
           const saved = [header, ...entries.flatMap((entry) => entry.lines)].join("\n")
           const full = yield* trunc.save(saved)
-          // Match text may carry its trailing newline, so an entry can render as
-          // more than one line. Count rendered lines, not array entries, or the
-          // continuation points back into the preview. When the preview did not
-          // cover every saved entry, continue at the first unshown saved line;
-          // only the scan-cap case can exhaust the saved listing itself.
+          // The terminator of a match line is removed above, so an entry renders
+          // as one line. Count the rendered lines (a split on "\n"), not array
+          // entries, so a text that still holds a line break cannot point the
+          // continuation back into the preview. When the preview did not cover
+          // every saved entry, continue at the first unshown saved line; only
+          // the scan-cap case can exhaust the saved listing itself.
           const next = output.join("\n").split("\n").length + 1
           const hasMoreSaved = next <= saved.split("\n").length
           const omitted = matches.length - shown

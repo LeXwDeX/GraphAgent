@@ -61,12 +61,20 @@ export function directShellEntry(definition: DirectTool): DirectShellEntry {
   }
 }
 
-/** Registry entries for MCP server tools; mirrors what `ToolRegistry.resolve` builds. */
-export function mcpEntries(items: Record<string, AITool>): Extract<ToolEntry, { source: { kind: "mcp" } }>[] {
+/**
+ * Registry entries for MCP server tools; mirrors what `ToolRegistry.resolve` builds. `transform` stands for the
+ * provider's schema rewrite: the entry keeps the server's own schema as `rawSchema` and the rewritten one as
+ * `jsonSchema`.
+ */
+export function mcpEntries(
+  items: Record<string, AITool>,
+  transform: (schema: JSONSchema7) => JSONSchema7 = (schema) => schema,
+): Extract<ToolEntry, { source: { kind: "mcp" } }>[] {
   return Object.entries(items)
     .toSorted(([left], [right]) => left.localeCompare(right))
     .map(([id, item]) => {
       const schema = asSchema(item.inputSchema).jsonSchema as JSONSchema7
+      const rawSchema: JSONSchema7 = { ...schema, properties: schema.properties ?? {} }
       const binding = McpCatalog.toolBinding(item)
       const server = binding?.server ?? "fixture"
       const tool = binding?.tool ?? id
@@ -84,7 +92,8 @@ export function mcpEntries(items: Record<string, AITool>): Extract<ToolEntry, { 
         },
         effects: "unknown" as const,
         description: item.description ?? "",
-        jsonSchema: { ...schema, properties: schema.properties ?? {} },
+        jsonSchema: transform(rawSchema),
+        rawSchema,
         tool: item,
       }
     })

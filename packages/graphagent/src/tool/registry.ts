@@ -239,7 +239,8 @@ type ToolEntryBase = Readonly<{
 export type ToolEntry =
   | (ToolEntryBase & { source: BuiltinSource; definition: Tool.Def })
   | (ToolEntryBase & { source: DirectShellSource; definition: DirectTool })
-  | (ToolEntryBase & { source: McpSource; tool: AITool })
+  // `rawSchema` is the server's own input schema; `jsonSchema` is the provider's downgrade of it (#1576).
+  | (ToolEntryBase & { source: McpSource; tool: AITool; rawSchema: JSONSchema7 })
   | (ToolEntryBase & { source: McpResourceSource })
   | (ToolEntryBase & { source: McpDeferredSource })
 
@@ -657,6 +658,7 @@ RequestCache.set(
           continue
         }
         const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
+        const rawSchema: JSONSchema7 = { ...schema, properties: schema.properties ?? {} }
         entries.set(key, {
           id: key,
           source: {
@@ -672,7 +674,8 @@ RequestCache.set(
           },
           effects: "unknown",
           description: item.description ?? "",
-          jsonSchema: transform({ ...schema, properties: schema.properties ?? {} }),
+          jsonSchema: transform(rawSchema),
+          rawSchema,
           tool: item,
         })
       }

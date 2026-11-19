@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import { Effect, Layer, Logger, Schema } from "effect"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { dynamicTool, jsonSchema } from "ai"
 import { Client } from "@modelcontextprotocol/client"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
@@ -1218,6 +1219,105 @@ describe("tool.registry MCP resolution", () => {
       expect(entry.jsonSchema).toMatchObject({ type: "object" })
       if (!("definition" in entry)) throw new Error("Expected a definition-bearing entry")
       expect(entry.definition.jsonSchema).toMatchObject({ type: "object" })
+    }),
+  )
+})
+
+describe("tool.registry MCP input schemas (#1576)", () => {
+  // A server's schema that the OpenAI downgrade changes in meaning: an array without `items`, an enum of numbers
+  // without a `type`, and a boolean sub-schema.
+  const loose = (): JSONSchema7 => ({
+    type: "object",
+    properties: { rows: { type: "array" }, level: { enum: [1, 2, 3] }, anything: true },
+  })
+  const downgraded: JSONSchema7 = {
+    type: "object",
+    properties: {
+      rows: { type: "array", items: { type: "string" } },
+      level: { type: "string", enum: [1, 2, 3] },
+      anything: { type: "string" },
+    },
+  }
+  const schemaTool = (name: string, schema: JSONSchema7, deferred = false) =>
+    McpCatalog.bindTool(
+      dynamicTool({
+        description: `remote ${name}`,
+        inputSchema: jsonSchema(schema),
+        execute: async () => ({ content: [] }),
+      }),
+      { server: "srv", tool: name, source: "fixture", ...(deferred ? { deferred } : {}) },
+    )
+  // A model whose profile names these downgrades, as the provider layer hands it over.
+  const downgrading = (schemaFixes: ModelProfile["schemaFixes"], toolLimits?: ModelProfile["toolLimits"]) => {
+    const model = ProviderTest.model({ providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") })
+    return {
+      ...model,
+      profile: {
+        ...ProviderProfile.profileOf(model),
+        schemaFixes,
+        ...(toolLimits === undefined ? {} : { toolLimits }),
+      },
+    }
+  }
+  // What the registry resolves for `tools`, as a lookup of the MCP entry of a key.
+  const resolveSchemas = (tools: typeof mcpTools, model: ReturnType<typeof downgrading>) =>
+    Effect.gen(function* () {
+      const { registry, build, directory } = yield* setup
+      const original = mcpTools
+      mcpTools = tools
+      const entries = yield* registry
+        .resolve({ model, agent: build, session: sessionInfo(directory) })
+        .pipe(Effect.ensuring(Effect.sync(() => (mcpTools = original))))
+      return (key: string) => {
+        const entry = entries.find((item) => item.id === key)
+        if (entry === undefined || !("rawSchema" in entry)) throw new Error(`Expected an MCP entry for ${key}`)
+        return entry
+      }
+    })
+
+  it.instance("an MCP entry keeps the server's own schema beside the rewritten one the model is sent", () =>
+    Effect.gen(function* () {
+      const served = loose()
+      const entry = yield* resolveSchemas(
+        { srv_loose: schemaTool("loose", served, true), srv_live: schemaTool("live", served) },
+        downgrading(["openai"]),
+      )
+      for (const key of ["srv_loose", "srv_live"]) {
+        expect(entry(key).rawSchema, key).toEqual(loose())
+        expect(entry(key).jsonSchema, key).toEqual(downgraded)
+      }
+      expect(entry("srv_loose").source).toMatchObject({ deferred: true })
+      // The rewrite builds new objects; the schema the server gave is as it was.
+      expect(served).toEqual(loose())
+    }),
+  )
+
+  it.instance("a tool a limit of the model moved into the catalog keeps both schemas", () =>
+    Effect.gen(function* () {
+      const entry = yield* resolveSchemas(
+        { srv_loose: schemaTool("loose", loose()), a: schemaTool("short", loose()) },
+        downgrading(["openai"], { nameMaxLength: 3 }),
+      )
+      expect(entry("srv_loose").source).toMatchObject({ deferred: true })
+      expect(entry("srv_loose").rawSchema).toEqual(loose())
+      expect(entry("srv_loose").jsonSchema).toEqual(downgraded)
+      expect(entry("a").source).not.toHaveProperty("deferred")
+    }),
+  )
+
+  it.instance("a model that needs no downgrade is sent the server's schema, so the two are the same", () =>
+    Effect.gen(function* () {
+      const entry = yield* resolveSchemas({ srv_loose: schemaTool("loose", loose(), true) }, downgrading([]))
+      expect(entry("srv_loose").rawSchema).toEqual(loose())
+      expect(entry("srv_loose").jsonSchema).toEqual(loose())
+    }),
+  )
+
+  it.instance("the schema of a tool that declares no properties gets an empty set, in both", () =>
+    Effect.gen(function* () {
+      const entry = yield* resolveSchemas({ srv_bare: schemaTool("bare", { type: "object" }) }, downgrading(["openai"]))
+      expect(entry("srv_bare").rawSchema).toEqual({ type: "object", properties: {} })
+      expect(entry("srv_bare").jsonSchema).toEqual({ type: "object", properties: {} })
     }),
   )
 })

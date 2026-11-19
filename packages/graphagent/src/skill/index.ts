@@ -18,6 +18,7 @@ import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { hasProjectLayer } from "@/project/project-root"
 import { watchTrustChanges } from "@/project/trust/subscribe"
+import { ToolError } from "@/tool/tool-error"
 import { BUILTIN_SKILLS } from "./builtin"
 
 // Directory sources only match this exact layout. The singular `skill/`
@@ -77,8 +78,11 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Skill.No
   name: Schema.String,
   available: Schema.Array(Schema.String),
 }) {
+  // The name is the model's own text and the list holds every skill there is. Both are bounded like the names an
+  // unknown-tool error echoes: the name to 64 code points, the list to 30 names of at most 64 code points (#1573).
   override get message() {
-    return `Skill "${this.name}" not found. Available skills: ${this.available.join(", ") || "none"}`
+    const available = this.available.length === 0 ? "none" : ToolError.nameList(this.available)
+    return `Skill "${ToolError.clipName(this.name)}" not found. Available skills: ${available}`
   }
 }
 
