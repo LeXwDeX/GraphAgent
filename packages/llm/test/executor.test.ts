@@ -233,6 +233,163 @@ describe("RequestExecutor", () => {
     }),
   )
 
+  // Sample 429 bodies (#1578). `packages/graphagent/test/provider/error-class.test.ts` holds the same two lists and
+  // asserts how the session table reads them; keep the two in step.
+  const spentBalances: ReadonlyArray<readonly [name: string, body: string]> = [
+    [
+      "credit_balance_exhausted",
+      '{"error":{"type":"credit_balance_exhausted","message":"Your credit balance is exhausted."}}',
+    ],
+    [
+      "exceeded_current_quota_error",
+      '{"error":{"code":"exceeded_current_quota_error","message":"You exceeded your current quota, please check your plan and billing details."}}',
+    ],
+    [
+      "enforced_spend_limit_reached",
+      '{"error":{"code":"enforced_spend_limit_reached","message":"The spend limit for this workspace has been reached."}}',
+    ],
+    [
+      "arrearage",
+      '{"error":{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}}',
+    ],
+    [
+      "allocationquota.freetieronly",
+      '{"error":{"code":"AllocationQuota.FreeTierOnly","message":"The free tier of the model has been exhausted."}}',
+    ],
+    [
+      "free allocated quota exceeded",
+      '{"error":{"message":"The Free Allocated Quota Exceeded, please purchase a plan."}}',
+    ],
+    [
+      "insufficient_quota",
+      '{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}',
+    ],
+  ]
+
+  // Bailian files its per-minute allocation under the same names; the phrase tells it apart.
+  const bailianWindow =
+    '{"error":{"code":"insufficient_quota","type":"insufficient_quota","message":"Allocated quota exceeded, please increase your quota limit."}}'
+  const windowedAllocations: ReadonlyArray<readonly [name: string, body: string]> = [
+    ["insufficient_quota", bailianWindow],
+    [
+      "Throttling.AllocationQuota",
+      '{"error":{"code":"Throttling.AllocationQuota","message":"Allocated quota exceeded, please increase your quota limit."}}',
+    ],
+    [
+      "the phrase in capitals",
+      '{"error":{"code":"Throttling.AllocationQuota","message":"ALLOCATED QUOTA EXCEEDED, PLEASE INCREASE YOUR QUOTA LIMIT."}}',
+    ],
+  ]
+
+  // Sends one request against a script of responses and settles on the failure and the number of attempts, without
+  // ever moving the clock. An executor that chose to wait leaves the fiber unfinished, which fails here, not hangs.
+  const settle = (responses: ReadonlyArray<Response>) =>
+    Effect.gen(function* () {
+      const attempts = yield* Ref.make(0)
+      const error = yield* Effect.gen(function* () {
+        const executor = yield* RequestExecutor.Service
+        const fiber = yield* executor.execute(request).pipe(Effect.flip, Effect.forkChild)
+        for (let step = 0; step < 40 && fiber.pollUnsafe() === undefined; step++) yield* Effect.yieldNow
+        if (fiber.pollUnsafe() === undefined) return yield* Effect.die(new Error("the executor is still waiting"))
+        return yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(countedResponsesLayer(attempts, responses)))
+      return { error, attempts: yield* Ref.get(attempts) }
+    })
+
+  for (const [name, body] of spentBalances) {
+    it.effect(`reads a 429 naming ${name} as a spent balance, tries it once and does not wait`, () =>
+      Effect.gen(function* () {
+        // The hint asks for ten seconds; a spent balance is not worth the wait.
+        const { error, attempts } = yield* settle([
+          new Response(body, { status: 429, headers: { "retry-after-ms": "10000" } }),
+          new Response("ok", { status: 200 }),
+        ])
+
+        expectLLMError(error)
+        expect(error.reason).toMatchObject({ _tag: "QuotaExceeded" })
+        expect(error.retryable).toBe(false)
+        expect(attempts).toBe(1)
+      }),
+    )
+  }
+
+  for (const [name, body] of windowedAllocations) {
+    it.effect(`reads a 429 asking to increase the quota limit (${name}) as a rate limit and retries it`, () =>
+      Effect.gen(function* () {
+        const { error, attempts } = yield* settle(
+          Array.from({ length: 3 }, () => new Response(body, { status: 429, headers: { "retry-after-ms": "0" } })),
+        )
+
+        expectLLMError(error)
+        expect(error.reason).toMatchObject({ _tag: "RateLimit" })
+        expect(error.retryable).toBe(true)
+        // The request and its two retries.
+        expect(attempts).toBe(3)
+      }),
+    )
+  }
+
+  it.effect("succeeds on the retry of a windowed allocation once the window reopens", () =>
+    Effect.gen(function* () {
+      const attempts = yield* Ref.make(0)
+      const response = yield* RequestExecutor.Service.use((executor) => executor.execute(request)).pipe(
+        Effect.provide(
+          countedResponsesLayer(attempts, [
+            new Response(bailianWindow, { status: 429, headers: { "retry-after-ms": "0" } }),
+            new Response("ok", { status: 200 }),
+          ]),
+        ),
+      )
+
+      expect(response.status).toBe(200)
+      expect(yield* Ref.get(attempts)).toBe(2)
+    }),
+  )
+
+  for (const [kind, body] of [
+    ["a windowed allocation", bailianWindow],
+    ["a plain rate limit", "rate limited"],
+  ] as const) {
+    it.effect(`caps the wait before retrying ${kind} at ten seconds however long retry-after-ms asks`, () =>
+      Effect.gen(function* () {
+        const attempts = yield* Ref.make(0)
+        return yield* Effect.gen(function* () {
+          const executor = yield* RequestExecutor.Service
+          const fiber = yield* executor.execute(request).pipe(Effect.flip, Effect.forkChild)
+          const tick = (millis: number) => TestClock.adjust(millis).pipe(Effect.andThen(Effect.yieldNow))
+
+          yield* Effect.yieldNow
+          expect(yield* Ref.get(attempts)).toBe(1)
+
+          // Each wait ends at the cap, not at the minute the provider asked for.
+          yield* tick(9_999)
+          expect(yield* Ref.get(attempts)).toBe(1)
+          yield* tick(1)
+          expect(yield* Ref.get(attempts)).toBe(2)
+
+          yield* tick(9_999)
+          expect(yield* Ref.get(attempts)).toBe(2)
+          yield* TestClock.adjust(1)
+          const error = yield* Fiber.join(fiber)
+
+          expectLLMError(error)
+          expect(error.reason).toMatchObject({ _tag: "RateLimit" })
+          expect(yield* Ref.get(attempts)).toBe(3)
+        }).pipe(
+          Effect.provide(
+            countedResponsesLayer(
+              attempts,
+              Array.from(
+                { length: 3 },
+                () => new Response(body, { status: 429, headers: { "retry-after-ms": "60000" } }),
+              ),
+            ),
+          ),
+        )
+      }),
+    )
+  }
+
   it.effect("returns redacted diagnostics for retryable rate limits", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service
