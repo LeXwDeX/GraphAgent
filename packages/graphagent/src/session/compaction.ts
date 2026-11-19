@@ -140,6 +140,11 @@ const OVERFLOW_NOTE = "The previous request exceeded the provider's size limit. 
 const MEDIA_OVERFLOW_NOTE =
   "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files."
 
+// What opens the continuation text after an overflow: the media note when the latest request carries files. The note
+// follows that request whether the text quotes it or the retained tail holds it.
+const overflowNote = (latest: CompactionFacts.Request | undefined) =>
+  latest?.attachments.length ? MEDIA_OVERFLOW_NOTE : OVERFLOW_NOTE
+
 const requestLines = (label: string, request: CompactionFacts.Request) => [
   label,
   ...(request.text ? [request.text] : []),
@@ -153,15 +158,17 @@ const pathLines = (label: string, paths: readonly string[], omitted: number) =>
     : [label, ...(omitted > 0 ? [`- (+${omitted} older paths omitted)`] : []), ...paths.map((file) => `- ${file}`)]
 
 // What the model resumes from after an automatic compaction. The requests, the task state and the files are facts the
-// harness read; the summary lines after them are narrative and may be stale, so the latest request outranks them.
-// The last line says where the compacted messages can be read in full.
+// harness read; the summary lines after them are narrative and may be stale, so the latest request outranks them. That
+// request is quoted unless the retained tail holds it: there it is in context as the user wrote it. The last line says
+// where the compacted messages can be read in full.
 function continuationText(input: {
   summary: string | undefined
   requests: CompactionFacts.Requests
   todos: readonly Pick<Todo.Info, "content" | "status">[]
   workflows: readonly Pick<DagStore.WorkflowRow, "id" | "title" | "status">[]
   files: CompactionFacts.SessionFiles
-  overflow: boolean
+  /** Opens the text after a provider overflow. */
+  overflowNote?: string
   exportNote?: string
 }) {
   const openTodos = input.todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled")
@@ -195,8 +202,7 @@ function continuationText(input: {
   if (context.length) lines.push("Context:", ...context)
   if (input.exportNote) lines.push(input.exportNote)
   const text = lines.join("\n")
-  if (!input.overflow) return text
-  return `${latest?.attachments.length ? MEDIA_OVERFLOW_NOTE : OVERFLOW_NOTE}\n\n${text}`
+  return input.overflowNote ? `${input.overflowNote}\n\n${text}` : text
 }
 
 /**
@@ -309,6 +315,14 @@ function splitTurn(input: {
     }
     return undefined
   })
+}
+
+// The messages a compaction keeps in context as they were written: `messages` from the tail's first message on. A
+// compaction without `tail_start_id` keeps none. `messages` is the history `select` chose the tail from.
+function retainedTail(messages: readonly SessionV1.WithParts[], tailStartID: MessageID | undefined) {
+  if (tailStartID === undefined) return []
+  const start = messages.findIndex((message) => message.info.id === tailStartID)
+  return start < 0 ? [] : messages.slice(start)
 }
 
 type UserTurn = {
@@ -721,7 +735,10 @@ export const layer = Layer.effect(
       replay: Replay | undefined
       overflow: boolean
       summary: string | undefined
+      /** The messages the summary replaces. */
       head: readonly SessionV1.WithParts[]
+      /** The messages the compaction keeps in context as they were written; empty without a retained tail. */
+      tail: readonly SessionV1.WithParts[]
       /** Tokens the quoted requests may take: what the retained tail may take. */
       budget: number
     }) {
@@ -771,16 +788,20 @@ export const layer = Layer.effect(
         compactionID: input.parentID,
         messages: input.head,
       })
+      const requests = CompactionFacts.requestsOf({
+        messages: history,
+        child: info !== undefined && SessionRole.isChild(info),
+      })
       const body = continuationText({
         summary: input.summary,
-        requests: CompactionFacts.fitRequests(
-          CompactionFacts.requestsOf({ messages: history, child: info !== undefined && SessionRole.isChild(info) }),
-          input.budget,
-        ),
+        // A latest request the retained tail holds is in context as it was written: quoting it again would show the
+        // model two copies, and the second one would take room from the budget. A request the tail does not hold is
+        // quoted, also when an earlier compaction replaced it: it is not in the history the model reads.
+        requests: CompactionFacts.fitRequests(CompactionFacts.quotedRequests(requests, input.tail), input.budget),
         todos,
         workflows,
         files: CompactionFacts.sessionFiles({ messages: history, directory: ctx.directory }),
-        overflow: input.overflow,
+        overflowNote: input.overflow ? overflowNote(requests.latest) : undefined,
         exportNote,
       })
       const text = Injection.wrap("compaction", withSkillNote(body, input.head))
@@ -1085,6 +1106,7 @@ export const layer = Layer.effect(
               overflow: input.overflow === true,
               summary,
               head: selected.head,
+              tail: retainedTail(filteredHistory, selected.tail_start_id),
               budget: preserveRecentBudget({ cfg, model: conversationModel }),
             })
           : undefined
