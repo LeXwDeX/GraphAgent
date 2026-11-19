@@ -89,7 +89,7 @@ config:
 
 Auditors always take the `advanced` tier; `required` sets only failure
 semantics. On ACCEPT `deep-dive` is skipped; otherwise it runs with the
-arbiter's findings, so a non-ACCEPT outcome never silently ends the graph.
+arbiter's findings, so a non-ACCEPT outcome never silently terminalizes the graph.
 
 ## 4. Diverge-converge
 
