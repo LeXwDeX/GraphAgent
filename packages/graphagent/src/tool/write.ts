@@ -3,7 +3,6 @@ import * as path from "path"
 import { Effect } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
-import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FileSystem } from "@graphagent/core/filesystem"
@@ -16,6 +15,9 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
 import type { SessionID } from "@/session/schema"
+import { addCorrections } from "@graphagent/core/session/outcome"
+import { Receipt } from "./receipt"
+import { WriteReceipt } from "./write-receipt"
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -79,8 +81,13 @@ export const WriteTool = Tool.define(
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
           let contentNew = exists ? keepLineEnding(next.text, contentOld) : next.text
+          // The formatter changed the text after it was written.
+          let reformatted = false
 
-          const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
+          // The one diff of the write before it is written: the text of the permission request, and the hunks the
+          // receipt of the result is made from when the formatter leaves the text as it was written.
+          const planned = WriteReceipt.unifiedDiff(filepath, contentOld, contentNew)
+          const diff = trimDiff(planned.text)
           yield* ctx.ask({
             permission: "edit",
             patterns: [path.relative(instance.worktree, filepath)],
@@ -98,7 +105,9 @@ export const WriteTool = Tool.define(
               if (yield* format.file(filepath)) {
                 // Keep the post-format text: diagnostics and afterEdit use disk line
                 // coordinates, so the pre-format snapshot would hide moved errors.
+                const written = contentNew
                 contentNew = yield* Bom.syncFile(fs, filepath, desiredBom)
+                reformatted = contentNew !== written
               }
               yield* fileState.record(ctx.sessionID, filepath, "write")
               yield* events.publish(FileSystem.Event.Edited, { file: filepath })
@@ -109,7 +118,16 @@ export const WriteTool = Tool.define(
             }),
           )
 
+          if (reformatted) yield* Receipt.logCorrection("write", "formatted")
+          const receipt = WriteReceipt.writeReceipt({
+            file: filepath,
+            oldText: contentOld,
+            newText: contentNew,
+            reformatted,
+            changes: reformatted ? undefined : planned.changes,
+          })
           let output = "Wrote file successfully."
+          if (receipt.text) output += `\n\n${receipt.text}`
           const status = yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
@@ -122,11 +140,7 @@ export const WriteTool = Tool.define(
 
           return {
             title: path.relative(instance.worktree, filepath),
-            metadata: {
-              diagnostics,
-              filepath,
-              exists: exists,
-            },
+            metadata: addCorrections({ diagnostics, filepath, exists: exists }, ...(reformatted ? ["formatted"] : [])),
             output,
           }
         }).pipe(Effect.orDie),

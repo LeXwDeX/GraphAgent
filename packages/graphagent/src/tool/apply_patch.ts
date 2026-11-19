@@ -16,6 +16,9 @@ import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { FileState } from "@/session/file-state"
 import type { SessionID } from "@/session/schema"
+import { addCorrections } from "@graphagent/core/session/outcome"
+import { Receipt } from "./receipt"
+import { WriteReceipt } from "./write-receipt"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -29,6 +32,8 @@ interface FileChange {
   type: "add" | "update" | "delete" | "move"
   movePath?: string
   diff: string
+  /** The hunks of the diff, which the receipt is made from when the formatter leaves the text as it was written. */
+  changes?: WriteReceipt.Changes
   additions: number
   deletions: number
   bom: boolean
@@ -41,6 +46,8 @@ interface FileChange {
   targetBaseline?: FileState.Baseline
   /** Under the locks: the source no longer matched the session's last record of it. */
   outside: boolean
+  /** Under the locks: the formatter changed the text after it was written. */
+  reformatted: boolean
 }
 
 export const ApplyPatchTool = Tool.define(
@@ -167,6 +174,7 @@ export const ApplyPatchTool = Tool.define(
               oldBom: false,
               targetBaseline,
               outside: false,
+              reformatted: false,
             })
 
             totalDiff += diff + "\n"
@@ -207,7 +215,8 @@ export const ApplyPatchTool = Tool.define(
               return yield* Effect.fail(new Error(`apply_patch verification failed: ${error}`))
             }
 
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, newContent))
+            const planned = WriteReceipt.unifiedDiff(filePath, oldContent, newContent)
+            const diff = trimDiff(planned.text)
 
             let additions = 0
             let deletions = 0
@@ -231,12 +240,14 @@ export const ApplyPatchTool = Tool.define(
               type: movePath ? "move" : "update",
               movePath,
               diff,
+              changes: planned.changes,
               additions,
               deletions,
               bom,
               oldBom: source.bom,
               targetBaseline,
               outside: false,
+              reformatted: false,
             })
 
             totalDiff += diff + "\n"
@@ -269,6 +280,7 @@ export const ApplyPatchTool = Tool.define(
               bom: source.bom,
               oldBom: source.bom,
               outside: false,
+              reformatted: false,
             })
 
             totalDiff += deleteDiff + "\n"
@@ -348,7 +360,9 @@ export const ApplyPatchTool = Tool.define(
               if (yield* format.file(edited)) {
                 // afterEdit runs against diagnostics in post-format disk coordinates,
                 // so retain the formatter's output rather than the patch snapshot.
+                const written = change.newContent
                 change.newContent = yield* Bom.syncFile(afs, edited, change.bom)
+                change.reformatted = change.newContent !== written
               }
               yield* fileState.record(ctx.sessionID, edited, "apply_patch")
               yield* events.publish(FileSystem.Event.Edited, { file: edited })
@@ -393,14 +407,27 @@ export const ApplyPatchTool = Tool.define(
         output += `\n${FileState.changedOutsideNote(shown)}`
       }
 
-      // Each written file gets a status line, ahead of the error blocks. The title keeps the result as it was
-      // before the status lines.
+      // Each written file gets a receipt block, after the summary, and a status line after all of those, ahead of the
+      // error blocks. The diffs of the blocks share one budget of lines. The title keeps the result as it was before
+      // the receipt blocks and the status lines.
       const head = output
+      const receiptBlocks: string[] = []
       const statusLines: string[] = []
       let blocks = ""
+      let budget = WriteReceipt.DIFF_LINES
       for (const { change, status } of checked) {
         const target = change.movePath ?? change.filePath
         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
+        const receipt = WriteReceipt.writeReceipt({
+          file: target,
+          oldText: change.oldContent,
+          newText: change.newContent,
+          reformatted: change.reformatted,
+          diffBudget: budget,
+          changes: change.reformatted ? undefined : change.changes,
+        })
+        budget -= receipt.diffLines
+        if (receipt.text) receiptBlocks.push(`${rel}\n${receipt.text}`)
         const issues = diagnostics[FSUtil.normalizePath(target)] ?? []
         const line = LSP.Diagnostic.checkLine(status, target, issues, change.oldContent, change.newContent)
         statusLines.push(`${rel}: ${line}`)
@@ -408,15 +435,14 @@ export const ApplyPatchTool = Tool.define(
         if (block) blocks += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
       }
       const title = head + blocks
-      output = statusLines.length > 0 ? `${head}\n\n${statusLines.join("\n")}${blocks}` : title
+      const parts = [head, ...receiptBlocks, ...(statusLines.length > 0 ? [statusLines.join("\n")] : [])]
+      output = parts.join("\n\n") + blocks
+      const reformatted = fileChanges.some((change) => change.reformatted)
+      if (reformatted) yield* Receipt.logCorrection("apply_patch", "formatted")
 
       return {
         title,
-        metadata: {
-          diff: totalDiff,
-          files,
-          diagnostics,
-        },
+        metadata: addCorrections({ diff: totalDiff, files, diagnostics }, ...(reformatted ? ["formatted"] : [])),
         output,
       }
     })

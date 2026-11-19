@@ -1,6 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { createHash } from "node:crypto"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import path from "path"
 import fs from "fs/promises"
 import { WriteTool } from "../../src/tool/write"
@@ -988,6 +989,8 @@ describe("tool.write call-local baseline (#1452)", () => {
 // not the same as one that found nothing.
 describe("tool.write LSP check state (#1451)", () => {
   const lines = (count: number, prefix = "line") => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`)
+  // What the receipt says about a new file of one line, ahead of the status line these tests are about.
+  const created = "Lines 1-1 changed. Additions: 1. Deletions: 0."
   const diagnostic = (line: number, severity: Diagnostic["severity"] = 1, message = "boom"): Diagnostic => ({
     severity,
     message,
@@ -999,7 +1002,7 @@ describe("tool.write LSP check state (#1451)", () => {
       const test = yield* TestInstance
       const result = yield* run({ filePath: path.join(test.directory, "new.txt"), content: "hello\n" })
 
-      expect(result.output).toBe("Wrote file successfully.\n\nnot checked: LSP disabled")
+      expect(result.output).toBe(`Wrote file successfully.\n\n${created}\n\nnot checked: LSP disabled`)
     }),
   )
 
@@ -1017,7 +1020,7 @@ describe("tool.write LSP check state (#1451)", () => {
 
         const result = yield* run({ filePath: path.join(test.directory, "new.txt"), content: "hello\n" })
 
-        expect(result.output).toBe(`Wrote file successfully.\n\n${line}`)
+        expect(result.output).toBe(`Wrote file successfully.\n\n${created}\n\n${line}`)
       }),
     )
   }
@@ -1035,6 +1038,8 @@ describe("tool.write LSP check state (#1451)", () => {
       expect(result.output).toBe(
         [
           "Wrote file successfully.",
+          "",
+          created,
           "",
           "not checked: timed out",
           "",
@@ -1054,7 +1059,7 @@ describe("tool.write LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "new.ts"), content: "const x = 1\n" })
 
-      expect(result.output).toBe("Wrote file successfully.\n\nchecked: clean")
+      expect(result.output).toBe(`Wrote file successfully.\n\n${created}\n\nchecked: clean`)
     }),
   )
 
@@ -1069,6 +1074,8 @@ describe("tool.write LSP check state (#1451)", () => {
       expect(result.output).toBe(
         [
           "Wrote file successfully.",
+          "",
+          created,
           "",
           "checked: 1 error",
           "",
@@ -1104,7 +1111,10 @@ describe("tool.write LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: filepath, content: ["changed", ...lines(30).slice(1)].join("\n") + "\n" })
 
-      expect(result.output).toBe("Wrote file successfully.\n\nchecked: clean")
+      // The receipt shows the change with three lines of context, the status line says the error on line 25 is not its.
+      expect(result.output.split("\n").slice(-2)).toEqual(["", "checked: clean"])
+      expect(result.output).toContain("Lines 1-1 changed. Additions: 1. Deletions: 1.")
+      expect(result.output).not.toContain("LSP errors detected")
     }),
   )
 
@@ -1120,5 +1130,275 @@ describe("tool.write LSP check state (#1451)", () => {
         expect(result.title).toBe("new.txt")
       }),
     { git: true },
+  )
+})
+
+// #1451: after a write the result says where the change landed and how much changed, whether the formatter rewrote the
+// file, and what the diff is. A new file has no diff to show.
+describe("tool.write write receipt (#1451)", () => {
+  const lines = (count: number, prefix = "line") => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`)
+  const expand = {
+    formatter: {
+      expand: {
+        extensions: [".ts"],
+        command: [
+          "node",
+          "-e",
+          "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n', 'utf8')",
+          "$FILE",
+        ],
+      },
+    },
+  }
+  // A formatter that runs and leaves the text as it found it.
+  const untouched = {
+    formatter: { noop: { extensions: [".ts"], command: ["node", "-e", "process.exit(0)", "$FILE"] } },
+  }
+
+  it.instance("says how many lines a new file has and shows no diff", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+
+      const result = yield* run({ filePath: path.join(test.directory, "fresh.txt"), content: "one\ntwo\nthree\n" })
+
+      expect(result.output).toBe(
+        "Wrote file successfully.\n\nLines 1-3 changed. Additions: 3. Deletions: 0.\n\nnot checked: LSP disabled",
+      )
+      expect(result.output).not.toContain("Replacements")
+      expect(result.metadata).not.toHaveProperty("corrections")
+    }),
+  )
+
+  it.instance("tells what an overwrite changed and shows the diff", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, "one\ntwo\nthree\n", "utf-8"))
+      yield* markRead(filepath)
+
+      const result = yield* run({ filePath: filepath, content: "one\nTWO\nthree\n" })
+
+      expect(result.output).toBe(
+        [
+          "Wrote file successfully.",
+          "",
+          "Lines 2-2 changed. Additions: 1. Deletions: 1.",
+          "@@ -1,3 +1,3 @@",
+          " one",
+          "-two",
+          "+TWO",
+          " three",
+          "",
+          "not checked: LSP disabled",
+        ].join("\n"),
+      )
+    }),
+  )
+
+  it.instance("lists every place an overwrite changed", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, lines(12).join("\n") + "\n", "utf-8"))
+      yield* markRead(filepath)
+      const next = lines(12).map((item, i) => ([1, 5, 11].includes(i) ? item.toUpperCase() : item))
+
+      const result = yield* run({ filePath: filepath, content: next.join("\n") + "\n" })
+
+      expect(result.output).toContain("\n\nLines 2-2, 6-6, 12-12 changed. Additions: 3. Deletions: 3.\n")
+    }),
+  )
+
+  it.instance("has nothing to say about the change when the content is the same", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, "same\n", "utf-8"))
+      yield* markRead(filepath)
+
+      const result = yield* run({ filePath: filepath, content: "same\n" })
+
+      expect(result.output).toBe("Wrote file successfully.\n\nnot checked: LSP disabled")
+    }),
+  )
+
+  it.instance("cuts the diff of a large overwrite at 40 lines and says where to read on", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "large.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, lines(50).join("\n") + "\n", "utf-8"))
+      yield* markRead(filepath)
+
+      const result = yield* run({ filePath: filepath, content: lines(50, "changed").join("\n") + "\n" })
+
+      const out = result.output.split("\n")
+      const diff = out.slice(out.indexOf("@@ -1,50 +1,50 @@"))
+      expect(diff.slice(0, 40)).toHaveLength(40)
+      expect(diff[40]).toBe(`[diff cut at 40 of 101 lines; read ${filepath} from line 1 to see the rest.]`)
+      expect(diff.slice(41)).toEqual(["", "not checked: LSP disabled"])
+    }),
+  )
+
+  it.instance(
+    "keeps the receipt out of the title",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+
+        const result = yield* run({ filePath: path.join(test.directory, "fresh.txt"), content: "one\n" })
+
+        expect(result.title).toBe("fresh.txt")
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "says the formatter rewrote a new file, and records it",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+
+        const result = yield* run({ filePath: path.join(test.directory, "fresh.ts"), content: "const x = 1\n" })
+
+        expect(result.output).toBe(
+          [
+            "Wrote file successfully.",
+            "",
+            "Lines 1-2 changed. Additions: 2. Deletions: 0.",
+            "File was reformatted by the formatter after this write.",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+        const logged = JSON.stringify(yield* logLines)
+        expect(logged).toContain("tool call corrected")
+        expect(logged).toContain('"tool.name":"write"')
+        expect(logged).toContain('"correction.kind":"formatted"')
+      }),
+    { config: expand },
+  )
+
+  it.instance(
+    "describes an overwrite that the formatter rewrote as the file is on disk",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.ts")
+        yield* Effect.promise(() => fs.writeFile(filepath, "const a = 1\nconst b = 1\n", "utf-8"))
+        yield* markRead(filepath)
+
+        const result = yield* run({ filePath: filepath, content: "const a = 2\nconst b = 1\n" })
+
+        expect(result.output).toBe(
+          [
+            "Wrote file successfully.",
+            "",
+            "Lines 1-1, 3-3 changed. Additions: 2. Deletions: 1.",
+            "File was reformatted by the formatter after this write.",
+            "@@ -1,2 +1,3 @@",
+            "-const a = 1",
+            "+const a = 2",
+            " const b = 1",
+            "+// formatted line",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+      }),
+    { config: expand },
+  )
+
+  it.instance(
+    "says nothing about a formatter that ran and left the text alone",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+
+        const result = yield* run({ filePath: path.join(test.directory, "fresh.ts"), content: "const x = 1\n" })
+
+        expect(result.output).not.toContain("reformatted")
+        expect(result.metadata).not.toHaveProperty("corrections")
+        expect(JSON.stringify(yield* logLines)).not.toContain("tool call corrected")
+      }),
+    { config: untouched },
+  )
+
+  // The diff of a rewrite of every line is the costly one, so the receipt takes it from the diff the tool ran for the
+  // permission request, however many lines that has, instead of running one of its own.
+  it.instance("gives the counts and the diff of a rewrite of every line, however many lines that is", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "existing.txt")
+      yield* Effect.promise(() => fs.writeFile(filepath, lines(600).join("\n") + "\n", "utf-8"))
+      yield* markRead(filepath)
+
+      const result = yield* run({ filePath: filepath, content: lines(600, "changed").join("\n") + "\n" })
+
+      const out = result.output.split("\n")
+      expect(out.slice(0, 5)).toEqual([
+        "Wrote file successfully.",
+        "",
+        "Lines 1-600 changed. Additions: 600. Deletions: 600.",
+        "@@ -1,600 +1,600 @@",
+        "-line 1",
+      ])
+      expect(out).toContain(`[diff cut at 40 of 1201 lines; read ${filepath} from line 1 to see the rest.]`)
+    }),
+  )
+
+  it.instance(
+    "does not compare line by line a rewrite of every line that the formatter then rewrote as well",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.ts")
+        yield* Effect.promise(() => fs.writeFile(filepath, lines(600).join("\n") + "\n", "utf-8"))
+        yield* markRead(filepath)
+
+        const result = yield* run({ filePath: filepath, content: lines(600, "changed").join("\n") + "\n" })
+
+        // What the formatter left is 601 lines that share none with the 600 before: too many edits to count cheaply.
+        expect(result.output).toBe(
+          [
+            "Wrote file successfully.",
+            "",
+            "Lines 1-601 changed. The change is too large to compare line by line, so counts and diff are left out.",
+            "File was reformatted by the formatter after this write.",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+      }),
+    { config: expand },
+  )
+
+  itWithDiagnostics.instance("puts the receipt ahead of the status line and the error block", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fresh.ts")
+      mockedDiagnostics = {
+        [FSUtil.normalizePath(filepath)]: [
+          { severity: 1, message: "boom", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+        ],
+      }
+
+      const result = yield* run({ filePath: filepath, content: "const a: string = 1\n" })
+
+      expect(result.output.split("\n")).toEqual([
+        "Wrote file successfully.",
+        "",
+        "Lines 1-1 changed. Additions: 1. Deletions: 0.",
+        "",
+        "checked: 1 error",
+        "",
+        "LSP errors detected in this file, please fix:",
+        `<diagnostics file="${filepath}">`,
+        "ERROR [1:1] boom",
+        "</diagnostics>",
+      ])
+    }),
   )
 })

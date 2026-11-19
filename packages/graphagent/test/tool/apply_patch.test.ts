@@ -3,6 +3,7 @@ import path from "path"
 import { createHash } from "node:crypto"
 import * as fs from "fs/promises"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { LSP } from "@/lsp/lsp"
 import type { Diagnostic } from "@/lsp/client"
@@ -1179,6 +1180,19 @@ describe("tool.apply_patch write-point checks (#1452)", () => {
             "M same.txt",
             FileState.changedOutsideNote("changed.txt"),
             "",
+            "changed.txt",
+            "Lines 1-1 changed. Additions: 1. Deletions: 1.",
+            "@@ -1,2 +1,2 @@",
+            "-a",
+            "+A",
+            " x",
+            "",
+            "same.txt",
+            "Lines 1-1 changed. Additions: 1. Deletions: 1.",
+            "@@ -1,1 +1,1 @@",
+            "-b",
+            "+B",
+            "",
             "changed.txt: not checked: LSP disabled",
             "same.txt: not checked: LSP disabled",
           ])
@@ -1198,10 +1212,15 @@ describe("tool.apply_patch write-point checks (#1452)", () => {
           const first = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-one", "+uno") }, ctx)
           const second = yield* execute({ patchText: patch("*** Update File: update.txt", "@@", "-two", "+dos") }, ctx)
 
-          const expected =
-            "Success. Updated the following files:\nM update.txt\n\nupdate.txt: not checked: LSP disabled"
-          expect(first.output).toBe(expected)
-          expect(second.output).toBe(expected)
+          for (const result of [first, second]) {
+            // No note after the summary line: the blank line comes right after it, then the receipt block.
+            expect(result.output.split("\n").slice(0, 4)).toEqual([
+              "Success. Updated the following files:",
+              "M update.txt",
+              "",
+              "update.txt",
+            ])
+          }
         }),
       { git: true },
     )
@@ -1573,15 +1592,12 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
         )
 
         // A deleted file has nothing to check, so it has no line.
-        expect(result.output.split("\n")).toEqual([
-          "Success. Updated the following files:",
-          "A nested/new.txt",
-          "D delete.txt",
-          "M modify.txt",
+        expect(result.output.split("\n").slice(-3)).toEqual([
           "",
           "nested/new.txt: not checked: LSP disabled",
           "modify.txt: not checked: LSP disabled",
         ])
+        expect(result.output).not.toContain("delete.txt:")
       }),
     { git: true },
   )
@@ -1607,7 +1623,7 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
           ctx,
         )
 
-        expect(result.output.split("\n").slice(6)).toEqual([
+        expect(result.output.split("\n").slice(-4)).toEqual([
           "a.txt: checked: clean",
           "b.txt: not checked: timed out",
           "c.txt: not checked: no language server",
@@ -1646,6 +1662,14 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
             "Success. Updated the following files:",
             "M a.ts",
             "",
+            "a.ts",
+            "Lines 1-2 changed. Additions: 2. Deletions: 2.",
+            "@@ -1,2 +1,2 @@",
+            "-const a = 1",
+            "-const b = 2",
+            "+const a = 'x'",
+            "+const b = 'y'",
+            "",
             "a.ts: checked: 2 errors",
             "",
             "LSP errors detected in a.ts, please fix:",
@@ -1675,7 +1699,9 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
           ctx,
         )
 
-        expect(result.output).toBe("Success. Updated the following files:\nM long.ts\n\nlong.ts: checked: clean")
+        // The receipt shows the change with three lines of context, the status line says the error on line 25 is not its.
+        expect(result.output.split("\n").slice(-2)).toEqual(["", "long.ts: checked: clean"])
+        expect(result.output).not.toContain("LSP errors detected")
       }),
     { git: true },
   )
@@ -1692,13 +1718,10 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
 
         const result = yield* execute({ patchText: patch("*** Add File: a.ts", "+const a = 1") }, ctx)
 
-        expect(result.output.split("\n").slice(0, 4)).toEqual([
-          "Success. Updated the following files:",
-          "A a.ts",
-          "",
-          "a.ts: not checked: timed out",
-        ])
-        expect(result.output).toContain("\n\nLSP errors detected in a.ts, please fix:\n")
+        expect(result.output).toContain(
+          "\n\na.ts: not checked: timed out\n\nLSP errors detected in a.ts, please fix:\n",
+        )
+        expect(result.output).not.toContain("checked: 1 error")
       }),
     { git: true },
   )
@@ -1723,9 +1746,7 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
         )
 
         expect(seen).toEqual([path.join("moved", "to.txt")])
-        expect(result.output).toBe(
-          "Success. Updated the following files:\nM moved/to.txt\n\nmoved/to.txt: checked: clean",
-        )
+        expect(result.output.split("\n").slice(-2)).toEqual(["", "moved/to.txt: checked: clean"])
       }),
     { git: true },
   )
@@ -1756,11 +1777,382 @@ describe("tool.apply_patch LSP check state (#1451)", () => {
 
         const result = yield* execute({ patchText: patch("*** Add File: a.ts", "+const a: string = 1") }, ctx)
 
-        // The title is what it was before the status lines: the summary and the error block, nothing more.
+        // The title is what it was before the receipt and the status lines: the summary and the error block, nothing more.
         expect(result.output).toContain("\n\na.ts: checked: 1 error\n\n")
-        expect(result.title).not.toContain("checked:")
-        expect(result.title).toBe(result.output.replace("\n\na.ts: checked: 1 error", ""))
-        expect(result.title).toContain("LSP errors detected in a.ts, please fix:")
+        expect(result.title).toBe(
+          [
+            "Success. Updated the following files:",
+            "A a.ts",
+            "",
+            "LSP errors detected in a.ts, please fix:",
+            `<diagnostics file="${file}">`,
+            "ERROR [1:1] boom",
+            "</diagnostics>",
+          ].join("\n"),
+        )
+      }),
+    { git: true },
+  )
+})
+
+// #1451: after a patch the result has a block for each file it wrote: where the change landed, how much changed,
+// whether the formatter rewrote the file, and a diff. The diffs share 40 lines; the status lines come after all blocks.
+describe("tool.apply_patch write receipt (#1451)", () => {
+  const patch = (...lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n")
+  const numbered = (count: number, prefix = "line") => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`)
+  const expand = {
+    formatter: {
+      expand: {
+        extensions: [".txt"],
+        command: [
+          "node",
+          "-e",
+          "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n', 'utf8')",
+          "$FILE",
+        ],
+      },
+    },
+  }
+
+  it.instance(
+    "writes a block for each written file ahead of the status lines, and none for a deleted file",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "modify.txt"), "line1\nline2\n")
+        yield* writeText(path.join(test.directory, "delete.txt"), "obsolete\n")
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Add File: nested/new.txt",
+              "+created",
+              "*** Delete File: delete.txt",
+              "*** Update File: modify.txt",
+              "@@",
+              "-line2",
+              "+changed",
+            ),
+          },
+          ctx,
+        )
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "A nested/new.txt",
+          "D delete.txt",
+          "M modify.txt",
+          "",
+          "nested/new.txt",
+          "Lines 1-1 changed. Additions: 1. Deletions: 0.",
+          "",
+          "modify.txt",
+          "Lines 2-2 changed. Additions: 1. Deletions: 1.",
+          "@@ -1,2 +1,2 @@",
+          " line1",
+          "-line2",
+          "+changed",
+          "",
+          "nested/new.txt: not checked: LSP disabled",
+          "modify.txt: not checked: LSP disabled",
+        ])
+        // The title is what it was before: the summary, nothing of the receipt or the status lines.
+        expect(result.title).toBe("Success. Updated the following files:\nA nested/new.txt\nD delete.txt\nM modify.txt")
+        expect(result.metadata).not.toHaveProperty("corrections")
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "names a moved file by its destination and never writes a replacement count",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "from.txt"), "keep\nold\n")
+
+        const result = yield* execute(
+          { patchText: patch("*** Update File: from.txt", "*** Move to: moved/to.txt", "@@", " keep", "-old", "+new") },
+          ctx,
+        )
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "M moved/to.txt",
+          "",
+          "moved/to.txt",
+          "Lines 2-2 changed. Additions: 1. Deletions: 1.",
+          "@@ -1,2 +1,2 @@",
+          " keep",
+          "-old",
+          "+new",
+          "",
+          "moved/to.txt: not checked: LSP disabled",
+        ])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "puts the receipt blocks after the note about a source that changed outside the session",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "update.txt")
+        yield* writeText(file, "one\ntwo\n")
+        yield* markRead(file)
+        yield* writeText(file, "one\ntwo\nthree\n")
+
+        const result = yield* execute(
+          { patchText: patch("*** Update File: update.txt", "@@", " one", "-two", "+TWO") },
+          ctx,
+        )
+
+        expect(result.output.split("\n").slice(0, 6)).toEqual([
+          "Success. Updated the following files:",
+          "M update.txt",
+          FileState.changedOutsideNote("update.txt"),
+          "",
+          "update.txt",
+          "Lines 2-2 changed. Additions: 1. Deletions: 1.",
+        ])
+        // The note stays in the title, as it did before the receipt.
+        expect(result.title).toBe(
+          `Success. Updated the following files:\nM update.txt\n${FileState.changedOutsideNote("update.txt")}`,
+        )
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "shares 40 diff lines between the files, and cuts the diff of the file that runs over",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const a = path.join(test.directory, "a.txt")
+        const b = path.join(test.directory, "b.txt")
+        yield* writeText(a, "keep1\nkeep2\nkeep3\n")
+        yield* writeText(b, "keep1\nkeep2\nkeep3\n")
+        const added = numbered(30, "new").map((item) => `+${item}`)
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Update File: a.txt",
+              "@@",
+              " keep1",
+              " keep2",
+              " keep3",
+              ...added,
+              "*** Update File: b.txt",
+              "@@",
+              " keep1",
+              " keep2",
+              " keep3",
+              ...added,
+            ),
+          },
+          ctx,
+        )
+
+        const [head, blockA, blockB, status] = result.output.split("\n\n")
+        expect(head).toBe("Success. Updated the following files:\nM a.txt\nM b.txt")
+        // The first file's diff is 34 lines: the header, 3 of context and 30 added.
+        expect(blockA.split("\n")).toHaveLength(2 + 34)
+        expect(blockA).not.toContain("[diff cut")
+        // Six lines are left for the second.
+        expect(blockB.split("\n")).toEqual([
+          "b.txt",
+          "Lines 4-33 changed. Additions: 30. Deletions: 0.",
+          "@@ -1,3 +1,33 @@",
+          " keep1",
+          " keep2",
+          " keep3",
+          "+new 1",
+          "+new 2",
+          `[diff cut at 6 of 34 lines; read ${b} from line 1 to see the rest.]`,
+        ])
+        expect(status).toBe("a.txt: not checked: LSP disabled\nb.txt: not checked: LSP disabled")
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "leaves only the sentence for a file once the 40 lines are spent",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const b = path.join(test.directory, "b.txt")
+        yield* writeText(path.join(test.directory, "a.txt"), numbered(50).join("\n") + "\n")
+        yield* writeText(b, "x\ny\n")
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Update File: a.txt",
+              "@@",
+              ...numbered(50).map((item) => `-${item}`),
+              ...numbered(50, "changed").map((item) => `+${item}`),
+              "*** Update File: b.txt",
+              "@@",
+              "-x",
+              "+X",
+              " y",
+            ),
+          },
+          ctx,
+        )
+
+        const [, blockA, blockB] = result.output.split("\n\n")
+        expect(blockA.split("\n").at(-1)).toMatch(
+          /^\[diff cut at 40 of 101 lines; read .*a\.txt from line 1 to see the rest\.\]$/,
+        )
+        expect(blockB.split("\n")).toEqual([
+          "b.txt",
+          "Lines 1-1 changed. Additions: 1. Deletions: 1.",
+          `[diff cut at 0 of 4 lines; read ${b} from line 1 to see the rest.]`,
+        ])
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "says which file the formatter rewrote, and records it once",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "a.txt"), "alpha\n")
+        yield* writeText(path.join(test.directory, "b.md"), "beta\n")
+        yield* writeText(path.join(test.directory, "c.txt"), "gamma\n")
+
+        const result = yield* execute(
+          {
+            patchText: patch(
+              "*** Update File: a.txt",
+              "@@",
+              "-alpha",
+              "+ALPHA",
+              "*** Update File: b.md",
+              "@@",
+              "-beta",
+              "+BETA",
+              "*** Update File: c.txt",
+              "@@",
+              "-gamma",
+              "+GAMMA",
+            ),
+          },
+          ctx,
+        )
+
+        const [, blockA, blockB, blockC] = result.output.split("\n\n")
+        expect(blockA.split("\n").slice(0, 3)).toEqual([
+          "a.txt",
+          "Lines 1-2 changed. Additions: 2. Deletions: 1.",
+          "File was reformatted by the formatter after this write.",
+        ])
+        expect(blockB.split("\n").slice(0, 2)).toEqual(["b.md", "Lines 1-1 changed. Additions: 1. Deletions: 1."])
+        expect(blockB).not.toContain("reformatted")
+        expect(blockC).toContain("File was reformatted by the formatter after this write.")
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+        // The title is the summary alone.
+        expect(result.title).toBe("Success. Updated the following files:\nM a.txt\nM b.md\nM c.txt")
+        const logged = JSON.stringify(yield* logLines)
+        expect(logged).toContain('"tool.name":"apply_patch"')
+        expect(logged).toContain('"correction.kind":"formatted"')
+      }),
+    { git: true, config: expand },
+  )
+
+  it.instance(
+    "gives the counts and the diff of a large change, and says when the formatter's rewrite makes it too large to compare",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "big.md"), numbered(600).join("\n") + "\n")
+        yield* writeText(path.join(test.directory, "big.txt"), numbered(600).join("\n") + "\n")
+        const rewrite = (name: string) => [
+          `*** Update File: ${name}`,
+          "@@",
+          ...numbered(600).map((item) => `-${item}`),
+          ...numbered(600, "changed").map((item) => `+${item}`),
+        ]
+
+        const result = yield* execute({ patchText: patch(...rewrite("big.md"), ...rewrite("big.txt")) }, ctx)
+
+        const [, blockMd, blockTxt] = result.output.split("\n\n")
+        // The diff the tool ran for the request is what the receipt of the unformatted file is made from.
+        expect(blockMd.split("\n").slice(0, 3)).toEqual([
+          "big.md",
+          "Lines 1-600 changed. Additions: 600. Deletions: 600.",
+          "@@ -1,600 +1,600 @@",
+        ])
+        // The formatter added a line to the other, so its receipt cannot come from that diff.
+        expect(blockTxt.split("\n")).toEqual([
+          "big.txt",
+          "Lines 1-601 changed. The change is too large to compare line by line, so counts and diff are left out.",
+          "File was reformatted by the formatter after this write.",
+        ])
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+      }),
+    { git: true, config: expand },
+  )
+
+  it.instance(
+    "says nothing about the formatter when there is none to rewrite the file",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        yield* writeText(path.join(test.directory, "a.txt"), "alpha\n")
+
+        const result = yield* execute({ patchText: patch("*** Update File: a.txt", "@@", "-alpha", "+ALPHA") }, ctx)
+
+        expect(result.output).not.toContain("reformatted")
+        expect(result.metadata).not.toHaveProperty("corrections")
+      }),
+    { git: true },
+  )
+
+  itWithDiagnostics.instance(
+    "puts the receipt blocks between the summary and the status lines, with the error blocks last",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const file = path.join(test.directory, "a.ts")
+        mockedDiagnostics = {
+          [FSUtil.normalizePath(file)]: [
+            {
+              severity: 1,
+              message: "boom",
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+            },
+          ],
+        }
+
+        const result = yield* execute({ patchText: patch("*** Add File: a.ts", "+const a: string = 1") }, ctx)
+
+        expect(result.output.split("\n")).toEqual([
+          "Success. Updated the following files:",
+          "A a.ts",
+          "",
+          "a.ts",
+          "Lines 1-1 changed. Additions: 1. Deletions: 0.",
+          "",
+          "a.ts: checked: 1 error",
+          "",
+          "LSP errors detected in a.ts, please fix:",
+          `<diagnostics file="${file}">`,
+          "ERROR [1:1] boom",
+          "</diagnostics>",
+        ])
       }),
     { git: true },
   )

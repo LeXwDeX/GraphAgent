@@ -3,8 +3,9 @@ import path from "path"
 import { createHash } from "node:crypto"
 import fs from "fs/promises"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import * as PlatformError from "effect/PlatformError"
-import { EditTool, replace } from "../../src/tool/edit"
+import { EditTool, looksLikeReadPrefix, replace } from "../../src/tool/edit"
 import { WriteTool } from "../../src/tool/write"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
@@ -68,8 +69,13 @@ const itWithLsp = testEffect(
   ),
 )
 
-// The line every edit made with LSP off (the default) ends with.
-const lspOff = "\n\nnot checked: LSP disabled"
+// The start of the result of an edit that replaced one line (#1451): the first sentence, a blank line instead of a
+// note, and the line that says where the change landed.
+const onlyReceipt = [
+  "Edit applied successfully.",
+  "",
+  "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+]
 
 const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex")
 
@@ -1505,7 +1511,7 @@ describe("tool.edit write-point checks (#1452)", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
+        expect(result.output.split("\n").slice(0, 3)).toEqual(onlyReceipt)
       }),
     )
 
@@ -1519,7 +1525,12 @@ describe("tool.edit write-point checks (#1452)", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe(`Edit applied successfully.\n${FileState.changedOutsideNote(result.title)}${lspOff}`)
+        expect(result.output.split("\n").slice(0, 4)).toEqual([
+          "Edit applied successfully.",
+          FileState.changedOutsideNote(result.title),
+          "",
+          "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+        ])
         expect(yield* load(filepath)).toBe("top = 1\nbottom = formatted elsewhere\n")
       }),
     )
@@ -1534,7 +1545,7 @@ describe("tool.edit write-point checks (#1452)", () => {
         yield* writeTool(filepath, "top = 0\n")
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
+        expect(result.output.split("\n").slice(0, 3)).toEqual(onlyReceipt)
       }),
     )
 
@@ -1546,7 +1557,7 @@ describe("tool.edit write-point checks (#1452)", () => {
         yield* patchTool("*** Begin Patch\n*** Add File: file.txt\n+top = 0\n*** End Patch")
         const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
-        expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
+        expect(result.output.split("\n").slice(0, 3)).toEqual(onlyReceipt)
       }),
     )
 
@@ -1563,7 +1574,10 @@ describe("tool.edit write-point checks (#1452)", () => {
           const second = yield* run({ filePath: filepath, oldString: "b = 1", newString: "b = 2" })
           const third = yield* run({ filePath: filepath, oldString: "a = 2", newString: "a = 3" })
 
-          for (const result of [first, second, third]) expect(result.output).toBe(`Edit applied successfully.${lspOff}`)
+          // No note after the first sentence, whatever the formatter did to the file in between.
+          for (const result of [first, second, third]) {
+            expect(result.output.split("\n").slice(0, 2)).toEqual(["Edit applied successfully.", ""])
+          }
           const final = yield* load(filepath)
           expect(final).toContain("const a = 3")
           expect(final).toContain("const b = 2")
@@ -1592,6 +1606,14 @@ describe("tool.edit write-point checks (#1452)", () => {
 // not the same as one that found nothing.
 describe("tool.edit LSP check state (#1451)", () => {
   const lines = (count: number) => Array.from({ length: count }, (_, i) => `line ${i + 1}`)
+  // What the receipt says about replacing the one line of a file, ahead of the status line these tests are about.
+  const receipt = (before: string, after: string) =>
+    [
+      "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+      "@@ -1,1 +1,1 @@",
+      `-${before}`,
+      `+${after}`,
+    ].join("\n")
   const diagnostic = (line: number, severity: Diagnostic["severity"] = 1, message = "boom"): Diagnostic => ({
     severity,
     message,
@@ -1606,7 +1628,9 @@ describe("tool.edit LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
 
-      expect(result.output).toBe("Edit applied successfully.\n\nnot checked: LSP disabled")
+      expect(result.output).toBe(
+        `Edit applied successfully.\n\n${receipt("alpha beta", "ALPHA beta")}\n\nnot checked: LSP disabled`,
+      )
     }),
   )
 
@@ -1626,7 +1650,7 @@ describe("tool.edit LSP check state (#1451)", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "alpha", newString: "ALPHA" })
 
-        expect(result.output).toBe(`Edit applied successfully.\n\n${line}`)
+        expect(result.output).toBe(`Edit applied successfully.\n\n${receipt("alpha beta", "ALPHA beta")}\n\n${line}`)
       }),
     )
   }
@@ -1640,7 +1664,9 @@ describe("tool.edit LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
 
-      expect(result.output).toBe("Edit applied successfully.\n\nchecked: clean")
+      expect(result.output).toBe(
+        `Edit applied successfully.\n\n${receipt("const a = 1", "const a = 2")}\n\nchecked: clean`,
+      )
     }),
   )
 
@@ -1656,6 +1682,8 @@ describe("tool.edit LSP check state (#1451)", () => {
       expect(result.output).toBe(
         [
           "Edit applied successfully.",
+          "",
+          receipt("const a = 1", "const a: string = 1"),
           "",
           "checked: 1 error",
           "",
@@ -1691,7 +1719,10 @@ describe("tool.edit LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: filepath, oldString: "line 1\n", newString: "changed\n" })
 
-      expect(result.output).toBe("Edit applied successfully.\n\nchecked: clean")
+      // The receipt shows the change with three lines of context, the status line says the error on line 25 is not its.
+      expect(result.output.split("\n").slice(-2)).toEqual(["", "checked: clean"])
+      expect(result.output).toContain("Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.")
+      expect(result.output).not.toContain("LSP errors detected")
     }),
   )
 
@@ -1705,12 +1736,8 @@ describe("tool.edit LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
 
-      expect(result.output.split("\n").slice(0, 3)).toEqual([
-        "Edit applied successfully.",
-        "",
-        "not checked: timed out",
-      ])
-      expect(result.output).toContain("\n\nLSP errors detected in this file, please fix:\n")
+      expect(result.output).toContain("\n\nnot checked: timed out\n\nLSP errors detected in this file, please fix:\n")
+      expect(result.output).not.toContain("checked: 1 error")
     }),
   )
 
@@ -1726,7 +1753,18 @@ describe("tool.edit LSP check state (#1451)", () => {
       const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
 
       expect(result.output).toBe(
-        `Edit applied successfully.\n${FileState.changedOutsideNote(result.title)}\n\nchecked: clean`,
+        [
+          "Edit applied successfully.",
+          FileState.changedOutsideNote(result.title),
+          "",
+          "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+          "@@ -1,2 +1,2 @@",
+          "-top = 0",
+          "+top = 1",
+          " bottom = formatted elsewhere",
+          "",
+          "checked: clean",
+        ].join("\n"),
       )
     }),
   )
@@ -1739,7 +1777,9 @@ describe("tool.edit LSP check state (#1451)", () => {
 
       const result = yield* run({ filePath: filepath, oldString: "", newString: "const a = 1\n" })
 
-      expect(result.output).toBe("Edit applied successfully.\n\nnot checked: no language server")
+      expect(result.output).toBe(
+        "Edit applied successfully.\n\nLines 1-1 changed. Additions: 1. Deletions: 0.\n\nnot checked: no language server",
+      )
     }),
   )
 
@@ -1758,4 +1798,507 @@ describe("tool.edit LSP check state (#1451)", () => {
       }),
     { git: true },
   )
+})
+
+// #1451: after an edit the result says where it landed and how much changed, how the text was found when the match was
+// not exact, whether the formatter rewrote the file, and what the diff is.
+describe("tool.edit write receipt (#1451)", () => {
+  const lines = (count: number, prefix = "line") => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`)
+  const expand = {
+    formatter: {
+      expand: {
+        extensions: [".ts"],
+        command: [
+          "node",
+          "-e",
+          "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n', 'utf8')",
+          "$FILE",
+        ],
+      },
+    },
+  }
+  // A formatter that runs and leaves the text as it found it.
+  const untouched = {
+    formatter: { noop: { extensions: [".ts"], command: ["node", "-e", "process.exit(0)", "$FILE"] } },
+  }
+
+  it.instance(
+    "tells where an exact edit landed, how much it changed, and shows the diff",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "alpha\nbeta\ngamma\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "beta", newString: "BETA" })
+
+        expect(result.output).toBe(
+          [
+            "Edit applied successfully.",
+            "",
+            "Lines 2-2 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+            "@@ -1,3 +1,3 @@",
+            " alpha",
+            "-beta",
+            "+BETA",
+            " gamma",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.title).toBe("file.txt")
+        expect(result.metadata).not.toHaveProperty("corrections")
+      }),
+    { git: true },
+  )
+
+  it.instance("says a fuzzy match was not exact, and keeps the strategy in the metadata", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fuzzy.ts")
+      yield* put(filepath, "  const a = 1\n  const b = 2\n")
+
+      const result = yield* run({ filePath: filepath, oldString: "const a = 1\nconst b = 2", newString: "const c = 3" })
+
+      expect(result.output).toBe(
+        [
+          "Edit applied successfully.",
+          "",
+          "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 2.",
+          "Matched by fuzzy strategy line_trimmed at line 1 (not an exact match); check the diff below.",
+          "@@ -1,2 +1,1 @@",
+          "-  const a = 1",
+          "-  const b = 2",
+          "+const c = 3",
+          "",
+          "not checked: LSP disabled",
+        ].join("\n"),
+      )
+      expect(result.metadata).toMatchObject({ matchStrategy: "line_trimmed", corrections: ["fuzzy_match"] })
+    }),
+  )
+
+  it.instance("names the line a fuzzy match started at", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "later.ts")
+      yield* put(filepath, "head\nhead\n  const a = 1\n  const b = 2\n")
+
+      const result = yield* run({ filePath: filepath, oldString: "const a = 1\nconst b = 2", newString: "const c = 3" })
+
+      expect(result.output).toContain("Matched by fuzzy strategy line_trimmed at line 3 (not an exact match)")
+    }),
+  )
+
+  it.instance("counts the replacements of replaceAll and lists every place it landed", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "many.txt")
+      yield* put(filepath, "x = 1\ny\nx = 1\nz\nx = 1\n")
+
+      const result = yield* run({ filePath: filepath, oldString: "x = 1", newString: "x = 2", replaceAll: true })
+
+      expect(result.output).toContain(
+        [
+          "Lines 1-1, 3-3, 5-5 changed. Replacements: 3. Additions: 3. Deletions: 3.",
+          "@@ -1,5 +1,5 @@",
+          "-x = 1",
+          "+x = 2",
+          " y",
+          "-x = 1",
+          "+x = 2",
+          " z",
+          "-x = 1",
+          "+x = 2",
+        ].join("\n"),
+      )
+      expect(result.output).not.toContain("fuzzy")
+    }),
+  )
+
+  it.instance("shows the lines of a CRLF file and of a file with a BOM without their line endings or BOM", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const crlf = path.join(test.directory, "crlf.txt")
+      const bom = path.join(test.directory, "bom.txt")
+      yield* put(crlf, "a\r\nb\r\nc\r\n")
+      yield* put(bom, `${String.fromCharCode(0xfeff)}a\nb\nc\n`)
+
+      const first = yield* run({ filePath: crlf, oldString: "b", newString: "B" })
+      const second = yield* run({ filePath: bom, oldString: "b", newString: "B" })
+
+      for (const result of [first, second]) {
+        expect(result.output).toContain(
+          "Lines 2-2 changed. Replacements: 1. Additions: 1. Deletions: 1.\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c",
+        )
+        expect(result.output).not.toContain("\r")
+        expect(result.output).not.toContain(String.fromCharCode(0xfeff))
+      }
+      expect(yield* loadRaw(crlf)).toBe("a\r\nB\r\nc\r\n")
+    }),
+  )
+
+  it.instance("writes a new file without a diff and without a replacement count", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "fresh.txt")
+
+      const result = yield* run({ filePath: filepath, oldString: "", newString: "one\ntwo\nthree\n" })
+
+      expect(result.output).toBe(
+        "Edit applied successfully.\n\nLines 1-3 changed. Additions: 3. Deletions: 0.\n\nnot checked: LSP disabled",
+      )
+    }),
+  )
+
+  it.instance("cuts the diff of a large change at 40 lines and says where to read on", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "large.txt")
+      yield* put(filepath, lines(100).join("\n") + "\n")
+      const old = lines(60).map((_, i) => `line ${i + 21}`)
+
+      const result = yield* run({
+        filePath: filepath,
+        oldString: old.join("\n"),
+        newString: lines(60, "changed").join("\n"),
+      })
+
+      const out = result.output.split("\n")
+      const diff = out.slice(out.indexOf("@@ -18,66 +18,66 @@"))
+      // The header and 39 more lines of the diff, then the sentence; the status line follows after a blank line.
+      expect(diff.slice(0, 40)).toHaveLength(40)
+      expect(diff[40]).toBe(`[diff cut at 40 of 127 lines; read ${filepath} from line 18 to see the rest.]`)
+      expect(diff.slice(41)).toEqual(["", "not checked: LSP disabled"])
+      expect(result.output).toContain("Lines 21-80 changed. Replacements: 1. Additions: 60. Deletions: 60.")
+    }),
+  )
+
+  it.instance(
+    "says the formatter rewrote the file, records it, and describes the file as it is on disk",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        yield* put(filepath, "const a = 1\nconst b = 1\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
+
+        expect(result.output).toBe(
+          [
+            "Edit applied successfully.",
+            "",
+            "Lines 1-1, 3-3 changed. Replacements: 1. Additions: 2. Deletions: 1.",
+            "File was reformatted by the formatter after this write.",
+            "@@ -1,2 +1,3 @@",
+            "-const a = 1",
+            "+const a = 2",
+            " const b = 1",
+            "+// formatted line",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+        const logged = JSON.stringify(yield* logLines)
+        expect(logged).toContain("tool call corrected")
+        expect(logged).toContain('"tool.name":"edit"')
+        expect(logged).toContain('"correction.kind":"formatted"')
+      }),
+    { config: expand },
+  )
+
+  it.instance(
+    "keeps the counts and the diff of a large edit that the formatter rewrote, which the tool ran the diff for",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "large.ts")
+        yield* put(filepath, lines(600).join("\n") + "\n")
+
+        const result = yield* run({
+          filePath: filepath,
+          oldString: lines(600).join("\n"),
+          newString: lines(600, "changed").join("\n"),
+        })
+
+        const out = result.output.split("\n")
+        expect(out.slice(0, 4)).toEqual([
+          "Edit applied successfully.",
+          "",
+          "Lines 1-601 changed. Replacements: 1. Additions: 601. Deletions: 600.",
+          "File was reformatted by the formatter after this write.",
+        ])
+        expect(out.some((line) => line.startsWith("[diff cut at 40 of"))).toBe(true)
+        expect(result.output).not.toContain("too large")
+      }),
+    { config: expand },
+  )
+
+  it.instance(
+    "says the formatter rewrote a file that the edit created",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "fresh.ts")
+
+        const result = yield* run({ filePath: filepath, oldString: "", newString: "const a = 1\n" })
+
+        expect(result.output).toBe(
+          [
+            "Edit applied successfully.",
+            "",
+            "Lines 1-2 changed. Additions: 2. Deletions: 0.",
+            "File was reformatted by the formatter after this write.",
+            "",
+            "not checked: LSP disabled",
+          ].join("\n"),
+        )
+        expect(result.metadata).toMatchObject({ corrections: ["formatted"] })
+      }),
+    { config: expand },
+  )
+
+  it.instance(
+    "says nothing about a formatter that ran and left the text alone",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        yield* put(filepath, "const a = 1\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a = 2" })
+
+        expect(result.output).not.toContain("reformatted")
+        expect(result.metadata).not.toHaveProperty("corrections")
+        expect(JSON.stringify(yield* logLines)).not.toContain("tool call corrected")
+      }),
+    { config: untouched },
+  )
+
+  it.instance(
+    "marks the running call as formatted as soon as the text is on disk, next to a fuzzy match",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "running.ts")
+        yield* put(filepath, "  const a = 1\n  const b = 2\n")
+        const updates: Array<{ metadata?: Record<string, unknown> }> = []
+        const recording: Tool.Context = {
+          ...ctx,
+          metadata: (update) =>
+            Effect.sync(() => {
+              updates.push(update)
+            }),
+        }
+
+        const result = yield* run(
+          { filePath: filepath, oldString: "const a = 1\nconst b = 2", newString: "const c = 3" },
+          recording,
+        )
+
+        // Both marks are on the call before it reports its own diff, and the diff update keeps them.
+        expect(updates.map((update) => update.metadata?.corrections)).toEqual([
+          ["formatted"],
+          ["fuzzy_match", "formatted"],
+          ["fuzzy_match", "formatted"],
+        ])
+        expect(result.metadata).toMatchObject({ corrections: ["fuzzy_match", "formatted"] })
+      }),
+    { config: expand },
+  )
+
+  it.instance("puts the receipt after the note about a file that changed outside the session", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.txt")
+      yield* put(filepath, "top = 0\nbottom = 0\n")
+      yield* (yield* FileState.Service).record(ctx.sessionID, filepath, "read")
+      yield* put(filepath, "top = 0\nbottom = formatted elsewhere\n")
+
+      const result = yield* run({ filePath: filepath, oldString: "top = 0", newString: "top = 1" })
+
+      const out = result.output.split("\n")
+      expect(out.slice(0, 4)).toEqual([
+        "Edit applied successfully.",
+        FileState.changedOutsideNote(result.title),
+        "",
+        "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+      ])
+      expect(out.slice(-2)).toEqual(["", "not checked: LSP disabled"])
+    }),
+  )
+
+  itWithLsp.instance("puts the receipt ahead of the status line and the error block", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.ts")
+      yield* put(filepath, "const a = 1\n")
+      mockedDiagnostics = {
+        [FSUtil.normalizePath(filepath)]: [
+          { severity: 1, message: "boom", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+        ],
+      }
+
+      const result = yield* run({ filePath: filepath, oldString: "a = 1", newString: "a: string = 1" })
+
+      expect(result.output.split("\n")).toEqual([
+        "Edit applied successfully.",
+        "",
+        "Lines 1-1 changed. Replacements: 1. Additions: 1. Deletions: 1.",
+        "@@ -1,1 +1,1 @@",
+        "-const a = 1",
+        "+const a: string = 1",
+        "",
+        "checked: 1 error",
+        "",
+        "LSP errors detected in this file, please fix:",
+        `<diagnostics file="${filepath}">`,
+        "ERROR [1:1] boom",
+        "</diagnostics>",
+      ])
+    }),
+  )
+})
+
+// #1451: a missing oldString says how long the file is, how much of it was looked at, and when oldString carries the
+// line numbers of a read result.
+describe("tool.edit miss diagnosis (#1451)", () => {
+  const first =
+    "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings."
+  const message = (content: string, oldString: string) => {
+    try {
+      replace(content, oldString, "replacement")
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+    throw new Error("expected replace to fail")
+  }
+
+  test("says how many lines the file has", () => {
+    expect(message("a\nb\nc\n", "zzzzzzzz")).toBe(`${first} The file has 3 lines.`)
+  })
+
+  test("counts the lines the way read does, without the empty line a final newline leaves", () => {
+    expect(message("a\nb\nc", "zzzzzzzz")).toBe(`${first} The file has 3 lines.`)
+    expect(message("a\nb\nc\n\n", "zzzzzzzz")).toBe(`${first} The file has 4 lines.`)
+    expect(message("", "zzzzzzzz")).toBe(`${first} The file has 0 lines.`)
+  })
+
+  test("finds the closest line beyond the first 2000 lines of a file", () => {
+    const content = Array.from({ length: 2500 }, (_, i) =>
+      i === 2299 ? "const marker = computeMarker(alpha, beta)" : `filler row ${i + 1} of the generated fixture`,
+    ).join("\n")
+
+    const error = message(content, "const marker = computeMarker(alpha)")
+
+    expect(error).toContain("The file has 2500 lines.")
+    expect(error).toContain("Closest match at line 2300:\n")
+    expect(error).toContain("const marker = computeMarker(alpha, beta)")
+    expect(error).not.toContain("Only the first")
+  })
+
+  test("says how far the comparison got when the work budget runs out", () => {
+    const content = Array.from({ length: 4000 }, () => "x".repeat(150)).join("\n")
+
+    const error = message(content, "y".repeat(150))
+
+    expect(error).toContain("The file has 4000 lines.")
+    const compared = Number(/ Only the first (\d+) of 4000 lines were compared\./.exec(error)?.[1])
+    // Each line costs 120 x 120 cells of a budget of 30 million, so a little over 2000 lines are compared.
+    expect(compared).toBeGreaterThan(2000)
+    expect(compared).toBeLessThan(2200)
+  })
+
+  test("still names the closest line among those it compared when the budget runs out", () => {
+    // Line 11 is the one that looks like what is searched for; the rest are as far from it as can be.
+    const content = Array.from({ length: 4000 }, (_, i) => (i === 10 ? "y".repeat(140) : "x".repeat(150))).join("\n")
+
+    const error = message(content, "y".repeat(150))
+
+    expect(error).toMatch(/Only the first \d+ of 4000 lines were compared\./)
+    expect(error).toContain("Closest match at line 11:")
+  })
+
+  test("says nothing about the comparison when it covered the whole file", () => {
+    expect(message("alpha\nbeta\n", "zzzzzzzz")).not.toContain("Only the first")
+  })
+
+  test("says that oldString carries the line numbers of read, between the first sentence and the closest line", () => {
+    const error = message("const a = 1\nconst b = 2\n", "12: const a = 1\n13: const b = 2")
+
+    expect(error.split("\n").slice(0, 3)).toEqual([
+      `${first} The file has 2 lines.`,
+      'oldString seems to include the "N: " line-number prefixes from read. Remove them and send only the file text.',
+      "Closest match at line 1:",
+    ])
+  })
+
+  test("does not mention line-number prefixes for an ordinary miss", () => {
+    expect(message("const a = 1\n", "const totl = 1")).not.toContain("line-number prefixes")
+  })
+
+  test("the hint comes even when no line is close enough to suggest", () => {
+    const error = message("alpha\n", "12: zzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+
+    expect(error).toBe(
+      `${first} The file has 1 lines.\noldString seems to include the "N: " line-number prefixes from read. Remove them and send only the file text.`,
+    )
+  })
+
+  it.instance("a miss through the tool carries the diagnosis and leaves the file alone", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "file.ts")
+      const original = "const a = 1\nconst b = 2\n"
+      yield* put(filepath, original)
+
+      const error = yield* fail({
+        filePath: filepath,
+        oldString: "12: const a = 1\n13: const b = 2",
+        newString: "const c = 3",
+      })
+
+      expect(error.message.split("\n").slice(0, 3)).toEqual([
+        `${first} The file has 2 lines.`,
+        'oldString seems to include the "N: " line-number prefixes from read. Remove them and send only the file text.',
+        "Closest match at line 1:",
+      ])
+      expect(yield* load(filepath)).toBe(original)
+    }),
+  )
+})
+
+describe("looksLikeReadPrefix (#1451)", () => {
+  test("is true when every line starts with a line number and a colon", () => {
+    expect(looksLikeReadPrefix("12: const a = 1\n13: const b = 2")).toBe(true)
+    expect(looksLikeReadPrefix("7: only line")).toBe(true)
+  })
+
+  test("allows leading whitespace before the number", () => {
+    expect(looksLikeReadPrefix("   7: indented\n   8: also")).toBe(true)
+  })
+
+  test("is true when half of the lines that have text start that way, false below half", () => {
+    expect(looksLikeReadPrefix("12: foo\nbar")).toBe(true)
+    expect(looksLikeReadPrefix("12: foo\nbar\nbaz")).toBe(false)
+    expect(looksLikeReadPrefix("12: foo\n13: bar\nbaz")).toBe(true)
+  })
+
+  test("does not count blank lines", () => {
+    expect(looksLikeReadPrefix("12: foo\n\n13: bar\n  \n")).toBe(true)
+    expect(looksLikeReadPrefix("12: foo\n\n\n\nbar\n\nbaz")).toBe(false)
+  })
+
+  test("needs at least one line with text", () => {
+    expect(looksLikeReadPrefix("")).toBe(false)
+    expect(looksLikeReadPrefix("\n  \n\t\n")).toBe(false)
+  })
+
+  test("needs the colon and the space that read writes after the number", () => {
+    expect(looksLikeReadPrefix("12:foo")).toBe(false)
+    expect(looksLikeReadPrefix("foo: bar")).toBe(false)
+    expect(looksLikeReadPrefix("version 12: foo")).toBe(false)
+    expect(looksLikeReadPrefix("a12: foo")).toBe(false)
+  })
 })
