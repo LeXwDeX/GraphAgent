@@ -36,6 +36,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 import { inlineReasoningTag, wrapInlineReasoning } from "./inline-reasoning"
 import { OpenAIWebSocketPool } from "./openai-ws/ws-pool"
+import { RequestCapture } from "./request-capture"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionCompactionEvent } from "@graphagent/schema/session-compaction-event"
@@ -129,6 +130,13 @@ function unwrapLanguageStreamErrors(language: LanguageModelV3): LanguageModelV3 
       }
     },
   })
+}
+
+/** The request as the transport receives it: the internal headers are removed unless the fetch itself consumes them. */
+function sentRequest<T extends RequestInit>(fetchFn: unknown, input: RequestInfo | URL, init: T) {
+  return OpenAIWebSocketPool.isTitleHeaderConsumer(fetchFn)
+    ? { input, init }
+    : OpenAIWebSocketPool.withoutInternalRequestHeaders(input, init)
 }
 
 function timeoutController(ms: number) {
@@ -1263,6 +1271,10 @@ export const layer = Layer.effect(
     const runtimeFlags = yield* RuntimeFlags.Service
     const events = yield* EventV2Bridge.Service
 
+    // Captures idle for over a week are pruned once per process, in the background and never on a request's path (#1461).
+    if (runtimeFlags.debugRequests)
+      yield* Effect.promise(() => RequestCapture.cleanup(Date.now())).pipe(Effect.forkScoped)
+
     const state = yield* InstanceState.make<State>((ctx) =>
       Effect.gen(function* () {
         const bridge = yield* EffectBridge.make()
@@ -1735,6 +1747,11 @@ export const layer = Layer.effect(
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
+          // Best effort, and before any timer below starts: a slow disk must not spend the header or overall timeout of
+          // the request (#1461).
+          if (runtimeFlags.debugRequests && (typeof input === "string" || input instanceof URL)) {
+            await RequestCapture.record(sentRequest(fetchFn, input, opts))
+          }
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
           const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
           const headerTimeoutCtl = typeof headerTimeoutMs === "number" ? timeoutController(headerTimeoutMs) : undefined
@@ -1756,9 +1773,7 @@ export const layer = Layer.effect(
           }
           let res: Response
           try {
-            const request = OpenAIWebSocketPool.isTitleHeaderConsumer(fetchFn)
-              ? { input, init: fetchInit }
-              : OpenAIWebSocketPool.withoutInternalRequestHeaders(input, fetchInit)
+            const request = sentRequest(fetchFn, input, fetchInit)
             res = await fetchFn(request.input, request.init)
           } finally {
             headerTimeoutCtl?.clear()

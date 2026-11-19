@@ -55,6 +55,7 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
 import { AgentContract } from "../agent/contract"
+import { McpReadonly } from "../agent/mcp-readonly"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
@@ -207,6 +208,8 @@ export type McpSource = Readonly<{
   /** Claude-style `mcp__server__tool` name used by hook matchers. */
   canonicalName: string
   requiresUserInteraction: boolean
+  /** The server declared the tool `annotations.readOnlyHint: true` (#1454); only such a tool has it. */
+  readOnly?: boolean
   /** The key before it was shortened or made unique (#1459); only such a key has one. Its deny and ask rules apply. */
   baseKey?: string
   /**
@@ -518,7 +521,6 @@ export const layer = Layer.effect(
       const model = input.model
       const s = yield* InstanceState.get(state)
       const nativePermission = (yield* agents.permissionPolicy(input.agent.name)).native
-      const configuredPermission = Permission.merge(input.agent.permission, input.permission ?? [])
       // #1030 D9-h: a run whose owner withheld workspace writes (review nodes)
       // never sees the tools that declare that effect. Shell and other
       // `unknown` tools keep the agent's own permission, so a reviewer can
@@ -664,6 +666,7 @@ RequestCache.set(
             source: binding.source,
             canonicalName: McpCatalog.canonicalToolName(binding),
             requiresUserInteraction: binding.requiresUserInteraction === true,
+            ...(binding.readOnly === true ? { readOnly: true } : {}),
             ...(binding.baseKey === undefined ? {} : { baseKey: binding.baseKey }),
             ...(binding.deferred === true ? { deferred: true } : {}),
           },
@@ -691,6 +694,12 @@ RequestCache.set(
         }
       }
 
+      // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454).
+      const policy = McpReadonly.adjust(
+        input.agent,
+        { native: nativePermission, rules: input.agent.permission },
+        McpReadonly.idsOfEntries(entries.values()),
+      )
       const disabled = Permission.disabledTools(
         [
           ...[...entries].map(([id, entry]) => ({
@@ -700,8 +709,8 @@ RequestCache.set(
           // The deferred-tool helpers are tools too: a rule that denies them hides them, a read-only agent included.
           ...MCP_DEFERRED_IDS.map((id) => ({ id })),
         ],
-        nativePermission,
-        configuredPermission,
+        policy.native,
+        Permission.merge(policy.rules, input.permission ?? []),
       )
       const visible = (id: string) => input.user?.tools?.[id] !== false && !disabled.has(id)
       const { entries: resolved, moved } = settle({

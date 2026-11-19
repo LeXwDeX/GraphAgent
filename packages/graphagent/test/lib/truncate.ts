@@ -22,6 +22,8 @@ export const truncateFailingWith = (message: string, onWrite?: () => void) =>
             ensureDir: () => Effect.void,
             writeFileString: () =>
               Effect.sync(() => onWrite?.()).pipe(Effect.andThen(Effect.fail(new Error(message) as never))),
+            writeFile: () =>
+              Effect.sync(() => onWrite?.()).pipe(Effect.andThen(Effect.fail(new Error(message) as never))),
           }),
         ),
       ).pipe(Layer.provide(FSUtil.defaultLayer)),
