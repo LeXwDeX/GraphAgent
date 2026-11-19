@@ -416,9 +416,9 @@ describe("workflow failure rendering in the real session route", () => {
           if (frame.includes("model.unavailable")) break
           await Bun.sleep(10)
         }
-        expect(frame).toContain("workflow: blocked")
-        expect(frame).toContain("model.unavailable")
-        expect(frame).toContain("unavailable worker model")
+        // A call that was blocked says why under the call, whatever the reader shows of tool output.
+        expect(frame).toContain("⏺ workflow")
+        expect(frame).toContain("⎿ [model.unavailable] unavailable worker model")
       } finally {
         await route.dispose()
       }

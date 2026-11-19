@@ -9,6 +9,7 @@ import { t } from "../../i18n"
 import type { BackgroundCard } from "../../session/background-card"
 import { cellWidth, type AmbiguousWidth } from "../../ui/width"
 import { outputOverflows } from "../../util/collapse-tool-output"
+import { remoteLine } from "../../util/remote-text"
 import {
   parseApplyPatchFiles,
   parseQuestionAnswers,
@@ -27,10 +28,11 @@ import { toolAttention } from "./tool-attention"
  * a windowed transcript that are not on screen, and those are not mounted.
  */
 
-/** Lines of a bash output a block shows before it folds. */
-export const SHELL_OUTPUT_LINES = 10
-/** Lines of any other tool output a block shows before it folds. */
-export const GENERIC_OUTPUT_LINES = 3
+/**
+ * Lines of a tool output that a call row draws under its `⎿` before it folds into one result line (#1614). Every tool
+ * with an output to draw folds at this count, and the hint under the row counts the lines the fold leaves out.
+ */
+export const TOOL_FOLD_LINES = 6
 
 /** Characters a folded output shows: the lines it may take, each as wide as the content less its gutter. */
 export function outputCharCap(lines: number, width: number) {
@@ -56,24 +58,75 @@ export function completedOutput(state: ToolPart["state"]) {
   return state.status === "completed" ? state.output : undefined
 }
 
-/** Whether a bash call draws a block, which it does once its output is known; before that it is one line. */
-export function shellShowsBlock(metadata: Record<string, unknown>) {
-  return stringValue(metadata.output) !== undefined
-}
+/** What the server writes as the output of a command that printed nothing. */
+const NO_OUTPUT = "(no output)"
 
-/** The output a bash block shows: what the call reports, without terminal escapes. */
+/**
+ * The output a bash row draws: what the call reports, without terminal escapes. It is only the tail the server keeps
+ * (`SHELL_TAIL_LINES`), so what the row keeps of it is the last line, not the first. Empty for a command that
+ * printed nothing, which the server reports as the placeholder `(no output)`.
+ */
 export function shellOutput(metadata: Record<string, unknown>) {
-  return stripAnsi(stringValue(metadata.output)?.trim() ?? "")
+  const output = stripAnsi(stringValue(metadata.output)?.trim() ?? "")
+  return output === NO_OUTPUT ? "" : output
 }
 
-/** The output a generic tool block shows. */
+/** The output a generic tool row draws. */
 export function genericOutput(output: string | undefined) {
   return output?.trim() ?? ""
 }
 
-/** Whether a generic tool draws a block: a call that was blocked, or one whose output the reader asked to see. */
-export function genericShowsBlock(attention: string | undefined, output: string | undefined, showOutput: boolean) {
-  return Boolean(attention) || (Boolean(output) && showOutput)
+/**
+ * The output the row of a generic tool draws under its result line: the one the reader asked to see. A call that was
+ * blocked draws why instead (`toolAttention`), and nothing else.
+ */
+export function genericRowOutput(attention: string | undefined, output: string | undefined, showOutput: boolean) {
+  return !attention && showOutput ? genericOutput(output) : ""
+}
+
+/** Lines in `text`, which has no line break at its ends. */
+function lineCount(text: string) {
+  let count = 1
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) count++
+  return count
+}
+
+/** The first line of `text`. */
+export function firstLine(text: string) {
+  const at = text.indexOf("\n")
+  return at === -1 ? text : text.slice(0, at)
+}
+
+/** The last line of `text`: what a command ends on is what its folded row keeps of the output. */
+export function lastLine(text: string) {
+  return text.slice(text.lastIndexOf("\n") + 1)
+}
+
+/**
+ * Whether the output of a call folds at `width`, the content width of the transcript, and how many of its lines the
+ * fold leaves out: all but the one the row keeps under the call. An output folds past `TOOL_FOLD_LINES` lines, or past
+ * the characters those lines take; one long line is cut and leaves no line out. A row, a click and `view.expand.toggle`
+ * all ask this, so the key never lands on a row that cannot change.
+ */
+export function foldOutput(output: string, width: number) {
+  if (!output || !outputOverflows(output, TOOL_FOLD_LINES, outputCharCap(TOOL_FOLD_LINES, width))) {
+    return { folds: false, hidden: 0 }
+  }
+  return { folds: true, hidden: lineCount(output) - 1 }
+}
+
+/**
+ * The lines the open row of a call draws under its result line, for the height of a row that is not measured yet: its
+ * whole output, or the error of a call that failed (and the output it printed, which a bash call keeps).
+ */
+export function openToolLines(part: ToolPart) {
+  const state = part.state
+  if (state.status === "pending") return 0
+  const output =
+    toolDisplay(part.tool) === "bash" ? shellOutput(state.metadata ?? {}) : genericOutput(completedOutput(state))
+  if (state.status !== "error") return output ? lineCount(output) : 0
+  const error = state.error.trim()
+  return (error ? lineCount(error) : 0) + (output ? lineCount(output) + 1 : 0)
 }
 
 /** Whether a write call draws a block, which it does once its diagnostics are known. */
@@ -89,6 +142,15 @@ export function editShowsBlock(metadata: Record<string, unknown>) {
 /** The error of a call that failed. */
 export function toolError(state: ToolPart["state"]) {
   return state.status === "error" ? state.error : undefined
+}
+
+/** The first line of `error` that has text, as one displayable line: what the row of a failed call says it failed on. */
+export function errorLine(error: string | undefined) {
+  for (const line of (error ?? "").split(/\r?\n/)) {
+    const text = remoteLine(line)
+    if (text) return text
+  }
+  return undefined
 }
 
 /** Whether `error` is the user or the permission rules turning the call down, which is not a failure. */
@@ -191,8 +253,8 @@ export interface FoldSource {
 
 /**
  * The view flag a click on `part` flips, or undefined when the part has nothing to fold right now. A reasoning
- * with a body and a tool output past its cap fold under `expanded`; the error of a failed call that is drawn as one
- * line folds under `errorExpanded`.
+ * with a body and a tool output past its cap fold under `expanded`; the error of a failed call, which its row draws
+ * as one line, folds under `errorExpanded`.
  */
 export function foldFlag(part: Part, env: FoldEnv, source: FoldSource): ViewFlag | undefined {
   if (part.type === "reasoning") return reasoningFolds(source.text(part), env.thinking) ? "expanded" : undefined
@@ -200,15 +262,14 @@ export function foldFlag(part: Part, env: FoldEnv, source: FoldSource): ViewFlag
 
   const metadata = source.metadata(part)
   const display = toolDisplay(part.tool)
-  if (display === "bash" && shellShowsBlock(metadata)) {
-    const cap = outputCharCap(SHELL_OUTPUT_LINES, env.width)
-    return outputOverflows(shellOutput(metadata), SHELL_OUTPUT_LINES, cap) ? "expanded" : undefined
-  }
-  if (display === "generic") {
-    const output = completedOutput(part.state)
-    if (genericShowsBlock(toolAttention(part.tool, part.state), output, env.showGenericToolOutput)) {
-      const cap = outputCharCap(GENERIC_OUTPUT_LINES, env.width)
-      return outputOverflows(genericOutput(output), GENERIC_OUTPUT_LINES, cap) ? "expanded" : undefined
+  // Only a call that completed has an output its row draws. While it runs the row says so, and a call that failed
+  // says why: its error folds under `errorExpanded`.
+  if (part.state.status === "completed") {
+    if (display === "bash" && foldOutput(shellOutput(metadata), env.width).folds) return "expanded"
+    if (display === "generic") {
+      const attention = toolAttention(part.tool, part.state)
+      const output = genericRowOutput(attention, completedOutput(part.state), env.showGenericToolOutput)
+      if (foldOutput(output, env.width).folds) return "expanded"
     }
   }
   if (drawsFixedBlock(display, metadata)) return undefined

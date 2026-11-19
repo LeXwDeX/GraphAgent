@@ -1,29 +1,38 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`TUI inline tool wrapping snapshots consecutive grep, glob, and read rows at a narrow width 1`] = `
-"   ✱ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.
-     *dir|xdg|APPDATA" in packages/graphagent/src (151 matches)
+"   ⏺ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.*dir|xdg…
+     ⎿ 151 matches
 
-   ✱ Glob "**/*db*" in packages/graphagent (6 matches)
-   → Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
-   → Read packages/graphagent/src/index.ts [offset=1, limit=100]
-   ✱ Grep "export const
-     GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Global\\.Path\\.data|data
-     =" in packages/graphagent/src (115 matches)"
+   ⏺ Glob "**/*db*" in packages/graphagent
+     ⎿ 6 files
+
+   ⏺ Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
+     ⎿ Read 130 lines
+
+   ⏺ Read packages/graphagent/src/index.ts [offset=1, limit=100]
+     ⎿ Failed · No LSP server available for this file type.
+
+   ⏺ Grep "export const GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Glob…
+     ⎿ 115 matches"
 `;
 
 exports[`TUI inline tool wrapping snapshots expanded tool errors under the tool text 1`] = `
-"   ✱ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.
-     *dir|xdg|APPDATA" in packages/graphagent/src (151 matches)
+"   ⏺ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.*dir|xdg…
+     ⎿ 151 matches
 
-   ✱ Glob "**/*db*" in packages/graphagent (6 matches)
-   → Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
-   → Read packages/graphagent/src/index.ts [offset=1, limit=100]
-     No LSP server available for this file type.
+   ⏺ Glob "**/*db*" in packages/graphagent
+     ⎿ 6 files
 
-   ✱ Grep "export const
-     GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Global\\.Path\\.data|data
-     =" in packages/graphagent/src (115 matches)"
+   ⏺ Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
+     ⎿ Read 130 lines
+
+   ⏺ Read packages/graphagent/src/index.ts [offset=1, limit=100]
+     ⎿ Failed · No LSP server available for this file type.
+       No LSP server available for this file type.
+
+   ⏺ Grep "export const GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Glob…
+     ⎿ 115 matches"
 `;
 
 exports[`TUI inline tool wrapping keeps separation after a shell output block 1`] = `
@@ -33,15 +42,20 @@ exports[`TUI inline tool wrapping keeps separation after a shell output block 1`
 
   file.ts
 
-   ✱ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.
-     *dir|xdg|APPDATA" in packages/graphagent/src (151 matches)
+   ⏺ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.*dir|xdg…
+     ⎿ 151 matches
 
-   ✱ Glob "**/*db*" in packages/graphagent (6 matches)
-   → Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
-   → Read packages/graphagent/src/index.ts [offset=1, limit=100]
-   ✱ Grep "export const
-     GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Global\\.Path\\.data|data
-     =" in packages/graphagent/src (115 matches)"
+   ⏺ Glob "**/*db*" in packages/graphagent
+     ⎿ 6 files
+
+   ⏺ Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
+     ⎿ Read 130 lines
+
+   ⏺ Read packages/graphagent/src/index.ts [offset=1, limit=100]
+     ⎿ Failed · No LSP server available for this file type.
+
+   ⏺ Grep "export const GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Glob…
+     ⎿ 115 matches"
 `;
 
 exports[`TUI inline tool wrapping keeps separation after a padded user message 1`] = `
@@ -49,31 +63,39 @@ exports[`TUI inline tool wrapping keeps separation after a padded user message 1
   Check whether the next tool remains separated.
 
 
-   ✱ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.
-     *dir|xdg|APPDATA" in packages/graphagent/src (151 matches)
+   ⏺ Grep "GRAPHAGENT.*DB|database|sqlite|drizzle|dev.*db|data.*dir|xdg…
+     ⎿ 151 matches
 
-   ✱ Glob "**/*db*" in packages/graphagent (6 matches)
-   → Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
-   → Read packages/graphagent/src/index.ts [offset=1, limit=100]
-   ✱ Grep "export const
-     GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Global\\.Path\\.data|data
-     =" in packages/graphagent/src (115 matches)"
+   ⏺ Glob "**/*db*" in packages/graphagent
+     ⎿ 6 files
+
+   ⏺ Read packages/graphagent/src/storage/db.ts [offset=1, limit=130]
+     ⎿ Read 130 lines
+
+   ⏺ Read packages/graphagent/src/index.ts [offset=1, limit=100]
+     ⎿ Failed · No LSP server available for this file type.
+
+   ⏺ Grep "export const GRAPHAGENT_DB|GRAPHAGENT_DB|GRAPHAGENT_DEV|Glob…
+     ⎿ 115 matches"
 `;
 
 exports[`TUI inline tool wrapping separates after a multi-line task row 1`] = `
-"   ✱ Grep "Task" (2 matches)
+"   ⏺ Grep "Task"
+     ⎿ 2 matches
 
    ⠙ Explore Task — Inspect active task spacing
 
    ✓ General Task — Confirm completed task spacing
      ↳ 1 toolcall · 501ms
 
-   → Read src/cli/cmd/tui/routes/session/index.tsx"
+   ⏺ Read src/cli/cmd/tui/routes/session/index.tsx
+     ⎿ Read 40 lines"
 `;
 
-exports[`TUI inline tool wrapping separates a task row from a preceding inline detail 1`] = `
-"   → Read src/cli/cmd/tui/routes/session/index.tsx
-   ↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx
+exports[`TUI inline tool wrapping separates a task row from a preceding tool row with a loaded file 1`] = `
+"   ⏺ Read src/cli/cmd/tui/routes/session/index.tsx
+     ⎿ Read 40 lines
+       ↳ Loaded src/cli/cmd/tui/routes/session/tools.tsx
 
    ✓ Explore Task — Inspect active task spacing
      ↳ 1 toolcall · 501ms"
@@ -93,10 +115,4 @@ exports[`TUI inline tool wrapping separates an inline row from the previous assi
 
    ✓ Build Task — Review changes
      ↳ 48 toolcalls · 1m 40s"
-`;
-
-exports[`TUI inline tool wrapping updates sticky-bottom geometry when a text separator mounts and unmounts 1`] = `
-"Assistant text
-                                                                       ▄
-   → Read src/cli/cmd/tui/routes/session/index.tsx                     █"
 `;

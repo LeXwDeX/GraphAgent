@@ -275,7 +275,8 @@ test("only the first message is the task: a later prompt of the parent stays an 
       parts: [text("msg_rec_child_assistant_2", childID, "prt_rec_child_answer_2", "版本都没有变。")],
     },
   ]
-  const harness = await mount({ handler: transcripts({ child: entries }) })
+  // Tall enough for the whole record: a tool call is a block of two lines, and the record follows its tail.
+  const harness = await mount({ handler: transcripts({ child: entries }), height: 40 })
   try {
     const frame = await harness.waitForFrame((value) => value.includes("版本都没有变"), "the second answer")
     expect(count(frame, TITLE)).toBe(1)

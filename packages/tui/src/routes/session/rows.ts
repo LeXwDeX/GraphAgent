@@ -281,7 +281,9 @@ export function estimateRowHeight(row: Row, width: number, chars: number, expand
     case "reasoning":
       return expanded ? lines + 3 : 2
     case "tool":
-      return expanded ? lines + 3 : 2
+      // The call and the line under it make two rows. Open, the whole output (`chars` is its number of lines, which
+      // the row table gives a tool row that is open) stands under them, and the hint that closes it under that.
+      return expanded ? Math.max(1, chars) + 3 : 2
     case "revert":
       return 5
     case "meta":
