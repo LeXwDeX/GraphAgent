@@ -36,7 +36,7 @@ import { coverageResult, parseOptions, routeKey, routeKeys, selectedScenarios } 
 import { runScenario } from "./runner"
 import { runtime } from "./runtime"
 import { runMainWithHardExit, teardown } from "./teardown"
-import { type Options, type Scenario, type ScenarioContext } from "./types"
+import { type CallResult, type Options, type Scenario, type ScenarioContext } from "./types"
 import { startProgressWatchdog } from "./watchdog"
 
 enterExerciseWorkingDirectory()
@@ -48,6 +48,20 @@ const seedChild = (ctx: ScenarioContext) =>
   Effect.gen(function* () {
     const parent = yield* ctx.session({ title: "Child guard parent" })
     return yield* ctx.session({ title: "Child guard child", parentID: parent.id })
+  })
+
+/** #1552: the BadRequest envelope of a params rejection, as a malformed messageID gets it. */
+const badRequestForSessionID = (_ctx: unknown, result: CallResult) =>
+  Effect.sync(() => {
+    const body = result.body
+    object(body)
+    check(body.name === "BadRequest", `a malformed session ID should answer BadRequest: ${result.text}`)
+    object(body.data)
+    check(body.data.kind === "Params", "a malformed session ID is rejected as a params error")
+    check(
+      typeof body.data.message === "string" && body.data.message.includes("sessionID"),
+      "the BadRequest message should name the sessionID param",
+    )
   })
 
 type SessionWrite = ReturnType<typeof http.protected.post>
@@ -545,7 +559,23 @@ const scenarios: Scenario[] = [
       object(body)
       check(body.type === "text" && body.content === "", "missing file content should return an empty text result")
     }),
-  http.protected.get("/file/status", "file.status").json(200, array),
+  http.protected
+    .get("/file/status", "file.status")
+    .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
+    .json(200, (body) => {
+      array(body)
+      check(
+        body.some(
+          (item) =>
+            isRecord(item) &&
+            item.path === "hello.txt" &&
+            item.status === "added" &&
+            item.added === 1 &&
+            item.removed === 0,
+        ),
+        `an untracked file should be listed as added: ${JSON.stringify(body)}`,
+      )
+    }),
   http.protected
     .get("/find", "find.text")
     .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
@@ -2473,6 +2503,23 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(404),
+
+  // #1552: a path segment that is not a session ID is a 400 BadRequest, not a 500.
+  http.protected
+    .get("/dag/session/{sessionID}", "dag.bySession.malformed")
+    .at((ctx) => ({
+      path: route("/dag/session/{sessionID}", { sessionID: "not-a-session-id" }),
+      headers: ctx.headers(),
+    }))
+    .status(400, badRequestForSessionID),
+
+  http.protected
+    .get("/dag/session/{sessionID}/summary", "dag.summary.malformed")
+    .at((ctx) => ({
+      path: route("/dag/session/{sessionID}/summary", { sessionID: "not-a-session-id" }),
+      headers: ctx.headers(),
+    }))
+    .status(400, badRequestForSessionID),
 
   // 404 scenarios (pre-existing, retained)
   http.protected

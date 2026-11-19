@@ -12,6 +12,7 @@ import { Workspace } from "../../src/control-plane/workspace"
 import { Database } from "@graphagent/core/database/database"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Project } from "../../src/project/project"
+import { SessionID } from "../../src/session/schema"
 import { Session } from "../../src/session/session"
 import { WorkspacePaths } from "../../src/server/routes/instance/httpapi/groups/workspace"
 import {
@@ -94,6 +95,10 @@ const ProbeApi = HttpApi.make("workspace-routing-probe").add(
       HttpApiEndpoint.get("get", "/probe", { success: ProbeResult }),
       HttpApiEndpoint.patch("patch", "/probe", { success: Schema.Boolean }),
       HttpApiEndpoint.get("session", "/session", { success: ProbeResult }),
+      HttpApiEndpoint.get("sessionByID", "/session/:sessionID", {
+        params: { sessionID: SessionID },
+        success: ProbeResult,
+      }),
       HttpApiEndpoint.get("workspace", WorkspacePaths.list, { success: ProbeResult }),
     )
     .middleware(WorkspaceRoutingMiddleware),
@@ -109,6 +114,7 @@ const probeHandlers = HttpApiBuilder.group(ProbeApi, "probe", (handlers) =>
     .handle("get", () => routeContextResponse)
     .handle("patch", () => Effect.succeed(false))
     .handle("session", () => routeContextResponse)
+    .handle("sessionByID", () => routeContextResponse)
     .handle("workspace", () => routeContextResponse),
 )
 
@@ -135,6 +141,21 @@ describe("HttpApi workspace routing middleware", () => {
 
       expect(response.status).toBe(500)
       expect(yield* response.text).toBe(`Workspace not found: ${workspaceID}`)
+    }),
+  )
+
+  it.live("leaves a path segment that is not a session ID to the endpoint's params decoder", () =>
+    Effect.gen(function* () {
+      yield* serveProbe
+
+      // #1552: routing reads the session out of the URL before the endpoint decodes its params.
+      // A malformed segment must reach that decoder (400), not throw in routing (500).
+      const malformed = yield* HttpClient.get("/session/not-a-session-id")
+      const wellFormed = yield* HttpClient.get("/session/ses_known")
+
+      expect(malformed.status).toBe(400)
+      expect(wellFormed.status).toBe(200)
+      expect(yield* wellFormed.json).toEqual({ directory: process.cwd(), workspaceID: null })
     }),
   )
 

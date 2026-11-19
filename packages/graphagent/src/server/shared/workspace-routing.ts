@@ -1,3 +1,4 @@
+import { Schema } from "effect"
 import { SessionID } from "@/session/schema"
 
 type Rule = { method?: string; path: string; exact?: boolean; action: "local" | "forward" }
@@ -17,7 +18,11 @@ export function isLocalWorkspaceRoute(method: string, path: string) {
   return false
 }
 
-export function getWorkspaceRouteSessionID(url: URL) {
+/**
+ * The session a URL addresses, for workspace routing. It never throws: a segment that is not a session ID names no
+ * session, so routing has nothing to resolve and the endpoint's own params decoder answers with the 400 BadRequest.
+ */
+export function getWorkspaceRouteSessionID(url: URL): SessionID | null {
   if (url.pathname === "/session/status") return null
 
   const id =
@@ -25,5 +30,5 @@ export function getWorkspaceRouteSessionID(url: URL) {
     url.pathname.match(/^\/experimental\/session\/([^/]+)\/background$/)?.[1]
   if (!id) return null
 
-  return SessionID.make(id)
+  return Schema.is(SessionID)(id) ? id : null
 }
