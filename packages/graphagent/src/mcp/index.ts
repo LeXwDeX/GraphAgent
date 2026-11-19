@@ -182,6 +182,8 @@ interface State {
   manualDisabled: Set<string>
   /** The `mcp.json` layers behind a signature cache: `tools()` runs on every step and must not decode them again. */
   files: ReturnType<typeof McpConfig.cached>
+  /** `tools()` has told the user that the definitions it sends are large (#1459); it says so once. */
+  definitionWarned: boolean
 }
 
 const toolID = (server: string, tool: string) => `${server}\0${tool}`
@@ -606,6 +608,7 @@ export const layer = Layer.effect(
           instructions: {},
           manualDisabled: new Set(),
           files: McpConfig.cached(),
+          definitionWarned: false,
         }
         // Project-layer servers must be trusted before their process starts.
         // A refused server keeps a `disabled` status (the same surface a user
@@ -789,8 +792,25 @@ export const layer = Layer.effect(
       return s.config[name]?.timeout?.request ?? configured?.timeout?.request ?? DEFAULT_TIMEOUT
     }
 
+    // Tells the user, once, that the tools which stay in the tool list carry large definitions (#1459). It is `tools()`
+    // that does: the startup connection and a `list_changed` refresh do not go through `storeClient`.
+    const warnLargeDefinitions = Effect.fnUntraced(function* (s: State, bytes: number) {
+      if (s.definitionWarned || bytes <= McpCatalog.MCP_DEFINITION_WARN_BYTES) return
+      s.definitionWarned = true
+      yield* Effect.logWarning("MCP tool definitions are large; consider deferred: true", { bytes })
+      yield* events
+        .publish(TuiEvent.ToastShow, {
+          title: "MCP tool definitions are large",
+          message: `set "deferred": true in mcp.json (about ${Math.ceil(bytes / 1024)} KB per request)`,
+          variant: "warning",
+          duration: 8000,
+        })
+        .pipe(Effect.ignore)
+    })
+
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, Tool> = {}
+      let bytes = 0
       const s = yield* InstanceState.get(state)
       const ctx = yield* InstanceState.context
       const { servers: config, error } = s.files(ctx.root)
@@ -842,8 +862,11 @@ export const layer = Layer.effect(
             // Only a deferred server's tools carry the mark; the tool list leaves them out (#1459).
             ...(deferred ? { deferred: true } : {}),
           })
+          // The warning adds up what the tool list keeps; once it is given nothing is added.
+          if (!deferred && !s.definitionWarned) bytes += McpCatalog.definitionBytes(mcpTool)
         }
       }
+      yield* warnLargeDefinitions(s, bytes)
       return result
     })
 

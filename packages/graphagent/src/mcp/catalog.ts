@@ -196,6 +196,14 @@ export function assignToolKeys(pairs: ReadonlyArray<{ server: string; tool: stri
   return keys.map((key, index) => (first.get(key) === index ? key : ""))
 }
 
+/** The bytes of definitions of tools that are not deferred, above which the user is told once (#1459). */
+export const MCP_DEFINITION_WARN_BYTES = 16 * 1024
+
+/** What a tool's definition adds to every request: the bytes of its description and of its input schema as JSON. */
+export function definitionBytes(def: Pick<MCPToolDef, "description" | "inputSchema">): number {
+  return Buffer.byteLength(def.description ?? "") + Buffer.byteLength(JSON.stringify(def.inputSchema))
+}
+
 /**
  * Real identity of a server-provided tool. The model-facing key (`server_tool`) is
  * lossy, so hook consumers must read this binding instead of splitting a key.

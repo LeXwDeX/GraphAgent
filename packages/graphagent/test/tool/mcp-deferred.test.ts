@@ -265,23 +265,26 @@ const builtin = (id: string): ToolEntry => ({
 describe("settle", () => {
   const identity = (schema: JSONSchema7) => schema
   const everything = () => true
+  // `settle` with no limit declared, and only the entries it returns.
+  const settleEntries = (input: Omit<Parameters<typeof McpDeferred.settle>[0], "limits">) =>
+    McpDeferred.settle({ ...input, limits: {} }).entries
 
   test("changes nothing while no entry is deferred: the same entries, in the same order", () => {
     const entries = [builtin("read"), entry("a_one", undefined), entry("a_two", false), builtin("zeta")]
-    const settled = McpDeferred.settle({ entries, visible: everything, transform: identity })
+    const settled = settleEntries({ entries, visible: everything, transform: identity })
     expect(settled).toEqual(entries)
     expect(settled.map((item) => item.id)).toEqual(["read", "a_one", "a_two", "zeta"])
   })
 
   test("keeps only the entries that are visible", () => {
     const entries = [builtin("read"), entry("a_one", undefined), entry("a_two", true)]
-    const settled = McpDeferred.settle({ entries, visible: (id) => id !== "a_one", transform: identity })
+    const settled = settleEntries({ entries, visible: (id) => id !== "a_one", transform: identity })
     expect(settled.map((item) => item.id)).toEqual(["read", "a_two", "mcp_describe", "mcp_call"])
   })
 
   test("keeps deferred entries in place and adds describe, then call, after everything else", () => {
     const entries = [entry("b_two", true), builtin("read"), entry("a_one", true), entry("c_live", undefined)]
-    const settled = McpDeferred.settle({
+    const settled = settleEntries({
       entries: new Map(entries.map((item) => [item.id, item])).values(),
       visible: everything,
       transform: identity,
@@ -311,20 +314,20 @@ describe("settle", () => {
   test("adds no helper when either helper name is not visible, and keeps the deferred entries", () => {
     const entries = [entry("a_one", true), builtin("read")]
     for (const hidden of MCP_DEFERRED_IDS) {
-      const settled = McpDeferred.settle({ entries, visible: (id) => id !== hidden, transform: identity })
+      const settled = settleEntries({ entries, visible: (id) => id !== hidden, transform: identity })
       expect(settled.map((item) => item.id)).toEqual(["a_one", "read"])
     }
   })
 
   test("adds no helper when no deferred entry is visible", () => {
     const entries = [entry("a_one", true), builtin("read")]
-    const settled = McpDeferred.settle({ entries, visible: (id) => id !== "a_one", transform: identity })
+    const settled = settleEntries({ entries, visible: (id) => id !== "a_one", transform: identity })
     expect(settled.map((item) => item.id)).toEqual(["read"])
   })
 
   test("puts the helpers' schemas through the transform, and nothing else", () => {
     const seen: JSONSchema7[] = []
-    const settled = McpDeferred.settle({
+    const settled = settleEntries({
       entries: [entry("a_one", true)],
       visible: everything,
       transform: (schema) => {
@@ -344,7 +347,7 @@ describe("settle", () => {
     const keys = ["m_z", "m_a", "m_m", "m_b"]
     const orders = [keys, [...keys].reverse(), ["m_m", "m_a", "m_z", "m_b"]]
     const catalogs = orders.map((order) => {
-      const settled = McpDeferred.settle({
+      const settled = settleEntries({
         entries: order.map((key) => entry(key, true)),
         visible: everything,
         transform: identity,
@@ -361,7 +364,7 @@ describe("settle", () => {
   })
 
   test("the helpers' parameters: describe takes 1 to 10 names, call a name and optional arguments", () => {
-    const settled = McpDeferred.settle({ entries: [entry("a_one", true)], visible: everything, transform: identity })
+    const settled = settleEntries({ entries: [entry("a_one", true)], visible: everything, transform: identity })
     const schemas = Object.fromEntries(settled.map((item) => [item.id, item.jsonSchema]))
     const describeProps = schemas.mcp_describe.properties as Record<string, JSONSchema7>
     expect(schemas.mcp_describe).toMatchObject({
@@ -377,6 +380,180 @@ describe("settle", () => {
     expect(callProps.arguments).toMatchObject({ type: "object" })
     expect(typeof callProps.tool.description).toBe("string")
     expect(typeof callProps.arguments.description).toBe("string")
+  })
+})
+
+describe("settle with the limits of a model", () => {
+  const identity = (schema: JSONSchema7) => schema
+  const everything = () => true
+  const resource = (id: string): ToolEntry => ({
+    id,
+    source: { kind: "mcp-resource", op: "list", registrationID: `mcp-resource:${id}` },
+    effects: "read",
+    description: id,
+    jsonSchema: { type: "object", properties: {} },
+  })
+  const run = (entries: ToolEntry[], limits: McpDeferred.ToolLimits, visible: (id: string) => boolean = everything) =>
+    McpDeferred.settle({ entries, visible, transform: identity, limits })
+  const deferredOf = (entries: ReadonlyArray<ToolEntry>) =>
+    entries.flatMap((item) => (item.source.kind === "mcp" && item.source.deferred === true ? [item.id] : []))
+  // Three tools that are not MCP tools, `invalid` among them, and one MCP resource tool: three the model is sent.
+  const natives = () => [builtin("invalid"), builtin("read"), builtin("grep"), resource("mcp_list")]
+  const NATIVE = 3
+
+  test("moves nothing and says so while no limit is declared, whatever the tools", () => {
+    const entries = [...natives(), entry("a_" + "x".repeat(80), undefined), entry("b_two", undefined)]
+    for (const limits of [{}, { maxTools: undefined, nameMaxLength: undefined, namePattern: undefined }]) {
+      const settled = run(entries, limits)
+      expect(settled.entries).toEqual(entries)
+      // Not copies: every entry is the one that went in.
+      for (const [index, item] of entries.entries()) expect(settled.entries[index]).toBe(item)
+      expect(settled.moved).toEqual({ byCount: 0, byName: 0 })
+    }
+  })
+
+  test("moves a tool by name as a copy: the entry the caller holds is not changed, and the tool is shared", () => {
+    const long = entry("a_long_name", undefined)
+    const short = entry("a_b", undefined)
+    const settled = run([long, short], { nameMaxLength: 5 })
+    expect(deferredOf(settled.entries)).toEqual(["a_long_name"])
+    expect(settled.moved).toEqual({ byCount: 0, byName: 1 })
+    expect(long.source).not.toHaveProperty("deferred")
+    const moved = settled.entries.find((item) => item.id === "a_long_name")
+    expect(moved).not.toBe(long)
+    expect(moved).toMatchObject({ tool: long.tool, description: long.description, jsonSchema: long.jsonSchema })
+    // The tool that fits is the entry itself.
+    expect(settled.entries.find((item) => item.id === "a_b")).toBe(short)
+  })
+
+  test("keeps a key of exactly nameMaxLength, and checks the pattern as a search, not a full match", () => {
+    expect(
+      deferredOf(run([entry("abcd", undefined), entry("abcde", undefined)], { nameMaxLength: 4 }).entries),
+    ).toEqual(["abcde"])
+    const search = run([entry("x_ok", undefined), entry("x_NO", undefined)], { namePattern: "[a-z]$" })
+    expect(deferredOf(search.entries)).toEqual(["x_NO"])
+    expect(search.moved).toEqual({ byCount: 0, byName: 1 })
+    // Anchors in the pattern are the pattern's own.
+    expect(deferredOf(run([entry("ab", undefined), entry("abc", undefined)], { namePattern: "^ab$" }).entries)).toEqual(
+      ["abc"],
+    )
+  })
+
+  test("takes a pattern that does not compile as none, and an empty one as matching everything", () => {
+    const entries = [entry("a_one", undefined), entry("b_two", undefined)]
+    expect(run(entries, { namePattern: "(" })).toEqual({ entries, moved: { byCount: 0, byName: 0 } })
+    expect(run(entries, { namePattern: "" })).toEqual({ entries, moved: { byCount: 0, byName: 0 } })
+  })
+
+  test("does not count a tool its server deferred as moved, whatever its key", () => {
+    const entries = [entry("a_" + "x".repeat(70), true), entry("b_two", undefined)]
+    const settled = run(entries, { nameMaxLength: 10 })
+    expect(settled.moved).toEqual({ byCount: 0, byName: 0 })
+    expect(deferredOf(settled.entries)).toEqual(["a_" + "x".repeat(70)])
+  })
+
+  test("counts the tools the model is sent: the native ones but `invalid`, the MCP ones that stay, two helpers", () => {
+    const mcp = ["m_a", "m_b", "m_c", "m_d"].map((key) => entry(key, undefined))
+    // NATIVE + 4 MCP tools is NATIVE + 4 tools, and no helper is needed: it fits exactly.
+    expect(run([...natives(), ...mcp], { maxTools: NATIVE + 4 }).moved).toEqual({ byCount: 0, byName: 0 })
+    // One short: the helpers come in, so the room is the limit less the native tools less the two helpers: one tool.
+    const tight = run([...natives(), ...mcp], { maxTools: NATIVE + 3 })
+    expect(deferredOf(tight.entries)).toEqual(["m_b", "m_c", "m_d"])
+    expect(tight.moved).toEqual({ byCount: 3, byName: 0 })
+    // What the model is sent is exactly the limit: the native tools, the one tool and the two helpers.
+    const sent = tight.entries.filter((item) => item.id !== "invalid" && !deferredOf(tight.entries).includes(item.id))
+    expect(sent.map((item) => item.id)).toEqual(["read", "grep", "mcp_list", "m_a", "mcp_describe", "mcp_call"])
+    expect(sent).toHaveLength(NATIVE + 3)
+  })
+
+  test("leaves room for the helpers when a server already deferred a tool", () => {
+    const entries = [
+      ...natives(),
+      entry("m_a", undefined),
+      entry("m_b", undefined),
+      entry("m_c", undefined),
+      entry("d_z", true),
+    ]
+    // Three live tools and two helpers on NATIVE need NATIVE + 5: one short moves one tool, the last by key.
+    const settled = run(entries, { maxTools: NATIVE + 4 })
+    expect(deferredOf(settled.entries)).toEqual(["m_c", "d_z"])
+    expect(settled.moved).toEqual({ byCount: 1, byName: 0 })
+    // At the limit nothing moves.
+    expect(run(entries, { maxTools: NATIVE + 5 }).moved).toEqual({ byCount: 0, byName: 0 })
+  })
+
+  test("a limit that the helpers alone exceed leaves no tool live, and the room never goes negative", () => {
+    const entries = [...natives(), entry("m_a", undefined), entry("m_b", undefined)]
+    for (const maxTools of [NATIVE + 1, NATIVE, 0, -3]) {
+      const settled = run(entries, { maxTools })
+      expect(deferredOf(settled.entries)).toEqual(["m_a", "m_b"])
+      expect(settled.moved).toEqual({ byCount: 2, byName: 0 })
+    }
+  })
+
+  test("keeps the first tools by key whatever order the entries come in", () => {
+    const keys = ["m_e", "m_a", "m_d", "m_c", "m_b"]
+    for (const order of [keys, [...keys].reverse(), ["m_c", "m_e", "m_b", "m_a", "m_d"]]) {
+      // Room for two tools: the limit less the natives less the helpers.
+      const settled = run([...natives(), ...order.map((key) => entry(key, undefined))], { maxTools: NATIVE + 4 })
+      expect(deferredOf(settled.entries).toSorted()).toEqual(["m_c", "m_d", "m_e"])
+      expect(settled.moved).toEqual({ byCount: 3, byName: 0 })
+    }
+  })
+
+  test("moves by name before it counts, and reports the two apart", () => {
+    const entries = [...natives(), entry("m_a", undefined), entry("m_b", undefined), entry("m_long_name", undefined)]
+    // The name moves one tool; m_a, m_b and the helpers then fit NATIVE + 4.
+    const fits = run(entries, { nameMaxLength: 4, maxTools: NATIVE + 4 })
+    expect(fits.moved).toEqual({ byCount: 0, byName: 1 })
+    expect(deferredOf(fits.entries)).toEqual(["m_long_name"])
+    // One tool fewer allowed: the count moves the later of the two that are left.
+    const tighter = run(entries, { nameMaxLength: 4, maxTools: NATIVE + 3 })
+    expect(tighter.moved).toEqual({ byCount: 1, byName: 1 })
+    expect(deferredOf(tighter.entries)).toEqual(["m_b", "m_long_name"])
+  })
+
+  test("moves nothing when either helper name is not visible, and says so", () => {
+    const entries = [...natives(), entry("m_a", undefined), entry("m_long_name", undefined)]
+    for (const hidden of MCP_DEFERRED_IDS) {
+      const settled = run(entries, { nameMaxLength: 3, maxTools: 1 }, (id) => id !== hidden)
+      expect(settled.entries).toEqual(entries)
+      expect(settled.moved).toEqual({ byCount: 0, byName: 0 })
+    }
+  })
+
+  test("counts only the tools that are visible", () => {
+    const entries = [...natives(), entry("m_a", undefined), entry("m_b", undefined), entry("m_c", undefined)]
+    // Three tools do not fit NATIVE + 2 once the helpers are counted; with one of them hidden the two left fit.
+    expect(run(entries, { maxTools: NATIVE + 2 }).moved).toEqual({ byCount: 3, byName: 0 })
+    const settled = run(entries, { maxTools: NATIVE + 2 }, (id) => id !== "m_c")
+    expect(settled.moved).toEqual({ byCount: 0, byName: 0 })
+    expect(settled.entries.map((item) => item.id)).toEqual(["invalid", "read", "grep", "mcp_list", "m_a", "m_b"])
+  })
+
+  test("adds the helpers once the limits made a catalog, with the moved tools in it", () => {
+    const entries = [...natives(), entry("m_a", undefined), entry("m_long_name", undefined)]
+    const settled = run(entries, { nameMaxLength: 4 })
+    expect(settled.entries.slice(-2).map((item) => item.id)).toEqual(["mcp_describe", "mcp_call"])
+    expect(settled.entries.find((item) => item.id === "mcp_describe")?.description).toBe(
+      [
+        "Read the input schema of deferred MCP tools before calling them with mcp_call.",
+        "Deferred tools:",
+        "- m_long_name: remote m_long_name",
+      ].join("\n"),
+    )
+    // A limit nothing breaks adds no helper.
+    expect(run(entries, { nameMaxLength: 20 }).entries.map((item) => item.id)).toEqual(entries.map((item) => item.id))
+  })
+})
+
+describe("movedNotice", () => {
+  test("names the number moved and the model, one tool in the singular", () => {
+    expect(McpDeferred.movedNotice(3, "acme/model-x")).toEqual({
+      title: "MCP tools moved to the deferred catalog",
+      message: "3 tools do not fit the limits of acme/model-x",
+    })
+    expect(McpDeferred.movedNotice(1, "acme/model-x").message).toBe("1 tool does not fit the limits of acme/model-x")
   })
 })
 
@@ -436,6 +613,8 @@ const DEFERRED_KEYS = new Set(["srv_lookup", "srv_guarded", REWRITTEN, "srv_blan
 // `resolve` wraps server tools in place, so each case needs fresh instances.
 let mcpTools: Record<string, ReturnType<typeof makeMcp>> = {}
 let deferredKeys = DEFERRED_KEYS
+// The limits of the model the registry stand-in below settles the entries under.
+let toolLimits: McpDeferred.ToolLimits = {}
 // The provider's rewrite of a schema; the registry applies it to the entries it returns.
 let rewrite: (schema: JSONSchema7) => JSONSchema7 = (schema) => schema
 
@@ -447,7 +626,8 @@ const resolvedEntries = () =>
     ),
     visible: () => true,
     transform: (schema) => rewrite(schema),
-  })
+    limits: toolLimits,
+  }).entries
 
 const model = ProviderTest.model()
 const it = testEffect(
@@ -502,7 +682,12 @@ const recordingHooks: SettingsHook.Interface = {
 /** The tools of one session as the model's runtime would run them, wrapped by the real pipeline. */
 const resolveTools = (
   rules: ReadonlyArray<PermissionV1.Rule> = ALLOW_ALL,
-  options: { hooks?: SettingsHook.Interface; keys?: Set<string>; rewrite?: (schema: JSONSchema7) => JSONSchema7 } = {},
+  options: {
+    hooks?: SettingsHook.Interface
+    keys?: Set<string>
+    rewrite?: (schema: JSONSchema7) => JSONSchema7
+    limits?: McpDeferred.ToolLimits
+  } = {},
 ) =>
   Effect.gen(function* () {
     const instance = yield* TestInstance
@@ -513,6 +698,7 @@ const resolveTools = (
     seen.recorded = new Map()
     deferredKeys = options.keys ?? DEFERRED_KEYS
     rewrite = options.rewrite ?? ((schema) => schema)
+    toolLimits = options.limits ?? {}
     mcpTools = {
       srv_lookup: makeMcp("lookup", {
         description: "Look things up in the index. Second sentence.",
@@ -589,6 +775,22 @@ describe("the tool list a deferred server leaves", () => {
     Effect.gen(function* () {
       const tools = yield* resolveTools()
       expect(Object.keys(tools).toSorted()).toEqual(["mcp_call", "mcp_describe", "srv_live"])
+    }),
+  )
+
+  it.instance("holds a tool that a limit of the model moved into the catalog out of the list, and reaches it", () =>
+    Effect.gen(function* () {
+      // No server is deferred; the keys longer than 8 characters do not fit the model, `srv_live` and `srv_open` do.
+      const tools = yield* resolveTools(ALLOW_ALL, { keys: new Set(), limits: { nameMaxLength: 8 } })
+      expect(Object.keys(tools).toSorted()).toEqual(["mcp_call", "mcp_describe", "srv_live", "srv_open"])
+
+      const described = yield* attempt(tools, "mcp_describe", { tools: ["srv_lookup"] })
+      expect(described.ok && described.value.output).toContain("Look things up in the index.")
+      const called = yield* attempt(tools, "mcp_call", { tool: "srv_lookup", arguments: { query: "x" } })
+      expect(called.ok && called.value.output).toBe('RAN lookup {"query":"x"}')
+      // A tool that stayed is called as it always was.
+      const direct = yield* attempt(tools, "srv_live", {})
+      expect(direct.ok && direct.value.output).toBe("RAN live {}")
     }),
   )
 
