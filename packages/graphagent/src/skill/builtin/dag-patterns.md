@@ -87,11 +87,9 @@ config:
     - { id: deep-dive, name: deep-dive, worker_type: auditor, depends_on: [arbitrate], condition: 'arbitrate.output.verdict != "ACCEPT"', report_to_parent: true, prompt_template: { inline: "Verify each required action against the code and produce a corrected action plan." } }
 ```
 
-Every node here is an `auditor`, and auditors always take the `advanced`
-tier, reviewers included; `required` sets only failure semantics (the
-arbiter's failure fails the workflow, a reviewer's does not). On ACCEPT the conditioned `deep-dive` is skipped;
-otherwise it runs with the arbiter's findings, so a non-ACCEPT outcome never
-silently terminalizes the graph.
+Auditors always take the `advanced` tier; `required` sets only failure
+semantics. On ACCEPT `deep-dive` is skipped; otherwise it runs with the
+arbiter's findings, so a non-ACCEPT outcome never silently ends the graph.
 
 ## 4. Diverge-converge
 
