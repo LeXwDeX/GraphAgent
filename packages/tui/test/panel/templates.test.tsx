@@ -11,6 +11,7 @@ import { ListPanel, type ListItem } from "../../src/panel/list"
 import { PanelShell } from "../../src/panel/shell"
 import { SettingsPanel, type SettingRow, type SettingsTab } from "../../src/panel/settings"
 import { DEFAULT_THEME } from "../../src/context/theme"
+import { useBindings } from "../../src/keymap"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth } from "../../src/ui/width"
 import { readFrame, readSpans } from "../fixture/frames"
@@ -153,7 +154,7 @@ test("list panel renders the three-segment surface at 80x24", async () => {
     expect(top).toBeGreaterThanOrEqual(0)
     expect(bottom).toBeGreaterThan(top)
     expect(lines[top + 1]).toContain("选择主题")
-    expect(lines[bottom - 1]).toContain("上移")
+    expect(lines[bottom - 1]).toContain("up/down 选择")
     expect(lines[bottom - 1]).toContain("关闭")
     const content = lines.slice(top + 2, bottom - 1).join("\n")
     expect(content).toContain("浅色主题")
@@ -1171,10 +1172,10 @@ test("a read-only row can be selected to read its note, and key and click do not
   try {
     for (const label of ["只读选择", "只读开关", "只读文字", "只读动作"]) {
       const frame = await selectRow(app, label)
-      // The hints offer no change, selection, edit or submit for it, and the row has no hint to cycle.
+      // The hints offer no change, confirmation, edit or submit for it, and the row has no hint to cycle.
       const hints = frameLines(frame)[borderIndex(frameLines(frame), "╰") - 1]
       expect(hints).toContain("关闭")
-      for (const verb of ["修改", "选择", "编辑", "提交"]) expect(hints).not.toContain(verb)
+      for (const verb of ["修改", "确认", "编辑", "提交"]) expect(hints).not.toContain(verb)
       expect(rowWith(frame, label)).not.toContain("换一个")
 
       app.mockInput.pressEnter()
@@ -1353,6 +1354,131 @@ test("detail panel selects rows and activates them", async () => {
     await Bun.sleep(20)
     expect(selects).toEqual(["state"])
     expect(activates).toEqual(["state"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+function tabbedDetailPanel() {
+  return (
+    <DetailPanel
+      title="会话详情"
+      command="/status"
+      tabs={[
+        { id: "overview", label: "概览" },
+        { id: "history", label: "历史" },
+      ]}
+      activeTab="overview"
+      onTab={() => {}}
+      summary={<text>进度 2/5</text>}
+      rows={detailRows}
+      onActivate={() => {}}
+      hints={[]}
+    />
+  )
+}
+
+/** The hint row of the panel: the text on the line above the bottom border, between the border and the padding. */
+function hintRowOf(frame: string) {
+  const lines = frameLines(frame)
+  return lines[borderIndex(lines, "╰") - 1].slice(1, -1).trim()
+}
+
+/**
+ * What the hint row of each template says: the two arrow keys of the rows are one entry whatever the language, the two
+ * of the tabs are one entry on the settings and detail panels, and the list has the one key of its tab hint. The first
+ * row of each is selected, so the settings panel offers to change it.
+ */
+const HINT_ROWS = {
+  "zh-CN": {
+    settings: "up/down 选择 · left/right 切换标签 · enter 修改 · escape 关闭",
+    detail: "up/down 选择 · left/right 切换标签 · enter 确认 · escape 关闭",
+    list: "up/down 选择 · tab 切换标签 · enter 确认 · escape 关闭",
+  },
+  en: {
+    settings: "up/down Select · left/right Switch tab · enter Change · escape Close",
+    detail: "up/down Select · left/right Switch tab · enter Confirm · escape Close",
+    list: "up/down Select · tab Switch tab · enter Confirm · escape Close",
+  },
+} as const
+
+const HINT_TEMPLATES = {
+  settings: () => settingsPanel(),
+  detail: () => tabbedDetailPanel(),
+  list: () => listPanel(),
+} as const
+
+for (const language of ["zh-CN", "en"] as const) {
+  for (const template of ["settings", "detail", "list"] as const) {
+    test(`the hint row of the ${template} panel pairs the arrow keys, ${language}`, async () => {
+      setLanguage(language)
+      await using tmp = await shellState()
+      const app = await renderPanel(() => <PanelSurface spec={{ render: HINT_TEMPLATES[template] }} />, {
+        width: 80,
+        height: 24,
+        state: tmp.path,
+      })
+
+      try {
+        const frame = await untilFrame(app, (value) => value.includes("╰"))
+        expect(hintRowOf(frame)).toBe(HINT_ROWS[language][template])
+        expect(frame).toMatchSnapshot()
+      } finally {
+        app.renderer.destroy()
+      }
+    })
+
+    for (const ambiguousWidth of [1, 2] as const) {
+      test(`the hint row of the ${template} panel fits 80 columns whole, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        setLanguage(language)
+        await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+        const app = await renderPanel(() => <PanelSurface spec={{ render: HINT_TEMPLATES[template] }} />, {
+          width: 80,
+          height: 24,
+          state: tmp.path,
+        })
+
+        try {
+          const row = hintRowOf(await untilFrame(app, (value) => value.includes("╰")))
+          // Whole: nothing cut off with an ellipsis, so the way out is still there at its end.
+          expect(row).not.toContain("…")
+          expect(row).toEndWith(language === "en" ? "Close" : "关闭")
+          expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(80 - 4)
+        } finally {
+          app.renderer.destroy()
+        }
+      })
+    }
+  }
+}
+
+/** A second key for the command of the next row, as a user's binding would be. */
+function ExtraNextKey() {
+  useBindings(() => ({ commands: [], bindings: [{ key: "ctrl+n", cmd: "panel.next" }] }))
+  return null
+}
+
+test("a next-row command with a key besides down leaves the arrow keys as two entries on the settings panel", async () => {
+  await using tmp = await shellState()
+  const app = await renderPanel(
+    () => (
+      <PanelSurface
+        spec={{
+          render: () => (
+            <>
+              <ExtraNextKey />
+              {settingsPanel()}
+            </>
+          ),
+        }}
+      />
+    ),
+    { width: 120, height: 40, state: tmp.path },
+  )
+
+  try {
+    const row = hintRowOf(await untilFrame(app, (value) => value.includes("╰")))
+    expect(row).toBe("up 选择 · ctrl+n, down 选择 · left/right 切换标签 · enter 修改 · escape 关闭")
   } finally {
     app.renderer.destroy()
   }

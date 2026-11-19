@@ -273,7 +273,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 只能基于 `PanelShell` 的三个模板之一：`ListPanel`（选择）、`SettingsPanel`（设置行）、`DetailPanel`（只读详情、单行输入、汇总加行表）。需要第四种模板时，先停下提出（F3 5.4 明确不新增）。
 - 面板栈最深 3 层；`esc` 返回上一层；`ctrl+c` 关闭全部。打开时保存焦点，关闭时还原，输入框草稿保留。
 - 挂载时注册一次带 `enabled` 函数的 layer，卸载时注销；不得因面板开合重新注册全局 layer。面板的数据源只在打开时创建 memo，关闭期间不订阅。
-- 按键提示由各模板 `hints` 加 `PanelHost` 通用项生成，key 取自 keymap（`formatKeyBindings`），不写死按键名。
+- 按键提示由各模板 `hints` 加 `PanelHost` 通用项生成，key 取自 keymap（`formatKeyBindings`），不写死按键名。一对相反方向的命令写成一条 `PanelHint`（`key` 加 `also`），两边各只绑一个裸方向键且成对（上下、左右）时合成一条（`↑↓ 选择`），否则退回两条同标签的提示（`shell.tsx` 的 `hintEntries`）。
 - 单字母动作键只在没有过滤输入框的 `DetailPanel` 里启用。有过滤输入的 `ListPanel` 动作用 `ctrl+<key>`，且不用 leader `ctrl+x`；其标签只用 `tab`/`shift+tab` 切换，`left`/`right` 留给过滤框光标。
 - 内容区超过 `maxRows` 在区内滚动；窄终端（< 100 列）先隐藏 `command` 与标签次要信息。警示类用 `tone="warning"` 与 `borderWarning`。
 - 破坏性确认、二选一不做面板，用询问区的 `confirm`/`choice` 变体。
