@@ -424,7 +424,7 @@ const trustRoot = Effect.fnUntraced(function* (projectText: string) {
     project: { id: Project.ID.global, worktree: root, time: { created: 0, updated: 0 }, sandboxes: [] },
   }
   const inInstance = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(InstanceRef, ctx))
-  return { file, mcp: Context.get(services, MCP.Service), inInstance }
+  return { file, mcp: Context.get(services, MCP.Service), trust: Context.get(services, ProjectTrust.Service), inInstance }
 })
 
 trustIt.live("a refused project server stays refused after its mcp.json becomes unreadable", () =>
@@ -456,6 +456,35 @@ trustIt.live("a skipped project mcp.json does not gate the user-layer server of 
     getOrCreateClientState("shared")
     expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
     expect(clientCreateCount).toBe(1)
+  }),
+)
+
+trustIt.live("revoking a project entry that a later connect started closes it", () =>
+  Effect.gen(function* () {
+    yield* userLayer(JSON.stringify({ mcpServers: { shared: { type: "local", command: ["echo", "user"] } } }))
+    const { file, mcp, trust, inInstance } = yield* trustRoot(JSON.stringify({ mcpServers: {} }))
+    lastCreatedClientName = "shared"
+    const serverState = getOrCreateClientState("shared")
+    expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
+
+    // The project now overrides `shared`; the startup configuration did not have that entry.
+    yield* Effect.promise(() =>
+      fs.writeFile(file, JSON.stringify({ mcpServers: { shared: { type: "local", command: ["echo", "project"] } } })),
+    )
+    const entries = yield* inInstance(trust.list())
+    expect(entries.map((entry) => entry.category)).toEqual(["mcp"])
+    yield* inInstance(trust.decide([{ id: entries[0].id, state: "trusted" }]))
+    yield* inInstance(mcp.connect("shared"))
+    expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
+
+    yield* inInstance(trust.decide([{ id: entries[0].id, state: "revoked" }]))
+    yield* inInstance(
+      pollWithTimeout(
+        mcp.status().pipe(Effect.map((status) => (status["shared"]?.status === "disabled" ? true : undefined))),
+        "revocation did not stop the project entry that connect started",
+      ),
+    )
+    expect(serverState.closed).toBe(true)
   }),
 )
 

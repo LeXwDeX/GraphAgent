@@ -665,8 +665,13 @@ export const layer = Layer.effect(
         // A trust decision changes the gate output without touching mcp.json,
         // so the state must react on its own: newly trusted servers start,
         // revoked ones are closed. A manual disconnect wins over a later grant.
+        // Verdicts follow the configuration as it is now, with its provenance (the cached document while the file
+        // cannot be read), so a project entry that a later `connect` started is closed when its trust is revoked.
+        // The names are those of the startup configuration and of every running client.
         const reconcile = Effect.fnUntraced(function* () {
-          const next = yield* projectVerdicts(project, Object.keys(config))
+          const current = yield* configured(s, ctx.root)
+          const names = [...new Set([...Object.keys(config), ...Object.keys(s.clients)])]
+          const next = yield* projectVerdicts(current.project, names)
           for (const [name, allowed] of next) {
             if (!allowed) {
               const client = s.clients[name]
@@ -677,7 +682,8 @@ export const layer = Layer.effect(
             if (s.manualDisabled.has(name)) continue
             if (s.clients[name]) continue
             if (s.status[name]?.status === "connected" || s.status[name]?.status === "needs_auth") continue
-            const mcp = config[name]
+            const mcp = current.servers[name] ?? config[name]
+            if (!mcp) continue
             const result = yield* create(name, mcp)
             if (!result.mcpClient) {
               s.status[name] = result.status
