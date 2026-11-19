@@ -7,6 +7,7 @@
  * harness the matrix stands on. No host starts and no model is called; `replay.test.ts` plays the scenarios.
  */
 
+import { buildPrompt } from "@graphagent/core/session/compaction-prompt"
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -40,7 +41,7 @@ import {
   type Cell,
   type Verdict,
 } from "./report"
-import { callsOf, caseKey, familiesOf, lastReply, runScenario, scrubber, scriptOf, tokensOf } from "./runner"
+import { callsOf, caseKey, familiesOf, lastReply, runScenario, scrubber, scriptOf, summaryOf, tokensOf } from "./runner"
 import { brokenCells, defaultOutPrefix, exitCodeOf, insideRepo, parseOptions } from "./run"
 import { SCENARIOS } from "./scenarios"
 import {
@@ -50,8 +51,10 @@ import {
   STEPS,
   TURN_TIMEOUT_MS,
   type Call,
+  type Reply,
   type RunView,
   type Scenario,
+  type ScriptFamily,
 } from "./types"
 
 const REPO = path.resolve(import.meta.dir, "../../../../..")
@@ -82,8 +85,22 @@ describe("constants", () => {
   })
 })
 
+const FILE_IDS = [
+  "file.create",
+  "file.edit",
+  "file.edit.ambiguous",
+  "file.overwrite",
+  "file.patch.multi",
+  "file.patch.stale",
+]
+const COMPACTION_IDS = ["compaction.constraint", "compaction.paths", "compaction.todo"]
+
+/** The tools a script's calls name, in order. */
+const toolsOf = (replies: readonly Reply[]): string[] =>
+  replies.flatMap((reply) => ("calls" in reply ? reply.calls.map((item) => item.name) : []))
+
 describe("scenario catalogue", () => {
-  test("holds the 11 read, glob, grep and bash scenarios, each once", () => {
+  test("holds the 26 scenarios, each once, in the order of the report", () => {
     expect(SCENARIOS.map((item) => item.id)).toEqual([
       "read.call",
       "read.recover",
@@ -96,18 +113,69 @@ describe("scenario catalogue", () => {
       "bash.call",
       "bash.recover",
       "bash.continue",
+      ...FILE_IDS,
+      "todowrite.call",
+      "todowrite.update",
+      "task.call",
+      "task.result",
+      "skill.call",
+      "skill.recover",
+      ...COMPACTION_IDS,
     ])
   })
 
-  test("every scenario has a prompt, a script that ends in text, and replays as the default family only", () => {
+  test("every scenario has a script that ends in text, and a prompt unless it is a compaction scenario", () => {
     for (const item of SCENARIOS) {
-      expect(item.prompt.length).toBeGreaterThan(0)
       expect(item.prompt).not.toContain("[case")
       const replies = item.scripts.default.replies
       expect(replies.length).toBeGreaterThan(1)
       expect(replies.at(-1)).toHaveProperty("text")
-      expect(familiesOf(item)).toEqual(["default"])
+      if (item.setup) expect(item.prompt).toBe("")
+      else expect(item.prompt.length).toBeGreaterThan(0)
     }
+  })
+
+  test("only the file scenarios replay a second time, as the apply_patch family", () => {
+    for (const item of SCENARIOS) {
+      expect(familiesOf(item)).toEqual(FILE_IDS.includes(item.id) ? ["default", "apply_patch"] : ["default"])
+    }
+    expect(SCENARIOS.flatMap((item) => familiesOf(item))).toHaveLength(26 + FILE_IDS.length)
+  })
+
+  test("the apply_patch scripts write with apply_patch alone and check its receipt; the default ones never use it", () => {
+    for (const id of FILE_IDS) {
+      const patched = scriptOf(scenario(id), "apply_patch")
+      const tools = toolsOf(patched.replies)
+      expect(tools).toContain("apply_patch")
+      expect(tools).not.toContain("write")
+      expect(tools).not.toContain("edit")
+      expect((patched.contract ?? []).map((entry) => entry.tool)).toEqual(["apply_patch"])
+      const plain = scriptOf(scenario(id), "default")
+      expect(toolsOf(plain.replies)).not.toContain("apply_patch")
+      // Each write tool of the default script has a receipt to check.
+      const writers = [...new Set(toolsOf(plain.replies).filter((tool) => tool === "write" || tool === "edit"))]
+      expect((plain.contract ?? []).map((entry) => entry.tool).sort()).toEqual(writers.sort())
+    }
+  })
+
+  test("the traps are where the Issue puts them", () => {
+    expect(scriptOf(scenario("file.edit.ambiguous"), "default").trap).toEqual({ call: 0, includes: [] })
+    expect(scriptOf(scenario("file.edit.ambiguous"), "apply_patch").trap).toBeUndefined()
+    const families: ScriptFamily[] = ["default", "apply_patch"]
+    for (const family of families) {
+      expect(scriptOf(scenario("file.overwrite"), family).trap).toEqual({
+        call: 0,
+        includes: ["was not read in this session"],
+      })
+    }
+    expect(scriptOf(scenario("todowrite.update"), "default").trap).toEqual({
+      call: 1,
+      includes: ["The todowrite tool was called with invalid arguments: ", '"in_progress"'],
+    })
+    expect(scriptOf(scenario("skill.recover"), "default").trap).toEqual({
+      call: 0,
+      includes: ["Available skills:", "release-notes"],
+    })
   })
 
   test("an empty run fails every judge", () => {
@@ -138,6 +206,83 @@ describe("scenario catalogue", () => {
     expect(counts).toEqual([33, 33, 33, 33, 33, 33, 33, 33, 34, 34, 34, 34])
     expect(counts.reduce((sum, count) => sum + count, 0)).toBe(400)
     expect(scenario("bash.continue").files["scripts/gen.sh"]).toContain("NEEDLE-4417")
+  })
+
+  test("the file, task, skill and todo fixtures are what the table says", () => {
+    expect(scenario("file.create").files).toEqual({ "src/index.ts": "export {}\n" })
+    expect(scenario("file.edit").files).toEqual({
+      "src/limits.ts": "export const MAX_RETRIES = 3\nexport const TIMEOUT = 1000\n",
+    })
+    const net = scenario("file.edit.ambiguous").files["src/net.ts"] ?? ""
+    expect(net.match(/^ {2}const retries = 3$/gm)).toHaveLength(2)
+    expect(net.indexOf("export function connect() {")).toBeLessThan(net.indexOf("export function upload() {"))
+    expect(JSON.parse(scenario("file.overwrite").files["config.json"] ?? "")).toEqual({ mode: "dev", retries: 1 })
+    expect(scenario("file.patch.multi").files).toEqual({ "src/a.ts": "export const A = 1\n" })
+    const price = scenario("file.patch.stale").files["src/price.ts"] ?? ""
+    expect(price).toContain("function totalPrice(items")
+    expect(price).toContain("reduce((sum, n) => sum + n, 0)")
+    expect(price).not.toContain("sumPrices")
+    expect(scenario("todowrite.call").files).toEqual({})
+    expect(scenario("todowrite.update").files).toEqual({})
+    expect(scenario("task.call").files).toEqual({ "notes/secret.txt": "The launch code is ORCHID-5521.\n" })
+    expect(scenario("task.result").files).toEqual(scenario("task.call").files)
+    const skill = scenario("skill.call").files[".agents/skills/release-notes/SKILL.md"] ?? ""
+    expect(skill.startsWith("---\nname: release-notes\ndescription: Release checklist\n---\n")).toBe(true)
+    expect(skill).toContain("reply with exactly: CHECKLIST-7Q2 tag, notes, publish")
+    expect(scenario("skill.recover").files).toEqual(scenario("skill.call").files)
+  })
+
+  test("the prompts are the Issue's words, with a case marker added only by the replay tier", () => {
+    expect(scenario("file.create").prompt).toBe(
+      'Create src/greet.ts containing exactly this one line: export const greeting = "hello"',
+    )
+    expect(scenario("file.overwrite").prompt).toBe(
+      'Replace the whole content of config.json with this single line: {"mode":"prod","retries":3}',
+    )
+    expect(scenario("todowrite.call").prompt).toBe(
+      'Use the todowrite tool to record exactly these 3 todos, all with status pending: "write tests", "update docs", "tag release".',
+    )
+    expect(scenario("todowrite.update").prompt).toBe(
+      'Use the todowrite tool twice. First record 3 pending todos: "write tests", "update docs", "tag release". Then record the full list again with "update docs" completed and a new pending todo "announce".',
+    )
+  })
+
+  test("a task scenario's subagent answers under the case marker its parent's call ends with", () => {
+    for (const id of ["task.call", "task.result"]) {
+      const item = scenario(id)
+      const [first] = item.scripts.default.replies
+      const input = first && "calls" in first ? first.calls[0]?.input : undefined
+      expect(isRecord(input) ? input.subagent_type : undefined).toBe("explore")
+      expect(isRecord(input) ? input.prompt : undefined).toEndWith(`\n[case ${id}.child]`)
+      expect(toolsOf(item.child ?? [])).toEqual(["read"])
+      expect(item.child?.at(-1)).toHaveProperty("text")
+    }
+    expect(SCENARIOS.filter((item) => item.child !== undefined).map((item) => item.id)).toEqual([
+      "task.call",
+      "task.result",
+    ])
+  })
+
+  test("the compaction scenarios' messages are answered noted, and the replay summary has the template's sections", () => {
+    const sections = (text: string) => text.split("\n").filter((line) => /^#{2,3} /.test(line))
+    // The instruction mentions the tag in a sentence before the template itself, which starts on a line of its own.
+    const template = /\n<template>\n([\s\S]*?)\n<\/template>/.exec(buildPrompt({ context: [] }))?.[1] ?? ""
+    expect(sections(template)).toHaveLength(10)
+    for (const id of COMPACTION_IDS) {
+      const item = scenario(id)
+      const setup = item.setup ?? []
+      const replies = item.scripts.default.replies
+      expect(setup).toHaveLength(2)
+      for (const message of setup) expect(message).toEndWith('Reply "noted".')
+      expect(replies.slice(0, setup.length)).toEqual(setup.map(() => ({ text: "noted" })))
+      expect(replies).toHaveLength(setup.length + 1)
+      const last = replies.at(-1)
+      const summary = last && "text" in last ? last.text : ""
+      // The sections of the template, in its order, each with a bullet; the compaction asks for no less.
+      expect(sections(summary)).toEqual(sections(template))
+      expect(summary.split("\n").filter((line) => line.startsWith("- ")).length).toBeGreaterThanOrEqual(10)
+      expect(summary.split("\n").slice(0, 2)).toEqual(["## Goal", expect.stringMatching(/^- \S/)])
+    }
   })
 
   test("the case markers keep the apply_patch family apart", () => {
@@ -181,6 +326,238 @@ describe("judges", () => {
     expect(missing).toEqual(["files: config.toml missing"])
     const stuck = recover.judge(view({ calls: calls.slice(0, 1), files: { "config.toml": "" }, reply: "build ok" }))
     expect(stuck).toEqual(['calls: last completed build.sh run lacks "build ok"'])
+  })
+
+  const files = (patch: Record<string, string>) => view({ files: patch })
+
+  test("file.create wants the one line, whitespace around it apart", () => {
+    const create = scenario("file.create")
+    expect(create.judge(files({ "src/greet.ts": '  export const greeting = "hello"\n\n' }))).toEqual([])
+    expect(create.judge(files({ "src/greet.ts": 'export const greeting = "hi"\n' }))).toHaveLength(1)
+    expect(create.judge(files({ "src/index.ts": "export {}\n" }))).toEqual(["files: src/greet.ts missing"])
+  })
+
+  test("file.edit wants exactly the two lines, whatever the line ending", () => {
+    const edit = scenario("file.edit")
+    const limits = (text: string) => files({ "src/limits.ts": text })
+    expect(edit.judge(limits("export const MAX_RETRIES = 5\nexport const TIMEOUT = 1000\n"))).toEqual([])
+    expect(edit.judge(limits("export const MAX_RETRIES = 5\r\nexport const TIMEOUT = 1000"))).toEqual([])
+    expect(edit.judge(limits("export const MAX_RETRIES = 5\nexport const TIMEOUT = 2000\n"))).toHaveLength(1)
+    expect(edit.judge(limits("export const MAX_RETRIES = 5\n"))[0]).toContain("expected")
+    expect(edit.judge(limits("export const MAX_RETRIES = 3\nexport const TIMEOUT = 1000\n"))).toHaveLength(1)
+    expect(edit.judge(view({}))).toEqual(["files: src/limits.ts missing"])
+  })
+
+  test("file.edit.ambiguous wants upload changed, connect kept and no other line moved", () => {
+    const ambiguous = scenario("file.edit.ambiguous")
+    const before = ambiguous.files["src/net.ts"] ?? ""
+    const upload = "export function upload() {\n  const retries = "
+    const net = (text: string) => files({ "src/net.ts": text })
+    expect(ambiguous.judge(net(before.replace(`${upload}3`, `${upload}5`)))).toEqual([])
+    // The edit that matched both lines, replaced everywhere: connect changed too.
+    expect(ambiguous.judge(net(before.replaceAll("const retries = 3", "const retries = 5")))).toEqual([
+      'files: connect no longer has "const retries = 3"',
+    ])
+    expect(ambiguous.judge(net(before))).toEqual(['files: upload lacks "const retries = 5"'])
+    expect(ambiguous.judge(net(`${before.replace(`${upload}3`, `${upload}5`)}export const EXTRA = 1\n`))).toEqual([
+      "files: src/net.ts changed outside its retries lines",
+    ])
+    expect(ambiguous.judge(net("export const nothing = 1\n"))).toContain(
+      'files: src/net.ts lost "export function upload() {"',
+    )
+    expect(ambiguous.judge(view({}))).toEqual(["files: src/net.ts missing"])
+  })
+
+  test("file.overwrite wants the JSON of the new content, however it is written", () => {
+    const overwrite = scenario("file.overwrite")
+    const config = (text: string) => files({ "config.json": text })
+    expect(overwrite.judge(config('{"mode":"prod","retries":3}\n'))).toEqual([])
+    expect(overwrite.judge(config('{ "retries": 3,\n  "mode": "prod" }'))).toEqual([])
+    expect(overwrite.judge(config('{"mode":"prod","retries":"3"}'))).toEqual([
+      'files: config.json holds {"mode":"prod","retries":"3"}, expected {"mode":"prod","retries":3}',
+    ])
+    expect(overwrite.judge(config('{"mode":"prod","retries":3,"debug":true}'))).toHaveLength(1)
+    expect(overwrite.judge(config('{"mode":"dev","retries":1}'))).toHaveLength(1)
+    expect(overwrite.judge(config("mode=prod"))).toEqual(["files: config.json is not valid JSON"])
+    expect(overwrite.judge(view({}))).toEqual(["files: config.json missing"])
+  })
+
+  test("file.patch.multi wants both files as asked", () => {
+    const multi = scenario("file.patch.multi")
+    const both = { "src/b.ts": "export const B = 2\n", "src/a.ts": "export const A = 10\n" }
+    expect(multi.judge(files(both))).toEqual([])
+    expect(multi.judge(files({ "src/a.ts": both["src/a.ts"] }))).toEqual(["files: src/b.ts missing"])
+    const unchanged = multi.judge(files({ ...both, "src/a.ts": "export const A = 1\n" }))
+    expect(unchanged).toEqual(['files: src/a.ts is not "export const A = 10"'])
+  })
+
+  test("file.patch.stale wants the clamp, the name kept, and a look at the file before the first write", () => {
+    const stale = scenario("file.patch.stale")
+    const fixed = (scenario("file.patch.stale").files["src/price.ts"] ?? "").replace("sum + n", "sum + Math.max(n, 0)")
+    const price = files({ "src/price.ts": fixed })
+    const look = (tool: string, input: Record<string, unknown>, status: Call["status"] = "completed"): Call => ({
+      ...(status === "completed" ? done(tool) : failed(tool)),
+      input,
+    })
+    const read = look("read", { filePath: "src/price.ts" })
+    expect(stale.judge({ ...price, calls: [read, done("edit")] })).toEqual([])
+    // A search or a shell command that names the file is a look too.
+    expect(
+      stale.judge({ ...price, calls: [look("grep", { pattern: "reduce", path: "src/price.ts" }), done("write")] }),
+    ).toEqual([])
+    expect(
+      stale.judge({ ...price, calls: [look("bash", { command: "cat src/price.ts" }), done("apply_patch")] }),
+    ).toEqual([])
+    // Only a write that completed is the first write; a failed one before the look changes nothing.
+    expect(stale.judge({ ...price, calls: [failed("edit"), read, done("edit")] })).toEqual([])
+    const blind = ["calls: no read, grep or bash of price.ts before the first write"]
+    expect(stale.judge({ ...price, calls: [done("edit"), read] })).toEqual(blind)
+    expect(
+      stale.judge({ ...price, calls: [look("read", { filePath: "src/price.ts" }, "error"), done("edit")] }),
+    ).toEqual(blind)
+    expect(stale.judge({ ...price, calls: [look("read", { filePath: "src/other.ts" }), done("edit")] })).toEqual(blind)
+    // No write tool at all: the file can still have been changed by the shell.
+    expect(stale.judge({ ...price, calls: [look("bash", { command: "sed -i s/x/y/ src/price.ts" })] })).toEqual([])
+    expect(
+      stale.judge({
+        ...files({ "src/price.ts": fixed.replace("totalPrice", "sumPrices") }),
+        calls: [read, done("edit")],
+      }),
+    ).toEqual(['files: src/price.ts lost "totalPrice"'])
+    expect(stale.judge({ ...files({ "src/price.ts": "export const x = 1\n" }), calls: [read, done("edit")] })).toEqual([
+      'files: src/price.ts lacks "Math.max("',
+      'files: src/price.ts lost "totalPrice"',
+    ])
+  })
+
+  test("todowrite wants exactly the items asked for, in any order, each once, and says which one is wrong", () => {
+    const record = scenario("todowrite.call")
+    const todo = (content: string, status: string) => ({ content, status })
+    const pending = ["tag release", "write tests", "update docs"].map((content) => todo(content, "pending"))
+    const judged = (todos: RunView["todos"]) => record.judge(view({ calls: [done("todowrite")], todos }))
+    expect(judged(pending)).toEqual([])
+    expect(judged([...pending, todo("announce", "pending")])).toEqual(['todos: unexpected "announce"'])
+    expect(judged(pending.slice(1))).toEqual(['todos: missing "tag release"'])
+    expect(judged([...pending, todo("write tests", "pending")])).toEqual(['todos: "write tests" is listed 2 times'])
+    expect(judged([todo("tag release", "completed"), ...pending.slice(1)])).toEqual([
+      'todos: "tag release" is completed, expected pending',
+    ])
+    expect(judged([])).toHaveLength(3)
+    // A list nobody recorded with the tool is not credited to the model.
+    expect(record.judge(view({ todos: pending }))).toEqual(["calls: no completed todowrite call"])
+  })
+
+  test("todowrite.update wants the final list and at least two completed calls", () => {
+    const update = scenario("todowrite.update")
+    const todo = (content: string, status: string) => ({ content, status })
+    const final = [
+      todo("write tests", "pending"),
+      todo("update docs", "completed"),
+      todo("tag release", "pending"),
+      todo("announce", "pending"),
+    ]
+    expect(update.judge(view({ calls: [done("todowrite"), done("todowrite")], todos: final }))).toEqual([])
+    // The call with `done` failed: only the first and the last wrote.
+    expect(
+      update.judge(view({ calls: [done("todowrite"), failed("todowrite"), done("todowrite")], todos: final })),
+    ).toEqual([])
+    expect(update.judge(view({ calls: [done("todowrite")], todos: final }))).toEqual([
+      "calls: 1 completed todowrite call, expected at least 2",
+    ])
+    const stale = final.map((item) => (item.content === "update docs" ? todo(item.content, "pending") : item))
+    expect(update.judge(view({ calls: [done("todowrite"), done("todowrite")], todos: stale }))).toEqual([
+      'todos: "update docs" is pending, expected completed',
+    ])
+  })
+
+  test("task.call wants an explore subagent that ran, a child session and the code in the reply", () => {
+    const task = scenario("task.call")
+    const started: Call = { ...done("task", "<task_result>x</task_result>"), input: { subagent_type: "explore" } }
+    const ok = view({ calls: [started], children: 1, reply: "The code is ORCHID-5521." })
+    expect(task.judge(ok)).toEqual([])
+    const general: Call = { ...started, input: { subagent_type: "general" } }
+    expect(task.judge({ ...ok, calls: [general] })).toEqual([
+      'calls: no completed task call with subagent_type "explore"',
+    ])
+    expect(task.judge({ ...ok, calls: [{ ...started, status: "error" }] })).toEqual([
+      "calls: no completed task call",
+      'calls: no completed task call with subagent_type "explore"',
+    ])
+    expect(task.judge({ ...ok, children: 0 })).toEqual(["children: 0, expected at least 1"])
+    expect(task.judge({ ...ok, reply: "I could not find it." })).toEqual(['reply: missing "ORCHID-5521"'])
+  })
+
+  test("task.result wants the reply to repeat the tool_errors the facts block of the result states", () => {
+    const result = scenario("task.result")
+    const block = (line: string) =>
+      done(
+        "task",
+        `<task id="s" state="completed">\n<task_facts>\nend: completed\nsteps: 2\n${line}\n</task_facts>\n</task>`,
+      )
+    expect(result.judge(view({ calls: [block("tool_errors: 0")], reply: "tool_errors=0" }))).toEqual([])
+    expect(result.judge(view({ calls: [block("tool_errors: 12")], reply: "tool_errors=12" }))).toEqual([])
+    // The model's own number is not the engine's.
+    expect(result.judge(view({ calls: [block("tool_errors: 2")], reply: "tool_errors=0" }))).toEqual([
+      'reply: missing "tool_errors=2"',
+    ])
+    for (const line of ["tool_errors: unknown", "  tool_errors: 1", "tool_errors: 1 failed"]) {
+      expect(result.judge(view({ calls: [block(line)], reply: "tool_errors=1" }))).toEqual([
+        "facts: no tool_errors line",
+      ])
+    }
+    expect(result.judge(view({ reply: "tool_errors=0" }))).toEqual([
+      "calls: no completed task call",
+      "facts: no tool_errors line",
+    ])
+  })
+
+  test("a skill scenario wants a completed skill call and the checklist line in the reply", () => {
+    for (const id of ["skill.call", "skill.recover"]) {
+      const skill = scenario(id)
+      const line = "CHECKLIST-7Q2 tag, notes, publish"
+      expect(skill.judge(view({ calls: [failed("skill"), done("skill")], reply: line }))).toEqual([])
+      expect(skill.judge(view({ calls: [failed("skill")], reply: line }))).toEqual(["calls: no completed skill call"])
+      expect(skill.judge(view({ calls: [done("skill")], reply: "CHECKLIST-7Q2 tag, notes" }))).toEqual([
+        `reply: missing "${line}"`,
+      ])
+    }
+  })
+
+  test("a compaction scenario wants every fact in the summary and names each one it lacks", () => {
+    const factOf = (line: string): string => {
+      const parsed: unknown = JSON.parse(line.slice("summary: missing ".length))
+      return typeof parsed === "string" ? parsed : ""
+    }
+    for (const id of COMPACTION_IDS) {
+      const item = scenario(id)
+      const setup = (item.setup ?? []).join("\n")
+      const last = item.scripts.default.replies.at(-1)
+      const written = last && "text" in last ? last.text : ""
+      // Nothing was summarized: every fact is missing, each as a line of its own.
+      const facts = item.judge(EMPTY).map(factOf)
+      expect(facts.length).toBeGreaterThanOrEqual(2)
+      expect(item.judge(EMPTY)).toEqual(facts.map((fact) => `summary: missing ${JSON.stringify(fact)}`))
+      // The facts are the words of the messages, and the summary the replay tier writes keeps them all.
+      for (const fact of facts) expect(setup).toContain(fact)
+      expect(item.judge(view({ summary: written }))).toEqual([])
+      expect(item.judge(view({ summary: setup }))).toEqual([])
+      // A summary that lacks one fact fails with that fact alone.
+      for (const fact of facts) {
+        expect(item.judge(view({ summary: written.replaceAll(fact, "") }))).toEqual([
+          `summary: missing ${JSON.stringify(fact)}`,
+        ])
+      }
+    }
+  })
+
+  test("a summary missing LEGACY-FREEZE fails with that constraint, and case matters", () => {
+    const constraint = scenario("compaction.constraint")
+    const summary = "Do not touch src/legacy/. Moving billing into src/billing/."
+    expect(constraint.judge(view({ summary }))).toEqual(['summary: missing "LEGACY-FREEZE"'])
+    expect(constraint.judge(view({ summary: `${summary} legacy-freeze` }))).toEqual([
+      'summary: missing "LEGACY-FREEZE"',
+    ])
+    expect(constraint.judge(view({ summary: `${summary} LEGACY-FREEZE` }))).toEqual([])
   })
 
   test("a failed call does not count as the named tool having run", () => {
@@ -813,6 +1190,25 @@ describe("the host the matrix builds on", () => {
     } finally {
       script.stop()
     }
+  })
+
+  test("summaryOf reads the text parts of the assistant messages marked summary, and nothing without one", () => {
+    const message = (role: string, summary: boolean | undefined, ...texts: string[]) => ({
+      info: { id: "m", role, ...(summary === undefined ? {} : { summary }) },
+      parts: texts.map((text) => ({ type: "text", text })),
+    })
+    expect(summaryOf([])).toBeUndefined()
+    expect(summaryOf("not a list")).toBeUndefined()
+    expect(summaryOf([message("user", undefined, "hi"), message("assistant", false, "noted")])).toBeUndefined()
+    expect(
+      summaryOf([message("assistant", undefined, "noted"), message("assistant", true, " ## Goal\n- a ", "", "tail")]),
+    ).toBe("## Goal\n- a\n\ntail")
+    expect(summaryOf([message("assistant", true, "one"), message("assistant", true, "two")])).toBe("one\n\ntwo")
+    // A user message is no summary, a part that is not text is not read, and a summary without text is none.
+    expect(summaryOf([message("user", true, "x")])).toBeUndefined()
+    const reasoning = { info: { role: "assistant", summary: true }, parts: [{ type: "reasoning", text: "x" }] }
+    expect(summaryOf([reasoning, message("assistant", true, "   ")])).toBeUndefined()
+    expect(summaryOf([{ info: "odd" }, { parts: [] }, null])).toBeUndefined()
   })
 
   test("a long result keeps its first and its last characters", () => {
