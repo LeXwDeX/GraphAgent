@@ -993,6 +993,74 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(404),
+  // #1461: a session that has sent no request has nothing to show; the answer is zeros, never an error.
+  http.protected
+    .get("/session/{sessionID}/overhead", "session.overhead")
+    .seeded((ctx) => ctx.session({ title: "Overhead fresh" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/overhead", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.bytes === 0 && body.tokens === 0, "a session without a request should have no overhead")
+      check(Array.isArray(body.sources) && body.sources.length === 0, "a session without a request has no sources")
+      check(
+        !("model" in body) && !("window" in body) && !("windowSource" in body) && !("ratio" in body),
+        "a session without a request has no model, window or ratio",
+      )
+    }),
+  // The manifest the process holds for the session is what the route returns, with the window and its share.
+  http.protected
+    .get("/session/{sessionID}/overhead", "session.overhead.recorded")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const modules = yield* Effect.promise(() => runtime())
+        const session = yield* ctx.session({ title: "Overhead recorded" })
+        modules.EngineProcess.runtimes.requestManifests.set(session.id, {
+          model: "test/overhead-model",
+          entries: [
+            { source: "base", bytes: 400, tokens: 134, hash: "0123456789abcdef" },
+            { source: "instructions", label: "/repo/AGENTS.md", bytes: 200, tokens: 67, hash: "fedcba9876543210" },
+            { source: "tools", bytes: 900, tokens: 300, hash: "00112233aabbccdd" },
+          ],
+          bytes: 1500,
+          tokens: 501,
+          window: 2004,
+          windowSource: "config",
+        })
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/overhead", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.bytes === 1500 && body.tokens === 501, "the totals should be the manifest's")
+      check(body.model === "test/overhead-model", "the model should be given as providerID/modelID")
+      check(body.window === 2004 && body.windowSource === "config", "the window and its source should be given")
+      check(body.ratio === 0.25, "ratio should be tokens of window")
+      array(body.sources)
+      check(body.sources.length === 3, "every source should be listed")
+      const [base, instructions, tools] = body.sources
+      object(base)
+      check(base.source === "base" && base.bytes === 400 && base.tokens === 134, "the base should come first")
+      check(base.hash === "0123456789abcdef" && !("label" in base), "a source without a label should carry none")
+      object(instructions)
+      check(instructions.source === "instructions", "an instructions section should be listed")
+      check(instructions.label === "/repo/AGENTS.md", "an instructions section should name its file")
+      object(tools)
+      check(tools.source === "tools" && tools.bytes === 900, "the tool definitions should be listed")
+    }),
+  http.protected
+    .get("/session/{sessionID}/overhead", "session.overhead.missing")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/overhead", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
   http.protected
     .patch("/session/{sessionID}", "session.update")
     .mutating()
