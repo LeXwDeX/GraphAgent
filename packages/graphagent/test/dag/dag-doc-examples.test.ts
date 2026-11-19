@@ -8,10 +8,15 @@
 // documents (a top-level `config`), and validate each under both gates, so an
 // example that only a standard start would accept fails here instead of in a
 // DAG-mode session.
+// #1582: a live extend or replan fragment is checked against the workflow's frozen gate, which DAG mode fixes to
+// strict, so the dag-blocks fragment examples are validated under it as well. `authoring.prepare` runs no structural
+// validation for a non-start action, so the review lifecycle that Dag.replan re-runs on the merged graph (a diff
+// review must feed a required final gate) is applied to the prepared nodes here.
 import { describe, expect, it } from "bun:test"
 import path from "node:path"
 import { Effect } from "effect"
 import { WorkflowAuthoring } from "@/dag/authoring"
+import { DagValidation } from "@/dag/validation"
 import { BUILTIN_SKILLS } from "@/skill/builtin"
 import { isRecord } from "@/util/record"
 
@@ -62,4 +67,51 @@ describe.each([
       expect(failures).toEqual([])
     })
   }
+})
+
+/** The YAML fences under one `###` heading of a markdown text, up to the next heading. */
+const sectionExamples = (markdown: string, heading: string) => {
+  const from = markdown.indexOf(`### ${heading}`)
+  if (from === -1) return []
+  const rest = markdown.slice(from + 1)
+  const next = rest.search(/\n#{2,3} /)
+  const section = next === -1 ? rest : rest.slice(0, next)
+  return [...section.matchAll(/```yaml\n([\s\S]*?)```/g)].map((match) => match[1] ?? "")
+}
+
+describe.each([
+  ["extend", "Extend file"],
+  ["replan", "Replan file"],
+] as const)("%s examples in the dag-blocks skill", (action, heading) => {
+  const examples = sectionExamples(skill("dag-blocks"), heading)
+
+  it("has at least one fragment example to check", () => {
+    expect(examples.length).toBeGreaterThan(0)
+  })
+
+  it("passes validation and the review lifecycle under the strict gate", async () => {
+    const failures: string[] = []
+    for (const content of examples) {
+      const result = await Effect.runPromise(
+        authoring.prepare({
+          action,
+          source: { kind: "yaml", source: `${action}.yaml`, content },
+          profile: "portable",
+          review_gate: "strict",
+          acceptance: [{ id: "AC1", text: "sample" }],
+        }),
+      )
+      failures.push(...result.errors.map((error) => `${action} ${error.path}: ${error.message}`))
+      if (!result.prepared) {
+        failures.push(`${action}: the example produced no prepared graph`)
+        continue
+      }
+      const lifecycle = DagValidation.reviewLifecycleDiagnostics({
+        review_gate: "strict",
+        nodes: result.prepared.nodes,
+      })
+      failures.push(...lifecycle.errors.map((error) => `${action} ${error.path}: ${error.message}`))
+    }
+    expect(failures).toEqual([])
+  })
 })

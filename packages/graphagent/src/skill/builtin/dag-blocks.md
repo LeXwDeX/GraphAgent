@@ -27,12 +27,11 @@ Top-level fields: optional `title`, `mode`, `admission`, required `config`.
 `acceptance` is `[{ id, text }]`; `review_gate` is `"strict"` or `"standard"`.
 Both are start-only and fixed at run.start: DAG mode on or `mode: deep` fixes
 `review_gate` to `strict`, overriding a `standard`; otherwise it defaults to
-`standard`. A deep workflow without `acceptance` derives
-`AC1..ACn` from `admission.brief.acceptance_criteria`. `strict` also requires
-block writers (`coding`/`prototype`/fan-out aggregator), a required
-non-skippable diff decision bound to each writer after verify and feeding a
-final `synthesize`, `completeness` among its lenses, read-only lanes and
-decision, and 1-50 unique `acceptance` ids; `standard` warns instead.
+`standard`. `strict` also requires block writers
+(`coding`/`prototype`/fan-out aggregator), a required non-skippable diff
+decision bound to each writer after verify and feeding a final `synthesize`,
+`completeness` among its lenses, read-only lanes and decision, and 1-50 unique
+`acceptance` ids; `standard` warns instead.
 
 ```yaml
 config:
@@ -51,7 +50,7 @@ wrapper, or start-only fields (`node_defaults`, graph budgets, `acceptance`,
 
 ```yaml
 objective: Add regression coverage.
-blocks: [{ id: fix, kind: coding }, { id: verify, kind: verify, depends_on: [fix] }]
+blocks: [{ id: fix, kind: coding }, { id: verify, kind: verify, depends_on: [fix] }, { id: review, kind: review, depends_on: [verify], lenses: [standards, intent, completeness] }, { id: report, kind: synthesize, depends_on: [review] }]
 ```
 
 ### Replan file
@@ -63,8 +62,12 @@ except the start-only `acceptance` and `review_gate`.
 fragment:
   name: recover-session-recovery
   objective: Replace the invalid route with a diagnosed repair path.
-  blocks: [{ id: diagnose, kind: debug }, { id: repair, kind: coding, depends_on: [diagnose] }, { id: verify, kind: verify, depends_on: [repair] }]
+  blocks: [{ id: diagnose, kind: debug }, { id: repair, kind: coding, depends_on: [diagnose] }, { id: verify, kind: verify, depends_on: [repair] }, { id: review, kind: review, depends_on: [verify], lenses: [standards, intent, completeness] }, { id: report, kind: synthesize, depends_on: [review] }]
 ```
+
+Extend and replan fragments follow the workflow's frozen gate (strict in DAG
+mode): a writer needs its own verify → review (with `completeness`) →
+synthesize; `nodes` writers are rejected.
 
 Every block accepts only `id`, `kind`, `depends_on`, `instruction`,
 `worker_type`, `worker_config`, `required`, and `report_to_parent`; `id` and
@@ -76,7 +79,7 @@ round's lane `required_actions` and dispositions as `prior_findings` keyed
 `performance`, defaults to `[standards, intent]`, and produces one
 `<block>--<lens>` lane each. `skeptics` is 0-4 (default 0), adding
 `<block>--skeptic-1..n` lanes whose fixed angles rotate: evidence existence,
-counterexample/minimal reproduction, alternative explanation, then
+minimal counterexample, alternative explanation,
 boundaries/concurrency. Other kinds reject these fields. Kinds:
 `explore`, `plan`, `prototype`, `debug`, `coding`, `verify`, `review`,
 `synthesize`. Never invent `worker_type`. `worker_config` (`timeout_ms` only)
@@ -111,16 +114,11 @@ acyclic and may name fragment blocks or durable node IDs.
 - `coding`: bounded production implementation plus focused tests and checks.
 - `verify`: deterministic acceptance checks with explicit PASS/FAIL evidence.
 - `review`: one read-only lane per lens and skeptic, arbitrated by `auditor`.
-  The `completeness` lens judges every `config.acceptance` item
-  covered/partial/missing with evidence and enters unlisted items in
-  `required_actions`. Implementation input follows `coding → verify(PASS) →
-  review`; the compiler binds its fingerprint through every lane into
-  `ACCEPT | REJECT`. Lanes return `required_actions` and may declare
-  `not_examined`; ACCEPT fails on its own required actions or an unrefuted lane
-  action. The decision returns `dispositions` for every lane action regardless
-  of verdict and `resolved` for every prior finding; missing, duplicated, or
-  dangling entries fail settlement, and ACCEPT rejects any upheld finding,
-  `still_open` item, or duplicate of a still-open prior finding.
+  Implementation input follows `coding → verify(PASS) → review`; the compiler
+  binds its fingerprint through every lane into `ACCEPT | REJECT`. Lanes return
+  `required_actions` and may declare `not_examined`; ACCEPT fails on its own
+  required actions or an unrefuted lane action. Skill dag-policy covers
+  `completeness`, `dispositions`, and `resolved`.
 - `synthesize`: resolves dependency outputs into the parent-facing result.
 
 Lanes, decision, `verify`, and `synthesize` default to the read-only
