@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createEffect, createMemo, For, Show } from "solid-js"
+import { createEffect, createMemo, For, Show, type JSX } from "solid-js"
 import { Portal, useTerminalDimensions } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme } from "../../context/theme"
@@ -16,7 +16,7 @@ import { useTuiConfig } from "../../config"
 import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { PanelShell, type PanelHint } from "../../panel/shell"
-import { t } from "../../i18n"
+import { t, type MessageKey } from "../../i18n"
 import { askSourceLabel } from "../../ask/ask-queue"
 import { diffView } from "./diff-view"
 
@@ -80,32 +80,62 @@ function EditBody(props: { request: PermissionRequest }) {
         </scrollbox>
       </Show>
       <Show when={!diff()}>
-        <box paddingLeft={1}>
-          <text fg={theme.textMuted}>No diff provided</text>
-        </box>
+        <text fg={theme.textMuted}>{t("ask.permission.noDiff")}</text>
       </Show>
     </box>
   )
 }
 
-function TextBody(props: { title: string; description?: string; icon?: string }) {
+/** What the request is about, in one line: a command, a path, a pattern, a URL or a query. */
+interface PermissionObject {
+  /** The prompt of a command, or the label of the field with its colon. */
+  lead: string
+  text: string
+}
+
+/** What the ask draws of one request; the parts it has nothing for are left out, never made up. */
+interface PermissionView {
+  /** The tool as the title names it. */
+  tool: string
+  /** The object of the request, in the dark block under the title. */
+  object?: PermissionObject
+  /** A readable explanation the request already carries. */
+  note?: string
+  /** What sits under the block: a diff, the patterns of a directory, the input of a call a hook asked about. */
+  body?: JSX.Element
+}
+
+/** The name the title leads with, by permission: the tool's own name, the same in every language. */
+const TOOL_NAMES: Readonly<Record<string, string>> = {
+  bash: "Bash",
+  edit: "Edit",
+  read: "Read",
+  glob: "Glob",
+  grep: "Grep",
+  list: "List",
+  task: "Task",
+  webfetch: "WebFetch",
+}
+
+function toolName(permission: string, data: Record<string, unknown>) {
+  if (permission === "websearch") return webSearchProviderLabel(data.provider)
+  if (permission === "external_directory") return t("ask.tool.externalDirectory")
+  if (permission === "doom_loop") return t("ask.tool.doomLoop")
+  return TOOL_NAMES[permission] ?? permission
+}
+
+/** The dark block of the ask: the lead in the muted color, the text after it, a cell of padding on each side. */
+function ObjectBlock(props: PermissionObject) {
   const { theme } = useTheme()
   return (
-    <>
-      <box flexDirection="row" gap={1} paddingLeft={1}>
-        <Show when={props.icon}>
-          <text fg={theme.textMuted} flexShrink={0}>
-            {props.icon}
-          </text>
-        </Show>
-        <text fg={theme.textMuted}>{props.title}</text>
-      </box>
-      <Show when={props.description}>
-        <box paddingLeft={1}>
-          <text fg={theme.text}>{props.description}</text>
-        </box>
-      </Show>
-    </>
+    <box flexDirection="row" gap={1} paddingLeft={1} paddingRight={1} backgroundColor={theme.background}>
+      <text fg={theme.textMuted} flexShrink={0} wrapMode="none">
+        {props.lead}
+      </text>
+      <text fg={theme.text} flexShrink={1}>
+        {props.text}
+      </text>
+    </box>
   )
 }
 
@@ -190,11 +220,6 @@ export function PermissionPrompt(props: PermissionPromptProps) {
         props.rootSessionID,
       ) ?? props.request.permission,
   )
-  const title = createMemo(() => {
-    const label = source() ? t("ask.title.permissionSource", { source: source()! }) : t("ask.title.permission")
-    return `${props.position}/${props.total} · ${label}`
-  })
-
   const hookAsk = () => props.request.metadata?.hookAsk === true
   const hookReason = () => {
     const reason = props.request.metadata?.reason
@@ -277,10 +302,9 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     }
     const result: PanelHint[] = []
     if (choices().length > 1) {
-      result.push({ key: "ask.permission.previous", label: t("ask.hint.previous") })
-      result.push({ key: "ask.permission.next", label: t("ask.hint.next") })
+      result.push({ key: "ask.permission.previous", also: "ask.permission.next", label: t("ask.hint.pick") })
     }
-    result.push({ key: "ask.permission.select", label: t("ask.hint.select") })
+    result.push({ key: "ask.permission.select", label: t("ask.hint.confirm") })
     result.push({ key: "ask.permission.reject", label: t("ask.hint.reject") })
     if (hasDiff()) result.push({ key: "ask.permission.fullscreen", label: t("ask.hint.fullscreen") })
     return result
@@ -362,156 +386,65 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     bindings: [{ key: "escape", desc: "Reject without a reason", group: "Ask", cmd: "ask.permission.rejectPlain" }],
   }))
 
-  const info = createMemo(() => {
+  const info = createMemo<PermissionView>(() => {
     const permission = props.request.permission
     const data = inputData()
+    const tool = toolName(permission, data)
+    const field = (key: MessageKey, value: string): PermissionObject | undefined =>
+      value ? { lead: `${t(key)}:`, text: value } : undefined
+    const str = (value: unknown) => (typeof value === "string" ? value : "")
 
     // A hook-forced ask carries no tool metadata (diff, path); show the effective input itself for tools
     // without a view built on that input.
     if (hookAsk() && !INPUT_VIEWS.has(permission)) {
       const path = [data.filePath, data.path].find((value): value is string => typeof value === "string")
       return {
-        icon: "⚙",
-        title: path ? `Call tool ${permission} · ${pathFormatter.format(path)}` : `Call tool ${permission}`,
-        body: (
-          <box paddingLeft={1}>
-            <text fg={theme.text}>{inputPreview(data)}</text>
-          </box>
-        ),
+        tool,
+        object: path ? field("ask.permission.path", pathFormatter.format(path)) : undefined,
+        body: <text fg={theme.text}>{inputPreview(data)}</text>,
       }
     }
 
     if (permission === "edit") {
-      const raw = props.request.metadata?.filepath
-      const filepath = typeof raw === "string" ? raw : ""
       return {
-        icon: "→",
-        title: `Edit ${pathFormatter.format(filepath)}`,
+        tool,
+        object: field("ask.permission.path", pathFormatter.format(str(props.request.metadata?.filepath))),
         body: <EditBody request={props.request} />,
       }
     }
 
     if (permission === "read") {
-      const raw = data.filePath
-      const filePath = typeof raw === "string" ? raw : ""
-      return {
-        icon: "→",
-        title: `Read ${pathFormatter.format(filePath)}`,
-        body: (
-          <Show when={filePath}>
-            <box paddingLeft={1}>
-              <text fg={theme.textMuted}>{"Path: " + pathFormatter.format(filePath)}</text>
-            </box>
-          </Show>
-        ),
-      }
+      return { tool, object: field("ask.permission.path", pathFormatter.format(str(data.filePath))) }
     }
 
-    if (permission === "glob") {
-      const pattern = typeof data.pattern === "string" ? data.pattern : ""
-      return {
-        icon: "✱",
-        title: `Glob "${pattern}"`,
-        body: (
-          <Show when={pattern}>
-            <box paddingLeft={1}>
-              <text fg={theme.textMuted}>{"Pattern: " + pattern}</text>
-            </box>
-          </Show>
-        ),
-      }
-    }
-
-    if (permission === "grep") {
-      const pattern = typeof data.pattern === "string" ? data.pattern : ""
-      return {
-        icon: "✱",
-        title: `Grep "${pattern}"`,
-        body: (
-          <Show when={pattern}>
-            <box paddingLeft={1}>
-              <text fg={theme.textMuted}>{"Pattern: " + pattern}</text>
-            </box>
-          </Show>
-        ),
-      }
+    if (permission === "glob" || permission === "grep") {
+      return { tool, object: field("ask.permission.pattern", str(data.pattern)) }
     }
 
     if (permission === "list") {
-      const raw = data.path
-      const dir = typeof raw === "string" ? raw : ""
-      return {
-        icon: "→",
-        title: `List ${pathFormatter.format(dir)}`,
-        body: (
-          <Show when={dir}>
-            <box paddingLeft={1}>
-              <text fg={theme.textMuted}>{"Path: " + pathFormatter.format(dir)}</text>
-            </box>
-          </Show>
-        ),
-      }
+      return { tool, object: field("ask.permission.path", pathFormatter.format(str(data.path))) }
     }
 
     if (permission === "bash") {
-      const command = typeof data.command === "string" ? data.command : ""
-      return {
-        icon: "#",
-        title: "Shell command",
-        body: (
-          <Show when={command}>
-            <box paddingLeft={1}>
-              <text fg={theme.text}>{"$ " + command}</text>
-            </box>
-          </Show>
-        ),
-      }
+      const command = str(data.command)
+      return { tool, object: command ? { lead: "$", text: command } : undefined }
     }
 
     if (permission === "task") {
-      const type = typeof data.subagent_type === "string" ? data.subagent_type : "Unknown"
-      const desc = typeof data.description === "string" ? data.description : ""
+      const type = str(data.subagent_type)
       return {
-        icon: "#",
-        title: `${Locale.titlecase(type)} Task`,
-        body: (
-          <Show when={desc}>
-            <box paddingLeft={1}>
-              <text fg={theme.text}>{"◉ " + desc}</text>
-            </box>
-          </Show>
-        ),
+        tool,
+        object: field("ask.permission.agent", type ? Locale.titlecase(type) : ""),
+        note: str(data.description) || undefined,
       }
     }
 
     if (permission === "webfetch") {
-      const url = typeof data.url === "string" ? data.url : ""
-      return {
-        icon: "%",
-        title: `WebFetch ${url}`,
-        body: (
-          <Show when={url}>
-            <box paddingLeft={1}>
-              <text fg={theme.textMuted}>{"URL: " + url}</text>
-            </box>
-          </Show>
-        ),
-      }
+      return { tool, object: field("ask.permission.url", str(data.url)) }
     }
 
     if (permission === "websearch") {
-      const query = typeof data.query === "string" ? data.query : ""
-      return {
-        icon: "◈",
-        title: `${webSearchProviderLabel(data.provider)} "${query}"`,
-        body: (
-          <Show when={query}>
-            <box paddingLeft={1}>
-              <text fg={theme.textMuted}>{"Query: " + query}</text>
-            </box>
-          </Show>
-        ),
-      }
+      return { tool, object: field("ask.permission.query", str(data.query)) }
     }
 
     if (permission === "external_directory") {
@@ -526,43 +459,36 @@ export function PermissionPrompt(props: PermissionPromptProps) {
       const patterns = (props.request.patterns ?? []).filter((p): p is string => typeof p === "string")
 
       return {
-        icon: "←",
-        title: `Access external directory ${dir}`,
-        body: (
-          <Show when={patterns.length > 0}>
-            <box paddingLeft={1} gap={1}>
-              <text fg={theme.textMuted}>Patterns</text>
-              <box>
-                <For each={patterns}>{(p) => <text fg={theme.text}>{"- " + p}</text>}</For>
-              </box>
+        tool,
+        object: field("ask.permission.path", dir),
+        body:
+          patterns.length > 0 ? (
+            <box flexDirection="column">
+              <text fg={theme.textMuted}>{t("ask.permission.patterns")}</text>
+              <For each={patterns}>{(p) => <text fg={theme.text}>{"- " + p}</text>}</For>
             </box>
-          </Show>
-        ),
+          ) : undefined,
       }
     }
 
     if (permission === "doom_loop") {
-      return {
-        icon: "⟳",
-        title: "Continue after repeated failures",
-        body: (
-          <box paddingLeft={1}>
-            <text fg={theme.textMuted}>This keeps the session running despite repeated failures.</text>
-          </box>
-        ),
-      }
+      return { tool, body: <text fg={theme.textMuted}>{t("ask.permission.doomLoop")}</text> }
     }
 
-    return {
-      icon: "⚙",
-      title: `Call tool ${permission}`,
-      body: <TextBody title={"Tool: " + permission} />,
-    }
+    return { tool }
+  })
+
+  const title = createMemo(() => {
+    const tool = info().tool
+    return source()
+      ? t("ask.title.permissionToolSource", { source: source()!, tool })
+      : t("ask.title.permissionTool", { tool })
   })
 
   function choiceLabel(choice: PermissionChoice) {
     if (choice === "once") return t("ask.permission.once")
-    if (choice === "reject") return t("ask.permission.reject")
+    // The root can say why it rejects (the reason editor opens); a sub-agent's request is rejected as it is.
+    if (choice === "reject") return own() ? t("ask.permission.rejectTell") : t("ask.permission.reject")
     if (choice === "relay") return t("ask.permission.relay")
     const patterns = props.request.always
     return patterns.length > 0
@@ -573,21 +499,19 @@ export function PermissionPrompt(props: PermissionPromptProps) {
   const optionsContent = () => {
     const current = info()
     return (
-      <box flexDirection="column" gap={1}>
+      <box flexDirection="column">
         <Show when={hookReason()}>
-          <box paddingLeft={1}>
-            <text fg={theme.warning}>{t("ask.permission.hook", { reason: hookReason() })}</text>
+          <text fg={theme.warning}>{t("ask.permission.hook", { reason: hookReason() })}</text>
+        </Show>
+        <Show when={current.object}>{(object) => <ObjectBlock lead={object().lead} text={object().text} />}</Show>
+        <Show when={current.note}>
+          <text fg={theme.textMuted}>{current.note}</text>
+        </Show>
+        <Show when={current.body}>
+          <box flexDirection="column" paddingTop={1}>
+            {current.body}
           </box>
         </Show>
-        <box flexDirection="column" paddingLeft={1}>
-          <box flexDirection="row" gap={1}>
-            <text fg={theme.textMuted} flexShrink={0}>
-              {current.icon}
-            </text>
-            <text fg={theme.text}>{current.title}</text>
-          </box>
-        </box>
-        {current.body}
         <box flexDirection="column" paddingTop={1}>
           <For each={choices()}>
             {(choice, index) => {
@@ -596,7 +520,6 @@ export function PermissionPrompt(props: PermissionPromptProps) {
                 <box
                   flexDirection="row"
                   gap={1}
-                  paddingLeft={1}
                   backgroundColor={selected() ? theme.backgroundSelected : undefined}
                   onMouseOver={() => setStore("selected", index())}
                   onMouseUp={() => {
@@ -604,10 +527,13 @@ export function PermissionPrompt(props: PermissionPromptProps) {
                     choose(choice)
                   }}
                 >
-                  <text fg={selected() ? theme.warning : theme.textMuted} flexShrink={0}>
+                  <text fg={selected() ? theme.primary : theme.textMuted} flexShrink={0} wrapMode="none">
+                    {selected() ? "›" : " "}
+                  </text>
+                  <text fg={selected() ? theme.primary : theme.textMuted} flexShrink={0} wrapMode="none">
                     {`${index() + 1}.`}
                   </text>
-                  <text fg={selected() ? theme.warning : theme.text}>{choiceLabel(choice)}</text>
+                  <text fg={selected() ? theme.primary : theme.text}>{choiceLabel(choice)}</text>
                 </box>
               )
             }}
@@ -646,6 +572,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
   const surface = (expanded: boolean) => (
     <PanelShell
       title={title()}
+      command={props.total > 1 ? `${props.position}/${props.total}` : undefined}
       tone="warning"
       hints={hints()}
       maxRows={expanded ? Math.max(1, dimensions().height - 6) : undefined}
