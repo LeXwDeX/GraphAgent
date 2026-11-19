@@ -64,14 +64,24 @@ export interface RunView {
   readonly todos: readonly { content: string; status: string }[]
   /** Child sessions the run started. */
   readonly children: number
+  /** The text of the compaction summary; only a scenario with `setup` has one. */
+  readonly summary?: string
 }
 
 export interface Scenario {
   readonly id: string
   /** The workspace before the run, by relative path. */
   readonly files: Record<string, string>
-  /** The user message, verbatim. The replay tier adds a `[case <id>]` line after it. */
+  /** The user message, verbatim. The replay tier adds a `[case <id>]` line after it. Empty for a compaction scenario. */
   readonly prompt: string
+  /**
+   * A compaction scenario's earlier user messages. They are sent in order, each answered by the scripted model
+   * (`noted`) and the first carrying the `[case <id>]` line in both tiers, and then the model under test is asked
+   * to summarize the session. The first `setup.length` replies of its script answer them, the next is the summary.
+   */
+  readonly setup?: readonly string[]
+  /** What the subagent a `task` call starts says in the replay tier: a script of its own, under the key `<id>.child`. */
+  readonly child?: readonly Reply[]
   readonly scripts: { readonly default: Script; readonly apply_patch?: Script }
   /** The criteria the run did not meet, in words (`reply: missing "4200"`); empty means the run passed. */
   readonly judge: (run: RunView) => string[]

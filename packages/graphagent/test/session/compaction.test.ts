@@ -9,7 +9,7 @@ import { Database } from "@graphagent/core/database/database"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { APICallError, jsonSchema, tool } from "ai"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import * as TestClock from "effect/testing/TestClock"
 import { HttpClient, HttpClientResponse } from "effect/http"
@@ -35,7 +35,7 @@ import { Todo } from "../../src/session/todo"
 import { DagStore } from "@graphagent/core/dag/store"
 import { SessionSummary } from "../../src/session/summary"
 
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
 import { ProviderProfile } from "@/provider/profile"
 import * as SessionProcessorModule from "../../src/session/processor"
 import { Snapshot } from "../../src/snapshot"
@@ -253,6 +253,7 @@ function createCompactionMarker(sessionID: SessionID) {
 function fake(
   input: Parameters<SessionProcessorModule.SessionProcessor.Interface["create"]>[0],
   result: "continue" | "compact",
+  ssn: SessionNs.Interface,
 ) {
   const msg = input.assistantMessage
   return {
@@ -263,15 +264,29 @@ function fake(
     previewToolCall: () => Effect.void,
     resumeToolCall: () => Effect.void,
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
-    process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),
+    // A summarizer that finishes writes its summary into the assistant message; one that overflows writes nothing.
+    process: Effect.fn("TestSessionProcessor.process")(function* () {
+      if (result === "continue")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: msg.sessionID,
+          type: "text",
+          text: validSummary(),
+        })
+      return result
+    }),
   } satisfies SessionProcessorModule.SessionProcessor.Handle
 }
 
 function layer(result: "continue" | "compact") {
-  return Layer.succeed(
+  return Layer.effect(
     SessionProcessorModule.SessionProcessor.Service,
-    SessionProcessorModule.SessionProcessor.Service.of({
-      create: Effect.fn("TestSessionProcessor.create")((input) => Effect.succeed(fake(input, result))),
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      return SessionProcessorModule.SessionProcessor.Service.of({
+        create: Effect.fn("TestSessionProcessor.create")((input) => Effect.succeed(fake(input, result, ssn))),
+      })
     }),
   )
 }
@@ -285,7 +300,7 @@ function cfg(compaction?: ConfigV1.Info["compaction"]) {
 
 const deps = Layer.mergeAll(
   wide().layer,
-  layer("continue"),
+  layer("continue").pipe(Layer.provide(SessionNs.defaultLayer)),
   Agent.defaultLayer,
   EventV2Bridge.defaultLayer,
   Config.defaultLayer,
@@ -892,7 +907,7 @@ describe("session.compaction.process", () => {
     () => {
       const order: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       const memory = Layer.mock(Memory.Service, {
         checkpoint: () =>
           Effect.sync(() => {
@@ -932,7 +947,7 @@ describe("session.compaction.process", () => {
     () => {
       let checkpoints = 0
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       const memory = Layer.mock(Memory.Service, {
         checkpoint: () =>
           Effect.sync(() => {
@@ -1059,6 +1074,9 @@ describe("session.compaction.process", () => {
     "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
   // The latest request of the sessions below: a lone "hello" turn.
   const hello = "Latest user request:\nhello"
+  // The summary the test processor stores is the template with a goal and nothing pending: the goal is all of it that
+  // the continuation text quotes.
+  const summaryContext = "Context:\nSummary goal: summary"
 
   it.instance("lists the skills loaded in the compacted range after auto compaction", () =>
     Effect.gen(function* () {
@@ -1086,7 +1104,10 @@ describe("session.compaction.process", () => {
       expect(last?.info.role).toBe("user")
       // The note closes the continuation text, inside the compaction block.
       expect(syntheticTexts(last)[0]).toBe(
-        Injection.wrap("compaction", `${fallbackText}\n${hello}\n\n${skillNote("dag-auto, git-workflow")}`),
+        Injection.wrap(
+          "compaction",
+          `${fallbackText}\n${hello}\n${summaryContext}\n\n${skillNote("dag-auto, git-workflow")}`,
+        ),
       )
     }),
   )
@@ -1115,7 +1136,9 @@ describe("session.compaction.process", () => {
       })
 
       const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
-      expect(syntheticTexts(last)).toEqual([Injection.wrap("compaction", `${fallbackText}\n${hello}`)])
+      expect(syntheticTexts(last)).toEqual([
+        Injection.wrap("compaction", `${fallbackText}\n${hello}\n${summaryContext}`),
+      ])
     }),
   )
 
@@ -1174,7 +1197,10 @@ describe("session.compaction.process", () => {
         // The recent turn stays verbatim, so its skill body is still in context.
         expect(part?.tail_start_id).toBe(recent.id)
         expect(syntheticTexts(last)[0]).toBe(
-          Injection.wrap("compaction", `${fallbackText}\nLatest user request:\nrecent\n\n${skillNote("git-workflow")}`),
+          Injection.wrap(
+            "compaction",
+            `${fallbackText}\nLatest user request:\nrecent\n${summaryContext}\n\n${skillNote("git-workflow")}`,
+          ),
         )
       }).pipe(withCompaction({ config: cfg({ tail_turns: 1 }) })),
     { git: true },
@@ -1290,10 +1316,7 @@ describe("session.compaction.process", () => {
     "continues with the latest instruction and current pending state",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       const todos: Todo.Info[] = [
         { content: "write boundary tests", status: "pending", priority: "high" },
         { content: "read issue", status: "completed", priority: "low" },
@@ -1352,10 +1375,7 @@ describe("session.compaction.process", () => {
     "does not report a completed workflow as current pending work",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- wf_live still running`),
-      )
+      stub.push(reply(validSummary({ next: "wf_live still running" })))
       const todos: Todo.Info[] = [{ content: "follow up", status: "pending", priority: "high" }]
       const workflows = [workflowRow({ id: "wf_live", title: "Issue 954", status: "completed" })]
       return Effect.gen(function* () {
@@ -1398,13 +1418,7 @@ describe("session.compaction.process", () => {
     "keeps a cancelled plan as stale context instead of a renewed command",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Goal
-- Finish the old plan
-
-## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ goal: "Finish the old plan", next: "old cancelled step" })))
       const todos: Todo.Info[] = [{ content: "still open", status: "pending", priority: "high" }]
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -1445,10 +1459,7 @@ describe("session.compaction.process", () => {
       `defers stale summary and todos to the latest request: ${request}`,
       () => {
         const stub = llm()
-        stub.push(
-          reply(`## Next Steps
-- old cancelled step`),
-        )
+        stub.push(reply(validSummary({ next: "old cancelled step" })))
         const todos: Todo.Info[] = [{ content: "historical todo", status: "pending", priority: "high" }]
         return Effect.gen(function* () {
           const ssn = yield* SessionNs.Service
@@ -1485,7 +1496,7 @@ describe("session.compaction.process", () => {
   itCompaction.instance("does not send signed history to the separate summarizer context", () => {
     const stub = llm()
     const captured: string[] = []
-    stub.push(reply("summary", (input) => captured.push(JSON.stringify(input.messages))))
+    stub.push(reply(validSummary(), (input) => captured.push(JSON.stringify(input.messages))))
     return Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
@@ -1526,7 +1537,7 @@ describe("session.compaction.process", () => {
   itCompaction.instance("strips opaque reasoning from the summarizer input", () => {
     const stub = llm()
     const captured: string[] = []
-    stub.push(reply("summary", (input) => captured.push(JSON.stringify(input.messages))))
+    stub.push(reply(validSummary(), (input) => captured.push(JSON.stringify(input.messages))))
     return Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
@@ -1583,7 +1594,7 @@ describe("session.compaction.process", () => {
       )
     })
     stub.push(
-      reply("recovered summary", (input) => {
+      reply(validSummary({ goal: "recovered summary" }), (input) => {
         seen.push(JSON.stringify(input.messages))
       }),
     )
@@ -1629,14 +1640,14 @@ describe("session.compaction.process", () => {
         expect(input).not.toContain("cipher-opaque")
         expect(input).not.toContain("rs_opaque")
       }
-    }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ tail_turns: 0 }) }))
+    }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ tail_turns: 0, mode: "small" }) }))
   })
 
   itCompaction.instance("drops opaque reasoning from retained tails across repeated compactions", () => {
     const stub = llm()
     const captured: string[] = []
-    stub.push(reply("summary one", (input) => captured.push(JSON.stringify(input.messages))))
-    stub.push(reply("summary two", (input) => captured.push(JSON.stringify(input.messages))))
+    stub.push(reply(validSummary({ goal: "summary one" }), (input) => captured.push(JSON.stringify(input.messages))))
+    stub.push(reply(validSummary({ goal: "summary two" }), (input) => captured.push(JSON.stringify(input.messages))))
     return Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
@@ -1759,7 +1770,7 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      stub.push(reply(validSummary(), (input) => (captured = JSON.stringify(input.messages))))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -1786,7 +1797,7 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      stub.push(reply(validSummary(), (input) => (captured = JSON.stringify(input.messages))))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -1823,7 +1834,7 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      stub.push(reply(validSummary(), (input) => (captured = JSON.stringify(input.messages))))
       return Effect.gen(function* () {
         const test = yield* TestInstance
         const ssn = yield* SessionNs.Service
@@ -1906,7 +1917,7 @@ describe("session.compaction.process", () => {
       const sources: string[] = []
       const queued: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -1947,7 +1958,7 @@ describe("session.compaction.process", () => {
       const sources: string[] = []
       const queued: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -1996,7 +2007,7 @@ describe("session.compaction.process", () => {
       const sources: string[] = []
       const queued: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2038,11 +2049,8 @@ describe("session.compaction.process", () => {
         "Session start boilerplate: follow the repository instructions, preserve existing user work, and report verification gaps honestly."
       const stub = llm()
       stub.push(
-        reply(`## Critical Context
-- ${boilerplate}
-
-## Next Steps
-- (none)`),
+        // The boilerplate sits in a section of its own; the sections the continuation reads are as the template has them.
+        reply(validSummary().replace("## Critical Context\n- (none)", `## Critical Context\n- ${boilerplate}`)),
       )
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -2081,10 +2089,7 @@ describe("session.compaction.process", () => {
       const queued: string[] = []
       const ctx = "historical SessionStart context that the compacted view dropped"
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2151,10 +2156,7 @@ describe("session.compaction.process", () => {
       const ctx = "old SessionStart context in the discarded head"
       const request = "also check the typecheck"
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2213,10 +2215,7 @@ describe("session.compaction.process", () => {
     "quotes the complete authoritative request past the old 500-character cut",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       const request = `${"x".repeat(600)} do not deploy`
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -2252,10 +2251,7 @@ describe("session.compaction.process", () => {
     "quotes a request over the old 2000-character budget in full",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       const request = `${"z".repeat(2_100)} and never touch the lockfile`
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -2288,10 +2284,7 @@ describe("session.compaction.process", () => {
     "ignores the async-hook rewake sentinel when choosing the latest request",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2323,10 +2316,7 @@ describe("session.compaction.process", () => {
     "states an attachment-only newest user turn by its attachment line",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old cancelled step`),
-      )
+      stub.push(reply(validSummary({ next: "old cancelled step" })))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2365,14 +2355,8 @@ describe("session.compaction.process", () => {
     "continues across repeated auto compactions with open todos",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- step one`),
-      )
-      stub.push(
-        reply(`## Next Steps
-- step two`),
-      )
+      stub.push(reply(validSummary({ next: "step one" })))
+      stub.push(reply(validSummary({ next: "step two" })))
       const todos: Todo.Info[] = [{ content: "open todo", status: "pending", priority: "high" }]
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -2412,10 +2396,7 @@ describe("session.compaction.process", () => {
     "states the latest text turn with its attachment line and does not revive an older request",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old step`),
-      )
+      stub.push(reply(validSummary({ next: "old step" })))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2454,10 +2435,7 @@ describe("session.compaction.process", () => {
     "keeps a later text part sentinel from hiding the newest request",
     () => {
       const stub = llm()
-      stub.push(
-        reply(`## Next Steps
-- old step`),
-      )
+      stub.push(reply(validSummary({ next: "old step" })))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2499,7 +2477,7 @@ describe("session.compaction.process", () => {
       const queued: string[] = []
       const ctx = "retained SessionStart context still visible after compaction"
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2550,7 +2528,7 @@ describe("session.compaction.process", () => {
       const sources: string[] = []
       const queued: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2590,7 +2568,7 @@ describe("session.compaction.process", () => {
       const sources: string[] = []
       const queued: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -2623,7 +2601,7 @@ describe("session.compaction.process", () => {
       const sources: string[] = []
       const queued: string[] = []
       const stub = llm()
-      stub.push(reply("summary"))
+      stub.push(reply(validSummary()))
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const parent = yield* ssn.create({})
@@ -2730,11 +2708,15 @@ describe("session.compaction.process", () => {
               getSmallModel: () => Effect.succeed(small),
               getModel: () => Effect.succeed(main),
             })
-            stub.push(reply("complete summary", (input) => captured.push(JSON.stringify(input.messages))))
+            stub.push(
+              reply(validSummary({ goal: "complete summary" }), (input) =>
+                captured.push(JSON.stringify(input.messages)),
+              ),
+            )
             const base: ConfigV1.Info = {
               reasoningDistillation: { enabled: true },
               provider: { test: { models: { [family]: { reasoningDistillation: { enabled } } } } },
-              compaction: { tail_turns: 1, preserve_recent_tokens: 300 },
+              compaction: { tail_turns: 1, preserve_recent_tokens: 300, mode: "small" },
             }
             return Effect.gen(function* () {
               const ssn = yield* SessionNs.Service
@@ -2831,7 +2813,7 @@ describe("session.compaction.process", () => {
           getSmallModel: () => Effect.succeed({ ...small, id: ModelV2.ID.make("small") }),
           getModel: () => Effect.succeed(main),
         })
-        stub.push(reply("complete summary"))
+        stub.push(reply(validSummary({ goal: "complete summary" })))
         return Effect.gen(function* () {
           const ssn = yield* SessionNs.Service
           const session = yield* ssn.create({})
@@ -2850,7 +2832,7 @@ describe("session.compaction.process", () => {
           expect((yield* readCompactionPart(session.id))?.tail_start_id).toBeUndefined()
           const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
           expect(retained.some((message) => message.info.id === tail.id)).toBe(false)
-        }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ tail_turns: 1 }) }))
+        }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ tail_turns: 1, mode: "small" }) }))
       },
       { git: true },
     )
@@ -2877,11 +2859,15 @@ describe("session.compaction.process", () => {
               captured.push(JSON.stringify(input.messages))
               return Stream.fail(new CompactionTimeoutError({ message: "try fallback model" }))
             })
-            stub.push(reply("complete summary", (input) => captured.push(JSON.stringify(input.messages))))
+            stub.push(
+              reply(validSummary({ goal: "complete summary" }), (input) =>
+                captured.push(JSON.stringify(input.messages)),
+              ),
+            )
             const base = Schema.decodeUnknownSync(ConfigV1.Info)({
               reasoningDistillation: { enabled: true },
               provider: { test: { models: { [family]: { reasoningDistillation: { enabled } } } } },
-              compaction: { tail_turns: 1, preserve_recent_tokens: 300 },
+              compaction: { tail_turns: 1, preserve_recent_tokens: 300, mode: "small" },
             }) as ConfigV1.Info
             return Effect.gen(function* () {
               const ssn = yield* SessionNs.Service
@@ -3068,7 +3054,8 @@ describe("session.compaction.process", () => {
                   responseHeaders: { "retry-after-ms": "10000" },
                 }),
               )
-            if (outcome === "success" && model === conversation) return reply("complete summary")(input)
+            if (outcome === "success" && model === conversation)
+              return reply(validSummary({ goal: "complete summary" }))(input)
             const error =
               outcome === "overflow" && model === small
                 ? new APICallError({
@@ -3122,7 +3109,7 @@ describe("session.compaction.process", () => {
           )
           if (outcome === "success") {
             expect(summaries[0].parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
-              "complete summary",
+              validSummary({ goal: "complete summary" }),
             ])
             expect(
               stored.filter((item) => item.parts.some((part) => part.type === "text" && part.synthetic)),
@@ -3139,7 +3126,7 @@ describe("session.compaction.process", () => {
           }),
         )
       },
-      { git: true, config: { agent: { compaction: { model: "test/agent" } } } },
+      { git: true, config: { compaction: { mode: "small" }, agent: { compaction: { model: "test/agent" } } } },
     )
   }
 
@@ -3165,7 +3152,7 @@ describe("session.compaction.process", () => {
         )
       })
       stub.push(
-        reply("recovered summary", (input) => {
+        reply(validSummary({ goal: "recovered summary" }), (input) => {
           expect(interrupted).toBe(true)
           seen.push(input.model.id)
         }),
@@ -3194,7 +3181,7 @@ describe("session.compaction.process", () => {
         }),
       )
     },
-    { git: true },
+    { git: true, config: { compaction: { mode: "small" } } },
   )
 
   itCompaction.instance(
@@ -3299,7 +3286,7 @@ describe("session.compaction.process", () => {
         Stream.make(
           LLMEvent.reasoningDelta({ id: "orphan-1", text: "stray reasoning" }),
           LLMEvent.textStart({ id: "txt-0" }),
-          LLMEvent.textDelta({ id: "txt-0", text: "summary" }),
+          LLMEvent.textDelta({ id: "txt-0", text: validSummary() }),
           LLMEvent.textEnd({ id: "txt-0" }),
           LLMEvent.stepFinish({ index: 0, reason: "stop", usage: basicUsage() }),
           LLMEvent.finish({ reason: "stop", usage: basicUsage() }),
@@ -3322,7 +3309,7 @@ describe("session.compaction.process", () => {
         )
         expect(summary?.parts.some((part) => part.type === "reasoning")).toBe(false)
         // Sanity: the text part still got through.
-        expect(summary?.parts.some((part) => part.type === "text" && part.text === "summary")).toBe(true)
+        expect(summary?.parts.some((part) => part.type === "text" && part.text === validSummary())).toBe(true)
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },
@@ -3370,7 +3357,7 @@ describe("session.compaction.process", () => {
       const stub = llm()
       let captured = ""
       stub.push(
-        reply("summary", (input) => {
+        reply(validSummary(), (input) => {
           captured = JSON.stringify(input.messages)
         }),
       )
@@ -3406,9 +3393,9 @@ describe("session.compaction.process", () => {
     () => {
       const stub = llm()
       let captured = ""
-      stub.push(reply("summary one"))
+      stub.push(reply(validSummary({ goal: "summary one" })))
       stub.push(
-        reply("summary two", (input) => {
+        reply(validSummary({ goal: "summary two" }), (input) => {
           captured = JSON.stringify(input.messages)
         }),
       )
@@ -3438,6 +3425,12 @@ describe("session.compaction.process", () => {
         expect(captured.match(/summary one/g)?.length).toBe(1)
         expect(captured).toContain("## Constraints & Preferences")
         expect(captured).toContain("## Progress")
+        // Every explicit user constraint is its own bullet, in the user's words (Issue #1469).
+        expect(captured).toContain(
+          "each explicit user constraint, preference or spec as its own bullet, in the user's words",
+        )
+        expect(captured).toContain("List every explicit user constraint as its own bullet; never merge or drop one.")
+        expect(captured).toContain("Keep the section headings exactly as written above, in English")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },
@@ -3445,8 +3438,8 @@ describe("session.compaction.process", () => {
 
   itCompaction.instance("keeps recent pre-compaction turns across repeated compactions", () => {
     const stub = llm()
-    stub.push(reply("summary one"))
-    stub.push(reply("summary two"))
+    stub.push(reply(validSummary({ goal: "summary one" })))
+    stub.push(reply(validSummary({ goal: "summary two" })))
 
     return Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
@@ -3865,7 +3858,7 @@ describe("shared compaction", () => {
     () => {
       const stub = llm()
       const captured: LLM.StreamInput[] = []
-      stub.push(reply("summary", (input) => captured.push(input)))
+      stub.push(reply(validSummary(), (input) => captured.push(input)))
       return Effect.gen(function* () {
         const ctx = yield* InstanceState.context
         const ssn = yield* SessionNs.Service
@@ -3908,9 +3901,9 @@ describe("shared compaction", () => {
       stub.push((input) => {
         captured.push(input)
         input.onToolRefused?.()
-        return reply("summary")(input)
+        return reply(validSummary())(input)
       })
-      stub.push(reply("summary", (input) => captured.push(input)))
+      stub.push(reply(validSummary(), (input) => captured.push(input)))
       return Effect.gen(function* () {
         const ctx = yield* InstanceState.context
         const ssn = yield* SessionNs.Service
@@ -3963,7 +3956,7 @@ describe("shared compaction", () => {
       () => {
         const stub = llm()
         const captured: LLM.StreamInput[] = []
-        stub.push(reply("summary", (input) => captured.push(input)))
+        stub.push(reply(validSummary(), (input) => captured.push(input)))
         return Effect.gen(function* () {
           const ctx = yield* InstanceState.context
           const ssn = yield* SessionNs.Service
@@ -3994,7 +3987,7 @@ describe("shared compaction", () => {
       () => {
         const stub = llm()
         const captured: LLM.StreamInput[] = []
-        stub.push(reply("summary", (input) => captured.push(input)))
+        stub.push(reply(validSummary(), (input) => captured.push(input)))
         const priced = createModel({
           context: 100_000,
           output: 32_000,
@@ -4049,7 +4042,7 @@ describe("shared compaction", () => {
                 }),
               )
         })
-        stub.push(reply("summary", (input) => captured.push(input)))
+        stub.push(reply(validSummary(), (input) => captured.push(input)))
         return Effect.gen(function* () {
           const ctx = yield* InstanceState.context
           const ssn = yield* SessionNs.Service
@@ -4081,6 +4074,421 @@ describe("shared compaction", () => {
       { git: true },
     )
   }
+})
+
+describe("session.compaction summary check", () => {
+  // A reply in no template shape: no heading, so no section the continuation reads.
+  const incomplete = "Nothing in the requested structure"
+
+  // A stream that finishes without text: the summarizer produced nothing.
+  const silent = () =>
+    Stream.make(
+      LLMEvent.stepFinish({ index: 0, reason: "stop", usage: basicUsage() }),
+      LLMEvent.finish({ reason: "stop", usage: basicUsage() }),
+    )
+
+  const summaryMessages = (sessionID: SessionID) =>
+    SessionNs.use
+      .messages({ sessionID })
+      .pipe(Effect.map((messages) => messages.filter((item) => item.info.role === "assistant" && item.info.summary)))
+
+  const textsOf = (message: SessionV1.WithParts) =>
+    message.parts.flatMap((part) => (part.type === "text" ? [part.text] : []))
+
+  const compact = (sessionID: SessionID, auto: boolean) =>
+    Effect.gen(function* () {
+      yield* SessionCompaction.use.create({ sessionID, agent: "build", model: ref, auto })
+      const messages = yield* SessionNs.use.messages({ sessionID })
+      return yield* SessionCompaction.use.process({
+        parentID: messages.at(-1)!.info.id,
+        messages,
+        sessionID,
+        auto,
+      })
+    })
+
+  itCompaction.instance(
+    "asks once more when the summary lacks the template's headings and keeps only the complete reply",
+    () => {
+      const stub = llm()
+      const seen: string[] = []
+      stub.push(reply(incomplete, (input) => seen.push(input.model.id)))
+      stub.push(reply(validSummary({ goal: "second try" }), (input) => seen.push(input.model.id)))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const events = yield* EventV2Bridge.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        const statuses: string[] = []
+        const unsub = yield* events.listen((evt) => {
+          if (evt.type !== SessionStatus.Event.Status.type || !Schema.is(SessionStatus.Event.Status.data)(evt.data))
+            return Effect.void
+          if (evt.data.sessionID === session.id && evt.data.status.type === "retry")
+            statuses.push(evt.data.status.message)
+          return Effect.void
+        })
+        yield* Effect.addFinalizer(() => unsub)
+
+        expect(yield* compact(session.id, false)).toBe("continue")
+
+        expect(seen).toHaveLength(2)
+        // The retry is announced as such, not as a switch to another model.
+        expect(statuses).toEqual(["Compaction returned an incomplete summary; retrying with test/test-model"])
+        // The incomplete reply is removed: it must never become input of a later compaction.
+        const kept = yield* summaryMessages(session.id)
+        expect(kept.map(textsOf)).toEqual([[validSummary({ goal: "second try" })]])
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not ask again for a complete summary",
+    () => {
+      const stub = llm()
+      let requests = 0
+      stub.push(reply(validSummary(), () => requests++))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        expect(yield* compact(session.id, false)).toBe("continue")
+        expect(requests).toBe(1)
+        expect(yield* summaryMessages(session.id)).toHaveLength(1)
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps a nonempty summary that is still incomplete after the one retry and logs a warning",
+    () => {
+      const stub = llm()
+      let requests = 0
+      stub.push(reply("first incomplete", () => requests++))
+      stub.push(reply("second incomplete", () => requests++))
+      // A third request would mean a second retry.
+      stub.push(reply(validSummary(), () => requests++))
+      const logs: string[] = []
+      // The message carries the log fields, a Cause among them, which JSON cannot always write.
+      const collector = Logger.make((options) => {
+        logs.push(String(options.message))
+      })
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+
+        expect(yield* compact(session.id, false)).toBe("continue")
+
+        expect(requests).toBe(2)
+        expect((yield* summaryMessages(session.id)).map(textsOf)).toEqual([["second incomplete"]])
+        expect(logs.filter((line) => line.includes("compaction summary incomplete"))).toHaveLength(1)
+      }).pipe(Effect.withLogger(collector), withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "retries on the model that gave the incomplete summary",
+    () => {
+      const stub = llm()
+      const seen: string[] = []
+      const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("small") }
+      const provider = ProviderTest.fake({
+        model: createModel({ context: 100_000, output: 32_000 }),
+        getSmallModel: () => Effect.succeed(small),
+      })
+      stub.push(reply(incomplete, (input) => seen.push(input.model.id)))
+      stub.push(reply(validSummary(), (input) => seen.push(input.model.id)))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        expect(yield* compact(session.id, false)).toBe("continue")
+        expect(seen).toEqual(["small", "small"])
+      }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ mode: "small" }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "an incomplete summary does not use up the model ladder",
+    () => {
+      const stub = llm()
+      const seen: string[] = []
+      const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("small") }
+      const provider = ProviderTest.fake({
+        model: createModel({ context: 100_000, output: 32_000 }),
+        getSmallModel: () => Effect.succeed(small),
+      })
+      stub.push(reply(incomplete, (input) => seen.push(input.model.id)))
+      // The retry times out: the ladder goes on to the next model as it always did.
+      stub.push((input) => {
+        seen.push(input.model.id)
+        return Stream.fail(new CompactionTimeoutError({ message: "Compaction stream timed out without progress" }))
+      })
+      stub.push(reply(validSummary(), (input) => seen.push(input.model.id)))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        expect(yield* compact(session.id, false)).toBe("continue")
+        expect(seen).toEqual(["small", "small", "test-model"])
+        expect(yield* summaryMessages(session.id)).toHaveLength(1)
+      }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ mode: "small" }) }))
+    },
+    { git: true },
+  )
+
+  for (const auto of [false, true]) {
+    itCompaction.instance(
+      `does not commit an empty summary of ${auto ? "an automatic" : "a manual"} compaction`,
+      () => {
+        const stub = llm()
+        let requests = 0
+        // Every request ends with a finish and no text; the retry gets the same.
+        stub.push(() => (requests++, silent()))
+        stub.push(() => (requests++, silent()))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const events = yield* EventV2Bridge.Service
+          const status = yield* SessionStatus.Service
+          const session = yield* ssn.create({})
+          const user = yield* createUserMessage(session.id, "hello")
+          const errors: string[] = []
+          const unsub = yield* events.listen((evt) => {
+            if (evt.type !== SessionNs.Event.Error.type || !Schema.is(SessionNs.Event.Error.data)(evt.data))
+              return Effect.void
+            if (evt.data.sessionID === session.id) errors.push(JSON.stringify(evt.data.error))
+            return Effect.void
+          })
+          yield* Effect.addFinalizer(() => unsub)
+
+          expect(yield* compact(session.id, auto)).toBe("stop")
+
+          expect(requests).toBe(2)
+          // No summary, no marker and no follow-up message remain: the session is as it was.
+          expect((yield* ssn.messages({ sessionID: session.id })).map((item) => item.info.id)).toEqual([user.id])
+          expect(errors).toHaveLength(1)
+          expect(errors[0]).toContain("Compaction produced an empty summary")
+          expect((yield* status.get(session.id)).type).toBe("idle")
+
+          // Nothing blocks the next compaction.
+          stub.push(reply(validSummary({ goal: "after the empty one" })))
+          expect(yield* compact(session.id, auto)).toBe("continue")
+          expect((yield* summaryMessages(session.id)).map(textsOf)).toEqual([
+            [validSummary({ goal: "after the empty one" })],
+          ])
+        }).pipe(withCompaction({ llm: stub.layer }))
+      },
+      { git: true },
+    )
+  }
+
+  itCompaction.instance(
+    "an empty reply of the retry ends the compaction with no summary, though the first reply had text",
+    () => {
+      const stub = llm()
+      stub.push(reply(incomplete))
+      stub.push(() => silent())
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const user = yield* createUserMessage(session.id, "hello")
+        expect(yield* compact(session.id, false)).toBe("stop")
+        expect((yield* ssn.messages({ sessionID: session.id })).map((item) => item.info.id)).toEqual([user.id])
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "an empty summary leaves the other parts of the marker message alone",
+    () => {
+      const stub = llm()
+      stub.push(() => silent())
+      stub.push(() => silent())
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: false })
+        const marker = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+        // The marker message also carries the user's own text: only its compaction part may go.
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: marker.info.id,
+          sessionID: session.id,
+          type: "text",
+          text: "keep me",
+        })
+        const messages = yield* ssn.messages({ sessionID: session.id })
+        expect(
+          yield* SessionCompaction.use.process({
+            parentID: marker.info.id,
+            messages,
+            sessionID: session.id,
+            auto: false,
+          }),
+        ).toBe("stop")
+        const after = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+        expect(after.info.id).toBe(marker.info.id)
+        expect(after.parts.map((part) => part.type)).toEqual(["text"])
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+})
+
+describe("session.compaction model order", () => {
+  const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("small") }
+  const agentModel = { ...small, id: ModelV2.ID.make("agent") }
+  const conversation = createModel({ context: 100_000, output: 32_000 })
+  const provider = () =>
+    ProviderTest.fake({
+      model: conversation,
+      getSmallModel: () => Effect.succeed(small),
+      // The catalog knows these two models and no other, as the real one fails for a model it does not list.
+      getModel: (providerID, modelID) =>
+        modelID === agentModel.id
+          ? Effect.succeed(agentModel)
+          : modelID === conversation.id
+            ? Effect.succeed(conversation)
+            : Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID })),
+    })
+
+  // Every attempt but the last times out, so the ladder visits each candidate once, in its order.
+  const visited = (candidates: number) => {
+    const stub = llm()
+    const seen: string[] = []
+    const logs: string[] = []
+    // The message carries the log fields, a Cause among them, which JSON cannot always write.
+    const collector = Logger.make((options) => {
+      logs.push(String(options.message))
+    })
+    for (let index = 0; index < candidates; index++)
+      stub.push((input) => {
+        seen.push(input.model.id)
+        return index === candidates - 1
+          ? reply(validSummary())(input)
+          : Stream.fail(new CompactionTimeoutError({ message: "Compaction stream timed out without progress" }))
+      })
+    return {
+      seen,
+      logs,
+      run: Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: false })
+        const messages = yield* ssn.messages({ sessionID: session.id })
+        return yield* SessionCompaction.use.process({
+          parentID: messages.at(-1)!.info.id,
+          messages,
+          sessionID: session.id,
+          auto: false,
+        })
+      }).pipe(Effect.withLogger(collector), withCompaction({ llm: stub.layer, provider: provider() })),
+    }
+  }
+
+  // The instance's configuration reaches both the compaction service and the compaction agent.
+  const configured = (input: { mode?: "small" | "shared" | "auto"; agent?: string }) => ({
+    git: true,
+    config: {
+      ...(input.mode ? { compaction: { mode: input.mode } } : {}),
+      ...(input.agent ? { agent: { compaction: { model: input.agent } } } : {}),
+    },
+  })
+
+  itCompaction.instance(
+    "without a compaction mode the conversation model is asked first and the small model last",
+    () => {
+      const ladder = visited(2)
+      return Effect.gen(function* () {
+        expect(yield* ladder.run).toBe("continue")
+        expect(ladder.seen).toEqual(["test-model", "small"])
+      })
+    },
+    configured({}),
+  )
+
+  itCompaction.instance(
+    "without a compaction mode the agent.compaction model comes first, then the conversation model, then the small one",
+    () => {
+      const ladder = visited(3)
+      return Effect.gen(function* () {
+        expect(yield* ladder.run).toBe("continue")
+        expect(ladder.seen).toEqual(["agent", "test-model", "small"])
+      })
+    },
+    configured({ agent: "test/agent" }),
+  )
+
+  itCompaction.instance(
+    "mode small restores the order small, agent, conversation",
+    () => {
+      const ladder = visited(3)
+      return Effect.gen(function* () {
+        expect(yield* ladder.run).toBe("continue")
+        expect(ladder.seen).toEqual(["small", "agent", "test-model"])
+      })
+    },
+    configured({ mode: "small", agent: "test/agent" }),
+  )
+
+  for (const mode of ["shared", "auto"] as const) {
+    itCompaction.instance(
+      `mode ${mode} without a usable prefix keeps the order small, agent, conversation`,
+      () => {
+        const ladder = visited(3)
+        return Effect.gen(function* () {
+          expect(yield* ladder.run).toBe("continue")
+          expect(ladder.seen).toEqual(["small", "agent", "test-model"])
+        })
+      },
+      configured({ mode, agent: "test/agent" }),
+    )
+  }
+
+  itCompaction.instance(
+    "an agent.compaction model the catalog does not know is skipped with the ladder going on",
+    () => {
+      const stub = llm()
+      const seen: string[] = []
+      stub.push(reply(validSummary(), (input) => seen.push(input.model.id)))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        yield* SessionCompaction.use.create({ sessionID: session.id, agent: "build", model: ref, auto: false })
+        const messages = yield* ssn.messages({ sessionID: session.id })
+        const result = yield* SessionCompaction.use.process({
+          parentID: messages.at(-1)!.info.id,
+          messages,
+          sessionID: session.id,
+          auto: false,
+        })
+        expect(result).toBe("continue")
+        expect(seen).toEqual(["test-model"])
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true, config: { agent: { compaction: { model: "ghost/missing" } } } },
+  )
+
+  itCompaction.instance(
+    "an unknown agent.compaction model logs a warning and leaves the other stages in their order",
+    () => {
+      const ladder = visited(2)
+      return Effect.gen(function* () {
+        expect(yield* ladder.run).toBe("continue")
+        expect(ladder.seen).toEqual(["small", "test-model"])
+        expect(ladder.logs.filter((line) => line.includes("compaction agent model unavailable"))).toHaveLength(1)
+      })
+    },
+    configured({ mode: "small", agent: "ghost/missing" }),
+  )
 })
 
 describe("session.compaction skill note", () => {

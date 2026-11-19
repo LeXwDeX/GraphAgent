@@ -5,7 +5,7 @@ import { Effect } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
-import { makeFakeProvider, textScript } from "../../lib/fake-provider"
+import { makeFakeProvider, summaryText, textScript } from "../../lib/fake-provider"
 import { reset, settle, snapshot, stepBook, type Counters } from "../../lib/engine-probe"
 import type { BaselineRequest } from "../fingerprint"
 import { fingerprintRequests } from "../fingerprint"
@@ -78,7 +78,7 @@ export function s2Scenario(): Scenario<S2Result, Session.Service | SessionPrompt
         compactions += 1
         // Roughly 14k estimated tokens (4 bytes per token), comfortably above the
         // 9k usable budget.
-        return textScript(compactions === 1 ? "oversized summary ".repeat(3_000) : "short summary")
+        return textScript(summaryText(compactions === 1 ? "oversized summary ".repeat(3_000) : "short summary"))
       }
       return textScript("continued answer")
     },

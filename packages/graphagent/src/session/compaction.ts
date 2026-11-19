@@ -323,6 +323,13 @@ function overflowReplay(
   return { replay: { info: prior.info, parts: prior.parts }, messages: earlier }
 }
 
+// Why a compaction attempt gives way to the next one, as the retry status names it.
+function attemptFailure(input: { incomplete: boolean; refused: boolean; result: SessionProcessor.Result }) {
+  if (input.incomplete) return "returned an incomplete summary"
+  if (input.refused) return "attempted a tool call"
+  return input.result === "timeout" ? "timed out" : "exceeded context"
+}
+
 export interface Interface {
   readonly isOverflow: (input: {
     tokens: SessionV1.Assistant["tokens"]
@@ -489,18 +496,40 @@ export const layer = Layer.effect(
       return { prefix, model: resolved.value }
     })
 
-    // A PreCompact veto settles the pending marker; each branch below says who is told.
-    const settleVetoedCompaction = Effect.fnUntraced(function* (
-      input: ProcessInput & { parent: SessionV1.WithParts; blocked: NonNullable<TriggerResult["blocked"]> },
-    ) {
-      // Settle the pending marker through the persisted message path. A leftover compaction part is
-      // unfinished work for every later prompt, which would then be vetoed again and never answered.
+    // The model `agent.compaction` names, when the catalog knows it. One it does not know leaves that stage out of the
+    // ladder: the ladder skips stages without a model, and a model that cannot be resolved is such a stage.
+    const resolveAgentModel = Effect.fnUntraced(function* (agent: Agent.Info) {
+      if (!agent.model) return undefined
+      const resolved = yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.exit)
+      if (Exit.isSuccess(resolved)) return resolved.value
+      yield* Effect.logWarning("compaction agent model unavailable", {
+        providerID: agent.model.providerID,
+        modelID: agent.model.modelID,
+        cause: resolved.cause,
+      })
+      return undefined
+    })
+
+    // Settle the pending marker through the persisted message path. A leftover compaction part is
+    // unfinished work for every later prompt, which would then run the compaction again and never finish it.
+    const dropMarker = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      parentID: MessageID
+      parent: SessionV1.WithParts
+    }) {
       if (input.parent.parts.every((part) => part.type === "compaction"))
         yield* session.removeMessage({ sessionID: input.sessionID, messageID: input.parentID })
       else
         for (const part of input.parent.parts)
           if (part.type === "compaction")
             yield* session.removePart({ sessionID: input.sessionID, messageID: input.parentID, partID: part.id })
+    })
+
+    // A PreCompact veto settles the pending marker; each branch below says who is told.
+    const settleVetoedCompaction = Effect.fnUntraced(function* (
+      input: ProcessInput & { parent: SessionV1.WithParts; blocked: NonNullable<TriggerResult["blocked"]> },
+    ) {
+      yield* dropMarker(input)
       const reason = input.blocked.reason.trim() || "PreCompact hook blocked compaction"
       if (!input.auto) {
         // Manual /compact shows the hook's reason to the user.
@@ -619,6 +648,44 @@ export const layer = Layer.effect(
           }
         }
       }
+    })
+
+    // The text the summarizer stored in its assistant message; undefined when it stored none.
+    const readSummary = Effect.fnUntraced(function* (sessionID: SessionID, msg: SessionV1.Assistant) {
+      const stored = Option.getOrUndefined(
+        yield* session.findMessage(sessionID, (item) => item.info.id === msg.id).pipe(Effect.orDie),
+      )
+      return summaryText(stored ?? { info: msg, parts: [] })
+    })
+
+    // Whether the finished summary is committed. A summary of the template's shape is. An incomplete one with text is
+    // kept and logged, since the one retry is spent and the narrative still has its use. An empty one is never
+    // committed: its message and the marker go, so the next prompt is not blocked by unfinished work, and the failure
+    // is reported.
+    const settleSummary = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      parentID: MessageID
+      parent: SessionV1.WithParts
+      msg: SessionV1.Assistant
+      summary: string | undefined
+    }) {
+      if (CompactionFacts.validateSummary(input.summary)) return "ok" as const
+      if (input.summary) {
+        yield* Effect.logWarning("compaction summary incomplete", {
+          sessionID: input.sessionID,
+          model: `${input.msg.providerID}/${input.msg.modelID}`,
+          length: input.summary.length,
+        })
+        return "ok" as const
+      }
+      yield* session.removeMessage({ sessionID: input.sessionID, messageID: input.msg.id })
+      yield* dropMarker(input)
+      yield* events.publish(Session.Event.Error, {
+        sessionID: input.sessionID,
+        error: new NamedError.Unknown({ message: "Compaction produced an empty summary" }).toObject(),
+      })
+      yield* status.set(input.sessionID, { type: "idle" })
+      return "stop" as const
     })
 
     // The follow-up user message of an automatic compaction: the replay of the prompt an overflow cut off or, without
@@ -765,9 +832,7 @@ export const layer = Layer.effect(
         .getModel(userMessage.model.providerID, userMessage.model.modelID)
         .pipe(Effect.orDie)
       const smallModel = yield* provider.getSmallModel(conversationModel.providerID)
-      const agentModel = agent.model
-        ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
-        : undefined
+      const agentModel = yield* resolveAgentModel(agent)
       const cfg = yield* config.get()
       const mode = cfg.compaction?.mode ?? "small"
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
@@ -777,19 +842,14 @@ export const layer = Layer.effect(
       const filteredHistory = history.filter((_, index) => !hidden.has(index))
       const nextPrompt = buildPrompt({ previousSummary, context: memoryContext })
       const ctx = yield* InstanceState.context
-      // Clean candidates keep the legacy preference order. A duplicated model
-      // is tried once, under its earliest role.
-      const clean: SessionCompactionModel.CleanCandidate<Provider.Model>[] = []
-      for (const [kind, candidate] of [
-        ["small", smallModel],
-        ["agent", agentModel],
-        ["conversation", conversationModel],
-      ] as const) {
-        if (!candidate) continue
-        if (clean.some((entry) => entry.model.providerID === candidate.providerID && entry.model.id === candidate.id))
-          continue
-        clean.push({ model: candidate, kind })
-      }
+      // Without a configured mode the ladder starts with the agent and conversation models; a configured mode keeps
+      // the legacy order, small model first. A duplicated model is tried once, under its earliest role.
+      const clean = SessionCompactionModel.cleanCandidates({
+        configured: cfg.compaction?.mode,
+        small: smallModel,
+        agent: agentModel,
+        conversation: conversationModel,
+      })
       const model = clean[0].model
       const shared =
         mode === "small"
@@ -840,6 +900,7 @@ export const layer = Layer.effect(
         },
       } satisfies SessionV1.Assistant
       let attempt = 0
+      let retried = false
       let msg: SessionV1.Assistant = template
       let processor: SessionProcessor.Handle
       let result: SessionProcessor.Result
@@ -908,7 +969,18 @@ export const layer = Layer.effect(
         // A refused tool call invalidates the shared attempt even when the
         // stream finished normally: its summary must never be persisted.
         const failed = result === "timeout" || result === "compact" || refused
-        if (!failed) break
+        // A finished summary of the wrong shape is asked for once more, on the same model, before the stage's
+        // result stands. The retry takes the next slot of the plan and does not use up the ladder behind it.
+        const incomplete =
+          result === "continue" &&
+          !refused &&
+          !retried &&
+          !CompactionFacts.validateSummary(yield* readSummary(input.sessionID, msg))
+        if (!failed && !incomplete) break
+        if (incomplete) {
+          retried = true
+          plan.splice(attempt + 1, 0, entry)
+        }
         if (attempt + 1 >= plan.length) {
           if (refused) {
             yield* session.removeMessage({ sessionID: input.sessionID, messageID: msg.id })
@@ -932,11 +1004,11 @@ export const layer = Layer.effect(
         // Failed/partial summaries must never become future compaction input.
         yield* session.removeMessage({ sessionID: input.sessionID, messageID: msg.id })
         attempt++
-        const reason = refused ? "attempted a tool call" : result === "timeout" ? "timed out" : "exceeded context"
+        const reason = attemptFailure({ incomplete, refused, result })
         yield* status.set(input.sessionID, {
           type: "retry",
           attempt,
-          message: `Compaction ${reason}; switching to ${plan[attempt].model.providerID}/${plan[attempt].model.id}`,
+          message: `Compaction ${reason}; ${incomplete ? "retrying with" : "switching to"} ${plan[attempt].model.providerID}/${plan[attempt].model.id}`,
           next: Date.now(),
         })
       }
@@ -953,6 +1025,14 @@ export const layer = Layer.effect(
         return "stop"
       }
 
+      const summary = yield* readSummary(input.sessionID, msg)
+      if (
+        result === "continue" &&
+        (yield* settleSummary({ sessionID: input.sessionID, parentID: input.parentID, parent, msg, summary })) ===
+          "stop"
+      )
+        return "stop"
+
       if (result === "continue" && compactionPart && compactionPart.tail_start_id !== selected.tail_start_id) {
         yield* session.updatePart({
           ...compactionPart,
@@ -960,10 +1040,6 @@ export const layer = Layer.effect(
         })
       }
 
-      const storedSummary = Option.getOrUndefined(
-        yield* session.findMessage(input.sessionID, (item) => item.info.id === msg.id).pipe(Effect.orDie),
-      )
-      const summary = summaryText(storedSummary ?? { info: msg, parts: [] })
       // Auto-compaction may append a follow-up user message (overflow replay or the synthetic "continue" prompt).
       // SessionStart(compact) contexts attach to it so they sit after the summary in model input; without one they
       // are queued.

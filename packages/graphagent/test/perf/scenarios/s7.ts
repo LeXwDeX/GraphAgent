@@ -9,7 +9,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
-import { makeFakeProvider, textScript, toolCallScript } from "../../lib/fake-provider"
+import { makeFakeProvider, summaryText, textScript, toolCallScript } from "../../lib/fake-provider"
 import { reset, settle, snapshot, stepBook } from "../../lib/engine-probe"
 import { TestInstance } from "../../fixture/fixture"
 import { auditHookCommand } from "../../fixture/claude-hook"
@@ -95,7 +95,7 @@ export function s7Scenario(): Scenario<S7Result, Session.Service | SessionPrompt
     script: (input, request) => {
       if (request.purpose === "compaction") {
         compactions += 1
-        return textScript(compactions === 1 ? "oversized summary ".repeat(3_000) : "short summary")
+        return textScript(summaryText(compactions === 1 ? "oversized summary ".repeat(3_000) : "short summary"))
       }
       if (request.purpose !== "conversation") return textScript("ok")
       const step = conversation

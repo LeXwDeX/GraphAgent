@@ -66,6 +66,14 @@ export function textScript(text: string, reason: "stop" | "unknown" = "stop"): L
   ]
 }
 
+/**
+ * A compaction summary in the template's shape (Issue #1469): the sections the continuation text reads each hold an
+ * item, so the scripted summary passes the summary check and is not asked for a second time.
+ */
+export function summaryText(goal: string) {
+  return `## Goal\n- ${goal}\n\n## Progress\n### In Progress\n- (none)\n\n## Next Steps\n- (none)`
+}
+
 export interface ToolCallRequest {
   readonly id: string
   readonly name: string
