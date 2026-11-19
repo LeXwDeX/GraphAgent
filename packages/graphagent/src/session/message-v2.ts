@@ -48,6 +48,7 @@ import { Effect, Schema } from "effect"
 import { EngineProcess } from "./engine-process"
 import { ModelHistory } from "./history/model"
 import { interruptionNote, isReplayableAssistantMessage, replayParts } from "./message-replay"
+import { SwitchProjection } from "./switch-projection"
 import { isRecord } from "@/util/record"
 import { headChars } from "@/util/text"
 import { ToolError } from "@/tool/tool-error"
@@ -209,6 +210,7 @@ interface ConversionContext {
   readonly model: Provider.Model
   readonly options: ToModelMessagesOptions | undefined
   readonly claudeReplay: boolean
+  readonly target: SwitchProjection.Target
 }
 
 // Track media from tool results that need to be injected as user messages
@@ -287,6 +289,7 @@ const conversionContext = (model: Provider.Model, options?: ToModelMessagesOptio
   claudeReplay: ["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic", "@ai-sdk/amazon-bedrock"].includes(
     model.api.npm,
   ),
+  target: SwitchProjection.targetOf(model),
 })
 
 /**
@@ -496,11 +499,14 @@ function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, comp
         )
           continue
         if (!knownThinking && (differentModel || (invalidatedThinking && carrier.kind === "opaque"))) {
-          if (replay.text.trim().length > 0)
-            assistantMessage.parts.push({
-              type: "text",
-              text: replay.text,
-            })
+          const projected = SwitchProjection.reasoningPart({
+            target: context.target,
+            source: msg.info,
+            differentModel,
+            carrierKind: carrier.kind,
+            text: replay.text,
+          })
+          if (projected) assistantMessage.parts.push(projected)
           continue
         }
         assistantMessage.parts.push({

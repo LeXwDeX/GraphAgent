@@ -5,6 +5,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { interruptionNote } from "../../src/session/message-replay"
 import { SessionAbortReason } from "../../src/session/abort-reason"
 import { ProviderTransform } from "@/provider/transform"
+import { ProviderProfile } from "@/provider/profile"
 import { ProviderError } from "@/provider/error"
 import type { Provider } from "@/provider/provider"
 
@@ -897,7 +898,6 @@ describe("session.message-v2.toModelMessage", () => {
         role: "assistant",
         content: [
           { type: "text", text: "done" },
-          { type: "text", text: "thinking" },
           {
             type: "tool-call",
             toolCallId: "call-1",
@@ -2505,6 +2505,21 @@ describe("session.message-v2 reasoning replay boundaries", () => {
   const wire = async (input: SessionV1.WithParts[], options?: Parameters<typeof MessageV2.toModelMessages>[2]) =>
     JSON.stringify(await MessageV2.toModelMessages(input, openaiModel, options))
 
+  /** `openaiModel` with a profile that replays earlier reasoning as `replay` says, as `profile.reasoning_mode.replay` does. */
+  const withReplay = (replay: "none" | "field" | "signed" | "encrypted"): Provider.Model => {
+    const p = ProviderProfile.profileOf(openaiModel)
+    return { ...openaiModel, profile: { ...p, reasoningMode: { ...p.reasoningMode, replay } } }
+  }
+  const wireFor = async (
+    target: Provider.Model,
+    input: SessionV1.WithParts[],
+    options?: Parameters<typeof MessageV2.toModelMessages>[2],
+  ) => JSON.stringify(await MessageV2.toModelMessages(input, target, { cache: "verify", ...options }))
+  const mirror = (value: string) =>
+    reasoning("a1", "mirror", value, {
+      openrouter: { reasoning_details: [{ type: "reasoning.text", text: value, format: "unknown", index: 0 }] },
+    })
+
   test("keeps same-model encrypted reasoning on ordinary turns", async () => {
     const json = await wire([
       userMessage("u1", 1, [text("u1", "u1t", "question")]),
@@ -2536,7 +2551,7 @@ describe("session.message-v2 reasoning replay boundaries", () => {
     })
   }
 
-  test("replays cross-model opaque reasoning as text under the existing compatibility policy", async () => {
+  test("drops cross-model opaque reasoning instead of rewriting it as text", async () => {
     const json = await wire([
       userMessage("u1", 1, [text("u1", "u1t", "question")]),
       assistantMessage("a1", "u1", 2, [reasoning("a1", "r1", "old thinking"), text("a1", "a1t", "answer")], {
@@ -2546,7 +2561,121 @@ describe("session.message-v2 reasoning replay boundaries", () => {
     ])
 
     expect(json).not.toContain("cipher-r1")
-    expect(json).toContain("old thinking")
+    expect(json).not.toContain("old thinking")
+    expect(json).toContain("answer")
+  })
+
+  test("drops cross-model reasoning when the target does not replay it", async () => {
+    const history = (source: { providerID?: string; modelID: string }) => [
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage(
+        "a1",
+        "u1",
+        2,
+        [
+          reasoning("a1", "r1", "old thinking"),
+          reasoning("a1", "plain", "plain thinking", {}),
+          mirror("mirror thinking"),
+          text("a1", "a1t", "answer"),
+        ],
+        source,
+      ),
+    ]
+    const gone = ["old thinking", "plain thinking", "mirror thinking", "cipher-r1", "reasoning_details"]
+    // another provider, and the same provider with another model
+    for (const source of [{ providerID: "other", modelID: "other" }, { modelID: "other-model" }]) {
+      for (const replay of ["none", "signed", "encrypted"] as const) {
+        const json = await wireFor(withReplay(replay), history(source))
+        for (const needle of gone) expect(json).not.toContain(needle)
+        expect(json).toContain("answer")
+      }
+    }
+    // `field` takes only what the same provider produced
+    const json = await wireFor(withReplay("field"), history({ providerID: "other", modelID: "other" }))
+    for (const needle of gone) expect(json).not.toContain(needle)
+    expect(json).toContain("answer")
+  })
+
+  test("replays same-provider plain and mirror reasoning as reasoning parts when replay is field", async () => {
+    const history = [
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage(
+        "a1",
+        "u1",
+        2,
+        [
+          reasoning("a1", "plain", "old thinking", {}),
+          mirror("mirror thinking"),
+          reasoning("a1", "opaque", "opaque thinking"),
+          reasoning("a1", "unknown", "unknown thinking", { foo: { bar: "baz" } }),
+          text("a1", "a1t", "answer"),
+        ],
+        { modelID: "other-model" },
+      ),
+    ]
+    const messages = await MessageV2.toModelMessages(history, withReplay("field"), { cache: "verify" })
+    expect(messages.find((message) => message.role === "assistant")?.content).toEqual([
+      { type: "reasoning", text: "old thinking" },
+      { type: "reasoning", text: "mirror thinking" },
+      { type: "text", text: "answer" },
+    ])
+    const json = JSON.stringify(messages)
+    expect(json).not.toContain("reasoning_details")
+    expect(json).not.toContain("cipher-opaque")
+    expect(json).not.toContain("opaque thinking")
+    expect(json).not.toContain("unknown thinking")
+  })
+
+  test("a field target sends the replayed reasoning in its interleaved field, and a target that does not replay sends none", async () => {
+    const field = (replay: "none" | "field"): Provider.Model => ({
+      ...withReplay(replay),
+      api: { ...openaiModel.api, npm: "@ai-sdk/openai-compatible" },
+      capabilities: { ...openaiModel.capabilities, interleaved: { field: "reasoning_content" } },
+    })
+    const history = [
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage("a1", "u1", 2, [reasoning("a1", "plain", "old thinking", {}), text("a1", "a1t", "answer")], {
+        modelID: "other-model",
+      }),
+    ]
+    const sent = async (target: Provider.Model) =>
+      ProviderTransform.message(await MessageV2.toModelMessages(history, target, { cache: "verify" }), target, {})
+        .filter((message) => message.role === "assistant")
+        .map((message) => ({
+          content: JSON.stringify(message.content),
+          field: message.providerOptions?.openaiCompatible,
+        }))
+
+    expect(await sent(field("field"))).toEqual([
+      { content: JSON.stringify([{ type: "text", text: "answer" }]), field: { reasoning_content: "old thinking" } },
+    ])
+    expect(await sent(field("none"))).toEqual([
+      { content: JSON.stringify([{ type: "text", text: "answer" }]), field: { reasoning_content: "" } },
+    ])
+  })
+
+  test("same-model conversion does not depend on replay", async () => {
+    const history = [
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage("a1", "u1", 2, [
+        reasoning("a1", "r1", "old thinking"),
+        text("a1", "a1t", "answer"),
+        bashPart("a1", "t1", "call_1", doneState("ok")),
+      ]),
+    ]
+    const replays = ["none", "field", "signed", "encrypted"] as const
+    const wires = await Promise.all(replays.map((replay) => wireFor(withReplay(replay), history)))
+    expect(new Set(wires).size).toBe(1)
+    expect(wires[0]).toContain("cipher-r1")
+    expect(wires[0]).toContain("call_1")
+
+    // the reasoning whose opaque carrier a compaction invalidated becomes text, whatever the target replays
+    const stripped = await Promise.all(
+      replays.map((replay) => wireFor(withReplay(replay), history, { stripOpaqueReasoning: true })),
+    )
+    expect(new Set(stripped).size).toBe(1)
+    expect(stripped[0]).toContain("old thinking")
+    expect(stripped[0]).not.toContain("cipher-r1")
   })
 
   test("keeps pre-compaction reasoning when the summary did not finish successfully", async () => {
@@ -2630,6 +2759,76 @@ describe("session.message-v2 reasoning replay boundaries", () => {
     )
 
     expect(json).not.toContain("cipher-empty")
+  })
+})
+
+describe("session.message-v2 edit tool families", () => {
+  const withEditTools = (editTools: "edit" | "apply_patch"): Provider.Model => ({
+    ...model,
+    profile: { ...ProviderProfile.profileOf(model), editTools },
+  })
+  const tool = (id: string, callID: string, name: string, state: SessionV1.ToolState): SessionV1.Part => ({
+    ...basePart("a1", id),
+    type: "tool",
+    callID,
+    tool: name,
+    state,
+  })
+  const done = (input: Record<string, unknown>, output: string): SessionV1.ToolState => ({
+    status: "completed",
+    input,
+    output,
+    title: "edit",
+    metadata: {},
+    time: { start: 0, end: 1 },
+  })
+
+  test("keeps tool calls of the other edit family as calls and results", async () => {
+    const history: SessionV1.WithParts[] = [
+      {
+        info: userInfo("u1"),
+        parts: [{ ...basePart("u1", "u1t"), type: "text", text: "change it" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo("a1", "u1", undefined, { providerID: "other", modelID: "other" }),
+        parts: [
+          tool("p1", "call_patch", "apply_patch", done({ patchText: "*** Begin Patch" }, "patched")),
+          tool("p2", "call_edit", "edit", {
+            status: "error",
+            input: { filePath: "/x", oldString: "a", newString: "b" },
+            error: "no match",
+            time: { start: 0, end: 1 },
+          }),
+          tool("p3", "call_write", "write", done({ filePath: "/y", content: "c" }, "written")),
+        ],
+      },
+    ]
+    // the other family is the same history whichever family the target offers
+    const [edit, patch] = await Promise.all(
+      (["edit", "apply_patch"] as const).map((editTools) =>
+        MessageV2.toModelMessages(history, withEditTools(editTools), { cache: "bypass" }),
+      ),
+    )
+    expect(JSON.stringify(edit)).toBe(JSON.stringify(patch))
+
+    const calls: string[][] = []
+    const results: string[][] = []
+    for (const message of edit) {
+      if ((message.role !== "assistant" && message.role !== "tool") || typeof message.content === "string") continue
+      for (const part of message.content) {
+        if (part.type === "tool-call") calls.push([part.toolName, part.toolCallId])
+        if (part.type === "tool-result") results.push([part.toolName, part.toolCallId])
+      }
+    }
+    const expected = [
+      ["apply_patch", "call_patch"],
+      ["edit", "call_edit"],
+      ["write", "call_write"],
+    ]
+    expect(calls).toEqual(expected)
+    expect(results).toEqual(expected)
+    expect(JSON.stringify(edit)).toContain("patched")
+    expect(JSON.stringify(edit)).toContain("no match")
   })
 })
 
