@@ -5,6 +5,7 @@ import { InstanceState } from "@/effect/instance-state"
 
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
+import { McpReadonly } from "@/agent/mcp-readonly"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 import { ROOT_ONLY_SKILLS } from "@/skill/builtin"
@@ -235,12 +236,18 @@ export const layer = Layer.effect(
         permission?: PermissionV1.Ruleset,
         nativePermission?: PermissionV1.Ruleset,
       ) {
-        const ruleset = Permission.merge(agent.permission, permission ?? [])
-        const instructions = (yield* mcp.instructions()).filter(
-          (item) =>
-            item.tools.length === 0 ||
-            Permission.disabledByPolicy(item.tools, nativePermission ?? [], ruleset).size < item.tools.length,
-        )
+        const instructions = (yield* mcp.instructions()).filter((item) => {
+          if (item.tools.length === 0) return true
+          // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454), so for one
+          // of them a server with such a tool is not a server whose tools are all denied (#1574).
+          const policy = McpReadonly.adjust(
+            agent,
+            { native: nativePermission ?? [], rules: agent.permission },
+            item.readOnlyTools,
+          )
+          const ruleset = Permission.merge(policy.rules, permission ?? [])
+          return Permission.disabledByPolicy(item.tools, policy.native, ruleset).size < item.tools.length
+        })
         if (instructions.length === 0) return
 
         const key = RequestCache.digest({

@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import path from "node:path"
-import { contextWindow, type BuiltinRule, type ModelProfile } from "@graphagent/core/model-profile"
+import { contextWindow, resolveProfile, type BuiltinRule, type ModelProfile } from "@graphagent/core/model-profile"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import type { Provider } from "@/provider/provider"
@@ -213,6 +213,85 @@ describe("ProviderProfile.syncProfile", () => {
     const model = profiled()
     const synced = ProviderProfile.syncProfile({ ...model, limit: { ...model.limit, context: model.limit.context } })
     expect(synced.profile?.sources.context).toBe("catalog")
+  })
+
+  // A catalog model's profile was worked out for the package and the id the model had then. An adapter that hands the
+  // model back through another package (Copilot does) or under another id would otherwise keep those rule results.
+  describe("when the adapter changed the package or the id", () => {
+    const api = (id: string, npm: string): Provider.Model["api"] => ({ id, url: "https://relay.test/v1", npm })
+    const evaluated = (id: string, npm: string) => {
+      const base = full({ api: api(id, npm) })
+      return { ...base, profile: ProviderProfile.profileOf(base) }
+    }
+
+    test("rule fields follow the new package, and an unchanged model is returned as it is", () => {
+      const model = evaluated("gpt-5", "@ai-sdk/openai")
+      expect(model.profile.schemaFixes).toEqual(["openai"])
+      expect(model.profile.toolResultMedia).toBe("all")
+      expect(ProviderProfile.syncProfile(model)).toBe(model)
+
+      const moved = ProviderProfile.syncProfile({ ...model, api: api("gpt-5", "@ai-sdk/github-copilot") })
+      expect(moved.api.npm).toBe("@ai-sdk/github-copilot")
+      expect(moved.profile?.schemaFixes).toEqual([])
+      expect(moved.profile?.toolResultMedia).toBe("none")
+      expect(moved.profile?.sources.schemaFixes).toBeUndefined()
+      expect(moved.profile?.sources.toolResultMedia).toBeUndefined()
+      // What no rule produced is carried over, and the id-based rules still apply.
+      expect(moved.profile?.context).toBe(model.profile.context)
+      expect(moved.profile?.sources.context).toBe("adapter")
+      expect(moved.profile?.editTools).toBe("apply_patch")
+      expect(moved.profile?.sources.editTools).toBe("builtin:edit-tools-apply-patch")
+    })
+
+    test("a package that a rule names brings that rule's fields", () => {
+      const model = evaluated("m", "@ai-sdk/openai-compatible")
+      expect(model.profile.toolResultMedia).toBe("none")
+      expect(model.profile.cacheMarker).toBe("none")
+      const moved = ProviderProfile.syncProfile({ ...model, api: api("m", "@ai-sdk/anthropic") })
+      expect(moved.profile?.toolResultMedia).toBe("all")
+      expect(moved.profile?.cacheMarker).toBe("explicit")
+      expect(moved.profile?.sources.toolResultMedia).toBe("builtin:tool-result-media")
+      expect(moved.profile?.sources.cacheMarker).toBe("builtin:cache-marker-anthropic")
+    })
+
+    test("the API id is read again too", () => {
+      const model = evaluated("m", "@ai-sdk/openai-compatible")
+      const renamed = ProviderProfile.syncProfile({ ...model, api: api("claude-sonnet-4", model.api.npm) })
+      expect(renamed.profile?.toolCallId).toEqual({ charset: "alnum_dash" })
+      expect(renamed.profile?.sources.toolCallId).toBe("builtin:tool-call-id-claude")
+      expect(renamed.profile?.cacheMarker).toBe("explicit")
+    })
+
+    test("a value the configuration declared is kept, and the rest follows the new package", () => {
+      const own = evaluated("gpt-5", "@ai-sdk/openai")
+      const profile = resolveProfile({
+        providerID: "relay",
+        apiID: "gpt-5",
+        npm: "@ai-sdk/openai",
+        base: own.profile,
+        config: { profile: { schema_fixes: [] } },
+      })
+      const model = { ...own, profile }
+      expect(model.profile.sources.schemaFixes).toBe("config")
+      expect(model.profile.toolResultMedia).toBe("all")
+      const moved = ProviderProfile.syncProfile({ ...model, api: api("gpt-5", "@ai-sdk/github-copilot") })
+      expect(moved.profile?.schemaFixes).toEqual([])
+      expect(moved.profile?.sources.schemaFixes).toBe("config")
+      expect(moved.profile?.toolResultMedia).toBe("none")
+    })
+
+    test("a limit the adapter changed and a package it changed are both taken", () => {
+      const model = evaluated("gpt-5", "@ai-sdk/openai")
+      const synced = ProviderProfile.syncProfile({
+        ...model,
+        api: api("gpt-5", "@ai-sdk/github-copilot"),
+        limit: { context: 100_000, output: 16_000 },
+      })
+      expect(synced.profile?.context).toBe(100_000)
+      expect(synced.profile?.sources.context).toBe("adapter")
+      expect(synced.profile?.schemaFixes).toEqual([])
+      expect(synced.profile?.toolResultMedia).toBe("none")
+    })
   })
 })
 

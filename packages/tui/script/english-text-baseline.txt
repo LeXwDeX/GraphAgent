@@ -128,23 +128,16 @@ panel/settings.tsx	prop	Previous tab
 routes/session/index.tsx	jsx-attr	# ${}: blocked
 routes/session/index.tsx	jsx-attr	# Questions
 routes/session/index.tsx	jsx-attr	# Todos
-routes/session/index.tsx	jsx-attr	Compaction
 routes/session/index.tsx	jsx-text	Asked
-routes/session/index.tsx	jsx-text	Click to collapse	2
-routes/session/index.tsx	jsx-text	Click to expand	2
-routes/session/index.tsx	jsx-text	Directory
 routes/session/index.tsx	jsx-text	Edit
 routes/session/index.tsx	jsx-text	Error [
-routes/session/index.tsx	jsx-text	File
 routes/session/index.tsx	jsx-text	Glob "
 routes/session/index.tsx	jsx-text	Grep "
 routes/session/index.tsx	jsx-text	Patch
-routes/session/index.tsx	jsx-text	QUEUED
 routes/session/index.tsx	jsx-text	Read
 routes/session/index.tsx	jsx-text	Skill "
 routes/session/index.tsx	jsx-text	Thinking
 routes/session/index.tsx	jsx-text	Thought
-routes/session/index.tsx	jsx-text	Tools started in this turn, so it was not replayed automatically. Retry manually.
 routes/session/index.tsx	jsx-text	Updating todos...
 routes/session/index.tsx	jsx-text	WebFetch
 routes/session/index.tsx	jsx-text	Write
@@ -155,7 +148,6 @@ routes/session/index.tsx	jsx-text	message reverted	2
 routes/session/index.tsx	jsx-text	or /redo to restore	2
 routes/session/index.tsx	jsx-text	question
 routes/session/index.tsx	jsx-text	results)
-routes/session/index.tsx	jsx-text	· interrupted
 routes/session/index.tsx	jsx-text	↳ Loaded
 routes/session/index.tsx	prop	Are you sure you want to restore the reverted messages?	2
 routes/session/index.tsx	prop	Background subagents

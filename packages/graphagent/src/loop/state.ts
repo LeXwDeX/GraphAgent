@@ -138,8 +138,18 @@ export const Recovery = Schema.Struct({
   reset: NonNegativeInt,
   probes: NonNegativeInt,
   probe_at: Schema.optional(Schema.Number),
-  /** The assistant message the chain started at (diagnostics and audit). */
+  /**
+   * The assistant message of the latest step the chain acted on: the turn that failed, or the boundary whose
+   * analysis failed. A turn that ends at another message since is how a pending probe learns the world moved on.
+   * The empty string stands for a failed turn that left no message.
+   */
   boundary: Schema.String,
+  /**
+   * What that step was: a turn (`round`) or the analysis of the boundary (`analysis`). The two cannot be told apart
+   * from the boundary: a loop resumed at a boundary whose turn ended on an error analyses it first. A probe that comes
+   * due redoes this step. Absent in a chain written before it was recorded; the probe then reads it off the boundary.
+   */
+  step: Schema.optional(Schema.Literals(["round", "analysis"])),
 })
 export type Recovery = typeof Recovery.Type
 

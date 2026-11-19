@@ -13,11 +13,41 @@ export function outputOverflows(output: string, maxLines: number, maxChars: numb
   return output.length > maxChars && Array.from(output).length > maxChars
 }
 
-export function collapseToolOutput(output: string, maxLines: number, maxChars: number) {
-  if (!outputOverflows(output, maxLines, maxChars)) return { output, overflow: false }
+/** What `collapseToolOutput` hands back. */
+export interface CollapsedOutput {
+  /**
+   * What a folded block draws: the first `maxLines` lines, or, when those run past `maxChars`, the first characters of
+   * them closed by a `…` inside the text. An output that does not fold comes back whole.
+   */
+  output: string
+  overflow: boolean
+  /**
+   * Lines past `maxLines`, which the hint under a folded block counts. Nothing when the output is only cut at a long
+   * line, or does not fold.
+   */
+  hidden: number
+}
+
+export interface CollapseOptions {
+  /**
+   * Closes an output cut by lines with a `…` line of its own, as the task block of a sub-agent view draws its
+   * prompt. The hint line under a tool block opens with a `…` already, so those blocks leave this off.
+   */
+  ellipsisRow?: boolean
+}
+
+export function collapseToolOutput(
+  output: string,
+  maxLines: number,
+  maxChars: number,
+  options: CollapseOptions = {},
+): CollapsedOutput {
+  if (!outputOverflows(output, maxLines, maxChars)) return { output, overflow: false, hidden: 0 }
 
   const lines = output.split("\n")
-  const preview = lines.slice(0, maxLines).join("\n")
+  const hidden = Math.max(0, lines.length - maxLines)
+  const kept = lines.slice(0, maxLines)
+  const preview = kept.join("\n")
   if (Array.from(preview).length > maxChars) {
     return {
       output:
@@ -25,8 +55,9 @@ export function collapseToolOutput(output: string, maxLines: number, maxChars: n
           .slice(0, Math.max(0, maxChars - 1))
           .join("") + "…",
       overflow: true,
+      hidden,
     }
   }
 
-  return { output: [...lines.slice(0, maxLines), "…"].join("\n"), overflow: true }
+  return { output: options.ellipsisRow ? [...kept, "…"].join("\n") : preview, overflow: true, hidden }
 }

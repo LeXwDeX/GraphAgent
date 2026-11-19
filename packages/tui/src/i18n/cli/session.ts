@@ -13,6 +13,9 @@ export const sessionZhCN = {
   "cli.session.describe": "管理会话",
   "cli.session.delete.describe": "删除会话",
   "cli.session.delete.arg.sessionID": "要删除的会话 ID",
+  "cli.session.delete.option.force": "即使别的进程正在运行也删除（只删数据库行）",
+  "cli.session.delete.foreignRunning":
+    "未删除：以下会话正在别的进程中运行：{runs}。直接删除不会停止它；先在那个进程里取消，或加 --force 只删数据库行。",
   "cli.session.delete.done": "已删除会话 {sessionID}",
   "cli.session.notFound": "未找到会话：{sessionID}",
   "cli.session.list.describe": "列出会话",
@@ -76,6 +79,9 @@ export const sessionEn: Record<keyof typeof sessionZhCN, string> = {
   "cli.session.describe": "manage sessions",
   "cli.session.delete.describe": "delete a session",
   "cli.session.delete.arg.sessionID": "session ID to delete",
+  "cli.session.delete.option.force": "delete even if another process runs it (database rows only)",
+  "cli.session.delete.foreignRunning":
+    "Not deleted: still running in another process: {runs}. Deleting does not stop that run; cancel it in that process first, or add --force to delete only the database rows.",
   "cli.session.delete.done": "Session {sessionID} deleted",
   "cli.session.notFound": "Session not found: {sessionID}",
   "cli.session.list.describe": "list sessions",

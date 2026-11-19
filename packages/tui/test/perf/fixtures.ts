@@ -304,9 +304,10 @@ export function richTail(fixture: PerfFixture, count: number): PerfFixture {
 
 /**
  * Gives every `every`-th bash call of the fixture an output of 30 lines. A tool whose output runs past ten
- * lines shows the first ten under a "Click to expand" and opens to the whole of it when clicked; the bash
- * parts of the default fixture carry no output in their metadata and render as a single line, so nothing in
- * it can be opened. It edits the fixture in place; call it before mounting.
+ * lines shows the first ten above a hint that says how many are left out, and opens to the whole of it when
+ * clicked or when `view.expand.toggle` is pressed; the bash parts of the default fixture carry no output in
+ * their metadata and render as a single line, so nothing in it can be opened. It edits the fixture in place;
+ * call it before mounting.
  */
 export function expandableOutputs(fixture: PerfFixture, every: number): PerfFixture {
   const output = Array.from({ length: 30 }, (_, line) => `output line ${line}`).join("\n")

@@ -445,7 +445,9 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --force       delete even if another process runs it (database rows only)
+                                                                          [boolean] [default: false]"
 `;
 
 exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent db path --help 1`] = `

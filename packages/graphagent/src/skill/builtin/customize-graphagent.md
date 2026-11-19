@@ -287,7 +287,9 @@ file, `disable: true` in frontmatter.
 
 GraphAgent ships with `build`, `plan`, `general`, `explore`. Hidden internal agents:
 `compaction`, `title`, `summary`. To override a built-in's fields, define the
-same key in `agent: { <name>: { ... } }`.
+same key in `agent: { <name>: { ... } }`. The read-only ones (`explore`,
+`researcher`, `architect`, `review`, `auditor`) are also open to the MCP tools
+that declare `readOnlyHint`; see "MCP servers" below for how to close them.
 
 ## Commands
 
@@ -355,12 +357,24 @@ optional `$schema`:
   30000 each.
 - `disabled: true` turns a server off. The old `enabled` field is rejected.
 - `deferred: true` keeps the server's tool definitions out of every request, for a
-  server with many tools. The model then sees one catalog line per tool in the
-  description of `mcp_describe`, loads a tool's schema with `mcp_describe`, and
-  calls the tool with `mcp_call`. Permission rules and hooks name the tool itself,
-  not `mcp_call`. The default is `false`: every tool is loaded, and a warning
-  appears once when the definitions of those tools pass 16 KB; no server is
-  deferred for you.
+  server with many tools. The model sees a catalog of one line per tool in the
+  description of `mcp_describe`, capped at 200 lines or 16 KB (a warning is logged
+  once when it is over; the last lines count the tools left out of each server).
+  `mcp_describe` loads a tool's schema, or lists every tool of a server when given
+  `server`, and `mcp_call` calls the tool; a tool left out of the catalog is called
+  by its key like any other. Permission rules and hooks name the tool itself, not
+  `mcp_call`. The default is `false`: every tool is loaded, and a warning appears
+  once when the definitions of those tools pass 16 KB; no server is deferred for you.
+- A tool that declares `annotations.readOnlyHint: true` (the boolean) is open,
+  without a question, to the built-in `explore`, `researcher`, `architect`,
+  `review` and `auditor` agents and to the DAG nodes that run them (an unattended
+  run under the `ask` or `readonly` tier of `dag.permission` still asks or refuses,
+  as for any MCP tool). They reach such a tool of a `deferred` server through
+  `mcp_describe` and `mcp_call`, and the catalog they see lists only those tools.
+  A tool without the declaration stays closed to them, and the hint is the
+  server's own word, trusted as given. To close a tool, deny it in `permission`:
+  its key (`<server>_<tool>`), `<server>_*` for the server, or `mcp_describe` /
+  `mcp_call` (either hides both) for every deferred tool.
 - A model whose profile sets `tool_limits` (`max_tools`, `name_max_length`,
   `name_pattern`, under `provider.<id>.models.<id>.profile`) gets the MCP tools
   that break them in that same catalog, with a warning once.

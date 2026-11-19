@@ -180,11 +180,33 @@ interface State {
    * grants access must not override that choice and reconnect them.
    */
   manualDisabled: Set<string>
-  /** The `mcp.json` layers behind a signature cache: `tools()` runs on every step and must not decode them again. */
+  /**
+   * The `mcp.json` layers behind a signature cache: `tools()` runs on every step and must not decode them again.
+   * Every reader goes through `configuredServers`, so a file that cannot be read fails none of them (#1575).
+   */
   files: ReturnType<typeof McpConfig.cached>
   /** `tools()` has told the user that the definitions it sends are large (#1459); it says so once. */
   definitionWarned: boolean
 }
+
+/**
+ * The merged servers of the `mcp.json` layers, read through the signature cache of `State.files`. The call that first
+ * sees a file it cannot read says so, once for that content; the servers that are still valid stay in use, so a broken
+ * file neither fails the caller nor hides the servers of the other layer (#1575).
+ */
+const configured = Effect.fnUntraced(function* (s: State, root: string) {
+  const { servers, project, error } = s.files(root)
+  if (error !== undefined) {
+    yield* Effect.logWarning("mcp.json cannot be read; keeping the servers that are still valid", {
+      error: describeReadFailure(error),
+    })
+  }
+  return { servers, project }
+})
+
+const configuredServers = Effect.fnUntraced(function* (s: State, root: string) {
+  return (yield* configured(s, root)).servers
+})
 
 const toolID = (server: string, tool: string) => `${server}\0${tool}`
 
@@ -208,6 +230,8 @@ export interface ServerInstructions {
   name: string
   instructions: string
   tools: string[]
+  /** The keys among `tools` of the tools that declare `readOnlyHint: true`, as `tools()` binds them (#1574). */
+  readOnlyTools: string[]
 }
 
 export interface Interface {
@@ -453,12 +477,15 @@ export const layer = Layer.effect(
      * Project-trust verdict for one server name whose effective configuration
      * comes from the project `mcp.json`. Undefined when the name is not
      * project-sourced (a global entry or a runtime-added server): no project
-     * provenance, so nothing to gate.
+     * provenance, so nothing to gate. The provenance is the project document
+     * the configured servers were read from, not the file as it is now: a
+     * cached project server stays gated after its file becomes unreadable, and
+     * a skipped project document gates nothing (#1575).
      */
     const projectVerdict = Effect.fnUntraced(function* (name: string) {
       if (!trust) return undefined
       const ctx = yield* InstanceState.context
-      const project = McpConfig.projectLayer(ctx.root)
+      const { project } = yield* configured(yield* InstanceState.get(state), ctx.root)
       if (!project) return undefined
       const entry = mcpEntries(project.relative, project.value).find((candidate) => candidate.label === name)
       if (!entry) return undefined
@@ -471,10 +498,12 @@ export const layer = Layer.effect(
      * from the project layer are omitted and stay ungated. One gate call keeps
      * the refused ids in the directory's skipped report.
      */
-    const projectVerdicts = Effect.fnUntraced(function* (root: string, names: readonly string[]) {
+    const projectVerdicts = Effect.fnUntraced(function* (
+      project: McpConfig.ProjectLayerDocument | undefined,
+      names: readonly string[],
+    ) {
       const verdicts = new Map<string, boolean>()
       if (!trust || names.length === 0) return verdicts
-      const project = McpConfig.projectLayer(root)
       if (!project) return verdicts
       const byName = new Map(mcpEntries(project.relative, project.value).map((entry) => [entry.label, entry]))
       const sourced = names.flatMap((name) => {
@@ -597,9 +626,6 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* (ctx) {
         const bridge = yield* EffectBridge.make()
-        // mcp.json is the only source of server definitions; a removed V1 shape
-        // throws a ConfigInvalidError that names the offending file and key.
-        const config = McpConfig.load(ctx.root)
         const s: State = {
           config: {},
           status: {},
@@ -610,10 +636,13 @@ export const layer = Layer.effect(
           files: McpConfig.cached(),
           definitionWarned: false,
         }
+        // mcp.json is the only source of server definitions. A layer that cannot be read (a syntax error, a removed
+        // V1 shape, an unknown field) is skipped and reported, so the servers of the other layer still start.
+        const { servers: config, project } = yield* configured(s, ctx.root)
         // Project-layer servers must be trusted before their process starts.
         // A refused server keeps a `disabled` status (the same surface a user
         // sees for `disabled: true`) and is reported by the CLI's skipped count.
-        const verdicts = yield* projectVerdicts(ctx.root, Object.keys(config))
+        const verdicts = yield* projectVerdicts(project, Object.keys(config))
 
         yield* Effect.forEach(
           Object.entries(config),
@@ -638,8 +667,13 @@ export const layer = Layer.effect(
         // A trust decision changes the gate output without touching mcp.json,
         // so the state must react on its own: newly trusted servers start,
         // revoked ones are closed. A manual disconnect wins over a later grant.
+        // Verdicts follow the configuration as it is now, with its provenance (the cached document while the file
+        // cannot be read), so a project entry that a later `connect` started is closed when its trust is revoked.
+        // The names are those of the startup configuration and of every running client.
         const reconcile = Effect.fnUntraced(function* () {
-          const next = yield* projectVerdicts(ctx.root, Object.keys(config))
+          const current = yield* configured(s, ctx.root)
+          const names = [...new Set([...Object.keys(config), ...Object.keys(s.clients)])]
+          const next = yield* projectVerdicts(current.project, names)
           for (const [name, allowed] of next) {
             if (!allowed) {
               const client = s.clients[name]
@@ -650,7 +684,8 @@ export const layer = Layer.effect(
             if (s.manualDisabled.has(name)) continue
             if (s.clients[name]) continue
             if (s.status[name]?.status === "connected" || s.status[name]?.status === "needs_auth") continue
-            const mcp = config[name]
+            const mcp = current.servers[name] ?? config[name]
+            if (!mcp) continue
             const result = yield* create(name, mcp)
             if (!result.mcpClient) {
               s.status[name] = result.status
@@ -713,7 +748,7 @@ export const layer = Layer.effect(
     const status = Effect.fn("MCP.status")(function* () {
       const s = yield* InstanceState.get(state)
       const ctx = yield* InstanceState.context
-      const config = McpConfig.load(ctx.root)
+      const config = yield* configuredServers(s, ctx.root)
       const result: Record<string, Status> = {}
 
       for (const key of Object.keys(config)) {
@@ -739,9 +774,19 @@ export const layer = Layer.effect(
         .filter(([name]) => s.status[name]?.status === "connected")
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, item]) => {
-          const listed = (s.defs[name] ?? []).map((tool) => keys.get(toolID(name, tool.name)) ?? "")
-          // A tool listed twice has one key, and a tool without a key is not offered.
-          return { name, instructions: item, tools: [...new Set(listed)].filter((key) => key !== "") }
+          // A tool listed twice has one key, and a tool without a key is not offered. The first listing of a key is the
+          // one `tools()` binds, so it is the one whose hint counts: only the boolean `true` marks a tool read-only.
+          const offered = new Map<string, boolean>()
+          for (const tool of s.defs[name] ?? []) {
+            const key = keys.get(toolID(name, tool.name)) ?? ""
+            if (key !== "" && !offered.has(key)) offered.set(key, tool.annotations?.readOnlyHint === true)
+          }
+          return {
+            name,
+            instructions: item,
+            tools: [...offered.keys()],
+            readOnlyTools: [...offered].filter(([, readOnly]) => readOnly).map(([key]) => key),
+          }
         })
     })
 
@@ -813,12 +858,7 @@ export const layer = Layer.effect(
       let bytes = 0
       const s = yield* InstanceState.get(state)
       const ctx = yield* InstanceState.context
-      const { servers: config, error } = s.files(ctx.root)
-      if (error !== undefined) {
-        yield* Effect.logWarning("mcp.json cannot be read; keeping the last valid servers", {
-          error: describeReadFailure(error),
-        })
-      }
+      const config = yield* configuredServers(s, ctx.root)
 
       const keys = connectedKeys(s)
       for (const [clientName, client] of Object.entries(s.clients)) {
@@ -881,7 +921,7 @@ export const layer = Layer.effect(
     ) {
       return Effect.gen(function* () {
         const ctx = yield* InstanceState.context
-        const config = McpConfig.load(ctx.root)
+        const config = yield* configuredServers(s, ctx.root)
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
             ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
@@ -936,7 +976,7 @@ export const layer = Layer.effect(
         return undefined
       }
       const ctx = yield* InstanceState.context
-      const config = McpConfig.load(ctx.root)
+      const config = yield* configuredServers(s, ctx.root)
       return yield* Effect.tryPromise({
         try: () => fn(client, requestTimeout(s, clientName, config[clientName])),
         catch: (error) => error,
@@ -979,7 +1019,7 @@ export const layer = Layer.effect(
       if (s.config[mcpName]) return s.config[mcpName]
 
       const ctx = yield* InstanceState.context
-      return McpConfig.load(ctx.root)[mcpName]
+      return (yield* configuredServers(s, ctx.root))[mcpName]
     })
 
     const requireMcpConfig = Effect.fnUntraced(function* (mcpName: string) {

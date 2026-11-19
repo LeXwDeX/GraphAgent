@@ -2,6 +2,7 @@ import type { Argv } from "yargs"
 import { Effect } from "effect"
 import { cmd } from "./cmd"
 import { effectCmd, fail } from "../effect-cmd"
+import { Database } from "@graphagent/core/database/database"
 import { Session } from "@/session/session"
 import { SessionID } from "../../session/schema"
 import { UI } from "../ui"
@@ -49,20 +50,59 @@ export const SessionCommand = cmd({
   async handler() {},
 })
 
+/** `rootID` and every session below it, DAG node sessions included: the sessions `Session.remove` deletes. */
+export const sessionTree = Effect.fnUntraced(function* (
+  children: (parentID: SessionID) => Effect.Effect<ReadonlyArray<{ readonly id: SessionID }>>,
+  rootID: SessionID,
+) {
+  const seen = new Set<SessionID>([rootID])
+  let level: readonly SessionID[] = [rootID]
+  while (level.length > 0) {
+    const listed = yield* Effect.forEach(level, (id) => children(id), { concurrency: "unbounded" })
+    level = listed.flat().flatMap((child) => (seen.has(child.id) ? [] : (seen.add(child.id), [child.id])))
+  }
+  return [...seen]
+})
+
+/**
+ * `removeSession` cancels only this process's runs (#1558). A turn that another live process is running somewhere in
+ * the tree would go on spending tokens against rows that are gone, so the delete is refused until the user has
+ * stopped that run, or accepted it with `--force` (#1584). The turn rows say who runs what; there is no
+ * cross-process cancel to offer instead.
+ */
+export const refuseForeignRuns = Effect.fnUntraced(function* (sessionID: SessionID) {
+  const sessions = yield* Session.Service
+  const database = yield* Database.Service
+  // Loaded here like the prompt engine: `turns` pulls in the child-run machinery.
+  const { Turns } = yield* Effect.promise(() => import("@/session/turns"))
+  const tree = yield* sessionTree((id) => sessions.children(id), sessionID)
+  const runs = yield* Turns.foreignRunning(database, tree)
+  if (runs.length === 0) return
+  const listed = runs.map((run) => `${run.sessionID} (pid ${run.pid})`).join(", ")
+  yield* fail(t("cli.session.delete.foreignRunning", { runs: listed }))
+})
+
 export const SessionDeleteCommand = effectCmd({
   command: "delete <sessionID>",
   describe: t("cli.session.delete.describe"),
   builder: (yargs) =>
-    yargs.positional("sessionID", {
-      describe: t("cli.session.delete.arg.sessionID"),
-      type: "string",
-      demandOption: true,
-    }),
+    yargs
+      .positional("sessionID", {
+        describe: t("cli.session.delete.arg.sessionID"),
+        type: "string",
+        demandOption: true,
+      })
+      .option("force", {
+        describe: t("cli.session.delete.option.force"),
+        type: "boolean",
+        default: false,
+      }),
   handler: Effect.fn("Cli.session.delete")(function* (args) {
     // Loaded here: the CLI entry imports this module for every command, and the prompt engine is heavy.
     const { SessionPrompt } = yield* Effect.promise(() => import("@/session/prompt"))
     const prompt = yield* SessionPrompt.Service
     const sessionID = SessionID.make(args.sessionID)
+    if (!args.force) yield* refuseForeignRuns(sessionID)
     yield* prompt
       .removeSession(sessionID)
       .pipe(

@@ -159,6 +159,11 @@ export type HarnessOptions = {
    * once and stays.
    */
   routes?: boolean
+  /**
+   * Interface language the server's config names. English by default, whatever the machine's locale is, so the
+   * assertions that read the words of the screen do not depend on where the suite runs.
+   */
+  language?: "zh-CN" | "en"
 }
 
 export async function mountHarness(fixture: PerfFixture, options: HarnessOptions = {}): Promise<PerfHarness> {
@@ -169,6 +174,7 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
   // is tied to the body having been read, without a wall-clock sleep (#1300
   // review).
   const calls = createFetch((url) => {
+    if (url.pathname === "/config") return Response.json({ language: options.language ?? "en" })
     const response = makeFetchFixture(fixture, url)
     if (response && url.pathname.endsWith("/dag-mode")) {
       const body = response.text.bind(response)

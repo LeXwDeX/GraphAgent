@@ -401,6 +401,93 @@ trustIt.live("a project MCP server starts no client before trust, starts after i
   }),
 )
 
+// A root with a project mcp.json and the real MCP service behind an isolated trust store (#1575).
+const trustRoot = Effect.fnUntraced(function* (projectText: string) {
+  const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-trust-root-")))
+  const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-trust-state-")))
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      await fs.rm(root, { recursive: true, force: true })
+      await fs.rm(stateDirectory, { recursive: true, force: true })
+    }),
+  )
+  const file = path.join(root, ".agents", "mcp.json")
+  yield* Effect.promise(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, projectText)
+  })
+  const services = yield* Layer.build(mcpWithTrust(stateDirectory))
+  const ctx: InstanceContext = {
+    directory: root,
+    worktree: root,
+    root,
+    project: { id: Project.ID.global, worktree: root, time: { created: 0, updated: 0 }, sandboxes: [] },
+  }
+  const inInstance = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(InstanceRef, ctx))
+  return { file, mcp: Context.get(services, MCP.Service), trust: Context.get(services, ProjectTrust.Service), inInstance }
+})
+
+trustIt.live("a refused project server stays refused after its mcp.json becomes unreadable", () =>
+  Effect.gen(function* () {
+    const { file, mcp, inInstance } = yield* trustRoot(
+      JSON.stringify({ mcpServers: { "project-refused": { type: "local", command: ["echo", "test"] } } }),
+    )
+    lastCreatedClientName = "project-refused"
+    getOrCreateClientState("project-refused")
+    expect((yield* inInstance(mcp.status()))["project-refused"]).toEqual({ status: "disabled" })
+
+    // The cached configuration still names the server; its provenance is the document it was read from.
+    yield* Effect.promise(() => fs.writeFile(file, "{ not json, and longer than before"))
+    const exit = yield* inInstance(mcp.connect("project-refused")).pipe(Effect.exit)
+    if (!Exit.isFailure(exit)) throw new Error("connect started a refused project server")
+    expect(String(Cause.squash(exit.cause))).toContain("not trusted")
+    expect(clientCreateCount).toBe(0)
+  }),
+)
+
+trustIt.live("a skipped project mcp.json does not gate the user-layer server of the same name", () =>
+  Effect.gen(function* () {
+    yield* userLayer(JSON.stringify({ mcpServers: { shared: { type: "local", command: ["echo", "user"] } } }))
+    // Parses, but the unknown top-level field makes the loader skip the whole project layer.
+    const { mcp, inInstance } = yield* trustRoot(
+      JSON.stringify({ unknown: true, mcpServers: { shared: { type: "local", command: ["echo", "project"] } } }),
+    )
+    lastCreatedClientName = "shared"
+    getOrCreateClientState("shared")
+    expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
+    expect(clientCreateCount).toBe(1)
+  }),
+)
+
+trustIt.live("revoking a project entry that a later connect started closes it", () =>
+  Effect.gen(function* () {
+    yield* userLayer(JSON.stringify({ mcpServers: { shared: { type: "local", command: ["echo", "user"] } } }))
+    const { file, mcp, trust, inInstance } = yield* trustRoot(JSON.stringify({ mcpServers: {} }))
+    lastCreatedClientName = "shared"
+    const serverState = getOrCreateClientState("shared")
+    expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
+
+    // The project now overrides `shared`; the startup configuration did not have that entry.
+    yield* Effect.promise(() =>
+      fs.writeFile(file, JSON.stringify({ mcpServers: { shared: { type: "local", command: ["echo", "project"] } } })),
+    )
+    const entries = yield* inInstance(trust.list())
+    expect(entries.map((entry) => entry.category)).toEqual(["mcp"])
+    yield* inInstance(trust.decide([{ id: entries[0].id, state: "trusted" }]))
+    yield* inInstance(mcp.connect("shared"))
+    expect((yield* inInstance(mcp.status()))["shared"]?.status).toBe("connected")
+
+    yield* inInstance(trust.decide([{ id: entries[0].id, state: "revoked" }]))
+    yield* inInstance(
+      pollWithTimeout(
+        mcp.status().pipe(Effect.map((status) => (status["shared"]?.status === "disabled" ? true : undefined))),
+        "revocation did not stop the project entry that connect started",
+      ),
+    )
+    expect(serverState.closed).toBe(true)
+  }),
+)
+
 function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server: string) {
   if ("status" in status) return status.status
   return status[server]?.status
@@ -494,6 +581,7 @@ it.instance(
           name: "guide-server",
           instructions: "Use lookup before mutate.",
           tools: ["guide-server_test_tool"],
+          readOnlyTools: [],
         })
       }),
     ),
@@ -727,11 +815,86 @@ it.instance(
 
         const instructions = yield* mcp.instructions()
         expect(instructions).toEqual([
-          { name: "a.b", instructions: "Guidance for a.b.", tools: [`a_b_c_${toolKeySuffix("a.b", "c")}`] },
-          { name: "dup", instructions: "Guidance for dup.", tools: ["dup_x"] },
+          {
+            name: "a.b",
+            instructions: "Guidance for a.b.",
+            tools: [`a_b_c_${toolKeySuffix("a.b", "c")}`],
+            readOnlyTools: [],
+          },
+          { name: "dup", instructions: "Guidance for dup.", tools: ["dup_x"], readOnlyTools: [] },
         ])
         const keys = Object.keys(yield* mcp.tools())
         for (const item of instructions) for (const key of item.tools) expect(keys).toContain(key)
+      }),
+    ),
+  { mcp: {} },
+)
+
+// Issue #1574: `instructions()` says which of a server's tools declare `readOnlyHint: true`, by the key `tools()` gives
+// them and by the rule `tools()` binds `readOnly` with, so the system prompt can judge a server as the tool list does.
+it.instance(
+  "instructions() lists the read-only tools of a server by key, as tools() binds them",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "ro"
+        const state = getOrCreateClientState("ro")
+        state.instructions = "Guidance for ro."
+        state.tools = [
+          { name: "yes", description: "ro/yes", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "no", description: "ro/no", inputSchema: emptyInput, annotations: { readOnlyHint: false } },
+          { name: "bare", description: "ro/bare", inputSchema: emptyInput },
+          { name: "other", description: "ro/other", inputSchema: emptyInput, annotations: { idempotentHint: true } },
+          // Only the boolean `true` counts: a server that sends something else does not make its tool read-only.
+          { name: "text", description: "ro/text", inputSchema: emptyInput, annotations: { readOnlyHint: "true" } },
+          { name: "one", description: "ro/one", inputSchema: emptyInput, annotations: { readOnlyHint: 1 } },
+          // A tool listed twice is bound once, from its first listing: the hint of the second is not the tool's.
+          { name: "dup", description: "ro/dup", inputSchema: emptyInput, annotations: { readOnlyHint: false } },
+          { name: "dup", description: "ro/dup", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "dup2", description: "ro/dup2", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+          { name: "dup2", description: "ro/dup2", inputSchema: emptyInput },
+        ]
+        yield* mcp.add("ro", { type: "local", command: ["echo", "test"] })
+
+        // A key that was rewritten to stay unique is the key the tool is listed under.
+        lastCreatedClientName = "a.b"
+        const colliding = getOrCreateClientState("a.b")
+        colliding.instructions = "Guidance for a.b."
+        colliding.tools = [
+          { name: "c", description: "a.b/c", inputSchema: emptyInput, annotations: { readOnlyHint: true } },
+        ]
+        yield* mcp.add("a.b", { type: "local", command: ["echo", "test"] })
+        yield* connectWith(mcp, "a", ["b.c"], "Guidance for a.")
+
+        const instructions = yield* mcp.instructions()
+        const named = (name: string) => instructions.find((item) => item.name === name)
+        expect(named("ro")?.tools).toEqual([
+          "ro_yes",
+          "ro_no",
+          "ro_bare",
+          "ro_other",
+          "ro_text",
+          "ro_one",
+          "ro_dup",
+          "ro_dup2",
+        ])
+        expect(named("ro")?.readOnlyTools).toEqual(["ro_yes", "ro_dup2"])
+        expect(named("a.b")?.readOnlyTools).toEqual([`a_b_c_${toolKeySuffix("a.b", "c")}`])
+        expect(named("a")?.readOnlyTools).toEqual([])
+
+        // Whatever the rule is, it is the one `tools()` binds `readOnly` with: the same keys, server by server.
+        const tools = yield* mcp.tools()
+        const boundReadOnly = (server: string) =>
+          Object.keys(tools).filter((key) => {
+            const binding = McpCatalog.toolBinding(tools[key])
+            return binding?.server === server && binding.readOnly === true
+          })
+        for (const item of instructions) {
+          expect(item.readOnlyTools.toSorted(), item.name).toEqual(boundReadOnly(item.name).toSorted())
+          // The read-only tools are among the tools of the server, and each is named once.
+          for (const key of item.readOnlyTools) expect(item.tools, `${item.name} ${key}`).toContain(key)
+          expect(new Set(item.readOnlyTools).size).toBe(item.readOnlyTools.length)
+        }
       }),
     ),
   { mcp: {} },
@@ -1184,6 +1347,175 @@ it.instance(
     ),
   { mcp: {} },
 )
+
+// ========================================================================
+// Test: one unreadable mcp.json layer fails no call and hides no other layer (Issue #1575)
+// ========================================================================
+
+const isUnreadableWarning = (message: unknown) =>
+  Array.isArray(message) && String(message[0]).includes("mcp.json cannot be read")
+
+// What `effect` returns, with the warnings it logged about an unreadable mcp.json.
+const withUnreadableWarnings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const warnings: unknown[] = []
+    const collector = Logger.make((entry) => {
+      if (entry.logLevel === "Warn") warnings.push(entry.message)
+    })
+    const result = yield* effect.pipe(Effect.provide(Logger.layer([collector])))
+    return { result, warnings: warnings.filter(isUnreadableWarning) }
+  })
+
+// A user-level mcp.json in a throwaway config directory until the test ends; resolves to the file.
+const userLayer = Effect.fnUntraced(function* (text: string) {
+  const dir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-user-layer-")))
+  const previous = process.env.GRAPHAGENT_CONFIG_DIR
+  process.env.GRAPHAGENT_CONFIG_DIR = dir
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+      else process.env.GRAPHAGENT_CONFIG_DIR = previous
+      await fs.rm(dir, { recursive: true, force: true })
+    }),
+  )
+  const file = path.join(dir, "mcp.json")
+  yield* Effect.promise(() => fs.writeFile(file, text))
+  return file
+})
+
+const escapedPath = (file: string) => JSON.stringify(file).slice(1, -1)
+
+it.instance(
+  "starts the servers of the project layer when the user layer cannot be read, and says so once",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const broken = yield* userLayer("{ not json")
+        lastCreatedClientName = "filed-valid"
+        getOrCreateClientState("filed-valid")
+
+        // The first call creates the state, which is where the unreadable layer is met.
+        const first = yield* withUnreadableWarnings(mcp.status())
+        expect(first.result["filed-valid"]?.status).toBe("connected")
+        expect(first.warnings).toHaveLength(1)
+        expect(JSON.stringify(first.warnings[0])).toContain("not valid JSONC")
+        expect(JSON.stringify(first.warnings[0])).toContain(escapedPath(broken))
+        expect(Object.keys(yield* mcp.tools())).toEqual(["filed-valid_test_tool"])
+
+        // The same unreadable file is not reported again.
+        expect((yield* withUnreadableWarnings(mcp.status())).warnings).toEqual([])
+      }),
+    ),
+  { mcp: { "filed-valid": { type: "local", command: ["echo", "test"] } } },
+)
+
+it.instance(
+  "starts the servers of the user layer when the project layer cannot be read, and says so once",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        yield* userLayer(
+          JSON.stringify({ mcpServers: { "user-server": { type: "local", command: ["echo", "test"] } } }),
+        )
+        // A V1 document: server names at the top level.
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            McpConfig.projectFile(directory),
+            JSON.stringify({ "old-server": { type: "local", command: ["echo", "old"] } }),
+          ),
+        )
+        lastCreatedClientName = "user-server"
+        getOrCreateClientState("user-server")
+
+        const first = yield* withUnreadableWarnings(mcp.status())
+        expect(Object.keys(first.result)).toEqual(["user-server"])
+        expect(first.result["user-server"]?.status).toBe("connected")
+        expect(first.warnings).toHaveLength(1)
+        expect(JSON.stringify(first.warnings[0])).toContain("removed V1 shape")
+        expect(JSON.stringify(first.warnings[0])).toContain(escapedPath(McpConfig.projectFile(directory)))
+      }),
+    ),
+  { mcp: {} },
+)
+
+it.instance(
+  "starts the servers of the user layer when the project mcp.json is a directory, and says so once",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        yield* userLayer(
+          JSON.stringify({ mcpServers: { "user-server": { type: "local", command: ["echo", "test"] } } }),
+        )
+        // Reading it throws (EISDIR), both in the loader and in the project-trust enumeration.
+        yield* Effect.promise(async () => {
+          await fs.rm(McpConfig.projectFile(directory), { force: true })
+          await fs.mkdir(McpConfig.projectFile(directory), { recursive: true })
+        })
+        lastCreatedClientName = "user-server"
+        getOrCreateClientState("user-server")
+
+        const first = yield* withUnreadableWarnings(mcp.status())
+        expect(Object.keys(first.result)).toEqual(["user-server"])
+        expect(first.result["user-server"]?.status).toBe("connected")
+        expect(first.warnings).toHaveLength(1)
+        expect(JSON.stringify(first.warnings[0])).toContain(escapedPath(McpConfig.projectFile(directory)))
+        expect(McpConfig.projectLayer(directory)).toBeUndefined()
+      }),
+    ),
+  { mcp: {} },
+)
+
+// Whichever call meets the file that became unreadable first says so, once; none of the calls fails and each goes on
+// with the servers that were valid.
+const callNames = ["status", "tools", "prompts", "getPrompt", "connect"] as const
+for (const first of callNames) {
+  it.instance(
+    `${first}() as the first call to meet an mcp.json that became unreadable: it reports it once and no call fails`,
+    () =>
+      MCP.Service.use((mcp: MCPNS.Interface) =>
+        Effect.gen(function* () {
+          const { directory } = yield* TestInstance
+          lastCreatedClientName = "running"
+          getOrCreateClientState("running").prompts = [{ name: "hello" }]
+          expect((yield* mcp.status()).running?.status).toBe("connected")
+
+          yield* Effect.promise(() => fs.writeFile(McpConfig.projectFile(directory), "{ not json"))
+          const calls = {
+            status: mcp.status().pipe(Effect.map((status) => status.running?.status)),
+            tools: mcp.tools().pipe(Effect.map((tools) => Object.keys(tools))),
+            prompts: mcp.prompts().pipe(Effect.map((prompts) => Object.keys(prompts))),
+            getPrompt: mcp.getPrompt("running", "hello"),
+            connect: mcp.connect("running").pipe(
+              Effect.andThen(mcp.status()),
+              Effect.map((status) => status.running?.status),
+            ),
+          }
+          const names = [first, ...callNames.filter((name) => name !== first)]
+          const { result, warnings } = yield* withUnreadableWarnings(
+            Effect.gen(function* () {
+              const results: Record<string, unknown> = {}
+              for (const name of names) results[name] = yield* calls[name]
+              return results
+            }),
+          )
+
+          expect(result).toEqual({
+            status: "connected",
+            tools: ["running_test_tool"],
+            prompts: ["running:hello"],
+            getPrompt: { messages: [] },
+            connect: "connected",
+          })
+          expect(warnings).toHaveLength(1)
+          expect(JSON.stringify(warnings[0])).toContain("not valid JSONC")
+          expect(JSON.stringify(warnings[0])).toContain(escapedPath(McpConfig.projectFile(directory)))
+        }),
+      ),
+    { mcp: { running: { type: "local", command: ["echo", "test"] } } },
+  )
+}
 
 // ========================================================================
 // Test: connect() / disconnect() lifecycle

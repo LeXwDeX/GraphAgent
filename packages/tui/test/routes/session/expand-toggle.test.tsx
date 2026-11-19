@@ -11,12 +11,16 @@ import { readFrame, readSpans } from "../dag-mode-harness"
 
 /**
  * `view.expand.toggle` (ctrl+o, #886 4.4) in the real session route. The transcript is the perf fixture cut down
- * to the parts a case needs: part 1 is plain text, part 5 a bash call with a 30 line output (ten lines show under
- * "Click to expand"), part 6 a read call, part 8 reasoning, which the default thinking mode folds to one header.
+ * to the parts a case needs: part 1 is plain text, part 5 a bash call with a 30 line output (ten lines show, and a
+ * hint under them names the key), part 6 a read call, part 8 reasoning, which the default thinking mode folds to
+ * one header.
  */
 
 const PART = (index: number) => `prt_ses_perf_main_${index}`
 const BEYOND_THE_CAP = "output line 29"
+/** The hint under an output that folds, and under one that is open: they name `view.expand.toggle`, ctrl+o. */
+const FOLDED = "more lines · ctrl+o expand"
+const OPEN = "ctrl+o collapse"
 const REASONING_BODY = "Reasoning step 8"
 
 /** The fixture with the assistant messages that hold `parts` and the user message, in order. */
@@ -81,7 +85,7 @@ async function click(harness: PerfHarness, text: string, dx: number) {
 test("ctrl+o opens the most recent folded block, then the one before it, and closes the latest when all are open", async () => {
   const harness = await mountHarness(transcript([1, 5, 8]))
   try {
-    const before = await until(harness, holds("Click to expand"), "held the folded output")
+    const before = await until(harness, holds(FOLDED), "held the folded output")
     expect(before).toContain("+ Thought")
     expect(before).not.toContain(REASONING_BODY)
     expect(before).not.toContain(BEYOND_THE_CAP)
@@ -97,13 +101,13 @@ test("ctrl+o opens the most recent folded block, then the one before it, and clo
       registerLayer: 0,
     })
     expect(first).toContain("- Thought")
-    expect(first).toContain("Click to expand")
+    expect(first).toContain(FOLDED)
     expect(first).not.toContain(BEYOND_THE_CAP)
 
     // The bash output is the one before it.
     pressExpand(harness)
     const second = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
-    expect(second).toContain("Click to collapse")
+    expect(second).toContain(OPEN)
     expect(second).toContain(REASONING_BODY)
 
     // Everything is open: the key closes the most recent block and leaves the other one.
@@ -111,7 +115,7 @@ test("ctrl+o opens the most recent folded block, then the one before it, and clo
     const third = await until(harness, lacks(REASONING_BODY), "closed the reasoning")
     expect(third).toContain("+ Thought")
     expect(third).toContain(BEYOND_THE_CAP)
-    expect(third).toContain("Click to collapse")
+    expect(third).toContain(OPEN)
   } finally {
     await harness.dispose()
   }
@@ -120,20 +124,20 @@ test("ctrl+o opens the most recent folded block, then the one before it, and clo
 test("a block opened by a click closes by key, and the other way round", async () => {
   const harness = await mountHarness(transcript([1, 5]))
   try {
-    await until(harness, holds("Click to expand"), "held the folded output")
-    await click(harness, "Click to expand", 2)
-    expect(await until(harness, holds("Click to collapse"), "opened by the click")).toContain(BEYOND_THE_CAP)
+    await until(harness, holds(FOLDED), "held the folded output")
+    await click(harness, FOLDED, 2)
+    expect(await until(harness, holds(OPEN), "opened by the click")).toContain(BEYOND_THE_CAP)
 
     // Nothing is folded any more, so the key closes the block the click opened.
     pressExpand(harness)
-    const closed = await until(harness, holds("Click to expand"), "closed by the key")
+    const closed = await until(harness, holds(FOLDED), "closed by the key")
     expect(closed).not.toContain(BEYOND_THE_CAP)
 
     // The key opens it again, and a click closes it.
     pressExpand(harness)
-    await until(harness, holds("Click to collapse"), "opened by the key")
-    await click(harness, "Click to collapse", 10)
-    const reclosed = await until(harness, holds("Click to expand"), "closed by the click")
+    await until(harness, holds(OPEN), "opened by the key")
+    await click(harness, OPEN, 10)
+    const reclosed = await until(harness, holds(FOLDED), "closed by the click")
     expect(reclosed).not.toContain(BEYOND_THE_CAP)
   } finally {
     await harness.dispose()
@@ -143,7 +147,7 @@ test("a block opened by a click closes by key, and the other way round", async (
 test("with thinking shown the reasoning has nothing to fold and the key goes to the tool output", async () => {
   const harness = await mountHarness(transcript([1, 5, 8]))
   try {
-    await until(harness, holds("Click to expand"), "held the folded output")
+    await until(harness, holds(FOLDED), "held the folded output")
     // The default folds reasoning; this switches the mode to show.
     harness.command("session.toggle.thinking")
     const shown = await until(harness, holds(REASONING_BODY), "showed the reasoning")
@@ -151,7 +155,7 @@ test("with thinking shown the reasoning has nothing to fold and the key goes to 
 
     pressExpand(harness)
     const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
-    expect(opened).toContain("Click to collapse")
+    expect(opened).toContain(OPEN)
     // The reasoning stayed as it was.
     expect(opened).toContain(REASONING_BODY)
   } finally {
@@ -224,7 +228,7 @@ test("a reasoning that has only a title has nothing to open, so the key goes pas
     }),
   )
   try {
-    const before = await until(harness, holds("Click to expand"), "held the folded output")
+    const before = await until(harness, holds(FOLDED), "held the folded output")
     expect(before).toContain("+ Thought: Planning the change")
 
     pressExpand(harness)
@@ -249,13 +253,13 @@ test("a failed bash call that printed output is a block: the key opens its outpu
     }),
   )
   try {
-    const before = await until(harness, holds("Click to expand"), "held the folded output")
+    const before = await until(harness, holds(FOLDED), "held the folded output")
     expect(before).toContain("Tool execution aborted")
     expect(before).not.toContain(BEYOND_THE_CAP)
 
     pressExpand(harness)
     const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
-    expect(opened).toContain("Click to collapse")
+    expect(opened).toContain(OPEN)
   } finally {
     await harness.dispose()
   }
@@ -278,7 +282,7 @@ test("the output of a tool without a display of its own folds once the reader sh
   )
   try {
     const before = await until(harness, holds("custom_tool"), "held the call as one line")
-    expect(before).not.toContain("Click to expand")
+    expect(before).not.toContain(FOLDED)
 
     // The call is one line until the output is shown: nothing to open, and the frame stays as it was.
     pressExpand(harness)
@@ -287,9 +291,9 @@ test("the output of a tool without a display of its own folds once the reader sh
     expect(await readFrame(harness.app)).toBe(before)
 
     harness.command("session.toggle.generic_tool_output")
-    await until(harness, holds("Click to expand"), "showed the output")
+    await until(harness, holds(FOLDED), "showed the output")
     pressExpand(harness)
-    const opened = await until(harness, holds("Click to collapse"), "opened the output")
+    const opened = await until(harness, holds(OPEN), "opened the output")
     expect(opened).toContain("generic line 19")
   } finally {
     await harness.dispose()

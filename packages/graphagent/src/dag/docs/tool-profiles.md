@@ -54,10 +54,14 @@ counts as not read-only) is advertised to, and callable by, the built-in `explor
 `review`, and `auditor` agents, and so by the nodes that run them, without a permission question. The grant is added
 to the agent's native rules, after them and before the user's rules, so a `deny` for the tool's id in the agent's
 configuration or the session rules closes it. `general`, `prototyper`, the composers, and custom agents keep their
-profiles, and a tool of a `deferred` server stays out of reach: these agents have neither `mcp_describe` nor
-`mcp_call`. The runtime trusts the hint of a server the user configured; the MCP SDK itself says a hint is only a
+profiles. The runtime trusts the hint of a server the user configured; the MCP SDK itself says a hint is only a
 hint. Under the `ask` and `readonly` tiers of `dag.permission` the grant is not an allow the user wrote: an MCP call
 is still confirmed or refused as before.
+
+A tool of a `deferred` server is reached through `mcp_describe` and `mcp_call`. While one such tool declares the hint,
+the grant covers both helpers (#1574), and they reach only the tools the agent can see: the catalog lists the tools that
+declare it, and `mcp_call` for any other returns `unknown_tool`. A `deny` for either helper hides both, whatever else
+is granted. The server's instructions reach these agents when at least one of its tools declares the hint.
 
 ## Writers
 

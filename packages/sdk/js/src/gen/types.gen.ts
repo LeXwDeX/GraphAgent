@@ -1702,8 +1702,11 @@ export type ProviderConfig = {
       temperature?: boolean
       tool_call?: boolean
       tool_choice?: boolean
+      /**
+       * How earlier reasoning is sent back inside assistant messages. An object names the message field it goes under; false sends no such field, which also turns off the field DeepSeek models on OpenAI-compatible endpoints get by default.
+       */
       interleaved?:
-        | true
+        | boolean
         | {
             field: "reasoning" | "reasoning_content" | "reasoning_details"
           }

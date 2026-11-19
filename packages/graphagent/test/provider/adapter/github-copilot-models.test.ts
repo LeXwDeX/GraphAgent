@@ -306,6 +306,8 @@ test("remaps fallback oauth model urls to the enterprise host", async () => {
             url: "https://api.githubcopilot.com/v1",
             npm: "@ai-sdk/anthropic",
           },
+          // Worked out for the Anthropic package; the model is handed over through the Copilot one.
+          variants: { high: { thinking: { type: "enabled", budgetTokens: 16_000 } } },
         },
       },
     } as never,
@@ -322,6 +324,8 @@ test("remaps fallback oauth model urls to the enterprise host", async () => {
 
   expect(models.claude.api.url).toBe("https://copilot-api.ghe.example.com")
   expect(models.claude.api.npm).toBe("@ai-sdk/github-copilot")
+  // Empty variants are built again for the current package; the old ones do not fit it.
+  expect(models.claude.variants).toEqual({})
 })
 
 test("detects PDF input support when vision and media type are advertised", async () => {

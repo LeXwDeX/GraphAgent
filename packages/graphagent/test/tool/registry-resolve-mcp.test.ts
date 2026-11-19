@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import { Effect, Layer, Logger, Schema } from "effect"
 import type { JSONSchema7 } from "@ai-sdk/provider"
-import { dynamicTool, jsonSchema } from "ai"
+import { dynamicTool, jsonSchema, type Tool as AITool } from "ai"
 import { Client } from "@modelcontextprotocol/client"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { EventV2 } from "@graphagent/core/event"
@@ -15,7 +15,9 @@ import { ProjectV2 } from "@graphagent/core/project"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { Agent } from "@/agent/agent"
+import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { Config } from "@/config/config"
+import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -27,7 +29,7 @@ import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { MCP_DEFERRED_TOOLS } from "@/tool/mcp-deferred"
 import { MCP_RESOURCE_ORDER, MCP_RESOURCE_TOOLS } from "@/tool/mcp-resource"
-import { ROOT_ONLY_TOOLS, type DirectTool } from "@/tool/pipeline"
+import { ROOT_ONLY_TOOLS, ToolPipeline, type DirectTool } from "@/tool/pipeline"
 import { ToolRegistry } from "@/tool/registry"
 import { disposeAllInstances } from "../fixture/fixture"
 import { TestConfig } from "../fixture/config"
@@ -466,24 +468,261 @@ describe("tool.registry MCP resolution", () => {
         ),
     )
 
+    // A deferred server with two tools that declare `readOnlyHint` when `readOnly` is set and one that never does,
+    // beside the suite's own eager tools and one eager read-only tool.
+    const lazy = (readOnly: boolean) => ({
+      ...mcpTools,
+      ro_lookup: mcpTool("ro", "lookup", undefined, undefined, undefined, readOnly),
+      rod_lookup: mcpTool("rod", "lookup", undefined, true, "Looks things up. More.", readOnly),
+      rod_other: mcpTool("rod", "other", undefined, true, "Looks at others.", readOnly),
+      rod_update: mcpTool("rod", "update", undefined, true, "Updates things."),
+    })
+    const DESCRIBE = MCP_DEFERRED_TOOLS.describe
+    const CALL = MCP_DEFERRED_TOOLS.call
+    const isDeferred = (entry: ToolRegistry.ToolEntry) => entry.source.kind === "mcp" && entry.source.deferred === true
+    const deferredIds = (entries: ReadonlyArray<ToolRegistry.ToolEntry>) => entries.filter(isDeferred).map((e) => e.id)
+    const catalogOf = (entries: ReadonlyArray<ToolRegistry.ToolEntry>) =>
+      (entries.find((entry) => entry.id === DESCRIBE)?.description ?? "")
+        .split("\n")
+        .filter((line) => line.startsWith("- "))
+        .map((line) => line.slice(2, line.indexOf(":")))
+    // What a node of a workflow resolves for `agent`: a child session, with the rules `deriveSubagentSessionPermission`
+    // gives it, as `workflow-tool-profiles.test.ts` builds them.
+    const asNode = (agent: Agent.Info, permission: PermissionV1.Ruleset = []) =>
+      Effect.gen(function* () {
+        const { registry, directory, model } = yield* setup
+        return yield* registry.resolve({
+          model,
+          agent,
+          session: sessionInfo(directory, { parentID: SessionID.make("ses_registry_parent") }),
+          permission: [
+            ...deriveSubagentSessionPermission({ parentSessionPermission: [], subagent: agent }),
+            ...permission,
+          ],
+        })
+      })
+    // The two helpers as the pipeline builds them over `entries`: what a call from the model to either one runs.
+    const helpersOf = (entries: ReadonlyArray<ToolRegistry.ToolEntry>, agent: Agent.Info) =>
+      Effect.gen(function* () {
+        const { model } = yield* setup
+        const tools: Record<string, AITool> = {}
+        const deferredTools = new Map<string, AITool>()
+        for (const entry of entries) if (isDeferred(entry) && "tool" in entry) deferredTools.set(entry.id, entry.tool)
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- partial deps: the two helpers read only these.
+        const deps = {
+          input: { agent, model },
+          run: yield* EffectBridge.make(),
+          truncate: { output: (text: string) => Effect.succeed({ content: text, truncated: false }) },
+          entries,
+          deferredTools,
+          proxiedCalls: new WeakMap(),
+        } as never
+        yield* ToolPipeline.mcpDeferredTools(deps, tools)
+        const options = (name: string) => ({
+          toolCallId: `call-${name}`,
+          messages: [],
+          abortSignal: new AbortController().signal,
+        })
+        // The text of what a call returned, or the message it failed with.
+        const outputOf = (value: unknown) =>
+          typeof value === "object" && value !== null && "output" in value && typeof value.output === "string"
+            ? value.output
+            : ""
+        const run = (name: string, args: unknown) =>
+          Effect.promise(() =>
+            Promise.resolve(tools[name]?.execute?.(args, options(name))).then(
+              (value) => ({ ok: true as const, output: outputOf(value) }),
+              (error: unknown) => ({
+                ok: false as const,
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            ),
+          )
+        return { tools, run }
+      })
+
     it.instance(
-      "the read-only tool of a deferred server is no tool of theirs: they have no mcp_describe or mcp_call",
+      "a read-only tool of a deferred server reaches them through mcp_describe and mcp_call, and no other tool does",
       () =>
         withTools(
-          { ...mcpTools, rod_lookup: mcpTool("rod", "lookup", undefined, true, undefined, true) },
+          lazy(true),
           Effect.gen(function* () {
             for (const name of READ_ONLY_AGENTS) {
               const entries = yield* resolved(yield* agentNamed(name))
-              expect(
-                entries.filter((entry) => entry.source.kind === "mcp-deferred"),
-                name,
-              ).toEqual([])
-              // Whatever is left of the tool is a member of the catalog, never one of the model's tools.
-              for (const entry of entries)
-                if (entry.id === "rod_lookup") expect(entry.source, name).toMatchObject({ deferred: true })
+              const ids = entries.map((entry) => entry.id)
+              // The helpers come after every other entry, describe then call, as they do for any agent.
+              expect(ids.slice(-2), name).toEqual([DESCRIBE, CALL])
+              expect(entries.find((entry) => entry.id === DESCRIBE)?.source, name).toEqual({
+                kind: "mcp-deferred",
+                op: "describe",
+                registrationID: `mcp-deferred:${DESCRIBE}`,
+              })
+              expect(entries.find((entry) => entry.id === CALL)?.source, name).toEqual({
+                kind: "mcp-deferred",
+                op: "call",
+                registrationID: `mcp-deferred:${CALL}`,
+              })
+              // The deferred tools left are the ones that declared the hint, each a member of the catalog and none of the
+              // model's tools; the one that did not is no entry at all, and so is the rest of the suite's tools.
+              expect(deferredIds(entries), name).toEqual(["rod_lookup", "rod_other"])
+              expect(catalogOf(entries), name).toEqual(["rod_lookup", "rod_other"])
+              for (const hidden of ["rod_update", "rw_update", "aaa_remote", "zzz_remote"])
+                expect(ids, `${name} ${hidden}`).not.toContain(hidden)
+              // The eager tool that declared the hint is one of the model's tools, as before.
+              expect(ids, name).toContain("ro_lookup")
+              expect(entries.find((entry) => entry.id === "ro_lookup")?.source, name).not.toHaveProperty("deferred")
             }
           }),
         ),
+    )
+
+    it.instance("the nodes that run them resolve the same: a child session and the rules of a subagent", () =>
+      withTools(
+        lazy(true),
+        Effect.gen(function* () {
+          for (const name of READ_ONLY_AGENTS) {
+            const entries = yield* asNode(yield* agentNamed(name))
+            expect(
+              entries.slice(-2).map((entry) => entry.id),
+              name,
+            ).toEqual([DESCRIBE, CALL])
+            expect(deferredIds(entries), name).toEqual(["rod_lookup", "rod_other"])
+            expect(catalogOf(entries), name).toEqual(["rod_lookup", "rod_other"])
+          }
+        }),
+      ),
+    )
+
+    it.instance(
+      "mcp_describe lists a server's read-only tools alone, and mcp_call refuses another tool as unknown",
+      () =>
+        withTools(
+          lazy(true),
+          Effect.gen(function* () {
+            for (const name of READ_ONLY_AGENTS) {
+              const agent = yield* agentNamed(name)
+              const { run } = yield* helpersOf(yield* resolved(agent), agent)
+
+              const listing = yield* run(DESCRIBE, { server: "rod" })
+              expect(listing.ok, name).toBe(true)
+              const lines = (listing.ok ? listing.output : "").split("\n")
+              expect(
+                lines.map((line) => line.slice(0, line.indexOf(" — "))),
+                name,
+              ).toEqual(["rod_lookup", "rod_other"])
+              const schemas = yield* run(DESCRIBE, { tools: ["rod_lookup"] })
+              expect(schemas.ok, name).toBe(true)
+              const refusedSchema = yield* run(DESCRIBE, { tools: ["rod_update"] })
+              expect(refusedSchema.ok, name).toBe(false)
+
+              // The tool that declared the hint runs; the one that did not is no tool of the catalog.
+              expect((yield* run(CALL, { tool: "rod_lookup", arguments: {} })).ok, name).toBe(true)
+              const refused = yield* run(CALL, { tool: "rod_update", arguments: {} })
+              expect(refused.ok, name).toBe(false)
+              expect(refused.ok ? "" : refused.message, name).toBe(
+                'Unknown tool "rod_update". Available tools: rod_lookup, rod_other. Use one of them.',
+              )
+            }
+          }),
+        ),
+    )
+
+    it.instance("a deny for either helper takes both away, and a deny for each tool of the server leaves none", () =>
+      withTools(
+        lazy(true),
+        Effect.gen(function* () {
+          for (const name of READ_ONLY_AGENTS) {
+            const agent = yield* agentNamed(name)
+            expect(yield* idsOf(agent), name).toContain(DESCRIBE)
+            for (const rules of [[deny(CALL)], [deny(DESCRIBE)], [deny(CALL), deny(DESCRIBE)], [deny("mcp_*")]]) {
+              const entries = yield* resolved(agent, rules)
+              const ids = entries.map((entry) => entry.id)
+              expect(ids, `${name} ${JSON.stringify(rules)}`).not.toContain(DESCRIBE)
+              expect(ids, `${name} ${JSON.stringify(rules)}`).not.toContain(CALL)
+              // The eager read-only tool and the tools of the catalog are not touched by a rule about the helpers.
+              expect(ids, name).toContain("ro_lookup")
+              expect(deferredIds(entries), name).toEqual(["rod_lookup", "rod_other"])
+            }
+            // A deny for the tools of the server, by key or by a wildcard, leaves no catalog and so no helper.
+            for (const rules of [[deny("rod_lookup"), deny("rod_other")], [deny("rod_*")]]) {
+              const ids = yield* idsOf(agent, rules)
+              expect(ids, name).not.toContain(DESCRIBE)
+              expect(ids, name).not.toContain(CALL)
+              expect(ids, name).toContain("ro_lookup")
+            }
+            // A deny for one tool leaves the other and the helpers.
+            const one = yield* resolved(agent, [deny("rod_lookup")])
+            expect(
+              one.slice(-2).map((entry) => entry.id),
+              name,
+            ).toEqual([DESCRIBE, CALL])
+            expect(catalogOf(one), name).toEqual(["rod_other"])
+            expect(deferredIds(one), name).toEqual(["rod_other"])
+          }
+        }),
+      ),
+    )
+
+    it.instance("no hint, no helper: a deferred server that declares nothing leaves them as they were", () =>
+      withTools(
+        lazy(false),
+        Effect.gen(function* () {
+          for (const name of READ_ONLY_AGENTS) {
+            const entries = yield* resolved(yield* agentNamed(name))
+            expect(
+              entries.filter((entry) => entry.source.kind === "mcp-deferred"),
+              name,
+            ).toEqual([])
+            expect(deferredIds(entries), name).toEqual([])
+            expect(
+              entries.map((entry) => entry.id),
+              name,
+            ).not.toContain("ro_lookup")
+          }
+        }),
+      ),
+    )
+
+    it.instance("every other agent resolves as before, a deferred read-only tool or not", () =>
+      Effect.gen(function* () {
+        const explore = yield* agentNamed("explore")
+        const custom: Agent.Info = { ...explore, name: "my-explorer", native: false }
+        const others = [
+          ...(yield* Effect.forEach(["build", "plan", "general", "prototyper", "surveyor", "mapper"], agentNamed)),
+          custom,
+          { ...explore, mode: "primary" as const },
+        ]
+        for (const agent of others) {
+          const without = yield* withTools(lazy(false), idsOf(agent))
+          const declared = yield* withTools(lazy(true), idsOf(agent))
+          expect(declared, agent.name).toEqual(without)
+        }
+        yield* withTools(
+          lazy(true),
+          Effect.gen(function* () {
+            // Where every MCP tool is open, so is the whole catalog.
+            for (const name of ["build", "general"]) {
+              const entries = yield* resolved(yield* agentNamed(name))
+              expect(
+                entries.slice(-2).map((entry) => entry.id),
+                name,
+              ).toEqual([DESCRIBE, CALL])
+              expect(catalogOf(entries), name).toEqual(["rod_lookup", "rod_other", "rod_update"])
+            }
+            // Where none is, neither are the helpers: a custom agent with the rules of explore is not given the grant.
+            for (const agent of [custom, { ...explore, mode: "primary" as const }]) {
+              const ids = yield* idsOf(agent)
+              for (const hidden of [DESCRIBE, CALL, "rod_lookup", "rod_other", "rod_update", "ro_lookup"])
+                expect(ids, `${agent.name} ${hidden}`).not.toContain(hidden)
+            }
+            for (const name of ["prototyper", "surveyor", "mapper"]) {
+              const ids = yield* idsOf(yield* agentNamed(name))
+              for (const hidden of [DESCRIBE, CALL, "rod_lookup", "rod_other", "rod_update"])
+                expect(ids, `${name} ${hidden}`).not.toContain(hidden)
+            }
+          }),
+        )
+      }),
     )
   })
 

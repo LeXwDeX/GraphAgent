@@ -101,10 +101,11 @@ export interface Snippet {
  * reasoning replay requirement when the endpoint answered it. `required` writes the profile's `replay: "field"` and
  * `interleaved: { field }` with the measured field, because the engine replays reasoning under the model's
  * `interleaved` field and does not read the profile's replay setting; `interleaved` is left out when no field was
- * measured. `rejected` writes `replay: "none"` and no `interleaved`: the configuration cannot say
- * `interleaved: false`, so a snippet with it would not load. `accepted` says nothing about what the engine should
- * do, so it writes nothing. A finding without a conclusion has no key, so a probe that learned nothing yields an
- * empty model entry.
+ * measured. `rejected` writes `replay: "none"` and no `interleaved`: the snippet reports what the endpoint answered
+ * and leaves the model's own `interleaved` alone, so an `interleaved: false` (which the configuration accepts) is for
+ * the user to add where that default would still send the field. `accepted` says nothing about what the engine
+ * should do, so it writes nothing. A finding without a conclusion has no key, so a probe that learned nothing yields
+ * an empty model entry.
  */
 export function snippet(findings: ProbeFindings.Findings, ctx: ProbePlan.Context): Snippet {
   const { context, reasoningField, replay } = findings

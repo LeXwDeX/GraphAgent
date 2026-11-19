@@ -283,7 +283,8 @@ export function requestSystem(input: ToolsInput & Pick<PrepareInput, "system">, 
 }
 
 export function resolveTools(input: ToolsInput) {
-  // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454).
+  // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454). So are the two
+  // helpers when `tools` holds both: the registry adds them for a deferred tool of that kind (#1574).
   const policy = McpReadonly.adjust(
     input.agent,
     { native: input.nativePermission ?? [], rules: input.agent.permission },

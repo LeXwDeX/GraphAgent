@@ -716,7 +716,9 @@ RequestCache.set(
         }
       }
 
-      // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454).
+      // The MCP tools that declare `readOnlyHint` are open to the read-only built-in subagents (#1454). While one of
+      // them is a tool of a deferred server, the two helpers that reach it are open too (#1574); `resolveTools` of a
+      // request reads the same grant.
       const policy = McpReadonly.adjust(
         input.agent,
         { native: nativePermission, rules: input.agent.permission },
@@ -728,7 +730,8 @@ RequestCache.set(
             id,
             alias: entry.source.kind === "mcp" ? entry.source.baseKey : undefined,
           })),
-          // The deferred-tool helpers are tools too: a rule that denies them hides them, a read-only agent included.
+          // The deferred-tool helpers are tools too: a rule that denies them hides them. A read-only agent has them
+          // only by the grant above.
           ...MCP_DEFERRED_IDS.map((id) => ({ id })),
         ],
         policy.native,

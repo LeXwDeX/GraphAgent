@@ -78,7 +78,7 @@ function openBlocks(scroll: ScrollBoxRenderable) {
   for (const row of scroll.getChildren()) {
     const text = texts(row).join("\n")
     const bash = /\$ printf block-(\d+)/.exec(text)
-    if (bash && text.includes("Click to collapse")) open.push(`bash ${bash[1]}`)
+    if (bash && text.includes("ctrl+o collapse")) open.push(`bash ${bash[1]}`)
     const reasoning = /- Thought: Block (\d+)/.exec(text)
     if (reasoning) open.push(`reasoning ${reasoning[1]}`)
   }
@@ -168,7 +168,7 @@ test("a block opened by the key shows its whole output when the reader scrolls t
     // The row is mounted open, so it holds the whole output and the label that closes it.
     const row = holding(scroll, "printf block-2100")!
     expect(texts(row).some((line) => line.includes("block 2100 line 29"))).toBe(true)
-    expect(texts(row).some((line) => line.includes("Click to collapse"))).toBe(true)
+    expect(texts(row).some((line) => line.includes("ctrl+o collapse"))).toBe(true)
   } finally {
     await harness.dispose()
   }

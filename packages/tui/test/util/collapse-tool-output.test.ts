@@ -16,17 +16,62 @@ const lines = (count: number, text = "line") =>
 test("folds an output past the line cap and not one at it", () => {
   expect(outputOverflows(lines(10), 10, 10_000)).toBe(false)
   expect(outputOverflows(lines(11), 10, 10_000)).toBe(true)
-  expect(collapseToolOutput(lines(11), 10, 10_000)).toEqual({
-    output: `${lines(10)}\n…`,
-    overflow: true,
-  })
-  expect(collapseToolOutput(lines(10), 10, 10_000)).toEqual({ output: lines(10), overflow: false })
+  // The first lines alone: the hint under the block opens with the `…` that marks the cut.
+  expect(collapseToolOutput(lines(11), 10, 10_000)).toEqual({ output: lines(10), overflow: true, hidden: 1 })
+  expect(collapseToolOutput(lines(10), 10, 10_000)).toEqual({ output: lines(10), overflow: false, hidden: 0 })
+})
+
+test("counts the lines the fold leaves out", () => {
+  expect(collapseToolOutput(lines(15), 10, 10_000).hidden).toBe(5)
+  expect(collapseToolOutput(lines(37), 3, 10_000).hidden).toBe(34)
+  // An empty line is a line, as it is to the cap.
+  expect(collapseToolOutput(`${lines(10)}\n\n`, 10, 10_000)).toEqual({ output: lines(10), overflow: true, hidden: 2 })
+  expect(collapseToolOutput(lines(10), 10, 10_000).hidden).toBe(0)
+  expect(collapseToolOutput("", 10, 10_000)).toEqual({ output: "", overflow: false, hidden: 0 })
 })
 
 test("folds an output past the character cap and not one at it", () => {
   expect(outputOverflows("x".repeat(100), 10, 100)).toBe(false)
   expect(outputOverflows("x".repeat(101), 10, 100)).toBe(true)
-  expect(collapseToolOutput("x".repeat(101), 10, 100)).toEqual({ output: `${"x".repeat(99)}…`, overflow: true })
+  // Cut inside a line, the `…` stays in the text, and no line is left out.
+  expect(collapseToolOutput("x".repeat(101), 10, 100)).toEqual({
+    output: `${"x".repeat(99)}…`,
+    overflow: true,
+    hidden: 0,
+  })
+  const wrapped = ["x".repeat(80), "y".repeat(80), "z"].join("\n")
+  expect(collapseToolOutput(wrapped, 10, 100)).toEqual({
+    // 99 characters: the first line, the break after it and 18 of the second.
+    output: `${"x".repeat(80)}\n${"y".repeat(18)}…`,
+    overflow: true,
+    hidden: 0,
+  })
+})
+
+test("an output past both caps keeps the cut inside its text and still counts the lines past the cap", () => {
+  const output = [
+    ...Array.from({ length: 3 }, () => "w".repeat(50)),
+    ...Array.from({ length: 7 }, (_, i) => `l${i}`),
+  ].join("\n")
+  // Ten lines fit the line cap, but not 100 characters; seven more lines are left out.
+  const folded = collapseToolOutput(`${output}\n${lines(7)}`, 10, 100)
+  expect(folded.overflow).toBe(true)
+  expect(folded.output).toEndWith("…")
+  expect(folded.output.split("\n").at(-1)).not.toBe("…")
+  expect(Array.from(folded.output)).toHaveLength(100)
+  expect(folded.hidden).toBe(7)
+})
+
+test("the ellipsis row is for the caller that asks for it, and only after a cut by lines", () => {
+  const asked = { ellipsisRow: true }
+  expect(collapseToolOutput(lines(11), 10, 10_000, asked)).toEqual({
+    output: `${lines(10)}\n…`,
+    overflow: true,
+    hidden: 1,
+  })
+  // A cut inside a line carries its `…`, and a block that does not fold has nothing to close.
+  expect(collapseToolOutput("x".repeat(101), 10, 100, asked)).toEqual(collapseToolOutput("x".repeat(101), 10, 100))
+  expect(collapseToolOutput(lines(10), 10, 10_000, asked)).toEqual({ output: lines(10), overflow: false, hidden: 0 })
 })
 
 test("counts characters and not UTF-16 units", () => {
@@ -39,7 +84,8 @@ test("counts characters and not UTF-16 units", () => {
 
 test("a cap of no lines folds everything, as the full split did", () => {
   expect(outputOverflows("", 0, 100)).toBe(true)
-  expect(collapseToolOutput("a", 0, 100)).toEqual({ output: "…", overflow: true })
+  expect(collapseToolOutput("a", 0, 100)).toEqual({ output: "", overflow: true, hidden: 1 })
+  expect(collapseToolOutput("a", 0, 100, { ellipsisRow: true })).toEqual({ output: "…", overflow: true, hidden: 1 })
 })
 
 test("agrees with the full split on every combination of lines and characters around the caps", () => {

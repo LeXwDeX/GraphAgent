@@ -12,6 +12,9 @@ const MINIMAX_M3_NPMS = ["@ai-sdk/anthropic", "@ai-sdk/openai-compatible"]
 /** Providers that host MiniMax-M3 behind a chat template, which takes the switch as a template argument. */
 const CHAT_TEMPLATE_PROVIDERS = ["nvidia", "lilac"]
 
+/** Ids of the families whose documentation says the model writes its reasoning between think tags in the answer text. */
+const INLINE_THINK_FAMILIES = ["qwen", "deepseek", "glm"]
+
 /** Gemini models that keep the sampling defaults; later ones deprecated them. */
 const GEMINI_MODELS_WITH_SAMPLING_DEFAULTS = [
   /gemini-2[.-]5(?:[.-]|$)/,
@@ -233,5 +236,20 @@ export const BUILTIN_RULES: ReadonlyArray<BuiltinRule> = [
     source: "296a1a5d0:packages/graphagent/src/provider/transform.ts:1803,1808,1827",
     match: (input) => schemaFixesOf(input).length > 0,
     set: (input) => ({ schemaFixes: schemaFixesOf(input) }),
+  },
+  {
+    // Qwen, DeepSeek and GLM models behind an OpenAI-compatible endpoint write their reasoning into the answer text
+    // between <think> and </think> unless the server splits it into a field of its own. Only a family whose own
+    // documentation says so is listed (the source holds one link per family); the text of any other model stays as it
+    // is. A configuration turns the rule off for one model with an empty `inline_tag`.
+    name: "inline-reasoning-think",
+    source:
+      "https://huggingface.co/Qwen/Qwen3-8B (qwen), https://huggingface.co/deepseek-ai/DeepSeek-R1 (deepseek), https://github.com/zai-org/GLM-4.5/blob/main/resources/glm_4.6_tir_guide.md (glm)",
+    match(input) {
+      if (input.npm !== "@ai-sdk/openai-compatible") return false
+      const id = input.apiID.toLowerCase()
+      return INLINE_THINK_FAMILIES.some((family) => id.includes(family))
+    },
+    set: () => ({ reasoningMode: { inlineTag: "think" } }),
   },
 ]

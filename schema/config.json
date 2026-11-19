@@ -369,7 +369,7 @@
             "charset"
           ],
           "additionalProperties": true,
-          "description": "Constraint on the tool call ids the provider accepts. Default: any."
+          "description": "Constraint on the tool call ids the provider accepts. Default: any; built-in rules give alnum_dash to Claude models and alnum of length 9 to Mistral models."
         },
         "user_after_tool_result": {
           "type": "string",
@@ -377,7 +377,7 @@
             "allow",
             "bridge"
           ],
-          "description": "Whether a user message may follow a tool result directly. bridge inserts a short assistant message first. Default: allow."
+          "description": "Whether a user message may follow a tool result directly. bridge inserts a short assistant message first. Default: allow; a built-in rule gives bridge to Mistral models."
         },
         "tool_result_media": {
           "type": "string",
@@ -386,7 +386,7 @@
             "image",
             "none"
           ],
-          "description": "Which tool result attachments are sent inside the tool result: all, image (only image/*) or none (sent as a synthetic user message). Default: none."
+          "description": "Which tool result attachments are sent inside the tool result: all, image (only image/*) or none (sent as a synthetic user message). Default: none; built-in rules give all or image to models served through some provider SDK packages, such as Anthropic and OpenAI."
         },
         "cache_marker": {
           "type": "string",
@@ -394,7 +394,7 @@
             "explicit",
             "none"
           ],
-          "description": "Whether to place explicit cache breakpoints in the request: explicit or none. Default: none."
+          "description": "Whether to place explicit cache breakpoints in the request: explicit or none. Default: none; built-in rules give explicit to Anthropic and Claude models and to models served through the Anthropic or Alibaba SDK packages."
         },
         "reasoning_mode": {
           "type": "object",
@@ -425,7 +425,7 @@
             },
             "placeholder": {
               "type": "boolean",
-              "description": "Add an empty reasoning string to assistant messages that carry none. Default: false."
+              "description": "Add an empty reasoning string to assistant messages that carry none. Default: false; a built-in rule gives true to DeepSeek models."
             },
             "replay": {
               "type": "string",
@@ -439,7 +439,7 @@
             },
             "inline_tag": {
               "type": "string",
-              "description": "Tag name that wraps reasoning inside the message text, for example think."
+              "description": "Tag name that wraps reasoning inside the message text, for example think. Default: none, unless a built-in rule names one for the model; an empty string turns it off even then."
             }
           },
           "additionalProperties": true,
@@ -459,7 +459,7 @@
             }
           },
           "additionalProperties": true,
-          "description": "Default sampling values. A value left out is not sent."
+          "description": "Default sampling values for the model. This block replaces the built-in values as a whole, so a value left out of it is not sent. Without the block, built-in rules give some models the values their vendor recommends; the others have no default."
         },
         "finish_reasons": {
           "type": "object",
@@ -479,7 +479,7 @@
             "edit",
             "apply_patch"
           ],
-          "description": "Edit tool family offered to the model: edit or apply_patch. Default: edit."
+          "description": "Edit tool family offered to the model: edit or apply_patch. Default: edit; a built-in rule gives apply_patch to GPT models other than gpt-4 and gpt-oss."
         },
         "tool_limits": {
           "type": "object",
@@ -511,7 +511,7 @@
               "gemini"
             ]
           },
-          "description": "Downgrade schemes applied to tool schemas: openai, moonshot or gemini. Default: none."
+          "description": "Downgrade schemes applied to tool schemas: openai, moonshot or gemini. Default: none; built-in rules give openai to the OpenAI and Azure SDK packages, moonshot to Moonshot and Kimi models and gemini to Google and Gemini models. An empty list switches them all off."
         }
       },
       "additionalProperties": true
@@ -654,12 +654,10 @@
                 "description": "Whether this model accepts a forced tool choice. When true, json_schema turns send tool_choice \"required\"; false means the model does not support it and the parameter is omitted. When unset, the capability is unknown and the parameter is also omitted."
               },
               "interleaved": {
+                "description": "How earlier reasoning is sent back inside assistant messages. An object names the message field it goes under; false sends no such field, which also turns off the field DeepSeek models on OpenAI-compatible endpoints get by default.",
                 "anyOf": [
                   {
-                    "type": "boolean",
-                    "enum": [
-                      true
-                    ]
+                    "type": "boolean"
                   },
                   {
                     "type": "object",

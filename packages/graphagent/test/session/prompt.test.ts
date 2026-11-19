@@ -569,6 +569,7 @@ const withMcpInstructions = testEffect(
         name: "guide-server",
         instructions: "Use lookup before mutate.",
         tools: ["guide-server_lookup"],
+        readOnlyTools: [],
       },
     ],
   }),
@@ -11249,7 +11250,7 @@ for (const mode of ["failure", "timeout"] as const) {
 
 // Memory moved to runtime context, so a server instruction drives the real system-prefix change.
 const thinkingPrefixInstructions: MCP.ServerInstructions[] = [
-  { name: "replay-fixture", instructions: "Replay fixture instructions before", tools: [] },
+  { name: "replay-fixture", instructions: "Replay fixture instructions before", tools: [], readOnlyTools: [] },
 ]
 const setThinkingPrefix = (instructions: string) => {
   thinkingPrefixInstructions[0] = { ...thinkingPrefixInstructions[0], instructions }
