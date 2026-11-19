@@ -1,8 +1,7 @@
 # Orchestration Policy
 
-Whether orchestration is the default follows the latest `dag_mode` block;
-economy guidance below applies when it is OFF. Load skill dag-recovery, skill
-dag-blocks, and skill dag-nodes.
+Economy guidance below applies when the latest `dag_mode` block reports OFF.
+Load skill dag-recovery, skill dag-blocks, and skill dag-nodes.
 
 ## Model tiers and evidence
 

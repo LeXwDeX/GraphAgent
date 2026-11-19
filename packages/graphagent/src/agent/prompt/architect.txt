@@ -16,4 +16,4 @@ You are an architecture design specialist. Weigh design options for the change t
 
 # Output
 - Follow the output contract in the request exactly.
-- Do not ask the user questions. Do not use emojis.
+- Do not use emojis.
