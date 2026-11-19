@@ -15,7 +15,7 @@ import { SessionID } from "../../src/session/schema"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Provider } from "../../src/provider/provider"
 import { isInternalOneShot } from "../../src/session/llm/internal-one-shot"
-import { isInternalAgent, prepare } from "../../src/session/llm/request"
+import { baseSystem, isInternalAgent, prepare } from "../../src/session/llm/request"
 import type { ProviderAdapters } from "../../src/provider/adapter/registry"
 import type { ChatInput, ChatParams } from "../../src/provider/adapter/types"
 import { testEffect } from "../lib/effect"
@@ -644,9 +644,23 @@ describe("internal agents (#1457)", () => {
         // `hidden` alone does not make a user's agent internal, and neither does the name of an internal one-shot.
         agentOf({ name: "ghost", hidden: true }),
         agentOf({ name: "title" }),
+        // Nor does it make a built-in one internal: the user can hide any of them in their config (#1540).
+        agentOf({ name: "explore", native: true, hidden: true, prompt: "Explore." }),
+        agentOf({ name: "build", native: true, hidden: true }),
       ]) {
         expect(isInternalAgent(agent)).toBe(false)
       }
+    }),
+  )
+
+  // The user can hide any built-in agent in their config, such as `explore` with `hidden: true` (#1540).
+  it.instance("a built-in agent the user hides keeps the baseline with the Safety section", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const explore = agentOf({ name: "explore", native: true, hidden: true, prompt: "Explore." })
+      const system = baseSystem({ ...input, agent: explore }, false)
+      expect(system).toEqual([GraphAgentPrompt.baseline(), "Explore."])
+      expect(system[0]).toContain("# Safety")
     }),
   )
 })

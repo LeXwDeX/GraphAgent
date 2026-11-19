@@ -762,7 +762,9 @@ describe("LLMRequestPrep.baseSystem and requestSystem", () => {
       DEFAULT_WRITING_STYLE,
     ])
     // ... unless the application runs it for itself, and the writing style is left out on request.
-    const internal = request({ agent: { ...streamInput().agent, native: true, hidden: true, prompt: "Custom agent." } })
+    const internal = request({
+      agent: { ...streamInput().agent, name: "compaction", native: true, hidden: true, prompt: "Custom agent." },
+    })
     expect(LLMRequestPrep.baseSystem(internal)).toEqual(["Custom agent.", DEFAULT_WRITING_STYLE])
     expect(LLMRequestPrep.baseSystem(custom, false)).toEqual([GraphAgentPrompt.baseline(), "Custom agent."])
     expect(LLMRequestPrep.baseSystem(internal, false)).toEqual(["Custom agent."])

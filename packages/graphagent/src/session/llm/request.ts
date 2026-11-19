@@ -241,12 +241,20 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
 
 type ToolsInput = Pick<PrepareInput, "tools" | "agent" | "permission" | "nativePermission" | "user">
 
+// Compaction, title and summary are the hidden built-in agents of the catalog (`agent.ts`); btw and loop-steer are
+// module constants of their own. The one-shot agents of `internal-one-shot.ts` are a subset: name a new internal agent
+// in both lists when it is routed away from conversation transports.
+const INTERNAL_AGENTS: ReadonlySet<string> = new Set(["compaction", "title", "summary", "btw", "loop-steer"])
+
 /**
- * The agents the application runs for itself: compaction, title and summary, the side question, and the loop's
- * analysis. The user does not talk to them, so their requests carry their own prompt alone (#1457).
+ * The built-in agents the application runs for itself: compaction, title and summary, the side question, and the
+ * loop's analysis. The user does not talk to them, so their requests carry their own prompt alone (#1457). The check
+ * is a closed list of names and does not read `hidden`: that flag only hides an agent from the menus, and the user can
+ * set it on any built-in agent in their config (`explore` with `hidden: true`), which would drop the Safety section
+ * from that agent's requests (#1540).
  */
 export function isInternalAgent(agent: Agent.Info): boolean {
-  return agent.native === true && (agent.hidden === true || isInternalOneShot(agent.name))
+  return agent.native === true && INTERNAL_AGENTS.has(agent.name)
 }
 
 /**
