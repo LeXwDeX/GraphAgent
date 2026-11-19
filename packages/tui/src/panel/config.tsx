@@ -3,16 +3,22 @@
 
 import type { UiLanguage } from "@graphagent/core/config/language"
 import { createMemo, createSignal, onMount } from "solid-js"
+import { useCommands } from "../commands/context"
 import { useKV } from "../context/kv"
+import { useLocal } from "../context/local"
 import { useRoute } from "../context/route"
 import { useSDK } from "../context/sdk"
 import { useSync } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { useThinkingMode } from "../context/thinking"
 import { getLanguage, setLanguage, t } from "../i18n"
+import { isSubagent } from "../session/role"
 import { drawerMode, useDrawer } from "../shell/drawer"
 import { dagBandMode } from "../shell/status-band"
 import { useToast } from "../ui/toast"
+import { TuiLog } from "../util/log"
+import * as Model from "../util/model"
+import { useShortcutEntries } from "./help"
 import { usePanelHost } from "./host"
 import { SettingsPanel, type SettingRow, type SettingsTab } from "./settings"
 import { ThemePanel } from "./theme"
@@ -26,6 +32,8 @@ type Overrides = {
   concurrency?: number
   budget?: number | null
   language?: UiLanguage
+  autoCompact?: boolean
+  smallModel?: string
   permission?: Partial<Record<PermissionTool, string>>
 }
 
@@ -54,6 +62,9 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
   const route = useRoute()
   const toast = useToast()
   const host = usePanelHost()
+  const local = useLocal()
+  const commands = useCommands()
+  const shortcuts = useShortcutEntries()
   const [overrides, setOverrides] = createSignal<Overrides>({})
 
   const writable = () => typeof sdk.client.global.config?.update === "function"
@@ -125,6 +136,26 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
   }
   const sessionState = () => (session()?.dagMode === "on" ? t("panel.setting.on") : t("panel.setting.off"))
   const configuredLanguage = () => overrides().language ?? sync.data.config.language
+  const autoCompact = (): boolean => overrides().autoCompact ?? sync.data.config.compaction?.auto ?? true
+  /** `compaction.trigger_ratio` as a percentage of the context; undefined while it is not set. */
+  const triggerPercent = (): number | undefined => {
+    const ratio = sync.data.config.compaction?.trigger_ratio
+    return typeof ratio === "number" && Number.isFinite(ratio) ? Math.round(ratio * 100) : undefined
+  }
+  /** `small_model` as set: the write made here, else the file's value; undefined while unset. */
+  const smallModel = (): string | undefined => (overrides().smallModel ?? sync.data.config.small_model) || undefined
+  /** Whether `value` is the `provider/model` of a model of a connected provider, as the server reads `small_model`. */
+  const connectedModel = (value: string): boolean => {
+    const { providerID, modelID } = Model.parse(value)
+    return providerID !== "" && modelID !== "" && Model.get(sync.data.provider, providerID, modelID) !== undefined
+  }
+  /** The model name as the top bar writes it; undefined while no model is chosen. */
+  const currentModelName = (): string | undefined => {
+    const current = local.model.current()
+    return current ? Model.name(sync.data.provider, current.providerID, current.modelID) : undefined
+  }
+  /** A sub-agent view is read-only: choosing a model or a reasoning effort there would write to the sub-agent. */
+  const delegated = () => isSubagent(session())
 
   function permissionValue(tool: PermissionTool): string {
     const permissions = sync.data.config.permission as Record<string, unknown> | undefined
@@ -165,6 +196,76 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
       },
     }
   }
+
+  const generalRows = createMemo<SettingRow[]>(() => [
+    {
+      id: "language",
+      label: t("config.language.label"),
+      kind: "choice",
+      value: getLanguage(),
+      options: [
+        { value: "zh-CN", label: t("language.option.zh-CN") },
+        { value: "en", label: t("language.option.en") },
+      ],
+      suffix: () => (configuredLanguage() === undefined ? t("panel.config.language.auto") : undefined),
+      description: t("panel.config.language.description"),
+      disabled: !writable(),
+      onChange(next) {
+        const language = next as UiLanguage
+        setLanguage(language)
+        setOverrides((current) => ({ ...current, language }))
+        void writeConfig({ language })
+      },
+    },
+    {
+      id: "auto-compact",
+      label: t("panel.config.autoCompact"),
+      kind: "toggle",
+      value: autoCompact(),
+      suffix: () => {
+        const percent = triggerPercent()
+        return percent === undefined ? undefined : t("panel.config.autoCompact.at", { percent })
+      },
+      description: t("panel.config.autoCompact.description"),
+      disabled: !writable(),
+      onChange(next) {
+        void writeConfig({ compaction: { auto: next } }, () =>
+          setOverrides((current) => ({ ...current, autoCompact: next })),
+        )
+      },
+    },
+    {
+      id: "file-context",
+      label: t("panel.config.fileContext"),
+      kind: "toggle",
+      value: kv.get("file_context_enabled", true),
+      onChange: (next) => kv.set("file_context_enabled", next),
+    },
+    {
+      id: "paste-summary",
+      label: t("panel.config.pasteSummary"),
+      kind: "toggle",
+      value: kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
+      onChange: (next) => kv.set("paste_summary_enabled", next),
+    },
+    {
+      id: "session-directory-filter",
+      label: t("panel.config.sessionDirectoryFilter"),
+      kind: "toggle",
+      value: kv.get("session_directory_filter_enabled", true),
+      onChange(next) {
+        kv.set("session_directory_filter_enabled", next)
+        void sync.session.refresh()
+      },
+    },
+    {
+      id: "terminal-title",
+      label: t("panel.config.terminalTitle"),
+      kind: "toggle",
+      value: kv.get("terminal_title_enabled", true),
+      onChange: (next) => kv.set("terminal_title_enabled", next),
+    },
+  ])
 
   const interfaceRows = createMemo<SettingRow[]>(() => [
     {
@@ -232,42 +333,11 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
       onChange: (next) => kv.set("scrollbar_visible", next),
     },
     {
-      id: "file-context",
-      label: t("panel.config.fileContext"),
-      kind: "toggle",
-      value: kv.get("file_context_enabled", true),
-      onChange: (next) => kv.set("file_context_enabled", next),
-    },
-    {
       id: "diff-wrap",
       label: t("panel.config.diffWrap"),
       kind: "toggle",
       value: kv.get("diff_wrap_mode", "word") === "word",
       onChange: (next) => kv.set("diff_wrap_mode", next ? "word" : "none"),
-    },
-    {
-      id: "paste-summary",
-      label: t("panel.config.pasteSummary"),
-      kind: "toggle",
-      value: kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
-      onChange: (next) => kv.set("paste_summary_enabled", next),
-    },
-    {
-      id: "session-directory-filter",
-      label: t("panel.config.sessionDirectoryFilter"),
-      kind: "toggle",
-      value: kv.get("session_directory_filter_enabled", true),
-      onChange(next) {
-        kv.set("session_directory_filter_enabled", next)
-        void sync.session.refresh()
-      },
-    },
-    {
-      id: "terminal-title",
-      label: t("panel.config.terminalTitle"),
-      kind: "toggle",
-      value: kv.get("terminal_title_enabled", true),
-      onChange: (next) => kv.set("terminal_title_enabled", next),
     },
     {
       id: "drawer",
@@ -311,26 +381,58 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
       ],
       onChange: (next) => kv.set("ambiguous_width", Number(next)),
     },
-    {
-      id: "language",
-      label: t("config.language.label"),
-      kind: "choice",
-      value: getLanguage(),
-      options: [
-        { value: "zh-CN", label: t("language.option.zh-CN") },
-        { value: "en", label: t("language.option.en") },
-      ],
-      suffix: () => (configuredLanguage() === undefined ? t("panel.config.language.auto") : undefined),
-      description: t("panel.config.language.description"),
-      disabled: !writable(),
-      onChange(next) {
-        const language = next as UiLanguage
-        setLanguage(language)
-        setOverrides((current) => ({ ...current, language }))
-        void writeConfig({ language })
-      },
-    },
   ])
+
+  const modelRows = createMemo<SettingRow[]>(() => {
+    const variants = local.model.variant.list()
+    return [
+      {
+        id: "model-current",
+        label: t("panel.config.model.current"),
+        kind: "action",
+        valueLabel: currentModelName() ?? t("panel.setting.empty"),
+        suffix: () => (delegated() ? t("subagent.readonlyTag") : undefined),
+        description: t("panel.config.model.current.description"),
+        disabled: delegated(),
+        run() {
+          // The model list is the panel `/model` opens, run by the command as the palette runs it.
+          void commands.run("model.list", { args: "", origin: "palette" }).catch((error) => {
+            TuiLog.write("error", "Command failed", error)
+          })
+        },
+      },
+      {
+        id: "variant",
+        label: t("panel.config.variant"),
+        kind: "choice",
+        value: local.model.variant.current() ?? "default",
+        valueLabel: variants.length === 0 ? t("panel.config.variant.none") : undefined,
+        options: [
+          { value: "default", label: t("panel.variant.default") },
+          ...variants.map((variant) => ({ value: variant, label: variant })),
+        ],
+        suffix: () => (delegated() ? t("subagent.readonlyTag") : undefined),
+        description: t("panel.config.variant.description"),
+        disabled: variants.length === 0 || delegated(),
+        onChange: (next) => local.model.variant.set(next === "default" ? undefined : next),
+      },
+      {
+        id: "small-model",
+        label: t("panel.config.smallModel"),
+        kind: "text",
+        value: smallModel() ?? "",
+        suffix: () => (smallModel() === undefined ? t("panel.config.smallModel.auto") : undefined),
+        description: t("panel.config.smallModel.description"),
+        disabled: !writable(),
+        // The global configuration has no way to clear a key, so an empty value is no value to write.
+        validate: (value) => (connectedModel(value.trim()) ? undefined : "panel.config.smallModel.invalid"),
+        onChange(value) {
+          const model = value.trim()
+          void writeConfig({ small_model: model }, () => setOverrides((current) => ({ ...current, smallModel: model })))
+        },
+      },
+    ]
+  })
 
   const dagRows = createMemo<SettingRow[]>(() => [
     {
@@ -397,10 +499,27 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
     permissionRow("external_directory", t("panel.config.permission.externalDirectory")),
   ])
 
+  /** The shortcuts the keymap holds, as `/help` lists them; the panel reports them and holds none of them. */
+  const shortcutRows = createMemo<SettingRow[]>(() =>
+    shortcuts().map((entry) => ({
+      id: `shortcut:${entry.id}`,
+      label: entry.title,
+      kind: "action",
+      valueLabel: entry.keys,
+      readonly: true,
+      description: entry.note,
+      // Never run: a read-only row does nothing when it is activated.
+      run() {},
+    })),
+  )
+
   const tabs = createMemo<SettingsTab[]>(() => [
+    { id: "general", label: t("panel.config.tab.general"), rows: generalRows() },
     { id: "interface", label: t("panel.config.tab.interface"), rows: interfaceRows() },
+    { id: "model", label: t("panel.config.tab.model"), rows: modelRows() },
     { id: "dag", label: t("panel.config.tab.dag"), rows: dagRows() },
     { id: "permissions", label: t("panel.config.tab.permission"), rows: permissionRows() },
+    { id: "shortcuts", label: t("panel.config.tab.shortcuts"), rows: shortcutRows() },
   ])
 
   return (
