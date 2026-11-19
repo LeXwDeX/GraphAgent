@@ -214,3 +214,86 @@ describe("SessionCompactionModel.chooseCompactionModel", () => {
     ).toEqual([ModelV2.ID.make("output-only"), ModelV2.ID.make("input-only")])
   })
 })
+
+describe("SessionCompactionModel.cleanCandidates", () => {
+  const small = model("small", price(0, 0))
+  const agent = model("agent", price(0, 0))
+  const conversation = model("conversation", price(0, 0))
+  const roles = (candidates: ReadonlyArray<{ kind: SessionCompactionModel.CleanKind }>) =>
+    candidates.map((entry) => entry.kind)
+
+  test("an unset mode tries the agent model and the conversation model before the small model", () => {
+    const candidates = SessionCompactionModel.cleanCandidates({
+      configured: undefined,
+      small,
+      agent,
+      conversation,
+    })
+    expect(roles(candidates)).toEqual(["agent", "conversation", "small"])
+    expect(candidates.map((entry) => entry.model.id)).toEqual([agent.id, conversation.id, small.id])
+  })
+
+  for (const configured of ["small", "shared", "auto"] as const) {
+    test(`mode ${configured} keeps the order small, agent, conversation`, () => {
+      expect(roles(SessionCompactionModel.cleanCandidates({ configured, small, agent, conversation }))).toEqual([
+        "small",
+        "agent",
+        "conversation",
+      ])
+    })
+  }
+
+  test("leaves out the stages that have no model", () => {
+    expect(
+      roles(SessionCompactionModel.cleanCandidates({ configured: undefined, small, agent: undefined, conversation })),
+    ).toEqual(["conversation", "small"])
+    expect(
+      roles(SessionCompactionModel.cleanCandidates({ configured: "small", small: undefined, agent, conversation })),
+    ).toEqual(["agent", "conversation"])
+    expect(
+      roles(
+        SessionCompactionModel.cleanCandidates({
+          configured: undefined,
+          small: undefined,
+          agent: undefined,
+          conversation,
+        }),
+      ),
+    ).toEqual(["conversation"])
+  })
+
+  test("keeps a model that fills several stages once, under its earliest role", () => {
+    // The provider's small model may be the very model of the conversation or the agent.
+    expect(
+      roles(
+        SessionCompactionModel.cleanCandidates({ configured: undefined, small: conversation, agent, conversation }),
+      ),
+    ).toEqual(["agent", "conversation"])
+    expect(
+      roles(SessionCompactionModel.cleanCandidates({ configured: "small", small: conversation, agent, conversation })),
+    ).toEqual(["small", "agent"])
+    expect(
+      roles(SessionCompactionModel.cleanCandidates({ configured: undefined, small: agent, agent, conversation })),
+    ).toEqual(["agent", "conversation"])
+    expect(
+      roles(SessionCompactionModel.cleanCandidates({ configured: "small", small: agent, agent, conversation })),
+    ).toEqual(["small", "conversation"])
+    expect(
+      SessionCompactionModel.cleanCandidates({
+        configured: undefined,
+        small: conversation,
+        agent: conversation,
+        conversation,
+      }),
+    ).toEqual([{ model: conversation, kind: "agent" }])
+  })
+
+  test("identifies a model by provider and id", () => {
+    const other = model("small", price(0, 0), "other")
+    expect(
+      roles(
+        SessionCompactionModel.cleanCandidates({ configured: undefined, small: other, agent: small, conversation }),
+      ),
+    ).toEqual(["agent", "conversation", "small"])
+  })
+})

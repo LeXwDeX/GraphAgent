@@ -7,6 +7,7 @@ import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
+import { ROOT_ONLY_SKILLS } from "@/skill/builtin"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { Location } from "@graphagent/core/location"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
@@ -48,6 +49,8 @@ export interface Interface {
     agent: Agent.Info,
     permission?: PermissionV1.Ruleset,
     nativePermission?: PermissionV1.Ruleset,
+    /** `root: false` leaves out the skills that record how to use tools only a root session has (#1457). */
+    options?: { readonly root?: boolean },
   ) => Effect.Effect<string | undefined>
   readonly mcp: (
     agent: Agent.Info,
@@ -196,12 +199,14 @@ export const layer = Layer.effect(
         agent: Agent.Info,
         permission?: PermissionV1.Ruleset,
         nativePermission?: PermissionV1.Ruleset,
+        options?: { readonly root?: boolean },
       ) {
         const ruleset = Permission.merge(agent.permission, permission ?? [])
         if (Permission.disabledByPolicy(["skill"], nativePermission ?? [], ruleset).has("skill")) return
 
         const list = (yield* skill.available(agent)).filter(
           (item) =>
+            (options?.root !== false || !ROOT_ONLY_SKILLS.has(item.name)) &&
             Permission.evaluate("skill", item.name, nativePermission ?? []).action !== "deny" &&
             Permission.evaluate("skill", item.name, ruleset).action !== "deny",
         )

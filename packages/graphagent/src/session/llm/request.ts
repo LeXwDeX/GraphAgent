@@ -13,6 +13,8 @@ import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
 import { APP_NAME } from "@graphagent/core/brand"
 import { InstallationVersion } from "@graphagent/core/installation/version"
+import { resolveLanguage } from "@graphagent/core/config/language"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { DEFAULT_WRITING_STYLE } from "@graphagent/core/system-context/writing-style"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
@@ -96,7 +98,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     } satisfies Pick<ProviderAdapters.Interface, "chatParams" | "chatHeaders">)
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const tools = resolveTools(input)
-  const system = [requestSystem(input).join("\n")]
+  // The writing style is written for English prose, so a reply in another language does not get it (#1457).
+  const writingStyle = resolveLanguage(input.cfg?.language) === "en"
+  const system = [requestSystem(input, writingStyle).join("\n")]
 
   const header = system[0]
   if (system.length > 2 && system[0] === header) {
@@ -238,19 +242,36 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
 type ToolsInput = Pick<PrepareInput, "tools" | "agent" | "permission" | "nativePermission" | "user">
 
 /**
+ * The agents the application runs for itself: compaction, title and summary, the side question, and the loop's
+ * analysis. The user does not talk to them, so their requests carry their own prompt alone (#1457).
+ */
+export function isInternalAgent(agent: Agent.Info): boolean {
+  return agent.native === true && (agent.hidden === true || isInternalOneShot(agent.name))
+}
+
+/**
  * The base of a request's system text: the agent's own prompt, or the provider prompt for the tools the request
  * advertises, then the writing style. Request preparation and the fixed-overhead estimate share it (#1461).
+ * An agent with a prompt of its own that is not internal keeps the `# Safety` section of the provider prompt in front
+ * of it. `writingStyle` is false for a reply in a language the style is not written for.
  */
-export function baseSystem(input: ToolsInput): string[] {
-  return [
-    ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(Object.keys(resolveTools(input)))),
-    DEFAULT_WRITING_STYLE,
-  ]
+export function baseSystem(input: ToolsInput, writingStyle = true): string[] {
+  const { agent } = input
+  const head = !agent.prompt
+    ? SystemPrompt.provider(Object.keys(resolveTools(input)))
+    : isInternalAgent(agent)
+      ? [agent.prompt]
+      : [GraphAgentPrompt.baseline(), agent.prompt]
+  return writingStyle ? [...head, DEFAULT_WRITING_STYLE] : head
 }
 
 /** The texts `prepare` joins into the system message: the base, the turn's system texts, the per-message text. */
-export function requestSystem(input: ToolsInput & Pick<PrepareInput, "system">): string[] {
-  return [...baseSystem(input), ...input.system, ...(input.user.system ? [input.user.system] : [])].filter((x) => x)
+export function requestSystem(input: ToolsInput & Pick<PrepareInput, "system">, writingStyle = true): string[] {
+  return [
+    ...baseSystem(input, writingStyle),
+    ...input.system,
+    ...(input.user.system ? [input.user.system] : []),
+  ].filter((x) => x)
 }
 
 export function resolveTools(input: ToolsInput) {

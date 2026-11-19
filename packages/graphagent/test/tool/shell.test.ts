@@ -1465,6 +1465,33 @@ describe("tool.shell truncation", () => {
     }
   })
 
+  // grep, awk and jq are usually missing on a Windows host, so the filter example names what the dialect has (#1457).
+  test("gives each shell description a filter example that exists in its dialect", () => {
+    const examples = {
+      bash: "grep/awk/jq",
+      powershell: "Select-String, Where-Object or ConvertFrom-Json",
+      pwsh: "Select-String, Where-Object or ConvertFrom-Json",
+      cmd: "findstr",
+    }
+    for (const [name, example] of Object.entries(examples)) {
+      const { description } = ShellPrompt.render(name, "win32", 120_000, 300_000)
+      expect(description).toContain(`(for example, pipe through ${example} or use the tool's native filter)`)
+      if (name !== "bash") expect(description).not.toContain("grep/awk/jq")
+    }
+  })
+
+  // The shell description steers file work to the dedicated tools, so its own directory check cannot be `ls` (#1457).
+  test("verifies a parent directory without ls and limits the dedicated-tool rule to files", () => {
+    const bash = ShellPrompt.render("bash", "linux", 120_000, 300_000).description
+    expect(bash).toContain("first use `test -d <parent>` to verify the parent directory exists")
+    expect(bash).toContain('first use `test -d foo` to check that "foo" exists')
+    expect(bash).not.toContain("ls foo")
+    for (const name of ["bash", "powershell", "pwsh", "cmd"]) {
+      const { description } = ShellPrompt.render(name, "win32", 120_000, 300_000)
+      expect(description).toContain("on files with")
+    }
+  })
+
   // The description is the same for every model, so it cannot state a byte count that follows the window (#1448).
   test("states the output cap without a byte count in each shell description", () => {
     const sentence =

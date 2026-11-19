@@ -58,6 +58,17 @@ const withMedia = (value: "all" | "image" | "none"): Provider.Model => ({
   }),
 })
 
+/** `model` with a profile that declares how earlier reasoning is replayed, as a configuration would. */
+const withReplay = (value: "none" | "field" | "signed" | "encrypted"): Provider.Model => ({
+  ...model,
+  profile: resolveProfile({
+    providerID,
+    apiID: model.api.id,
+    npm: model.api.npm,
+    config: { profile: { reasoning_mode: { replay: value } } },
+  }),
+})
+
 const sessionID = SessionID.make("ses_model_history")
 const messageID = MessageID.make("msg_model_history")
 const partID = PartID.make("prt_model_history")
@@ -102,6 +113,16 @@ describe("ModelHistory cache primitives", () => {
     expect(bucket(withMedia("none"))).not.toBe(bucket(withMedia("image")))
     // a model without a profile is keyed by what the rules give it, `all` for @ai-sdk/openai
     expect(bucket(model)).toBe(bucket(withMedia("all")))
+  })
+
+  test("keys the bucket by the replay of the reasoning mode of the profile", () => {
+    expect(bucket(withReplay("field"))).toBe(bucket(withReplay("field")))
+    expect(bucket(withReplay("field"))).not.toBe(bucket(model))
+    expect(bucket(withReplay("signed"))).not.toBe(bucket(withReplay("field")))
+    expect(bucket(withReplay("encrypted"))).not.toBe(bucket(withReplay("signed")))
+    expect(bucket(withReplay("encrypted"))).not.toBe(bucket(withReplay("none")))
+    // a model without a profile replays nothing, the default `none`
+    expect(bucket(withReplay("none"))).toBe(bucket(model))
   })
 
   test("changes the content digest with any wire-visible field", () => {

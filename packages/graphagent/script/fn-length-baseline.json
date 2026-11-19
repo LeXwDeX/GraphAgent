@@ -3,7 +3,6 @@
   "functions": {
     "src/session/command.ts#commandBody": 357,
     "src/session/command.ts#makeCommand": 438,
-    "src/session/compaction.ts#processCompaction": 367,
     "src/session/llm.ts#run": 302,
     "src/session/processor.ts#create": 883,
     "src/session/processor.ts#handleEvent": 310,

@@ -6,6 +6,10 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../lib/cli-process"
+import { summaryText } from "../lib/fake-provider"
+
+// The scripted summary has the template's shape, so the compaction commits it as it is.
+const COMMITTED_SUMMARY = summaryText("REAL_COMMITTED_COMPACT_SUMMARY")
 
 for (const block of [false, true]) {
   cliIt.live(
@@ -47,7 +51,7 @@ for (const block of [false, true]) {
         })
         expect(prompted.status).toBe(200)
         yield* Effect.promise(() => prompted.text())
-        if (!block) yield* llm.text("REAL_COMMITTED_COMPACT_SUMMARY")
+        if (!block) yield* llm.text(COMMITTED_SUMMARY)
         const calls = llm.inputs.pipe(
           Effect.map(
             (inputs) =>
@@ -77,7 +81,7 @@ for (const block of [false, true]) {
         expect(rows[0].transcript).toContain("COMPACTION_ORIGINAL_USER")
         if (block) expect(yield* calls).toBe(before)
         else {
-          expect(rows[1].compact_summary).toBe("REAL_COMMITTED_COMPACT_SUMMARY")
+          expect(rows[1].compact_summary).toBe(COMMITTED_SUMMARY)
           expect(rows[1].transcript).toContain("REAL_COMMITTED_COMPACT_SUMMARY")
           expect(rows[2].source).toBe("compact")
         }

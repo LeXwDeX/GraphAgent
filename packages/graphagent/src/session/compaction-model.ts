@@ -26,7 +26,10 @@ export type PlanEntry<M extends CostModel = CostModel> = {
 
 export type ChooseInput<M extends CostModel = CostModel> = {
   readonly mode: Mode
-  /** Clean candidates in legacy preference order (small, agent, conversation). */
+  /**
+   * Clean candidates as `cleanCandidates` ordered them. `shared` and `auto` need a configured mode, so they arrive in
+   * the legacy order: small, agent, conversation.
+   */
   readonly clean: readonly CleanCandidate<M>[]
   /** Present only when every shared-prefix guard passed. */
   readonly shared?: SharedCandidate<M>
@@ -106,6 +109,33 @@ function dedupeClean<M extends CostModel>(clean: readonly CleanCandidate<M>[]): 
     seen.add(key)
     return true
   })
+}
+
+/**
+ * The clean ladder's candidates in the order they are tried. With no `compaction.mode` configured the models chosen for
+ * the work come first, the `agent.compaction` model and the conversation's own, and the provider's small model last:
+ * a summary is only as precise as the model that writes it. A configured mode keeps the legacy order, small model
+ * first. A model that fills several stages is tried once, under its earliest role.
+ */
+export function cleanCandidates<M extends CostModel>(input: {
+  readonly configured: Mode | undefined
+  readonly small: M | undefined
+  readonly agent: M | undefined
+  readonly conversation: M
+}): CleanCandidate<M>[] {
+  const stages: ReadonlyArray<readonly [CleanKind, M | undefined]> =
+    input.configured === undefined
+      ? [
+          ["agent", input.agent],
+          ["conversation", input.conversation],
+          ["small", input.small],
+        ]
+      : [
+          ["small", input.small],
+          ["agent", input.agent],
+          ["conversation", input.conversation],
+        ]
+  return dedupeClean(stages.flatMap(([kind, model]) => (model ? [{ model, kind }] : [])))
 }
 
 function compare<M extends CostModel>(left: PlanEntry<M>, right: PlanEntry<M>): number {

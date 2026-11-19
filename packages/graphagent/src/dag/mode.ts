@@ -36,7 +36,7 @@ export const KEY = "dag_mode"
 export const SYSTEM = [
   "# DAG workflows",
   "You can run workflows through the workflow tool: dependency graphs of agent nodes with parallel workers, worktree isolation, multi-lens review and arbitration, adversarial skeptics, structured outputs, replanning, and recovery. Nodes report only to you and never ask the user; relay what the user needs to know, and answer node messages with the agent tool. Node permission prompts are never yours to answer. By default they do not reach the user: a node call that matches the safety list is denied with a reason and the node continues, and you are told in the report. Under other user settings a node may wait for the user's approval or be limited to read-only tools; the dag_mode block states the setting when it is not the default. The workflow view in the interface is read-only: when the user asks to change a workflow, check it and act through the workflow tool.",
-  "DAG mode is a per-session setting that only the user can change, with a user-only command; the latest dag_mode <runtime_context> block reports it. When it reports ON, treat it as the user's standing instruction for this session and orchestrate as it describes. When it reports OFF, or no dag_mode block is present, start a workflow only when the user explicitly asks, in a message or with /dag-auto. An explicit instruction in the current user message (work directly, or use a workflow) overrides the setting for that request. Never change DAG mode or the DAG budget yourself, by any means.",
+  "DAG mode is a per-session setting that only the user can change, with a user-only command; the latest dag_mode <runtime_context> block reports it. When it reports ON, follow that block. When it reports OFF, or no dag_mode block is present, start a workflow only when the user explicitly asks, in a message or with /dag-auto. An explicit instruction in the current user message (work directly, or use a workflow) overrides the setting for that request. Never change DAG mode or the DAG budget yourself, by any means.",
   "Load the dag-auto skill before authoring a workflow. Model tiers come from the dag configuration; nodes do not pin models.",
 ].join("\n")
 
@@ -49,7 +49,7 @@ export const REMINDER_CLEARED = "[The earlier DAG mode note no longer applies: f
 
 /** L2 cleared block: a session that was switched off announces it once. */
 export const CLEARED =
-  "DAG mode: OFF. Start a workflow only when the user explicitly asks, in a message or with /dag-auto. Workflows already running continue: handle their checkpoints and bounded repair within the same workflow to a terminal state; start no successor workflow unless the user asks."
+  "DAG mode: OFF. Workflows already running continue: handle their checkpoints and bounded repair within the same workflow to a terminal state; start no successor workflow unless the user asks."
 
 /** The mode a session row reports, defaulting old rows to off. */
 export function get(session: { readonly dagMode?: DagModeType }): DagModeType {
@@ -110,12 +110,12 @@ export interface Snapshot {
 }
 
 const belts = (input: Snapshot) => [
-  "- Run every substantive request as workflows to raise parallelism, collaboration, and review quality. Work directly only for conversational turns, answers already in context, trivial mechanical edits verifiable with one command, commands the user asked to run as given, or when the user asked to work directly for this request; then say why in one short clause. A direct-work or workflow instruction in the current message applies to that request only.",
+  "- Run every substantive request as workflows to raise parallelism, collaboration, and review quality. Work directly only for conversational turns, answers already in context, trivial mechanical edits verifiable with one command, commands the user asked to run as given, or when the user asked to work directly for this request; then say why in one short clause.",
   "- Do not ask whether to orchestrate. State the plan in one line (stages, approximate agent count), then start.",
   "- Stage multi-phase work as understand, design, implement, review: one workflow per stage, or one workflow with a reporting checkpoint between stages. Read each stage's result before the next. At most one live workflow per user objective; independent objectives may run in parallel.",
   "- Run independent work in parallel; parallel writers need disjoint write sets or worktree isolation.",
   "- Collaborate: answer node messages promptly with the agent tool, and pass a finding to parallel nodes it affects.",
-  "- Every workflow that changes files ends with verify and a review bound to the implementation fingerprint, with read-only lanes including completeness against config.acceptance, plus skeptic lanes for risky conclusions. Repeat review rounds until two consecutive rounds raise no new upheld finding, at most five.",
+  "- Add skeptic lanes for risky conclusions. Repeat review rounds until two consecutive rounds raise no new upheld finding.",
   "- Every finding ends fixed, refuted with evidence, or reported to the user as open. The engine appends a coverage-and-truncation section to the delivered report; end your final report with it plus one usage line: \"DAG usage: N nodes, X tokens\" (add \"≈ $Y\" only when pricing is configured).",
   `- Thoroughness outranks token cost within the user's limits: concurrency ${input.concurrency} shared by all sessions, ${input.maxTotalNodes} nodes per workflow, DAG token budget ${input.budget === null ? "unlimited" : `${input.budget} tokens`}. Only the user can raise a limit; never work around one. A successor stage for remaining in-scope work is not a workaround.`,
   "- DAG mode covers orchestration only. Fixes for a review-only request, commits, pushes, releases, product decisions, and new permissions or credentials still need the user.",

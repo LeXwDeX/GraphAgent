@@ -62,6 +62,7 @@ import { SessionInbox } from "../../src/session/inbox"
 import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
 import { estimateOverhead } from "../../src/session/overflow"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { explainFingerprintChange, fingerprintOf, StepMetricsRing } from "../../src/session/step-metrics"
 import { ReminderState } from "../../src/session/reminder-state"
 import { SessionRevert } from "../../src/session/revert"
@@ -71,6 +72,7 @@ import { SessionAbortReason } from "../../src/session/abort-reason"
 import { SessionStatus } from "../../src/session/status"
 import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { Skill } from "../../src/skill"
+import { ROOT_ONLY_SKILLS } from "../../src/skill/builtin"
 import { SystemPrompt } from "../../src/session/system"
 import { RuntimeContext } from "../../src/session/runtime-context"
 import { Shell } from "@graphagent/core/shell"
@@ -87,7 +89,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { Truncate } from "@/tool/truncate"
-import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook"
+import { SettingsHook, type HookPayload, type HookSummary, type TriggerResult } from "@/hook"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { HookTranscript } from "@/hook/transcript"
 import { Global } from "@graphagent/core/global"
@@ -99,6 +101,7 @@ import { Format } from "../../src/format"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { expectLeftBehindStopped, killedShell } from "../lib/left-behind"
+import { summaryText } from "../lib/fake-provider"
 import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -1944,7 +1947,7 @@ it.instance("compacts a large new user message before sending it on the same mod
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(10_000))
     // The summary fits the model's usable window, so the next request is not compacted again.
-    yield* llm.text("long summary ".repeat(200))
+    yield* llm.text(summaryText("long summary ".repeat(200)))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -1997,7 +2000,7 @@ it.instance("compacts a large unique tool output before sending it on the same m
         time: { start: 1, end: 2 },
       },
     })
-    yield* llm.text("compact summary")
+    yield* llm.text(summaryText("compact summary"))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -2049,7 +2052,7 @@ it.instance("checks a smaller switched model after an earlier compaction summary
       ...next,
       model: { providerID: ref.providerID, modelID: ModelV2.ID.make("small-model") },
     })
-    yield* llm.text("smaller summary")
+    yield* llm.text(summaryText("smaller summary"))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -2102,7 +2105,7 @@ withOversizedToolSchema.instance(
         ...next,
         model: { providerID: ref.providerID, modelID: ModelV2.ID.make("small-model") },
       })
-      yield* llm.text("short summary")
+      yield* llm.text(summaryText("short summary"))
       yield* llm.text("continued answer")
 
       yield* prompt.loop({ sessionID: chat.id })
@@ -2186,8 +2189,8 @@ it.instance("recompacts an oversized summary before sending it to a smaller mode
     const chat = yield* sessions.create({ title: "Oversized compaction summary" })
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(3_000))
-    yield* llm.text("oversized summary ".repeat(3_000))
-    yield* llm.text("short summary")
+    yield* llm.text(summaryText("oversized summary ".repeat(3_000)))
+    yield* llm.text(summaryText("short summary"))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -2225,7 +2228,7 @@ it.instance("stops after repeated automatic summaries remain above the model lim
     const chat = yield* sessions.create({ title: "Bounded compaction" })
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(3_000))
-    for (let attempt = 0; attempt < 3; attempt++) yield* llm.text("oversized summary ".repeat(3_000))
+    for (let attempt = 0; attempt < 3; attempt++) yield* llm.text(summaryText("oversized summary ".repeat(3_000)))
 
     const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
 
@@ -2257,9 +2260,9 @@ it.instance("stops when the provider still rejects the request after two consecu
       parts: [{ type: "text", text: "hello" }],
     })
     yield* llm.error(413, { error: { message: "request entity too large" } })
-    yield* llm.text("s1")
+    yield* llm.text(summaryText("s1"))
     yield* llm.error(413, { error: { message: "request entity too large" } })
-    yield* llm.text("s2")
+    yield* llm.text(summaryText("s2"))
     yield* llm.error(413, { error: { message: "request entity too large" } })
 
     const result = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
@@ -2305,7 +2308,7 @@ it.instance("counts provider-rejected recoveries only while no step gets through
     })
     for (let round = 0; round < 3; round++) {
       yield* llm.error(413, { error: { message: "request entity too large" } })
-      yield* llm.text("s")
+      yield* llm.text(summaryText("s"))
       yield* llm.tool("glob", { pattern: "**/overflow-recovery-missing" })
     }
     yield* llm.text("done")
@@ -2785,6 +2788,52 @@ it.instance("counts the base prompt in the request overhead and the shared prefi
       ),
     )
   }),
+)
+
+// An agent with a prompt of its own gets the Safety section in front of it (#1457), and the same two estimates count it.
+it.instance(
+  "counts the Safety section of an agent with its own prompt in the request overhead and the prefix estimate",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { build: { prompt: "Custom agent instructions." } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Overhead with an agent prompt",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* Effect.gen(function* () {
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        yield* llm.text("world")
+        yield* prompt.loop({ sessionID: chat.id })
+
+        const body = (yield* llm.hits)[0]?.body as { messages?: Array<{ role?: string; content?: unknown }> }
+        const sent = body.messages?.find((message) => message.role === "system")?.content
+        if (typeof sent !== "string") throw new Error("the request carries no system message")
+        expect(sent).toStartWith(GraphAgentPrompt.baseline())
+        expect(sent).toContain("Custom agent instructions.")
+        const prefix = EngineProcess.runtimes.requestPrefixes.get(chat.id)
+        expect(prefix).toBeDefined()
+        const floor = estimateOverhead({ system: [sent], tools: prefix!.tools, toolsJson: prefix!.toolsJson })
+        expect(EngineProcess.runtimes.requestOverheads.get(chat.id)!).toBeGreaterThanOrEqual(floor)
+        expect(prefix!.prefixTokens).toBeGreaterThanOrEqual(floor)
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            EngineProcess.runtimes.forgetRequestPrefix(chat.id)
+            EngineProcess.runtimes.requestOverheads.delete(chat.id)
+          }),
+        ),
+      )
+    }),
 )
 
 it.instance("keeps a manifest of what each request carries besides its messages (#1461)", () =>
@@ -5872,7 +5921,7 @@ for (const [runtime, runner] of [
       })
       yield* llm.push(
         reply().tool("write", { filePath: first, content: "allowed" }).usage({ input: 30_000, output: 10 }),
-        reply().text("One file was written. Summarize the remaining work.").stop(),
+        reply().text(summaryText("One file was written. Summarize the remaining work.")).stop(),
         reply().tool("write", { filePath: blocked, content: "must not execute" }),
         reply().text("The budget is exhausted after compaction.").stop(),
       )
@@ -6176,7 +6225,7 @@ const automaticCompactionLifecycle = (runtime: "ai-sdk" | "native") =>
       parts: [{ type: "text", text: "trigger threshold automatic compaction" }],
     })
     yield* fixture.llm.text(`s08-threshold-trigger-${runtime}`, { usage: { input: 11_500, output: 10 } })
-    yield* fixture.llm.text(`s08-threshold-summary-${runtime}`)
+    yield* fixture.llm.text(summaryText(`s08-threshold-summary-${runtime}`))
     yield* fixture.llm.text(`s08-threshold-continued-${runtime}`)
     const result = yield* fixture.prompt.loop({ sessionID: fixture.session.id })
     const hits = (yield* fixture.llm.hits).slice(before)
@@ -6212,7 +6261,7 @@ const overflowRecoveryLifecycle = (runtime: "ai-sdk" | "native", recovery: "succ
     const before = (yield* fixture.llm.hits).length
     yield* fixture.llm.error(413, { error: { message: "request entity too large" } })
     if (recovery === "success") {
-      yield* fixture.llm.text(`s08-auto-summary-${runtime}`)
+      yield* fixture.llm.text(summaryText(`s08-auto-summary-${runtime}`))
       yield* fixture.llm.text(`s08-overflow-recovered-${runtime}`)
     } else {
       yield* fixture.llm.error(413, { error: { message: "request entity too large during summary" } })
@@ -7371,7 +7420,7 @@ it.instance("claims ordinary users before a manual compaction request", () =>
     const earlier = yield* user(chat.id, "queued before compaction")
     const latest = yield* user(chat.id, "also queued before compaction")
     yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
-    yield* llm.text("summary")
+    yield* llm.text(summaryText("summary"))
     yield* prompt.loop({ sessionID: chat.id })
 
     const messages = yield* sessions.messages({ sessionID: chat.id })
@@ -8356,6 +8405,72 @@ it.instance("carries the DAG mechanism (L1) only for a main session with the wor
     expect(requests[0]?.system).toContain("# DAG workflows")
     expect(requests[0]?.system).toContain("Never change DAG mode or the DAG budget yourself")
     expect(requests[1]?.system).not.toContain("# DAG workflows")
+  }),
+)
+
+// #1457: what only a root session can use stays out of a child session's system: the goal note, the Active Hooks block
+// (it points at the watch_pr tool) and the skills that record the workflow tool. The base prompt's `# Hooks` stays.
+const listedHooks = Layer.effect(
+  SettingsHook.Service,
+  Effect.gen(function* () {
+    const service = yield* SettingsHook.Service
+    const entries: HookSummary[] = [{ event: "Stop", scope: "global", type: "command", descriptor: "echo done" }]
+    return SettingsHook.Service.of({ ...service, list: () => Effect.succeed(entries) })
+  }),
+).pipe(Layer.provide(hookRecorderLayer))
+const withListedHooks = testEffect(makeHttp({ settingsHookLayer: listedHooks }))
+
+withListedHooks.instance("a child session's system leaves out the root-only sections", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "main session" }],
+    })
+    yield* llm.text("main done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const parent = yield* Effect.acquireRelease(sessions.create({ title: "Root-only parent" }), (info) =>
+      sessions.remove(info.id).pipe(Effect.ignore),
+    )
+    const child = yield* Effect.acquireRelease(
+      sessions.create({ title: "Root-only child", parentID: parent.id }),
+      (info) => sessions.remove(info.id).pipe(Effect.ignore),
+    )
+    const children = (yield* prompt.children).forParent(parent.id)
+    yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID: "wf-root-only", nodeID: "child", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
+    yield* children.prompt({
+      sessionID: child.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "child session" }],
+    })
+    yield* llm.text("child done")
+    yield* prompt.loop({ sessionID: child.id }, { kind: "child_run" })
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    const [root, nested] = inputs.map((input) => requestMessages(input).system)
+    const dagSkills = [...ROOT_ONLY_SKILLS].map((name) => `- ${name}: `)
+    const rootOnly = [JSON.stringify(SystemPrompt.GOAL_NOTE).slice(1, -1), "## Active Hooks", ...dagSkills]
+    expect(dagSkills).toHaveLength(6)
+    for (const section of rootOnly) {
+      expect(root).toContain(section)
+      expect(nested).not.toContain(section)
+    }
+    // The child still gets the base prompt, with its hooks entry, and the rest of the skill list.
+    for (const system of [root, nested]) {
+      expect(system).toContain("# Hooks")
+      expect(system).toContain("- git-workflow: ")
+    }
   }),
 )
 
@@ -9769,7 +9884,7 @@ it.instance("review: repeated identical tool results count toward the next reque
         },
       })
     }
-    yield* llm.text("compact summary")
+    yield* llm.text(summaryText("compact summary"))
     yield* llm.text("continued answer")
     yield* prompt.loop({ sessionID: chat.id })
     const messages = yield* sessions.messages({ sessionID: chat.id })
@@ -11542,7 +11657,7 @@ it.instance("manual compaction strips persisted encrypted reasoning from the sum
     yield* prompt.loop({ sessionID: chat.id })
 
     yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
-    yield* llm.text("compaction summary")
+    yield* llm.text(summaryText("compaction summary"))
     yield* prompt.loop({ sessionID: chat.id })
 
     const summarizer = JSON.stringify((yield* llm.inputs).at(-1))
@@ -11601,7 +11716,7 @@ it.instance("manual compaction recovers a session whose upstream rejects persist
     expect(JSON.stringify((yield* llm.inputs).at(-1))).toContain("bad-cipher")
 
     yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
-    yield* llm.text("compaction summary")
+    yield* llm.text(summaryText("compaction summary"))
     yield* prompt.loop({ sessionID: chat.id })
 
     const stored = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)

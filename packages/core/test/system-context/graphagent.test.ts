@@ -58,4 +58,16 @@ describe("GraphAgentPrompt", () => {
       ),
     )
   })
+
+  test("baseline is the whole Safety section, the last section of the prompt (#1457)", () => {
+    const baseline = GraphAgentPrompt.baseline()
+    expect(baseline).toStartWith("# Safety\n")
+    expect(baseline).toContain('<system-reminder source="')
+    // The editing line sits above it, so every variant of the prompt ends with the same text.
+    for (const tools of [["edit", "write"], ["apply_patch"], []]) {
+      expect(GraphAgentPrompt.render(tools).endsWith(baseline)).toBe(true)
+    }
+    // No other top-level section follows the heading.
+    expect(baseline.slice(1)).not.toMatch(/^# /m)
+  })
 })
