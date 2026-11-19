@@ -54,6 +54,9 @@ export interface Query {
   readonly since: number
 }
 
+/**
+ * Message ids sort by creation: the runtime compares them as strings to tell which of two messages is newer.
+ */
 export interface Observation {
   /** No turn is running. A boundary is decided only while the session is idle. */
   readonly idle: boolean

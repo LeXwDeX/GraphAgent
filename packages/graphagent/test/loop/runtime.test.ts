@@ -246,6 +246,21 @@ describe("LoopRuntime rounds", () => {
     }),
   )
 
+  it.effect("does not send a round twice when its turn ended without a new boundary", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* round(t)
+      expect(t.session.sent).toHaveLength(1)
+      // The dispatched turn died before it wrote anything: the session is idle at the old boundary.
+      t.session.idle = true
+      yield* t.tick
+      yield* t.tick
+      expect(t.calls()).toHaveLength(1)
+      expect(t.session.sent).toHaveLength(1)
+      expect((yield* t.current()).round).toBe(2)
+    }),
+  )
+
   it.effect("counts a round only with the message that starts it", () =>
     Effect.gen(function* () {
       const t = yield* boot()
@@ -407,6 +422,43 @@ describe("LoopRuntime waiting", () => {
       expect(state.status).toBe("waiting")
       expect(state.declaration).toBeUndefined()
       expect(state.wait?.wait_id).toBe("job_1")
+      expect(state.round).toBe(1)
+      expect(t.calls()).toHaveLength(0)
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+
+  it.effect("analyses first when the user spoke in the round that declared await, then waits on continue", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      const message = t.session.human("and mind the changelog")
+      yield* t.end([ok(result({ next_prompt: "Mind the changelog." }))])
+
+      expect(t.calls()).toHaveLength(1)
+      expect(t.calls()[0].humans).toEqual([{ id: message, text: "and mind the changelog" }])
+      expect(t.calls()[0].declaration).toMatchObject({ kind: "await" })
+      const state = yield* t.current()
+      expect(state.status).toBe("waiting")
+      expect(state.declaration).toBeUndefined()
+      expect(state.wait?.wait_id).toBe("job_1")
+      expect(state.round).toBe(1)
+      expect(t.session.requests).toHaveLength(0)
+    }),
+  )
+
+  it.effect("leaves a live wait alone when another automation's turn ends", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor() })
+      yield* t.end()
+
+      // A DAG result is delivered to the session and its turn ends: not the loop's turn, not a human's.
+      t.session.begin()
+      yield* t.end()
+
+      const state = yield* t.current()
+      expect(state.status).toBe("waiting")
       expect(state.round).toBe(1)
       expect(t.calls()).toHaveLength(0)
       expect(t.session.requests).toHaveLength(0)
@@ -753,10 +805,12 @@ describe("LoopRuntime fence", () => {
       const t = yield* boot()
       yield* round(t)
       t.session.finish()
-      // The user starts a new loop: its first message has not been sent yet.
-      yield* t.runtime.start(t.sessionID, { prompt: "A new goal.", messageID: t.session.human("A new goal.") })
+      // The user starts a new loop. Its first message has an id, but is not in the session yet.
+      yield* t.runtime.start(t.sessionID, { prompt: "A new goal.", messageID: "msg_9999" })
+      yield* t.tick
       yield* t.tick
       expect(t.calls()).toHaveLength(1)
+      expect(t.session.requests).toHaveLength(1)
     }),
   )
 })
@@ -857,6 +911,24 @@ describe("LoopRuntime failures", () => {
       const state = yield* t.current()
       expect(state.stop?.reason).toBe("provider_unavailable")
       expect(t.session.sent).toHaveLength(2)
+    }),
+  )
+
+  it.effect("starts a new chain for an analysis that fails after the turn recovered", () =>
+    Effect.gen(function* () {
+      const t = yield* atRound2
+      t.session.fail(providerError(503))
+      yield* t.tick
+      expect((yield* t.current()).recovery?.attempts).toBe(1)
+
+      // The retried turn works; its analysis then fails three times. The turn's retry is not charged to it.
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      const before = t.calls().length
+      yield* t.end([unavailable, unavailable, unavailable])
+      const state = yield* t.current()
+      expect(t.calls().length - before).toBe(3)
+      expect(state.status).toBe("waiting")
+      expect(state.recovery).toMatchObject({ attempts: 2, probes: 1 })
     }),
   )
 

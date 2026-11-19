@@ -138,7 +138,11 @@ export const Recovery = Schema.Struct({
   reset: NonNegativeInt,
   probes: NonNegativeInt,
   probe_at: Schema.optional(Schema.Number),
-  /** The assistant message the chain started at (diagnostics and audit). */
+  /**
+   * The assistant message of the latest step the chain acted on: the turn that failed, or the boundary whose
+   * analysis failed. A turn that ends at another message since is how a pending probe learns the world moved on.
+   * The empty string stands for a failed turn that left no message.
+   */
   boundary: Schema.String,
 })
 export type Recovery = typeof Recovery.Type
