@@ -960,32 +960,43 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
   // through `reconcileAfter`, whose observation carries the ownership gate above. A second path that built an entry (or
   // called the adoption itself) would bypass the single flight that keeps two adoptions from overwriting each other.
   it("every runtime entry is created by the adoption, and the event triggers reach it through reconcileAfter", () => {
-    // #1344: the handlers split out of loop.ts are part of the loop for this contract.
-    const loopSource = ["loop.ts", "control-handlers.ts", "replan-handler.ts"]
-      .map((file) => readFileSync(path.join(graphagentDagSrc, "runtime", file), "utf8"))
-      .join("\n")
-    const code = loopSource
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("//"))
+    // #1344: loop.ts is split into modules, so every file of the runtime directory is scanned: none but the adoption
+    // creates an entry or calls it.
+    const runtimeDir = path.join(graphagentDagSrc, "runtime")
+    const codeOf = (file: string) =>
+      readFileSync(path.join(runtimeDir, file), "utf8")
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("//"))
+        .join("\n")
+    const code = readdirSync(runtimeDir)
+      .filter((file) => file.endsWith(".ts"))
+      .map(codeOf)
       .join("\n")
 
     // Exactly one `runtimes.set(`, and it lies inside `recoverWorkflow`.
     expect(code.match(/runtimes\.set\(/g) ?? []).toHaveLength(1)
-    const adoption = code.slice(
-      code.indexOf("const recoverWorkflow = Effect.fn("),
-      code.indexOf("DagReconciler.movedEvictor("),
+    const loop = codeOf("loop.ts")
+    const adoption = loop.slice(
+      loop.indexOf("const recoverWorkflow = Effect.fn("),
+      loop.indexOf("DagReconciler.movedEvictor("),
     )
     expect(adoption).toContain("runtimes.set(")
     // `recoverWorkflow` is called by the reconciler's `adopt`, and nowhere else.
     expect(code.match(/\brecoverWorkflow\(/g) ?? []).toHaveLength(1)
 
-    // Each event trigger hands the workflow to `reconcileAfter` and does not adopt on its own.
-    const triggers = ["DagEvent.WorkflowStarted", "DagEvent.WorkflowReplanned", "SessionEvent.Moved"]
-    for (const event of triggers) {
-      const start = code.indexOf(`events.subscribe(${event})`)
+    // Each event trigger hands the workflow to `reconcileAfter` and does not adopt on its own: its handler is
+    // taken from the module that subscribes it, up to the next subscription of that module.
+    const triggers = [
+      ["DagEvent.WorkflowStarted", "control-handlers.ts"],
+      ["DagEvent.WorkflowReplanned", "replan-handler.ts"],
+      ["SessionEvent.Moved", "lifecycle-handlers.ts"],
+    ] as const
+    for (const [event, file] of triggers) {
+      const source = codeOf(file)
+      const start = source.indexOf(`events.subscribe(${event})`)
       expect(start).toBeGreaterThan(-1)
-      const next = code.indexOf("events.subscribe(", start + 1)
-      const handler = code.slice(start, next === -1 ? undefined : next)
+      const next = source.indexOf("events.subscribe(", start + 1)
+      const handler = source.slice(start, next === -1 ? undefined : next)
       expect(`${event}: ${handler.includes("reconcileAfter(")}`).toBe(`${event}: true`)
       expect(handler).not.toContain("recoverWorkflow")
     }
