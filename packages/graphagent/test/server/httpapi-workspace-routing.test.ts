@@ -159,6 +159,34 @@ describe("HttpApi workspace routing middleware", () => {
     }),
   )
 
+  it.live("refuses a workspace header that is not a workspace ID", () =>
+    Effect.gen(function* () {
+      yield* serveProbe
+
+      // #1552: the header names where the request runs. Reading it used to throw inside routing (500), and
+      // falling back to the default location would run the request somewhere it was not meant for. A value
+      // that is not a workspace ID is a 400 with the BadRequest envelope, and no handler runs.
+      const malformed = "not-a-workspace-id"
+      const probe = yield* HttpClientRequest.get("/probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", malformed),
+        HttpClient.execute,
+      )
+      // A control-plane route resolves the header as well.
+      const controlPlane = yield* HttpClientRequest.get("/session").pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", malformed),
+        HttpClient.execute,
+      )
+
+      expect(probe.status).toBe(400)
+      expect(controlPlane.status).toBe(400)
+      // Exactly the envelope middleware/schema-error.ts gives a rejected param or query.
+      expect(yield* probe.json).toEqual({
+        name: "BadRequest",
+        data: { kind: "Headers", message: expect.stringContaining("x-graphagent-workspace") },
+      })
+    }),
+  )
+
   it.live("keeps control-plane routes local even when workspace is selected", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })

@@ -50,17 +50,24 @@ const seedChild = (ctx: ScenarioContext) =>
     return yield* ctx.session({ title: "Child guard child", parentID: parent.id })
   })
 
-/** #1552: the BadRequest envelope of a params rejection, as a malformed messageID gets it. */
-const badRequestForSessionID = (_ctx: unknown, result: CallResult) =>
+/**
+ * #1552: the BadRequest envelope a rejected request component answers with, whichever layer rejects it: `kind` names
+ * the component (a malformed messageID gets `Params`) and the message names `field`.
+ */
+const rejectedAs = (kind: string, field: string) => (_ctx: unknown, result: CallResult) =>
   Effect.sync(() => {
     const body = result.body
     object(body)
-    check(body.name === "BadRequest", `a malformed session ID should answer BadRequest: ${result.text}`)
+    check(body.name === "BadRequest", `${field} should be rejected as BadRequest: ${result.text}`)
     object(body.data)
-    check(body.data.kind === "Params", "a malformed session ID is rejected as a params error")
+    check(body.data.kind === kind, `${field} should be rejected as a ${kind} error: ${result.text}`)
     check(
-      typeof body.data.message === "string" && body.data.message.includes("sessionID"),
-      "the BadRequest message should name the sessionID param",
+      typeof body.data.message === "string" && body.data.message.includes(field),
+      `the BadRequest message should name ${field}`,
+    )
+    check(
+      Object.keys(body.data).sort().join() === "kind,message",
+      `the BadRequest data should carry only kind and message: ${result.text}`,
     )
   })
 
@@ -801,6 +808,15 @@ const scenarios: Scenario[] = [
         "a roots listing should carry the root role on every session",
       )
     }),
+  // #1552: a workspace header that is not a workspace ID is refused (400), not a 500 and not a fallback to
+  // the default location.
+  http.protected
+    .get("/session", "session.list.malformedWorkspace")
+    .at((ctx) => ({
+      path: "/session",
+      headers: ctx.headers({ "x-graphagent-workspace": "not-a-workspace-id" }),
+    }))
+    .status(400, rejectedAs("Headers", "x-graphagent-workspace")),
   http.protected
     .get("/session/status", "session.status")
     .seeded((ctx) => ctx.session({ title: "Status session" }))
@@ -2511,7 +2527,7 @@ const scenarios: Scenario[] = [
       path: route("/dag/session/{sessionID}", { sessionID: "not-a-session-id" }),
       headers: ctx.headers(),
     }))
-    .status(400, badRequestForSessionID),
+    .status(400, rejectedAs("Params", "sessionID")),
 
   http.protected
     .get("/dag/session/{sessionID}/summary", "dag.summary.malformed")
@@ -2519,7 +2535,7 @@ const scenarios: Scenario[] = [
       path: route("/dag/session/{sessionID}/summary", { sessionID: "not-a-session-id" }),
       headers: ctx.headers(),
     }))
-    .status(400, badRequestForSessionID),
+    .status(400, rejectedAs("Params", "sessionID")),
 
   // 404 scenarios (pre-existing, retained)
   http.protected

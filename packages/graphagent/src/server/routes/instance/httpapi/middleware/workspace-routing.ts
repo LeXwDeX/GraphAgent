@@ -6,14 +6,17 @@ import { Session } from "@/session/session"
 import type { SessionRole } from "@/session/role"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
-import { Context, Data, Effect, Layer } from "effect"
+import { Context, Data, Effect, Layer, Schema } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiMiddleware } from "effect/http-api"
+
+const WORKSPACE_HEADER = `${HEADER_PREFIX}workspace`
 
 // Directory and workspace addressing is header-only. Requests carrying the
 // retired `directory` / `workspace` query parameters are still accepted by
 // HttpApi (unknown query fields are ignored) but never select a location.
 type RequestPlan = Data.TaggedEnum<{
+  MalformedWorkspace: { readonly header: string }
   MissingWorkspace: { readonly workspaceID: WorkspaceV2.ID }
   Local: { readonly directory: string; readonly workspaceID?: WorkspaceV2.ID }
 }>
@@ -46,12 +49,13 @@ function requestURL(request: HttpServerRequest.HttpServerRequest): URL {
   return new URL(request.url, "http://localhost")
 }
 
-function selectedWorkspaceID(
+// A session carries its own workspace and it wins, so the header counts only when the session names none.
+// The header is untrusted text; `planRequest` checks that it is a workspace ID before using it.
+function workspaceHeader(
   request: HttpServerRequest.HttpServerRequest,
   sessionWorkspaceID?: WorkspaceV2.ID,
-): WorkspaceV2.ID | undefined {
-  const workspaceHeader = request.headers[`${HEADER_PREFIX}workspace`]
-  return sessionWorkspaceID ?? (workspaceHeader ? WorkspaceV2.ID.make(workspaceHeader) : undefined)
+): string | undefined {
+  return sessionWorkspaceID === undefined ? request.headers[WORKSPACE_HEADER] || undefined : undefined
 }
 
 function defaultDirectory(request: HttpServerRequest.HttpServerRequest): string {
@@ -76,6 +80,14 @@ function missingWorkspaceResponse(id: WorkspaceV2.ID): HttpServerResponse.HttpSe
   })
 }
 
+// The envelope a rejected param or query gets (middleware/schema-error.ts), so clients read one 400 shape.
+function malformedWorkspaceResponse(header: string): HttpServerResponse.HttpServerResponse {
+  return HttpServerResponse.jsonUnsafe(
+    { name: "BadRequest", data: { message: `Expected a workspace ID in the ${header} header`, kind: "Headers" } },
+    { status: 400 },
+  )
+}
+
 function planWorkspaceRequest(workspace: Workspace.Info): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const target = yield* WorkspaceAdapterRuntime.target(workspace)
@@ -89,7 +101,13 @@ function planRequest(
 ): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const url = requestURL(request)
-    const workspaceID = selectedWorkspaceID(request, session?.workspaceID)
+    const header = workspaceHeader(request, session?.workspaceID)
+    // A header that is not a workspace ID selects nowhere. Running the request in the default location instead
+    // could change the wrong place, so it is refused (#1552).
+    if (header !== undefined && !Schema.is(WorkspaceV2.ID)(header)) {
+      return RequestPlan.MalformedWorkspace({ header: WORKSPACE_HEADER })
+    }
+    const workspaceID = session?.workspaceID ?? header
     const workspace = yield* resolveWorkspace(workspaceID)
 
     if (workspaceID && workspace === undefined) {
@@ -113,6 +131,7 @@ function routeWorkspace<E>(
   session?: Session.Info,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, Workspace.Service> {
   return RequestPlan.$match(plan, {
+    MalformedWorkspace: ({ header }) => Effect.succeed(malformedWorkspaceResponse(header)),
     MissingWorkspace: ({ workspaceID }) => Effect.succeed(missingWorkspaceResponse(workspaceID)),
     Local: ({ directory, workspaceID }) =>
       effect.pipe(
