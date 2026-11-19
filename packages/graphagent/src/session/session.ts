@@ -587,6 +587,10 @@ export interface Interface {
   }) => Effect.Effect<{ items: SessionV1.WithParts[]; cursor?: string }, NotFound | InvalidCursor>
   readonly applyUpdate: (input: { sessionID: SessionID } & UpdateInput) => Effect.Effect<Info, NotFound>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
+  /**
+   * Removes the session, its children and everything they own. It does not stop a prompt run that is still
+   * writing into them: delete entry points go through `SessionPrompt.removeSession`, which cancels the runs first.
+   */
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends SessionV1.Info>(msg: T) => Effect.Effect<T>
   readonly removeMessage: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<MessageID>

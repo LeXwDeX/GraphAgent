@@ -7102,6 +7102,148 @@ it.instance(
   10_000,
 )
 
+// Session removal (#1558)
+
+// Deleting a session used to cancel only its background jobs: a run that was streaming kept the provider request open
+// (HTTP) or failed its next write against the missing row (WebSocket). `removeSession` stops the runs of the whole tree
+// through the abort path, waits for them to settle, and only then removes the rows.
+
+type RemovalEvent = { readonly type: string; readonly sessionID: string; readonly error?: string }
+
+const watchRemoval = Effect.fn("test.watchRemoval")(function* (sessionIDs: readonly SessionID[]) {
+  const events = yield* EventV2Bridge.Service
+  const ids = new Set<string>(sessionIDs)
+  const seen: RemovalEvent[] = []
+  const off = yield* events.listen((event) => {
+    const data = event.data
+    if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+    if (typeof data.sessionID !== "string" || !ids.has(data.sessionID)) return Effect.void
+    const error =
+      "error" in data && data.error && typeof data.error === "object" && "name" in data.error
+        ? data.error.name
+        : undefined
+    seen.push({ type: event.type, sessionID: data.sessionID, ...(typeof error === "string" ? { error } : {}) })
+    return Effect.void
+  })
+  return { seen, off }
+})
+
+const logRecorder = () => {
+  const lines: Array<{ level: string; text: string }> = []
+  const record = Logger.make((entry) => {
+    lines.push({ level: entry.logLevel, text: JSON.stringify(entry.message) })
+  })
+  return { lines, layer: Logger.layer([record]) }
+}
+
+// Nothing may follow a session's own `session.deleted`, and the only errors on the way are the aborted runs' own:
+// the abort path reports `MessageAbortedError` and logs the run as `process` / `Aborted`, as it does for Esc.
+const expectCleanRemoval = (
+  ids: readonly SessionID[],
+  seen: readonly RemovalEvent[],
+  lines: ReadonlyArray<{ level: string; text: string }>,
+) => {
+  for (const id of ids) {
+    const mine = seen.filter((event) => event.sessionID === id)
+    expect(mine.filter((event) => event.type === "session.deleted")).toHaveLength(1)
+    expect(mine.at(-1)?.type).toBe("session.deleted")
+  }
+  const errors = seen.filter((event) => event.type === "session.error")
+  expect(errors.filter((event) => event.error !== "MessageAbortedError")).toEqual([])
+  expect(lines.filter((line) => line.level === "Error" && !line.text.includes('"error":"Aborted"'))).toEqual([])
+}
+
+const expectRemoved = (sessions: Session.Interface, ids: readonly SessionID[]) =>
+  Effect.forEach(
+    ids,
+    (id) =>
+      sessions.get(id).pipe(
+        Effect.exit,
+        Effect.map((exit) => expect(Exit.isFailure(exit)).toBe(true)),
+      ),
+    { discard: true },
+  )
+
+it.instance(
+  "removing a streaming session aborts its run before the rows go",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const { seen, off } = yield* watchRemoval([chat.id])
+      const { lines, layer } = logRecorder()
+      yield* llm.push(reply().text("partial output").hang())
+      yield* user(chat.id, "hello")
+
+      const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.provide(layer), Effect.forkChild)
+      yield* llm.wait(1)
+      yield* waitForBusy(chat.id)
+      yield* prompt.removeSession(chat.id).pipe(Effect.provide(layer))
+      yield* awaitWithTimeout(llm.waitAbort(1), "timed out waiting for the provider to see the abort", "5 seconds")
+      yield* Fiber.await(run)
+      yield* off
+
+      expect(yield* llm.aborts).toBe(1)
+      yield* expectRemoved(sessions, [chat.id])
+      expectCleanRemoval([chat.id], seen, lines)
+    }),
+  { git: true },
+  15_000,
+)
+
+it.instance(
+  "removing a session aborts the runs of its children and grandchildren too",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const { lines, layer } = logRecorder()
+
+      // A child session is prompted as the delegation it is: under a run its parent started.
+      const startChild = Effect.fn("test.startChild")(function* (parentID: SessionID, title: string) {
+        const child = yield* sessions.create({ parentID, title, agent: "general" })
+        const children = (yield* prompt.children).forParent(parentID)
+        const handle = yield* children.start({
+          childSessionID: child.id,
+          owner: { kind: "task", toolCallID: `call_${title}` },
+          detached: false,
+        })
+        yield* handle.markRunning
+        const run = yield* children
+          .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: title }] })
+          .pipe(Effect.provide(layer), Effect.forkChild)
+        return { child, run }
+      })
+
+      yield* llm.push(
+        reply().text("root partial").hang(),
+        reply().text("child partial").hang(),
+        reply().text("grandchild partial").hang(),
+      )
+      yield* user(chat.id, "hello")
+      const root = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.provide(layer), Effect.forkChild)
+      yield* llm.wait(1)
+      const first = yield* startChild(chat.id, "child")
+      yield* llm.wait(2)
+      const second = yield* startChild(first.child.id, "grandchild")
+      yield* llm.wait(3)
+      const ids = [chat.id, first.child.id, second.child.id]
+      yield* Effect.forEach(ids, (id) => waitForBusy(id), { discard: true })
+      const { seen, off } = yield* watchRemoval(ids)
+
+      yield* prompt.removeSession(chat.id).pipe(Effect.provide(layer))
+      yield* awaitWithTimeout(llm.waitAbort(3), "timed out waiting for the provider to see the aborts", "5 seconds")
+      yield* Effect.forEach([root, first.run, second.run], Fiber.await, { discard: true })
+      yield* off
+
+      expect(yield* llm.aborts).toBe(3)
+      yield* expectRemoved(sessions, ids)
+      expectCleanRemoval(ids, seen, lines)
+    }),
+  { git: true },
+  20_000,
+)
+
 // Queue semantics
 
 noLLMServer.instance("concurrent loop callers get same result", () =>
