@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import { $ } from "bun"
 import { eq } from "drizzle-orm"
-import { Effect, Exit, Fiber } from "effect"
+import { Cause, Effect, Exit, Fiber } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import path from "node:path"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
   chmodSync,
@@ -16,11 +16,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
+import * as nodeFs from "node:fs"
+import * as nodeFsPromises from "node:fs/promises"
 import os from "node:os"
 import { Database } from "@graphagent/core/database/database"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
@@ -38,6 +41,7 @@ import { workflowArtifactsRoot, workflowReportsArea } from "@/dag/runtime/output
 import { completeIsolatedNode, settleWorkflowWorktree } from "@/dag/runtime/worktree-completion"
 import { tmpdir } from "../fixture/fixture"
 import { makeWorkflowRow } from "./fixtures"
+import { legacyFingerprintTarget } from "./fixture/legacy-fingerprint"
 import { installGitGate, withoutGit } from "./fixture/git-shim"
 import { spiedLayer, watchGit } from "./fixture/git-watch"
 
@@ -176,6 +180,42 @@ describe("resolveWorkspaceAsync gives the verdicts of resolveWorkspace", () => {
     await using owner = await tmpdir({ git: true })
     await withoutGit(() => expectInvalid(owner.path, owner.path, "requires the workflow owner to be a git project"))
   })
+
+  posixIt("refuses a link that loops, and one that leads to a file, as the synchronous version does", async () => {
+    await using owner = await tmpdir({ git: true })
+    const loop = path.join(owner.path, "loop")
+    symlinkSync(loop, loop)
+    const file = path.join(owner.path, "file.txt")
+    writeFileSync(file, "not a directory")
+    const toFile = path.join(owner.path, "to-file")
+    symlinkSync(file, toFile)
+    const dangling = path.join(owner.path, "dangling")
+    symlinkSync(path.join(owner.path, "nowhere"), dangling)
+    await expectInvalid(loop, owner.path, "does not exist")
+    await expectInvalid(toFile, owner.path, "is not a directory")
+    await expectInvalid(dangling, owner.path, "does not exist")
+  })
+
+  posixIt("names every worktree of a repository that has several, as the synchronous version does", async () => {
+    await using owner = await tmpdir({ git: true })
+    await using plain = await tmpdir()
+    const names = ["first", "second", "third"]
+    const worktrees = names.map((name) => path.join(owner.path, name))
+    for (const [index, directory] of worktrees.entries())
+      await $`git worktree add ${directory} -b lock-git-many-${names[index]}`.cwd(owner.path).quiet()
+    // One of them reached through a link whose own path is not canonical.
+    const alias = path.join(plain.path, "alias")
+    symlinkSync(owner.path, alias)
+    for (const directory of worktrees)
+      expect(await resolveBoth(directory, owner.path)).toEqual({
+        _tag: "ok",
+        directory: DagLocation.canonicalDirectory(directory),
+      })
+    expect(await resolveBoth(path.join(alias, "second"), alias)).toEqual({
+      _tag: "ok",
+      directory: DagLocation.canonicalDirectory(worktrees[1] ?? ""),
+    })
+  })
 })
 
 describe("retarget resolves its workspace without blocking the event loop", () => {
@@ -254,6 +294,26 @@ describe("resolveExecutionAsync gives the verdicts of resolveExecution", () => {
     expect(await executionBoth({ directory: owner.path, executionDirectory: plain.path })).toMatchObject({
       _tag: "invalid",
       reason: expect.stringContaining("is not part of a git project"),
+    })
+  })
+
+  posixIt("judges a binding written with a trailing separator, or through a loop, like resolveExecution", async () => {
+    await using owner = await tmpdir({ git: true })
+    const linked = path.join(owner.path, "linked")
+    await $`git worktree add ${linked} -b lock-git-execution-spelling`.cwd(owner.path).quiet()
+    const canonical = DagLocation.canonicalDirectory(linked)
+    const loop = path.join(owner.path, "loop")
+    symlinkSync(loop, loop)
+    expect(await executionBoth({ directory: owner.path, executionDirectory: canonical + path.sep })).toMatchObject({
+      _tag: "invalid",
+      reason: expect.stringContaining("instead of the bound realpath"),
+    })
+    expect(await executionBoth({ directory: owner.path, executionDirectory: loop })).toMatchObject({ _tag: "missing" })
+    expect(
+      await executionBoth({ directory: owner.path, executionDirectory: path.join(owner.path, "nowhere") }),
+    ).toEqual({
+      _tag: "missing",
+      directory: path.join(owner.path, "nowhere"),
     })
   })
 
@@ -1241,5 +1301,737 @@ describe("workflow worktree settlement waits for git under the lock without bloc
     expectUnblocked(result, 3)
     expect(ranUnderTheLock).toEqual(["-c", "rev-parse", "rev-parse"])
     expect(published[0]).toMatchObject({ state: "kept", head: baseHead, touchedPaths: [] })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #1583: the filesystem under the workflow lock
+// ---------------------------------------------------------------------------
+
+/** What a test needs of the `node:fs` calls that wait on the disk: spies that call through, and the paths they saw. */
+function watchSyncFs() {
+  const probes = {
+    existsSync: spyOn(nodeFs, "existsSync"),
+    mkdirSync: spyOn(nodeFs, "mkdirSync"),
+    readFileSync: spyOn(nodeFs, "readFileSync"),
+    realpathSync: spyOn(nodeFs, "realpathSync"),
+    renameSync: spyOn(nodeFs, "renameSync"),
+    rmSync: spyOn(nodeFs, "rmSync"),
+    statSync: spyOn(nodeFs, "statSync"),
+    writeFileSync: spyOn(nodeFs, "writeFileSync"),
+  }
+  const targets = (probe: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }) =>
+    probe.mock.calls.map((call) => (typeof call[0] === "string" ? call[0] : ""))
+  return {
+    /** `<function> <path>` for every call on a path at or under one of `roots`. */
+    callsUnder: (roots: readonly string[]) =>
+      Object.entries(probes).flatMap(([name, probe]) =>
+        targets(probe)
+          .filter((target) => roots.some((root) => target === root || target.startsWith(root + path.sep)))
+          .map((target) => `${name} ${target}`),
+      ),
+    restore: () => {
+      for (const probe of Object.values(probes)) probe.mockRestore()
+    },
+  }
+}
+
+/** The synchronous `node:fs` calls `run` made on paths under `roots`: the calls that block the event loop. */
+async function syncFsCalls<A>(roots: readonly string[], run: () => Promise<A>) {
+  const watch = watchSyncFs()
+  try {
+    const value = await run()
+    return { value, calls: watch.callsUnder(roots) }
+  } finally {
+    watch.restore()
+  }
+}
+
+/** What an operation did to the event loop, as the longest time between two turns of a 10 ms interval: a free loop stays near 10 ms. */
+async function longestStall<A>(run: () => Promise<A>) {
+  let last = performance.now()
+  let longest = 0
+  const timer = setInterval(() => {
+    const now = performance.now()
+    longest = Math.max(longest, now - last)
+    last = now
+  }, 10)
+  try {
+    const value = await run()
+    return { value, longest: Math.max(longest, performance.now() - last) }
+  } finally {
+    clearInterval(timer)
+  }
+}
+
+/** The other end of a pipe, opened by a process of its own `seconds` from now: a disk that answers late. */
+const lateEnd = (seconds: number, script: string, ...args: string[]) =>
+  new Promise<void>((resolve, reject) => {
+    const child = spawn("sh", ["-c", `sleep ${seconds}; ${script}`, "sh", ...args], { stdio: "ignore" })
+    child.on("error", reject)
+    child.on("exit", () => resolve())
+  })
+
+/** The settlement of an isolated workflow whose worktree is `directory`, with what it publishes and removes recorded. */
+function settling(input: {
+  dagID: string
+  projectID: string
+  owner: string
+  directory: string
+  status: "completed" | "failed"
+  branch?: string
+  baseHead?: string
+}) {
+  const config: WorkflowConfig = {
+    name: "settle",
+    isolation: "worktree",
+    worktree: {
+      directory: input.directory,
+      ...(input.branch ? { branch: input.branch } : {}),
+      ...(input.baseHead ? { baseHead: input.baseHead } : {}),
+    },
+    nodes: [],
+  }
+  const row = makeWorkflowRow({
+    id: input.dagID,
+    projectId: input.projectID,
+    status: input.status,
+    directory: input.owner,
+    config: JSON.stringify(config),
+    worktree: null,
+  })
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- a store with the one method settlement reads
+  const store = { getWorkflow: () => Effect.succeed(row) } as unknown as DagStore.Interface
+  const published: DagEvent.WorkflowWorktree[] = []
+  const removed: string[] = []
+  const effect = settleWorkflowWorktree({
+    dagID: input.dagID,
+    status: input.status,
+    config,
+    store,
+    projectID: input.projectID,
+    remove: (directory) =>
+      Effect.sync(() => {
+        removed.push(directory)
+        return true
+      }),
+    publish: (worktree) =>
+      Effect.sync(() => {
+        published.push(worktree)
+      }),
+  })
+  return { effect, published, removed }
+}
+
+describe("the filesystem checks under the workflow lock make no synchronous call (#1583)", () => {
+  it("resolves a workspace and an execution location", async () => {
+    await using owner = await tmpdir({ git: true })
+    const linked = path.join(owner.path, "linked")
+    await $`git worktree add ${linked} -b lock-fs-resolve`.cwd(owner.path).quiet()
+    const row = { directory: owner.path, executionDirectory: DagLocation.canonicalDirectory(linked) }
+    // The probe has to see what the synchronous versions do.
+    const control = await syncFsCalls([owner.path], async () => ({
+      workspace: DagLocation.resolveWorkspace(linked, owner.path),
+      execution: DagLocation.resolveExecution(row),
+    }))
+    expect(control.calls.some((call) => call.startsWith("realpathSync "))).toBe(true)
+    expect(control.calls.some((call) => call.startsWith("statSync "))).toBe(true)
+
+    const asynchronous = await syncFsCalls([owner.path], () =>
+      Effect.runPromise(
+        Effect.all({
+          workspace: DagLocation.resolveWorkspaceAsync(linked, owner.path),
+          execution: DagLocation.resolveExecutionAsync(row),
+        }),
+      ),
+    )
+    expect(asynchronous.value).toEqual(control.value)
+    expect(asynchronous.calls).toEqual([])
+  })
+
+  posixIt("fingerprints the untracked files of a target", async () => {
+    await using tmp = await tmpdir({ git: true })
+    for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(path.join(tmp.path, name), name)
+    symlinkSync(path.join(tmp.path, "nowhere"), path.join(tmp.path, "dangling.txt"))
+    const control = await syncFsCalls([tmp.path], async () => legacyFingerprintTarget(tmp.path))
+    expect(control.calls.filter((call) => call.startsWith("statSync ")).length).toBeGreaterThanOrEqual(4)
+
+    const asynchronous = await syncFsCalls([tmp.path], () => Effect.runPromise(DagLocation.fingerprintTarget(tmp.path)))
+    expect(asynchronous.value).toEqual(control.value)
+    expect(asynchronous.calls).toEqual([])
+  })
+
+  it("stops asking the disk about untracked files once its caller was interrupted", async () => {
+    await using tmp = await tmpdir({ git: true })
+    // Ten batches of untracked files.
+    const total = 640
+    for (let i = 0; i < total; i++) writeFileSync(path.join(tmp.path, `untracked-${i}.txt`), "x")
+    const controller = new AbortController()
+    const stat = nodeFsPromises.stat
+    const interrupting = (target: nodeFs.PathLike) => {
+      controller.abort()
+      return stat(target)
+    }
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the one overload `stat` is called with
+    const probe = spyOn(nodeFsPromises, "stat").mockImplementation(interrupting as typeof stat)
+    try {
+      const exit = await Effect.runPromiseExit(DagLocation.fingerprintTarget(tmp.path), { signal: controller.signal })
+      expect(Exit.hasInterrupts(exit)).toBe(true)
+      // The batch in flight when the interruption landed finishes; the ones after it are never asked for.
+      const asked = probe.mock.calls.filter((call) => String(call[0]).startsWith(tmp.path)).length
+      expect(asked).toBeGreaterThan(0)
+      expect(asked).toBeLessThan(total)
+    } finally {
+      probe.mockRestore()
+    }
+  })
+
+  posixIt("settles a workflow worktree: the checkout, the patch and the evidence", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = path.join(tmp.path, "settle-fs-tree")
+    await $`git worktree add -b lock-fs-settle ${linked}`.cwd(tmp.path).quiet()
+    const baseHead = (await $`git rev-parse HEAD`.cwd(linked).text()).trim()
+    writeFileSync(path.join(linked, "change.txt"), "dirty\n")
+    const projectID = `proj-lock-fs-probe-${process.pid}`
+    const reports = workflowReportsArea(projectID)
+    const roots = [linked, reports]
+    try {
+      const control = await syncFsCalls(roots, async () => {
+        existsSync(linked)
+        DagIsolation.writePatchArtifact(reports, "dag_control", "_workflow", "patch")
+      })
+      expect(control.calls).toEqual(
+        expect.arrayContaining([
+          `existsSync ${linked}`,
+          expect.stringMatching(/^mkdirSync /),
+          expect.stringMatching(/^writeFileSync /),
+        ]),
+      )
+
+      const settlement = settling({
+        dagID: "dag_lock_fs_probe",
+        projectID,
+        owner: tmp.path,
+        directory: linked,
+        status: "completed",
+        branch: "lock-fs-settle",
+        baseHead,
+      })
+      const probed = await syncFsCalls(roots, () => Effect.runPromise(settlement.effect))
+      expect(probed.value).toBe("settled")
+      expect(settlement.published).toHaveLength(1)
+      expect(settlement.published[0]).toMatchObject({ state: "removed", touchedPaths: ["change.txt"] })
+      expect(settlement.removed).toEqual([linked])
+      // The patch and the evidence were written all the same.
+      const written = readdirSync(path.join(reports, "dag_lock_fs_probe")).sort()
+      expect(written).toEqual(["_workflow.patch", "_workflow.settlement.json"])
+      expect(probed.calls).toEqual([])
+    } finally {
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("settles a workflow whose checkout is gone, reading the evidence an earlier settlement left", async () => {
+    await using tmp = await tmpdir()
+    const projectID = `proj-lock-fs-probe-gone-${process.pid}`
+    const dagID = "dag_lock_fs_gone"
+    const directory = path.join(tmp.path, "gone")
+    const evidence = {
+      directory,
+      branch: "lock-fs-gone",
+      head: "a".repeat(40),
+      touchedPaths: ["x.txt"],
+      state: "removed" as const,
+    }
+    const file = path.join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(evidence))
+    try {
+      const settlement = settling({ dagID, projectID, owner: tmp.path, directory, status: "completed" })
+      const probed = await syncFsCalls([directory, workflowReportsArea(projectID)], () =>
+        Effect.runPromise(settlement.effect),
+      )
+      expect(probed.value).toBe("settled")
+      expect(settlement.published).toEqual([evidence])
+      expect(probed.calls).toEqual([])
+    } finally {
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+})
+
+describe("workflow worktree settlement waits for the disk under the lock without blocking the event loop (#1583)", () => {
+  /** A named pipe at `file`: opening it waits for the other end, as a slow disk does. */
+  const pipeAt = (file: string) => {
+    mkdirSync(path.dirname(file), { recursive: true })
+    execFileSync("mkfifo", [file])
+  }
+
+  posixIt("reads the evidence of a removed checkout with timers firing", async () => {
+    await using tmp = await tmpdir()
+    const projectID = `proj-lock-fs-read-${process.pid}`
+    const dagID = "dag_lock_fs_read"
+    const directory = path.join(tmp.path, "gone")
+    const evidence = {
+      directory,
+      branch: "lock-fs-read",
+      head: "b".repeat(40),
+      touchedPaths: ["x.txt"],
+      state: "removed" as const,
+    }
+    const file = path.join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+    pipeAt(file)
+    const source = path.join(tmp.path, "evidence.json")
+    writeFileSync(source, JSON.stringify(evidence))
+    try {
+      const settlement = settling({ dagID, projectID, owner: tmp.path, directory, status: "completed" })
+      const writer = lateEnd(0.25, 'cat "$1" > "$2"', source, file)
+      const result = await measured(() => Effect.runPromise(settlement.effect))
+      await writer
+      expect(result.value).toBe("settled")
+      // The read waited for the pipe, and the loop turned meanwhile.
+      expectUnblocked(result, 1)
+      expect(settlement.published).toEqual([evidence])
+    } finally {
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("writes the patch with timers firing", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = path.join(tmp.path, "settle-fs-slow-tree")
+    await $`git worktree add -b lock-fs-patch ${linked}`.cwd(tmp.path).quiet()
+    const baseHead = (await $`git rev-parse HEAD`.cwd(linked).text()).trim()
+    writeFileSync(path.join(linked, "change.txt"), "dirty\n")
+    const projectID = `proj-lock-fs-patch-${process.pid}`
+    const dagID = "dag_lock_fs_patch"
+    const patch = path.join(workflowReportsArea(projectID), dagID, "_workflow.patch")
+    pipeAt(patch)
+    const captured = path.join(tmp.path, "captured.patch")
+    try {
+      // A failed workflow keeps its worktree: the patch is the only disk work it waits for.
+      const settlement = settling({
+        dagID,
+        projectID,
+        owner: tmp.path,
+        directory: linked,
+        status: "failed",
+        branch: "lock-fs-patch",
+        baseHead,
+      })
+      // The commit runs git first, so the pipe is opened late enough for the write to be what waits for it.
+      const reader = lateEnd(0.8, 'cat "$1" > "$2"', patch, captured)
+      const started = performance.now()
+      const result = await longestStall(() => Effect.runPromise(settlement.effect))
+      await reader
+      expect(result.value).toBe("settled")
+      // The write really waited for the pipe, and the loop was never held for anything near that long.
+      expect(performance.now() - started).toBeGreaterThan(700)
+      expect(result.longest).toBeLessThan(300)
+      expect(readFileSync(captured, "utf8")).toContain("change.txt")
+      expect(settlement.published).toHaveLength(1)
+      expect(settlement.published[0]).toMatchObject({
+        state: "kept",
+        touchedPaths: ["change.txt"],
+        patchPath: patch,
+        patchSha256: createHash("sha256").update(readFileSync(captured)).digest("hex"),
+      })
+    } finally {
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("lets an interruption through while the disk is slow, and publishes nothing", async () => {
+    await using tmp = await tmpdir()
+    const projectID = `proj-lock-fs-interrupt-${process.pid}`
+    const dagID = "dag_lock_fs_interrupt"
+    const directory = path.join(tmp.path, "gone")
+    const file = path.join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+    pipeAt(file)
+    try {
+      const settlement = settling({ dagID, projectID, owner: tmp.path, directory, status: "completed" })
+      const controller = new AbortController()
+      // The pipe is opened 1.5 s from now, which ends the read the interruption gives up on.
+      const release = lateEnd(1.5, ': > "$1"', file)
+      const started = performance.now()
+      const running = Effect.runPromiseExit(settlement.effect, { signal: controller.signal })
+      await Bun.sleep(100)
+      controller.abort()
+      const exit = await running
+      // Nobody opened the pipe by then: the wait was given up, not finished; a synchronous read could not be.
+      expect(performance.now() - started).toBeLessThan(1000)
+      expect(Exit.hasInterrupts(exit)).toBe(true)
+      expect(settlement.published).toEqual([])
+      await release
+    } finally {
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  posixIt("lets the cap of the lock end a settlement whose disk stalls, and frees the lock", async () => {
+    await using tmp = await tmpdir()
+    const projectID = `proj-lock-fs-cap-${process.pid}`
+    const dagID = "dag_lock_fs_cap"
+    const file = path.join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+    pipeAt(file)
+    try {
+      const settlement = settling({
+        dagID,
+        projectID,
+        owner: tmp.path,
+        directory: path.join(tmp.path, "gone"),
+        status: "completed",
+      })
+      // Opened after the test is done with the pipe, which ends the read the cap gave up on.
+      const release = lateEnd(2, ': > "$1"', file)
+      const timedOut = await Effect.runPromise(
+        Effect.gen(function* () {
+          const dag = yield* Dag.Service
+          const fiber = yield* dag.exclusive(dagID, settlement.effect).pipe(Effect.forkChild)
+          // The read is parked on the pipe, in real time; then the clock of the test runs the cap out.
+          yield* Effect.promise(() => Bun.sleep(100))
+          yield* TestClock.adjust("31 seconds")
+          const exit = yield* Fiber.await(fiber)
+          // The lock went with the timeout: the next critical section of the workflow runs.
+          expect(yield* dag.exclusive(dagID, Effect.succeed("again"))).toBe("again")
+          return exit
+        }).pipe(
+          Effect.provide(spiedLayer(path.join(tmp.path, "transaction-open"))),
+          Effect.provide(TestClock.layer()),
+          Effect.scoped,
+        ),
+      )
+      expect(Exit.isFailure(timedOut)).toBe(true)
+      if (Exit.isFailure(timedOut)) {
+        const defect = Cause.findDefect(timedOut.cause)
+        expect(defect._tag).toBe("Success")
+        if (defect._tag === "Success") expect(Cause.isTimeoutError(defect.success)).toBe(true)
+      }
+      expect(settlement.published).toEqual([])
+      await release
+    } finally {
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+})
+
+// A write that outlives its caller (the cap of the workflow lock, a cancel) ends after the lock was released. A recovery
+// can have reopened the workflow by then, and the settlement of its next episode writes the same `_workflow.patch` and
+// `_workflow.settlement.json`: the old write must not land over the new one, which the synchronous write could never
+// do, because it ended inside the critical section.
+describe("writes to one file keep their order when the caller of one gave up (#1583)", () => {
+  const deferred = () => {
+    let resolve!: () => void
+    const promise = new Promise<void>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+
+  /** Waits, in real time, for `condition`: a few turns of the event loop, the queue's own, are all it takes. */
+  const until = async (condition: () => boolean) => {
+    for (let attempt = 0; attempt < 200 && !condition(); attempt++) await Bun.sleep(10)
+  }
+
+  /** Parks the first `writeFile` of `fs/promises` aimed at a path ending in `suffix` until `release`; the rest go through. */
+  const parkFirstWriteFile = (suffix: string) => {
+    const original = nodeFsPromises.writeFile
+    const reached = deferred()
+    const gate = deferred()
+    let seen = 0
+    let content: unknown
+    let landed: Promise<void> = Promise.resolve()
+    const probe = spyOn(nodeFsPromises, "writeFile").mockImplementation((file, data, options) => {
+      if (typeof file !== "string" || !file.endsWith(suffix) || ++seen > 1) return original(file, data, options)
+      content = data
+      reached.resolve()
+      landed = gate.promise.then(() => original(file, data, options))
+      void landed.catch(() => undefined)
+      return landed
+    })
+    return {
+      reached: reached.promise,
+      release: gate.resolve,
+      landed: () => landed,
+      content: () => content,
+      restore: () => probe.mockRestore(),
+    }
+  }
+
+  /** Parks the first `rename` of `fs/promises` onto a path ending in `suffix` until `release`; the rest go through. */
+  const parkFirstRename = (suffix: string) => {
+    const original = nodeFsPromises.rename
+    const reached = deferred()
+    const gate = deferred()
+    let seen = 0
+    let landed: Promise<void> = Promise.resolve()
+    const probe = spyOn(nodeFsPromises, "rename").mockImplementation((from, to) => {
+      if (typeof to !== "string" || !to.endsWith(suffix) || ++seen > 1) return original(from, to)
+      reached.resolve()
+      landed = gate.promise.then(() => original(from, to))
+      void landed.catch(() => undefined)
+      return landed
+    })
+    return { reached: reached.promise, release: gate.resolve, landed: () => landed, restore: () => probe.mockRestore() }
+  }
+
+  /** A repository with a linked worktree that has a first change. */
+  const treeWithChange = async (tmp: { path: string }, branch: string) => {
+    const linked = path.join(tmp.path, "order-tree")
+    await $`git worktree add -b ${branch} ${linked}`.cwd(tmp.path).quiet()
+    const baseHead = (await $`git rev-parse HEAD`.cwd(linked).text()).trim()
+    writeFileSync(path.join(linked, "first.txt"), "first\n")
+    return { linked, baseHead }
+  }
+
+  describe("DagIsolation.writeInOrder", () => {
+    const unique = (name: string) => path.join(os.tmpdir(), `graphagent-write-order-${process.pid}`, name)
+    /** How a write ended: its result, or the message of the error it failed with. */
+    const outcome = (write: Promise<unknown>) =>
+      write.then(
+        () => "ended",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      )
+
+    it("starts a write only when the earlier writes to its file have ended", async () => {
+      const file = unique("order")
+      const log: string[] = []
+      const first = deferred()
+      const second = deferred()
+      const write = (name: string, gate?: { promise: Promise<void> }) => async () => {
+        log.push(`start ${name}`)
+        await gate?.promise
+        log.push(`end ${name}`)
+        return name
+      }
+      const a = DagIsolation.writeInOrder(file, write("a", first))
+      const b = DagIsolation.writeInOrder(file, write("b", second))
+      const c = DagIsolation.writeInOrder(file, write("c"))
+      const other = DagIsolation.writeInOrder(`${file}.other`, write("other"))
+      await Bun.sleep(20)
+      // The others wait for `a`; another file does not.
+      expect(log).toEqual(["start a", "start other", "end other"])
+      expect(await other).toBe("other")
+      expect(DagIsolation.pendingWritePaths()).toEqual([path.resolve(file)])
+      first.resolve()
+      await a
+      await Bun.sleep(20)
+      expect(log.slice(3)).toEqual(["end a", "start b"])
+      second.resolve()
+      expect(await Promise.all([b, c])).toEqual(["b", "c"])
+      expect(log.slice(3)).toEqual(["end a", "start b", "end b", "start c", "end c"])
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    })
+
+    it("goes on after a write that failed, skips one whose caller gave up before its turn, and never cuts one that started", async () => {
+      const file = unique("outcomes")
+      const started: string[] = []
+      const hold = deferred()
+      const failing = DagIsolation.writeInOrder(file, async () => {
+        started.push("failing")
+        await hold.promise
+        throw new Error("disk full")
+      })
+      const controller = new AbortController()
+      const abandoned = DagIsolation.writeInOrder(
+        file,
+        async () => {
+          started.push("abandoned")
+          return "abandoned"
+        },
+        controller.signal,
+      )
+      const kept = DagIsolation.writeInOrder(file, async () => {
+        started.push("kept")
+        return "kept"
+      })
+      // Its caller gave up while it waited for its turn.
+      controller.abort()
+      hold.resolve()
+      expect(await outcome(failing)).toBe("disk full")
+      expect(await outcome(abandoned)).toContain("not started")
+      expect(await kept).toBe("kept")
+      expect(started).toEqual(["failing", "kept"])
+
+      // A write that has started when its caller gives up runs to its end.
+      const running = deferred()
+      const late = new AbortController()
+      let finished = false
+      const cut = DagIsolation.writeInOrder(
+        file,
+        async () => {
+          await running.promise
+          finished = true
+        },
+        late.signal,
+      )
+      await Bun.sleep(10)
+      late.abort()
+      running.resolve()
+      await cut
+      expect(finished).toBe(true)
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    })
+  })
+
+  it("keeps the patch of the later settlement when the write of an interrupted one ends after it", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { linked, baseHead } = await treeWithChange(tmp, "lock-order-patch")
+    const projectID = `proj-lock-order-patch-${process.pid}`
+    const dagID = "dag_lock_order_patch"
+    const patchFile = path.join(workflowReportsArea(projectID), dagID, "_workflow.patch")
+    const gate = parkFirstWriteFile("_workflow.patch")
+    try {
+      const input = {
+        dagID,
+        projectID,
+        owner: tmp.path,
+        directory: linked,
+        status: "failed" as const,
+        branch: "lock-order-patch",
+        baseHead,
+      }
+      // The first settlement writes its patch, which parks, and its caller gives up.
+      const first = settling(input)
+      const controller = new AbortController()
+      const firstRun = Effect.runPromiseExit(first.effect, { signal: controller.signal })
+      await gate.reached
+      controller.abort()
+      expect(Exit.hasInterrupts(await firstRun)).toBe(true)
+      expect(first.published).toEqual([])
+
+      // The workflow is reopened, more is done in the worktree, and the second settlement has another patch to write.
+      writeFileSync(path.join(linked, "second.txt"), "second\n")
+      const second = settling(input)
+      let secondEnded = false
+      const secondRun = Effect.runPromise(second.effect).then((outcome) => {
+        secondEnded = true
+        return outcome
+      })
+      await Bun.sleep(400)
+      const waitedForTheWriteAhead = !secondEnded
+      // The slow disk answers: the first write ends, and then the second.
+      gate.release()
+      expect(await secondRun).toBe("settled")
+      await gate.landed()
+
+      const patch = readFileSync(patchFile)
+      expect(patch.toString()).toContain("second.txt")
+      expect(patch.toString()).not.toBe(String(gate.content()))
+      expect(second.published[0]).toMatchObject({ patchSha256: createHash("sha256").update(patch).digest("hex") })
+      expect(waitedForTheWriteAhead).toBe(true)
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    } finally {
+      gate.release()
+      gate.restore()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the evidence of the later settlement when the rename of an interrupted one ends after it", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { linked, baseHead } = await treeWithChange(tmp, "lock-order-evidence")
+    const projectID = `proj-lock-order-evidence-${process.pid}`
+    const dagID = "dag_lock_order_evidence"
+    const evidenceFile = path.join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+    const gate = parkFirstRename("_workflow.settlement.json")
+    try {
+      const input = {
+        dagID,
+        projectID,
+        owner: tmp.path,
+        directory: linked,
+        status: "completed" as const,
+        branch: "lock-order-evidence",
+        baseHead,
+      }
+      // The first settlement has written the temporary file of its evidence; the rename parks, and its caller gives up.
+      const first = settling(input)
+      const controller = new AbortController()
+      const firstRun = Effect.runPromiseExit(first.effect, { signal: controller.signal })
+      await gate.reached
+      controller.abort()
+      expect(Exit.hasInterrupts(await firstRun)).toBe(true)
+      expect(first.published).toEqual([])
+      expect(first.removed).toEqual([])
+
+      writeFileSync(path.join(linked, "second.txt"), "second\n")
+      const second = settling(input)
+      let secondEnded = false
+      const secondRun = Effect.runPromise(second.effect).then((outcome) => {
+        secondEnded = true
+        return outcome
+      })
+      await Bun.sleep(400)
+      const waitedForTheWriteAhead = !secondEnded
+      gate.release()
+      expect(await secondRun).toBe("settled")
+      await gate.landed()
+
+      const evidence = JSON.parse(readFileSync(evidenceFile, "utf8"))
+      expect(evidence.touchedPaths).toEqual(["first.txt", "second.txt"])
+      expect(evidence).toEqual(second.published[0])
+      expect(readdirSync(path.dirname(evidenceFile)).filter((name) => name.includes(".tmp-"))).toEqual([])
+      expect(waitedForTheWriteAhead).toBe(true)
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    } finally {
+      gate.release()
+      gate.restore()
+      rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
+    }
+  })
+
+  it("bounds the wait behind an earlier write by the cap of the lock, and never starts the write that gave up", async () => {
+    await using tmp = await tmpdir()
+    const reports = path.join(tmp.path, "reports")
+    const patchFile = path.join(reports, "dag_lock_order_cap", "_workflow.patch")
+    const gate = parkFirstWriteFile("_workflow.patch")
+    try {
+      const write = (patch: string) =>
+        DagIsolation.writePatchArtifactAsync(reports, "dag_lock_order_cap", "_workflow", patch)
+      const controller = new AbortController()
+      const first = Effect.runPromiseExit(write("first\n"), { signal: controller.signal })
+      await gate.reached
+      controller.abort()
+      expect(Exit.hasInterrupts(await first)).toBe(true)
+
+      const timedOut = await Effect.runPromise(
+        Effect.gen(function* () {
+          const dag = yield* Dag.Service
+          const fiber = yield* dag.exclusive("dag_lock_order_cap", write("second\n")).pipe(Effect.forkChild)
+          // It is waiting for the write ahead of it, in real time; then the clock of the test runs the cap out.
+          yield* Effect.promise(() => Bun.sleep(50))
+          yield* TestClock.adjust("31 seconds")
+          const exit = yield* Fiber.await(fiber)
+          // The lock went with the timeout: the next critical section of the workflow runs.
+          expect(yield* dag.exclusive("dag_lock_order_cap", Effect.succeed("again"))).toBe("again")
+          return exit
+        }).pipe(
+          Effect.provide(spiedLayer(path.join(tmp.path, "transaction-open"))),
+          Effect.provide(TestClock.layer()),
+          Effect.scoped,
+        ),
+      )
+      expect(Exit.isFailure(timedOut)).toBe(true)
+      if (Exit.isFailure(timedOut)) {
+        const defect = Cause.findDefect(timedOut.cause)
+        expect(defect._tag).toBe("Success")
+        if (defect._tag === "Success") expect(Cause.isTimeoutError(defect.success)).toBe(true)
+      }
+
+      // The write ahead goes on to its end; the one whose caller gave up on it never starts.
+      gate.release()
+      await gate.landed()
+      await until(() => DagIsolation.pendingWritePaths().length === 0)
+      expect(readFileSync(patchFile, "utf8")).toBe("first\n")
+      expect(DagIsolation.pendingWritePaths()).toEqual([])
+    } finally {
+      gate.release()
+      gate.restore()
+    }
   })
 })

@@ -6,7 +6,7 @@ import { $ } from "bun"
 import { eq } from "drizzle-orm"
 import { Effect, Fiber } from "effect"
 import path from "node:path"
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { Database } from "@graphagent/core/database/database"
 import { WorkflowTable } from "@graphagent/core/dag/sql"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -140,6 +140,32 @@ describe("fingerprintTarget keeps the value and the fallbacks of the synchronous
     const fingerprint = await expectLegacyValue(tmp.path)
     expect(fingerprint.kind).toBe("git")
     if (fingerprint.kind === "git") expect(["clean", "unavailable"]).not.toContain(fingerprint.untracked)
+  })
+
+  posixIt("marks an untracked path that cannot be looked at as missing", async () => {
+    await using tmp = await tmpdir({ git: true })
+    writeFileSync(path.join(tmp.path, "present.txt"), "present")
+    // Git lists a link to nothing as untracked, and the stat of it fails.
+    symlinkSync(path.join(tmp.path, "nowhere"), path.join(tmp.path, "dangling.txt"))
+    const fingerprint = await expectLegacyValue(tmp.path)
+    expect(fingerprint).toMatchObject({ kind: "git" })
+    if (fingerprint.kind === "git") expect(["clean", "unavailable"]).not.toContain(fingerprint.untracked)
+  })
+
+  posixIt("spends the budget for hashed content in the order of the paths", async () => {
+    await using tmp = await tmpdir({ git: true })
+    // Sparse files of 30, 5 and 1 MiB against a 32 MiB budget: the first and the last are hashed, the middle one is
+    // not, and a different order of the stats would hash another set and give another value.
+    for (const [name, mebibytes] of [
+      ["a.bin", 30],
+      ["b.bin", 5],
+      ["c.bin", 1],
+    ] as const) {
+      writeFileSync(path.join(tmp.path, name), "")
+      truncateSync(path.join(tmp.path, name), mebibytes * 1024 * 1024)
+    }
+    const fingerprint = await expectLegacyValue(tmp.path)
+    expect(fingerprint.kind).toBe("git")
   })
 
   posixIt("is none when git cannot be spawned", async () => {

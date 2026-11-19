@@ -3,7 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import { TextRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
+import { DiffRenderable, TextRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { Part } from "@graphagent/sdk"
 import { WINDOW_MIN_ROWS } from "../../../src/routes/session/rows"
 import { createFixture, type PerfFixture } from "../../perf/fixtures"
@@ -18,12 +18,12 @@ import { readFrame } from "../dag-mode-harness"
  * pins the row, which then mounts open wherever the viewport is.
  */
 
-type Block = { index: number; kind: "bash" | "reasoning" }
+type Block = { index: number; kind: "bash" | "reasoning" | "edit" }
 
 /**
  * The XL fixture with plain text everywhere but at `blocks`: 2200 parts, 22 to each of 100 messages, so the
  * transcript is windowed and the blocks are the only things in it that fold. The reasoning carries its index as
- * the title of its header, and a bash call as the command and the lines it prints.
+ * the title of its header, a bash call as the command and the lines it prints, and an edit as the file it changed.
  */
 function windowedWith(blocks: readonly Block[]): PerfFixture {
   const fixture = createFixture("XL")
@@ -54,6 +54,24 @@ function windowedWith(blocks: readonly Block[]): PerfFixture {
           },
         }
       }
+      if (kind === "edit") {
+        const file = `src/edit-${index}.ts`
+        const diff = ["--- a", "+++ b", "@@ -1 +1 @@", `-old ${index}`, `+new ${index}`, ""].join("\n")
+        return {
+          ...base,
+          type: "tool",
+          callID: `call_${index}`,
+          tool: "edit",
+          state: {
+            status: "completed",
+            input: { filePath: file },
+            output: "Edit applied successfully.",
+            title: "Deterministic edit",
+            metadata: { diff, filediff: { file, patch: diff, additions: 1, deletions: 1 }, diagnostics: {} },
+            time,
+          },
+        }
+      }
       return { ...base, type: "text", text: `Plain row ${index}.`, time }
     })
   }
@@ -62,6 +80,11 @@ function windowedWith(blocks: readonly Block[]): PerfFixture {
 
 function texts(node: Renderable): string[] {
   return [...(node instanceof TextRenderable ? [node.plainText] : []), ...node.getChildren().flatMap(texts)]
+}
+
+/** Whether `node` or something under it is a diff: an edit that is open has one under its summary, and no hint. */
+function hasDiff(node: Renderable): boolean {
+  return node instanceof DiffRenderable || node.getChildren().some(hasDiff)
 }
 
 /** The mounted child of the scroll box that holds `text`. Rows outside the window are not there. */
@@ -81,6 +104,8 @@ function openBlocks(scroll: ScrollBoxRenderable) {
     if (bash && text.includes("ctrl+o collapse")) open.push(`bash ${bash[1]}`)
     const reasoning = /- Thought: Block (\d+)/.exec(text)
     if (reasoning) open.push(`reasoning ${reasoning[1]}`)
+    const edit = /Edit src\/edit-(\d+)\.ts/.exec(text)
+    if (edit && hasDiff(row)) open.push(`edit ${edit[1]}`)
   }
   return open.sort()
 }
@@ -169,6 +194,35 @@ test("a block opened by the key shows its whole output when the reader scrolls t
     const row = holding(scroll, "printf block-2100")!
     expect(texts(row).some((line) => line.includes("block 2100 line 29"))).toBe(true)
     expect(texts(row).some((line) => line.includes("ctrl+o collapse"))).toBe(true)
+  } finally {
+    await harness.dispose()
+  }
+}, 120_000)
+
+test("an edit opens by the key although a long plain tail has unmounted it, and stays open where it is", async () => {
+  const harness = await mountHarness(
+    windowedWith([
+      { index: 900, kind: "edit" },
+      { index: 2100, kind: "bash" },
+    ]),
+  )
+  try {
+    const scroll = await atTheEnd(harness)
+    // The premise: the edit is far from what is mounted, and its row has to be reached from the parts in the store.
+    expect(holding(scroll, "src/edit-900.ts")).toBeUndefined()
+    expect(openBlocks(scroll)).toEqual([])
+
+    await pressExpand(harness)
+    expect(openBlocks(scroll)).toEqual(["bash 2100"])
+    await pressExpand(harness)
+    // The key flips the flag a click flips: the row is pinned, so it is mounted, and it is mounted open.
+    expect(openBlocks(scroll)).toEqual(["bash 2100", "edit 900"])
+    const row = holding(scroll, "src/edit-900.ts")!
+    expect(texts(row).some((line) => line.includes("+1 \u22121"))).toBe(true)
+
+    // Every block is open: the next press closes the latest one, which is the bash call.
+    await pressExpand(harness)
+    expect(openBlocks(scroll)).toEqual(["edit 900"])
   } finally {
     await harness.dispose()
   }

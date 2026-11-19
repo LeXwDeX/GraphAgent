@@ -129,14 +129,10 @@ panel/settings.tsx	prop	Previous tab
 routes/session/index.tsx	jsx-attr	# Questions
 routes/session/index.tsx	jsx-attr	# Todos
 routes/session/index.tsx	jsx-text	Asked
-routes/session/index.tsx	jsx-text	Edit
 routes/session/index.tsx	jsx-text	Error [
-routes/session/index.tsx	jsx-text	Patch
 routes/session/index.tsx	jsx-text	Thinking
 routes/session/index.tsx	jsx-text	Thought
 routes/session/index.tsx	jsx-text	Updating todos...
-routes/session/index.tsx	jsx-text	Write
-routes/session/index.tsx	jsx-text	line
 routes/session/index.tsx	jsx-text	message reverted	2
 routes/session/index.tsx	jsx-text	or /redo to restore	2
 routes/session/index.tsx	jsx-text	question

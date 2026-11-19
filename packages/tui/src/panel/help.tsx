@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { createMemo, createSignal } from "solid-js"
+import { createMemo, createSignal, type Accessor } from "solid-js"
 import { commandTitle, slashCommandEntries } from "../commands/registry"
 import { useCommands, useCommandScope } from "../commands/context"
 import { useTuiConfig } from "../config"
@@ -13,17 +13,29 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
-/** `/help`: shortcuts and slash commands generated from the keymap and registry. */
-export function HelpPanel() {
-  const registry = useCommands()
-  const scope = useCommandScope()
-  const config = useTuiConfig()
-  const [tab, setTab] = createSignal("shortcuts")
+export interface ShortcutEntry {
+  /** The keymap command name. */
+  id: string
+  /** The command's bindings as the keymap shows them now, overrides included. */
+  keys: string
+  title: string
+  /** The command's own description, when it has one. */
+  note?: string
+  /** The command's category; empty when it has none. */
+  group: string
+}
 
+/**
+ * The shortcuts a user can press, read from the keymap as it is now: no command that is hidden, has no title, belongs
+ * to the panels (`Panel`) or has no binding. Ordered by category, then by title. `/help` and the shortcuts tab of
+ * `/config` both list these, so a rebound key changes both.
+ */
+export function useShortcutEntries(): Accessor<ShortcutEntry[]> {
+  const config = useTuiConfig()
   const entries = useKeymapSelector((keymap) => keymap.getCommandEntries({ visibility: "registered" }))
 
-  const shortcutRows = createMemo<DetailRow[]>(() => {
-    const groups = new Map<string, { id: string; keys: string; title: string; note?: string }[]>()
+  return createMemo(() => {
+    const result: ShortcutEntry[] = []
     const seen = new Set<string>()
     for (const entry of entries()) {
       const name = entry.command.name
@@ -35,18 +47,29 @@ export function HelpPanel() {
       const keys = formatKeyBindings(entry.bindings, config)
       if (!keys) continue
       seen.add(name)
-      const group = category ?? ""
-      const rows = groups.get(group) ?? []
-      rows.push({ id: `shortcut:${name}`, keys, title, note: stringField(entry.command.desc) })
-      groups.set(group, rows)
+      result.push({ id: name, keys, title, note: stringField(entry.command.desc), group: category ?? "" })
     }
+    return result.sort((left, right) => left.group.localeCompare(right.group) || left.title.localeCompare(right.title))
+  })
+}
 
+/** `/help`: shortcuts and slash commands generated from the keymap and registry. */
+export function HelpPanel() {
+  const registry = useCommands()
+  const scope = useCommandScope()
+  const [tab, setTab] = createSignal("shortcuts")
+
+  const shortcuts = useShortcutEntries()
+
+  const shortcutRows = createMemo<DetailRow[]>(() => {
     const result: DetailRow[] = []
-    for (const [group, rows] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
-      if (group) result.push({ id: `group:${group}`, cells: [group], selectable: false })
-      for (const row of rows.sort((left, right) => left.title.localeCompare(right.title))) {
-        result.push({ id: row.id, cells: [row.keys, row.title], note: row.note })
+    let group: string | undefined
+    for (const entry of shortcuts()) {
+      if (entry.group !== group) {
+        group = entry.group
+        if (group) result.push({ id: `group:${group}`, cells: [group], selectable: false })
       }
+      result.push({ id: `shortcut:${entry.id}`, cells: [entry.keys, entry.title], note: entry.note })
     }
     return result
   })
