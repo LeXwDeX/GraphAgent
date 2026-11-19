@@ -8,6 +8,7 @@ import { Database } from "@graphagent/core/database/database"
 import { ToolOutcomeTable } from "@graphagent/core/session/outcome.sql"
 import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { TuiEvent } from "@graphagent/schema/tui-event"
 import { FetchHttpClient } from "effect/http"
 import { expect } from "bun:test"
 import {
@@ -2823,6 +2824,65 @@ it.instance("keeps a manifest of what each request carries besides its messages 
       expect(instructions.map((entry) => entry.label)).toContain(path.join(dir, "AGENTS.md"))
       expect(manifest!.bytes).toBe(manifest!.entries.reduce((sum, entry) => sum + entry.bytes, 0))
     }).pipe(Effect.ensuring(Effect.sync(() => EngineProcess.runtimes.requestManifests.delete(chat.id))))
+  }),
+)
+
+// The alert goes out through the bridge of the step itself, measured against the window of the session's own model
+// (#1461): here a model that declares 4,000 tokens, which the tools and the base prompt alone pass by far.
+it.instance("tells the user that the fixed request overhead is large when it passes a quarter of the window", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const base = providerCfg(url)
+      return {
+        ...base,
+        provider: {
+          ...base.provider,
+          test: {
+            ...base.provider.test,
+            models: {
+              ...base.provider.test.models,
+              "test-model": { ...base.provider.test.models["test-model"], limit: { context: 4_000, output: 500 } },
+            },
+          },
+        },
+      }
+    })
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Overhead alert",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    const toasts: Array<typeof TuiEvent.ToastShow.data.Type> = []
+    const off = yield* events.listen((event) => {
+      if (event.type === TuiEvent.ToastShow.type && Schema.is(TuiEvent.ToastShow.data)(event.data))
+        toasts.push(event.data)
+      return Effect.void
+    })
+    yield* Effect.gen(function* () {
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const manifest = EngineProcess.runtimes.requestManifests.get(chat.id)!
+      expect(manifest.window).toBe(4_000)
+      expect(manifest.windowSource).not.toBe("default")
+      expect(toasts.filter((toast) => toast.title === "Fixed request overhead is large")).toEqual([
+        {
+          title: "Fixed request overhead is large",
+          message: `≈${manifest.tokens.toLocaleString("en-US")} tokens (${Math.round((manifest.tokens / 4_000) * 100)}% of the 4,000-token window) are sent with every request.`,
+          variant: "warning",
+          duration: 8000,
+        },
+      ])
+      expect(EngineProcess.runtimes.overheadWarned.get(chat.id)).toEqual(new Set([`${ref.providerID}/${ref.modelID}`]))
+    }).pipe(Effect.ensuring(off.pipe(Effect.andThen(EngineProcess.runtimes.remove(chat.id)))))
   }),
 )
 

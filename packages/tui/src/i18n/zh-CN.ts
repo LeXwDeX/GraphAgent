@@ -94,6 +94,8 @@ export const zhCN = {
   "drawer.mcp.failed": "MCP 未连接：{names}",
   "drawer.closeHint": "{key} 关闭",
   "drawer.context": "上下文",
+  "drawer.overhead": "固定开销",
+  "drawer.overhead.total": "≈{tokens} tokens · {percent}%",
   "drawer.cost": "费用",
   "drawer.cost.session": "本会话 {cost}",
   "drawer.usage.io": "输入 {input} · 输出 {output}",

@@ -865,6 +865,63 @@ export type Session = {
   dagBudgetUnlimited?: boolean
 }
 
+export type SessionOverhead = {
+  bytes: number
+  /**
+   * Estimated, not a tokenizer count
+   */
+  tokens: number
+  /**
+   * The model the request was for, as providerID/modelID
+   */
+  model?: string
+  /**
+   * The context window of that model; the assumed one when `windowSource` is `default`
+   */
+  window?: number
+  /**
+   * Where the window comes from; `default` means the model declares none and the window is assumed
+   */
+  windowSource?: string
+  /**
+   * `tokens` of `window`, as a fraction
+   */
+  ratio?: number
+  sources: Array<{
+    /**
+     * A system section, the base prompt, the tool definitions, or one runtime-context block
+     */
+    source:
+      | "environment"
+      | "language"
+      | "instructions"
+      | "mcp_instructions"
+      | "skills"
+      | "goal"
+      | "hooks"
+      | "dag"
+      | "runtime_note"
+      | "structured_output"
+      | "one_shot_event"
+      | "base"
+      | "tools"
+      | "runtime_context"
+    /**
+     * The file an instructions section was read from
+     */
+    label?: string
+    bytes: number
+    /**
+     * Estimated, not a tokenizer count
+     */
+    tokens: number
+    /**
+     * The first 16 hex digits of the SHA-256 of the text
+     */
+    hash: string
+  }>
+}
+
 export type SessionUsage = {
   rootID: string
   /**
@@ -5150,6 +5207,37 @@ export type SessionUsageResponses = {
 }
 
 export type SessionUsageResponse = SessionUsageResponses[keyof SessionUsageResponses]
+
+export type SessionOverheadData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/overhead"
+}
+
+export type SessionOverheadErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: BadRequestError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionOverheadError = SessionOverheadErrors[keyof SessionOverheadErrors]
+
+export type SessionOverheadResponses = {
+  /**
+   * What every request of the session carries besides its messages
+   */
+  200: SessionOverhead
+}
+
+export type SessionOverheadResponse = SessionOverheadResponses[keyof SessionOverheadResponses]
 
 export type SessionChildrenData = {
   body?: never

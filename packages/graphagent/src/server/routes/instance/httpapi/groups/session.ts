@@ -9,6 +9,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionBtw } from "@/session/btw"
 import { SessionStatus } from "@/session/status"
+import { SYSTEM_SECTIONS } from "@/session/step-metrics"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { SessionGoal } from "@graphagent/schema/session-goal"
@@ -60,6 +61,42 @@ export const SessionReminder = Schema.Struct({
 export const SessionReminderList = Schema.Struct({
   entries: Schema.Array(SessionReminder),
 }).annotate({ identifier: "SessionReminderList" })
+
+/** One source of what a request carries besides its messages (#1461): bytes, estimated tokens and a hash of its text. */
+const OverheadSource = Schema.Struct({
+  source: Schema.Literals([...SYSTEM_SECTIONS, "base", "tools", "runtime_context"] as const).annotate({
+    description: "A system section, the base prompt, the tool definitions, or one runtime-context block",
+  }),
+  label: Schema.optional(Schema.String.annotate({ description: "The file an instructions section was read from" })),
+  bytes: Schema.Finite,
+  tokens: Schema.Finite.annotate({ description: "Estimated, not a tokenizer count" }),
+  hash: Schema.String.annotate({ description: "The first 16 hex digits of the SHA-256 of the text" }),
+})
+
+/**
+ * `GET /session/:sessionID/overhead` (#1461): what the latest request of the session carried besides its conversation
+ * messages, by source. A session that has sent no request answers with zeros and no sources.
+ */
+export const SessionOverhead = Schema.Struct({
+  bytes: Schema.Finite,
+  tokens: Schema.Finite.annotate({ description: "Estimated, not a tokenizer count" }),
+  model: Schema.optional(
+    Schema.String.annotate({ description: "The model the request was for, as providerID/modelID" }),
+  ),
+  window: Schema.optional(
+    Schema.Finite.annotate({
+      description: "The context window of that model; the assumed one when `windowSource` is `default`",
+    }),
+  ),
+  windowSource: Schema.optional(
+    Schema.String.annotate({
+      description: "Where the window comes from; `default` means the model declares none and the window is assumed",
+    }),
+  ),
+  ratio: Schema.optional(Schema.Finite.annotate({ description: "`tokens` of `window`, as a fraction" })),
+  sources: Schema.Array(OverheadSource),
+}).annotate({ identifier: "SessionOverhead" })
+
 export const ListQuery = Schema.Struct({
   scope: Schema.optional(Schema.Literals(["project"])),
   path: Schema.optional(Schema.String),
@@ -178,6 +215,7 @@ export const SessionPaths = {
   get: `${root}/:sessionID`,
   dagMode: `${root}/:sessionID/dag-mode`,
   usage: `${root}/:sessionID/usage`,
+  overhead: `${root}/:sessionID/overhead`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   goal: `${root}/:sessionID/goal`,
@@ -271,6 +309,18 @@ export const SessionApi = HttpApi.make("session")
             summary: "Get session tree usage",
             description:
               "Read the token usage and cost summed over the root session of the requested session's tree: the root, its task children, their descendants and the DAG node sessions. Display only; nothing is limited or blocked.",
+          }),
+        ),
+        HttpApiEndpoint.get("overhead", SessionPaths.overhead, {
+          params: { sessionID: SessionID },
+          success: described(SessionOverhead, "What every request of the session carries besides its messages"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.overhead",
+            summary: "Get session fixed overhead",
+            description:
+              "Read what the latest request of the session carried besides its conversation messages, by source: the base prompt, each system section, the tool definitions and the runtime-context blocks, with their bytes, estimated tokens and hashes, and the share of the model's context window. Display only; nothing is limited or blocked. A session that has sent no request yet answers with zeros and no sources.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {
