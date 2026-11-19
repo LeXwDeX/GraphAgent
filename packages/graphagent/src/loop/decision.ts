@@ -30,6 +30,14 @@ export function isOkTurn(turn: TurnOutcome): boolean {
 export const keyOf = (boundary: LoopHost.Boundary) => boundary.message ?? ""
 
 /**
+ * Tells one boundary from another where `keyOf` cannot: the closing message, or for a turn that left none, when it
+ * ended. Two turns that left no message are two boundaries, and neither is taken for a message. Only the runtime's
+ * memory of the boundary a resume masked uses it; it is never stored.
+ */
+export const identityOf = (boundary: Pick<LoopHost.Boundary, "message" | "endedAt">) =>
+  boundary.message ?? `ended:${boundary.endedAt}`
+
+/**
  * Whether the boundary was there before the loop began. A loop just started or replaced has not run its first round,
  * so the boundary in front of the session is an older one and says nothing about it. Message ids sort by creation:
  * a closing message that is not newer than the message that started the loop is older. A turn that left no message

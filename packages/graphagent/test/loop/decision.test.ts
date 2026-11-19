@@ -87,6 +87,21 @@ describe("LoopDecision older boundaries", () => {
   })
 })
 
+describe("LoopDecision boundary identity", () => {
+  test("is the closing message, so two turns that ended one after the other are two boundaries", () => {
+    const of = (message: string) => LoopDecision.identityOf(boundary({ message }))
+    expect(of("msg_2")).toBe("msg_2")
+    expect(of("msg_2")).not.toBe(of("msg_3"))
+  })
+
+  test("is told by when it ended for a turn that left no message, and never mistaken for a message", () => {
+    const left = (endedAt: number) => LoopDecision.identityOf(boundary({ message: undefined, endedAt }))
+    expect(left(5)).toBe(left(5))
+    expect(left(5)).not.toBe(left(6))
+    expect(left(5)).not.toBe(LoopDecision.identityOf(boundary({ message: "msg_5", endedAt: 5 })))
+  })
+})
+
 describe("LoopDecision counted rounds", () => {
   test("the first analysis after a round counts, unless a human turn ended it", () => {
     expect(LoopDecision.followsCountedRound({ round: 2 }, 1, boundary())).toBe(true)

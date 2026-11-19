@@ -789,6 +789,69 @@ describe("LoopRuntime waiting", () => {
       expect(t.session.requests).toHaveLength(0)
     }),
   )
+
+  /** A waiting loop that kept a prompt: a user turn in it was analysed as continue, and the prompt waits for the wait to end. */
+  const keptPrompt = (deadline: number) =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      yield* t.loops.update(t.sessionID, undefined, { declaration: { kind: "await" }, wait: waitFor({ deadline }) })
+      yield* t.end()
+      t.session.human("also mind the changelog")
+      t.session.begin()
+      t.script(ok(result({ next_prompt: "Mind the changelog." })))
+      t.session.finish({ humanTurn: true })
+      yield* t.tick
+      const state = yield* t.current()
+      expect([state.status, state.round, state.next_prompt]).toEqual(["waiting", 1, "Mind the changelog."])
+      return t
+    })
+
+  it.effect("reviews the wait of a kept continue when its deadline passes, and carries the prompt in it", () =>
+    Effect.gen(function* () {
+      const t = yield* keptPrompt(60_000)
+
+      // While the wait is alive and in time, a scan has nothing to decide.
+      yield* TestClock.adjust(30_000)
+      yield* t.tick
+      expect(t.session.requests).toHaveLength(0)
+
+      // The deadline passes with the job still running: the wait ends in the review round, not in an ordinary round.
+      yield* TestClock.adjust(30_000)
+      yield* t.tick
+      let state = yield* t.current()
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].marker).toEqual({ loopID: state.loop_id, round: 2, kind: "review" })
+      expect(t.session.sent[0].text).toContain("Waiting for background_job:job_1 timed out.")
+      expect(t.session.sent[0].text).toContain("Mind the changelog.")
+      expect([state.status, state.wait?.reviewed, state.next_prompt]).toEqual(["active", true, undefined])
+
+      // A review that moves nothing ends the loop for the wait, as it does for any other wait.
+      yield* round(t, ok(stalled))
+      state = yield* t.current()
+      expect(state.stop?.reason).toBe("wait_expired")
+      expect(t.session.sent).toHaveLength(1)
+    }),
+  )
+
+  it.effect("reviews the wait of a kept continue when its object is gone, not sending the prompt as a round", () =>
+    Effect.gen(function* () {
+      const t = yield* keptPrompt(3_600_000)
+      t.session.gone.set("job_1", "The background job job_1 was lost in a restart.")
+      yield* t.tick
+
+      let state = yield* t.current()
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].marker).toEqual({ loopID: state.loop_id, round: 2, kind: "review" })
+      expect(t.session.sent[0].text).toContain("The background job job_1 was lost in a restart.")
+      expect(t.session.sent[0].text).toContain("Mind the changelog.")
+      expect([state.status, state.wait?.reviewed, state.next_prompt]).toEqual(["active", true, undefined])
+
+      yield* round(t, ok(stalled))
+      state = yield* t.current()
+      expect(state.stop?.reason).toBe("wait_expired")
+      expect(t.session.sent).toHaveLength(1)
+    }),
+  )
 })
 
 describe("LoopRuntime user messages", () => {
@@ -1445,6 +1508,34 @@ describe("LoopRuntime commands", () => {
     }),
   )
 
+  it.effect("does not let a late cancel stop a loop that was resumed after the ESC", () =>
+    Effect.gen(function* () {
+      const t = yield* boot()
+      t.script(ok(result({ next_prompt: "Go on." })))
+      t.session.finish({ humanTurn: true })
+      // The host holds the admission of round 2's message while the user presses ESC.
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      t.session.gate = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+      yield* t.runtime.claim(t.sessionID)
+      yield* Deferred.await(entered)
+
+      t.session.epoch += 1
+      expect((yield* t.runtime.act(t.sessionID, "interrupt")).tag).toBe("stopped")
+      // The user resumes before the old dispatch has answered; it answers `cancelled`, for an ESC the loop already took.
+      expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("resumed")
+      yield* Deferred.succeed(release, undefined)
+      yield* t.runtime.settled(t.sessionID)
+
+      // The stale cancel wrote nothing; the resumed loop went on with the round it had analysed.
+      const state = yield* t.current()
+      expect([state.status, state.round, state.stop]).toEqual(["active", 2, undefined])
+      expect(t.session.requests).toHaveLength(2)
+      expect(t.session.sent).toHaveLength(1)
+      expect(t.session.sent[0].text).toContain("Go on.")
+    }),
+  )
+
   it.effect("ends a loop whose session was archived", () =>
     Effect.gen(function* () {
       const t = yield* boot()
@@ -1529,6 +1620,85 @@ describe("LoopRuntime resume", () => {
       expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("running")
       yield* t.runtime.clear(t.sessionID)
       expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("none")
+    }),
+  )
+
+  /** A loop at round 2 whose turn ended on a hook's stop, so the loop stopped there. */
+  const stoppedByHook = Effect.gen(function* () {
+    const t = yield* boot()
+    yield* round(t)
+    t.session.finish({ hookStop: { message: "blocked by policy" } })
+    yield* t.tick
+    expect((yield* t.current()).stop?.reason).toBe("hook_stopped")
+    return t
+  })
+
+  it.effect("keeps the mask of the boundary it stopped at while the analysis is retried and probed", () =>
+    Effect.gen(function* () {
+      const t = yield* stoppedByHook
+      const before = t.calls().length
+
+      // The analysis of that boundary fails three times on the provider: the resumed loop plans a probe.
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      t.script(unavailable, unavailable, unavailable, ok(result({ next_prompt: "Carry on after the hook." })))
+      expect((yield* t.runtime.resume(t.sessionID)).tag).toBe("resumed")
+      yield* t.runtime.settled(t.sessionID)
+      let state = yield* t.current()
+      expect([state.status, state.recovery?.probes]).toEqual(["waiting", 1])
+      expect(t.calls().length - before).toBe(3)
+
+      // The probe comes due and the analysis works: the hook's stop was handled before, and is not applied again.
+      yield* TestClock.adjust(60_000)
+      yield* t.tick
+      state = yield* t.current()
+      expect(t.calls().length - before).toBe(4)
+      expect(state.stop).toBeUndefined()
+      expect([state.status, state.round]).toEqual(["active", 3])
+      expect(t.session.sent.at(-1)?.text).toContain("Carry on after the hook.")
+    }),
+  )
+
+  it.effect("keeps the mask when the analysis after a resume loses its fence and the boundary is decided again", () =>
+    Effect.gen(function* () {
+      const t = yield* stoppedByHook
+
+      // A command writes the loop while the analysis runs: its result is stale, and the same boundary is decided again.
+      t.script(
+        () =>
+          t.loops
+            .update(t.sessionID, undefined, { max_rounds: 30 })
+            .pipe(Effect.as(ok(result({ next_prompt: "stale" })))),
+        ok(result({ next_prompt: "Carry on after the hook." })),
+      )
+      yield* t.runtime.resume(t.sessionID)
+      yield* t.runtime.settled(t.sessionID)
+      expect(t.session.nudges).toBe(1)
+      expect((yield* t.current()).status).toBe("active")
+
+      yield* t.tick
+      const state = yield* t.current()
+      expect(state.stop).toBeUndefined()
+      expect([state.status, state.round, state.max_rounds]).toEqual(["active", 3, 30])
+      expect(t.session.sent.at(-1)?.text).toContain("Carry on after the hook.")
+    }),
+  )
+
+  it.effect("ends the mask at the next boundary: a hook that stops a later turn stops the loop again", () =>
+    Effect.gen(function* () {
+      const t = yield* stoppedByHook
+      const unavailable = failed({ kind: "provider", error: providerError(503) })
+      t.script(unavailable, unavailable, unavailable)
+      yield* t.runtime.resume(t.sessionID)
+      yield* t.runtime.settled(t.sessionID)
+      expect((yield* t.current()).status).toBe("waiting")
+
+      // Another turn ends while the probe is pending, and a hook stops it: that is a boundary of its own.
+      t.session.begin()
+      t.session.finish({ hookStop: { message: "a second policy" } })
+      yield* t.tick
+      const state = yield* t.current()
+      expect(state.status).toBe("stopped")
+      expect(state.stop).toMatchObject({ reason: "hook_stopped", detail: { message: "a second policy" } })
     }),
   )
 })

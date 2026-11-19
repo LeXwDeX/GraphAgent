@@ -106,7 +106,8 @@ export interface Request {
 /**
  * `started`: the message is committed and its turn runs (this does not wait for the turn). `refused`: nothing
  * was written, because a turn is running, a human message is waiting for its reply, the boundary moved on, or
- * `commit` said no. `cancelled`: the user pressed ESC since `epoch` was observed.
+ * `commit` said no. `cancelled`: the user pressed ESC since `epoch` was observed; nothing was written, `commit`
+ * included, so the loop is still at the revision the request was made against unless something else wrote to it.
  */
 export type Dispatched = "started" | "refused" | "cancelled"
 

@@ -28,6 +28,9 @@
  *   admission leaves the loop as it was.
  * - An analysis commits only if the loop and the boundary are still the ones it started at. A discarded
  *   result re-triggers the boundary through the host at once.
+ * - A resume masks the boundary the loop stopped at: its signals were handled when it stopped. The mask is that
+ *   boundary's, whatever becomes of the decision on it (a retried analysis, a probe, a result that lost its fence);
+ *   it ends when the loop reaches another boundary. It lives in memory only.
  * - A human message never pauses the loop. It waits for its reply (`Observation.preempted`), and the
  *   boundary that follows analyses it as a human message.
  *
@@ -103,7 +106,9 @@ export interface Interface {
   readonly archive: (sessionID: SessionID) => Effect.Effect<LoopState.Info | undefined>
   /**
    * Resumes a `stopped` loop. Opens a new failure chain, zeroes the streak and widens the budget, then decides
-   * the boundary again, seeing only the analysis and the counts: what stopped the loop is not applied twice.
+   * the boundary again, seeing only the analysis and the counts: what stopped the loop is not applied twice. That
+   * holds for every decision of that boundary (a probe, a retried analysis, a result decided again), until a turn
+   * ends at another one.
    */
   readonly resume: (sessionID: SessionID, input?: ResumeInput) => Effect.Effect<Resumed, never, Scope.Scope>
   /**
@@ -195,8 +200,17 @@ export const layer = Layer.effect(
     const host = yield* LoopHost.Service
 
     const works = new Map<SessionID, Work>()
-    /** Sessions whose next decision follows a resume. */
-    const masked = new Set<SessionID>()
+    /** The boundary a resume masked, by `LoopDecision.identityOf`, per session. Each decision of it is masked. */
+    const masked = new Map<SessionID, string>()
+
+    /** Whether `boundary` is the masked one. The first other boundary ends the mask: its signals are its own. */
+    const maskOf = (sessionID: SessionID, boundary: LoopHost.Boundary) => {
+      const at = masked.get(sessionID)
+      if (at === undefined) return false
+      if (at === LoopDecision.identityOf(boundary)) return true
+      masked.delete(sessionID)
+      return false
+    }
 
     const abortAnalysis = (sessionID: SessionID) => Effect.sync(() => works.get(sessionID)?.analysis?.abort())
 
@@ -206,18 +220,25 @@ export const layer = Layer.effect(
     const stopLoop = Effect.fnUntraced(function* (sessionID: SessionID, fence: LoopState.Expected | undefined, stop: Stop) {
       const record = LoopState.stopRecord(stop, yield* Clock.currentTimeMillis)
       const ends = STOP_REASON_PROPS[stop.reason].ends
-      if (ends === "no")
-        return yield* loops.update(sessionID, fence, {
-          status: "stopped",
-          stop: record,
-          analyzing: undefined,
-          declaration: undefined,
-          recovery: undefined,
-        })
-      return yield* loops.end(sessionID, fence, { status: ends, stop: record })
+      const stopped =
+        ends === "no"
+          ? yield* loops.update(sessionID, fence, {
+              status: "stopped",
+              stop: record,
+              analyzing: undefined,
+              declaration: undefined,
+              recovery: undefined,
+            })
+          : yield* loops.end(sessionID, fence, { status: ends, stop: record })
+      // A loop that stopped has nothing left to mask; the resume that revives it masks its own boundary.
+      if (stopped !== undefined) masked.delete(sessionID)
+      return stopped
     })
 
-    /** Stops the loop `loopID` as it is now, if it is still the session's loop: for decisions with no revision to hold. */
+    /**
+     * Stops the loop `loopID` as it is now, if it is still the session's loop. For a dispatch that died: its `commit`
+     * may have written before it did, so the revision the request was made against no longer holds.
+     */
     const stopCurrent = Effect.fnUntraced(function* (sessionID: SessionID, loopID: string, stop: Stop) {
       const current = yield* loops.load(sessionID)
       if (current === undefined || current.loop_id !== loopID) return undefined
@@ -255,7 +276,11 @@ export const layer = Layer.effect(
         })
         return
       }
-      if (result.value === "cancelled") yield* stopCurrent(sessionID, state.loop_id, { reason: "user_interrupted" })
+      // An ESC since the epoch was observed; nothing was committed. The stop holds the revision the request was made
+      // against, like its `commit` does: a loop written to since (stopped by that very ESC, resumed, replaced) is not
+      // the one that was interrupted, and a cancel that arrives late must not stop it.
+      if (result.value === "cancelled")
+        yield* stopLoop(sessionID, LoopState.expected(state), { reason: "user_interrupted" })
     })
 
     const dispatchRound = Effect.fnUntraced(function* (ctx: Exec, round: "next" | "review") {
@@ -267,7 +292,8 @@ export const layer = Layer.effect(
         kind: round,
         round: next,
         maxRounds: state.max_rounds,
-        ...(round === "next" && state.next_prompt !== undefined ? { prompt: state.next_prompt } : {}),
+        // A prompt kept while the loop waited (a user turn in it said continue) rides in the review that ends the wait.
+        ...(state.next_prompt !== undefined ? { prompt: state.next_prompt } : {}),
         ...(note !== undefined ? { note } : {}),
         origin: state.origin.prompt,
         ...(state.intent !== undefined ? { intent: state.intent } : {}),
@@ -545,7 +571,6 @@ export const layer = Layer.effect(
       sessionID: SessionID,
       work: Work,
       epoch: number,
-      mask: boolean,
       carry: Carry | undefined,
     ) {
       let state = yield* loops.load(sessionID)
@@ -565,6 +590,9 @@ export const layer = Layer.effect(
       if (!observation.idle || boundary === undefined || observation.preempted) return undefined
       // A loop started or replaced just now has not run its first round: the boundary in front is an older one.
       if (LoopDecision.precedesLoop(state.origin, boundary)) return undefined
+      // After a resume the boundary it stopped at is decided with only its analysis and the counts, however many
+      // decisions that takes; a boundary that came after it is decided in full.
+      const mask = maskOf(sessionID, boundary)
       const ctx: Ctx = { sessionID, work, epoch, now, state, observation, boundary }
 
       const recovery = state.recovery
@@ -581,10 +609,15 @@ export const layer = Layer.effect(
         const stored = yield* committed(state, boundary.message)
         // A continue whose prompt was already sent is waiting for its turn's boundary, not for another dispatch.
         if (stored?.type === "continue" && state.next_prompt === undefined) return undefined
-        // A blocked analysis is carried out once. When it put the loop into a wait, the wait decides from then on:
-        // replaying the verdict would set the wait afresh at every scan, so it would never expire, and would stop a
-        // loop whose object is over for a question it has already turned into a wait, instead of reviewing it.
-        const carriedOut = stored?.type === "blocked" && state.status === "waiting" && state.wait !== undefined
+        // A blocked or continue analysis is carried out once. When it put the loop into a wait, or left it in one (a
+        // user turn in a waiting loop), the wait decides from then on. Replaying a blocked verdict would set the wait
+        // afresh at every scan, so it would never expire, and would stop a loop whose object is over for a question
+        // it has already turned into a wait. Replaying a continue would send its prompt as an ordinary round once the
+        // wait is over and drop the wait without the review that ends it; the review carries the kept prompt instead.
+        const carriedOut =
+          (stored?.type === "blocked" || stored?.type === "continue") &&
+          state.status === "waiting" &&
+          state.wait !== undefined
         result = carriedOut ? undefined : stored
       }
       // Only a blocked analysis asks whether something running may still unblock the work.
@@ -606,10 +639,10 @@ export const layer = Layer.effect(
       return yield* execute({ ...ctx, chain, carry, waited, waitable }, verdict)
     })
 
-    const decide = Effect.fnUntraced(function* (sessionID: SessionID, work: Work, epoch: number, mask: boolean) {
+    const decide = Effect.fnUntraced(function* (sessionID: SessionID, work: Work, epoch: number) {
       let carry: Carry | undefined
       for (let index = 0; index < MAX_STEPS; index++) {
-        const next = yield* step(sessionID, work, epoch, mask, carry)
+        const next = yield* step(sessionID, work, epoch, carry)
         if (next === undefined) return
         carry = next.kind === "analyzed" ? next.carry : undefined
       }
@@ -644,8 +677,7 @@ export const layer = Layer.effect(
         let epoch = claimEpoch
         let done = false
         while (!done) {
-          const mask = masked.delete(sessionID)
-          yield* decide(sessionID, work, epoch ?? (yield* host.epoch(sessionID)), mask)
+          yield* decide(sessionID, work, epoch ?? (yield* host.epoch(sessionID)))
           epoch = undefined
           done = yield* finished
         }
@@ -754,6 +786,8 @@ export const layer = Layer.effect(
       const limit = input?.maxRounds
       if (limit !== undefined && (!Number.isInteger(limit) || limit <= state.round))
         return { tag: "invalid", state } as const satisfies Resumed
+      // The boundary the loop stopped at, observed before the write so no decision of the resumed loop runs without its mask.
+      const stoppedAt = (yield* host.observe(sessionID, queryOf(state))).boundary
       const resumed = yield* loops.update(sessionID, LoopState.expected(state), {
         status: "active",
         stop: undefined,
@@ -765,7 +799,8 @@ export const layer = Layer.effect(
         max_rounds: limit ?? (state.round >= state.max_rounds ? state.round + 1 : state.max_rounds),
       })
       if (resumed === undefined) return { tag: "running", state } as const satisfies Resumed
-      masked.add(sessionID)
+      if (stoppedAt === undefined) masked.delete(sessionID)
+      else masked.set(sessionID, LoopDecision.identityOf(stoppedAt))
       yield* trigger(sessionID)
       return { tag: "resumed", state: resumed } as const satisfies Resumed
     })
