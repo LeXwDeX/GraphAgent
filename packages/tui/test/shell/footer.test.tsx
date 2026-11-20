@@ -781,7 +781,7 @@ test("a sub-agent footer says it is read-only and lists the keys of that view", 
 
   try {
     const frame = app.captureCharFrame()
-    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toStartWith("  explore · 只读 · 子 agent 只接受主 agent 的通信")
     expect(row(frame)).toEndWith("←→ 切换 · esc 返回 · ⌃B 侧边栏")
     // The agent to switch to and the command hints belong to the views that have a prompt.
     expect(frame).not.toContain("切换 agent")
@@ -801,7 +801,7 @@ test("a sub-agent footer in English", async () => {
 
   try {
     const frame = app.captureCharFrame()
-    expect(row(frame)).toStartWith(" explore · read-only · only the main agent can message it")
+    expect(row(frame)).toStartWith("  explore · read-only · only the main agent can message it")
     expect(row(frame)).toEndWith("←→ switch · esc back · ⌃B drawer")
     expect(frame).toMatchSnapshot()
   } finally {
@@ -811,12 +811,13 @@ test("a sub-agent footer in English", async () => {
 
 test("at 80 columns the trailing hints give way before the notice is cut", async () => {
   await using tmp = await shellState()
-  // In Chinese the notice of `explore` takes 48 cells and the three hints 30: with the one-cell `⌃B` they fit the 79 the
-  // row has, so the longest kind is the one that makes them give way here: the drawer hint goes first, the way back stays.
+  // The row between the gutters has 76 cells. In Chinese the notice of `explore` takes 48 and the three hints 30, with
+  // the gap 79: the drawer hint gives way beside the shortest kind already. The longest kind, below, leaves room for the
+  // other two (56 + 1 + 18): the drawer hint goes first, the way back stays.
   const zh = await render(() => <SubagentFooterFromKeymap kind="general-purpose" />, { width: 80, state: tmp.path })
   try {
     const frame = zh.captureCharFrame()
-    expect(row(frame)).toStartWith(" general-purpose · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toStartWith("  general-purpose · 只读 · 子 agent 只接受主 agent 的通信")
     expect(row(frame)).toEndWith("←→ 切换 · esc 返回")
     expect(frame).not.toContain("侧边栏")
     expect(frame).toMatchSnapshot()
@@ -828,8 +829,10 @@ test("at 80 columns the trailing hints give way before the notice is cut", async
   const en = await render(() => <SubagentFooterFromKeymap />, { width: 80, state: tmp.path })
   try {
     const frame = en.captureCharFrame()
-    expect(row(frame)).toStartWith(" explore · read-only · only the main agent can message it")
-    expect(row(frame)).toEndWith("←→ switch · esc back")
+    expect(row(frame)).toStartWith("  explore · read-only · only the main agent can message it")
+    // The notice is 56 cells and the row between the gutters 76: of the hints, 19 cells are left, one short of the two.
+    expect(row(frame)).toEndWith("←→ switch")
+    expect(row(frame)).not.toContain("esc back")
     expect(frame).toMatchSnapshot()
   } finally {
     en.renderer.destroy()
@@ -852,8 +855,8 @@ for (const language of ["zh-CN", "en"] as const) {
         // The notice is whole at the left edge; what gives way is the right-hand hints and the trust reminder.
         expect(row(frame)).toStartWith(
           language === "en"
-            ? " general-purpose · read-only · only the main agent can message it"
-            : " general-purpose · 只读 · 子 agent 只接受主 agent 的通信",
+            ? "  general-purpose · read-only · only the main agent can message it"
+            : "  general-purpose · 只读 · 子 agent 只接受主 agent 的通信",
         )
       } finally {
         app.renderer.destroy()
@@ -868,7 +871,7 @@ test("a notice that does not fit is cut from its end, the kind last", async () =
 
   try {
     const frame = app.captureCharFrame()
-    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 ag…")
+    expect(row(frame)).toStartWith("  explore · 只读 · 子 agent 只接受主 …")
     expectWithin(frame, 40, 1)
   } finally {
     app.renderer.destroy()
@@ -911,7 +914,7 @@ test("the shared right slot replaces the hints and the notice stays", async () =
 
   try {
     const frame = app.captureCharFrame()
-    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toStartWith("  explore · 只读 · 子 agent 只接受主 agent 的通信")
     expect(row(frame)).toEndWith("status: indexing")
     expect(frame).not.toContain("esc 返回")
   } finally {
@@ -936,10 +939,10 @@ test("paints the notice with the text and muted colors, and no brand color", asy
 })
 
 test("holds back the notice's width from the toast that shares the row", () => {
-  // The notice is 47 cells wide in Chinese and 56 in English, plus the gap; 28 columns are held back already.
-  expect(subagentNoticeReserve("explore", 1)).toBe(47 + 1 - 28)
+  // The notice is 47 cells wide in Chinese and 56 in English, plus the gap; 26 columns are held back already.
+  expect(subagentNoticeReserve("explore", 1)).toBe(47 + 1 - 26)
   setLanguage("en")
-  expect(subagentNoticeReserve("explore", 1)).toBe(56 + 1 - 28)
+  expect(subagentNoticeReserve("explore", 1)).toBe(56 + 1 - 26)
   // At ambiguous_width 2 the two `·` take a cell more each.
-  expect(subagentNoticeReserve("explore", 2)).toBe(56 + 2 + 1 - 28)
+  expect(subagentNoticeReserve("explore", 2)).toBe(56 + 2 + 1 - 26)
 })

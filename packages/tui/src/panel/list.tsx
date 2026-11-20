@@ -11,6 +11,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
+import { contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
@@ -93,7 +94,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
   const filterEnabled = () => props.filter !== false
   const clientFilter = () => props.filter === false || typeof props.filter !== "object" || props.filter.client !== false
   const placeholder = () => (typeof props.filter === "object" ? props.filter.placeholder : undefined)
-  const descriptionBudget = () => Math.max(0, dimensions().width - 8)
+  const descriptionBudget = () => Math.max(0, contentWidth(dimensions().width) - 8)
   const actions = createMemo(() => props.actions ?? [])
 
   const filtered = createMemo(() => {

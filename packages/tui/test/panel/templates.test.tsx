@@ -954,18 +954,19 @@ test("the hint to change a value is cut before the suffix, and the suffix before
   // Room for all three, with the value, the suffix and the hint in that order.
   const wide = await look(100, "graphagent-light")
   expect(wide).toMatch(/graphagent-light {3}this session: on {3}\S+ change \(1\/3\)/)
-  // 76 columns leave 48 for the three, which need 52 with the 14 cells of `⏎ change (1/3)`; the hint does not fit, and
-  // goes whole: no part of it is left. (At 80 columns it fits: the key is the one cell of `⏎`, not the five of `enter`.)
-  const mid = await look(76, "graphagent-light")
+  // 80 columns leave 48 for the three (the panel's frame is the 76 between the gutters), which need 52 with the 14 cells
+  // of `⏎ change (1/3)`; the hint does not fit, and goes whole: no part of it is left. (At 84 columns it fits: the key is
+  // the one cell of `⏎`, not the five of `enter`.)
+  const mid = await look(80, "graphagent-light")
   expect(mid).toContain("graphagent-light   this session: on")
   expect(mid).not.toContain("change")
-  // 60 columns leave 32: the suffix is cut with an ellipsis, the value is whole.
-  const narrow = await look(60, "graphagent-light")
+  // 64 columns leave 32: the suffix is cut with an ellipsis, the value is whole.
+  const narrow = await look(64, "graphagent-light")
   expect(narrow).toMatch(/graphagent-light {3}this session…/)
   expect(narrow).not.toContain("this session:")
   expect(narrow).not.toContain("change")
   // A value too long for the line is cut last, and takes the whole width: nothing of the suffix is left.
-  const longest = await look(60, "a value that is a good deal longer than the line can hold")
+  const longest = await look(64, "a value that is a good deal longer than the line can hold")
   expect(longest).toContain("a value that is a good deal")
   expect(longest).toContain("…")
   expect(longest).not.toContain("hold")

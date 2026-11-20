@@ -108,12 +108,14 @@ for (const size of [
   { width: 120, height: 40 },
 ] as const) {
   test(`draws the path and the read-only footer at ${size.width}x${size.height}, in both languages`, async () => {
+    // The row has 76 cells between the gutters at 80 columns: the path and the position leave the description two short.
+    const description = size.width === 80 ? "扫描破坏性…" : "扫描破坏性变更"
     const zh = await runApp({ sessions, args: { sessionID: childID }, ...size })
     try {
       const frame = await waitForFrame(zh.setup, (value) => value.includes("只读"), "the sub-agent footer")
       // No task entry is known: the description is the title without its tail, the kind the session's own agent.
-      expect(topRow(frame)).toStartWith(` ◇─◆ GraphAgent › ${rootTitle} › explore · 扫描破坏性变更`)
-      expect(footerRow(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+      expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle} › explore · ${description}`)
+      expect(footerRow(frame)).toStartWith("  explore · 只读 · 子 agent 只接受主 agent 的通信")
       expect(footerRow(frame)).toContain("esc 返回")
       expect(frame).toMatchSnapshot()
     } finally {
@@ -128,8 +130,8 @@ for (const size of [
     })
     try {
       const frame = await waitForFrame(en.setup, (value) => value.includes("read-only"), "the English footer")
-      expect(topRow(frame)).toStartWith(` ◇─◆ GraphAgent › ${rootTitle} › explore · 扫描破坏性变更`)
-      expect(footerRow(frame)).toStartWith(" explore · read-only · only the main agent can message it")
+      expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle} › explore · ${description}`)
+      expect(footerRow(frame)).toStartWith("  explore · read-only · only the main agent can message it")
       expect(footerRow(frame)).toContain("esc back")
       expect(frame).toMatchSnapshot()
     } finally {
@@ -150,7 +152,7 @@ test("the kind comes from the parent's Task entry when the session carries no ag
     app.events.emit(taskPart(siblingID, "plan", "来自任务的描述"))
     const frame = await waitForFrame(app.setup, (value) => topRow(value).includes("plan"), "the Task entry")
     expect(topRow(frame)).toContain("› plan · 来自任务的描述")
-    expect(footerRow(frame)).toStartWith(" plan · 只读")
+    expect(footerRow(frame)).toStartWith("  plan · 只读")
   } finally {
     await app.stop()
   }
@@ -264,10 +266,10 @@ test("a main session keeps its top bar and its footer", async () => {
   const app = await runApp({ sessions, args: { sessionID: rootID }, width: 120, height: 30 })
   try {
     const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes("⇥ 切换 agent"), "the footer")
-    expect(topRow(frame)).toStartWith(` ◇─◆ GraphAgent › ${rootTitle}`)
+    expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle}`)
     expect(topRow(frame)).not.toContain("explore")
     expect(topRow(frame)).not.toContain("子 agent")
-    expect(footerRow(frame)).toStartWith(" build ")
+    expect(footerRow(frame)).toStartWith("  build ")
     expect(footerRow(frame)).toContain("⇥ 切换 agent")
     expect(footerRow(frame)).toContain("⌃P 命令")
     expect(frame).not.toContain("只读")
@@ -311,7 +313,7 @@ for (const language of ["zh-CN", "en"] as const) {
         // The path keeps its root and its current segment; the kind comes from the title's tail, hyphen and all.
         expect(topRow(frame)).toContain("◇─◆ GraphAgent › ")
         expect(topRow(frame)).toContain("general-purpose")
-        expect(footerRow(frame)).toStartWith(" general-purpose · ")
+        expect(footerRow(frame)).toStartWith("  general-purpose · ")
       } finally {
         await app.stop()
       }

@@ -10,7 +10,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { formatKeyBindings, useKeymapSelector } from "../keymap"
-import { NARROW_WIDTH } from "../ui/layout"
+import { NARROW_WIDTH, contentWidth, framedInnerWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { usePanelHostDepth } from "./host"
 
@@ -107,6 +107,11 @@ export interface PanelShellProps {
    */
   note?: string
   /**
+   * The panel spans the whole terminal, not the content area between the gutters that the bottom zone keeps around
+   * a panel (#1671): the fullscreen ask, which sits in a layer of its own.
+   */
+  fullscreen?: boolean
+  /**
    * Receives the content scroll container. Templates use it to reveal the
    * selected row; it is an internal extension of the shared shell.
    */
@@ -122,7 +127,6 @@ export function panelMaxRows(terminalHeight: number) {
   return Math.min(14, Math.floor(terminalHeight * 0.45))
 }
 
-const BORDER_AND_PADDING = 4
 const GAP = 2
 const TAB_GAP = 2
 const TITLE_MIN_WIDTH = 8
@@ -139,7 +143,9 @@ export function PanelShell(props: PanelShellProps) {
   const [contentRows, setContentRows] = createSignal<number>()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const innerWidth = () => Math.max(1, dimensions().width - BORDER_AND_PADDING)
+  // The cells the frame spans, and inside it the text: the border and the padding come off both sides.
+  const frameWidth = () => (props.fullscreen ? dimensions().width : contentWidth(dimensions().width))
+  const innerWidth = () => Math.max(1, framedInnerWidth(frameWidth()))
   const maxRows = () => Math.max(1, props.maxRows ?? panelMaxRows(dimensions().height))
   // The scrollbox fills the remaining main-axis space by default; measuring the
   // content lets the panel hug its rows up to the configured maximum.
@@ -173,9 +179,8 @@ export function PanelShell(props: PanelShellProps) {
 
   const layout = createMemo(() => {
     const aw = ambiguousWidth()
-    const width = dimensions().width
-    const inner = Math.max(1, width - BORDER_AND_PADDING)
-    const narrow = width < PANEL_NARROW_WIDTH
+    const inner = innerWidth()
+    const narrow = dimensions().width < PANEL_NARROW_WIDTH
     const tabs = props.tabs ?? []
     const activeId = props.activeTab ?? tabs[0]?.id
     const command = narrow ? undefined : props.command

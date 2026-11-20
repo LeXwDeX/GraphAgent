@@ -9,6 +9,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t, type MessageKey } from "../i18n"
 import { EscapePriority, formatKeyBindings, useBindings, useKeymapSelector } from "../keymap"
+import { contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
@@ -145,7 +146,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const activeTabKey = createMemo(() => currentTab()?.id)
   const rows = () => currentTab()?.rows ?? []
   const selectedRow = () => rows()[selected()]
-  const valueWidth = () => Math.max(0, dimensions().width - PANEL_INSET - MARKER_WIDTH - NAME_WIDTH)
+  const valueWidth = () => Math.max(0, contentWidth(dimensions().width) - PANEL_INSET - MARKER_WIDTH - NAME_WIDTH)
   // A tab where some row explains itself keeps the line for it as the selection moves, blank for the rows that do not,
   // so the panel does not change height with the selection. A tab where none does has no such line.
   const note = () =>

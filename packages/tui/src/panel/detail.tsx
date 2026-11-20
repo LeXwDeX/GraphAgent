@@ -8,6 +8,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
+import { contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
@@ -87,7 +88,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   const rowRefs = new Map<string, BoxRenderable>()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const innerWidth = () => Math.max(0, dimensions().width - 6)
+  const innerWidth = () => Math.max(0, contentWidth(dimensions().width) - 6)
   const selectableRows = createMemo(() => (props.rows ?? []).filter((row) => row.selectable !== false))
   const selectedId = createMemo(() => {
     if (props.selected !== undefined) return props.selected

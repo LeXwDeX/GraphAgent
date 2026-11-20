@@ -92,7 +92,8 @@ function EditBody(props: { request: PermissionRequest; show: DiffFit["show"] }) 
   // The request carries the diff but not the `filediff` the completed edit has, so the counts come from the diff.
   const changes = createMemo(() => diffChanges(diff()))
 
-  // The permission diff sits in the bottom zone, which spans the terminal; it keeps the shared threshold.
+  // The permission diff sits in the bottom zone, between the gutters; it keeps the shared threshold, counted from the
+  // width of the terminal as before.
   const view = createMemo(() => diffView(config.diff_style, dimensions().width))
 
   const ft = createMemo(() => filetype(filepath()))
@@ -661,6 +662,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
       tone="warning"
       hints={hints()}
       maxRows={budget()}
+      fullscreen={store.expanded}
     >
       {content()}
     </PanelShell>

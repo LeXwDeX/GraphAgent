@@ -7,7 +7,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { useCommandShortcut } from "../keymap"
-import { LEGACY_EDGE_GUTTER } from "../ui/layout"
+import { GUTTER, contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { DagIndicator, dagIndicatorCompact, dagIndicatorText, type DagIndicatorState } from "./dag-indicator"
 import { LEFT_RESERVE } from "./footer-status"
@@ -128,7 +128,7 @@ export function Footer(props: FooterProps) {
 
   const layout = createMemo(() => {
     const aw = ambiguousWidth()
-    const inner = Math.max(1, width() - 2 * LEGACY_EDGE_GUTTER)
+    const inner = Math.max(1, contentWidth(width()))
     const compact = dagIndicatorCompact(width())
 
     // The DAG indicator follows the agent name and outranks it: the name is
@@ -246,13 +246,7 @@ export function Footer(props: FooterProps) {
   })
 
   return (
-    <box
-      height={1}
-      flexShrink={0}
-      flexDirection="row"
-      paddingLeft={LEGACY_EDGE_GUTTER}
-      paddingRight={LEGACY_EDGE_GUTTER + layout().shift}
-    >
+    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={GUTTER} paddingRight={GUTTER + layout().shift}>
       <Show when={layout().agent || props.dag || layout().action}>
         <box flexDirection="row" gap={GAP}>
           <Show when={layout().agent}>
