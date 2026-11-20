@@ -527,3 +527,75 @@ exports[`the hint row of the list panel pairs the arrow keys, en 1`] = `
                                                                                 
 "
 `;
+
+exports[`descriptionInline writes every description after its title, and moving the selection leaves the rows as they are, 80x24 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ 行内备注                                                                     │
+│ › 筛选…                                                                      │
+│ › Model Alpha  Alpha Provider                                             新 │
+│   Model Beta                                                                 │
+│   模型 Gamma  第一段 · 第二段                                                │
+│   A Rather Long Model Name That Takes The Whole Row Of An Eighty Column Pan… │
+│ up/down 选择 · enter 确认 · escape 关闭                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`descriptionInline writes every description after its title, and moving the selection leaves the rows as they are, 120x40 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 行内备注                                                                                                             │
+│ › 筛选…                                                                                                              │
+│ › Model Alpha  Alpha Provider                                                                                     新 │
+│   Model Beta                                                                                                         │
+│   模型 Gamma  第一段 · 第二段                                                                                        │
+│   A Rather Long Model Name That Takes The Whole Row Of An Eighty Column Panel Alone  Delta Provider                  │
+│ up/down 选择 · enter 确认 · escape 关闭                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+"
+`;

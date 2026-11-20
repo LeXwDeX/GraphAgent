@@ -296,6 +296,18 @@ export type SlashResolution =
   | { kind: "server"; spec: CommandSpec; name: string; args: string }
   | { kind: "message" }
 
+/** What quits the client when it is all that is entered: `exit` without its slash, and the two slash forms (#1666). */
+const EXIT_INPUTS: ReadonlySet<string> = new Set(["exit", "/exit", "/quit"])
+
+/**
+ * Whether a submission is only the word that quits the client, blanks around it ignored. `resolveSlashInput` already
+ * takes the two slash forms for the `app.exit` command; `exit` without its slash is no command there and stays a
+ * message, so the input box asks this first and resolves `/exit` in its place.
+ */
+export function isExitInput(input: string): boolean {
+  return EXIT_INPUTS.has(input.trim())
+}
+
 /**
  * Resolve the first word of a prompt submission against the registry. A slash
  * command outside the current scope, hidden, disabled or unknown falls through

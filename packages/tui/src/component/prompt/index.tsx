@@ -30,7 +30,7 @@ import { normalizePromptContent, openEditor } from "../../editor"
 import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { useCommands, useCommandScope } from "../../commands/context"
-import { resolveSlashInput, serverCommandSpec, type CommandRunContext } from "../../commands/registry"
+import { isExitInput, resolveSlashInput, serverCommandSpec, type CommandRunContext } from "../../commands/registry"
 import { parseBtwArgs, useBtwOptional } from "../../context/btw"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
@@ -1202,9 +1202,9 @@ export function Prompt(props: PromptProps) {
     }
     const agent = local.agent.current()
     if (!agent) return false
-    const builtin = editSend
-      ? ({ kind: "message" } as const)
-      : resolveSlashInput(commands, commandScope(), store.prompt.input)
+    // `exit` entered alone quits like `/exit` (#1666); in shell mode it stays a command for the shell.
+    const typed = store.mode !== "shell" && isExitInput(store.prompt.input) ? "/exit" : store.prompt.input
+    const builtin = editSend ? ({ kind: "message" } as const) : resolveSlashInput(commands, commandScope(), typed)
     if (builtin.kind === "builtin") {
       // `/btw` owns clearing and focus so empty, invalid or session-less input
       // stays in the composer. Shell mode never intercepts it.

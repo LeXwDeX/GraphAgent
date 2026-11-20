@@ -618,6 +618,7 @@ export const zhCN = {
   "panel.model.favorite.mark": "(收藏)",
   "panel.model.provider.connect": "连接提供商",
   "panel.model.provider.all": "查看全部提供商",
+  "panel.model.empty": "没有已声明的模型。请在 graphagent.json 的 provider.<id>.models 里声明。",
   "panel.sessions.title": "会话",
   "panel.sessions.filter": "搜索会话…",
   "panel.sessions.group.pinned": "已置顶",

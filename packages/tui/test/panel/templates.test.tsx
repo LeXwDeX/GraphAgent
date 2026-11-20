@@ -437,6 +437,145 @@ test("the lines of a description scroll into view with their item, at the bottom
   }
 })
 
+// --- descriptionInline: the description of every item is on the item's own row (#1666) ---------------------------------
+
+const inlineItems: ListItem<string>[] = [
+  { id: "alpha", value: "alpha", title: "Model Alpha", description: "Alpha Provider", trail: "新" },
+  { id: "beta", value: "beta", title: "Model Beta" },
+  { id: "gamma", value: "gamma", title: "模型 Gamma", description: ["第一段", "", "第二段"] },
+  {
+    id: "delta",
+    value: "delta",
+    title: "A Rather Long Model Name That Takes The Whole Row Of An Eighty Column Panel Alone",
+    description: "Delta Provider",
+  },
+]
+
+function inlinePanel(descriptionInline: boolean, items: readonly ListItem<string>[] = inlineItems) {
+  return (
+    <PanelSurface
+      spec={{
+        render: () => (
+          <ListPanel title="行内备注" items={items} onSelect={() => {}} descriptionInline={descriptionInline} />
+        ),
+      }}
+    />
+  )
+}
+
+/** The rows of the list, without the border, the padding and the mark the selection puts in front of a row. */
+function listRowsOf(frame: string) {
+  const lines = frameLines(frame)
+  const top = borderIndex(lines, "╭")
+  const bottom = borderIndex(lines, "╰")
+  return lines
+    .slice(top + 3, bottom - 1)
+    .map((line) => line.slice(1, -1).trim().replace(/^›\s+/, ""))
+    .filter((line) => line !== "")
+}
+
+for (const [width, height] of [
+  [80, 24],
+  [120, 40],
+] as const) {
+  test(`descriptionInline writes every description after its title, and moving the selection leaves the rows as they are, ${width}x${height}`, async () => {
+    await using tmp = await shellState()
+    const theme = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME], "dark")
+    const app = await renderPanel(() => inlinePanel(true), { width, height, state: tmp.path })
+
+    try {
+      const first = await untilFrame(app, (frame) => frame.includes("Alpha Provider"))
+      const rows = listRowsOf(first)
+      // Every description is on its item's row, the selected one or not, and a list of lines is one row; the trail
+      // stays at the right edge, and the title with no room for anything else is cut, its description gone.
+      expect(rows[0]).toStartWith("Model Alpha  Alpha Provider")
+      expect(rows[0]).toEndWith("新")
+      expect(rows[1]).toBe("Model Beta")
+      expect(rows[2]).toBe("模型 Gamma  第一段 · 第二段")
+      if (width === 80) {
+        expect(rows[3]).toStartWith("A Rather Long Model Name")
+        expect(rows[3]).toEndWith("…")
+        expect(rows[3]).not.toContain("Delta Provider")
+      } else {
+        expect(rows[3]).toEndWith("Alone  Delta Provider")
+      }
+      expect(rows).toHaveLength(4)
+      expect(first).toMatchSnapshot()
+
+      // The description is muted and never bold; the title is not muted, and the selected one is bold.
+      expect(await paintedWith(app, "Alpha Provider", theme.textMuted)).toBe(true)
+      expect(await isBold(app, "Alpha Provider")).toBe(false)
+      expect(await paintedWith(app, "Model Alpha", theme.textMuted)).toBe(false)
+      expect(await isBold(app, "Model Alpha")).toBe(true)
+      expect(await isBold(app, "Model Beta")).toBe(false)
+
+      // Down through every item: the rows and the height of the panel do not change.
+      const top = borderIndex(frameLines(first), "╭")
+      const bottom = borderIndex(frameLines(first), "╰")
+      for (let step = 1; step < inlineItems.length; step++) {
+        const before = await readFrame(app)
+        app.mockInput.pressArrow("down")
+        const frame = await untilFrame(app, (value) => value !== before)
+        expect(listRowsOf(frame)).toEqual(rows)
+        expect(borderIndex(frameLines(frame), "╰") - borderIndex(frameLines(frame), "╭")).toBe(bottom - top)
+        expect(await isBold(app, inlineItems[step]!.title.slice(0, 20))).toBe(true)
+      }
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}
+
+for (const ambiguousWidth of [1, 2] as const) {
+  test(`descriptionInline fits every row of an 80-column panel, with the mark of the current item, ambiguous_width ${ambiguousWidth}`, async () => {
+    await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+    // No trail here: a trail is at the right edge of the row, where the one cell an ambiguous mark takes more at 2 would
+    // be in the padding, as in any other list.
+    const items = inlineItems.map(({ trail: _trail, ...item }) => item)
+    const app = await renderPanel(
+      () => (
+        <PanelSurface
+          spec={{
+            render: () => (
+              <ListPanel title="行内备注" items={items} current="gamma" onSelect={() => {}} descriptionInline />
+            ),
+          }}
+        />
+      ),
+      { width: 80, height: 24, state: tmp.path },
+    )
+
+    try {
+      const frame = await untilFrame(app, (value) => value.includes("Alpha Provider"))
+      const lines = frameLines(frame).filter((line) => line.startsWith("│") && line.endsWith("│"))
+      expect(lines.length).toBeGreaterThan(5)
+      for (const line of lines) {
+        const inner = line.slice(1, -1).trimEnd()
+        expect({ line, fits: cellWidth(inner, ambiguousWidth) <= 80 - 3 }).toEqual({ line, fits: true })
+      }
+      // The current item is marked, is the one selected to begin with, and has its description after it.
+      expect(lines.find((line) => line.includes("模型 Gamma"))).toMatch(/^│ ● 模型 Gamma {2}第一段 · 第二段 +│$/)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}
+
+test("without descriptionInline a description stays under the selected item only", async () => {
+  await using tmp = await shellState()
+  const app = await renderPanel(() => inlinePanel(false), { width: 120, height: 40, state: tmp.path })
+
+  try {
+    const frame = frameLines(await untilFrame(app, (value) => value.includes("Alpha Provider")))
+    const row = frame.findIndex((line) => line.includes("Model Alpha"))
+    expect(frame[row]).not.toContain("Alpha Provider")
+    expect(frame[row + 1]).toContain("Alpha Provider")
+    expect(frame.join("\n")).not.toContain("第一段")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("list panel moves with arrows, selects with return, and runs ctrl bindings", async () => {
   await using tmp = await shellState()
   const selected: string[] = []

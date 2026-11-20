@@ -782,11 +782,17 @@ function providerOf(...models: TestModel[]): Provider {
   }
 }
 
-/** Connects one provider with these models, the first of which is the one the TUI starts on. */
+/**
+ * Connects one provider with these models, the first of which is the one the TUI starts on. The configuration declares
+ * them all: the model list holds only the models it names (#1666).
+ */
 function connect(...models: TestModel[]) {
   return (context: AppPanelTestContext) => {
     context.sync.set("agent", agents)
     context.sync.set("provider", [providerOf(...models)])
+    context.sync.set("config", {
+      provider: { test: { models: Object.fromEntries(models.map((model) => [model.id, {}])) } },
+    })
   }
 }
 

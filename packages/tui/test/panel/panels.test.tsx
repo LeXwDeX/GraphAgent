@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import type { Agent, McpStatus, Provider, Workspace } from "@graphagent/sdk"
+import type { Agent, Config, McpStatus, Provider, Workspace } from "@graphagent/sdk"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { setLanguage } from "../../src/i18n"
 import { AgentPanel } from "../../src/panel/agent"
@@ -68,6 +68,18 @@ function providerFixture(): Provider {
       m1: model,
       m2: { ...model, id: "m2", name: "Model Two", release_date: "2026-02-01" },
     },
+  }
+}
+
+/** The configuration that declares every model of these providers: the model list holds only what it names (#1666). */
+function declaring(...providers: Provider[]): Config {
+  return {
+    provider: Object.fromEntries(
+      providers.map((provider) => [
+        provider.id,
+        { models: Object.fromEntries(Object.keys(provider.models).map((modelID) => [modelID, {}])) },
+      ]),
+    ),
   }
 }
 
@@ -177,6 +189,7 @@ test("model panel favorites the selected model with ctrl+f", async () => {
         ctx = context
         context.sync.set("agent", agents)
         context.sync.set("provider", [providerFixture()])
+        context.sync.set("config", declaring(providerFixture()))
       },
     },
   )
@@ -214,6 +227,7 @@ test("model panel selects a model and closes", async () => {
         ctx = context
         context.sync.set("agent", agents)
         context.sync.set("provider", [providerFixture()])
+        context.sync.set("config", declaring(providerFixture()))
       },
     },
   )
@@ -293,6 +307,7 @@ test("model panel opens the provider list with ctrl+a", async () => {
       setup: (context) => {
         context.sync.set("agent", agents)
         context.sync.set("provider", [providerFixture()])
+        context.sync.set("config", declaring(providerFixture()))
       },
     },
   )

@@ -7,6 +7,7 @@ import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { registerBuiltinCommands } from "../../src/commands/context"
 import {
   createCommandRegistry,
+  isExitInput,
   resolveSlashInput,
   serverCommandSpec,
   slashCommandEntries,
@@ -517,10 +518,37 @@ describe("resolveSlashInput submission rules", () => {
 
   test("commands without a slash are normal messages", () => {
     const { registry, dispose } = builtins()
+    // A bare `exit` is one too here: the input box catches it before it asks the registry (`isExitInput`, #1666).
     for (const input of ["exit", "quit", ":q", "/nope", "/", "/ "]) {
       expect(resolveSlashInput(registry, "session", input)).toEqual({ kind: "message" })
     }
     dispose()
+  })
+
+  test("the exit word entered alone is recognised with or without its slash, and nothing else is", () => {
+    for (const input of ["exit", "/exit", "/quit", " exit", "exit ", "\n /quit\t", "  /exit  "]) {
+      expect({ input, exit: isExitInput(input) }).toEqual({ input, exit: true })
+    }
+    for (const input of [
+      "",
+      " ",
+      "/",
+      "quit",
+      ":q",
+      "/q",
+      "Exit",
+      "/Exit",
+      "exit now",
+      "/exit now",
+      "/quit now",
+      "please exit",
+      "exit\nnow",
+      "/exit\n/quit",
+      "exits",
+      "exit.",
+    ]) {
+      expect({ input, exit: isExitInput(input) }).toEqual({ input, exit: false })
+    }
   })
 
   test("commands outside the active scope are normal messages", () => {

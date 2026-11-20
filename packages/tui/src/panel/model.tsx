@@ -5,8 +5,9 @@ import { createMemo } from "solid-js"
 import { useConnected } from "../component/use-connected"
 import { useLocal } from "../context/local"
 import { useSync } from "../context/sync"
+import { useTheme } from "../context/theme"
 import { t } from "../i18n"
-import { sortModelOptions } from "../util/model-options"
+import { declaredModels, sortModelOptions } from "../util/model-options"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
 
@@ -33,8 +34,13 @@ type Candidate = {
   releaseDate: string | number
 }
 
-/** `/model`: favorites, recents and every configured model in one list. */
+/**
+ * `/model`: favorites, recents and the models the configuration declares, in one list. A model the configuration does
+ * not name (one the catalog brings with a provider that has a key from the environment or a login) is not listed; the
+ * list that opens after connecting a provider, scoped to it, holds all of that provider's models (#1666).
+ */
 export function ModelPanel(props: ModelPanelProps) {
+  const { theme } = useTheme()
   const local = useLocal()
   const sync = useSync()
   const host = usePanelHost()
@@ -47,6 +53,9 @@ export function ModelPanel(props: ModelPanelProps) {
     const recentList = local.model.recent()
     // After connecting, hide favorites/recents so the new provider's models lead.
     const showExtra = connected() && !props.providerID
+    const declared = props.providerID ? undefined : declaredModels(sync.data.config)
+    const listed = (ref: ModelRef) =>
+      declared === undefined || (declared.get(ref.providerID)?.has(ref.modelID) ?? false)
     const isFavorite = (ref: ModelRef) =>
       favoriteList.some((item) => item.providerID === ref.providerID && item.modelID === ref.modelID)
     const isRecent = (ref: ModelRef) =>
@@ -56,7 +65,7 @@ export function ModelPanel(props: ModelPanelProps) {
       ? favoriteList.flatMap((item) => {
           const provider = sync.data.provider.find((entry) => entry.id === item.providerID)
           const model = provider?.models[item.modelID]
-          if (!provider || !model) return []
+          if (!provider || !model || !listed(item)) return []
           return [
             {
               id: `${provider.id}/${model.id}`,
@@ -76,7 +85,7 @@ export function ModelPanel(props: ModelPanelProps) {
           .flatMap((item) => {
             const provider = sync.data.provider.find((entry) => entry.id === item.providerID)
             const model = provider?.models[item.modelID]
-            if (!provider || !model) return []
+            if (!provider || !model || !listed(item)) return []
             return [
               {
                 id: `${provider.id}/${model.id}`,
@@ -96,7 +105,7 @@ export function ModelPanel(props: ModelPanelProps) {
       .flatMap((provider) =>
         sortModelOptions(
           Object.entries(provider.models)
-            .filter(([, info]) => info.status !== "deprecated")
+            .filter(([modelID, info]) => info.status !== "deprecated" && listed({ providerID: provider.id, modelID }))
             .map(([modelID, info]) => {
               const ref = { providerID: provider.id, modelID }
               return {
@@ -150,6 +159,12 @@ export function ModelPanel(props: ModelPanelProps) {
       items={items()}
       current={local.model.current()}
       onSelect={(item) => void select(item)}
+      descriptionInline
+      empty={
+        <text fg={theme.textMuted}>
+          {!props.providerID && items().length === 0 ? t("panel.model.empty") : t("panel.list.empty")}
+        </text>
+      }
       actions={[
         {
           key: "model.dialog.provider",
