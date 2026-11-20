@@ -132,14 +132,6 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDefinition[] = [
     slash: { name: "model", args: "none" },
   },
   {
-    id: "agent.list",
-    titleKey: "command.agent.list.title",
-    descriptionKey: "command.agent.list.description",
-    category: "model",
-    scope: HS,
-    slash: { name: "agent", args: "none" },
-  },
-  {
     id: "agent.subagents",
     titleKey: "command.agent.subagents.title",
     descriptionKey: "command.agent.subagents.description",

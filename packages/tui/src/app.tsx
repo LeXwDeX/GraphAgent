@@ -49,7 +49,6 @@ import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { resolveRootSessionID } from "./ask/ask-queue"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
-import { AgentPanel } from "./panel/agent"
 import { AgentsPanel } from "./panel/agents"
 import { BtwPanel } from "./panel/btw"
 import { ConfigPanel } from "./panel/config"
@@ -134,7 +133,6 @@ const appBindingCommands = [
   "model.cycle_recent_reverse",
   "model.cycle_favorite",
   "model.cycle_favorite_reverse",
-  "agent.list",
   "mcp.list",
   "agent.cycle",
   "agent.cycle.reverse",
@@ -757,7 +755,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     openPanel("model", () => (
       <ModelPanel providerID={providerID} onConnectProvider={connectProvider} onVariant={() => openVariant()} />
     ))
-  const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   // `/agents` lists the sub-agents of the root session in a main session and in a sub-agent view alike.
   const openSubagentList = () => openPanel("agents", () => <AgentsPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
@@ -801,7 +798,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "session.list": openSessionList,
     "workspace.list": openWorkspaceList,
     "model.list": () => openModelList(),
-    "agent.list": openAgentList,
     "agent.subagents": openSubagentList,
     "mcp.list": openMcpList,
     "trust.open": () => openTrustPanel("manage", sync.trust.importedReview?.ids),
@@ -920,12 +916,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       run: () => {
         local.model.cycleFavorite(-1)
       },
-    },
-    {
-      name: "agent.list",
-      title: "Switch agent",
-      category: "Agent",
-      run: openAgentList,
     },
     {
       name: "mcp.list",
