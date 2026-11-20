@@ -23,7 +23,7 @@ import { settleHighlights, settleScroll, topRow, walkUp } from "../../perf/scena
 // end of each shows (the last bash command: a call is a block of two lines, so the
 // one before it is already above a viewport of thirty), and what the first loaded
 // message shows at the top.
-const LAST_COMMAND: Partial<Record<FixtureSize, string>> = { L: "printf perf-397", XL: "printf perf-2197" }
+const LAST_COMMAND: Partial<Record<FixtureSize, string>> = { L: "printf perf-397", XL: "printf perf-2297" }
 const FIRST_TEXT: Partial<Record<FixtureSize, string>> = { L: "Deterministic answer 300", XL: "Deterministic answer 0:" }
 
 async function frameContaining(harness: Awaited<ReturnType<typeof mountHarness>>, text: string) {
@@ -177,6 +177,10 @@ test.each(["L", "XL"] as const)("a running tool spins only while its row sits in
       state: { status: "running", input: { filePath: "/tmp/spinner-fixture" }, time: { start: 1 } },
     }
     harness.emit(updatePartEvent(part, 1000, "evt_spinner_running"))
+    // The call is the last row now, below a viewport that does not follow the end (no line of the message comes after
+    // it): the viewport goes to it.
+    await harness.app.renderOnce()
+    scroll!.scrollTo(Infinity)
 
     const visible = await frameContaining(harness, "spinner-fixture")
     expect(braille(visible)).not.toBe("")
@@ -199,6 +203,38 @@ test.each(["L", "XL"] as const)("a running tool spins only while its row sits in
     await harness.dispose()
   }
 })
+
+// A turn ends with the last of its parts (#1615): no line under it gives the agent, the model and the time, and none says
+// how to view the sub-agents. The windowed transcript and the one mounted whole draw the end of the session the same way.
+test.each(["L", "XL"] as const)(
+  "nothing follows the last part of a finished turn at the end of the transcript (%s)",
+  async (size) => {
+    const harness = await mountHarness(createFixture(size))
+    try {
+      await harness.reset()
+      await Bun.sleep(60)
+      const scroll = harness.scroll()!
+      scroll.stickyScroll = true
+      scroll.scrollTo(Infinity)
+      const frame = await frameContaining(harness, LAST_COMMAND[size]!)
+      const rows = frame.split("\n").map((row) => row.trimEnd())
+
+      // The last part of the fixture's last message is a thought; the input's top edge is the next thing under it.
+      const thought = rows.findLastIndex((row) => row.includes("∴"))
+      expect(thought).toBeGreaterThan(0)
+      expect(
+        rows
+          .slice(thought + 1)
+          .find((row) => row.trim().length > 0)
+          ?.trimStart()
+          .startsWith("╭"),
+      ).toBe(true)
+      expect(frame).not.toContain("▣")
+    } finally {
+      await harness.dispose()
+    }
+  },
+)
 
 test("a transcript below the threshold mounts every row, whatever the viewport shows", async () => {
   const fixture = createFixture("L")
@@ -413,6 +449,28 @@ test.each([
   },
   60_000,
 )
+
+// The scroll box gives its content the height of the viewport at least and puts it at the end (#1615: a session that
+// does not fill the screen stands on the bottom). A session that is taller than the screen is not changed by that, and
+// the walk shows it for the one that is mounted whole as well: the largest below the threshold, about 1800 rows.
+test("walking up a line at a time from the end of a transcript mounted whole moves the row at the top a line a step", async () => {
+  const fixture = createFixture("XL", false, { partsPerMessage: 20 })
+  expect(fixture.rows).toBeLessThan(WINDOW_MIN_ROWS)
+  expect(fixture.rows).toBeGreaterThan(1500)
+  const harness = await mountHarness(fixture)
+  try {
+    const scroll = await atTheEnd(harness)
+
+    const walk = await walkUp(harness, scroll, 450)
+
+    expect(walk.steps).toBe(450)
+    expect(walk).toMatchObject({ jumps: 0, driftPx: 0, maxJumpPx: 0 })
+    // Every row is mounted, and none is mounted by the walk.
+    expect(harness.counters.mountedRows(scroll)).toBe(fixture.rows)
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)
 
 test("a reply written at the end is followed, and one written below a reader who went up is not", async () => {
   const harness = await mountHarness(createFixture("XL"))

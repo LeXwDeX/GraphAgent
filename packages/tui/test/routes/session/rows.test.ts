@@ -142,10 +142,20 @@ describe("estimateRowHeight", () => {
     expect(estimateRowHeight(row("a", "reasoning"), 40, 0, true)).toBe(1 + 3)
   })
 
-  test("uses fixed heights for metadata rows", () => {
+  test("uses fixed heights for the line of an interrupted turn and for the revert marker", () => {
+    // The gap above the line and the line.
     expect(estimateRowHeight(row("a", "meta"), 40, 0)).toBe(2)
-    expect(estimateRowHeight(row("a", "notice"), 40, 0)).toBe(2)
+    expect(estimateRowHeight(row("a", "meta"), 40, 10_000)).toBe(2)
     expect(estimateRowHeight(row("a", "revert"), 40, 0)).toBe(5)
+  })
+
+  test("sizes the block of an error by its message: the gap, the padding above and below, and the lines behind the border", () => {
+    // The lines wrap in the width a text row indents by: 10 cells of a row 13 wide.
+    expect(estimateRowHeight(row("a", "notice"), 13, 10)).toBe(1 + 3)
+    expect(estimateRowHeight(row("a", "notice"), 13, 11)).toBe(2 + 3)
+    expect(estimateRowHeight(row("a", "notice"), 13, 25)).toBe(3 + 3)
+    // A message the row table has not measured yet is one line.
+    expect(estimateRowHeight(row("a", "notice"), 13, 0)).toBe(1 + 3)
   })
 
   test("sizes the task block of a sub-agent by its prompt, up to the lines it shows, and the closing line at two", () => {

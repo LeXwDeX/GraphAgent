@@ -864,7 +864,6 @@ export const en: Record<MessageKey, string> = {
   "background.band.row": "bg {n}",
   "background.drawer.title": "Background {n}",
   "background.drawer.more": "… {k} more · /agents",
-  "background.hint.view": "view subagents",
   "background.hint.move": "background {key}",
   "background.card.title": "background result · {kind} · {title} · {status} · {elapsed}",
   "background.card.status.completed": "done",
