@@ -28,7 +28,6 @@ app.tsx	prop	Model cycle reverse
 app.tsx	prop	New session
 app.tsx	prop	Show command palette
 app.tsx	prop	Suspend terminal
-app.tsx	prop	Switch agent
 app.tsx	prop	Switch model
 app.tsx	prop	Switch model variant
 app.tsx	prop	Switch session

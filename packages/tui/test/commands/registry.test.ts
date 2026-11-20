@@ -49,7 +49,6 @@ const WORKSPACE_IDS = Flag.GRAPHAGENT_WORKSPACES ? ["workspace.list", "workspace
 const HOME_IDS = [
   "session.list",
   "session.new",
-  "agent.list",
   "model.list",
   "prompt.editor",
   "config.open",
@@ -80,7 +79,6 @@ const SESSION_IDS = [
   "session.rename",
   "session.timeline",
   "session.undo",
-  "agent.list",
   "agent.subagents",
   "model.list",
   "diff.open",
@@ -224,7 +222,6 @@ describe("builtin scope snapshots", () => {
       "session.btw",
       "session.timeline",
       "model.list",
-      "agent.list",
       "prompt.editor",
       "prompt.skills",
       "diff.open",
@@ -253,6 +250,8 @@ describe("decommissioned commands", () => {
     "themes",
     "timestamps",
     "thinking",
+    // The primary agent is switched with Tab and Shift+Tab (agent.cycle); `/agents` lists sub-agents (#1677).
+    "agent",
   ]
 
   test("slash names and ids are absent from every scope", () => {
@@ -266,6 +265,7 @@ describe("decommissioned commands", () => {
       for (const name of REMOVED) expect(values).not.toContain(name)
       expect(values).not.toContain("variant.list")
       expect(values).not.toContain("org.list")
+      expect(values).not.toContain("agent.list")
     }
     dispose()
   })
