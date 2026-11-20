@@ -1330,12 +1330,14 @@ describe("DAG mode at 80 and 120 columns", () => {
             expect(drawn[0]).toContain(language === "en" ? "mode on" : "模式开")
             expect(drawn[0]).toMatch(/[━─]/)
             // The budget is at its warning band (850 of 1000), so it is the last piece of the usage to go: both widths
-            // keep it. At 120 columns the wait that is also on the row keeps its place beside it; at 80 the room
-            // beside the bar, the title and the counts is short for both, and the budget stays while the wait goes.
+            // keep it. At 120 columns the wait that is also on the row keeps its place beside it. At 80 the room beside
+            // the title and the counts is short for both: the text is sized first (#1619), so the bar gives up its
+            // third slot and the Chinese row now keeps the wait too (until then the bar kept its three and the wait
+            // went); the English wait is longer, 22 cells, and still goes while the budget stays.
             if (aw === 1) {
               expect(drawn[0]).toContain(language === "en" ? "budget 85%" : "预算 85%")
               const wait = language === "en" ? "waiting for main agent" : "等待主 agent"
-              if (width === 120) expect(drawn[0]).toContain(wait)
+              if (width === 120 || language === "zh-CN") expect(drawn[0]).toContain(wait)
               else expect(drawn[0]).not.toContain(wait)
             }
             expect(drawn.join("\n")).toMatchSnapshot()
