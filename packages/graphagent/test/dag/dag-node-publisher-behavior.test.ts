@@ -9,6 +9,7 @@ import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore, type NodeRow, type WorkflowRow } from "@graphagent/core/dag/store"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import type { DagSummary } from "@graphagent/schema/dag-summary"
+import { DagNodeView } from "@/dag/node-view"
 import { DagNodePublisher } from "@/dag/runtime/node-publisher"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GlobalBus } from "@/bus/global"
@@ -91,6 +92,29 @@ function nodeRow(workflowId: string, id: string, status = "pending"): NodeRow {
   }
 }
 
+// #1606: a result body of 100 KB, and a finished node that carries it together with the other fields such a node has:
+// the model, the child session, and an error text at its 200-character bound.
+const BODY = "x".repeat(100 * 1024)
+
+function finishedRow(workflowId: string, id: string, output: unknown = BODY): NodeRow {
+  return {
+    ...nodeRow(workflowId, id, "completed"),
+    name: "Review the change set",
+    workerType: "review",
+    dependsOn: ["survey", "implement"],
+    modelId: "claude-sonnet-4-5-20250929",
+    modelProviderId: "anthropic",
+    childSessionId: "ses_0123456789abcdefghijklmnop",
+    output,
+    errorReason: "e".repeat(200),
+    errorClass: "exec_failed",
+    deadlineMs: 1_700_000_600_000,
+    replanAttempts: 2,
+    startedAt: 1_700_000_000_000,
+    completedAt: 1_700_000_300_000,
+  }
+}
+
 function runtime(state: StoreControl, messages?: Layer.Layer<DagMessages.Service>) {
   const store = Layer.mock(DagStore.Service, {
     getWorkflow: (dagID) => Effect.succeed(state.workflows.get(dagID)),
@@ -115,12 +139,15 @@ const bus: EventControl = {}
 
 function startCollector() {
   const patches: NodePatch[] = []
+  // Each emitted payload as it goes over the wire, for the tests of what a push weighs.
+  const wire: string[] = []
   const handler = (event: { payload?: { type?: string; properties?: NodePatch } }) => {
     if (event.payload?.type !== "dag.workflow.nodes.updated") return
     patches.push(event.payload.properties!)
+    wire.push(JSON.stringify(event.payload))
   }
   GlobalBus.on("event", handler)
-  return { patches, stop: () => GlobalBus.off("event", handler) }
+  return { patches, wire, stop: () => GlobalBus.off("event", handler) }
 }
 
 function withCollector<A, E, R>(use: (collector: ReturnType<typeof startCollector>) => Effect.Effect<A, E, R>) {
@@ -198,6 +225,106 @@ describe("DagNodePublisher behavior", () => {
         expect(patches[1].removed).toEqual([])
         // This workflow's definition is empty: the pushed row has no `expanded_from` at all, not an undefined one.
         expect("expanded_from" in patches[1].nodes[0]).toBe(false)
+      }),
+    ).pipe(Effect.provide(runtime(state)))
+  })
+
+  // #1606: the body of a node's result can be of any size and no client reads it from a push (the TUI reads it from
+  // `dag.nodes` when a node's details open), so a pushed row leaves it out.
+  it.instance("pushes a finished node without its output body, in at most 2 KB", () => {
+    const state = control()
+    const queue = Effect.runSync(Queue.unbounded<DagMessages.Change>())
+    const metadata: DagMessages.Metadata = {
+      endpoint: {
+        id: "ep-a",
+        kind: "node",
+        sessionID: "ses_0123456789abcdefghijklmnop",
+        workflowID: "dag-body",
+        nodeID: "a",
+        attemptID: "att_0123456789abcdefghijklmnop",
+      },
+      accepted: 3,
+      snapshot: 3,
+      queued: 1,
+      delivered: 2,
+      undeliverable: 1,
+      closedReason: "completed",
+    }
+    const messages = Layer.mock(DagMessages.Service, {
+      changed: Stream.fromQueue(queue),
+      metadataForWorkflow: (_caller, _workflowID, nodeIDs) =>
+        Effect.succeed({
+          ok: true as const,
+          value: new Map((nodeIDs ?? []).map((id) => [id, metadata])),
+        }),
+    })
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        const instance = yield* InstanceState.context
+        state.workflows.set("dag-body", workflow("dag-body", "ses-body", instance.directory))
+        state.nodes.set("dag-body", [nodeRow("dag-body", "a", "running"), nodeRow("dag-body", "b")])
+        yield* (yield* DagNodePublisher.Service).init()
+        yield* publishEvent("dag-body", DagEvent.NodeRegistered.type)
+        yield* waitPatches(collector, 1)
+
+        state.nodes.set("dag-body", [finishedRow("dag-body", "a"), nodeRow("dag-body", "b")])
+        yield* publishEvent("dag-body", DagEvent.NodeCompleted.type, { nodeID: "a" })
+        const patches = yield* waitPatches(collector, 2)
+        // The event as it goes over the wire: a size that does not depend on the 100 KB result, and no `output` key
+        // anywhere in it.
+        expect(Buffer.byteLength(collector.wire[1])).toBeLessThanOrEqual(2048)
+        expect(collector.wire[1]).not.toContain('"output"')
+        expect(patches[1].resync).toBeUndefined()
+        expect(patches[1].nodes.map((node) => [node.id, node.status])).toEqual([["a", "completed"]])
+        expect(patches[1].nodes[0]).not.toHaveProperty("output")
+        // The row still says everything else about the node's end: the error text and the mailbox counters.
+        expect(patches[1].nodes[0]).toMatchObject({
+          completed_at: 1_700_000_300_000,
+          error_reason: "e".repeat(200),
+          attempt_id: "att_0123456789abcdefghijklmnop",
+          agent_messages: { queued: 1, delivered: 2, undeliverable: 1 },
+        })
+      }),
+    ).pipe(Effect.provide(runtime(state, messages)))
+  })
+
+  // What `dag.nodes` serves is this same projection, asked for with its default.
+  it.effect("keeps the output body in the node table that dag.nodes serves", () =>
+    Effect.sync(() => {
+      const row = finishedRow("dag-table", "a")
+      const table = DagNodeView.base(row)
+      expect(table.output).toBe(BODY)
+      expect(DagNodeView.base(row, undefined, { output: true })).toEqual(table)
+      // The pushed row is that row without the body, and nothing else is dropped.
+      const { output: _body, ...rest } = table
+      expect(DagNodeView.base(row, undefined, { output: false })).toEqual(rest)
+      // A finished node with no result still reads `output: null` in the table, and has no key in a push.
+      const empty = finishedRow("dag-table", "b", null)
+      expect(DagNodeView.base(empty)).toHaveProperty("output", null)
+      expect(DagNodeView.base(empty, undefined, { output: false })).not.toHaveProperty("output")
+    }),
+  )
+
+  it.instance("does not push a row whose only change is its output body", () => {
+    const state = control()
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        const instance = yield* InstanceState.context
+        state.workflows.set("dag-same", workflow("dag-same", "ses-same", instance.directory))
+        state.nodes.set("dag-same", [finishedRow("dag-same", "a")])
+        yield* (yield* DagNodePublisher.Service).init()
+        yield* publishEvent("dag-same", DagEvent.NodeRegistered.type)
+        yield* waitPatches(collector, 1)
+
+        // Another result of the same size, and no other field moved: a push could show a client nothing new.
+        state.nodes.set("dag-same", [finishedRow("dag-same", "a", "y".repeat(100 * 1024))])
+        yield* publishEvent("dag-same", DagEvent.NodeCompleted.type, { nodeID: "a" })
+        yield* pollWithTimeout(
+          Effect.sync(() => ((state.reads.get("dag-same") ?? 0) >= 2 ? true : undefined)),
+          "the node table was not read again",
+        )
+        yield* Effect.sleep("100 millis")
+        expect(collector.patches).toHaveLength(1)
       }),
     ).pipe(Effect.provide(runtime(state)))
   })

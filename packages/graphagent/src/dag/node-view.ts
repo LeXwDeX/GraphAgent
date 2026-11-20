@@ -28,8 +28,18 @@ export function expandedFrom(config: string): ReadonlyMap<string, string> {
  * incremental `dag.workflow.nodes.updated` push. Keeping it here means the
  * fetched table and the pushed rows cannot drift. `expanded` is the node's entry
  * of `expandedFrom`; it is left out of the view when the node has none.
+ *
+ * `options.output` says whether the node's `output` body goes into the view
+ * (#1606). The body is a result of any size, so a read of the table carries it
+ * (the default) and the push leaves it out: a client that shows it reads it from
+ * `dag.nodes` when it needs it, and a pushed row stays small whatever its node
+ * returned.
  */
-export function base(row: DagStore.NodeRow, expanded?: string): DagSummary.NodeView {
+export function base(
+  row: DagStore.NodeRow,
+  expanded?: string,
+  options: { readonly output: boolean } = { output: true },
+): DagSummary.NodeView {
   return {
     id: row.id,
     workflow_id: row.workflowId,
@@ -45,7 +55,7 @@ export function base(row: DagStore.NodeRow, expanded?: string): DagSummary.NodeV
     // #949: per-attempt execution location. Optional so rows persisted before
     // #949 and pre-#949 clients decode exactly as before.
     ...DagLocation.nodeLocationView(row),
-    ...(row.output !== null || row.status === "completed" ? { output: row.output } : {}),
+    ...(options.output && (row.output !== null || row.status === "completed") ? { output: row.output } : {}),
     ...(row.errorReason !== null ? { error_reason: row.errorReason } : {}),
     ...(row.errorClass !== null ? { error_class: row.errorClass } : {}),
     // #1031 M7: bounded safety-denial evidence travels with the node push.

@@ -33,6 +33,10 @@ import { DagLocation } from "../location"
  * - Mailbox changes arrive on the process-level `DagMessages.changed` stream;
  *   they mark individual nodes dirty so `agent_messages` counters refresh
  *   without re-reading every mailbox.
+ * - A pushed row carries no `output` body (#1606): it can be of any size, and a
+ *   client that shows it reads it from `dag.nodes`. Rows are compared in the
+ *   same projection, so a body that changes alone is not a push; the projector
+ *   writes it only with the completion, which moves `status` too.
  */
 
 // The events that can change a workflow's current node table. Mirrors the
@@ -75,7 +79,7 @@ const MAX_PATCH_NODES = 64
 interface WorkflowState {
   readonly seq: number
   readonly graphRev: number
-  /** Serialized full views, so a mailbox-only change still registers. */
+  /** Serialized pushed views (no `output`), so a mailbox-only change still registers. */
   readonly rows: ReadonlyMap<string, string>
 }
 
@@ -108,6 +112,10 @@ export const layer = Layer.effect(
 
         const serialize = (view: DagSummary.NodeView) => JSON.stringify(view)
 
+        // The row projection of a push, and the one rows are kept and compared in (#1606): without `output`.
+        const baseView = (row: DagStore.NodeRow, marks: ReadonlyMap<string, string>) =>
+          DagNodeView.base(row, marks.get(row.id), { output: false })
+
         const marksOf = (workflowID: string, config: string) => {
           const known = expansions.get(workflowID)
           if (known?.config === config) return known.marks
@@ -131,7 +139,7 @@ export const layer = Layer.effect(
             const views = new Map<string, DagSummary.NodeView>()
             if (rows.length === 0) return views
             if (messages._tag === "None") {
-              for (const row of rows) views.set(row.id, DagNodeView.base(row, marks.get(row.id)))
+              for (const row of rows) views.set(row.id, baseView(row, marks))
               return views
             }
             const first = rows[0]
@@ -153,8 +161,7 @@ export const layer = Layer.effect(
               )
               .pipe(Effect.catchCause(() => Effect.succeed({ ok: false as const })))
             const byNode: ReadonlyMap<string, DagMessages.Metadata> = batch.ok ? batch.value : new Map()
-            for (const row of rows)
-              views.set(row.id, DagNodeView.observed(DagNodeView.base(row, marks.get(row.id)), byNode.get(row.id)))
+            for (const row of rows) views.set(row.id, DagNodeView.observed(baseView(row, marks), byNode.get(row.id)))
             return views
           })
 
@@ -213,14 +220,14 @@ export const layer = Layer.effect(
               states.set(workflowID, {
                 seq,
                 graphRev: wf.graphRev,
-                rows: new Map(rows.map((row) => [row.id, serialize(DagNodeView.base(row, marks.get(row.id)))])),
+                rows: new Map(rows.map((row) => [row.id, serialize(baseView(row, marks))])),
               })
               emit(workflowID, wf.sessionId, wf.graphRev, seq, [], [], true, workspace)
               return
             }
 
             // The mark is part of what a row is compared by, so a node whose slot was renamed is pushed again.
-            const base = new Map(rows.map((row) => [row.id, serialize(DagNodeView.base(row, marks.get(row.id)))]))
+            const base = new Map(rows.map((row) => [row.id, serialize(baseView(row, marks))]))
             const rowByID = new Map(rows.map((row) => [row.id, row]))
             const removed = [...previous.rows.keys()].filter((id) => !base.has(id))
             // Candidates: rows whose durable projection changed, plus nodes a
