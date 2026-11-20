@@ -265,8 +265,13 @@ test("a sub-agent view has no prompt, and nothing the user does in it writes a r
 test("a main session keeps its top bar and its footer", async () => {
   const app = await runApp({ sessions, args: { sessionID: rootID }, width: 120, height: 30 })
   try {
-    const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes("⇥ 切换 agent"), "the footer")
-    expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle}`)
+    const frame = await waitForFrame(
+      app.setup,
+      (value) => footerRow(value).includes("⇥ 切换 agent") && topRow(value).includes("(main)"),
+      "the footer and the branch",
+    )
+    // A main session names its directory and branch before its title (#1674); a sub-agent view names none of them.
+    expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent  ${directory} (main) › ${rootTitle}`)
     expect(topRow(frame)).not.toContain("explore")
     expect(topRow(frame)).not.toContain("子 agent")
     expect(footerRow(frame)).toStartWith("  build ")

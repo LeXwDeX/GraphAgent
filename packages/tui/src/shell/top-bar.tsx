@@ -8,7 +8,8 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { subagentMarkerToken } from "../session/subagents"
 import { GUTTER, NARROW_WIDTH, contentWidth } from "../ui/layout"
-import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import { cellWidth, truncateCells, truncateCellsLeft, type AmbiguousWidth } from "../ui/width"
+import { remoteLine } from "../util/remote-text"
 import {
   DESCRIPTION_SEPARATOR,
   PATH_SEPARATOR,
@@ -40,7 +41,11 @@ export type TopBarPosition = {
 export type TopBarProps = {
   /** Session title after the `›` separator. */
   path?: string
-  /** Replaces `path` while a sub-agent is viewed. */
+  /** Working directory, with the home directory written `~`; shown after the mark, before the title (#1674). */
+  directory?: string
+  /** Branch of `directory`, in parentheses after it. It is the first thing to give way when the row is short. */
+  branch?: string
+  /** Replaces `path` and `directory` while a sub-agent is viewed. */
   subagent?: TopBarSubagent
   /** Shown on the right of a sub-agent view, with the keys that move it unless it is the only one. */
   position?: TopBarPosition
@@ -52,6 +57,12 @@ const MARK = "GraphAgent"
 const MARK_PREFIX = `◇─◆ ${MARK}`
 const PART_SEPARATOR = " · "
 const POSITION_GAP = "  "
+/** Between the mark and the directory. */
+const LOCATION_GAP = "  "
+const BRANCH_OPEN = " ("
+const BRANCH_CLOSE = ")"
+/** Stands in front of the levels of a directory that was cut from its left. */
+const CUT = "…"
 
 /** The position text and the keys that move it within `budget` cells; the keys are the first to go. */
 function positionBlock(position: TopBarPosition | undefined, budget: number, ambiguousWidth: AmbiguousWidth) {
@@ -61,6 +72,78 @@ function positionBlock(position: TopBarPosition | undefined, budget: number, amb
   if (keys && cellWidth(text + POSITION_GAP + keys, ambiguousWidth) <= budget) return { text, keys }
   const shown = truncateCells(text, budget, ambiguousWidth)
   return shown ? { text: shown, keys: "" } : undefined
+}
+
+/**
+ * The shapes a directory takes as the bar gets short, the widest first: as it is, then `…/` and its last two levels,
+ * then its last level alone. A shape that is not narrower than the one before it is left out, so a path the cut would
+ * not shorten is never cut.
+ */
+export function directoryForms(directory: string, ambiguousWidth: AmbiguousWidth): string[] {
+  const levels = directory.split(/[\\/]+/).filter((level) => level !== "")
+  const separator = /[\\/]/.exec(directory)?.[0] ?? "/"
+  const forms = [directory]
+  const add = (form: string) => {
+    if (cellWidth(form, ambiguousWidth) < cellWidth(forms[forms.length - 1], ambiguousWidth)) forms.push(form)
+  }
+  if (levels.length > 2) add(CUT + separator + levels.slice(-2).join(separator))
+  if (levels.length > 1) add(levels[levels.length - 1])
+  return forms
+}
+
+type LeftFit = {
+  directory?: string
+  branch?: string
+  title?: string
+  /** The model name has to give way too, because nothing before it left the title its room. */
+  dropModel: boolean
+}
+
+/**
+ * What follows the mark at the left of the bar, given the cells that are left beside the right-hand details with the
+ * model name kept (`room.kept`) and without it (`room.dropped`). Things give way in this order, and a step is taken
+ * only when the ones before it did not make the row fit: the branch, the directory to `…/` and its last two levels,
+ * the directory to its last level, the model name, the title (cut with `…`, and gone when not one cell is left for it).
+ * The title and the context usage on the right are the last to go. Where the title is gone and the directory still does
+ * not fit, the directory is cut from its left, which keeps the level that tells one project from another.
+ */
+function fitLeft(input: {
+  directory?: string
+  branch?: string
+  title?: string
+  room: { kept: number; dropped: number }
+  ambiguousWidth: AmbiguousWidth
+}): LeftFit {
+  const aw = input.ambiguousWidth
+  const width = (text: string) => cellWidth(text, aw)
+  const titleWidth = input.title ? width(PATH_SEPARATOR + input.title) : 0
+
+  type Step = { directory?: string; branch?: string }
+  const forms = input.directory ? directoryForms(input.directory, aw) : []
+  const steps: Step[] = forms.length > 0 ? [{ directory: forms[0], branch: input.branch }] : [{}]
+  if (forms.length > 0 && input.branch) steps.push({ directory: forms[0] })
+  for (const form of forms.slice(1)) steps.push({ directory: form })
+  const stepWidth = (step: Step) => (step.directory ? width(directoryText(step.directory, step.branch)) : 0)
+
+  for (const step of steps) {
+    if (stepWidth(step) + titleWidth <= input.room.kept) return { ...step, title: input.title, dropModel: false }
+  }
+  const last = steps[steps.length - 1]
+  const lastWidth = stepWidth(last)
+  if (lastWidth + titleWidth <= input.room.dropped) return { ...last, title: input.title, dropModel: true }
+
+  const titleRoom = input.room.dropped - lastWidth - width(PATH_SEPARATOR)
+  const title = input.title && titleRoom > 0 ? truncateCells(input.title, titleRoom, aw) : ""
+  if (title || !last.directory || lastWidth <= input.room.dropped) {
+    return { ...last, title: title || undefined, dropModel: true }
+  }
+  const directory = truncateCellsLeft(last.directory, input.room.dropped - width(LOCATION_GAP), aw)
+  return { directory: directory || undefined, dropModel: true }
+}
+
+/** The directory as the bar draws it after the mark, with its branch when it has one. */
+function directoryText(directory: string, branch?: string) {
+  return LOCATION_GAP + directory + (branch ? BRANCH_OPEN + branch + BRANCH_CLOSE : "")
 }
 
 export function TopBar(props: TopBarProps) {
@@ -111,28 +194,55 @@ export function TopBar(props: TopBarProps) {
       else break
     }
 
-    let right = visible().join(PART_SEPARATOR)
-    if (cellWidth(right, aw) > partsBudget) right = truncateCells(right, partsBudget, aw)
+    // The right-hand side with the details in `keys`, and the cells it leaves after the mark.
+    const sideOf = (keys: ReadonlySet<string>) => {
+      let right = parts
+        .filter((part) => keys.has(part.key))
+        .map((part) => part.text!)
+        .join(PART_SEPARATOR)
+      if (cellWidth(right, aw) > partsBudget) right = truncateCells(right, partsBudget, aw)
+      const placeGap = right && place ? GAP : 0
+      const sideWidth = cellWidth(right, aw) + placeGap + placeWidth
+      return { right, placeGap, width: sideWidth, room: inner - (sideWidth > 0 ? sideWidth + GAP : 0) - markWidth }
+    }
+    const kept = sideOf(included)
+    const separatorWidth = cellWidth(PATH_SEPARATOR, aw)
 
-    const placeGap = right && place ? GAP : 0
-    const rightWidth = cellWidth(right, aw) + placeGap + placeWidth
-    const content = inner - (rightWidth > 0 ? rightWidth + GAP : 0)
-    const pathBudget = content - markWidth - cellWidth(PATH_SEPARATOR, aw)
+    // A sub-agent view draws its own path and no directory (#1674): the path of its sessions is what says where it is.
     const subpath =
-      subagent && pathBudget > 0
-        ? layoutSubagentPath({ ...subagent, budget: pathBudget, ambiguousWidth: aw })
+      subagent && kept.room - separatorWidth > 0
+        ? layoutSubagentPath({ ...subagent, budget: kept.room - separatorWidth, ambiguousWidth: aw })
         : undefined
-    const path = !subagent && props.path && pathBudget > 0 ? truncateCells(props.path, pathBudget, aw) : undefined
+
+    // Otherwise the directory and the title give way by `fitLeft`'s order, and the model name is one of the steps.
+    const lean = new Set(included)
+    lean.delete("model")
+    const directory = subagent || !props.directory ? undefined : remoteLine(props.directory) || undefined
+    const branch = directory && props.branch ? remoteLine(props.branch) || undefined : undefined
+    const fit = subagent
+      ? undefined
+      : fitLeft({
+          directory,
+          branch,
+          title: props.path,
+          room: { kept: kept.room, dropped: sideOf(lean).room },
+          ambiguousWidth: aw,
+        })
+    const side = fit?.dropModel ? sideOf(lean) : kept
+    const location = fit?.directory ? directoryText(fit.directory, fit.branch) : undefined
+    const title = fit?.title || undefined
+
     const leftWidth = subpath
-      ? markWidth + cellWidth(PATH_SEPARATOR, aw) + subpath.width
-      : cellWidth(MARK_PREFIX + (path ? PATH_SEPARATOR + path : ""), aw)
-    const gap = rightWidth > 0 ? Math.max(GAP, inner - leftWidth - rightWidth) : 0
+      ? markWidth + separatorWidth + subpath.width
+      : markWidth + (location ? cellWidth(location, aw) : 0) + (title ? cellWidth(PATH_SEPARATOR + title, aw) : 0)
+    const gap = side.width > 0 ? Math.max(GAP, inner - leftWidth - side.width) : 0
 
     return {
-      right,
+      right: side.right,
       place,
-      placeGap,
-      path: path || undefined,
+      placeGap: side.placeGap,
+      location,
+      path: title,
       subpath,
       gap,
     }
@@ -145,6 +255,9 @@ export function TopBar(props: TopBarProps) {
         <span style={{ fg: theme.primary }}>◆</span>
         <span> </span>
         <b>{MARK}</b>
+        <Show when={layout().location}>
+          <span style={{ fg: theme.textMuted }}>{layout().location}</span>
+        </Show>
         <Show when={layout().path}>
           <span style={{ fg: theme.textMuted }}>{PATH_SEPARATOR}</span>
           <span style={{ fg: theme.text }}>{layout().path}</span>

@@ -27,7 +27,12 @@ export const SHELL_MIN_HEIGHT = 12
 export const DIMMED_OPACITY = 0.35
 
 export type AppFrameTopBar = {
+  /** The session title. */
   path?: string
+  /** The working directory, with the home directory written `~`; a sub-agent view shows none. */
+  directory?: string
+  /** The branch of `directory`. */
+  branch?: string
   /** The path of a sub-agent view; replaces `path`. */
   subagent?: TopBarSubagent
   position?: TopBarPosition
@@ -111,6 +116,8 @@ export function AppFrame(props: AppFrameProps) {
       <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.background}>
         <TopBar
           path={props.topBar?.path}
+          directory={props.topBar?.directory}
+          branch={props.topBar?.branch}
           subagent={props.topBar?.subagent}
           position={props.topBar?.position}
           right={props.topBar?.right}
