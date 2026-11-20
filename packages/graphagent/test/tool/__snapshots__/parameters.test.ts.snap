@@ -920,9 +920,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                 "nodes": {
                   "items": {
                     "properties": {
-                      "cancel": {
-                        "type": "boolean",
-                      },
                       "condition": {
                         "type": "string",
                       },
@@ -974,9 +971,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                         "type": "boolean",
                       },
                       "required": {
-                        "type": "boolean",
-                      },
-                      "restart": {
                         "type": "boolean",
                       },
                       "review": {
@@ -1082,7 +1076,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "inputs": {
-              "description": "Template inputs",
               "type": "object",
             },
             "operation": {
@@ -1101,7 +1094,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved spec name or path",
               "type": "string",
             },
           },
@@ -1158,7 +1150,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved spec name or path",
               "type": "string",
             },
             "workflow_id": {
@@ -1251,110 +1242,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
             "operation": {
               "enum": [
                 "pause",
-              ],
-              "type": "string",
-            },
-            "workflow_id": {
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "operation",
-            "workflow_id",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "enum": [
-                "control",
-              ],
-              "type": "string",
-            },
-            "operation": {
-              "enum": [
                 "resume",
-              ],
-              "type": "string",
-            },
-            "workflow_id": {
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "operation",
-            "workflow_id",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "enum": [
-                "control",
-              ],
-              "type": "string",
-            },
-            "operation": {
-              "enum": [
-                "cancel",
-              ],
-              "type": "string",
-            },
-            "workflow_id": {
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "operation",
-            "workflow_id",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "enum": [
-                "control",
-              ],
-              "type": "string",
-            },
-            "operation": {
-              "enum": [
-                "complete",
-              ],
-              "type": "string",
-            },
-            "workflow_id": {
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "operation",
-            "workflow_id",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "enum": [
-                "control",
-              ],
-              "type": "string",
-            },
-            "operation": {
-              "enum": [
                 "step",
+                "complete",
+                "cancel",
               ],
               "type": "string",
             },
@@ -1389,7 +1280,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "reason": {
-              "description": "Audit reason",
               "type": "string",
             },
             "workflow_id": {
@@ -1421,7 +1311,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved spec name or path",
               "type": "string",
             },
             "workflow_id": {
@@ -1452,7 +1341,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "integer",
             },
             "node_ids": {
-              "description": "Nodes to retry; invalidates downstream closure",
               "items": {
                 "type": "string",
               },

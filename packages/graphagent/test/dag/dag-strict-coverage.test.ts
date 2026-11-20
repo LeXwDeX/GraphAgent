@@ -21,7 +21,8 @@ import { DagValidation } from "@/dag/validation"
 import { settleCapturedOutput } from "@/dag/runtime/capture"
 import { recoveredSettlement } from "@/dag/runtime/recovery"
 import { coverageSection, resultPage, withResultPageCoverage, workflowCoverage } from "@/dag/coverage"
-import { renderResult, renderStatus } from "@/tool/workflow/render"
+import { renderStatus } from "@/tool/workflow/render"
+import { renderResult } from "@/tool/workflow/render-result"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 
 const acceptance: AcceptanceItem[] = [{ id: "AC1", text: "The change works" }]

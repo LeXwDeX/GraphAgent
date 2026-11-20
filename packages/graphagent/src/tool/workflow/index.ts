@@ -26,7 +26,7 @@ import { draftSpec, listSpecs, readSpec, validateSpec } from "./spec"
 // Re-exported so the committed workflow library and wire-shape tests can
 // import them from the tool module without reaching into the directory.
 export { Parameters, Parameters as WorkflowParameters, StartSpec } from "./schema"
-export { resultTargetFields, worktreeResultFields } from "./render"
+export { resultTargetFields, worktreeResultFields } from "./render-result"
 
 const id = "workflow"
 

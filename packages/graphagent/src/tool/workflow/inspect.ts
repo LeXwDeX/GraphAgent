@@ -16,7 +16,8 @@ import type { ChildRunView } from "@/session/child/run"
 import { SessionID } from "@/session/schema"
 import type { Tool } from "../tool"
 import { requireOwnedWorkflow } from "./mutation"
-import { renderResult, renderStatus } from "./render"
+import { renderStatus } from "./render"
+import { renderResult } from "./render-result"
 import type { InspectParams, Metadata } from "./schema"
 
 export interface InspectContext {

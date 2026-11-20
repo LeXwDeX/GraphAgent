@@ -16,9 +16,16 @@ import { CompactBlock, CompactNode, CompactNodeDefaults, DraftGraph, Parameters 
 
 const keys = (fields: Record<string, unknown>) => Object.keys(fields).sort()
 
+// #1606: a draft writes a start document, so the node flags that only act in a replan fragment are not on the
+// draft wire (the tool definition is a per-turn budget). A replan fragment is its own file envelope.
+const REPLAN_ONLY_NODE_FIELDS = ["restart", "cancel"]
+
 describe("workflow draft wire schema parity", () => {
-  test("compact node fields mirror the authoring node schema", () => {
-    expect(keys(CompactNode.fields)).toEqual(keys(DagValidation.NodeSchema.fields))
+  test("compact node fields mirror the authoring node schema, less the replan-only flags", () => {
+    const authoring = keys(DagValidation.NodeSchema.fields)
+    // The exclusion names real authoring fields, so it cannot go stale silently.
+    for (const field of REPLAN_ONLY_NODE_FIELDS) expect(authoring).toContain(field)
+    expect(keys(CompactNode.fields)).toEqual(authoring.filter((field) => !REPLAN_ONLY_NODE_FIELDS.includes(field)))
   })
 
   test("compact block fields mirror the authoring block schema", () => {
@@ -52,8 +59,6 @@ describe("workflow draft wire schema parity", () => {
       input_mapping: { plan: "plan" },
       report_to_parent: true,
       condition: "plan.output.ready == true",
-      restart: true,
-      cancel: true,
       output_schema: { type: "object" },
       review: { phase: "design" },
       fan_out: "plan",
@@ -102,5 +107,18 @@ describe("workflow draft wire schema parity", () => {
         },
       }),
     ).toThrow()
+    // The replan-only flags have no meaning in a start document, so the draft boundary rejects them.
+    for (const flag of REPLAN_ONLY_NODE_FIELDS)
+      expect(
+        () =>
+          decode({
+            params: {
+              action: "spec",
+              operation: "draft",
+              config: { ...config, nodes: [{ ...node, [flag]: true }] },
+            },
+          }),
+        flag,
+      ).toThrow()
   })
 })

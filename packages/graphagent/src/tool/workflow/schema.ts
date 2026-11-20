@@ -40,11 +40,15 @@ export { Parameters as WorkflowParameters }
 //
 // Four actions group the operations: spec (library/authoring), run
 // (start/extend), inspect (durable reads), control (live mutations). Every
-// group is flattened into one branch per operation so `params` stays a
-// single-level union of discriminated objects — no nested anyOf for the
-// action discriminator, which OpenAI-compatible transports also reject.
+// group is flattened into branches of one `params` single-level union of
+// discriminated objects — no nested anyOf for the action discriminator, which
+// OpenAI-compatible transports also reject. An operation has its own branch
+// unless it takes exactly the fields of another operation of the same action;
+// those share one branch whose `operation` is an enum (control: pause, resume,
+// step, complete, cancel).
 // Annotations are terse on purpose: the serialized description plus this
-// schema is the per-turn tool-definition budget.
+// schema is the per-turn tool-definition budget (test/tool/workflow-provider-schema.test.ts
+// holds the ceiling).
 // ============================================================================
 
 export type Metadata = {
@@ -61,13 +65,15 @@ export type Metadata = {
   diagnosticSummary?: string
 }
 
-const specPath = Schema.String.annotate({ description: "Saved spec name or path" })
+// Annotated once on `read` and `start`, where a spec reference first enters; the
+// other operations take the same value and repeat no text (the tool definition
+// is a per-turn budget).
+const specPath = Schema.String
+const namedSpecPath = specPath.annotate({ description: "Saved spec name or path" })
 // Values for the inputs a template declares (spec list shows them). The authoring
 // boundary checks names and types against the declarations, so the wire shape
 // stays open and small.
-const templateInputs = Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
-  description: "Template inputs",
-})
+const templateInputs = Schema.optional(Schema.Record(Schema.String, Schema.Unknown))
 const workflowID = Dag.ID
 const nodeID = Dag.NodeID
 const op = <const L extends string>(name: L) => Schema.Literal(name)
@@ -116,6 +122,9 @@ export const CompactBlock = Schema.Struct({
     }),
   ),
 })
+// `restart` and `cancel` are replan-only node flags and a draft writes a start
+// document, so they are not on this wire; the drift guard in
+// test/tool/workflow-draft-parity.test.ts names that one exclusion.
 export const CompactNode = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -128,8 +137,6 @@ export const CompactNode = Schema.Struct({
   input_mapping: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   report_to_parent: Schema.optional(Schema.Boolean),
   condition: Schema.optional(Schema.String),
-  restart: Schema.optional(Schema.Boolean),
-  cancel: Schema.optional(Schema.Boolean),
   output_schema: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   review: Schema.optional(
     Schema.Struct({
@@ -192,7 +199,7 @@ export type DraftGraphType = Schema.Schema.Type<typeof DraftGraph>
 // ---------------------------------------------------------------------------
 
 const SpecList = Schema.Struct({ action: act("spec"), operation: op("list") })
-const SpecRead = Schema.Struct({ action: act("spec"), operation: op("read"), spec_path: specPath })
+const SpecRead = Schema.Struct({ action: act("spec"), operation: op("read"), spec_path: namedSpecPath })
 const SpecDraft = Schema.Struct({
   action: act("spec"),
   operation: op("draft").annotate({ description: "Write a start spec" }),
@@ -216,8 +223,8 @@ const SpecValidate = Schema.Struct({
 const RunStart = Schema.Struct({
   action: act("run"),
   operation: op("start"),
-  spec_path: specPath,
-  inputs: templateInputs,
+  spec_path: namedSpecPath,
+  inputs: templateInputs.annotate({ description: "Template inputs" }),
 })
 const RunExtend = Schema.Struct({
   action: act("run"),
@@ -244,11 +251,13 @@ const InspectResult = Schema.Struct({
 // control: live mutations.
 // ---------------------------------------------------------------------------
 
-const ControlPause = Schema.Struct({ action: act("control"), operation: op("pause"), workflow_id: workflowID })
-const ControlResume = Schema.Struct({ action: act("control"), operation: op("resume"), workflow_id: workflowID })
-const ControlCancel = Schema.Struct({ action: act("control"), operation: op("cancel"), workflow_id: workflowID })
-const ControlComplete = Schema.Struct({ action: act("control"), operation: op("complete"), workflow_id: workflowID })
-const ControlStep = Schema.Struct({ action: act("control"), operation: op("step"), workflow_id: workflowID })
+// The five operations that take the workflow id alone share one branch; the
+// operation name still reaches the permission patterns and the dispatch.
+const ControlWorkflow = Schema.Struct({
+  action: act("control"),
+  operation: Schema.Literals(["pause", "resume", "step", "complete", "cancel"]),
+  workflow_id: workflowID,
+})
 const ControlCancelNode = Schema.Struct({
   action: act("control"),
   operation: op("cancel_node").annotate({
@@ -256,7 +265,7 @@ const ControlCancelNode = Schema.Struct({
   }),
   workflow_id: workflowID,
   node_id: nodeID,
-  reason: Schema.optional(Schema.String).annotate({ description: "Audit reason" }),
+  reason: Schema.optional(Schema.String),
 })
 const ControlReplan = Schema.Struct({
   action: act("control"),
@@ -268,9 +277,7 @@ const ControlRecover = Schema.Struct({
   action: act("control"),
   operation: op("recover").annotate({ description: "Retry nodes and descendants; keep valid work" }),
   workflow_id: workflowID,
-  node_ids: Schema.Array(nodeID)
-    .check(Schema.isMinLength(1))
-    .annotate({ description: "Nodes to retry; invalidates downstream closure" }),
+  node_ids: Schema.Array(nodeID).check(Schema.isMinLength(1)),
   expected_graph_rev: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
     description: "Exact graph_rev",
   }),
@@ -316,11 +323,7 @@ const ActionParams = Schema.Union([
   RunExtend,
   InspectStatus,
   InspectResult,
-  ControlPause,
-  ControlResume,
-  ControlCancel,
-  ControlComplete,
-  ControlStep,
+  ControlWorkflow,
   ControlCancelNode,
   ControlReplan,
   ControlRecover,

@@ -70,12 +70,12 @@ function record(node: JsonSchemaNode | undefined): Record<string, JsonSchemaNode
 }
 
 describe("workflow provider-facing schema", () => {
-  test("base wire shape is a plain-object root carrying the 18-branch union in params", async () => {
+  test("base wire shape is a plain-object root carrying the 14-branch union in params", async () => {
     const schema = ToolJsonSchema.fromSchema(Parameters as never) as JsonSchemaNode
     expect(schema.type).toBe("object")
     expect(schema.anyOf).toBeUndefined()
     expect(schema.required).toEqual(["params"])
-    expect(branches(schema).length).toBe(18)
+    expect(branches(schema).length).toBe(14)
     const flat = JSON.stringify(schema)
     expect(flat).not.toContain('"session_id"')
     expect(flat).not.toContain('"project_id"')
@@ -89,12 +89,18 @@ describe("workflow provider-facing schema", () => {
     // parameters). The compact draft wire schema is the dominant win: it must
     // stay a small fraction of the old inline graph schema.
     expect(total).toBeLessThan(21_898)
-    expect(total).toBeLessThan(12_000)
-    // #1158: 9_000 and 3_000 grew by 100 B each for the description on the `compose` block kind, the one place the
-    // model is told what that block is (the skills carry no word of it).
-    expect(Buffer.byteLength(schema)).toBeLessThan(9_100)
+    // #1606: the goal is 8,192 B (description + parameters) and it is not met. Merging the five workflow-only
+    // control branches, dropping the replan-only node flags from the draft wire and trimming the routing text and
+    // repeated annotations took the definition from 11,229 B to 9,664 B. What is left is the typed draft graph
+    // (3,026 B) and one branch per remaining operation; the further 1.5 KB needs the draft's typed `blocks[]` and
+    // `nodes[]` loosened, a contract decision left open in #1606. These ceilings are the measured sizes rounded up to
+    // 100 B, and they only tighten.
+    expect(total).toBeLessThanOrEqual(9_700)
+    // #1158: the schema and draft ceilings had grown by 100 B each for the description on the `compose` block kind,
+    // the one place the model is told what that block is (the skills carry no word of it).
+    expect(Buffer.byteLength(schema)).toBeLessThanOrEqual(7_900)
     const draft = JSON.stringify(branchByOperation(JSON.parse(schema) as JsonSchemaNode, "draft")[0])
-    expect(Buffer.byteLength(draft)).toBeLessThan(3_100)
+    expect(Buffer.byteLength(draft)).toBeLessThanOrEqual(3_100)
   })
 
   test("every action group and operation stays representable after OpenAI transformation", () => {
@@ -132,6 +138,28 @@ describe("workflow provider-facing schema", () => {
     const status = branchByOperation(transformed, "status")[0]
     expect(status.required).toContain("workflow_id")
     expect(Object.keys(status.properties ?? {})).toEqual(["action", "operation", "workflow_id"])
+  })
+
+  // #1606: pause/resume/step/complete/cancel take the workflow id alone, so one
+  // branch carries all five instead of one branch each. Every operation name must
+  // still be a value the model can send, on every transport, and the shared branch
+  // must not widen into the operations that take more fields.
+  test("the workflow-only control operations share one branch on every transport", () => {
+    const shared = ["pause", "resume", "step", "complete", "cancel"]
+    for (const model of [openaiModel, azureModel, geminiModel, deepseekModel, glmModel]) {
+      const transformed = ProviderTransform.schema(
+        model,
+        ToolJsonSchema.fromSchema(Parameters as never),
+      ) as JsonSchemaNode
+      const branch = branchByOperation(transformed, "pause")[0]
+      for (const operation of shared) expect(branchByOperation(transformed, operation)).toEqual([branch])
+      expect(branch.properties?.action?.enum).toEqual(["control"])
+      expect(branch.properties?.operation?.enum).toEqual(shared)
+      expect(Object.keys(branch.properties ?? {})).toEqual(["action", "operation", "workflow_id"])
+      expect(branch.required).toEqual(["action", "operation", "workflow_id"])
+      for (const operation of ["cancel_node", "replan", "recover", "extend_timeout", "retarget"])
+        expect(branchByOperation(transformed, operation)[0].properties?.operation?.enum, operation).toEqual([operation])
+    }
   })
 
   test("OpenAI transformation exposes paths without inline graph objects", () => {
@@ -192,7 +220,7 @@ describe("workflow provider-facing schema", () => {
       ToolJsonSchema.fromSchema(Parameters as never),
     ) as JsonSchemaNode
     expect(root(transformed).type).toBe("object")
-    expect(branches(transformed).length).toBe(18)
+    expect(branches(transformed).length).toBe(14)
     expect(branchByOperation(transformed, "start")).toHaveLength(1)
     expect(branchByOperation(transformed, "validate")).toHaveLength(1)
   })
@@ -202,7 +230,7 @@ describe("workflow provider-facing schema", () => {
       geminiModel,
       ToolJsonSchema.fromSchema(Parameters as never),
     ) as JsonSchemaNode
-    expect(branches(transformed).length).toBe(18)
+    expect(branches(transformed).length).toBe(14)
     expect(branchByOperation(transformed, "start")[0].properties?.["spec_path"]).toBeDefined()
     expect(branchByOperation(transformed, "start")[0].properties?.["spec"]).toBeUndefined()
     const resultBranch = branchByOperation(transformed, "result")[0]
@@ -217,7 +245,7 @@ describe("workflow provider-facing schema", () => {
         ToolJsonSchema.fromSchema(Parameters as never),
       ) as JsonSchemaNode
       expect(root(transformed).type).toBe("object")
-      expect(branches(transformed)).toHaveLength(18)
+      expect(branches(transformed)).toHaveLength(14)
       expect(branchByOperation(transformed, "start")).toHaveLength(1)
     }
   })

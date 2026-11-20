@@ -59,7 +59,7 @@ describe("workflow tool schema contract", () => {
 
   test("the union survives intact inside the params property", () => {
     const transformed = ToolJsonSchema.fromSchema(Parameters as never) as JsonSchemaNode
-    expect(branches(transformed)).toHaveLength(18)
+    expect(branches(transformed)).toHaveLength(14)
     expect(transformed.properties?.params).toBeDefined()
     expect(transformed.required).toEqual(["params"])
   })
@@ -77,6 +77,23 @@ describe("workflow tool schema contract", () => {
     // The action group alone is never sufficient: every branch carries a
     // required operation discriminator.
     for (const branch of branches(transformed)) expect(branch.required).toContain("operation")
+  })
+
+  // #1606: the five operations that take only the workflow id share one branch.
+  // Each name still decodes to itself (the permission patterns and the dispatch read
+  // it), and the shared branch does not accept another operation's fields.
+  test("pause, resume, step, complete and cancel each decode through the shared control branch", () => {
+    const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
+    for (const operation of ["pause", "resume", "step", "complete", "cancel"]) {
+      const params = { action: "control", operation, workflow_id: "dag_test" }
+      expect(JSON.stringify(decode({ params })), operation).toBe(JSON.stringify({ params }))
+      expect(() => decode({ params: { ...params, node_id: "n1" } }), `${operation} node_id`).toThrow()
+      expect(() => decode({ params: { ...params, action: "inspect" } }), `${operation} as inspect`).toThrow()
+      expect(() => decode({ params: { action: "control", operation } }), `${operation} without workflow_id`).toThrow()
+    }
+    // The operations that carry more fields keep their own required fields.
+    expect(() => decode({ params: { action: "control", operation: "cancel_node", workflow_id: "dag_test" } })).toThrow()
+    expect(() => decode({ params: { action: "control", operation: "status", workflow_id: "dag_test" } })).toThrow()
   })
 
   test("decoded shape is { params: { action, operation, ...fields } }", () => {

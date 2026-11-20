@@ -138,6 +138,8 @@ export async function runDagCoreCoverageGate() {
         { file: "src/tool/workflow/files.ts", lines: 85, functions: 75 },
         { file: "src/tool/workflow/inspect.ts", lines: 85, functions: 90 },
         { file: "src/tool/workflow/render.ts", lines: 78, functions: 88 },
+        // #1606: renderResult moved out of render.ts and is held to at least render.ts's old floor (78 / 88).
+        { file: "src/tool/workflow/render-result.ts", lines: 78, functions: 88 },
         { file: "src/tool/workflow/run.ts", lines: 92, functions: 90 },
         { file: "src/tool/workflow/schema.ts", lines: 90, functions: 90 },
         { file: "src/tool/workflow/spec.ts", lines: 85, functions: 85 },
