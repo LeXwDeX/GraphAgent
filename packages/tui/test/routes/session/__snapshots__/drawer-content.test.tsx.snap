@@ -26,7 +26,7 @@ exports[`the drawer's sections come in their order with their data, 80 columns 1
   "  ● LSP typescript",
   "  ● MCP 已连接 2 个",
   "  ● MCP 未连接：broken",
-  "  ctrl+b 关闭",
+  "  ⌃B 关闭",
 ]
 `;
 
@@ -56,7 +56,7 @@ exports[`the drawer's sections come in their order with their data, 120 columns 
   "  ● LSP typescript",
   "  ● MCP 已连接 2 个",
   "  ● MCP 未连接：broken",
-  "  ctrl+b 关闭",
+  "  ⌃B 关闭",
 ]
 `;
 
@@ -86,7 +86,7 @@ exports[`the drawer's sections say the same in English 1`] = `
   "  ● LSP typescript",
   "  ● MCP 2 connected",
   "  ● MCP not connected: broken",
-  "  ctrl+b close",
+  "  ⌃B close",
 ]
 `;
 
@@ -121,7 +121,7 @@ exports[`the background section sits between the goal and the todo, three runs a
   "  ● LSP typescript",
   "  ● MCP 已连接 2 个",
   "  ● MCP 未连接：broken",
-  "  ctrl+b 关闭",
+  "  ⌃B 关闭",
 ]
 `;
 
@@ -156,7 +156,7 @@ exports[`the background section sits between the goal and the todo, three runs a
   "  ● LSP typescript",
   "  ● MCP 已连接 2 个",
   "  ● MCP 未连接：broken",
-  "  ctrl+b 关闭",
+  "  ⌃B 关闭",
 ]
 `;
 
@@ -191,7 +191,7 @@ exports[`the background section says the same in English 1`] = `
   "  ● LSP typescript",
   "  ● MCP 2 connected",
   "  ● MCP not connected: broken",
-  "  ctrl+b close",
+  "  ⌃B close",
 ]
 `;
 
@@ -228,7 +228,7 @@ exports[`the fixed-overhead section sits after the context and before the cost, 
   "  ● LSP typescript",
   "  ● MCP 已连接 2 个",
   "  ● MCP 未连接：broken",
-  "  ctrl+b 关闭",
+  "  ⌃B 关闭",
 ]
 `;
 
@@ -265,7 +265,7 @@ exports[`the fixed-overhead section sits after the context and before the cost, 
   "  ● LSP typescript",
   "  ● MCP 已连接 2 个",
   "  ● MCP 未连接：broken",
-  "  ctrl+b 关闭",
+  "  ⌃B 关闭",
 ]
 `;
 
@@ -302,6 +302,6 @@ exports[`the fixed-overhead section says the same in English 1`] = `
   "  ● LSP typescript",
   "  ● MCP 2 connected",
   "  ● MCP not connected: broken",
-  "  ctrl+b close",
+  "  ⌃B close",
 ]
 `;

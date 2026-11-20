@@ -74,6 +74,7 @@ export const zhCN = {
   "shell.footer.help": "快捷键",
   "shell.footer.hookRunning": "hook {name} · {seconds}s",
   "shell.footer.trust": "⚠ {count} 条项目命令未信任 · /trust",
+  "keymap.key.space": "空格",
   "subagent.readonly": "子 agent 只接受主 agent 的通信",
   "subagent.readonlyTag": "只读",
   "error.child_session_read_only": "子 agent 只读：请回主会话让主 agent 调整",

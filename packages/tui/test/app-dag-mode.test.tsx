@@ -54,12 +54,12 @@ const sessions = [
 test("the drawer has the DAG mode line while it is open, and none of it while it is closed", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃P"), "the footer hints")
     expect(await settled(app.setup)).not.toContain("DAG 模式 开")
 
     app.setup.mockInput.pressKey("b", { ctrl: true })
     const open = await waitForFrame(app.setup, (frame) => frame.includes("DAG 模式 开"), "the open drawer")
-    expect(open).toContain("DAG 模式 开 ctrl+x d")
+    expect(open).toContain("DAG 模式 开 ⌃X D")
 
     app.setup.mockInput.pressKey("b", { ctrl: true })
     await waitForFrame(app.setup, (frame) => !frame.includes("DAG 模式 开"), "the closed drawer")
@@ -87,7 +87,7 @@ test("a sub-agent view has no drawer line, even with the mode on", async () => {
 test("the server's budget toast says its text once: the title is not put in front of a message that begins with it", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 140, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃P"), "the footer hints")
     app.events.emit(
       toastEvent({
         title: "DAG token budget",
@@ -108,7 +108,7 @@ test("the server's budget toast says its text once: the title is not put in fron
 test("the exhausted budget's toast is not stuttered either", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 140, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃P"), "the footer hints")
     app.events.emit(
       toastEvent({
         title: "DAG token budget",
@@ -129,7 +129,7 @@ test("the exhausted budget's toast is not stuttered either", async () => {
 test("a toast whose message does not repeat its title keeps the title in front", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 140, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃P"), "the footer hints")
     app.events.emit(toastEvent({ title: "Build", message: "finished in 4s", variant: "info" }))
     const frame = await waitForFrame(app.setup, (value) => value.includes("finished in 4s"), "the toast")
     expect(footerRow(frame)).toContain("Build: finished in 4s")

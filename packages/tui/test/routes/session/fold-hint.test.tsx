@@ -125,26 +125,26 @@ async function clickOn(harness: Harness, frame: string, text: string) {
 // the same output says now, so the cases read as they did.
 const SAYS = {
   en: {
-    five: "… 14 more lines · ctrl+o expand",
-    one: "… 1 more line · ctrl+o expand",
-    seven: "… 7 more lines · ctrl+o expand",
+    five: "… 14 more lines · ⌃O expand",
+    one: "… 1 more line · ⌃O expand",
+    seven: "… 7 more lines · ⌃O expand",
     fiveClick: "… 14 more lines · click to expand",
-    long: "… long output · ctrl+o expand",
-    open: "ctrl+o collapse",
+    long: "… long output · ⌃O expand",
+    open: "⌃O collapse",
     openClick: "click to collapse",
-    f9: "… 14 more lines · f9 expand",
-    f9Open: "f9 collapse",
+    f9: "… 14 more lines · F9 expand",
+    f9Open: "F9 collapse",
   },
   "zh-CN": {
-    five: "… 还有 14 行 · ctrl+o 展开",
-    one: "… 还有 1 行 · ctrl+o 展开",
-    seven: "… 还有 7 行 · ctrl+o 展开",
+    five: "… 还有 14 行 · ⌃O 展开",
+    one: "… 还有 1 行 · ⌃O 展开",
+    seven: "… 还有 7 行 · ⌃O 展开",
     fiveClick: "… 还有 14 行 · 点击展开",
-    long: "… 内容较长 · ctrl+o 展开",
-    open: "ctrl+o 收起",
+    long: "… 内容较长 · ⌃O 展开",
+    open: "⌃O 收起",
     openClick: "点击收起",
-    f9: "… 还有 14 行 · f9 展开",
-    f9Open: "f9 收起",
+    f9: "… 还有 14 行 · F9 展开",
+    f9Open: "F9 收起",
   },
 } as const
 
@@ -264,7 +264,7 @@ test("the hint names the key the keymap has, and that key opens and closes the o
     try {
       const frame = await harness.waitForFrame(has(SAYS[language].f9), "the hint")
       expect(hintUnder(frame, "⎿ out 15")).toBe(SAYS[language].f9)
-      expect(frame).not.toContain("ctrl+o")
+      expect(frame).not.toContain("⌃O")
 
       harness.app.mockInput.pressKey("F9")
       const open = await harness.waitForFrame(has(SAYS[language].f9Open), "the whole output")

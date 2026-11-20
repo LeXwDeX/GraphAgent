@@ -111,6 +111,11 @@ test("help panel lists keymap shortcuts and registry commands and closes with es
   try {
     expect(app.captureCharFrame()).toContain("帮助")
     expect(app.captureCharFrame()).toContain("测试快捷键")
+    // The key column writes the key as the keymap does everywhere: `ctrl+t` is `⌃T`.
+    const lines = app.captureCharFrame().split("\n")
+    const row = lines.find((line) => line.includes("测试快捷键"))
+    expect(row).toContain("⌃T")
+    expect(row).not.toContain("ctrl+t")
 
     app.mockInput.pressArrow("right")
     await settle(app)
@@ -147,8 +152,8 @@ test("help panel shows the rebound key for an existing command", async () => {
     const frame = app.captureCharFrame()
     expect(frame).toContain("帮助")
     expect(frame).toContain("切换工作流模式")
-    expect(frame).toContain("f8")
-    expect(frame).not.toContain("ctrl+x d")
+    expect(frame).toContain("F8")
+    expect(frame).not.toContain("⌃X D")
   } finally {
     app.renderer.destroy()
   }

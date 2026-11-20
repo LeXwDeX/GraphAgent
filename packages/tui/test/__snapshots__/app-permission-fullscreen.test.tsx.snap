@@ -22,7 +22,7 @@ exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 src/*                                                    │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -66,7 +66,7 @@ exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl
 │ › 1. 允许这一次                                                                                                      │
 │   2. 本会话内都允许 src/*                                                                                            │
 │   3. 拒绝，并告诉 agent 怎么做                                                                                       │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                                                        │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -94,7 +94,7 @@ exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl
 │ › 1. Allow once                                                              │
 │   2. Allow src/* for this session                                            │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Ful… │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -138,7 +138,7 @@ exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl
 │ › 1. Allow once                                                                                                      │
 │   2. Allow src/* for this session                                                                                    │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Fullscreen                                   │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "

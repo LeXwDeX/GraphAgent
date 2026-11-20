@@ -75,11 +75,11 @@ test("the session prompt sits above the footer with one blank row between them",
     const footer = rows.findLastIndex((row) => row.length > 0)
     const hint = statusRowOf(rows)
 
-    expect(footerRow(frame)).toContain("ctrl+p 命令")
-    expect(footerRow(frame)).toContain("tab 切换 agent")
+    expect(footerRow(frame)).toContain("⌃P 命令")
+    expect(footerRow(frame)).toContain("⇥ 切换 agent")
     // The agent-cycle and palette keys are the footer's hints; the prompt does not repeat them (#1032 PR6).
     const prompt = composerRows(frame).join("\n")
-    expect(prompt).not.toContain("ctrl+p")
+    expect(prompt).not.toContain("⌃P")
     expect(prompt).not.toContain("agents")
     expect(footer - hint).toBe(2)
     expect(rows[hint + 1]).toBe("")

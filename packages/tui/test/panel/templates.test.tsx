@@ -154,7 +154,7 @@ test("list panel renders the three-segment surface at 80x24", async () => {
     expect(top).toBeGreaterThanOrEqual(0)
     expect(bottom).toBeGreaterThan(top)
     expect(lines[top + 1]).toContain("选择主题")
-    expect(lines[bottom - 1]).toContain("up/down 选择")
+    expect(lines[bottom - 1]).toContain("↑↓ 选择")
     expect(lines[bottom - 1]).toContain("关闭")
     const content = lines.slice(top + 2, bottom - 1).join("\n")
     expect(content).toContain("浅色主题")
@@ -954,8 +954,9 @@ test("the hint to change a value is cut before the suffix, and the suffix before
   // Room for all three, with the value, the suffix and the hint in that order.
   const wide = await look(100, "graphagent-light")
   expect(wide).toMatch(/graphagent-light {3}this session: on {3}\S+ change \(1\/3\)/)
-  // 80 columns leave 52 for the three; the hint does not fit, and goes whole: no part of it is left.
-  const mid = await look(80, "graphagent-light")
+  // 76 columns leave 48 for the three, which need 52 with the 14 cells of `⏎ change (1/3)`; the hint does not fit, and
+  // goes whole: no part of it is left. (At 80 columns it fits: the key is the one cell of `⏎`, not the five of `enter`.)
+  const mid = await look(76, "graphagent-light")
   expect(mid).toContain("graphagent-light   this session: on")
   expect(mid).not.toContain("change")
   // 60 columns leave 32: the suffix is cut with an ellipsis, the value is whole.
@@ -1286,7 +1287,7 @@ test("detail panel answers space on a row with a toggle label, and says so while
   )
 
   try {
-    expect(app.captureCharFrame()).toContain("space 展开子节点")
+    expect(app.captureCharFrame()).toContain("空格 展开子节点")
     app.mockInput.pressKey(" ")
     await Bun.sleep(50)
     expect(toggles).toEqual(["slot"])
@@ -1295,7 +1296,7 @@ test("detail panel answers space on a row with a toggle label, and says so while
     await Bun.sleep(50)
     await app.renderOnce()
     // A row with neither a check lead nor a label leaves the key alone, and has no hint for it.
-    expect(app.captureCharFrame()).not.toContain("space")
+    expect(app.captureCharFrame()).not.toMatch(/空格|space/)
     app.mockInput.pressKey(" ")
     await Bun.sleep(50)
     expect(toggles).toEqual(["slot"])
@@ -1314,7 +1315,7 @@ test("detail panel leaves space alone without onToggle, label or not", async () 
 
   try {
     // No handler to call: nothing to offer either.
-    expect(app.captureCharFrame()).not.toContain("space")
+    expect(app.captureCharFrame()).not.toMatch(/空格|space/)
     app.mockInput.pressKey(" ")
     await Bun.sleep(30)
     await app.renderOnce()
@@ -1391,14 +1392,14 @@ function hintRowOf(frame: string) {
  */
 const HINT_ROWS = {
   "zh-CN": {
-    settings: "up/down 选择 · left/right 切换标签 · enter 修改 · escape 关闭",
-    detail: "up/down 选择 · left/right 切换标签 · enter 确认 · escape 关闭",
-    list: "up/down 选择 · tab 切换标签 · enter 确认 · escape 关闭",
+    settings: "↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭",
+    detail: "↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭",
+    list: "↑↓ 选择 · ⇥ 切换标签 · ⏎ 确认 · esc 关闭",
   },
   en: {
-    settings: "up/down Select · left/right Switch tab · enter Change · escape Close",
-    detail: "up/down Select · left/right Switch tab · enter Confirm · escape Close",
-    list: "up/down Select · tab Switch tab · enter Confirm · escape Close",
+    settings: "↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close",
+    detail: "↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close",
+    list: "↑↓ Select · ⇥ Switch tab · ⏎ Confirm · esc Close",
   },
 } as const
 
@@ -1478,7 +1479,7 @@ test("a next-row command with a key besides down leaves the arrow keys as two en
 
   try {
     const row = hintRowOf(await untilFrame(app, (value) => value.includes("╰")))
-    expect(row).toBe("up 选择 · ctrl+n, down 选择 · left/right 切换标签 · enter 修改 · escape 关闭")
+    expect(row).toBe("↑ 选择 · ⌃N, ↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭")
   } finally {
     app.renderer.destroy()
   }

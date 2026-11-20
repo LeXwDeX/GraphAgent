@@ -16,8 +16,8 @@ afterEach(() => {
 })
 
 for (const [dagMode, expected] of [
-  ["on", "build ◆ DAG tab 切换 agent"],
-  ["off", "build ◇ DAG tab 切换 agent"],
+  ["on", "build ◆ DAG ⇥ 切换 agent"],
+  ["off", "build ◇ DAG ⇥ 切换 agent"],
 ] as const) {
   test(`the session footer shows the ${dagMode} indicator after the agent name`, async () => {
     const app = await runApp({ sessions: [sessionFixture(mainID, { dagMode })], args: { continue: true } })
@@ -38,7 +38,7 @@ test("the session footer shows the warning state when workflows cannot start", a
   })
   try {
     const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes("◆ DAG !"), "◆ DAG !")
-    expect(footerRow(frame)).toContain("build ◆ DAG ! tab 切换 agent")
+    expect(footerRow(frame)).toContain("build ◆ DAG ! ⇥ 切换 agent")
   } finally {
     await app.stop()
   }
@@ -54,7 +54,7 @@ test("the footer keeps only the marker below 80 columns", async () => {
   try {
     const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes("build ◆"), "build ◆")
     expect(footerRow(frame)).not.toContain("DAG")
-    expect(footerRow(frame)).toContain("build ◆ tab 切换 agent")
+    expect(footerRow(frame)).toContain("build ◆ ⇥ 切换 agent")
   } finally {
     await app.stop()
   }
@@ -161,10 +161,10 @@ test("the session footer lists the key hints, the expand shortcut among them, wh
   try {
     const frame = await waitForFrame(
       app.setup,
-      (value) => footerRow(value).includes("ctrl+o 展开输出"),
+      (value) => footerRow(value).includes("⌃O 展开输出"),
       "the expand shortcut in the footer",
     )
-    expect(footerRow(frame)).toContain("ctrl+p 命令")
+    expect(footerRow(frame)).toContain("⌃P 命令")
     expect(footerRow(frame)).toContain("展开输出")
     expect(footerRow(frame)).toContain("? 快捷键")
     expect(cellWidth(footerRow(frame), 1)).toBeLessThanOrEqual(140)
@@ -193,7 +193,7 @@ test("a running hook takes the shared slot from the key hints and gives it back 
     },
   })
   try {
-    await waitForFrame(app.setup, (value) => footerRow(value).includes("ctrl+o 展开输出"), "the key hints")
+    await waitForFrame(app.setup, (value) => footerRow(value).includes("⌃O 展开输出"), "the key hints")
 
     app.events.emit(hook("started"))
     const running = await waitForFrame(
@@ -201,10 +201,10 @@ test("a running hook takes the shared slot from the key hints and gives it back 
       (value) => footerRow(value).includes("hook policy check"),
       "the hook progress",
     )
-    expect(footerRow(running)).not.toContain("ctrl+o 展开输出")
+    expect(footerRow(running)).not.toContain("⌃O 展开输出")
 
     app.events.emit(hook("finished"))
-    await waitForFrame(app.setup, (value) => footerRow(value).includes("ctrl+o 展开输出"), "the key hints again")
+    await waitForFrame(app.setup, (value) => footerRow(value).includes("⌃O 展开输出"), "the key hints again")
   } finally {
     await app.stop()
   }

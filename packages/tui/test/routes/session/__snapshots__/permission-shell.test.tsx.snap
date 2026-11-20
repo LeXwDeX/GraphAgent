@@ -8,7 +8,7 @@ exports[`frames bash at 80x24 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 bun install                                              │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝                              │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -36,7 +36,7 @@ exports[`frames bash at 80x24 in English 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow bun install for this session                                      │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject               │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -64,7 +64,7 @@ exports[`frames bash at 120x40 in English with ambiguous_width 2 1`] = `
 │ › 1. Allow once                                                                                                      │
 │   2. Allow bun install for this session                                                                              │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject                                                       │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -113,7 +113,7 @@ exports[`frames edit at 80x24 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 src/*                                                    │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -141,7 +141,7 @@ exports[`frames edit at 80x24 in English 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow src/* for this session                                            │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Ful… │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -169,7 +169,7 @@ exports[`frames edit at 120x40 in English with ambiguous_width 2 1`] = `
 │ › 1. Allow once                                                                                                      │
 │   2. Allow src/* for this session                                                                                    │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Fullscreen                                   │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -208,7 +208,7 @@ exports[`frames read at 80x24 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 *                                                        │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝                              │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -236,7 +236,7 @@ exports[`frames read at 80x24 in English 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow * for this session                                                │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject               │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -264,7 +264,7 @@ exports[`frames read at 120x40 in English with ambiguous_width 2 1`] = `
 │ › 1. Allow once                                                                                                      │
 │   2. Allow * for this session                                                                                        │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject                                                       │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -309,7 +309,7 @@ exports[`frames task at 80x24 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 explore                                                  │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝                              │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -337,7 +337,7 @@ exports[`frames task at 80x24 in English 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow explore for this session                                          │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject               │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -365,7 +365,7 @@ exports[`frames task at 120x40 in English with ambiguous_width 2 1`] = `
 │ › 1. Allow once                                                                                                      │
 │   2. Allow explore for this session                                                                                  │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject                                                       │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -411,7 +411,7 @@ exports[`frames external_directory at 80x24 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 /opt/data/*                                              │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝                              │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -439,7 +439,7 @@ exports[`frames external_directory at 80x24 in English 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow /opt/data/* for this session                                      │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject               │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -467,7 +467,7 @@ exports[`frames external_directory at 120x40 in English with ambiguous_width 2 1
 │ › 1. Allow once                                                                                                      │
 │   2. Allow /opt/data/* for this session                                                                              │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject                                                       │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -513,7 +513,7 @@ exports[`frames edit-long at 80x24 in zh-CN with ambiguous_width 1 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 src/*                                                    │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -541,7 +541,7 @@ exports[`frames edit-long at 80x24 in en with ambiguous_width 1 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow src/* for this session                                            │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Ful… │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -573,7 +573,7 @@ exports[`frames edit-long at 120x40 in en with ambiguous_width 2 1`] = `
 │ › 1. Allow once                                                                                                      │
 │   2. Allow src/* for this session                                                                                    │
 │   3. Reject, and tell the agent what to do instead                                                                   │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Fullscreen                                   │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -608,7 +608,7 @@ exports[`frames edit-long at 80x12 in zh-CN with ambiguous_width 1 1`] = `
 │ › 1. 允许这一次                                                              │
 │   2. 本会话内都允许 src/*                                                    │
 │   3. 拒绝，并告诉 agent 怎么做                                               │
-│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                │
+│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -624,7 +624,7 @@ exports[`frames edit-long at 80x12 in en with ambiguous_width 1 1`] = `
 │ › 1. Allow once                                                              │
 │   2. Allow src/* for this session                                            │
 │   3. Reject, and tell the agent what to do instead                           │
-│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Ful… │
+│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 

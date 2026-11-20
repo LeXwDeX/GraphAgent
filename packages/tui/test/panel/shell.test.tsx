@@ -9,6 +9,7 @@ import { useBindings } from "../../src/keymap"
 import { hintEntries, joinPairKeys, PanelShell, panelMaxRows, type PanelHint } from "../../src/panel/shell"
 import { renderUntilFrame } from "../fixture/frames"
 import { shellState } from "../shell/contexts"
+import { cellWidth } from "../../src/ui/width"
 import { PanelSurface, renderPanel } from "./contexts"
 
 beforeEach(() => {
@@ -54,7 +55,7 @@ function written(bindings: readonly Binding[] | undefined, style: (part: Binding
   return [...new Set(bindings.map((binding) => binding.sequence.map(style).join(" ")))].join(", ")
 }
 
-/** Key names as words, the way the keymap writes them. */
+/** Key names as words: what a style that writes names and not symbols gives `joinPairKeys` to tell apart. */
 const asNames = (bindings: readonly Binding[] | undefined) => written(bindings, (part) => part.display)
 
 /** Key names as symbols, for the arrows to run together in the entry of a pair. */
@@ -182,18 +183,58 @@ async function rowOf(previous: string, next: string, extra?: readonly PanelHint[
 }
 
 test("the shell writes the keys of a pair of arrow keys as one entry, in each language", async () => {
-  expect(await rowOf("up", "down")).toBe("up/down 选择 · escape 关闭")
+  expect(await rowOf("up", "down")).toBe("↑↓ 选择 · esc 关闭")
   setLanguage("en")
-  expect(await rowOf("left", "right")).toBe("left/right 选择 · escape Close")
+  expect(await rowOf("left", "right")).toBe("←→ 选择 · esc Close")
 })
 
 test("the shell writes a pair with a rebound key as two entries, each with the label", async () => {
-  expect(await rowOf("up", "ctrl+n")).toBe("up 选择 · ctrl+n 选择 · escape 关闭")
+  expect(await rowOf("up", "ctrl+n")).toBe("↑ 选择 · ⌃N 选择 · esc 关闭")
   setLanguage("en")
-  expect(await rowOf("ctrl+p", "ctrl+n")).toBe("ctrl+p 选择 · ctrl+n 选择 · escape Close")
+  expect(await rowOf("ctrl+p", "ctrl+n")).toBe("⌃P 选择 · ⌃N 选择 · esc Close")
 })
 
 test("a command that a pair names is not written again by another hint", async () => {
   const again: PanelHint = { key: "test.next", label: "下移" }
-  expect(await rowOf("up", "down", [again])).toBe("up/down 选择 · escape 关闭")
+  expect(await rowOf("up", "down", [again])).toBe("↑↓ 选择 · esc 关闭")
 })
+
+/** Eight commands, each on a shifted or an alt arrow key, and a hint for each: `⇧↑ ab`, `⌥→ ab`. */
+function ArrowShell() {
+  const names = Array.from({ length: 8 }, (_, index) => `test.arrow.${index}`)
+  const keys = ["shift+up", "shift+down", "shift+left", "shift+right", "alt+up", "alt+down", "alt+left", "alt+right"]
+  useBindings(() => ({
+    commands: names.map((name) => ({ name, title: name, category: "Test", run: () => {} })),
+    bindings: names.map((name, index) => ({ key: keys[index], cmd: name })),
+  }))
+  return (
+    <PanelShell title="箭头" hints={names.map((name) => ({ key: name, label: "ab" }))}>
+      <text>内容</text>
+    </PanelShell>
+  )
+}
+
+// `⇧` and the arrows take two cells each at ambiguous_width 2: the same hints are 72 cells wide at 1, and 84 at 2, where
+// the 76 of an 80-column panel do not hold them. The row is cut by cells, and at 1 not cut at all.
+for (const ambiguousWidth of [1, 2] as const) {
+  test(`the hint row of shifted arrow keys is cut by cells at 80 columns with ambiguous_width ${ambiguousWidth}`, async () => {
+    await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+    const app = await renderPanel(() => <PanelSurface spec={{ render: () => <ArrowShell /> }} />, {
+      width: 80,
+      height: 24,
+      state: tmp.path,
+    })
+    try {
+      const row = hintRow(await renderUntilFrame(app, (frame) => frame.includes("内容"), "the shell"))
+      expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(80 - 4)
+      if (ambiguousWidth === 1) {
+        expect(row).toBe("⇧↑ ab · ⇧↓ ab · ⇧← ab · ⇧→ ab · ⌥↑ ab · ⌥↓ ab · ⌥← ab · ⌥→ ab · esc 关闭")
+      } else {
+        expect(row).toStartWith("⇧↑ ab · ⇧↓ ab · ⇧← ab")
+        expect(row).toEndWith("…")
+      }
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}

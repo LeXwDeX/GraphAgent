@@ -146,9 +146,9 @@ test("translates the footer labels", async () => {
 
   try {
     const frame = app.captureCharFrame()
-    expect(frame).toContain("tab switch agent")
-    expect(frame).toContain("ctrl+p commands")
-    expect(frame).toContain("ctrl+b drawer")
+    expect(frame).toContain("⇥ switch agent")
+    expect(frame).toContain("⌃P commands")
+    expect(frame).toContain("⌃B drawer")
     expect(frame).toContain("? shortcuts")
     expect(frame).not.toContain("切换 agent")
   } finally {
@@ -180,6 +180,55 @@ for (const ambiguousWidth of [1, 2] as const) {
   })
 }
 
+// The keys of the footer written as the user rebinds them: modifiers, shift and arrows, the widest the symbols get. `⇧`
+// and the arrows take two cells each at ambiguous_width 2, so the row has less room there; it must still fit.
+const ARROW_KEYS: TuiKeybind.KeybindOverrides = {
+  agent_cycle: "shift+left",
+  command_list: "ctrl+shift+up",
+  session_drawer_toggle: "shift+down",
+  view_expand_toggle: "alt+right",
+  help_show: "<leader>down",
+}
+
+test("writes the rebound keys with the symbols of the keymap, in the order the footer lists them", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => <FooterFromKeymap />, {
+    width: 120,
+    state: tmp.path,
+    expand: true,
+    overrides: ARROW_KEYS,
+  })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("⇧← 切换 agent")
+    expect(frame).toContain("⌃⇧↑ 命令 · ⇧↓ 侧边栏 · ⌥→ 展开输出 · ⌃X ↓ 快捷键")
+    expectWithin(frame, 120, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+for (const ambiguousWidth of [1, 2] as const) {
+  test(`drops the trailing hints written with arrows instead of overflowing at 80 columns with ambiguous_width ${ambiguousWidth}`, async () => {
+    await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+    const app = await render(() => <FooterFromKeymap />, {
+      width: 80,
+      state: tmp.path,
+      expand: true,
+      overrides: ARROW_KEYS,
+    })
+
+    try {
+      const frame = app.captureCharFrame()
+      expect(frame).toContain("⌃⇧↑ 命令")
+      expectWithin(frame, 80, ambiguousWidth)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}
+
 test("builds hints from registered keymap bindings", async () => {
   await using tmp = await shellState()
   const app = await render(() => <FooterFromKeymap />, {
@@ -190,10 +239,10 @@ test("builds hints from registered keymap bindings", async () => {
 
   try {
     const frame = app.captureCharFrame()
-    expect(frame).toContain("tab 切换 agent")
-    expect(frame).toContain("ctrl+p 命令")
-    expect(frame).toContain("f9 侧边栏")
-    expect(frame).not.toContain("ctrl+b 侧边栏")
+    expect(frame).toContain("⇥ 切换 agent")
+    expect(frame).toContain("⌃P 命令")
+    expect(frame).toContain("F9 侧边栏")
+    expect(frame).not.toContain("⌃B 侧边栏")
     expect(frame).toContain("? 快捷键")
     expect(frame).not.toContain("展开输出")
     expectWithin(frame, 120, 1)
@@ -208,8 +257,8 @@ test("lists the expand shortcut once the session route registers its command", a
 
   try {
     const frame = app.captureCharFrame()
-    expect(frame).toContain("ctrl+b 侧边栏")
-    expect(frame).toContain("ctrl+o 展开输出")
+    expect(frame).toContain("⌃B 侧边栏")
+    expect(frame).toContain("⌃O 展开输出")
     expect(frame).toContain("? 快捷键")
     // The hint sits between the drawer and the help hints, as the Issue's footer shows them.
     expect(frame.indexOf("侧边栏")).toBeLessThan(frame.indexOf("展开输出"))
@@ -232,8 +281,8 @@ test("the expand hint follows the language and a rebound key", async () => {
 
   try {
     const frame = app.captureCharFrame()
-    expect(frame).toContain("f7 expand output")
-    expect(frame).not.toContain("ctrl+o")
+    expect(frame).toContain("F7 expand output")
+    expect(frame).not.toContain("⌃O")
     expect(frame).not.toContain("展开输出")
   } finally {
     app.renderer.destroy()
@@ -247,8 +296,8 @@ test("shows the drawer toggle as its leader alternative inside tmux", async () =
 
   try {
     const frame = app.captureCharFrame()
-    expect(frame).toContain("ctrl+x b 侧边栏")
-    expect(frame).not.toContain("ctrl+b 侧边栏")
+    expect(frame).toContain("⌃X B 侧边栏")
+    expect(frame).not.toContain("⌃B 侧边栏")
     expectWithin(frame, 120, 1)
   } finally {
     app.renderer.destroy()
@@ -378,32 +427,37 @@ test("renders a toast in the footer right slot instead of idle hints", async () 
   }
 })
 
-test("shows pending leader keys ahead of a toast in the shared right slot", async () => {
-  await using tmp = await shellState()
-  const app = await render(
-    () => (
-      <FooterToastProvider>
-        <TickerProvider>
-          <FooterFromStatus />
-        </TickerProvider>
-      </FooterToastProvider>
-    ),
-    { width: 80, state: tmp.path },
-  )
-  await app.renderOnce()
-  expect(app.captureCharFrame()).toContain("Copied to clipboard")
-
-  try {
-    app.mockInput.pressKey("x", { ctrl: true })
+for (const ambiguousWidth of [1, 2] as const) {
+  test(`shows pending leader keys ahead of a toast in the shared right slot, with ambiguous_width ${ambiguousWidth}`, async () => {
+    await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+    const app = await render(
+      () => (
+        <FooterToastProvider>
+          <TickerProvider>
+            <FooterFromStatus />
+          </TickerProvider>
+        </FooterToastProvider>
+      ),
+      // The help command's leader key ends in an arrow, so the pending keys have one: `↓` takes two cells at 2.
+      { width: 80, state: tmp.path, overrides: { help_show: "<leader>down" } },
+    )
     await app.renderOnce()
-    const frame = app.captureCharFrame()
-    expect(frame).not.toContain("Copied to clipboard")
-    expect(frame).not.toContain("/ 命令")
-    expectWithin(frame, 80, 1)
-  } finally {
-    app.renderer.destroy()
-  }
-})
+    expect(app.captureCharFrame()).toContain("Copied to clipboard")
+
+    try {
+      app.mockInput.pressKey("x", { ctrl: true })
+      await app.renderOnce()
+      const frame = app.captureCharFrame()
+      expect(frame).not.toContain("Copied to clipboard")
+      expect(frame).not.toContain("/ 命令")
+      // The keys that can follow the leader, each written as the footer writes any key: capitals and symbols.
+      expect(frame).toContain("B  ↓")
+      expectWithin(frame, 80, ambiguousWidth)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}
 
 function ToastProbe(props: { onToast: (toast: ReturnType<typeof useToast>) => void }) {
   const toast = useToast()
@@ -728,10 +782,10 @@ test("a sub-agent footer says it is read-only and lists the keys of that view", 
   try {
     const frame = app.captureCharFrame()
     expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
-    expect(row(frame)).toEndWith("←→ 切换 · esc 返回 · ctrl+b 侧边栏")
+    expect(row(frame)).toEndWith("←→ 切换 · esc 返回 · ⌃B 侧边栏")
     // The agent to switch to and the command hints belong to the views that have a prompt.
     expect(frame).not.toContain("切换 agent")
-    expect(frame).not.toContain("ctrl+p")
+    expect(frame).not.toContain("⌃P")
     expect(frame).not.toContain("DAG")
     expectWithin(frame, 120, 1)
     expect(frame).toMatchSnapshot()
@@ -748,7 +802,7 @@ test("a sub-agent footer in English", async () => {
   try {
     const frame = app.captureCharFrame()
     expect(row(frame)).toStartWith(" explore · read-only · only the main agent can message it")
-    expect(row(frame)).toEndWith("←→ switch · esc back · ctrl+b drawer")
+    expect(row(frame)).toEndWith("←→ switch · esc back · ⌃B drawer")
     expect(frame).toMatchSnapshot()
   } finally {
     app.renderer.destroy()
@@ -757,10 +811,12 @@ test("a sub-agent footer in English", async () => {
 
 test("at 80 columns the trailing hints give way before the notice is cut", async () => {
   await using tmp = await shellState()
-  const zh = await render(() => <SubagentFooterFromKeymap />, { width: 80, state: tmp.path })
+  // In Chinese the notice of `explore` takes 48 cells and the three hints 30: with the one-cell `⌃B` they fit the 79 the
+  // row has, so the longest kind is the one that makes them give way here: the drawer hint goes first, the way back stays.
+  const zh = await render(() => <SubagentFooterFromKeymap kind="general-purpose" />, { width: 80, state: tmp.path })
   try {
     const frame = zh.captureCharFrame()
-    expect(row(frame)).toStartWith(" explore · 只读 · 子 agent 只接受主 agent 的通信")
+    expect(row(frame)).toStartWith(" general-purpose · 只读 · 子 agent 只接受主 agent 的通信")
     expect(row(frame)).toEndWith("←→ 切换 · esc 返回")
     expect(frame).not.toContain("侧边栏")
     expect(frame).toMatchSnapshot()
@@ -827,7 +883,7 @@ test("the drawer hint follows the keymap, and a missing binding leaves it out", 
     overrides: { session_drawer_toggle: "f9" },
   })
   try {
-    expect(row(rebound.captureCharFrame())).toEndWith("←→ 切换 · esc 返回 · f9 侧边栏")
+    expect(row(rebound.captureCharFrame())).toEndWith("←→ 切换 · esc 返回 · F9 侧边栏")
   } finally {
     rebound.renderer.destroy()
   }

@@ -10,7 +10,7 @@ exports[`list panel renders the three-segment surface at 80x24 1`] = `
 │                                                                              │
 │ 用户                                                                         │
 │   自定义主题                                                                 │
-│ up/down 选择 · tab 切换标签 · enter 确认 · escape 关闭                       │
+│ ↑↓ 选择 · ⇥ 切换标签 · ⏎ 确认 · esc 关闭                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -38,7 +38,7 @@ exports[`list panel renders the three-segment surface at 120x40 1`] = `
 │                                                                                                                      │
 │ 用户                                                                                                                 │
 │   自定义主题                                                                                                         │
-│ up/down 选择 · tab 切换标签 · enter 确认 · escape 关闭                                                               │
+│ ↑↓ 选择 · ⇥ 切换标签 · ⏎ 确认 · esc 关闭                                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -75,12 +75,12 @@ exports[`list panel renders the three-segment surface at 120x40 1`] = `
 exports[`settings panel renders at 80x24 and 120x40 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [通用]  模型                                                           │
-│ › 主题                  graphagent-dark   enter 换一个（1/2）                │
+│ › 主题                  graphagent-dark   ⏎ 换一个（1/2）                    │
 │   推理过程              开                                                   │
 │   接口密钥              未设置   全局                                        │
 │   清除缓存              0 项                                                 │
 │   界面配色                                                                   │
-│ up/down 选择 · left/right 切换标签 · enter 修改 · escape 关闭                │
+│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -103,12 +103,12 @@ exports[`settings panel renders at 80x24 and 120x40 1`] = `
 exports[`settings panel renders at 80x24 and 120x40 2`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [通用]  模型                                                                                           /config │
-│ › 主题                  graphagent-dark   enter 换一个（1/2）                                                        │
+│ › 主题                  graphagent-dark   ⏎ 换一个（1/2）                                                            │
 │   推理过程              开                                                                                           │
 │   接口密钥              未设置   全局                                                                                │
 │   清除缓存              0 项                                                                                         │
 │   界面配色                                                                                                           │
-│ up/down 选择 · left/right 切换标签 · enter 修改 · escape 关闭                                                        │
+│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -152,7 +152,7 @@ exports[`detail panel renders at 80x24 and 120x40 1`] = `
 │ 按 ⏎ 复制标题                                                                │
 │   状态  运行中                                                               │
 │   归属  根会话                                                               │
-│ up/down 选择 · enter 确认 · escape 关闭                                      │
+│ ↑↓ 选择 · ⏎ 确认 · esc 关闭                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -180,7 +180,7 @@ exports[`detail panel renders at 80x24 and 120x40 2`] = `
 │ 按 ⏎ 复制标题                                                                                                        │
 │   状态  运行中                                                                                                       │
 │   归属  根会话                                                                                                       │
-│ up/down 选择 · enter 确认 · escape 关闭                                                                              │
+│ ↑↓ 选择 · ⏎ 确认 · esc 关闭                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -219,7 +219,7 @@ exports[`detail panel renders at 80x24 and 120x40 2`] = `
 exports[`settings panel values at 80x24 and 120x40, zh-CN 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [取值]                                                                 │
-│ › 抽屉                  宽屏时自动显示   enter 换一个（2/3）                 │
+│ › 抽屉                  宽屏时自动显示   ⏎ 换一个（2/3）                     │
 │   推理过程              开   本会话：开                                      │
 │   时间戳                关                                                   │
 │   仅一个选项            唯一                                                 │
@@ -230,7 +230,7 @@ exports[`settings panel values at 80x24 and 120x40, zh-CN 1`] = `
 │   全局写入              询问                                                 │
 │   一个相当长的设置名称… 开                                                   │
 │   隐藏时按快捷键打开，打开后覆盖在对话上方                                   │
-│ up/down 选择 · enter 修改 · escape 关闭                                      │
+│ ↑↓ 选择 · ⏎ 修改 · esc 关闭                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -247,7 +247,7 @@ exports[`settings panel values at 80x24 and 120x40, zh-CN 1`] = `
 exports[`settings panel values at 80x24 and 120x40, zh-CN 2`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [取值]                                                                                                 /config │
-│ › 抽屉                  宽屏时自动显示   enter 换一个（2/3）                                                         │
+│ › 抽屉                  宽屏时自动显示   ⏎ 换一个（2/3）                                                             │
 │   推理过程              开   本会话：开                                                                              │
 │   时间戳                关                                                                                           │
 │   仅一个选项            唯一                                                                                         │
@@ -258,7 +258,7 @@ exports[`settings panel values at 80x24 and 120x40, zh-CN 2`] = `
 │   全局写入              询问                                                                                         │
 │   一个相当长的设置名称… 开                                                                                           │
 │   隐藏时按快捷键打开，打开后覆盖在对话上方                                                                           │
-│ up/down 选择 · enter 修改 · escape 关闭                                                                              │
+│ ↑↓ 选择 · ⏎ 修改 · esc 关闭                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -291,7 +291,7 @@ exports[`settings panel values at 80x24 and 120x40, zh-CN 2`] = `
 exports[`settings panel values at 80x24 and 120x40, en 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [取值]                                                                 │
-│ › 抽屉                  宽屏时自动显示   enter change (2/3)                  │
+│ › 抽屉                  宽屏时自动显示   ⏎ change (2/3)                      │
 │   推理过程              On   本会话：开                                      │
 │   时间戳                Off                                                  │
 │   仅一个选项            唯一                                                 │
@@ -302,7 +302,7 @@ exports[`settings panel values at 80x24 and 120x40, en 1`] = `
 │   全局写入              询问                                                 │
 │   一个相当长的设置名称… On                                                   │
 │   隐藏时按快捷键打开，打开后覆盖在对话上方                                   │
-│ up/down Select · enter Change · escape Close                                 │
+│ ↑↓ Select · ⏎ Change · esc Close                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -319,7 +319,7 @@ exports[`settings panel values at 80x24 and 120x40, en 1`] = `
 exports[`settings panel values at 80x24 and 120x40, en 2`] = `
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [取值]                                                                                                 /config │
-│ › 抽屉                  宽屏时自动显示   enter change (2/3)                                                          │
+│ › 抽屉                  宽屏时自动显示   ⏎ change (2/3)                                                              │
 │   推理过程              On   本会话：开                                                                              │
 │   时间戳                Off                                                                                          │
 │   仅一个选项            唯一                                                                                         │
@@ -330,7 +330,7 @@ exports[`settings panel values at 80x24 and 120x40, en 2`] = `
 │   全局写入              询问                                                                                         │
 │   一个相当长的设置名称… On                                                                                           │
 │   隐藏时按快捷键打开，打开后覆盖在对话上方                                                                           │
-│ up/down Select · enter Change · escape Close                                                                         │
+│ ↑↓ Select · ⏎ Change · esc Close                                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
                                                                                                                         
@@ -363,12 +363,12 @@ exports[`settings panel values at 80x24 and 120x40, en 2`] = `
 exports[`the hint row of the settings panel pairs the arrow keys, zh-CN 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [通用]  模型                                                           │
-│ › 主题                  graphagent-dark   enter 换一个（1/2）                │
+│ › 主题                  graphagent-dark   ⏎ 换一个（1/2）                    │
 │   推理过程              开                                                   │
 │   接口密钥              未设置   全局                                        │
 │   清除缓存              0 项                                                 │
 │   界面配色                                                                   │
-│ up/down 选择 · left/right 切换标签 · enter 修改 · escape 关闭                │
+│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -396,7 +396,7 @@ exports[`the hint row of the detail panel pairs the arrow keys, zh-CN 1`] = `
 │ 按 ⏎ 复制标题                                                                │
 │   状态  运行中                                                               │
 │   归属  根会话                                                               │
-│ up/down 选择 · left/right 切换标签 · enter 确认 · escape 关闭                │
+│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -426,7 +426,7 @@ exports[`the hint row of the list panel pairs the arrow keys, zh-CN 1`] = `
 │                                                                              │
 │ 用户                                                                         │
 │   自定义主题                                                                 │
-│ up/down 选择 · tab 切换标签 · enter 确认 · escape 关闭                       │
+│ ↑↓ 选择 · ⇥ 切换标签 · ⏎ 确认 · esc 关闭                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -447,12 +447,12 @@ exports[`the hint row of the list panel pairs the arrow keys, zh-CN 1`] = `
 exports[`the hint row of the settings panel pairs the arrow keys, en 1`] = `
 "╭──────────────────────────────────────────────────────────────────────────────╮
 │ 设置  [通用]  模型                                                           │
-│ › 主题                  graphagent-dark   enter change (1/2)                 │
+│ › 主题                  graphagent-dark   ⏎ change (1/2)                     │
 │   推理过程              On                                                   │
 │   接口密钥              Not set   全局                                       │
 │   清除缓存              0 项                                                 │
 │   界面配色                                                                   │
-│ up/down Select · left/right Switch tab · enter Change · escape Close         │
+│ ↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -480,7 +480,7 @@ exports[`the hint row of the detail panel pairs the arrow keys, en 1`] = `
 │ 按 ⏎ 复制标题                                                                │
 │   状态  运行中                                                               │
 │   归属  根会话                                                               │
-│ up/down Select · left/right Switch tab · enter Confirm · escape Close        │
+│ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 
@@ -510,7 +510,7 @@ exports[`the hint row of the list panel pairs the arrow keys, en 1`] = `
 │                                                                              │
 │ 用户                                                                         │
 │   自定义主题                                                                 │
-│ up/down Select · tab Switch tab · enter Confirm · escape Close               │
+│ ↑↓ Select · ⇥ Switch tab · ⏎ Confirm · esc Close                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
                                                                                 

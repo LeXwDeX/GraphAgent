@@ -620,7 +620,7 @@ describe("what the user can do in it", () => {
     const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
     try {
       const frame = await harness.frame()
-      expect(frame).toContain("ctrl+r")
+      expect(frame).toContain("⌃R")
       expect(frame).toContain("请主 agent 处理")
       expect(frame).not.toMatch(/停止|终止|取消|中断|重试|stop|abort|cancel|retry/i)
       // Every key a stop could hang on does nothing to the server.
@@ -846,8 +846,8 @@ describe("how it looks", () => {
 
   // The list has a filter box, so it has no tab keys on the arrows: the pair of row keys is the only pair in the row.
   const HINT_ROWS = {
-    "zh-CN": "up/down 选择 · enter 确认 · ctrl+r 请主 agent 处理 · escape 关闭",
-    en: "up/down Select · enter Confirm · ctrl+r Ask main agent · escape Close",
+    "zh-CN": "↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭",
+    en: "↑↓ Select · ⏎ Confirm · ⌃R Ask main agent · esc Close",
   } as const
 
   for (const language of ["zh-CN", "en"] as const) {
@@ -1604,8 +1604,8 @@ describe("what ctrl+r asks for a background run", () => {
     })
     try {
       const frame = await harness.frame()
-      const hints = linesOf(frame).find((line) => line.includes("ctrl+r"))!
-      expect(hints.match(/ctrl\+\w/g)).toEqual(["ctrl+r"])
+      const hints = linesOf(frame).find((line) => line.includes("⌃R"))!
+      expect(hints.match(/⌃\w/g)).toEqual(["⌃R"])
       expect(hints).toContain("请主 agent 处理")
       for (const key of ["x", "d", "s", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
       await harness.settle()

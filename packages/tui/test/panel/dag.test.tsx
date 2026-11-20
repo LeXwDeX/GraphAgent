@@ -989,12 +989,12 @@ describe("an expansion folded under its slot", () => {
     const shell = await mountDag({ server: composeServer(), width: 120, height: 40 })
     try {
       await openLoaded(shell)
-      const hints = (frame: string) => rowsOf(frame).find((line) => line.includes("escape"))
-      expect(hints(await shell.frame())).toContain("space 展开子节点")
+      const hints = (frame: string) => rowsOf(frame).find((line) => /\besc\b/.test(line))
+      expect(hints(await shell.frame())).toContain("空格 展开子节点")
       await press(shell, " ")
-      expect(hints(await shell.frame())).toContain("space 折叠子节点")
+      expect(hints(await shell.frame())).toContain("空格 折叠子节点")
       await press(shell, "down")
-      expect(hints(await shell.frame())).not.toContain("space")
+      expect(hints(await shell.frame())).not.toContain("空格")
       await press(shell, "up")
       setLanguage("en")
       await shell.settle()
@@ -1012,16 +1012,16 @@ describe("an expansion folded under its slot", () => {
       const shell = await mountDag({ server: composeServer(), width, height: 30 })
       try {
         await openLoaded(shell)
-        const hints = rowsOf(await shell.frame()).find((line) => line.includes("escape")) ?? ""
-        expect(hints).toContain("space 展开子节点")
-        expect(hints).toContain("escape 关闭")
+        const hints = rowsOf(await shell.frame()).find((line) => /\besc\b/.test(line)) ?? ""
+        expect(hints).toContain("空格 展开子节点")
+        expect(hints).toContain("esc 关闭")
         expect(hints).not.toContain("详情")
         expect(hints.includes("请主 agent 处理")).toBe(width >= 120)
         await press(shell, "up")
-        const plain = rowsOf(await shell.frame()).find((line) => line.includes("escape")) ?? ""
+        const plain = rowsOf(await shell.frame()).find((line) => /\besc\b/.test(line)) ?? ""
         expect(plain).toContain("请主 agent 处理")
         expect(plain.includes("详情")).toBe(width >= 100)
-        expect(plain).not.toContain("space")
+        expect(plain).not.toContain("空格")
       } finally {
         await shell.dispose()
       }
@@ -1038,9 +1038,9 @@ describe("an expansion folded under its slot", () => {
         const shell = await mountDag({ server, width, height: 30, language })
         try {
           await openLoaded(shell)
-          const hints = rowsOf(await shell.frame()).find((line) => line.includes("escape")) ?? ""
-          expect(hints).toContain(language === "en" ? "space Unfold" : "space 展开子节点")
-          expect(hints).toContain(language === "en" ? "escape Close" : "escape 关闭")
+          const hints = rowsOf(await shell.frame()).find((line) => /\besc\b/.test(line)) ?? ""
+          expect(hints).toContain(language === "en" ? "space Unfold" : "空格 展开子节点")
+          expect(hints).toContain(language === "en" ? "esc Close" : "esc 关闭")
           expect(hints).not.toContain("…")
         } finally {
           await shell.dispose()
@@ -1992,8 +1992,8 @@ describe("how it looks", () => {
             })
           }
           // Every hint row ends in the way out.
-          const hints = lines.find((line) => line.includes("escape")) ?? ""
-          expect(hints.includes("escape") || hints.includes("…")).toBe(true)
+          const hints = lines.find((line) => /\besc\b/.test(line)) ?? ""
+          expect(/\besc\b/.test(hints) || hints.includes("…")).toBe(true)
         }
       })
 

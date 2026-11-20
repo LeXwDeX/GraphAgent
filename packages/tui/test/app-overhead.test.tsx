@@ -68,7 +68,7 @@ function overheadServer(answer: () => SessionOverhead = () => OVERHEAD) {
 test("the server's large-overhead warning reaches the footer as a warning toast, title in front", async () => {
   const app = await runApp({ sessions, args: { continue: true }, width: 160, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃P"), "the footer hints")
     app.events.emit(
       event("tui.toast.show", {
         title: "Fixed request overhead is large",
@@ -93,7 +93,7 @@ test("the drawer shows the overhead while it is open, and a closed drawer neithe
   const server = overheadServer()
   const app = await runApp({ sessions, args: { continue: true }, width: 120, height: 36, handler: server.handler })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃P"), "the footer hints")
     // Closed: nothing in the frame, and nothing asked of the server.
     expect(await captureFrame(app.setup)).not.toContain("固定开销")
     expect(server.reads).toEqual([])

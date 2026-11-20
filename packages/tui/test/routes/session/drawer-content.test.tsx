@@ -268,7 +268,7 @@ describe("the drawer's sections", () => {
         )
         expect(lines).toMatchSnapshot()
         const at = (needle: string) => lines.findIndex((line) => line.includes(needle))
-        const order = ["依赖升级", "上下文", "费用", "DAG 模式", "目标", "待办 1/3", "服务", "ctrl+b 关闭"].map(at)
+        const order = ["依赖升级", "上下文", "费用", "DAG 模式", "目标", "待办 1/3", "服务", "⌃B 关闭"].map(at)
         expect(order.every((index) => index >= 0)).toBe(true)
         expect([...order].sort((a, b) => a - b)).toEqual(order)
         expect(harness.writes()).toEqual([])
@@ -297,7 +297,7 @@ describe("the drawer's sections", () => {
   test("leave out what has no data, and show the context as a dash before the first answer", async () => {
     const harness = await mountDrawer()
     try {
-      const lines = await column(harness, 120, (all) => has("$0.00")(all) && has("ctrl+b 关闭")(all), "the drawer")
+      const lines = await column(harness, 120, (all) => has("$0.00")(all) && has("⌃B 关闭")(all), "the drawer")
       expect(lines.some((line) => line.trim() === "—")).toBe(true)
       for (const absent of ["目标", "待办", "服务", "LSP", "MCP", "修改的文件"]) expect(has(absent)(lines)).toBe(false)
     } finally {

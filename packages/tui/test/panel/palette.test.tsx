@@ -7,6 +7,7 @@ import { onCleanup, type ParentProps } from "solid-js"
 import { useCommands } from "../../src/commands/context"
 import { usePromptRef } from "../../src/context/prompt"
 import { setLanguage, t } from "../../src/i18n"
+import { useGraphagentKeymap } from "../../src/keymap"
 import type { PanelHostApi } from "../../src/panel/host"
 import { CommandPalettePanel } from "../../src/panel/palette"
 import { shellState } from "../shell/contexts"
@@ -90,3 +91,45 @@ test("palette panel closes with escape", async () => {
     app.renderer.destroy()
   }
 })
+
+/** Binds `model.list` to two keys before the palette mounts, as a user's keybinds would: the palette reads them once. */
+function ModelKeys(props: ParentProps) {
+  const keymap = useGraphagentKeymap()
+  const off = keymap.registerLayer({
+    commands: [{ name: "model.list", run() {} }],
+    bindings: [
+      { key: "<leader>m", cmd: "model.list" },
+      { key: "ctrl+shift+m", cmd: "model.list" },
+    ],
+  })
+  onCleanup(off)
+  return <>{props.children}</>
+}
+
+// The keys at the end of a row come from the keymap, as the footer's do: `<leader>m` is `⌃X M`, not `ctrl+x m`.
+for (const language of ["zh-CN", "en"] as const) {
+  test(`palette rows end in the keys of their commands written as symbols, in ${language}`, async () => {
+    setLanguage(language)
+    await using tmp = await shellState()
+    const app = await renderAppPanel(
+      () => (
+        <PaletteHarness onRun={() => {}}>
+          <ModelKeys>
+            <PanelSurface spec={{ id: "palette", render: () => <CommandPalettePanel /> }} />
+          </ModelKeys>
+        </PaletteHarness>
+      ),
+      { width: 120, height: 40, state: tmp.path },
+    )
+
+    try {
+      const rows = app.captureCharFrame().split("\n")
+      const row = rows.find((line) => line.includes(t("command.model.list.title")))
+      expect(row).toBeDefined()
+      expect(row!.replace(/ *│$/, "")).toEndWith("⌃X M, ⌃⇧M")
+      expect(rows.join("\n")).not.toContain("ctrl+")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}

@@ -205,8 +205,8 @@ test("an output of six lines is drawn whole after the mark, with no hint", async
 
 test("an output of seven lines folds into its last line and a hint that counts the other six", async () => {
   for (const [language, hint, open] of [
-    ["zh-CN", "… 还有 6 行 · ctrl+o 展开", "ctrl+o 收起"],
-    ["en", "… 6 more lines · ctrl+o expand", "ctrl+o collapse"],
+    ["zh-CN", "… 还有 6 行 · ⌃O 展开", "⌃O 收起"],
+    ["en", "… 6 more lines · ⌃O expand", "⌃O collapse"],
   ] as const) {
     const output = lines(7)
     const harness = await mount([call("bash", completed({ command: "seq 7" }, output, { output, exit: 0 }))], {
@@ -249,9 +249,9 @@ test("a click on the hint opens the output and a click on its hint closes it", a
   try {
     await frameWith(harness, "⏺ Bash")
     await clickOn(harness, "还有 8 行")
-    const opened = await harness.waitForFrame((text) => text.includes("ctrl+o 收起"), "the open output")
+    const opened = await harness.waitForFrame((text) => text.includes("⌃O 收起"), "the open output")
     expect(blockOf(opened, "⏺ Bash")).toContain("    out 5")
-    await clickOn(harness, "ctrl+o 收起")
+    await clickOn(harness, "⌃O 收起")
     await harness.waitForFrame((text) => text.includes("还有 8 行"), "the folded output")
     expect(harness.writes()).toEqual([])
   } finally {
@@ -268,7 +268,7 @@ test("the result line of a folded output is the last line, because the output is
     expect(blockOf(frame, "⏺ Bash")).toEqual([
       "⏺ Bash bun run build",
       "  ⎿ Build finished in 4.2s",
-      "    … 还有 8 行 · ctrl+o 展开",
+      "    … 还有 8 行 · ⌃O 展开",
     ])
   } finally {
     await harness.dispose()
@@ -286,10 +286,10 @@ test("one long line folds, leaves no line out, and opens to the whole of it", as
     expect(block).toHaveLength(3)
     expect(block[1]).toStartWith("  ⎿ word word")
     expect(block[1]).toEndWith("…")
-    expect(block[2]).toBe("    … 内容较长 · ctrl+o 展开")
+    expect(block[2]).toBe("    … 内容较长 · ⌃O 展开")
 
     press(harness)
-    const opened = await harness.waitForFrame((text) => text.includes("ctrl+o 收起"), "the whole line")
+    const opened = await harness.waitForFrame((text) => text.includes("⌃O 收起"), "the whole line")
     expect(opened.replaceAll("\n", " ")).toContain("end")
   } finally {
     await harness.dispose()
@@ -705,9 +705,9 @@ test("the output of a tool without a display of its own folds at the same six li
   })
   try {
     const frame = await frameWith(harness, "⏺ mcp_search")
-    expect(blockOf(frame, "⏺ mcp_search")).toEqual(["⏺ mcp_search", "  ⎿ row 1", "    … 还有 8 行 · ctrl+o 展开"])
+    expect(blockOf(frame, "⏺ mcp_search")).toEqual(["⏺ mcp_search", "  ⎿ row 1", "    … 还有 8 行 · ⌃O 展开"])
     press(harness)
-    const opened = await harness.waitForFrame((text) => text.includes("ctrl+o 收起"), "the open output")
+    const opened = await harness.waitForFrame((text) => text.includes("⌃O 收起"), "the open output")
     expect(blockOf(opened, "⏺ mcp_search")).toContain("    row 9")
   } finally {
     await harness.dispose()
@@ -806,7 +806,7 @@ test("an edit says what it added and what it removed, in the colors of success a
       // The diff is not drawn: none of its rows is on screen, and no hint offers it.
       expect(frame).not.toContain("const answer")
       expect(frame).not.toContain("export function value")
-      expect(frame).not.toContain("ctrl+o")
+      expect(frame).not.toContain("⌃O")
       expect(frame).not.toMatch(/还有|more lines?/)
 
       const spans = await harness.spans()
@@ -896,7 +896,7 @@ test("a click on the summary of an edit opens its diff, and a click on its call 
     expect(backgroundOf(spans, "const answer = 42", "42")?.equals(palette().diffAddedBg)).toBe(true)
     // Nothing under the diff says how to close it: the row is the target of the click, wherever on it that is.
     expect(blockOf(opened, "⏺ Edit").at(-1)?.replace(/\s+/g, " ").trim()).toBe("3 }")
-    expect(opened).not.toContain("ctrl+o")
+    expect(opened).not.toContain("⌃O")
 
     await clickOn(harness, "src/answer.ts")
     const closed = await harness.waitForFrame(
@@ -980,7 +980,7 @@ test("an edit is one row until it completes: getting ready, running, and then it
     await harness.settle()
     const after = await harness.frame()
     expect(after).not.toContain("const answer")
-    expect(after).not.toContain("ctrl+o")
+    expect(after).not.toContain("⌃O")
   } finally {
     await harness.dispose()
   }
@@ -1039,7 +1039,7 @@ test("a write says how many lines it wrote and folds the file under that, which 
       const frame = await frameWith(harness, "⏺ Write")
       expect(blockOf(frame, "⏺ Write")).toEqual(["⏺ Write src/new.ts", `  ⎿ ${says}`])
       expect(frame).not.toContain("export const a")
-      expect(frame).not.toContain("ctrl+o")
+      expect(frame).not.toContain("⌃O")
       const spans = await harness.spans()
       expect(colorOf(spans, language === "en" ? "1 diagnostic error" : "1 个诊断错误")?.equals(palette().error)).toBe(
         true,
@@ -1159,7 +1159,7 @@ test("a patch has a row of two lines for each file: what the patch did to it, an
       expect(blockOf(frame, `⏺ Patch ${deleted}`)).toEqual([`⏺ Patch ${deleted} src/gone.ts`, "  ⎿ +0 −14"])
       expect(blockOf(frame, `⏺ Patch ${moved}`)).toEqual([`⏺ Patch ${moved} src/old.ts → src/new.ts`, "  ⎿ +2 −2"])
       expect(frame).not.toContain("const answer")
-      expect(frame).not.toContain("ctrl+o")
+      expect(frame).not.toContain("⌃O")
       const spans = await harness.spans()
       expect(colorOf(spans, "+25")?.equals(palette().success)).toBe(true)
       expect(colorOf(spans, "−14")?.equals(palette().error)).toBe(true)
@@ -1185,7 +1185,7 @@ test("the key opens the diff of every file of a patch at once, and a file it del
         .slice(2)
         .map((row) => row.replace(/\s+/g, " ").trim()),
     ).toEqual(["1 + export const a = 1", "2 + export const b = 2"])
-    expect(opened).not.toContain("ctrl+o")
+    expect(opened).not.toContain("⌃O")
     expect(blockOf(opened, "⏺ Patch 删除")).toEqual(["⏺ Patch 删除 src/gone.ts", "  ⎿ +0 −14"])
     expect(blockOf(opened, "⏺ Patch 移动").some((row) => row.includes("const answer = 42"))).toBe(true)
 

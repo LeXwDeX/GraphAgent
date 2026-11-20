@@ -241,13 +241,7 @@ export function RunFooterView(props: RunFooterViewProps) {
   const exiting = createMemo(() => props.state().exit > 0)
   const queue = createMemo(() => props.state().queue)
   const usage = createMemo(() => props.state().usage)
-  const interruptLabel = createMemo(() => {
-    if (!interrupt()) {
-      return
-    }
-
-    return interrupt() === "escape" ? "esc" : interrupt()
-  })
+  const interruptLabel = createMemo(() => interrupt() || undefined)
   const runTheme = createMemo(() => props.theme())
   const theme = createMemo(() => runTheme().footer)
   const block = createMemo(() => runTheme().block)
@@ -400,7 +394,12 @@ export function RunFooterView(props: RunFooterViewProps) {
   })
   const statusText = createMemo(() => {
     if (exiting()) {
-      return `Press ${clearShortcut() || "ctrl+c"} again to exit`
+      // With the clear key unbound the exit chord is still ctrl+c; it is written like every other shortcut.
+      const chord = formatKeySequence(
+        [{ stroke: { name: "c", ctrl: true, shift: false, meta: false, super: false }, display: "ctrl+c" }],
+        props.tuiConfig,
+      )
+      return `Press ${clearShortcut() || chord} again to exit`
     }
 
     if (busy()) {
