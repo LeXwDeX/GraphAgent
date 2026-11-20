@@ -1,0 +1,145 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl+f again puts it back, zh-CN, 80x24, ambiguous_width 1 1`] = `
+"                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Edit 需要权限                                                                │
+│  路径: src/app.ts                                                            │
+│                                                                              │
+│   1   const keep1 = 1                                                      █ │
+│   2   const keep2 = 2                                                      █ │
+│   3   const keep3 = 3                                                      █ │
+│   4   const keep4 = 4                                                      ▀ │
+│   5   const keep5 = 5                                                        │
+│   6   const keep6 = 6                                                        │
+│   7 -   old1()                                                               │
+│   8 -   old2()                                                               │
+│   9 -   old3()                                                               │
+│  10 -   old4()                                                               │
+│  11 -   old5()                                                               │
+│  12 -   old6()                                                               │
+│                                                                              │
+│ › 1. 允许这一次                                                              │
+│   2. 本会话内都允许 src/*                                                    │
+│   3. 拒绝，并告诉 agent 怎么做                                               │
+│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl+f again puts it back, zh-CN, 120x40, ambiguous_width 1 1`] = `
+"                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Edit 需要权限                                                                                                        │
+│  路径: src/app.ts                                                                                                    │
+│                                                                                                                      │
+│   1   const keep1 = 1                                                                                              █ │
+│   2   const keep2 = 2                                                                                              █ │
+│   3   const keep3 = 3                                                                                              █ │
+│   4   const keep4 = 4                                                                                              █ │
+│   5   const keep5 = 5                                                                                              █ │
+│   6   const keep6 = 6                                                                                              █ │
+│   7 -   old1()                                                                                                     █ │
+│   8 -   old2()                                                                                                     █ │
+│   9 -   old3()                                                                                                     █ │
+│  10 -   old4()                                                                                                     █ │
+│  11 -   old5()                                                                                                     █ │
+│  12 -   old6()                                                                                                     █ │
+│  13 -   old7()                                                                                                     █ │
+│  14 -   old8()                                                                                                     █ │
+│  15 -   old9()                                                                                                     █ │
+│  16 -   old10()                                                                                                    █ │
+│  17 -   old11()                                                                                                    █ │
+│  18 -   old12()                                                                                                    █ │
+│  19 -   old13()                                                                                                    █ │
+│  20 -   old14()                                                                                                    ▀ │
+│   7 +   new1()                                                                                                       │
+│   8 +   new2()                                                                                                       │
+│   9 +   new3()                                                                                                       │
+│  10 +   new4()                                                                                                       │
+│  11 +   new5()                                                                                                       │
+│  12 +   new6()                                                                                                       │
+│  13 +   new7()                                                                                                       │
+│  14 +   new8()                                                                                                       │
+│                                                                                                                      │
+│ › 1. 允许这一次                                                                                                      │
+│   2. 本会话内都允许 src/*                                                                                            │
+│   3. 拒绝，并告诉 agent 怎么做                                                                                       │
+│ up/down 或数字键选择 · enter 确认 · escape 拒绝 · ctrl+f 全屏                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;
+
+exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl+f again puts it back, en, 80x24, ambiguous_width 1 1`] = `
+"                                                                                
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Edit needs permission                                                        │
+│  Path: src/app.ts                                                            │
+│                                                                              │
+│   1   const keep1 = 1                                                      █ │
+│   2   const keep2 = 2                                                      █ │
+│   3   const keep3 = 3                                                      █ │
+│   4   const keep4 = 4                                                      ▀ │
+│   5   const keep5 = 5                                                        │
+│   6   const keep6 = 6                                                        │
+│   7 -   old1()                                                               │
+│   8 -   old2()                                                               │
+│   9 -   old3()                                                               │
+│  10 -   old4()                                                               │
+│  11 -   old5()                                                               │
+│  12 -   old6()                                                               │
+│                                                                              │
+│ › 1. Allow once                                                              │
+│   2. Allow src/* for this session                                            │
+│   3. Reject, and tell the agent what to do instead                           │
+│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Ful… │
+╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+"
+`;
+
+exports[`ctrl+f puts the ask over the whole terminal inside its border, and ctrl+f again puts it back, en, 120x40, ambiguous_width 1 1`] = `
+"                                                                                                                        
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Edit needs permission                                                                                                │
+│  Path: src/app.ts                                                                                                    │
+│                                                                                                                      │
+│   1   const keep1 = 1                                                                                              █ │
+│   2   const keep2 = 2                                                                                              █ │
+│   3   const keep3 = 3                                                                                              █ │
+│   4   const keep4 = 4                                                                                              █ │
+│   5   const keep5 = 5                                                                                              █ │
+│   6   const keep6 = 6                                                                                              █ │
+│   7 -   old1()                                                                                                     █ │
+│   8 -   old2()                                                                                                     █ │
+│   9 -   old3()                                                                                                     █ │
+│  10 -   old4()                                                                                                     █ │
+│  11 -   old5()                                                                                                     █ │
+│  12 -   old6()                                                                                                     █ │
+│  13 -   old7()                                                                                                     █ │
+│  14 -   old8()                                                                                                     █ │
+│  15 -   old9()                                                                                                     █ │
+│  16 -   old10()                                                                                                    █ │
+│  17 -   old11()                                                                                                    █ │
+│  18 -   old12()                                                                                                    █ │
+│  19 -   old13()                                                                                                    █ │
+│  20 -   old14()                                                                                                    ▀ │
+│   7 +   new1()                                                                                                       │
+│   8 +   new2()                                                                                                       │
+│   9 +   new3()                                                                                                       │
+│  10 +   new4()                                                                                                       │
+│  11 +   new5()                                                                                                       │
+│  12 +   new6()                                                                                                       │
+│  13 +   new7()                                                                                                       │
+│  14 +   new8()                                                                                                       │
+│                                                                                                                      │
+│ › 1. Allow once                                                                                                      │
+│   2. Allow src/* for this session                                                                                    │
+│   3. Reject, and tell the agent what to do instead                                                                   │
+│ up/down or number keys to pick · enter Confirm · escape Reject · ctrl+f Fullscreen                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+"
+`;

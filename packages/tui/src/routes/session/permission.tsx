@@ -2,7 +2,7 @@ import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { Portal, useTerminalDimensions } from "@opentui/solid"
-import type { BoxRenderable, DiffRenderable, TextareaRenderable } from "@opentui/core"
+import { Renderable, type BoxRenderable, type DiffRenderable, type TextareaRenderable } from "@opentui/core"
 import { useTheme } from "../../context/theme"
 import type { PermissionRequest } from "@graphagent/sdk"
 import { useSDK, locationHeaders } from "../../context/sdk"
@@ -29,6 +29,27 @@ type PermissionChoice = "once" | "always" | "reject" | "relay"
 const MIN_DIFF_ROWS = 3
 /** The blank rows that set the diff apart from the lines above it and the options under it. */
 const DIFF_GAPS = 2
+/**
+ * The blank rows above the fullscreen panel. The content budget, the terminal height less 6, and the four rows of the
+ * panel's own border, title and hint leave two rows of the terminal over: one goes here, one stays under a panel that
+ * has used its whole budget.
+ */
+const FULLSCREEN_MARGIN = 1
+
+/**
+ * Makes the container a `Portal` creates a layer over the whole terminal (#1662). The container is a plain box added to
+ * the end of the root, and in the flow of the root: laid out after the app, which is as tall as the terminal, it sat
+ * under the last row, and the ask in it was drawn off screen (or, where the app is shorter, in a strip one row high,
+ * with a panel that had no side borders). Out of the flow and spread over the screen, it is where the ask is meant to be.
+ */
+function coverTerminal(layer: object) {
+  if (!(layer instanceof Renderable)) return
+  layer.position = "absolute"
+  layer.top = 0
+  layer.right = 0
+  layer.bottom = 0
+  layer.left = 0
+}
 
 /** What an ask that has a diff draws of it, and whether blank rows set it apart from the parts around it. */
 export interface DiffFit {
@@ -649,8 +670,16 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     <Show
       when={!store.expanded}
       fallback={
-        <Portal>
-          <box position="absolute" top={0} left={0} right={0} bottom={0} backgroundColor={theme.background}>
+        <Portal ref={coverTerminal}>
+          <box
+            position="absolute"
+            top={0}
+            left={0}
+            right={0}
+            bottom={0}
+            paddingTop={FULLSCREEN_MARGIN}
+            backgroundColor={theme.background}
+          >
             {surface()}
           </box>
         </Portal>
