@@ -4,6 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { readFileSync } from "node:fs"
 import path from "node:path"
+import { BoxRenderable, TextRenderable, type Renderable } from "@opentui/core"
 import type { Session } from "@graphagent/sdk"
 import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal, onCleanup, Show, type ParentProps } from "solid-js"
@@ -267,6 +268,57 @@ function colorOf(frame: Awaited<ReturnType<Mounted["spans"]>>, needle: string) {
 const TITLE_REVIEW = "review · 复核最终补丁"
 const TITLE_BUILD = "build · 重新生成 SDK"
 const TITLE_SCAN = "explore · 扫描破坏性变更"
+
+/** The row of the list that shows this text: the box that holds the text of the name. */
+function rowNode(harness: Pick<Mounted, "app">, needle: string) {
+  const nodes: Renderable[] = []
+  const walk = (node: Renderable) => {
+    nodes.push(node)
+    for (const child of node.getChildren()) walk(child)
+  }
+  walk(harness.app.renderer.root)
+  const text = nodes.find((node) => node instanceof TextRenderable && node.plainText.includes(needle))
+  return text?.parent instanceof BoxRenderable ? text.parent : undefined
+}
+
+// A list that is taller than the panel: one sub-agent that runs and began before everyone, and many that are over,
+// newest first, so a sub-agent that finishes goes to the end of the list.
+const CROWD_RUN = "ses_ag_crowd_run"
+const CROWD_COUNT = 22
+const crowdID = (index: number) => `ses_ag_crowd_${String(index).padStart(2, "0")}`
+const TITLE_CROWD_RUN = "explore · 最早开始的扫描"
+const TITLE_CROWD_LAST = "build · 收尾任务 01"
+
+function crowdTree(): Session[] {
+  const sessions = [
+    sessionFixture(ROOT, { title: "发布准备", time: { created: at(0), updated: at(100) } }),
+    sessionFixture(CROWD_RUN, {
+      parentID: ROOT,
+      agent: "explore",
+      title: "最早开始的扫描",
+      time: { created: at(1), updated: at(2) },
+    }),
+    ...Array.from({ length: CROWD_COUNT }, (_, index) =>
+      sessionFixture(crowdID(index), {
+        parentID: ROOT,
+        agent: "build",
+        title: `收尾任务 ${String(index + 1).padStart(2, "0")}`,
+        time: { created: at(10 + index), updated: at(11 + index) },
+      }),
+    ),
+  ]
+  return sessions.toSorted((left, right) => (left.id < right.id ? -1 : 1))
+}
+
+function crowd(ctx: AppPanelTestContext) {
+  const sessions = crowdTree()
+  for (const session of sessions) {
+    ctx.sync.set("summary", session.id, {
+      ...createSummary(session, { type: session.id === CROWD_RUN ? "busy" : "idle" }),
+      toolCalls: 3,
+    })
+  }
+}
 
 describe("what the list shows", () => {
   test("lists the direct sub-agents of the root, in the order of its groups, and no others", async () => {
@@ -849,6 +901,109 @@ describe("the selection while the list moves", () => {
       harness.app.mockInput.pressEnter()
       await waitFor(() => viewing(harness).sessionID === SCAN)
       expect(viewing(harness)).toEqual({ type: "session", sessionID: SCAN })
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a tool count that changes does not mount the rows again: the rows keep their nodes and the selection its row", async () => {
+    const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
+    try {
+      harness.app.mockInput.pressArrow("down")
+      await waitUntil(harness, (frame) => rowWith(frame, TITLE_REVIEW)?.includes("›") === true, "REVIEW selected")
+      const before = [TITLE_SCAN, TITLE_REVIEW, TITLE_BUILD].map((title) => rowNode(harness, title))
+      expect(before.every((row) => row !== undefined)).toBe(true)
+
+      // A running sub-agent calls another tool, and the summary is replaced, as the data layer does it.
+      setState(harness, SCAN, "busy", { toolCalls: 8 })
+      const frame = await waitUntil(
+        harness,
+        (value) => rowWith(value, TITLE_SCAN)?.includes("工具 8") === true,
+        "the new tool count",
+      )
+
+      // The same rows are on screen, alive, and the one that changed says its new count.
+      const after = [TITLE_SCAN, TITLE_REVIEW, TITLE_BUILD].map((title) => rowNode(harness, title))
+      for (const [index, row] of before.entries()) {
+        expect(row?.isDestroyed).toBe(false)
+        expect(after[index]).toBe(row)
+      }
+      // The selection is still on REVIEW, in the part of the panel that shows rows.
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("›")
+      expect(rowWith(frame, TITLE_SCAN)).not.toContain("›")
+      const lines = linesOf(frame)
+      const top = lines.findIndex((line) => line.startsWith("╭"))
+      const bottom = lines.findIndex((line) => line.startsWith("╰"))
+      expect(rowIndex(frame, TITLE_REVIEW)).toBeGreaterThan(top + 1)
+      expect(rowIndex(frame, TITLE_REVIEW)).toBeLessThan(bottom - 1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a sub-agent that appears is the only row that is mounted: the others keep their nodes", async () => {
+    const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
+    try {
+      harness.app.mockInput.pressArrow("down")
+      await waitUntil(harness, (frame) => rowWith(frame, TITLE_REVIEW)?.includes("›") === true, "REVIEW selected")
+      const titles = [TITLE_SCAN, TITLE_REVIEW, TITLE_BUILD]
+      const before = titles.map((title) => rowNode(harness, title))
+      expect(before.every((row) => row !== undefined)).toBe(true)
+
+      // A new sub-agent starts: the items are built again from the ids, and one more row is in the list.
+      const fresh = sessionFixture("ses_ag_new", {
+        parentID: ROOT,
+        agent: "build",
+        title: "新来的任务",
+        time: { created: at(50), updated: at(51) },
+      })
+      harness.ctx().sync.set(
+        "session",
+        [...tree(), fresh].toSorted((left, right) => (left.id < right.id ? -1 : 1)),
+      )
+      harness.ctx().sync.set("summary", fresh.id, { ...createSummary(fresh, { type: "idle" }), toolCalls: 1 })
+      const frame = await waitUntil(harness, (value) => value.includes("build · 新来的任务"), "the new sub-agent")
+
+      for (const [index, row] of before.entries()) {
+        expect(row?.isDestroyed).toBe(false)
+        expect(rowNode(harness, titles[index])).toBe(row)
+      }
+      // The selection stayed on REVIEW.
+      expect(rowWith(frame, TITLE_REVIEW)).toContain("›")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a selected row that its state takes to another group, far down the list, is brought into view", async () => {
+    const harness = await mount({ sessions: crowdTree(), seed: crowd, ticker: fakeTicker(at(95)).ticker })
+    try {
+      // The sub-agent that runs is the first row, and selected. It began before all the others.
+      const first = await harness.frame()
+      expect(rowWith(first, TITLE_CROWD_RUN)).toContain("›")
+      expect(rowWith(first, TITLE_CROWD_RUN)).toContain("运行中")
+      expect(rowWith(first, TITLE_CROWD_LAST)).toBeUndefined()
+
+      // It finishes. The finished group is newest start first, so it is the last row of the list now: out of the view.
+      const run = crowdTree().find((session) => session.id === CROWD_RUN)!
+      harness.ctx().sync.set("summary", CROWD_RUN, { ...createSummary(run, { type: "idle" }), toolCalls: 5 })
+      const frame = await waitUntil(
+        harness,
+        (value) => rowWith(value, TITLE_CROWD_RUN)?.includes("已完成") === true,
+        "the sub-agent that finished, in view",
+      )
+      expect(rowWith(frame, TITLE_CROWD_RUN)).toContain("›")
+      // It moved with its glyph: the state shows as it does for every row that is over.
+      expect(rowWith(frame, TITLE_CROWD_RUN)).toContain(SUBAGENT_MARKER_GLYPH.done)
+      const lines = linesOf(frame)
+      const top = lines.findIndex((line) => line.startsWith("╭"))
+      const bottom = lines.findIndex((line) => line.startsWith("╰"))
+      expect(rowIndex(frame, TITLE_CROWD_RUN)).toBeGreaterThan(top + 1)
+      expect(rowIndex(frame, TITLE_CROWD_RUN)).toBeLessThan(bottom - 1)
+      // It is the end of the list that is in view, and enter goes into the selected sub-agent.
+      expect(frame).toContain(TITLE_CROWD_LAST)
+      harness.app.mockInput.pressEnter()
+      await waitFor(() => viewing(harness).sessionID === CROWD_RUN)
     } finally {
       await harness.dispose()
     }
