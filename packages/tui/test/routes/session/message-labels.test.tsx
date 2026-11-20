@@ -16,7 +16,8 @@ import { mountRoute, sessionFixture, waitFor } from "../dag-mode-harness"
  * an attached file and directory, the divider of a compaction, the mark of an interrupted turn, and the note of a turn
  * that could not be replayed. They come from the message tables now, in the reader's language; English reads as it did.
  * The queued badge stands at the end of the line of the message since PR B, and the labels of an attachment in a line
- * under it, both inside its block.
+ * under it, both inside its block. The mark of an interrupted turn is a line of its own since PR C, and the one thing a
+ * turn says after its words: a turn that was not interrupted ends with them.
  */
 
 afterEach(() => {
@@ -61,7 +62,7 @@ const LABELS = {
     file: " File  a.ts ",
     directory: " Directory  src ",
     compaction: " Compaction ",
-    interrupted: "· interrupted",
+    interrupted: "interrupted",
     retry: "Tools started in this turn, so it was not replayed automatically. Retry manually.",
   },
   "zh-CN": {
@@ -69,7 +70,7 @@ const LABELS = {
     file: " 文件  a.ts ",
     directory: " 目录  src ",
     compaction: " 压缩 ",
-    interrupted: "· 已中断",
+    interrupted: "已中断",
     retry: "本回合已启动工具，因此没有自动重放，请手动重试。",
   },
 } as const
@@ -176,7 +177,7 @@ for (const language of ["en", "zh-CN"] as const) {
     }
   })
 
-  test(`an interrupted turn says so on the line that closes it, in ${language}`, async () => {
+  test(`an interrupted turn ends with a line that says so, under the words of the turn, in ${language}`, async () => {
     const aborted: AssistantMessage = {
       ...assistantMessage("msg_label_aborted", ROOT, "msg_label_first", 20),
       error: { name: "MessageAbortedError", data: { message: "Aborted" } },
@@ -190,9 +191,42 @@ for (const language of ["en", "zh-CN"] as const) {
     )
     try {
       const frame = await harness.waitForFrame(says(label.interrupted), "the mark")
-      const row = frame.split("\n").find((line) => line.includes(label.interrupted))!
-      expect(row).toContain("▣")
-      expect(row).toContain("Explore")
+      const rows = frame.split("\n")
+      const answer = rows.findIndex((line) => line.includes("half an answer"))
+      const mark = rows.findIndex((line) => line.includes(label.interrupted))
+      // A line of its own, a blank row under the words and in their column, and nothing else on it: not the agent, the
+      // model or the time, which the turn used to carry on a line like this.
+      expect(mark).toBe(answer + 2)
+      expect(rows[mark].trim()).toBe(label.interrupted)
+      expect(rows[mark].indexOf(label.interrupted)).toBe(rows[answer].indexOf("half an answer"))
+      expect(frame).not.toContain("▣")
+      expect(frame).not.toContain("Explore")
+      // One line, for the one turn that was interrupted.
+      expect(rows.filter((line) => line.includes(label.interrupted))).toHaveLength(1)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test(`a turn that was not interrupted ends with its words, and the input is the next thing under them, in ${language}`, async () => {
+    const harness = await mount(
+      [
+        user("msg_label_first", 10, [textPart("msg_label_first", ROOT, "prt_label_first", "first prompt")]),
+        {
+          info: assistantMessage("msg_label_done", ROOT, "msg_label_first", 20),
+          parts: [textPart("msg_label_done", ROOT, "prt_label_whole", "a whole answer")],
+        },
+      ],
+      language,
+    )
+    try {
+      const frame = await harness.waitForFrame(says("a whole answer"), "the answer")
+      const rows = frame.split("\n")
+      const answer = rows.findIndex((line) => line.includes("a whole answer"))
+      const next = rows.findIndex((line, index) => index > answer && line.trim().length > 0)
+      expect(rows[next].trimStart().startsWith("╭")).toBe(true)
+      expect(frame).not.toContain(label.interrupted)
+      expect(frame).not.toContain("▣")
     } finally {
       await harness.dispose()
     }

@@ -649,13 +649,16 @@ describe("a thought", () => {
         const open = await shell.waitForFrame(says("First I look at the files"), "the opened thought")
         const rows = rowsOf(open)
         const head = rows.findIndex((line) => line.includes(`∴ ${words.openTitled}`))
-        expect(head).toBe(header.row)
         expect(open).not.toContain("已折叠")
         expect(open).not.toContain("collapsed")
         // The body stands under the words of the header, behind the mark, after a blank row.
         const body = columnOf(open, "First I look at the files")
         expect(body.row).toBe(head + 2)
         expect(body.column).toBe(columnOf(open, words.openTitled).column)
+        // A transcript shorter than the screen stands on its bottom edge (#1615): what the click added is above it. The
+        // thought was the last line and the body is the last line now, and the header moved up by the two rows it gained.
+        expect(body.row).toBe(header.row)
+        expect(head).toBe(header.row - 2)
 
         // The header keeps the warning color it had, at the opacity of a thought; the body is muted.
         const runs = await runsIn(shell)
@@ -673,7 +676,7 @@ describe("a thought", () => {
         expect(find(runs, "First I look at the files")!.fg.equals(palette().textMuted)).toBe(false)
         expect(shell.writes().length).toBe(counts)
 
-        await shell.app.mockMouse.click(header.column + 6, header.row)
+        await shell.app.mockMouse.click(header.column + 6, head)
         const closed = await shell.waitForFrame(says(words.titled), "the folded thought again")
         expect(closed).not.toContain("First I look at the files")
         expect(shell.writes().length).toBe(counts)

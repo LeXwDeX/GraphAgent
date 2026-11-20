@@ -76,8 +76,8 @@ function calibrateLoop() {
 
 /**
  * `--profile=stream` runs P12 and P13 alone, `--repeats` times, and reports their medians. `--size` picks the
- * session and `--parts-per-message=N` rescales its transcript: on `XL`, 20 is about 1900 rows (fully mounted)
- * and 40 about 3700 (windowed). `--rounds=N` is the number of streamed frames.
+ * session and `--parts-per-message=N` rescales its transcript: on `XL`, 20 is about 1800 rows (fully mounted)
+ * and 40 about 3600 (windowed). `--rounds=N` is the number of streamed frames.
  */
 async function streamProfile() {
   const size = arg("--size")

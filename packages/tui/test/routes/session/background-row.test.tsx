@@ -967,9 +967,9 @@ test("a foreground run that goes on says how to move it to the background, in it
       for (const key of ["running", "done", "queued"]) {
         expect(rowOf(frame, `Scan ${key} `, 1)).not.toMatch(/转后台|background \S/)
       }
-      // What stands under the message is the way to the sub-agents, and only that.
-      expect(rowOf(frame, view)).toMatch(new RegExp(`^\\S.* ${view}$`))
-      expect(rowOf(frame, view)).not.toContain(" · ")
+      // Nothing stands under the message any more: it used to end with the way to the sub-agents and the way to move a
+      // run to the background, and both are on the rows of the runs now (#1615).
+      expect(frame).not.toContain(view)
     } finally {
       await harness.dispose()
     }

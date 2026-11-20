@@ -184,11 +184,14 @@ function LoadedReadBeforeTaskFixture() {
 }
 
 // The one-line rows that are still `InlineToolRow`s are the ones of a question and a todo update.
-function AssistantSummaryBeforeInlineFixture() {
+function AssistantTextBeforeInlineFixture() {
   return (
     <box flexDirection="column" width={72}>
-      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
-        <text>▣ Build · Little Frank · 53.1s</text>
+      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} flexDirection="row">
+        <box width={2} flexShrink={0}>
+          <text>⏺</text>
+        </box>
+        <text>Checking the open questions first.</text>
       </box>
       <InlineToolRow icon="→" complete={true} pending="">
         Asked 2 questions
@@ -438,8 +441,8 @@ describe("TUI inline tool wrapping", () => {
     expect(await renderFrame(() => <LoadedReadBeforeTaskFixture />, { width: 72, height: 8 })).toMatchSnapshot()
   })
 
-  test("separates a one-line row from the previous assistant summary", async () => {
-    expect(await renderFrame(() => <AssistantSummaryBeforeInlineFixture />, { width: 72, height: 5 })).toMatchSnapshot()
+  test("separates a one-line row from the previous assistant text", async () => {
+    expect(await renderFrame(() => <AssistantTextBeforeInlineFixture />, { width: 72, height: 5 })).toMatchSnapshot()
   })
 
   test("separates a one-line row from the previous assistant error", async () => {

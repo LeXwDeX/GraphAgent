@@ -11,7 +11,7 @@ import { settleHighlights } from "../../perf/scenarios"
  * #1260: a frame of a streamed reply used to read the text of every part of the session and hash all of
  * it, so it cost as much as the transcript is long. Timing that depends on the machine, so this counts what
  * a frame reads instead: through the real session route, the parts whose text is read for a frame are the
- * ones being written, and how many of them is the same in a session of 48 rows, of 190 and of 2080 (the
+ * ones being written, and how many of them is the same in a session of 23 rows, of 90 and of 2070 (the
  * last one windowed).
  */
 
@@ -69,7 +69,7 @@ test("a streamed frame reads the part being written and no other, whatever the l
   const sizes = [await streamedFrame("S"), await streamedFrame("L"), await streamedFrame("XL")]
 
   // The sessions are as different in length as the claim needs.
-  expect(sizes.map((run) => run.rows)).toEqual([48, 190, 2080])
+  expect(sizes.map((run) => run.rows)).toEqual([23, 90, 2070])
   for (const run of sizes) {
     // Only the part being written is read.
     expect(Object.keys(run.reads)).toEqual([run.part])

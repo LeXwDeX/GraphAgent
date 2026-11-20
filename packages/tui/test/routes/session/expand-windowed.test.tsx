@@ -21,7 +21,7 @@ import { readFrame } from "../dag-mode-harness"
 type Block = { index: number; kind: "bash" | "reasoning" | "edit" }
 
 /**
- * The XL fixture with plain text everywhere but at `blocks`: 2200 parts, 22 to each of 100 messages, so the
+ * The XL fixture with plain text everywhere but at `blocks`: 2300 parts, 23 to each of 100 messages, so the
  * transcript is windowed and the blocks are the only things in it that fold. The reasoning carries its index as
  * the title of its header, a bash call as the command and the lines it prints, and an edit as the file it changed.
  */
@@ -133,8 +133,8 @@ const BLOCKS: readonly Block[] = [
   { index: 60, kind: "reasoning" },
   { index: 900, kind: "bash" },
   { index: 1500, kind: "reasoning" },
-  { index: 2100, kind: "bash" },
-  { index: 2150, kind: "reasoning" },
+  { index: 2200, kind: "bash" },
+  { index: 2250, kind: "reasoning" },
 ]
 
 test("the most recent block opens although a long plain tail has unmounted it", async () => {
@@ -145,14 +145,14 @@ test("the most recent block opens although a long plain tail has unmounted it", 
     const scroll = await atTheEnd(harness)
     // The premise: windowed, with the viewport at the end, and the latest blocks far from what is mounted.
     const seen = await readFrame(harness.app)
-    expect(seen).toContain("Plain row 2199")
+    expect(seen).toContain("Plain row 2299")
     expect(scroll.getChildren().length).toBeLessThan(120)
-    expect(holding(scroll, "Block 2150")).toBeUndefined()
-    expect(holding(scroll, "printf block-2100")).toBeUndefined()
+    expect(holding(scroll, "Block 2250")).toBeUndefined()
+    expect(holding(scroll, "printf block-2200")).toBeUndefined()
     expect(openBlocks(scroll)).toEqual([])
 
     await pressExpand(harness)
-    expect(openBlocks(scroll)).toEqual(["reasoning 2150"])
+    expect(openBlocks(scroll)).toEqual(["reasoning 2250"])
     // The open block is above the viewport, which follows the end and stays where it was.
     expect(await readFrame(harness.app)).toBe(seen)
   } finally {
@@ -164,7 +164,7 @@ test("each press opens the block before the last one, unmounted or not, and all 
   const harness = await mountHarness(windowedWith(BLOCKS))
   try {
     const scroll = await atTheEnd(harness)
-    const order = ["reasoning 2150", "bash 2100", "reasoning 1500", "bash 900", "reasoning 60"]
+    const order = ["reasoning 2250", "bash 2200", "reasoning 1500", "bash 900", "reasoning 60"]
 
     for (let pressed = 1; pressed <= order.length; pressed++) {
       await pressExpand(harness)
@@ -189,11 +189,11 @@ test("a block opened by the key shows its whole output when the reader scrolls t
     const scroll = await atTheEnd(harness)
     await pressExpand(harness)
     await pressExpand(harness)
-    expect(openBlocks(scroll)).toEqual(["bash 2100", "reasoning 2150"])
+    expect(openBlocks(scroll)).toEqual(["bash 2200", "reasoning 2250"])
 
     // The row is mounted open, so it holds the whole output and the label that closes it.
-    const row = holding(scroll, "printf block-2100")!
-    expect(texts(row).some((line) => line.includes("block 2100 line 29"))).toBe(true)
+    const row = holding(scroll, "printf block-2200")!
+    expect(texts(row).some((line) => line.includes("block 2200 line 29"))).toBe(true)
     expect(texts(row).some((line) => line.includes("ctrl+o collapse"))).toBe(true)
   } finally {
     await harness.dispose()
@@ -204,7 +204,7 @@ test("an edit opens by the key although a long plain tail has unmounted it, and 
   const harness = await mountHarness(
     windowedWith([
       { index: 900, kind: "edit" },
-      { index: 2100, kind: "bash" },
+      { index: 2200, kind: "bash" },
     ]),
   )
   try {
@@ -214,10 +214,10 @@ test("an edit opens by the key although a long plain tail has unmounted it, and 
     expect(openBlocks(scroll)).toEqual([])
 
     await pressExpand(harness)
-    expect(openBlocks(scroll)).toEqual(["bash 2100"])
+    expect(openBlocks(scroll)).toEqual(["bash 2200"])
     await pressExpand(harness)
     // The key flips the flag a click flips: the row is pinned, so it is mounted, and it is mounted open.
-    expect(openBlocks(scroll)).toEqual(["bash 2100", "edit 900"])
+    expect(openBlocks(scroll)).toEqual(["bash 2200", "edit 900"])
     const row = holding(scroll, "src/edit-900.ts")!
     expect(texts(row).some((line) => line.includes("+1 \u22121"))).toBe(true)
 

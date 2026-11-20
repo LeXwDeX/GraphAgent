@@ -831,7 +831,6 @@ export const zhCN = {
   "background.band.row": "后台 {n}",
   "background.drawer.title": "后台任务 {n}",
   "background.drawer.more": "… 还有 {k} 个 · /agents",
-  "background.hint.view": "查看子 agent",
   "background.hint.move": "转后台 {key}",
   "background.card.title": "后台结果 · {kind} · {title} · {status} · {elapsed}",
   "background.card.status.completed": "完成",
