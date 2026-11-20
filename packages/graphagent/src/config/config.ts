@@ -34,7 +34,7 @@ import { HookConfigChange } from "@/hook/config-change"
 import { HookPermissions } from "./permissions"
 import type { PermissionUpdate } from "@/hook/trigger-result"
 import { ConfigPaths } from "./paths"
-import { changedTopLevelKeys } from "./hot-reload"
+import { changedTopLevelKeys, readsInstanceConfig, tightenedPermissionKeys } from "./hot-reload"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
 import {
@@ -181,8 +181,13 @@ export interface Interface {
     updates: readonly PermissionUpdate[],
   ) => Effect.Effect<Info, HookConfigChange.ConfigChangeBlocked>
   readonly update: (config: Info) => Effect.Effect<void, HookConfigChange.ConfigChangeBlocked>
+  /**
+   * Write the global layer. `tightened` names the permission keys the write made stricter (#1678), for the caller
+   * that has to forget what a session approved under the looser rule. A changed permission key also rebuilds the
+   * merged configuration of every loaded directory before this returns.
+   */
   readonly updateGlobal: (config: Info) => Effect.Effect<
-    { info: Info; changed: boolean; changedKeys: string[] },
+    { info: Info; changed: boolean; changedKeys: string[]; tightened: string[] },
     HookConfigChange.ConfigChangeBlocked
   >
   readonly invalidate: () => Effect.Effect<void, HookConfigChange.ConfigChangeBlocked>
@@ -934,12 +939,14 @@ export const layer = Layer.effect(
       let next: Info
       let changed: boolean
       let changedKeys: string[]
+      let tightened: string[]
       if (!file.endsWith(".jsonc")) {
         const existing = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(before, file), file)
         const merged = mergeDeep(writable(existing), patch)
         const serialized = JSON.stringify(merged, null, 2)
         changed = serialized !== before
         changedKeys = changed ? changedTopLevelKeys(existing, merged) : []
+        tightened = changed ? tightenedPermissionKeys(existing, merged) : []
         if (changed) {
           yield* checkConfigChange(file, "user_settings")
           yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
@@ -951,14 +958,20 @@ export const layer = Layer.effect(
         next = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
         changedKeys = changed ? changedTopLevelKeys(existing, next) : []
+        tightened = changed ? tightenedPermissionKeys(existing, next) : []
         if (changed) {
           yield* checkConfigChange(file, "user_settings")
           yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
         }
       }
 
-      if (changed) yield* invalidateGlobal
-      return { info: next, changed, changedKeys }
+      if (changed) {
+        yield* invalidateGlobal
+        // #1678: the merged configuration of each open directory embeds the global permission rules. Without a
+        // disposal to rebuild it, drop it here so the next permission check in any session reads the new rules.
+        if (readsInstanceConfig(changedKeys)) yield* InstanceState.invalidateAll(state)
+      }
+      return { info: next, changed, changedKeys, tightened }
     })
 
     return Service.of({

@@ -1,5 +1,6 @@
 import { Config } from "@/config/config"
 import { ConfigHotReload } from "@/config/hot-reload"
+import { Permission } from "@/permission"
 import { ProviderRedact } from "@/provider/redact"
 import { GlobalBus } from "@/bus/global"
 import { EffectBridge } from "@/effect/bridge"
@@ -23,6 +24,7 @@ function parseBody(body: string) {
 export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handlers) =>
   Effect.gen(function* () {
     const config = yield* Config.Service
+    const permission = yield* Permission.Service
     const bridge = yield* EffectBridge.make()
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
@@ -43,6 +45,10 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
           // #1013 (C1 PR5): hot-read keys apply to the next workflow run, so
           // keep every instance (and its in-flight nodes) alive and report the
           // changed keys instead.
+          // #1678: a permission edit is hot-read the same way. `updateGlobal` has already rebuilt each directory's
+          // merged configuration, so the next permission check of every open session reads the new rules; what a
+          // session approved under a looser rule is forgotten here, or an "always allow" would outrank the new `ask`.
+          yield* permission.forgetApproved(result.tightened)
           yield* Effect.sync(() =>
             GlobalBus.emit("event", {
               directory: "global",

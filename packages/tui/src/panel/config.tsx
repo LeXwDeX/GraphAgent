@@ -195,6 +195,23 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
             ...current,
             permission: { ...current.permission, [tool]: next },
           }))
+          // #1678: the write keeps the instance and every running session, so the store holds the old rules until the
+          // merged configuration is read again. Once it has been, the store is what is in force (a project layer may
+          // still override what was just written) and the value written here must stop standing for it. If the read
+          // fails, what is in force is not known: the written value stays, as the best that is known (the write was
+          // accepted, and the store would show the rule from before it), the user is told it is unconfirmed, and the
+          // next read of the panel that succeeds drops it.
+          void sync.config.refresh().then((read) => {
+            if (read) {
+              setOverrides((current) => ({ ...current, permission: undefined }))
+              return
+            }
+            toast.show({
+              text: t("panel.config.permission.unconfirmed"),
+              level: "warning",
+              dedupeKey: "config.permission.unconfirmed",
+            })
+          })
         })
       },
     }

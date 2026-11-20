@@ -300,6 +300,7 @@ export const en: Record<MessageKey, string> = {
   "panel.config.dag.budget.description":
     "Token cap for all DAG nodes under one main session; only changes the default, use /dag-mode budget for this session",
   "panel.config.writeFailed": "Failed to write configuration: {message}",
+  "panel.config.permission.unconfirmed": "Saved, but the permission in force could not be confirmed",
   "panel.config.permission.edit": "Edit",
   "panel.config.permission.bash": "Bash",
   "panel.config.permission.webfetch": "Web requests",

@@ -294,6 +294,7 @@ export const zhCN = {
   "panel.config.dag.budget.description":
     "每个主会话下全部 DAG 节点的 token 上限；只改默认值，当前会话用 /dag-mode budget 设置",
   "panel.config.writeFailed": "写入配置失败：{message}",
+  "panel.config.permission.unconfirmed": "已保存，但未能确认当前生效的权限",
   "panel.config.permission.edit": "编辑",
   "panel.config.permission.bash": "Bash",
   "panel.config.permission.webfetch": "网络请求",

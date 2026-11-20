@@ -5,6 +5,7 @@ import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/http
 import { HttpApiBuilder } from "effect/http-api"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
+import { Permission } from "../../src/permission"
 import { Installation } from "../../src/installation"
 import { MoveSession } from "@graphagent/core/control-plane/move-session"
 import { Session } from "../../src/session/session"
@@ -33,6 +34,7 @@ const apiLayer = HttpRouter.serve(
   Layer.provideMerge(NodeHttpServer.layerTest),
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
+  Layer.provide(Layer.mock(Permission.Service)({})),
   Layer.provide(Layer.mock(MoveSession.Service)({})),
   Layer.provide(Layer.mock(Session.Service)({})),
   Layer.provide(
