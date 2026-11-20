@@ -79,6 +79,7 @@ export const en: Record<MessageKey, string> = {
   "shell.footer.help": "shortcuts",
   "shell.footer.hookRunning": "hook {name} · {seconds}s",
   "shell.footer.trust": "⚠ {count} project commands untrusted · /trust",
+  "keymap.key.space": "space",
   "subagent.readonly": "only the main agent can message it",
   "subagent.readonlyTag": "read-only",
   "error.child_session_read_only": "Sub-agent is read-only; ask the main agent",

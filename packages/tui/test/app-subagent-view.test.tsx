@@ -201,7 +201,7 @@ test("clicking the root segment goes back to the root session, whose chrome is t
     expect(topRow(after)).toContain(`› ${rootTitle}`)
     expect(topRow(after)).not.toContain("explore")
     expect(footerRow(after)).toContain("build")
-    expect(footerRow(after)).toContain("tab 切换 agent")
+    expect(footerRow(after)).toContain("⇥ 切换 agent")
     // A sub-agent view has no prompt; the root session has.
     expect(prompts(app.setup)).toBe(1)
     expect(app.writes()).toEqual([])
@@ -263,13 +263,13 @@ test("a sub-agent view has no prompt, and nothing the user does in it writes a r
 test("a main session keeps its top bar and its footer", async () => {
   const app = await runApp({ sessions, args: { sessionID: rootID }, width: 120, height: 30 })
   try {
-    const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes("tab 切换 agent"), "the footer")
+    const frame = await waitForFrame(app.setup, (value) => footerRow(value).includes("⇥ 切换 agent"), "the footer")
     expect(topRow(frame)).toStartWith(` ◇─◆ GraphAgent › ${rootTitle}`)
     expect(topRow(frame)).not.toContain("explore")
     expect(topRow(frame)).not.toContain("子 agent")
     expect(footerRow(frame)).toStartWith(" build ")
-    expect(footerRow(frame)).toContain("tab 切换 agent")
-    expect(footerRow(frame)).toContain("ctrl+p 命令")
+    expect(footerRow(frame)).toContain("⇥ 切换 agent")
+    expect(footerRow(frame)).toContain("⌃P 命令")
     expect(frame).not.toContain("只读")
     expect(app.writes()).toEqual([])
   } finally {

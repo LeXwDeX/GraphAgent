@@ -103,7 +103,7 @@ const transcripts: FetchHandler = (url) => {
 }
 
 /** What a panel's hint line ends with; a panel is open exactly while the frame has it. */
-const PANEL_HINT = "escape 关闭"
+const PANEL_HINT = "esc 关闭"
 /** A heading only the drawer draws. */
 const DRAWER_MARK = "上下文"
 

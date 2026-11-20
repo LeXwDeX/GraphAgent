@@ -84,7 +84,7 @@ describe("the DAG mode line of the drawer", () => {
     const harness = await mountDrawer({ root: { dagMode: "on" } })
     try {
       const lines = await column(harness, (all) => all.some((line) => line.includes("DAG 模式")), "the line")
-      expect(lines.find((line) => line.includes("DAG 模式"))).toBe("DAG 模式 开 ctrl+x d")
+      expect(lines.find((line) => line.includes("DAG 模式"))).toBe("DAG 模式 开 ⌃X D")
     } finally {
       await harness.dispose()
     }
@@ -107,7 +107,7 @@ describe("the DAG mode line of the drawer", () => {
     })
     try {
       const lines = await column(rebound, (all) => all.some((line) => line.includes("DAG 模式")), "the line")
-      expect(lines.find((line) => line.includes("DAG 模式"))).toBe("DAG 模式 开 f9")
+      expect(lines.find((line) => line.includes("DAG 模式"))).toBe("DAG 模式 开 F9")
     } finally {
       await rebound.dispose()
     }
@@ -195,7 +195,7 @@ describe("the DAG mode line of the drawer", () => {
     const on = await mountDrawer({ root: { dagMode: "on" }, language: "en" })
     try {
       const lines = await column(on, (all) => hasLine(all, "DAG mode"), "the line")
-      expect(lines.find((line) => line.includes("DAG mode"))).toBe("DAG mode on ctrl+x d")
+      expect(lines.find((line) => line.includes("DAG mode"))).toBe("DAG mode on ⌃X D")
     } finally {
       await on.dispose()
     }

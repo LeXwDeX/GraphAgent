@@ -288,7 +288,8 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 只在 `config/keybind.ts` 的 `Definitions` 与 `CommandMap` 登记，两者一一对应；同时在 `config/keybind-disposition.ts` 的 `Disposition` 登记处置（`keep | change | new`）和 `layer`（取自 `Layers`）；删除的键位名不再留在 `Definitions`，登记到 `test/keybind-disposition.test.ts` 的 `REMOVED`（放在 `src` 之外，已下线功能守卫才不会命中）。
 - 命名：`Definitions` 键用 `snake_case`，命令名用点分（先例：`session_dagmode_toggle` 对应 `session.dagmode.toggle`）。
 - 同一个键在同一上下文层里只做一件事；跨上下文重用靠"上下文层"区分，不在命令内部写 `if`。
-- 页脚、`?` 帮助面板、回执里的按键文字由 keymap 生成，不硬编码键名。`TMUX` 环境变量存在时，抽屉开关显示 `<leader>b`。
+- 页脚、`?` 帮助面板、回执里的按键文字由 keymap 生成，不硬编码键名。`TMUX` 环境变量存在时，抽屉开关显示它的 leader 备选 `⌃X B`。
+- 键名显示写成符号，唯一出口是 `keymap.tsx` 的 `formatKeySequence`、`formatKeyBindings`（共用 `formatOptions` 与 `finishKeyText`），其余地方不得再手写键名。写法：`ctrl+b`→`⌃B`、`ctrl+shift+p`→`⌃⇧P`、`alt`→`⌥`、`super`→`⌘`、`tab`→`⇥`、`shift+tab`→`⇧⇥`、`return`→`⏎`、`escape`→`esc`、方向键→`↑ ↓ ← →`、`f9`→`F9`、字母键大写、`pageup`/`pagedown`/`delete`→`pgup`/`pgdn`/`del`；`space` 随语言写成 `空格` 或 `space`（`keymap.key.space`）；leader 序列各部分以空格相隔（`ctrl+x b`→`⌃X B`），同一命令的多个绑定以 `, ` 相连并去重。用户 `tui.json` 的 `keybinds` 与 `Definitions` 仍写 `ctrl+b` 这类字符串，只有显示变成符号。宽度：`⌃ ⇥ ⏎ ⌥ ⌘` 在 `ambiguous_width` 为 1 与 2 时都占 1 格；`↑ ↓ ← → ⇧` 是 Ambiguous 字形，为 2 时各占 2 格。用到键名的版面一律走 `cellWidth`、`truncateCells`，对齐敏感的页脚、面板提示行补 `ambiguous_width` 为 1 与 2 的 80 列用例。
 - 已删除的键位名不得回来：`sidebar_toggle`、`session_child_cycle(_reverse)`、`session_parent`、`which_key_*`、`tips_toggle`、`plugin_manager`、`plugin_install`、`plugins.toggle`、`dialog.plugins.install`、全部 `dag_*`、`session_share`、`session_unshare`、`docs_open`、`console_org_switch`。检查：`grep -rn "dag_[a-z_]*" packages/tui/src/config/keybind.ts` 为空。
 - 输入框不用 `ctrl+b`/`ctrl+f` 移动光标；`ctrl+d` 只在输入框为空时退出。输入框层只绑 `Definitions` 与 `keymap.tsx` 里 `inputExtraBindings` 列出的固定别名；不得改回 `registerManagedTextareaLayer`，它会追加库默认的 64 个键位（含 emacs 的 `ctrl+b`/`ctrl+f`/`ctrl+d`）。
 - `esc` 是优先级链，不得另写长 `if`。每层向 keymap 注册一次带 `enabled` 函数的绑定，位置按 F1 4.5 的顺序：补全 → 抽屉 → 询问区 → 模态面板 → 非模态详情面板 → 子 agent 返回父会话 → 会话忙碌（5 秒内第二次才中断）→ 无动作。层号以 F1 4.5 为准（子 agent 返回第 6 层、会话忙碌第 7 层）。新增一层需要修订 F1 与本文。
@@ -495,7 +496,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 ## 8. 文案与双语
 
 - 所有用户可见文字走 `t("key", params)`，包括命令标题与描述、面板标题与按键提示、toast、页脚、状态带、询问区、空状态、预填文字。命令分类等枚举用键，不用中文字面量。
-- 不翻译：代码标识符、命令名（`/new`）、键名、`/config` 语言行的选项文字（`简体中文`、`English`）。
+- 不翻译：代码标识符、命令名（`/new`）、键名、`/config` 语言行的选项文字（`简体中文`、`English`）。键名只有 `space` 是例外：它写成一个词，随语言显示 `空格` 或 `space`（`keymap.key.space`，见 6.3）；其余键名是符号或固定写法，两种语言相同。
 - 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`、`background.row.*`、`background.card.*`、`background.band.*`、`background.drawer.*`、`background.agents.*`、`background.prefill.*`、`background.toast.*`、`trust.band.*`）。
 - `i18n/zh-CN.ts` 与 `i18n/en.ts` 两张表键集合必须完全相同，每个键的占位符集合相同，没有空字符串。一致性测试由 F1 提供；缺任何一个键测试失败。
 - 禁止在组件里拼接中文字符串。带变量的文案用占位符，不用字符串拼接。检查：F1 的 AST 扫描测试遍历 `packages/tui/src`（排除 `i18n/`）的字符串字面量与 JSX 文本，不得出现 CJK 字符（注释不计）。
@@ -520,7 +521,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ## 10. 测试约定
 
-- 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/graphagent && bun run typecheck && bun test test/cli/cmd/run`。
+- 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/graphagent && bun run typecheck && bun test test/cli/run`。
 - 渲染测试用 `testRender`（`@opentui/solid`）。快照尺寸：面板、状态带、抽屉、页脚等组件 80×24 与 120×40；骨架测试 80×24、100×30、140×40；宽 < 60 或高 < 12 断言只渲染"终端太小"。
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
 - 测试进程不碰用户真实的目录：`test/preload.ts`（`bunfig.toml` 的 `[test] preload`）在任何 `src/` import 之前，把 `GRAPHAGENT_TEST_HOME` 与 `XDG_*` 指到一个临时目录，整个测试结束后删除。原因是 `@graphagent/core/global` 首次 import 时就按 XDG 变量定下 `Global.Path.*` 并建目录，`TuiLog` 的日志文件也在其中，不隔离的话错误路径会往已安装版本的真实日志里追加。新增测试不得读写真实的 HOME 与 XDG 目录；`test/util/log.test.ts` 守住 `TuiLog` 的目标路径。
@@ -598,7 +599,7 @@ F1–F6 以及此后任何触及 `packages/tui` 的 PR，描述里逐条勾选�
 - [ ] cd packages/tui && bun test 通过
 - [ ] cd packages/tui && bun run bench:tui（F2a 基准）通过，对照表附描述；渲染路径改动必附
 - [ ] bun run check:hosts 通过
-- [ ] 涉及 run 模式消费点时：cd packages/graphagent && bun run typecheck && bun test test/cli/cmd/run 通过
+- [ ] 涉及 run 模式消费点时：cd packages/graphagent && bun run typecheck && bun test test/cli/run 通过
 - [ ] 描述与提交信息无私有地址、本机路径、AI 署名
 ```
 

@@ -574,12 +574,12 @@ test("opening or closing a tool output above the viewport leaves what the reader
     for (let attempt = 0; attempt < 200 && !header; attempt++) {
       scroll.scrollBy(-10)
       await renderSettled(harness, 2)
-      header = locateText(harness, "more lines · ctrl+o expand")
+      header = locateText(harness, "more lines · ⌃O expand")
     }
     expect(header).toBeDefined()
     await harness.app.mockMouse.click(header!.column + 2, header!.row)
     await renderSettled(harness)
-    const opened = holding(scroll, "ctrl+o collapse")
+    const opened = holding(scroll, "⌃O collapse")
     expect(opened).toBeDefined()
     // The call is what tells the row apart, whichever of the rows that fold carries the same hint, and a row that
     // opens or closes is a new row: it is found again by its command, not kept.
@@ -587,14 +587,14 @@ test("opening or closing a tool output above the viewport leaves what the reader
 
     // Read on until the open output is just above the viewport. It is still mounted: it is open.
     for (let guard = 0; guard < 100; guard++) {
-      const open = holding(scroll, "ctrl+o collapse")
+      const open = holding(scroll, "⌃O collapse")
       if (open && open.row.y + open.row.height <= scroll.viewport.y) break
       scroll.scrollBy(3)
       await harness.app.renderOnce()
     }
     await settleScroll(harness)
 
-    for (const label of ["ctrl+o collapse", "more lines · ctrl+o expand"]) {
+    for (const label of ["⌃O collapse", "more lines · ⌃O expand"]) {
       const output = holding(scroll, command)
       expect(output).toBeDefined()
       const node = textIn(output!.row, label)

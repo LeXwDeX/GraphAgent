@@ -23,8 +23,8 @@ const PART = (index: number) => `prt_ses_perf_main_${index}`
  */
 const BEYOND_THE_CAP = "output line 25"
 /** The hint under an output that folds, and under one that is open: they name `view.expand.toggle`, ctrl+o. */
-const FOLDED = "more lines · ctrl+o expand"
-const OPEN = "ctrl+o collapse"
+const FOLDED = "more lines · ⌃O expand"
+const OPEN = "⌃O collapse"
 const REASONING_BODY = "Reasoning step 8"
 /** The header of the reasoning while it is folded (the thought of the fixture lasts a millisecond), and what is left of it open. */
 const THOUGHT_FOLDED = "∴ Thought for 0s · collapsed"

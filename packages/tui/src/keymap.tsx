@@ -8,21 +8,16 @@ import {
   registerTextareaMappingSuspension,
   registerTimedLeader,
 } from "@opentui/keymap/addons/opentui"
-import {
-  stringifyKeyStroke,
-  type ActiveBinding,
-  type Binding,
-  type KeyLike,
-  type KeySequencePart,
-} from "@opentui/keymap"
+import { type ActiveBinding, type Binding, type KeyLike, type KeySequencePart } from "@opentui/keymap"
 import {
   formatCommandBindings as formatCommandBindingsExtra,
   formatKeySequence as formatKeySequenceExtra,
+  type KeySequenceFormatPart,
 } from "@opentui/keymap/extras"
 import { KeymapProvider, useKeymap, useKeymapSelector, useBindings } from "@opentui/keymap/solid"
 import { type Accessor } from "solid-js"
 import { useTuiConfig } from "./config"
-import { TuiKeybind } from "./config/keybind"
+import { t } from "./i18n"
 
 export const LEADER_TOKEN = "leader"
 export const GRAPHAGENT_BASE_MODE = "base"
@@ -283,38 +278,75 @@ function registerLeaderMissConsumption(keymap: OpenTuiKeymap) {
   })
 }
 
-function leaderDisplay(config: FormatConfig) {
-  const key = config.keybinds.get(LEADER_TOKEN)?.[0]?.key
-  if (!key) return TuiKeybind.LeaderDefault
-  return typeof key === "string" ? key : stringifyKeyStroke(key)
-}
-
 function leaderKey(config: FormatConfig) {
   return config.keybinds.get(LEADER_TOKEN)?.[0]?.key
 }
 
-function formatOptions(config: FormatConfig) {
+/** How a modifier is written: the key symbols of the Mac keyboard, each one cell wide at either `ambiguous_width`. */
+const MODIFIER_ALIASES = {
+  ctrl: "⌃",
+  shift: "⇧",
+  meta: "⌥",
+  super: "⌘",
+} as const
+
+/** Key names that are written as a symbol or a shorter word. The formatter looks `return` up here as `enter`. */
+const KEY_NAME_ALIASES = {
+  tab: "⇥",
+  enter: "⏎",
+  escape: "esc",
+  up: "↑",
+  down: "↓",
+  left: "←",
+  right: "→",
+  pageup: "pgup",
+  pagedown: "pgdn",
+  delete: "del",
+} as const
+
+/**
+ * Options for the upstream formatter. It writes a token such as the leader as the fixed text it was registered with,
+ * and applies the aliases only to plain strokes. Every token part carries the stroke of the key it stands for, so the
+ * token is written as that stroke: the leader gets the same aliases as any other key, whichever key it is bound to.
+ */
+function formatOptions() {
+  const aliases = {
+    keyNameAliases: { ...KEY_NAME_ALIASES, space: t("keymap.key.space") },
+    modifierAliases: MODIFIER_ALIASES,
+  }
   return {
-    tokenDisplay: {
-      [LEADER_TOKEN]: leaderDisplay(config),
-    },
-    keyNameAliases: {
-      pageup: "pgup",
-      pagedown: "pgdn",
-      delete: "del",
-    },
-    modifierAliases: {
-      meta: "alt",
-    },
-  } as const
+    ...aliases,
+    tokenDisplay: (_token: string, part: KeySequenceFormatPart) =>
+      formatKeySequenceExtra([{ stroke: part.stroke, display: part.display }], aliases),
+  }
 }
 
-export function formatKeySequence(parts: Parameters<typeof formatKeySequenceExtra>[0], config: FormatConfig) {
-  return formatKeySequenceExtra(parts, formatOptions(config))
+/**
+ * The writing the upstream formatter cannot produce: it joins a modifier and the key with `+` ("⌃+b") and leaves letter
+ * keys and function keys in lower case. Applying it twice changes nothing.
+ */
+function finishKeyText(text: string) {
+  return text
+    .replace(/([⌃⇧⌥⌘])\+/g, "$1")
+    .replace(/(^|[\s,⌃⇧⌥⌘])([a-z]|f\d{1,2})(?=$|[\s,])/g, (_match, before: string, key: string) => {
+      return before + key.toUpperCase()
+    })
 }
 
-export function formatKeyBindings(bindings: Parameters<typeof formatCommandBindingsExtra>[0], config: FormatConfig) {
-  return formatCommandBindingsExtra(bindings, formatOptions(config))
+/**
+ * The text of a key sequence as the footer, the panels and `/help` show it: `⌃B`, `⌃⇧P`, `⇧⇥`, `⏎`, `esc`, `↑`, `F9`,
+ * and `⌃X B` for the leader and the key after it. The keys themselves are written in `keybinds` as before (`ctrl+b`);
+ * only what is displayed changes. `config` is kept for the callers that pass the one they hold: the leader's key
+ * comes with the sequence, so nothing here reads it.
+ */
+export function formatKeySequence(parts: Parameters<typeof formatKeySequenceExtra>[0], _config: FormatConfig) {
+  return finishKeyText(formatKeySequenceExtra(parts, formatOptions()))
+}
+
+/** The sequences of every binding of a command, written like `formatKeySequence`, apart by `, ` and each one once. */
+export function formatKeyBindings(bindings: Parameters<typeof formatCommandBindingsExtra>[0], _config: FormatConfig) {
+  const text = formatCommandBindingsExtra(bindings, formatOptions())
+  return text === undefined ? undefined : finishKeyText(text)
 }
 
 export function registerGraphagentKeymap(keymap: OpenTuiKeymap, renderer: CliRenderer, config: ResolvedKeymapConfig) {

@@ -1038,12 +1038,12 @@ test("direct footer shows editable prompts and additional queued work while runn
     expect(spinner).toBeDefined()
     expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
     expect(frame).toContain("3 queued")
-    expect(frame).toContain("ctrl+x w background")
-    expect(frame).toContain("ctrl+x q 3 queued")
-    expect(frame).toContain("ctrl+x down subagents")
-    expect(frame).toContain("ctrl+p cmd")
+    expect(frame).toContain("⌃X W background")
+    expect(frame).toContain("⌃X Q 3 queued")
+    expect(frame).toContain("⌃X ↓ subagents")
+    expect(frame).toContain("⌃P cmd")
     expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("subagents · ctrl+p cmd")
+    expect(frame).toContain("subagents · ⌃P cmd")
     expect(frame).not.toContain("1 agent")
     expect(statusline.backgroundColor.toInts()).toEqual(tinted)
     expect(mode.backgroundColor.toInts()).toEqual(accent)
@@ -1078,7 +1078,7 @@ test("direct footer separates a lone context hint from model and command hint", 
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("GPT-5")
-    expect(frame).toContain("xhigh · ctrl+x w background · ctrl+x down subagents · ctrl+p cmd")
+    expect(frame).toContain("xhigh · ⌃X W background · ⌃X ↓ subagents · ⌃P cmd")
     expect(frame).not.toContain("queued")
   } finally {
     app.cleanup()
@@ -1104,8 +1104,8 @@ test("direct footer hides the subagent hint when only completed subagents remain
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("GPT-5")
-    expect(frame).toContain("xhigh · ctrl+p cmd")
-    expect(frame).not.toContain("ctrl+x down subagents")
+    expect(frame).toContain("xhigh · ⌃P cmd")
+    expect(frame).not.toContain("⌃X ↓ subagents")
   } finally {
     app.cleanup()
   }
@@ -1122,9 +1122,50 @@ test("direct footer omits interrupt key hint when interrupt is unbound", async (
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("interrupt")
-    expect(frame).not.toContain("ctrl+l")
+    expect(frame).not.toContain("⌃L")
   } finally {
     app.cleanup()
+  }
+})
+
+test("direct footer writes the interrupt key as the symbols of the keymap, esc by default", async () => {
+  for (const [keybinds, shown] of [
+    [{}, "esc interrupt"],
+    [{ session_interrupt: "ctrl+shift+x" }, "⌃⇧X interrupt"],
+  ] as const) {
+    const app = await renderFooter({ tuiConfig: createTuiResolvedConfig({ keybinds }), state: { phase: "running" } })
+
+    try {
+      await app.renderOnce()
+      const frame = app.captureCharFrame()
+
+      expect({ keybinds, shown: frame.includes(shown) }).toEqual({ keybinds, shown: true })
+      expect(frame).not.toContain("escape")
+      expect(frame).not.toContain("ctrl+shift+x")
+    } finally {
+      app.cleanup()
+    }
+  }
+})
+
+test("direct footer writes the exit chord with the symbols of the keymap", async () => {
+  for (const [keybinds, shown] of [
+    [{}, "Press ⌃C again to exit"],
+    [{ input_clear: "ctrl+l" }, "Press ⌃L again to exit"],
+    // With the clear key unbound the exit chord is still ctrl+c.
+    [{ input_clear: "none" }, "Press ⌃C again to exit"],
+  ] as const) {
+    const app = await renderFooter({ tuiConfig: createTuiResolvedConfig({ keybinds }), state: { exit: 1 } })
+
+    try {
+      await app.renderOnce()
+      const frame = app.captureCharFrame()
+
+      expect({ keybinds, shown: frame.includes(shown) }).toEqual({ keybinds, shown: true })
+      expect(frame).not.toContain("ctrl+")
+    } finally {
+      app.cleanup()
+    }
   }
 })
 

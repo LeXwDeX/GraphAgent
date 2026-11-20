@@ -65,7 +65,7 @@ test("the footer lists the expand shortcut while a session is open", async () =>
   try {
     const frame = await harness.waitForFrame((text) => text.includes("展开输出"), "the expand hint")
     const footer = frame.trimEnd().split("\n").at(-1)!
-    expect(footer).toContain("ctrl+o 展开输出")
+    expect(footer).toContain("⌃O 展开输出")
   } finally {
     await harness.dispose()
   }
@@ -75,7 +75,7 @@ test("the footer hint follows the interface language", async () => {
   const harness = await mount(mainID, { language: "en" })
   try {
     const frame = await harness.waitForFrame((text) => text.includes("expand output"), "the English hint")
-    expect(frame.trimEnd().split("\n").at(-1)).toContain("ctrl+o expand output")
+    expect(frame.trimEnd().split("\n").at(-1)).toContain("⌃O expand output")
     expect(frame).not.toContain("展开输出")
   } finally {
     await harness.dispose()
@@ -87,8 +87,8 @@ test("a rebound key replaces ctrl+o in the footer and in the keymap", async () =
   try {
     const frame = await harness.waitForFrame((text) => text.includes("展开输出"), "the expand hint")
     const footer = frame.trimEnd().split("\n").at(-1)!
-    expect(footer).toContain("f7 展开输出")
-    expect(footer).not.toContain("ctrl+o")
+    expect(footer).toContain("F7 展开输出")
+    expect(footer).not.toContain("⌃O")
 
     const bindings = harness.keymap().getCommandBindings({ visibility: "registered", commands: ["view.expand.toggle"] })
     expect(

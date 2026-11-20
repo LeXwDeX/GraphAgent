@@ -44,7 +44,7 @@ async function settled(setup: Setup) {
 }
 
 async function ready(setup: Setup) {
-  await waitForFrame(setup, (frame) => frame.includes("ctrl+b 侧边栏"), "the footer")
+  await waitForFrame(setup, (frame) => frame.includes("⌃B 侧边栏"), "the footer")
   return settled(setup)
 }
 
@@ -206,7 +206,7 @@ test("a sub-agent session has the drawer: its own sections, the root session's g
   const goal: Goal = { goal: "根会话的目标", status: "active", turnsUsed: 2, maxTurns: 10 }
   const app = await runApp({ sessions, args: { sessionID: childID }, width: 140, height: 40 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+b"), "the footer")
+    await waitForFrame(app.setup, (frame) => frame.includes("⌃B"), "the footer")
     app.events.emit(event("goal.updated", { sessionID: mainID, goal }))
     app.events.emit(
       event("todo.updated", {

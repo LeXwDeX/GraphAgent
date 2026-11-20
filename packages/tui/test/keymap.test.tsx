@@ -2,11 +2,14 @@
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { testRender, useRenderer } from "@opentui/solid"
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
+import { setLanguage } from "../src/i18n"
 import {
   displaySequence,
+  formatKeyBindings,
   formatKeySequence,
   getGraphagentModeStack,
   GRAPHAGENT_BASE_MODE,
@@ -14,6 +17,11 @@ import {
   modifiedBindings,
   registerGraphagentKeymap,
 } from "../src/keymap"
+import { cellWidth } from "../src/ui/width"
+
+afterEach(() => {
+  setLanguage(DEFAULT_LANGUAGE)
+})
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -302,14 +310,29 @@ async function shortcutText(
   }
 }
 
-test("shows ctrl+b for the drawer toggle outside tmux", async () => {
-  expect(await shortcutText("session.drawer.toggle", { tmux: undefined })).toBe("ctrl+b")
+test("shows ⌃B for the drawer toggle outside tmux", async () => {
+  expect(await shortcutText("session.drawer.toggle", { tmux: undefined })).toBe("⌃B")
   // An empty TMUX is the same as no tmux.
-  expect(await shortcutText("session.drawer.toggle", { tmux: "" })).toBe("ctrl+b")
+  expect(await shortcutText("session.drawer.toggle", { tmux: "" })).toBe("⌃B")
 })
 
 test("shows the leader alternative for the drawer toggle inside tmux", async () => {
-  expect(await shortcutText("session.drawer.toggle", { tmux: TMUX_SESSION })).toBe("ctrl+x b")
+  expect(await shortcutText("session.drawer.toggle", { tmux: TMUX_SESSION })).toBe("⌃X B")
+})
+
+test("the shortcut follows a key the user binds, written in the same symbols", async () => {
+  expect(
+    await shortcutText("session.drawer.toggle", {
+      tmux: undefined,
+      overrides: { session_drawer_toggle: "ctrl+shift+b" },
+    }),
+  ).toBe("⌃⇧B")
+  expect(
+    await shortcutText("session.drawer.toggle", {
+      tmux: TMUX_SESSION,
+      overrides: { session_drawer_toggle: "ctrl+b,<leader>d", leader: "alt+g" },
+    }),
+  ).toBe("⌥G D")
 })
 
 test("keeps the only drawer toggle binding inside tmux when it has no leader alternative", async () => {
@@ -318,11 +341,146 @@ test("keeps the only drawer toggle binding inside tmux when it has no leader alt
       tmux: TMUX_SESSION,
       overrides: { session_drawer_toggle: "f9" },
     }),
-  ).toBe("f9")
+  ).toBe("F9")
 })
 
 test("inside tmux only the drawer toggle prefers its leader alternative", async () => {
   const overrides = { help_show: "?,<leader>h" }
   expect(await shortcutText("help.show", { tmux: undefined, overrides })).toBe("?")
   expect(await shortcutText("help.show", { tmux: TMUX_SESSION, overrides })).toBe("?")
+})
+
+/**
+ * What `formatKeySequence` writes for each of `keys`, bound one to a command, with the keymap registered the way the
+ * app does it (aliases, comma lists, the leader) and `overrides` applied to the user's keybinds.
+ */
+async function written(keys: readonly string[], overrides?: TuiKeybind.KeybindOverrides) {
+  const result: string[] = []
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    const config = createResolvedKeymapConfig(overrides)
+    const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
+    const names = keys.map((_, index) => `test.written.${index}`)
+    const offLayer = keymap.registerLayer({
+      commands: names.map((name) => ({ name, run() {} })),
+      bindings: keys.map((key, index) => ({ key, cmd: names[index] })),
+    })
+    const found = keymap.getCommandBindings({ visibility: "registered", commands: names })
+    for (const name of names) result.push(formatKeySequence(found.get(name)?.[0]?.sequence, config))
+    onCleanup(() => {
+      offLayer()
+      offKeymap()
+    })
+
+    return (
+      <GraphagentKeymapProvider keymap={keymap}>
+        <box />
+      </GraphagentKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />)
+  try {
+    return result
+  } finally {
+    app.renderer.destroy()
+  }
+}
+
+/** The keys as the user writes them in `keybinds`, and as the footer, the panels and `/help` show them. */
+const WRITTEN: readonly (readonly [key: string, shown: string])[] = [
+  ["ctrl+b", "⌃B"],
+  ["ctrl+shift+p", "⌃⇧P"],
+  ["ctrl+alt+b", "⌃⌥B"],
+  ["alt+shift+a", "⇧⌥A"],
+  ["super+z", "⌘Z"],
+  ["super+shift+z", "⇧⌘Z"],
+  ["tab", "⇥"],
+  ["shift+tab", "⇧⇥"],
+  ["return", "⏎"],
+  ["enter", "⏎"],
+  ["shift+return", "⇧⏎"],
+  ["ctrl+return", "⌃⏎"],
+  ["escape", "esc"],
+  ["esc", "esc"],
+  ["alt+escape", "⌥esc"],
+  ["up", "↑"],
+  ["down", "↓"],
+  ["left", "←"],
+  ["right", "→"],
+  ["shift+up", "⇧↑"],
+  ["alt+right", "⌥→"],
+  ["f9", "F9"],
+  ["f12", "F12"],
+  ["shift+f2", "⇧F2"],
+  ["pageup", "pgup"],
+  ["pgdown", "pgdn"],
+  ["delete", "del"],
+  ["home", "home"],
+  ["backspace", "backspace"],
+  ["q", "Q"],
+  ["ctrl+-", "⌃-"],
+  ["ctrl+.", "⌃."],
+  ["?", "?"],
+  ["1", "1"],
+  ["<leader>b", "⌃X B"],
+  ["<leader>down", "⌃X ↓"],
+  ["<leader>1", "⌃X 1"],
+]
+
+test("writes modifiers and key names as symbols, and letters and function keys in capitals", async () => {
+  setLanguage("en")
+  expect(await written(WRITTEN.map(([key]) => key))).toEqual(WRITTEN.map(([, shown]) => shown))
+})
+
+test("writes space as a word in the language of the interface", async () => {
+  setLanguage("zh-CN")
+  expect(await written(["space", "ctrl+space"])).toEqual(["空格", "⌃空格"])
+  setLanguage("en")
+  expect(await written(["space", "ctrl+space"])).toEqual(["space", "⌃space"])
+})
+
+test("a rebound leader is written like every other key", async () => {
+  setLanguage("en")
+  expect(await written(["<leader>b"], { leader: "ctrl+g" })).toEqual(["⌃G B"])
+  expect(await written(["<leader>b", "<leader>down"], { leader: "alt+g" })).toEqual(["⌥G B", "⌥G ↓"])
+})
+
+test("formatKeySequence writes nothing for no sequence", () => {
+  const config = createResolvedKeymapConfig()
+  expect(formatKeySequence(undefined, config)).toBe("")
+  expect(formatKeySequence([], config)).toBe("")
+})
+
+// The symbols are laid out by `cellWidth` everywhere. Four of them are East Asian Ambiguous characters, which take two
+// cells when the user sets `ambiguous_width` to 2; the rest take one at either setting.
+test("the key symbols are one cell wide, except the ambiguous ones that take two at ambiguous_width 2", () => {
+  for (const symbol of ["⌃", "⌥", "⌘", "⇥", "⏎"]) {
+    expect({ symbol, aw1: cellWidth(symbol, 1), aw2: cellWidth(symbol, 2) }).toEqual({ symbol, aw1: 1, aw2: 1 })
+  }
+  for (const symbol of ["⇧", "↑", "↓", "←", "→"]) {
+    expect({ symbol, aw1: cellWidth(symbol, 1), aw2: cellWidth(symbol, 2) }).toEqual({ symbol, aw1: 1, aw2: 2 })
+  }
+  expect(cellWidth("⌃⇧↑", 1)).toBe(3)
+  expect(cellWidth("⌃⇧↑", 2)).toBe(5)
+})
+
+test("formatKeyBindings joins the bindings of a command with a comma and writes each once", () => {
+  const config = createResolvedKeymapConfig()
+  const press = (name: string, modifiers: { ctrl?: boolean; shift?: boolean } = {}) => ({
+    sequence: [
+      {
+        stroke: { name, ctrl: modifiers.ctrl ?? false, shift: modifiers.shift ?? false, meta: false, super: false },
+        display: name,
+      },
+    ],
+  })
+  expect(formatKeyBindings(undefined, config)).toBeUndefined()
+  expect(formatKeyBindings([], config)).toBeUndefined()
+  expect(formatKeyBindings([press("b", { ctrl: true })], config)).toBe("⌃B")
+  expect(
+    formatKeyBindings([press("b", { ctrl: true }), press("tab", { shift: true }), press("b", { ctrl: true })], config),
+  ).toBe("⌃B, ⇧⇥")
 })

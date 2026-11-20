@@ -22,7 +22,7 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
 │ ripgrep 下载超时（504）                                                      │
 │   │        ● typecheck  9m 0s                                                │
 │   第 4 波  ○ unit                                                            │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭          │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · esc 关闭                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -66,7 +66,7 @@ exports[`how it looks 120 by 40, in Chinese 1`] = `
 │ ripgrep 下载超时（504）                                                                                              │
 │   │        ● typecheck  9m 0s                                                                                        │
 │   第 4 波  ○ unit                                                                                                    │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · o 详情 · escape 关闭                                         │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · O 详情 · esc 关闭                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -94,7 +94,7 @@ exports[`how it looks 80 by 24, in English 1`] = `
 │ ripgrep 下载超时（504）                                                      │
 │   │       ● typecheck  9m 0s                                                 │
 │   Wave 4  ○ unit                                                             │
-│ up/down Select · enter Sub-agent · i Ask main agent · escape Close           │
+│ ↑↓ Select · ⏎ Sub-agent · I Ask main agent · esc Close                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -128,7 +128,7 @@ exports[`how it looks a workflow with several tabs and a loop, 100 by 30 1`] = `
 │   !        ○ after                                                                               │
 │   !        ○ x                                                                                   │
 │   !        ○ y                                                                                   │
-│ up/down 选择 · left/right 切换标签 · enter 展开 · i 请主 agent 处理 · o 详情 · escape 关闭       │
+│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 展开 · I 请主 agent 处理 · O 详情 · esc 关闭                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
 "
@@ -156,7 +156,7 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in Chinese 1`] = `
 │ › │        ✗ e2e      4m 0s                                                  │
 │ ripgrep 下载超时（504）                                                      │
 │   │        ● unit     1m 40s                                                 │
-│ up/down 选择 · enter 展开 · i 请主 agent 处理 · escape 关闭                  │
+│ ↑↓ 选择 · ⏎ 展开 · I 请主 agent 处理 · esc 关闭                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -200,7 +200,7 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in Chinese 1`] = `
 │ › │        ✗ e2e      4m 0s                                                                                          │
 │ ripgrep 下载超时（504）                                                                                              │
 │   │        ● unit     1m 40s                                                                                         │
-│ up/down 选择 · enter 展开 · i 请主 agent 处理 · o 详情 · escape 关闭                                                 │
+│ ↑↓ 选择 · ⏎ 展开 · I 请主 agent 处理 · O 详情 · esc 关闭                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -228,7 +228,7 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in English 1`] = `
 │ › │       ✗ e2e      4m 0s                                                   │
 │ ripgrep 下载超时（504）                                                      │
 │   │       ● unit     1m 40s                                                  │
-│ up/down Select · enter Expand · i Ask main agent · escape Close              │
+│ ↑↓ Select · ⏎ Expand · I Ask main agent · esc Close                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -272,7 +272,7 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in English 1`] = `
 │ › │       ✗ e2e      4m 0s                                                                                           │
 │ ripgrep 下载超时（504）                                                                                              │
 │   │       ● unit     1m 40s                                                                                          │
-│ up/down Select · enter Expand · i Ask main agent · o Details · escape Close                                          │
+│ ↑↓ Select · ⏎ Expand · I Ask main agent · O Details · esc Close                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -300,7 +300,7 @@ exports[`how it looks a compose expansion folded, 80 by 24, in Chinese 1`] = `
 │ › 第 4 波  ○ ▸ review            （3 个子节点）                              │
 │ 等待第 4 波                                                                  │
 │   第 5 波  ○   ship                                                          │
-│ up/down 选择 · space 展开子节点 · enter 展开 · escape 关闭                   │
+│ ↑↓ 选择 · 空格 展开子节点 · ⏎ 展开 · esc 关闭                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -344,7 +344,7 @@ exports[`how it looks a compose expansion folded, 120 by 40, in Chinese 1`] = `
 │ › 第 4 波  ○ ▸ review            （3 个子节点）                                                                      │
 │ 等待第 4 波                                                                                                          │
 │   第 5 波  ○   ship                                                                                                  │
-│ up/down 选择 · space 展开子节点 · enter 展开 · i 请主 agent 处理 · escape 关闭                                       │
+│ ↑↓ 选择 · 空格 展开子节点 · ⏎ 展开 · I 请主 agent 处理 · esc 关闭                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -372,7 +372,7 @@ exports[`how it looks a compose expansion folded, 80 by 24, in English 1`] = `
 │ › Wave 4  ○ ▸ review            (3 children)                                 │
 │ Waiting for wave 4                                                           │
 │   Wave 5  ○   ship                                                           │
-│ up/down Select · space Unfold · enter Expand · escape Close                  │
+│ ↑↓ Select · space Unfold · ⏎ Expand · esc Close                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -400,7 +400,7 @@ exports[`how it looks a compose expansion unfolded, 80 by 24, in Chinese 1`] = `
 │ 等待第 4 波                                                                  │
 │            ✓     review--api   1m 20s                                        │
 │            ✗     review--core  3m 0s                                         │
-│ up/down 选择 · space 折叠子节点 · enter 展开 · escape 关闭                   │
+│ ↑↓ 选择 · 空格 折叠子节点 · ⏎ 展开 · esc 关闭                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -444,7 +444,7 @@ exports[`how it looks a compose expansion unfolded, 120 by 40, in English 1`] = 
 │           ✗     review--core  3m 0s                                                                                  │
 │           ●     review--docs  9m 40s                                                                                 │
 │   Wave 5  ○   ship                                                                                                   │
-│ up/down Select · space Fold · enter Expand · i Ask main agent · escape Close                                         │
+│ ↑↓ Select · space Fold · ⏎ Expand · I Ask main agent · esc Close                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -488,7 +488,7 @@ exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese
 │            ✓       review--docs--intro  50s                                                                          │
 │            ●       review--docs--refs   9m 30s                                                                       │
 │   第 7 波  ○   ship                                                                                                  │
-│ up/down 选择 · space 折叠子节点 · enter 展开 · i 请主 agent 处理 · escape 关闭                                       │
+│ ↑↓ 选择 · 空格 折叠子节点 · ⏎ 展开 · I 请主 agent 处理 · esc 关闭                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -516,7 +516,7 @@ exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
 │   第 2 波  ✓ install    48s                                                  │
 │ › 第 3 波  ✗ e2e        4m 0s                                                │
 │ ripgrep 下载超时（504）                                                      │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭          │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · esc 关闭                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -560,7 +560,7 @@ exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
 │ ripgrep 下载超时（504）                                                                                              │
 │   │        ● typecheck  9m 0s                                                                                        │
 │   第 4 波  ○ unit                                                                                                    │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · o 详情 · escape 关闭                                         │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · O 详情 · esc 关闭                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -588,7 +588,7 @@ exports[`the usage row how it looks 80 by 24, in English 1`] = `
 │   Wave 2  ✓ install    48s                                                   │
 │ › Wave 3  ✗ e2e        4m 0s                                                 │
 │ ripgrep 下载超时（504）                                                      │
-│ up/down Select · enter Sub-agent · i Ask main agent · escape Close           │
+│ ↑↓ Select · ⏎ Sub-agent · I Ask main agent · esc Close                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -616,7 +616,7 @@ exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
 │ › 第 3 波  ✗ e2e        4m 0s                                                │
 │ ripgrep 下载超时（504）                                                      │
 │   │        ● typecheck  9m 0s                                                │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭          │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · esc 关闭                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -660,7 +660,7 @@ exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
 │ ripgrep 下载超时（504）                                                                                              │
 │   │        ● typecheck  9m 0s                                                                                        │
 │   第 4 波  ○ unit                                                                                                    │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · o 详情 · escape 关闭                                         │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · O 详情 · esc 关闭                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -688,7 +688,7 @@ exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
 │ › Wave 3  ✗ e2e        4m 0s                                                 │
 │ ripgrep 下载超时（504）                                                      │
 │   │       ● typecheck  9m 0s                                                 │
-│ up/down Select · enter Sub-agent · i Ask main agent · escape Close           │
+│ ↑↓ Select · ⏎ Sub-agent · I Ask main agent · esc Close                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -732,7 +732,7 @@ exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
 │ ripgrep 下载超时（504）                                                                                              │
 │   │       ● typecheck  9m 0s                                                                                         │
 │   Wave 4  ○ unit                                                                                                     │
-│ up/down Select · enter Sub-agent · i Ask main agent · o Details · escape Close                                       │
+│ ↑↓ Select · ⏎ Sub-agent · I Ask main agent · O Details · esc Close                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "
@@ -760,7 +760,7 @@ exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
 │ › 第 3 波  ✗ e2e        4m 0s                                                │
 │ ripgrep 下载超时（504）                                                      │
 │   │        ● typecheck  9m 0s                                                │
-│ up/down 选择 · enter 进入子 agent · i 请主 agent 处理 · escape 关闭          │
+│ ↑↓ 选择 · ⏎ 进入子 agent · I 请主 agent 处理 · esc 关闭                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
                                                                                 
 "
@@ -804,7 +804,7 @@ exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
 │ ripgrep 下载超时（504）                                                                                              │
 │   │       ● typecheck  9m 0s                                                                                         │
 │   Wave 4  ○ unit                                                                                                     │
-│ up/down Select · enter Sub-agent · i Ask main agent · o Details · escape Close                                       │
+│ ↑↓ Select · ⏎ Sub-agent · I Ask main agent · O Details · esc Close                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
 "

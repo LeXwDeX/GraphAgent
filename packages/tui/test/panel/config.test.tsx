@@ -1209,11 +1209,11 @@ test("the shortcuts tab lists the keymap by category and then title, with the ke
     const names = bodyOf(frame).map((line) => line.slice(4, 4 + 22).trim())
     // The categories are Agent, DAG and Session: no row of its own for them, the rows follow in that order.
     expect(names.slice(0, 4)).toEqual(["Switch model", "Toggle DAG mode", "New session", "Switch to another se…"])
-    expect(lineOf(frame, "Switch model")).toContain("ctrl+x m")
-    expect(lineOf(frame, "Toggle DAG mode")).toContain("ctrl+x d")
-    expect(lineOf(frame, "New session")).toContain("ctrl+x n")
+    expect(lineOf(frame, "Switch model")).toContain("⌃X M")
+    expect(lineOf(frame, "Toggle DAG mode")).toContain("⌃X D")
+    expect(lineOf(frame, "New session")).toContain("⌃X N")
     // A title too long for the name column is cut inside it, and the keys still start in the value column.
-    expect(lineOf(frame, "Switch to another se…")).toContain("ctrl+x l")
+    expect(lineOf(frame, "Switch to another se…")).toContain("⌃X L")
     for (const left of ["Hidden command", "Panel command", "Unbound command"]) expect(frame).not.toContain(left)
     for (const heading of ["Agent", "DAG", "Session"]) expect(frame).not.toMatch(new RegExp(`│\\s+${heading}\\s+│`))
   } finally {
@@ -1246,8 +1246,8 @@ test("a key rebound in the configuration changes the shortcuts tab", async () =>
   })
   try {
     const frame = await renderUntilFrame(app, (text) => text.includes("Toggle DAG mode"), "the shortcut rows")
-    expect(lineOf(frame, "Toggle DAG mode")).toContain("f8")
-    expect(frame).not.toContain("ctrl+x d")
+    expect(lineOf(frame, "Toggle DAG mode")).toContain("F8")
+    expect(frame).not.toContain("⌃X D")
   } finally {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()

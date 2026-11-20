@@ -268,8 +268,8 @@ const SAYS: Record<"en" | "zh-CN", Record<string, { title: string; line: string 
 }
 
 const HINTS = {
-  en: { fold: "ctrl+o expand · click to open", open: "click to open" },
-  "zh-CN": { fold: "ctrl+o 展开 · 点击进入", open: "点击进入" },
+  en: { fold: "⌃O expand · click to open", open: "click to open" },
+  "zh-CN": { fold: "⌃O 展开 · 点击进入", open: "点击进入" },
 } as const
 
 for (const language of ["zh-CN", "en"] as const) {
@@ -333,7 +333,7 @@ test("the mark says how the run ended, and the line of a failed run is drawn in 
     // The text of a result is gray, the failure's is red, and the hint is the dimmest of the three.
     expect((await colorOn(harness, "Found 3 issues", "Found 3 issues"))?.equals(palette().textMuted)).toBe(true)
     expect((await colorOn(harness, "boom: connection", "boom: connection"))?.equals(palette().error)).toBe(true)
-    expect((await colorOn(harness, "Found 3 issues", "ctrl+o"))?.equals(palette().textDim)).toBe(true)
+    expect((await colorOn(harness, "Found 3 issues", "⌃O"))?.equals(palette().textDim)).toBe(true)
     expect((await colorOn(harness, "Scan done ·", "background result"))?.equals(palette().text)).toBe(true)
   } finally {
     await harness.dispose()
@@ -368,8 +368,8 @@ test("view.expand.toggle opens the whole result as markdown under the title, and
     expect(text).toContain("final word")
     expect(text).not.toContain("**")
     // The preview line is gone: the body stands in its place, and the hint at its foot says what the key does now.
-    expect(at.preview).not.toContain("ctrl+o expand")
-    expect(open).toContain("ctrl+o collapse · click to open")
+    expect(at.preview).not.toContain("⌃O expand")
+    expect(open).toContain("⌃O collapse · click to open")
     // The card under it moved down by what the body took, and the one that had nothing to open did not change.
     expect(card(open, "short")!.index - at.index).toBeGreaterThan(height)
     expect(card(open, "short")!.preview).toEndWith(HINTS.en.open)
@@ -393,13 +393,13 @@ test("the key opens one card at a time, the last one first, and the hint names t
   })
   try {
     const closed = await harness.waitForFrame((value) => shown(value, ["done", "failed"]), "the cards")
-    expect(card(closed, "done")!.preview).toEndWith("f9 展开 · 点击进入")
-    expect(card(closed, "failed")!.preview).toEndWith("f9 展开 · 点击进入")
+    expect(card(closed, "done")!.preview).toEndWith("F9 展开 · 点击进入")
+    expect(card(closed, "failed")!.preview).toEndWith("F9 展开 · 点击进入")
 
     harness.app.mockInput.pressKey("F9")
     const first = await harness.waitForFrame((value) => value.includes("at run (task.ts:42)"), "the later card")
     expect(first).not.toContain("second finding")
-    expect(first).toContain("f9 折叠 · 点击进入")
+    expect(first).toContain("F9 折叠 · 点击进入")
 
     harness.app.mockInput.pressKey("F9")
     const second = await harness.waitForFrame((value) => value.includes("second finding"), "the earlier card")
@@ -550,7 +550,7 @@ test("a transcript long enough to be windowed shows the card at its place, and o
     expect(card(frame, "done")!.preview).toEndWith(HINTS.en.fold)
     pressExpand(harness)
     const open = await harness.waitForFrame((value) => value.includes("second finding"), "the result")
-    expect(open).toContain("ctrl+o collapse · click to open")
+    expect(open).toContain("⌃O collapse · click to open")
     expect(harness.writes()).toEqual([])
   } finally {
     await harness.dispose()
@@ -574,7 +574,7 @@ test("a card far from the viewport of a windowed transcript opens by key and is 
     // The card is open: the first of the findings is on the screen, and the rest is below the viewport.
     const frame = await harness.waitForFrame((value) => value.includes("first finding"), "the open card")
     expect(frame).toContain("Found 3 issues in src/a.ts")
-    expect(card(frame, "done")!.preview).not.toContain("ctrl+o expand")
+    expect(card(frame, "done")!.preview).not.toContain("⌃O expand")
     expect(harness.writes()).toEqual([])
   } finally {
     await harness.dispose()
