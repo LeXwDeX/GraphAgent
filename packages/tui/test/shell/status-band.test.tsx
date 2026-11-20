@@ -122,7 +122,7 @@ function serve(world: World, interest: () => readonly string[]) {
     const nodes = url.pathname.match(/^\/dag\/([^/]+)\/nodes$/)
     if (nodes) {
       reads.push({ workflow: nodes[1], interest: interest() })
-      return json(world.tables[nodes[1]] ?? [])
+      return json({ graphRev: 1, nodes: world.tables[nodes[1]] ?? [] })
     }
     return undefined
   }

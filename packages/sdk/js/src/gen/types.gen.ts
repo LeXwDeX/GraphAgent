@@ -6933,7 +6933,9 @@ export type PartUpdateResponse = PartUpdateResponses[keyof PartUpdateResponses]
 export type DagListData = {
   body?: never
   path?: never
-  query?: never
+  query?: {
+    sessionID?: string
+  }
   url: "/dag"
 }
 
@@ -6952,43 +6954,12 @@ export type DagListError = DagListErrors[keyof DagListErrors]
 
 export type DagListResponses = {
   /**
-   * All workflows
+   * Workflows of the project, or of one session when `sessionID` is given
    */
   200: Array<DagWorkflow>
 }
 
 export type DagListResponse = DagListResponses[keyof DagListResponses]
-
-export type DagBySessionData = {
-  body?: never
-  path: {
-    sessionID: string
-  }
-  query?: never
-  url: "/dag/session/{sessionID}"
-}
-
-export type DagBySessionErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * NotFoundError
-   */
-  404: NotFoundError
-}
-
-export type DagBySessionError = DagBySessionErrors[keyof DagBySessionErrors]
-
-export type DagBySessionResponses = {
-  /**
-   * Workflows for a session
-   */
-  200: Array<DagWorkflow>
-}
-
-export type DagBySessionResponse = DagBySessionResponses[keyof DagBySessionResponses]
 
 export type DagSummaryData = {
   body?: never
@@ -7045,9 +7016,12 @@ export type DagNodesError = DagNodesErrors[keyof DagNodesErrors]
 
 export type DagNodesResponses = {
   /**
-   * Nodes for a workflow
+   * The workflow's graph revision and its nodes
    */
-  200: Array<DagNode>
+  200: {
+    graphRev: number | "Infinity" | "-Infinity" | "NaN"
+    nodes: Array<DagNode>
+  }
 }
 
 export type DagNodesResponse = DagNodesResponses[keyof DagNodesResponses]

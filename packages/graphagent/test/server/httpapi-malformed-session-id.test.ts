@@ -27,11 +27,13 @@ const malformed: ReadonlyArray<Probe> = [
   ["GET", "/session/not-a-session-id/message"],
   ["DELETE", "/session/not-a-session-id"],
   ["POST", "/session/not-a-session-id/abort"],
-  ["GET", "/dag/session/not-a-session-id"],
   ["GET", "/dag/session/not-a-session-id/summary"],
   ["GET", "/session/not-a-session-id/children"],
   ["POST", "/experimental/session/not-a-session-id/background"],
 ]
+
+// The workflow list takes the session as a query parameter: the same refusal, with the query as the rejected component.
+const malformedQuery: ReadonlyArray<Probe> = [["GET", "/dag?sessionID=not-a-session-id"]]
 
 // A session ID that is well formed but names no session.
 const missing = "ses_doesnotexist"
@@ -81,6 +83,38 @@ describe("malformed session IDs over HTTP", () => {
   )
 
   it.instance(
+    "answer 400 for a malformed sessionID query, naming the query as the rejected component",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const results = []
+        for (const probe of malformedQuery) {
+          const { status, body } = yield* call(test.directory, probe)
+          results.push({
+            request: probe.join(" "),
+            status,
+            name: body?.name,
+            kind: body?.data?.kind,
+            fields: Object.keys(body?.data ?? {}).sort(),
+            names: String(body?.data?.message).includes("sessionID"),
+          })
+        }
+
+        expect(results).toEqual(
+          malformedQuery.map((probe) => ({
+            request: probe.join(" "),
+            status: 400,
+            name: "BadRequest",
+            kind: "Query",
+            fields: ["kind", "message"],
+            names: true,
+          })),
+        )
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
     "keep 404 for a well-formed ID that names no session",
     () =>
       Effect.gen(function* () {
@@ -89,7 +123,7 @@ describe("malformed session IDs over HTTP", () => {
           ["GET", `/session/${missing}`],
           ["GET", `/session/${missing}/message`],
           ["DELETE", `/session/${missing}`],
-          ["GET", `/dag/session/${missing}`],
+          ["GET", `/dag?sessionID=${missing}`],
           ["GET", `/dag/session/${missing}/summary`],
         ]
 
@@ -124,7 +158,7 @@ describe("malformed session IDs over HTTP", () => {
         expect(session.status).toBe(200)
         expect(session.body).toMatchObject({ id: created.id })
         // No workflow was started for it: both DAG reads answer an empty list, not a 404.
-        expect(yield* call(test.directory, ["GET", `/dag/session/${created.id}`])).toEqual({ status: 200, body: [] })
+        expect(yield* call(test.directory, ["GET", `/dag?sessionID=${created.id}`])).toEqual({ status: 200, body: [] })
         expect(yield* call(test.directory, ["GET", `/dag/session/${created.id}/summary`])).toEqual({
           status: 200,
           body: [],

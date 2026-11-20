@@ -1297,19 +1297,6 @@ export const {
     }
 
     /**
-     * The graph revision a freshly read table is stamped with: the `dag.nodes`
-     * answer carries none. A push buffered meanwhile knows the server's current
-     * one (a resync names it); with none buffered the summary's is the best
-     * there is, and a later push that disagrees reads the table once more.
-     */
-    function dagGraphRev(workflowID: string, sessionID: string, feed: DagMerge.Feed) {
-      if (feed.status === "loading" && feed.buffered.length > 0) {
-        return feed.buffered.reduce((newest, patch) => (patch.seq > newest.seq ? patch : newest)).graphRev
-      }
-      return dagFinite(store.dag[sessionID]?.find((summary) => summary.id === workflowID)?.graphRev) ?? 0
-    }
-
-    /**
      * Read a workflow's whole node table. The read starts a feed in `loading`
      * (or keeps the one that is), so pushes that arrive meanwhile are buffered
      * and replayed on top of the answer. `reset` forgets what was buffered, for
@@ -1319,8 +1306,7 @@ export const {
      * reads again.
      */
     function readDagNodes(workflowID: string, reset = false) {
-      const sessionID = dagWatched().get(workflowID)
-      if (sessionID === undefined) return
+      if (!dagWatched().has(workflowID)) return
       const previous = dagFeeds.get(workflowID)
       const feed = previous?.status === "loading" && !reset ? previous : DagMerge.loading()
       if (feed !== previous) writeDagFeed(workflowID, feed)
@@ -1341,9 +1327,10 @@ export const {
             workflowID,
             DagMerge.receive(current, {
               workflowID,
-              graphRev: dagGraphRev(workflowID, sessionID, current),
+              // The answer names the revision its rows belong to, so pushes buffered meanwhile replay onto it.
+              graphRev: dagFinite(response.data.graphRev) ?? 0,
               seq: 0,
-              nodes: response.data.map(dagNodeRow),
+              nodes: response.data.nodes.map(dagNodeRow),
             }),
           )
         })

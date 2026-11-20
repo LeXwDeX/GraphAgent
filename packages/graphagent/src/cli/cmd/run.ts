@@ -661,7 +661,7 @@ export const RunCommand = effectCmd({
           }
           GlobalBus.on("event", onBus)
           let error: string | undefined
-          // Issue 614: consumer-only DAG hold. Sample dag.bySession on the
+          // Issue 614: consumer-only DAG hold. Sample dag.list on the
           // busy/idle transitions of the target session and on the DAG summary
           // pushes that replace the old 1s poll (#1027 PR5); keep consuming
           // events while a session workflow may still owe a wake turn. The

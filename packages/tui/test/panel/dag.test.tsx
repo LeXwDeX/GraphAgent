@@ -243,7 +243,7 @@ function dagServer(input: {
       const table = url.pathname.match(/^\/dag\/([^/]+)\/nodes$/)
       if (table) {
         server.reads.push(table[1])
-        return json(server.tables[table[1]] ?? [])
+        return json({ graphRev: 1, nodes: server.tables[table[1]] ?? [] })
       }
       return undefined
     },

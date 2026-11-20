@@ -34,8 +34,6 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
-  DagBySessionErrors,
-  DagBySessionResponses,
   DagListErrors,
   DagListResponses,
   DagNodesErrors,
@@ -3520,29 +3518,19 @@ export class Part extends HeyApiClient {
 
 export class Dag extends HeyApiClient {
   /**
-   * List all DAG workflows
+   * List DAG workflows
+   *
+   * List the project's DAG workflows. With `sessionID`, list only the workflows that session owns; a session of another project or one that does not exist is a 404.
    */
   public list<ThrowOnError extends boolean = false>(
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<DagListResponses, DagListErrors, ThrowOnError> {
-    return (options?.client ?? this.client).get<DagListResponses, DagListErrors, ThrowOnError>({
-      url: "/dag",
-      ...options,
-    })
-  }
-
-  /**
-   * List workflows by session
-   */
-  public bySession<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
+    parameters?: {
+      sessionID?: string
     },
     options?: Options<never, ThrowOnError>,
-  ): RequestResult<DagBySessionResponses, DagBySessionErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).get<DagBySessionResponses, DagBySessionErrors, ThrowOnError>({
-      url: "/dag/session/{sessionID}",
+  ): RequestResult<DagListResponses, DagListErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<DagListResponses, DagListErrors, ThrowOnError>({
+      url: "/dag",
       ...options,
       ...params,
     })

@@ -266,7 +266,8 @@ function withContext<A, E>(
           llmText: (value) => Effect.suspend(() => llm().text(value)),
           llmHang: () => Effect.suspend(() => llm().hang),
           llmWait: (count) => Effect.suspend(() => llm().wait(count)),
-          dag: (input) => run(createDagFixture(input.sessionID, input.title, input.nodes, input.worktree)),
+          dag: (input) =>
+            run(createDagFixture(input.sessionID, input.title, input.nodes, input.worktree, input.graphRev)),
           dagFailNode: (dagID, nodeID, reason, errorClass) =>
             run(failDagNodeFixture(dagID, nodeID, reason, errorClass)),
           dagAgentMessage: (dagID, nodeID, ownerSessionID) => run(seedDagAgentMessage(dagID, nodeID, ownerSessionID)),
@@ -436,6 +437,7 @@ function createDagFixture(
   title: string | undefined,
   nodes: DagNodeSeed[],
   worktree?: DagWorktreeSeed,
+  graphRev?: number,
 ) {
   return Effect.gen(function* () {
     const modules = yield* Effect.promise(() => runtime())
@@ -479,6 +481,16 @@ function createDagFixture(
             state: worktree.settled,
           },
         })
+        .where(eq(WorkflowTable.id, dagID))
+        .run()
+        .pipe(Effect.orDie)
+    }
+    if (graphRev !== undefined) {
+      // The revision column alone: the scenario needs a value a replan would leave, not a replan's history.
+      const { db } = yield* Database.Service
+      yield* db
+        .update(WorkflowTable)
+        .set({ graph_rev: graphRev })
         .where(eq(WorkflowTable.id, dagID))
         .run()
         .pipe(Effect.orDie)

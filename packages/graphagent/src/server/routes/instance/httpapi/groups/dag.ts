@@ -39,7 +39,18 @@ export const NodeResponse = DagSummary.NodeView
 export type NodeResponse = DagSummary.NodeView
 
 export const DagListResponse = Schema.Array(WorkflowResponse)
-export const DagNodeListResponse = Schema.Array(NodeResponse)
+
+// `graphRev` is the graph revision the rows belong to: the stamp a client gives its table before it merges
+// `dag.workflow.nodes.updated` pushes (`DagMerge`).
+export const DagNodeListResponse = Schema.Struct({
+  graphRev: Schema.Number,
+  nodes: Schema.Array(NodeResponse),
+})
+
+// No `sessionID`: the whole project. With one: the workflows that session owns.
+export const DagListQuery = Schema.Struct({
+  sessionID: Schema.optional(SessionID),
+})
 
 // Reuse the event/TUI contract so HTTP and push summaries cannot drift.
 export const WorkflowSummaryResponse = DagSummary.WorkflowSummary
@@ -48,7 +59,6 @@ export const DagSummaryListResponse = Schema.Array(WorkflowSummaryResponse)
 
 export const DagPaths = {
   list: `${root}`,
-  bySession: `${root}/session/:sessionID`,
   summary: `${root}/session/:sessionID/summary`,
   nodes: `${root}/:dagID/nodes`,
 } as const
@@ -61,16 +71,17 @@ export const DagApi = HttpApi.make("dag").add(
   HttpApiGroup.make("dag")
     .add(
       HttpApiEndpoint.get("list", DagPaths.list, {
-        success: described(DagListResponse, "All workflows"),
+        query: DagListQuery,
+        success: described(DagListResponse, "Workflows of the project, or of one session when `sessionID` is given"),
         error: [ApiNotFoundError],
-      }).annotateMerge(OpenApi.annotations({ identifier: "dag.list", summary: "List all DAG workflows" })),
-    )
-    .add(
-      HttpApiEndpoint.get("bySession", DagPaths.bySession, {
-        params: { sessionID: SessionID },
-        success: described(DagListResponse, "Workflows for a session"),
-        error: [ApiNotFoundError],
-      }).annotateMerge(OpenApi.annotations({ identifier: "dag.bySession", summary: "List workflows by session" })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "dag.list",
+          summary: "List DAG workflows",
+          description:
+            "List the project's DAG workflows. With `sessionID`, list only the workflows that session owns; a session of another project or one that does not exist is a 404.",
+        }),
+      ),
     )
     .add(
       HttpApiEndpoint.get("summary", DagPaths.summary, {
@@ -87,7 +98,7 @@ export const DagApi = HttpApi.make("dag").add(
     .add(
       HttpApiEndpoint.get("nodes", DagPaths.nodes, {
         params: { dagID: Schema.String },
-        success: described(DagNodeListResponse, "Nodes for a workflow"),
+        success: described(DagNodeListResponse, "The workflow's graph revision and its nodes"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.nodes", summary: "List nodes for a workflow" })),
     )

@@ -223,14 +223,16 @@ A node's final reply can be plain text, a structured payload (one final JSON val
 
   ```
   GET  /dag                              list workflows
-  GET  /dag/session/:sessionID           workflows for a session
+  GET  /dag?sessionID=:sessionID         workflows for a session
   GET  /dag/session/:sessionID/summary   progress summaries
-  GET  /dag/:dagID/nodes                 node list
+  GET  /dag/:dagID/nodes                 node list ({ graphRev, nodes })
   ```
 
   There is deliberately no per-workflow or per-node detail endpoint: read
   workflow status from the session-scoped list and node state from the node
-  list; mutations go through the `workflow` tool.
+  list; mutations go through the `workflow` tool. The node list names the
+  `graphRev` its rows belong to, so a client can merge the
+  `dag.workflow.nodes.updated` pushes that follow onto it.
 
 ### Project configuration files
 

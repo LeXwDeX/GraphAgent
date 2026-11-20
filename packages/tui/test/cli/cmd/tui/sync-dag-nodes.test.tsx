@@ -90,10 +90,12 @@ function global(payload: GlobalEvent["payload"] | Record<string, unknown>): Glob
   return { directory, project: "proj_test", payload } as GlobalEvent
 }
 
-/** `GET /dag/:id/nodes`: the tables it serves, and a record of every read. */
+/** `GET /dag/:id/nodes`: the tables it serves with the graph revision each belongs to, and a record of every read. */
 function tableRoute(tables: Record<string, DagNode[]>) {
   const route = {
     tables,
+    /** The revision a table is answered with; 1 unless set. The wire may carry a non-finite sentinel. */
+    revs: {} as Record<string, number | string>,
     reads: [] as string[],
     status: 200,
     /** Held until released: the read stays in flight. */
@@ -106,7 +108,7 @@ function tableRoute(tables: Record<string, DagNode[]>) {
       route.onRead?.(match[1])
       if (route.gate) await route.gate
       if (route.status !== 200) return json({ message: "unavailable" }, { status: route.status })
-      return json(route.tables[match[1]] ?? [])
+      return json({ graphRev: route.revs[match[1]] ?? 1, nodes: route.tables[match[1]] ?? [] })
     },
   }
   return route
@@ -274,7 +276,7 @@ describe("tui sync dag node tables", () => {
         ["late", "pending"],
       ])
 
-      // The buffered push named the graph revision, so the table carries it and the next push merges.
+      // The answer named revision 1, the buffered push's, so the push replayed and the next one merges.
       emit(nodesEvent({ seq: 2, nodes: [wire("b", "completed")] }))
       await wait(() => sync.dag.nodes(wf)?.[1].status === "completed")
       await settle()
@@ -309,7 +311,7 @@ describe("tui sync dag node tables", () => {
     })
   })
 
-  test("a push from another graph revision reads the table again, once, and stamps it with that revision", async () => {
+  test("a push from another graph revision reads the table again, once, and stamps it with the revision it answers", async () => {
     const route = tableRoute({ [wf]: [wire("a"), wire("b")] })
     await withMount(route, async ({ emit, sync }) => {
       emit(summaryEvent([summary(1)]))
@@ -317,8 +319,9 @@ describe("tui sync dag node tables", () => {
       await sync.dag.watch("band", shown())
       await wait(() => sync.dag.nodes(wf) !== undefined)
 
-      // A replan: the table changes shape and the push names revision 2.
+      // A replan: the table changes shape, the server is at revision 2 and the push names it.
       route.tables[wf] = [wire("a"), wire("z")]
+      route.revs[wf] = 2
       emit(nodesEvent({ graphRev: 2, seq: 5, nodes: [wire("z", "running")] }))
       await wait(() => route.reads.length === 2)
       await wait(() => sync.dag.nodes(wf)?.some((row) => row.id === "z") === true)
@@ -630,9 +633,8 @@ describe("tui sync dag node tables", () => {
 
   test("a graph revision sentinel on a push is not mistaken for a change", async () => {
     const route = tableRoute({ [wf]: [wire("a")] })
+    route.revs[wf] = 0
     await withMount(route, async ({ emit, sync }) => {
-      emit(summaryEvent([summary(0)]))
-      await wait(() => (sync.data.dag[sid]?.length ?? 0) === 1)
       await sync.dag.watch("band", shown())
       await wait(() => sync.dag.nodes(wf) !== undefined)
       // The wire says "NaN": it counts as revision 0, the table's, and merges.
@@ -650,6 +652,42 @@ describe("tui sync dag node tables", () => {
           },
         }),
       )
+      await wait(() => sync.dag.nodes(wf)?.[0].status === "completed")
+      await settle()
+      expect(route.reads).toEqual([wf])
+    })
+  })
+
+  test("the table is stamped with the revision the answer names, not the summary's", async () => {
+    const route = tableRoute({ [wf]: [wire("a"), wire("b")] })
+    route.revs[wf] = 2
+    await withMount(route, async ({ emit, sync }) => {
+      // The summary lags behind: it still names revision 5.
+      emit(summaryEvent([summary(5)]))
+      await wait(() => (sync.data.dag[sid]?.length ?? 0) === 1)
+      await sync.dag.watch("band", shown())
+      await wait(() => sync.dag.nodes(wf) !== undefined)
+      const feed = sync.data.dagNodes[wf]
+      expect(feed.status === "ready" && feed.view.graphRev).toBe(2)
+
+      // A push from the answer's revision merges; the summary's would have made it read the table again.
+      emit(nodesEvent({ graphRev: 2, seq: 1, nodes: [wire("b", "completed")] }))
+      await wait(() => sync.dag.nodes(wf)?.[1].status === "completed")
+      await settle()
+      expect(route.reads).toEqual([wf])
+    })
+  })
+
+  test("a graph revision sentinel in the answer counts as revision 0", async () => {
+    const route = tableRoute({ [wf]: [wire("a")] })
+    route.revs[wf] = "NaN"
+    await withMount(route, async ({ emit, sync }) => {
+      await sync.dag.watch("band", shown())
+      await wait(() => sync.dag.nodes(wf) !== undefined)
+      const feed = sync.data.dagNodes[wf]
+      expect(feed.status === "ready" && feed.view.graphRev).toBe(0)
+
+      emit(nodesEvent({ graphRev: 0, seq: 1, nodes: [wire("a", "completed")] }))
       await wait(() => sync.dag.nodes(wf)?.[0].status === "completed")
       await settle()
       expect(route.reads).toEqual([wf])

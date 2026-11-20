@@ -130,7 +130,7 @@ test.skipIf(!setting)(
               let start: any
               const startDeadline = Date.now() + 120000
               while (Date.now() < startDeadline) {
-                const workflows: any[] = await req(`/dag/session/${parent.id}`)
+                const workflows: any[] = await req(`/dag?sessionID=${parent.id}`)
                 if (workflows[0]) {
                   start = workflows[0]
                   break
@@ -143,10 +143,10 @@ test.skipIf(!setting)(
                 detail: any
               const end = Date.now() + 240000
               do {
-                const workflows: any[] = await req(`/dag/session/${parent.id}`)
+                const workflows: any[] = await req(`/dag?sessionID=${parent.id}`)
                 detail = workflows.find((workflow) => workflow.id === start.id)
                 if (!detail) throw Error(`workflow ${start.id} disappeared from the session list`)
-                nodes = await req("/dag/" + start.id + "/nodes")
+                nodes = (await req("/dag/" + start.id + "/nodes")).nodes
                 if (["completed", "failed", "cancelled"].includes(detail.status)) break
                 await new Promise((r) => setTimeout(r, 1000))
               } while (Date.now() < end)

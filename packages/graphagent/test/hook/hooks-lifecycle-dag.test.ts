@@ -22,8 +22,8 @@ let nodeStatus;
 if(i.hook_event_name==="SubagentStop") {
   const base=await Bun.file(${JSON.stringify(serverURL)}).text();
   const headers={"x-graphagent-directory":${JSON.stringify(home)}};
-  const workflows=await (await fetch(base+"/dag/session/"+i.session_id,{headers})).json();
-  const nodes=await (await fetch(base+"/dag/"+workflows[0].id+"/nodes",{headers})).json();
+  const workflows=await (await fetch(base+"/dag?sessionID="+i.session_id,{headers})).json();
+  const {nodes}=await (await fetch(base+"/dag/"+workflows[0].id+"/nodes",{headers})).json();
   nodeStatus=nodes.find(n=>n.child_session_id===i.agent_id)?.status;
 }
 await (await import("node:fs/promises")).appendFile(${JSON.stringify(audit)},JSON.stringify({origin:process.argv[2],...i,nodeStatus,readable:await Bun.file(i.transcript_path).exists(),agentReadable:i.agent_transcript_path?await Bun.file(i.agent_transcript_path).exists():undefined})+"\\n");
@@ -108,19 +108,19 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
     yield* request(`/session/${parent.id}/message`, {
       parts: [{ type: "text", text: "HOOK-LIFECYCLE-START" }],
     })
-    const workflows = yield* request(`/dag/session/${parent.id}`)
+    const workflows = yield* request(`/dag?sessionID=${parent.id}`)
     const workflow = workflows[0]
     if (!workflow) throw new Error("workflow tool did not start a workflow")
     let detail: any
     const deadline = Date.now() + 10_000
     do {
-      const rows: any[] = yield* request(`/dag/session/${parent.id}`)
+      const rows: any[] = yield* request(`/dag?sessionID=${parent.id}`)
       detail = rows.find((row) => row.id === workflow.id)
       if (detail && ["completed", "failed", "cancelled"].includes(detail.status)) break
       yield* Effect.sleep("50 millis")
     } while (Date.now() < deadline)
     if (!detail) throw new Error(`workflow ${workflow.id} disappeared from the session list`)
-    const nodes = yield* request(`/dag/${workflow.id}/nodes`)
+    const { nodes } = yield* request(`/dag/${workflow.id}/nodes`)
     expect({ status: detail.status, errors: nodes.map((node: any) => node.error_reason ?? null) }).toEqual({
       status: "completed",
       errors: [null],

@@ -99,6 +99,8 @@ export type ScenarioContext = {
     title?: string
     nodes: DagNodeSeed[]
     worktree?: DagWorktreeSeed
+    /** #1606: the persisted `workflow.graph_rev` (a new workflow starts at 1), set to a value a replan would leave. */
+    graphRev?: number
   }) => Effect.Effect<DagWorkflowInfo>
   /** Fail a seeded DAG node through the Dag service (projects error_class on the wire). */
   dagFailNode: (

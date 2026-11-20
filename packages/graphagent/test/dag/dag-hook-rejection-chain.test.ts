@@ -170,12 +170,12 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
           await request(`/session/${parent.id}/message`, {
             parts: [{ type: "text", text: "ISSUE777-START" }],
           })
-          const workflows: Row[] = await request(`/dag/session/${parent.id}`)
+          const workflows: Row[] = await request(`/dag?sessionID=${parent.id}`)
           const workflow = workflows[0]
           if (!workflow) throw new Error("workflow tool did not start a workflow")
-          const nodes = (): Promise<Row[]> => request(`/dag/${workflow.id}/nodes`)
+          const nodes = async (): Promise<Row[]> => (await request(`/dag/${workflow.id}/nodes`)).nodes
           const workflowRow = async (): Promise<Row> => {
-            const rows: Row[] = await request(`/dag/session/${parent.id}`)
+            const rows: Row[] = await request(`/dag?sessionID=${parent.id}`)
             const row = rows.find((candidate) => candidate.id === workflow.id)
             if (!row) throw new Error(`workflow ${workflow.id} disappeared from the session list`)
             return row
@@ -360,7 +360,7 @@ cliIt.live(
         await request(`/session/${parent.id}/message`, {
           parts: [{ type: "text", text: "ISSUE1040-START" }],
         })
-        const workflows: Row[] = await request(`/dag/session/${parent.id}`)
+        const workflows: Row[] = await request(`/dag?sessionID=${parent.id}`)
         const workflow = workflows[0]
         if (!workflow) throw new Error("workflow tool did not start a workflow")
         const deadline = Date.now() + 60_000
@@ -374,7 +374,7 @@ cliIt.live(
         }
         const terminal = await waitUntil(
           async () => {
-            const rows: Row[] = await request(`/dag/session/${parent.id}`)
+            const rows: Row[] = await request(`/dag?sessionID=${parent.id}`)
             const row = rows.find((candidate) => candidate.id === workflow.id)
             if (!row) throw new Error(`workflow ${workflow.id} disappeared from the session list`)
             return row
@@ -382,7 +382,7 @@ cliIt.live(
           (row) => ["completed", "failed", "cancelled"].includes(row.status),
         )
         expect(terminal.status).toBe("completed")
-        const nodes: Row[] = await request(`/dag/${workflow.id}/nodes`)
+        const { nodes }: { nodes: Row[] } = await request(`/dag/${workflow.id}/nodes`)
         expect(nodes.map((row) => [row.id, row.status])).toEqual([["verify", "completed"]])
         expect(JSON.parse(await readFile(reportFile, "utf8"))).toEqual({ ok: true })
         expect(

@@ -6,7 +6,7 @@
 // Today the loop breaks on the FIRST session.status=idle of the target session,
 // so a workflow started in that turn keeps running server-side while the CLI
 // exits and the eventual wake reply is silently lost. `wake_reported` is not
-// part of the dag.bySession DTO, so the consumer cannot read completion from a
+// part of the dag.list DTO, so the consumer cannot read completion from a
 // single list call — it samples the workflow snapshot and applies the pure
 // four-condition break rule below.
 //
@@ -372,7 +372,7 @@ function responseStatus(response: unknown): number | undefined {
   return response.status
 }
 
-/** Poll implementation over the in-process SDK client (GET /dag/session/:id —
+/** Poll implementation over the in-process SDK client (GET /dag?sessionID= —
  * session-scoped, project-ownership enforced server-side). A completed final
  * response remains pending until its exact answer receipt is visible. */
 export async function dagWorkflowsBySession(
@@ -382,7 +382,7 @@ export async function dagWorkflowsBySession(
   observation?: ReportObservation,
   signal?: AbortSignal,
 ): Promise<readonly DagWorkflowSnapshot[] | undefined> {
-  const response = await client.dag.bySession({ sessionID }, signal ? { signal } : undefined)
+  const response = await client.dag.list({ sessionID }, signal ? { signal } : undefined)
   if (response.error) return undefined
   return Promise.all(
     (response.data ?? []).map(async (workflow): Promise<DagWorkflowSnapshot> => {

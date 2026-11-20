@@ -558,7 +558,7 @@ export function makeFetchFixture(fixture: PerfFixture, url: URL): Response | und
   // reminders. A fixture that sets none of them answers with empty lists, which is what the reads got before.
   if (url.pathname === `/dag/session/${fixture.session.id}/summary`) return Response.json(fixture.dagSummaries ?? [])
   const table = url.pathname.match(/^\/dag\/([^/]+)\/nodes$/)
-  if (table) return Response.json(fixture.dagTables?.[table[1]] ?? [])
+  if (table) return Response.json({ graphRev: 1, nodes: fixture.dagTables?.[table[1]] ?? [] })
   if (url.pathname === `/session/${fixture.session.id}/pr-watch`)
     return Response.json({ entries: fixture.prWatches ?? [] })
   if (url.pathname === `/session/${fixture.session.id}/reminder`)

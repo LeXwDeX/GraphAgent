@@ -95,16 +95,17 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       return session
     })
 
-    const list = Effect.fn("DagHttpApi.list")(function* () {
+    const list = Effect.fn("DagHttpApi.list")(function* (ctx: { query: { readonly sessionID?: SessionID } }) {
+      const sessionID = ctx.query.sessionID
+      if (sessionID !== undefined) {
+        // A session of another project reads as missing, same as the summary route.
+        yield* requireSession(sessionID)
+        const rows = yield* dag.store.listBySession(sessionID).pipe(Effect.orDie)
+        return rows.map(wf)
+      }
       const projectID = (yield* InstanceState.context).project.id
       // Project-scoped read: never materialize other projects' workflows.
       const rows = yield* dag.store.listByProject(projectID).pipe(Effect.orDie)
-      return rows.map(wf)
-    })
-
-    const bySession = Effect.fn("DagHttpApi.bySession")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* requireSession(ctx.params.sessionID)
-      const rows = yield* dag.store.listBySession(ctx.params.sessionID).pipe(Effect.orDie)
       return rows.map(wf)
     })
 
@@ -125,13 +126,10 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       // renders the CURRENT graph revision only (zero TUI changes: the
       // server filters).
       const rows = yield* dag.store.getCurrentNodes(ctx.params.dagID).pipe(Effect.orDie)
-      return yield* observedNodes(rows, workflow.sessionId, workflow.config)
+      // The revision comes from the workflow row `requireWorkflow` already read: no further statement.
+      return { graphRev: workflow.graphRev, nodes: yield* observedNodes(rows, workflow.sessionId, workflow.config) }
     })
 
-    return handlers
-      .handle("list", list)
-      .handle("bySession", bySession)
-      .handle("summary", summary)
-      .handle("nodes", nodes)
+    return handlers.handle("list", list).handle("summary", summary).handle("nodes", nodes)
   }),
 )

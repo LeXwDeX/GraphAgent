@@ -464,7 +464,7 @@ describe("hook event trigger counts on a real server", () => {
         // and the parent's Stop reached the capture.
         yield* pollWithTimeout(
           Effect.gen(function* () {
-            const workflows: { status: string }[] = yield* json(`/dag/session/${parent.id}`, "GET")
+            const workflows: { status: string }[] = yield* json(`/dag?sessionID=${parent.id}`, "GET")
             const names = (yield* readRows(capture)).map((row) => row.hook_event_name)
             const settled = workflows.length > 0 && workflows.every((workflow) => workflow.status === "completed")
             return settled && names.includes("SubagentStop") && names.includes("Stop") ? true : undefined

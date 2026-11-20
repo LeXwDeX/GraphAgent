@@ -7953,69 +7953,20 @@
       "get": {
         "tags": ["dag"],
         "operationId": "dag.list",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "All workflows",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/DagWorkflow"
-                  },
-                  "description": "All workflows"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BadRequestError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
-                }
-              }
-            }
-          }
-        },
-        "summary": "List all DAG workflows",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.dag.list({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/dag/session/{sessionID}": {
-      "get": {
-        "tags": ["dag"],
-        "operationId": "dag.bySession",
         "parameters": [
           {
             "name": "sessionID",
-            "in": "path",
+            "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^ses"
             },
-            "required": true
+            "required": false
           }
         ],
         "responses": {
           "200": {
-            "description": "Workflows for a session",
+            "description": "Workflows of the project, or of one session when `sessionID` is given",
             "content": {
               "application/json": {
                 "schema": {
@@ -8023,7 +7974,7 @@
                   "items": {
                     "$ref": "#/components/schemas/DagWorkflow"
                   },
-                  "description": "Workflows for a session"
+                  "description": "Workflows of the project, or of one session when `sessionID` is given"
                 }
               }
             }
@@ -8049,11 +8000,12 @@
             }
           }
         },
-        "summary": "List workflows by session",
+        "description": "List the project's DAG workflows. With `sessionID`, list only the workflows that session owns; a session of another project or one that does not exist is a 404.",
+        "summary": "List DAG workflows",
         "x-codeSamples": [
           {
             "lang": "js",
-            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.dag.bySession({\n  ...\n})"
+            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.dag.list({\n  ...\n})"
           }
         ]
       }
@@ -8067,7 +8019,8 @@
             "name": "sessionID",
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^ses"
             },
             "required": true
           }
@@ -8133,15 +8086,33 @@
         ],
         "responses": {
           "200": {
-            "description": "Nodes for a workflow",
+            "description": "The workflow's graph revision and its nodes",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/DagNode"
+                  "type": "object",
+                  "properties": {
+                    "graphRev": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": ["Infinity", "-Infinity", "NaN"]
+                        }
+                      ]
+                    },
+                    "nodes": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DagNode"
+                      }
+                    }
                   },
-                  "description": "Nodes for a workflow"
+                  "required": ["graphRev", "nodes"],
+                  "additionalProperties": false,
+                  "description": "The workflow's graph revision and its nodes"
                 }
               }
             }
@@ -9849,6 +9820,23 @@
                 "type": "null"
               }
             ]
+          },
+          "worktree": {
+            "type": "object",
+            "properties": {
+              "directory": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": ["active", "removed", "kept"]
+              }
+            },
+            "required": ["directory", "state"],
+            "additionalProperties": false
           }
         },
         "required": [

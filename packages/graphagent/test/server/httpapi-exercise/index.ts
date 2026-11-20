@@ -99,6 +99,9 @@ const refusedForChild = (
       }),
     )
 
+// #1606: the graph revision the `dag.nodes` scenario seeds into the workflow row and expects back.
+const nodesGraphRev = 7
+
 // #1557: a request that names a model the catalog does not have (`test-modle`, a typo of the fake provider's
 // `test-model`) is answered by its endpoint's declared 400 error, which names the model and suggests the close one.
 const unknownModel = { providerID: "test", modelID: "test-modle" }
@@ -2435,26 +2438,34 @@ const scenarios: Scenario[] = [
       }),
     ),
 
+  // #1606: the session-scoped list is `dag.list` with a `sessionID` query, not a route of its own.
   http.protected
-    .get("/dag/session/{sessionID}", "dag.bySession")
+    .get("/dag", "dag.list.session")
     .seeded((ctx) =>
-      ctx.session({ title: "DAG bySession owner" }).pipe(
-        Effect.flatMap((s) =>
-          ctx.dag({
-            sessionID: s.id,
-            nodes: [{ id: "x", name: "X", worker_type: "general", depends_on: [], required: true }],
-          }),
-        ),
-      ),
+      Effect.gen(function* () {
+        const nodes = [{ id: "x", name: "X", worker_type: "general", depends_on: [], required: true }]
+        const owner = yield* ctx.session({ title: "DAG list session owner" })
+        const bystander = yield* ctx.session({ title: "DAG list session bystander" })
+        const mine = yield* ctx.dag({ sessionID: owner.id, nodes })
+        yield* ctx.dag({ sessionID: bystander.id, nodes })
+        return { sessionID: owner.id, dagID: mine.dagID }
+      }),
     )
     .at((ctx) => ({
-      path: route("/dag/session/{sessionID}", { sessionID: ctx.state.sessionID }),
+      path: `/dag?${new URLSearchParams({ sessionID: ctx.state.sessionID })}`,
       headers: ctx.headers(),
     }))
-    .jsonEffect(200, (body) =>
+    .jsonEffect(200, (body, ctx) =>
       Effect.sync(() => {
         array(body)
-        check(body.length >= 1, "dag.bySession should return the fixture workflow")
+        // Both workflows are in the project: the query is what leaves the other session's out.
+        check(
+          body.map((item) => (isRecord(item) ? item.id : undefined)).join() === ctx.state.dagID,
+          "dag.list with a sessionID should return only that session's workflow",
+        )
+        const workflow = body[0]
+        object(workflow)
+        check(workflow.session_id === ctx.state.sessionID, "the workflow should name its owner session")
       }),
     ),
 
@@ -2618,6 +2629,8 @@ const scenarios: Scenario[] = [
         Effect.flatMap((s) =>
           ctx.dag({
             sessionID: s.id,
+            // #1606: a value a fresh workflow (1) would not have, so the answer cannot match by default.
+            graphRev: nodesGraphRev,
             nodes: [
               // #1158 PR5: `a` is a node a compose expansion generated for the slot `b`, which waits for it.
               { id: "a", name: "Node A", worker_type: "general", depends_on: [], required: true, expanded_from: "b" },
@@ -2632,8 +2645,16 @@ const scenarios: Scenario[] = [
       ),
     )
     .at((ctx) => ({ path: route("/dag/{dagID}/nodes", { dagID: ctx.state.dagID }), headers: ctx.headers() }))
-    .jsonEffect(200, (body) =>
+    .jsonEffect(200, (response) =>
       Effect.sync(() => {
+        // #1606: the answer names the graph revision of its rows, which is what the workflow row holds.
+        object(response)
+        check(response.graphRev === nodesGraphRev, "nodes should answer the graph revision the workflow row holds")
+        check(
+          Object.keys(response).toSorted().join() === "graphRev,nodes",
+          "nodes should answer exactly graphRev and nodes",
+        )
+        const body = response.nodes
         array(body)
         check(body.length >= 2, "nodes should return all fixture nodes")
         const n = body[0]
@@ -2667,7 +2688,7 @@ const scenarios: Scenario[] = [
         check(pristine.agent_messages.delivered === 0, "acceptance must not claim delivery")
         check(pristine.agent_messages.undeliverable === 0, "live recipient should have no undeliverable input")
         check(
-          !JSON.stringify(body).includes("HTTP_MESSAGE_BODY_PRIVATE"),
+          !JSON.stringify(response).includes("HTTP_MESSAGE_BODY_PRIVATE"),
           "node metadata must not expose message bodies",
         )
       }),
@@ -2694,7 +2715,7 @@ const scenarios: Scenario[] = [
     ),
 
   http.protected
-    .get("/dag/session/{sessionID}", "dag.bySession.isolation")
+    .get("/dag", "dag.list.session.isolation")
     .seeded((ctx) =>
       ctx.foreignDag({
         title: "Foreign session workflows",
@@ -2702,7 +2723,7 @@ const scenarios: Scenario[] = [
       }),
     )
     .at((ctx) => ({
-      path: route("/dag/session/{sessionID}", { sessionID: ctx.state.sessionID }),
+      path: `/dag?${new URLSearchParams({ sessionID: ctx.state.sessionID })}`,
       headers: ctx.headers(),
     }))
     .status(404),
@@ -2735,14 +2756,14 @@ const scenarios: Scenario[] = [
     }))
     .status(404),
 
-  // #1552: a path segment that is not a session ID is a 400 BadRequest, not a 500.
+  // #1552: a path segment that is not a session ID is a 400 BadRequest, not a 500; #1606: so is the query parameter.
   http.protected
-    .get("/dag/session/{sessionID}", "dag.bySession.malformed")
+    .get("/dag", "dag.list.session.malformed")
     .at((ctx) => ({
-      path: route("/dag/session/{sessionID}", { sessionID: "not-a-session-id" }),
+      path: `/dag?${new URLSearchParams({ sessionID: "not-a-session-id" })}`,
       headers: ctx.headers(),
     }))
-    .status(400, rejectedAs("Params", "sessionID")),
+    .status(400, rejectedAs("Query", "sessionID")),
 
   http.protected
     .get("/dag/session/{sessionID}/summary", "dag.summary.malformed")

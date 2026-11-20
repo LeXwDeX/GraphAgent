@@ -80,7 +80,7 @@ function mountApp() {
     height: 30,
     handler: (url) => {
       if (url.pathname === `/dag/session/${mainID}/summary`) return json([summary])
-      if (url.pathname === `/dag/${workflowID}/nodes`) return json(nodes)
+      if (url.pathname === `/dag/${workflowID}/nodes`) return json({ graphRev: 1, nodes })
       return undefined
     },
   })

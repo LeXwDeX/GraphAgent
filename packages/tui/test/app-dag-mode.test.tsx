@@ -170,12 +170,15 @@ function server(summary: DagWorkflowSummary): FetchHandler {
         depends_on: depends,
         replan_attempts: 0,
       })
-      return json([
-        node("a", "completed"),
-        node("b", "completed"),
-        node("c", "running", ["a", "b"]),
-        node("d", "queued", ["c"]),
-      ])
+      return json({
+        graphRev: 1,
+        nodes: [
+          node("a", "completed"),
+          node("b", "completed"),
+          node("c", "running", ["a", "b"]),
+          node("d", "queued", ["c"]),
+        ],
+      })
     }
     return undefined
   }

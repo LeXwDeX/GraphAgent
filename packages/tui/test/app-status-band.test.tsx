@@ -77,7 +77,7 @@ function workflows(summaries: Record<string, DagWorkflowSummary[]>) {
     const nodes = url.pathname.match(/^\/dag\/([^/]+)\/nodes$/)
     if (nodes) {
       reads.push(nodes[1])
-      return json(TABLE)
+      return json({ graphRev: 1, nodes: TABLE })
     }
     return undefined
   }

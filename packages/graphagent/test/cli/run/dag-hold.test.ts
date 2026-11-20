@@ -375,13 +375,33 @@ describe("final-response answer receipt polling", () => {
     }
   }
 
+  test("the poll asks dag.list for the session's own workflows and passes its abort signal on", async () => {
+    const calls: unknown[][] = []
+    const client = {
+      dag: {
+        list: async (...args: unknown[]) => {
+          calls.push(args)
+          return { data: [] }
+        },
+      },
+    } as unknown as Client
+    const controller = new AbortController()
+    expect(await DagHold.makeDagWorkflowPoll(client, "parent")()).toEqual([])
+    expect(await DagHold.dagWorkflowsBySession(client, "parent", new Set(), undefined, controller.signal)).toEqual([])
+    // Without the sessionID the list is the whole project's, which is not this run's to wait for.
+    expect(calls).toEqual([
+      [{ sessionID: "parent" }, undefined],
+      [{ sessionID: "parent" }, { signal: controller.signal }],
+    ])
+  })
+
   test("two completed workflows wait for both receipts and memoize only verified episodes", async () => {
     const first = completed("first", 4)
     const second = completed("second", 8)
     const received = new Set<string>([identity(first).messageID])
     const reads: string[] = []
     const client = {
-      dag: { bySession: async () => ({ data: [first, second] }) },
+      dag: { list: async () => ({ data: [first, second] }) },
       session: {
         message: async ({ messageID }: { messageID: string }) => {
           reads.push(messageID)
@@ -408,7 +428,7 @@ describe("final-response answer receipt polling", () => {
     let row = completed("same", 10)
     const reads: string[] = []
     const client = {
-      dag: { bySession: async () => ({ data: [row] }) },
+      dag: { list: async () => ({ data: [row] }) },
       session: {
         message: async ({ messageID }: { messageID: string }) => {
           reads.push(messageID)
@@ -429,7 +449,7 @@ describe("final-response answer receipt polling", () => {
     let mode: "throw" | "wrong-kind" | "valid" = "throw"
     let reads = 0
     const client = {
-      dag: { bySession: async () => ({ data: [row, paused] }) },
+      dag: { list: async () => ({ data: [row, paused] }) },
       session: {
         message: async () => {
           reads++
@@ -458,7 +478,7 @@ describe("final-response answer receipt polling", () => {
     ].map((config, index) => ({ ...completed(`config-${index}`, index + 1), config }))
     let reads = 0
     const client = {
-      dag: { bySession: async () => ({ data: rows }) },
+      dag: { list: async () => ({ data: rows }) },
       session: {
         message: async () => {
           reads++
@@ -476,7 +496,7 @@ describe("final-response answer receipt polling", () => {
     let listReads = 0
     const client = {
       dag: {
-        bySession: async () => {
+        list: async () => {
           listReads++
           if (listReads === 1) return { error: { name: "InternalServerError", data: { message: "temporary" } } }
           return { data: [old] }
@@ -497,7 +517,7 @@ describe("final-response answer receipt polling", () => {
     let receiptReads = 0
     const client = {
       dag: {
-        bySession: async () => {
+        list: async () => {
           listReads++
           return { data: [old] }
         },
@@ -537,7 +557,7 @@ describe("final-response answer receipt polling", () => {
       let row = old
       const reads: string[] = []
       const client = {
-        dag: { bySession: async () => ({ data: [row] }) },
+        dag: { list: async () => ({ data: [row] }) },
         session: {
           message: async ({ messageID }: { messageID: string }) => {
             reads.push(messageID)
@@ -561,7 +581,7 @@ describe("final-response answer receipt polling", () => {
     let listReads = 0
     const client = {
       dag: {
-        bySession: async () => {
+        list: async () => {
           listReads++
           return { error: { name: "InternalServerError", data: { message: "still unavailable" } } }
         },
@@ -579,7 +599,7 @@ describe("final-response answer receipt polling", () => {
     const old = completed("unknown-receipt", 17)
     let receiptReads = 0
     const client = {
-      dag: { bySession: async () => ({ data: [old] }) },
+      dag: { list: async () => ({ data: [old] }) },
       session: {
         message: async () => {
           receiptReads++
@@ -599,7 +619,7 @@ describe("final-response answer receipt polling", () => {
     const next = completed("next", 21)
     let rows = [old]
     const client = {
-      dag: { bySession: async () => ({ data: rows }) },
+      dag: { list: async () => ({ data: rows }) },
       session: {
         message: async ({ messageID }: { messageID: string }) =>
           answer(messageID === identity(old).messageID ? old : next),
@@ -625,7 +645,7 @@ describe("final-response answer receipt polling", () => {
     const current = completed("same", 31)
     let row = prior
     const client = {
-      dag: { bySession: async () => ({ data: [row] }) },
+      dag: { list: async () => ({ data: [row] }) },
       session: { message: async () => answer(row) },
     } as unknown as Client
     const hold = await DagHold.createDagRunHold(client, "parent")
@@ -653,7 +673,7 @@ describe("final-response answer receipt polling", () => {
     let rows: Row[] = []
     let fails = true
     const client = {
-      dag: { bySession: async () => ({ data: rows }) },
+      dag: { list: async () => ({ data: rows }) },
       session: {
         message: async () => {
           if (fails) throw new Error("receipt temporarily unavailable")
@@ -681,7 +701,7 @@ describe("final-response answer receipt polling", () => {
       metadata: { dag_delivery: { workflow_id: row.id, completion_seq: row.seq, kind: "source" } },
     })
     const client = {
-      dag: { bySession: async () => ({ data: [current] }) },
+      dag: { list: async () => ({ data: [current] }) },
       session: { message: async () => receipt },
     } as unknown as Client
     const rendered: string[] = []
@@ -709,7 +729,7 @@ describe("final-response answer receipt polling", () => {
     let rows: Row[] = []
     let attempts = 0
     const client = {
-      dag: { bySession: async () => ({ data: rows }) },
+      dag: { list: async () => ({ data: rows }) },
       session: { message: async () => answer(row) },
     } as unknown as Client
     const hold = await DagHold.createDagRunHold(client, "parent", undefined, () => {
@@ -728,7 +748,7 @@ describe("final-response answer receipt polling", () => {
     const next = completed("stream-first", 44)
     let rows = [old]
     const client = {
-      dag: { bySession: async () => ({ data: rows }) },
+      dag: { list: async () => ({ data: rows }) },
       session: {
         message: async ({ messageID }: { messageID: string }) =>
           answer(messageID === identity(old).messageID ? old : next),

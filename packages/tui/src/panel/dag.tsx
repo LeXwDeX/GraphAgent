@@ -532,7 +532,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
         { dagID: workflowID },
         { headers: locationHeaders({ workspace: project.workspace.current() }) },
       )
-      const found = response.data?.find((node) => node.id === nodeID)
+      const found = response.data?.nodes.find((node) => node.id === nodeID)
       state.setOutput(
         key,
         found
