@@ -16,6 +16,7 @@ import { useCommandShortcut } from "../../keymap"
 import { backgroundItems } from "../../session/background"
 import { isRoot, isSubagent } from "../../session/role"
 import { isGoalShown } from "../../shell/status-band"
+import { DRAWER_INSET, DRAWER_SCROLL_GAP } from "../../ui/layout"
 import type { AmbiguousWidth } from "../../ui/width"
 import { estimateMark } from "../../util/context-window"
 import { remoteLine } from "../../util/remote-text"
@@ -421,7 +422,7 @@ export function SessionDrawer(props: { sessionID: string }) {
 
   return (
     <Show when={sync.session.get(props.sessionID)}>
-      <box height="100%" paddingTop={1} paddingLeft={2} paddingRight={2}>
+      <box height="100%" paddingTop={1} paddingLeft={DRAWER_INSET} paddingRight={DRAWER_INSET}>
         <scrollbox
           flexGrow={1}
           scrollAcceleration={scrollAcceleration()}
@@ -432,7 +433,7 @@ export function SessionDrawer(props: { sessionID: string }) {
             },
           }}
         >
-          <box flexShrink={0} gap={1} paddingRight={1}>
+          <box flexShrink={0} gap={1} paddingRight={DRAWER_SCROLL_GAP}>
             <DrawerSession sessionID={props.sessionID} />
             <DrawerContext sessionID={props.sessionID} />
             <DrawerOverhead sessionID={props.sessionID} />

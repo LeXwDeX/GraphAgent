@@ -45,14 +45,13 @@ import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
 import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
-import { contentWidth, framedInnerWidth } from "../ui/layout"
 import { cellWidth, truncateCells, truncateCellsLeft, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
 import { remoteLine } from "../util/remote-text"
 import { DetailPanel, type DetailRow } from "./detail"
 import { usePanelHost, type PanelSpec } from "./host"
 import { ListPanel, type ListItem } from "./list"
-import { PANEL_NARROW_WIDTH, type PanelHint, type PanelTab } from "./shell"
+import { PANEL_NARROW_WIDTH, usePanelInnerWidth, type PanelHint, type PanelTab } from "./shell"
 
 /** The name this panel declares what it shows under; the data layer holds one declaration per surface. */
 const SOURCE = "dag-panel"
@@ -270,7 +269,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
   const dimensions = useTerminalDimensions()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const innerWidth = () => Math.max(1, framedInnerWidth(contentWidth(dimensions().width)))
+  const innerWidth = usePanelInnerWidth({ dimensions })
   /** The clock's now. Reading it in a computation makes that computation follow the one-second signal. */
   const now = () => {
     ticker.second()

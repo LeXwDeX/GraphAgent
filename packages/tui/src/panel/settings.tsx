@@ -2,16 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BoxRenderable, InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { useTuiConfig } from "../config"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t, type MessageKey } from "../i18n"
 import { EscapePriority, formatKeyBindings, useBindings, useKeymapSelector } from "../keymap"
-import { contentWidth } from "../ui/layout"
+import { MARK_CELLS } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
-import { PanelShell, type PanelHint, type PanelTab } from "./shell"
+import { PanelShell, usePanelInnerWidth, type PanelHint, type PanelTab } from "./shell"
 
 interface SettingRowBase {
   id: string
@@ -73,18 +72,16 @@ export interface SettingsPanelProps {
 }
 
 /**
- * A row is three columns: the selection marker, the name, then the value right after it. The last cell of the name
- * column stays empty, so that a name cut to the column never runs into the value.
+ * A row is three columns: the selection marker (`MARK_CELLS`), the name, then the value right after it. The last cell of
+ * the name column stays empty, so that a name cut to the column never runs into the value.
  */
-const MARKER_WIDTH = 2
 const NAME_WIDTH = 22
-/** The border and padding of `PanelShell`, which the rows sit inside. */
-const PANEL_INSET = 4
 /** Between the value, the suffix and the hint to change the value. */
 const SEGMENT_GAP = "   "
 
 /** The name cut and padded to its column by `cellWidth`, so that the column is as wide as the terminal draws it. */
 function nameCell(label: string, ambiguousWidth: AmbiguousWidth): string {
+  // One cell less than the column: its last cell stays empty (above). A cell of the panel's own column, not of the frame.
   const text = truncateCells(label, NAME_WIDTH - 1, ambiguousWidth)
   return text + " ".repeat(NAME_WIDTH - cellWidth(text, ambiguousWidth))
 }
@@ -127,7 +124,7 @@ function fitValueLine(
 export function SettingsPanel(props: SettingsPanelProps) {
   const { theme } = useTheme()
   const kv = useKV()
-  const dimensions = useTerminalDimensions()
+  const innerWidth = usePanelInnerWidth()
   const tuiConfig = useTuiConfig()
 
   const [internalTab, setInternalTab] = createSignal<string | undefined>(props.activeTab ?? props.tabs[0]?.id)
@@ -146,7 +143,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const activeTabKey = createMemo(() => currentTab()?.id)
   const rows = () => currentTab()?.rows ?? []
   const selectedRow = () => rows()[selected()]
-  const valueWidth = () => Math.max(0, contentWidth(dimensions().width) - PANEL_INSET - MARKER_WIDTH - NAME_WIDTH)
+  const valueWidth = () => Math.max(0, innerWidth() - MARK_CELLS - NAME_WIDTH)
   // A tab where some row explains itself keeps the line for it as the selection moves, blank for the rows that do not,
   // so the panel does not change height with the selection. A tab where none does has no such line.
   const note = () =>
@@ -417,7 +414,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 }}
               >
                 <text
-                  width={MARKER_WIDTH}
+                  width={MARK_CELLS}
                   flexShrink={0}
                   fg={isSelected() ? theme.primary : theme.textDim}
                   wrapMode="none"

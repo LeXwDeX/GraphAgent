@@ -206,9 +206,9 @@ export function useBottomZone() {
 /**
  * The layer a panel or an ask sits in. The frame of either takes the content area between the gutters, so its border
  * is in the columns the input box's is, and the three are the same width (#1671, 13.3). The gutter is kept here, once,
- * not by each panel: a panel counts its widths from `contentWidth` of the terminal, and the fullscreen ask, which sits
- * outside this layer, spans the terminal and says so to `PanelShell`. The panel test fixtures mount what they render in
- * this layer too, so that it is laid out as on screen.
+ * not by each panel: a panel takes the width of its text from `usePanelInnerWidth` (`panelInnerWidth` of the terminal),
+ * and the fullscreen ask, which sits outside this layer, spans the terminal and says so to `PanelShell`. The panel test
+ * fixtures mount what they render in this layer too, so that it is laid out as on screen.
  */
 export function ZoneSurface(props: ParentProps) {
   return (
