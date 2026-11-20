@@ -339,6 +339,27 @@ it.instance("ignores unknown keybind names without dropping valid overrides from
   ),
 )
 
+it.instance("drops the removed agent_list override without failing the rest of the file", () =>
+  withCleanState(
+    Effect.gen(function* () {
+      const fs = yield* FSUtil.Service
+      const test = yield* TestInstance
+      // `/agent` and its key were removed (#1677); a tui.json written before that may still rebind it.
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
+        keybinds: {
+          agent_list: "ctrl+g",
+          agent_cycle: "alt+a",
+        },
+      })
+
+      const config = yield* getTuiConfig(test.directory)
+      expect(config.keybinds.get("agent_list")).toEqual([])
+      expect(config.keybinds.get("agent.list")).toEqual([])
+      expect(config.keybinds.get("agent.cycle")?.[0]?.key).toBe("alt+a")
+    }),
+  ),
+)
+
 it.instance("resolves keybind lookup from canonical keybinds", () =>
   withCleanState(
     Effect.gen(function* () {

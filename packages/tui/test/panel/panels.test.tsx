@@ -5,7 +5,6 @@
 import type { Agent, McpStatus, Provider, Workspace } from "@graphagent/sdk"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { setLanguage } from "../../src/i18n"
-import { AgentPanel } from "../../src/panel/agent"
 import type { PanelHostApi } from "../../src/panel/host"
 import { McpPanel } from "../../src/panel/mcp"
 import { ModelPanel, type ModelRef } from "../../src/panel/model"
@@ -81,41 +80,6 @@ function otherProviderFixture(): Provider {
     models: { o1: { ...model, id: "o1", name: "Other Model", providerID: "other" } },
   }
 }
-
-test("agent panel selects an agent and closes", async () => {
-  await using tmp = await shellState()
-  let panelHost: PanelHostApi | undefined
-  let ctx!: AppPanelTestContext
-  const app = await renderAppPanel(
-    () => <PanelSurface spec={{ id: "agent", render: () => <AgentPanel /> }} onHost={(host) => (panelHost = host)} />,
-    {
-      width: 120,
-      height: 40,
-      state: tmp.path,
-      setup: (context) => {
-        ctx = context
-        context.sync.set("agent", agents)
-      },
-    },
-  )
-
-  try {
-    expect(app.captureCharFrame()).toContain("选择主 agent")
-    expect(app.captureCharFrame()).toContain("build")
-    expect(panelHost?.depth()).toBe(1)
-
-    app.mockInput.pressArrow("down")
-    await settle(app)
-    app.mockInput.pressEnter()
-    await settle(app)
-
-    expect(ctx.local.agent.current()?.name).toBe("plan")
-    expect(panelHost?.depth()).toBe(0)
-    expect(app.captureCharFrame()).not.toContain("选择主 agent")
-  } finally {
-    app.renderer.destroy()
-  }
-})
 
 test("mcp panel toggles the selected server with space and keeps the panel open on select", async () => {
   await using tmp = await shellState()

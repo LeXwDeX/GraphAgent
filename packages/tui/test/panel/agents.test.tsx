@@ -250,6 +250,11 @@ async function waitUntil(
 
 const linesOf = (frame: string) => frame.split("\n").map((line) => line.trimEnd())
 const rowWith = (frame: string, needle: string) => linesOf(frame).find((line) => line.includes(needle))
+/** The note line of the panel, where the detail of the selected row is: the line before the hint row. */
+const noteLine = (frame: string) => {
+  const lines = linesOf(frame)
+  return lines[lines.findIndex((line) => line.startsWith("╰")) - 2]
+}
 
 /** The color a piece of text is drawn in: the foreground of the first span that holds it. */
 function colorOf(frame: Awaited<ReturnType<Mounted["spans"]>>, needle: string) {
@@ -450,7 +455,7 @@ describe("what the list shows", () => {
     }
   })
 
-  test("shows the delegated prompt of the selected row: the session's first user message once it is loaded", async () => {
+  test("shows the delegated prompt of the selected row on the note line: the session's first user message once it is loaded", async () => {
     const harness = await mount({
       ticker: fakeTicker(at(95)).ticker,
       seed: (ctx) => {
@@ -478,18 +483,50 @@ describe("what the list shows", () => {
     })
     try {
       // The first row is the one that runs; its session is not loaded, so the Task description stands in.
-      expect(await harness.frame()).toContain("任务：扫描破坏性变更")
+      expect(noteLine(await harness.frame())).toContain("任务：扫描破坏性变更")
       // The next one is loaded: the prompt is read from its first message.
       harness.app.mockInput.pressArrow("down")
-      expect(await harness.settle().then(() => harness.frame())).toContain(
+      expect(noteLine(await harness.settle().then(() => harness.frame()))).toContain(
         "任务：逐个检查补丁里的 破坏性变更， 并列出风险",
       )
       // The one after is not loaded again: the Task description stands in, and nothing is requested for it.
       harness.app.mockInput.pressArrow("down")
       const frame = await harness.settle().then(() => harness.frame())
-      expect(frame).toContain("任务：重新生成 SDK")
+      expect(noteLine(frame)).toContain("任务：重新生成 SDK")
       expect(frame).not.toContain("逐个检查补丁里的")
       expect(harness.messageReads()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
+describe("what the selection moves", () => {
+  test("the detail is on the note line, not under the row: no row moves and the panel keeps its height", async () => {
+    const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
+    try {
+      const titles = [TITLE_SCAN, TITLE_REVIEW, TITLE_BUILD]
+      const layout = (frame: string) => ({
+        rows: titles.map((title) => rowIndex(frame, title)),
+        height:
+          linesOf(frame).findIndex((line) => line.startsWith("╰")) -
+          linesOf(frame).findIndex((line) => line.startsWith("╭")),
+      })
+      const first = await harness.frame()
+      const before = layout(first)
+      expect(before.rows.every((row) => row >= 0)).toBe(true)
+      expect(noteLine(first)).toContain("任务：扫描破坏性变更")
+      // The row under the selected one is the next sub-agent's, not a line of detail.
+      expect(linesOf(first)[before.rows[0] + 1]).not.toContain("任务：")
+
+      for (const task of ["任务：复核最终补丁", "任务：重新生成 SDK"]) {
+        harness.app.mockInput.pressArrow("down")
+        const frame = await harness.settle().then(() => harness.frame())
+        expect(noteLine(frame)).toContain(task)
+        expect(layout(frame)).toEqual(before)
+        // Written once: on the note line, nowhere under a row.
+        expect(linesOf(frame).filter((line) => line.includes(task))).toHaveLength(1)
+      }
     } finally {
       await harness.dispose()
     }
@@ -542,7 +579,7 @@ describe("what opening it costs", () => {
       await harness.settle()
       const before = await harness.frame()
       expect(rowWith(before, TITLE_BUILD)).toContain("›")
-      expect(before).toContain("任务：重新生成 SDK")
+      expect(noteLine(before)).toContain("任务：重新生成 SDK")
 
       // A running sub-agent calls another tool; the summary is replaced, as the data layer does it.
       const scan = tree().find((session) => session.id === SCAN)!
@@ -552,7 +589,7 @@ describe("what opening it costs", () => {
       expect(rowWith(after, TITLE_SCAN)).toContain("工具 8")
       expect(rowWith(after, TITLE_BUILD)).toContain("›")
       expect(rowWith(after, TITLE_REVIEW)).not.toContain("›")
-      expect(after).toContain("任务：重新生成 SDK")
+      expect(noteLine(after)).toContain("任务：重新生成 SDK")
     } finally {
       await harness.dispose()
     }
@@ -1393,17 +1430,17 @@ describe("background runs in the list", () => {
     }
   })
 
-  test("a run that is over shows the first line of its report and that it came back, under its row", async () => {
+  test("a run that is over shows the first line of its report and that it came back, then what it was asked, on the note line", async () => {
     const harness = await mount(options({ height: 60 }))
     try {
       for (let step = 0; step < 6; step++) harness.app.mockInput.pressArrow("down")
       await harness.settle()
       const frame = await harness.frame()
       expect(rowWith(frame, TITLE_BG_DONE)).toContain("›")
-      const row = rowIndex(frame, TITLE_BG_DONE)
-      const lines = linesOf(frame)
-      expect(lines[row + 1]).toContain("任务：列出过期依赖")
-      expect(lines[row + 2]).toContain("结果：发现 3 个过期依赖。 · 结果已回注")
+      // What came back is short and comes first, so that a long prompt is what the line cuts; one line holds both.
+      expect(noteLine(frame)).toContain("结果：发现 3 个过期依赖。 · 结果已回注 · 任务：列出过期依赖")
+      // It is written once, on the note line, and not again under the row.
+      expect(linesOf(frame).filter((line) => line.includes("结果已回注"))).toHaveLength(1)
       expect(harness.messageReads()).toEqual([])
     } finally {
       await harness.dispose()
@@ -1412,7 +1449,9 @@ describe("background runs in the list", () => {
     try {
       for (let step = 0; step < 6; step++) english.app.mockInput.pressArrow("down")
       await english.settle()
-      expect(await english.frame()).toContain("Result: 发现 3 个过期依赖。 · result delivered")
+      expect(noteLine(await english.frame())).toContain(
+        "Result: 发现 3 个过期依赖。 · result delivered · Task: 列出过期依赖",
+      )
     } finally {
       await english.dispose()
     }
@@ -1424,8 +1463,7 @@ describe("background runs in the list", () => {
       for (let step = 0; step < 6; step++) harness.app.mockInput.pressArrow("down")
       await harness.settle()
       const frame = await harness.frame()
-      const row = rowIndex(frame, TITLE_BG_DONE)
-      expect(linesOf(frame)[row + 2]).toContain("结果已回注")
+      expect(noteLine(frame)).toContain("结果已回注 · 任务：列出过期依赖")
       expect(frame).not.toContain("结果：")
       expect(harness.messageReads()).toEqual([])
     } finally {
@@ -1439,9 +1477,8 @@ describe("background runs in the list", () => {
       for (let step = 0; step < 5; step++) harness.app.mockInput.pressArrow("down")
       await harness.settle()
       const frame = await harness.frame()
-      const row = rowIndex(frame, TITLE_BG_CUT)
       expect(rowWith(frame, TITLE_BG_CUT)).toContain("›")
-      expect(linesOf(frame)[row + 2]).toContain("未回注（已中断）")
+      expect(noteLine(frame)).toContain("未回注（已中断）")
     } finally {
       await harness.dispose()
     }
@@ -1459,8 +1496,8 @@ describe("background runs in the list", () => {
     const harness = await mount(options({ height: 60 }))
     try {
       const frame = await harness.frame()
-      const row = rowIndex(frame, TITLE_BG_RUN)
-      expect(linesOf(frame)[row + 1]).toContain("任务：未提交改动")
+      expect(rowWith(frame, TITLE_BG_RUN)).toContain("›")
+      expect(noteLine(frame)).toContain("任务：未提交改动")
       expect(frame).not.toContain("结果已回注")
       expect(frame).not.toContain("未回注")
     } finally {

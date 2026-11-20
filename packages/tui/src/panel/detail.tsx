@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BoxRenderable, InputRenderable, ScrollBoxRenderable } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onMount, Show, type JSX } from "solid-js"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
-import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import { cellWidth, type AmbiguousWidth } from "../ui/width"
+import { remoteLine } from "../util/remote-text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
 /**
@@ -37,7 +37,11 @@ export interface DetailRow<T = unknown> {
   cells: readonly (string | JSX.Element)[]
   value?: T
   selectable?: boolean
-  /** One-line note shown only while the row is selected. */
+  /**
+   * One-line note for the row, drawn on the panel's fixed note line (under the rows, outside the scroll area) while the
+   * row is selected, never under the row. Line breaks become spaces, and what is wider than the line is cut. A panel
+   * where some row has a note keeps that line as the selection moves, blank for the rows without one.
+   */
   note?: string
   /** Wrapped text revealed below the row while it is selected. */
   body?: string
@@ -79,7 +83,6 @@ const COLUMN_GAP = 2
 export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   const { theme } = useTheme()
   const kv = useKV()
-  const dimensions = useTerminalDimensions()
   let scroll: ScrollBoxRenderable | undefined
 
   const [internalSelected, setInternalSelected] = createSignal<string | undefined>(firstSelectableId())
@@ -87,7 +90,6 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   const rowRefs = new Map<string, BoxRenderable>()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const innerWidth = () => Math.max(0, dimensions().width - 6)
   const selectableRows = createMemo(() => (props.rows ?? []).filter((row) => row.selectable !== false))
   const selectedId = createMemo(() => {
     if (props.selected !== undefined) return props.selected
@@ -96,6 +98,14 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     return firstSelectableId()
   })
   const selectedRow = createMemo(() => (props.rows ?? []).find((row) => row.id === selectedId()))
+  // A panel where some row has a note keeps the line for it as the selection moves, blank for the rows without one, so
+  // the rows and the height of the panel do not change with the selection. A panel where none has one has no such line.
+  const hasNote = createMemo(() => (props.rows ?? []).some((row) => row.selectable !== false && !!row.note))
+  const note = createMemo(() => {
+    if (!hasNote()) return undefined
+    const row = selectedRow()
+    return row?.selectable !== false && row?.note ? remoteLine(row.note) : ""
+  })
   const tabs = createMemo(() => props.tabs ?? [])
 
   const columnWidths = createMemo(() => {
@@ -260,6 +270,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
       onTab={props.onTab}
       hints={hints()}
       tone={props.tone}
+      note={note()}
     >
       <Show when={props.summary}>
         <box flexShrink={0} flexDirection="column">
@@ -339,11 +350,6 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                   )}
                 </For>
               </box>
-              <Show when={isSelected() && selectable && row.note}>
-                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
-                  {truncateCells(row.note!, innerWidth(), ambiguousWidth())}
-                </text>
-              </Show>
               <Show when={isSelected() && row.body}>
                 <box flexShrink={0} paddingLeft={2} paddingBottom={1}>
                   <text wrapMode="word" fg={theme.text}>

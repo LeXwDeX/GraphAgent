@@ -7,6 +7,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { subagentMarkerToken } from "../session/subagents"
+import { LEGACY_EDGE_GUTTER, NARROW_WIDTH } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import {
   DESCRIPTION_SEPARATOR,
@@ -46,10 +47,6 @@ export type TopBarProps = {
   right?: TopBarRight
 }
 
-/** Below this terminal width the model name and context usage are hidden. */
-export const TOP_BAR_WIDE_WIDTH = 100
-
-const PADDING = 2
 const GAP = 2
 const MARK = "GraphAgent"
 const MARK_PREFIX = `◇─◆ ${MARK}`
@@ -76,9 +73,10 @@ export function TopBar(props: TopBarProps) {
 
   const layout = createMemo(() => {
     const aw = ambiguousWidth()
-    const inner = Math.max(1, width() - PADDING)
+    const inner = Math.max(1, width() - 2 * LEGACY_EDGE_GUTTER)
     const markWidth = cellWidth(MARK_PREFIX, aw)
-    const wide = width() >= TOP_BAR_WIDE_WIDTH
+    // Below the narrow breakpoint the model name and context usage are hidden.
+    const wide = width() >= NARROW_WIDTH
     const value = props.right
 
     const parts = [
@@ -141,7 +139,13 @@ export function TopBar(props: TopBarProps) {
   })
 
   return (
-    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+    <box
+      height={1}
+      flexShrink={0}
+      flexDirection="row"
+      paddingLeft={LEGACY_EDGE_GUTTER}
+      paddingRight={LEGACY_EDGE_GUTTER}
+    >
       <text wrapMode="none">
         <span style={{ fg: theme.textMuted }}>◇─</span>
         <span style={{ fg: theme.primary }}>◆</span>
