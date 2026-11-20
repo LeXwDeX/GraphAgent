@@ -7,7 +7,7 @@ import type { CapturedFrame } from "@opentui/core"
 import { DEFAULT_THEME } from "../src/context/theme"
 import { setLanguage } from "../src/i18n"
 import { DEFAULT_THEMES, resolveTheme } from "../src/theme"
-import { readFrame, readSpans, renderUntilFrame } from "./fixture/frames"
+import { readSpans, renderUntilFrame } from "./fixture/frames"
 import { promptShown, runApp, type Setup } from "./fixture/run-app"
 import { assistantMessage, textPart, userMessage } from "./fixture/session-records"
 import { json } from "./fixture/tui-sdk"
@@ -144,17 +144,28 @@ function edgeProblems(frame: CapturedFrame) {
   return problems
 }
 
-/** Renders until two frames in a row are the same, which is when a layout that needs a few frames has settled. */
+/** How many frames in a row have to be the same for the screen to count as settled. */
+const SETTLED_FRAMES = 3
+
+/**
+ * Renders until the screen stops changing, which is when a layout that needs a few frames (a resize the renderer
+ * applies later) has settled, and returns the painted cells of it. The wait ends at the deadline of `renderUntilFrame`,
+ * not after a fixed number of renders: a count of renders is not real time, and a loaded host runs out of them before
+ * the layout is done.
+ */
 async function settled(setup: Setup) {
-  let previous = ""
-  for (let round = 0; round < 40; round++) {
-    await setup.renderOnce()
-    await Bun.sleep(5)
-    const frame = await readFrame(setup)
-    if (frame === previous) return readSpans(setup)
-    previous = frame
-  }
-  throw new Error(`the screen did not settle:\n${previous}`)
+  let last = ""
+  let same = 0
+  await renderUntilFrame(
+    setup,
+    (frame) => {
+      same = frame === last ? same + 1 : 1
+      last = frame
+      return same >= SETTLED_FRAMES && frame.trim().length > 0
+    },
+    "a screen that stops changing",
+  )
+  return readSpans(setup)
 }
 
 async function transcriptShown(setup: Setup) {
