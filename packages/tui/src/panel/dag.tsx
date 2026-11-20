@@ -938,7 +938,6 @@ function DagRequestPanel(props: { ctx: DagRequestContext }) {
       id: kind,
       value: kind,
       title: dagRequestLabel(kind, props.ctx),
-      description: dagRequestText(kind, props.ctx),
     })),
   )
 

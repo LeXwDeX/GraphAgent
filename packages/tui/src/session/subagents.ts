@@ -402,10 +402,11 @@ export function backgroundResultLine(text: string | undefined): string | undefin
 }
 
 /**
- * The lines under the selected row of the list: what the sub-agent was asked (`prompt`, which is the Task description
- * until its session is loaded), and for a background run that is over whether its report reached the main session. A
- * run the server reported on shows the first line of the report when `resultText` (its message) is loaded; a run that
- * was interrupted and left no report says it did not come back.
+ * The lines of detail for the selected row of the list (the panel writes them on its one note line): what the
+ * sub-agent was asked (`prompt`, which is the Task description until its session is loaded), and for a background run
+ * that is over whether its report reached the main session. A run the server reported on shows the first line of the
+ * report when `resultText` (its message) is loaded; a run that was interrupted and left no report says it did not come
+ * back.
  */
 export function subagentDetail(
   row: Pick<SubagentRow, "description" | "background" | "status" | "result">,

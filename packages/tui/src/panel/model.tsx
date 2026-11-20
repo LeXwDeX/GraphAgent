@@ -28,7 +28,6 @@ type Candidate = {
   id: string
   value: ModelRef
   title: string
-  description?: string
   group?: string
   releaseDate: string | number
 }
@@ -62,7 +61,6 @@ export function ModelPanel(props: ModelPanelProps) {
               id: `${provider.id}/${model.id}`,
               value: { providerID: provider.id, modelID: model.id },
               title: model.name ?? item.modelID,
-              description: provider.name,
               group: t("panel.model.group.favorites"),
               releaseDate: model.release_date,
             },
@@ -82,7 +80,6 @@ export function ModelPanel(props: ModelPanelProps) {
                 id: `${provider.id}/${model.id}`,
                 value: { providerID: provider.id, modelID: model.id },
                 title: model.name ?? item.modelID,
-                description: provider.name,
                 group: t("panel.model.group.recent"),
                 releaseDate: model.release_date,
               },
@@ -103,7 +100,6 @@ export function ModelPanel(props: ModelPanelProps) {
                 id: `${provider.id}/${modelID}`,
                 value: ref,
                 title: info.name ?? modelID,
-                description: isFavorite(ref) ? t("panel.model.favorite.mark") : connected() ? undefined : provider.name,
                 group: connected() ? provider.name : undefined,
                 releaseDate: info.release_date,
               } satisfies Candidate
@@ -123,7 +119,6 @@ export function ModelPanel(props: ModelPanelProps) {
       id: candidate.id,
       value: candidate.value,
       title: candidate.title,
-      description: candidate.description,
       group: candidate.group,
     })),
   )

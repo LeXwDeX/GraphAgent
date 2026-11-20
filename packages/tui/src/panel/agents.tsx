@@ -52,6 +52,14 @@ function padCells(text: string, width: number, ambiguousWidth: AmbiguousWidth) {
 }
 
 /**
+ * The detail lines of a row on the one note line of the panel. What a run that is over reported, and whether it came
+ * back, are short and come first; the delegated prompt, which can be of any length, follows and is what the line cuts.
+ */
+function detailText(lines: readonly string[]) {
+  return [...lines.slice(1), ...lines.slice(0, 1)].join(" · ")
+}
+
+/**
  * Listens to the one-second clock while it is mounted. Only a sub-agent that runs has a time that moves, so the panel
  * mounts this only while there is one.
  */
@@ -221,16 +229,19 @@ export function AgentsPanel() {
         return row ? subagentGroupTitle(row.group) : undefined
       },
       lead: <StateGlyph row={() => rowOf(id)} />,
-      // Read only for the selected row. The delegated prompt is the first user message of the session when it is
-      // loaded; otherwise the Task description stands in, and nothing is requested to get the message. A background
-      // run that is over adds what it reported, which is read from the main session's messages when they are loaded.
-      get description() {
+      // Read for the selected row, and for the first one, where the list looks for a detail at all. The delegated prompt
+      // is the first user message of the session when it is loaded; otherwise the Task description stands in, and
+      // nothing is requested to get the message. A background run that is over adds what it reported, which is read
+      // from the main session's messages when they are loaded.
+      get detail() {
         const row = rowOf(id)
         if (!row) return undefined
-        return subagentDetail(row, {
-          prompt: delegatedPrompt(sync.data.message[id], (messageID) => sync.data.part[messageID]),
-          resultText: resultText(row),
-        })
+        return detailText(
+          subagentDetail(row, {
+            prompt: delegatedPrompt(sync.data.message[id], (messageID) => sync.data.part[messageID]),
+            resultText: resultText(row),
+          }),
+        )
       },
     })),
   )

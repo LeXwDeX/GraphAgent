@@ -1243,11 +1243,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // The status band is passed to the frame as an expression, not built in a memo here: the frame's slot creates it
   // inside the bottom zone's provider, which is where it reads the panel stack. Only a session route has one; home
   // and the diff view leave the slot empty.
+  //
+  // The root fills the renderer (`100%`) and is not given the numbers of `dimensions()` (#1673). Those are a copy kept
+  // by a `resize` listener: the renderer calls its listeners in order and stops at the first that throws, so a copy
+  // that never heard of a size would leave the whole screen laid out at the old one, narrower than the terminal.
   return (
     <BottomZoneProvider state={bottomZone}>
       <box
-        width={dimensions().width}
-        height={dimensions().height}
+        width="100%"
+        height="100%"
         flexDirection="column"
         backgroundColor={theme.background}
         onMouseDown={(evt) => {
