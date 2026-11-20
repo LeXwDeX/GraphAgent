@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { setLanguage } from "../../src/i18n"
 import { ListPanel, type ListItem } from "../../src/panel/list"
-import { nextTurn, readFrame, renderUntilFrame } from "../fixture/frames"
+import { renderUntilFrame } from "../fixture/frames"
 import { shellState } from "../shell/contexts"
 import { PanelSurface, renderPanel } from "./contexts"
 
@@ -76,6 +76,16 @@ const linesOf = (frame: string) => frame.split("\n").map((line) => line.trimEnd(
 /** The title of the selected row: the pointer of the filter row is not followed by a title. */
 const selectedTitle = (frame: string) => frame.match(/› (条目 \d+)/)?.[1]
 
+/**
+ * Whether the selection has left the row with this title and the view shows the row it is on now. The selection moves
+ * first and the view follows it; a frame in between has no pointer on any row, and is not yet the place the selection
+ * has moved to.
+ */
+const movedFrom = (title: string) => (frame: string) => {
+  const now = selectedTitle(frame)
+  return now !== undefined && now !== title
+}
+
 /** The rows the panel draws: its borders, its filter row when it is in view, and the cursor the terminal shows. */
 function placeOf(app: App, frame: string) {
   const lines = linesOf(frame)
@@ -92,15 +102,6 @@ function placeOf(app: App, frame: string) {
     // The renderer counts the cursor from 1.
     cursor: { row: state.y - 1, col: state.x - 1, visible: state.visible },
   }
-}
-
-/** Renders a few times so that what a key or an update causes has happened, for a check that nothing else will. */
-async function settled(app: App) {
-  for (let round = 0; round < 8; round++) {
-    await app.renderOnce()
-    await nextTurn()
-  }
-  return readFrame(app)
 }
 
 function press(app: App, key: "pageup" | "pagedown" | "home" | "end" | "up" | "down") {
@@ -128,13 +129,16 @@ test("the terminal cursor stays on the filter row, inside the panel, however far
   await using tmp = await shellState()
   const app = await mountList(tmp.path, () => numbered(26))
   try {
-    const start = placeOf(app, await renderUntilFrame(app, (frame) => frame.includes("› 条目 1"), "the list"))
+    const start = placeOf(app, await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the list"))
     // The filter is the row under the title and the cursor is in it, after the pointer.
     expect(start.filterRow).toBe(start.top + 2)
     expect(start.cursor).toEqual({ row: start.filterRow, col: start.left + 4, visible: true })
 
     press(app, "end")
-    const end = placeOf(app, await renderUntilFrame(app, (frame) => frame.includes("› 条目 26"), "the end of the list"))
+    const end = placeOf(
+      app,
+      await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 26", "the end of the list"),
+    )
     // Nothing of the cursor is outside the panel: not above it, in the other content, and not on its border.
     expect(end.cursor.visible).toBe(true)
     expect(end.cursor.row).toBeGreaterThan(end.top)
@@ -167,10 +171,20 @@ test("the filter row does not scroll: it is the row under the title, whichever r
   await using tmp = await shellState()
   const app = await mountList(tmp.path, () => numbered(26))
   try {
-    await renderUntilFrame(app, (frame) => frame.includes("› 条目 1"), "the list")
-    for (const key of ["end", "pageup", "home"] as const) {
+    await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the list")
+    // Each key with the row the selection is on once it has been handled: the end, a page up from the end, the top.
+    // The pointer is drawn on a row in view only, so a frame that shows it is one in which the view has followed.
+    for (const [key, title] of [
+      ["end", "条目 26"],
+      ["pageup", "条目 16"],
+      ["home", "条目 1"],
+    ] as const) {
       press(app, key)
-      const frame = await settled(app)
+      const frame = await renderUntilFrame(
+        app,
+        (shown) => selectedTitle(shown) === title,
+        `the selection on ${title} after ${key}`,
+      )
       const place = placeOf(app, frame)
       expect(place.filterRow).toBe(place.top + 2)
       expect(place.lines[place.top + 1]).toContain("长列表")
@@ -190,11 +204,15 @@ test("PageDown and PageUp stop at the last and the first item, they do not wrap 
 
     // Ten items down would be past the end: the selection is on the last item, not on the fifth.
     press(app, "pagedown")
-    await renderUntilFrame(app, (frame) => selectedTitle(frame) !== "条目 15", "a move of the selection")
-    expect(selectedTitle(await settled(app))).toBe("条目 20")
-    // At the last item there is nowhere further to go.
+    const last = await renderUntilFrame(app, movedFrom("条目 15"), "the selection after a page down")
+    expect(selectedTitle(last)).toBe("条目 20")
+    // At the last item there is nowhere further to go. A key that changes nothing leaves nothing to wait for, so the key
+    // after it is what is waited for. Keys are handled in the order they are pressed: a step up ends on the item before
+    // the last one only if the page down before it left the selection where it was.
     press(app, "pagedown")
-    expect(selectedTitle(await settled(app))).toBe("条目 20")
+    press(app, "up")
+    const stayed = await renderUntilFrame(app, movedFrom("条目 20"), "the selection after a step up")
+    expect(selectedTitle(stayed)).toBe("条目 19")
 
     press(app, "home")
     await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the first item again")
@@ -202,14 +220,17 @@ test("PageDown and PageUp stop at the last and the first item, they do not wrap 
     press(app, "down")
     await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 3", "the third item")
     press(app, "pageup")
-    await renderUntilFrame(app, (frame) => selectedTitle(frame) !== "条目 3", "a move of the selection")
-    expect(selectedTitle(await settled(app))).toBe("条目 1")
+    const first = await renderUntilFrame(app, movedFrom("条目 3"), "the selection after a page up")
+    expect(selectedTitle(first)).toBe("条目 1")
+    // The same at the first item, with one step down.
     press(app, "pageup")
-    expect(selectedTitle(await settled(app))).toBe("条目 1")
+    press(app, "down")
+    const stayedFirst = await renderUntilFrame(app, movedFrom("条目 1"), "the selection after a step down")
+    expect(selectedTitle(stayedFirst)).toBe("条目 2")
 
     // A page is still ten items where there are ten to go.
     press(app, "pagedown")
-    await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 11", "a page down")
+    await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 12", "a page down")
     // Up and Down still wrap round the ends.
     press(app, "home")
     await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the first item once more")
@@ -228,15 +249,15 @@ test("a page key brings the selected row back into view even when it does not mo
   try {
     await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the first item")
     press(app, "end")
-    await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 20", "the last item")
+    const end = await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 20", "the last item")
     // The wheel takes the view away from the selection; the selection stays on the last item.
-    const place = placeOf(app, await settled(app))
+    const place = placeOf(app, end)
     for (let tick = 0; tick < 30; tick++) await app.mockMouse.scroll(10, place.top + 4, "up")
     const away = await renderUntilFrame(app, (frame) => shows(frame, "条目 1"), "the top of the list")
     expect(shows(away, "条目 20")).toBe(false)
     // PageDown cannot move it any further, and it is shown again all the same.
     press(app, "pagedown")
-    const frame = await renderUntilFrame(app, (shown) => shown.includes("› 条目 20"), "the selected row in view")
+    const frame = await renderUntilFrame(app, (shown) => selectedTitle(shown) === "条目 20", "the selected row in view")
     expect(selectedTitle(frame)).toBe("条目 20")
   } finally {
     app.renderer.destroy()
@@ -271,8 +292,13 @@ test("an item that data moves out of view takes the view with it, and a group's 
     await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the first item")
     // The owner sends the first item to the end of the list. The selection follows it, and so does the view.
     setItems((current) => [...current.slice(1), current[0]])
-    const frame = await renderUntilFrame(app, (shown) => selectedTitle(shown) === "条目 1", "the selected item in view")
-    expect(shows(frame, "条目 20")).toBe(true)
+    // The first item is selected before the update as well, so the wait is for the view that has gone to the end of the
+    // list with it, not for the pointer alone.
+    const frame = await renderUntilFrame(
+      app,
+      (shown) => selectedTitle(shown) === "条目 1" && shows(shown, "条目 20"),
+      "the selected item in view at the end of the list",
+    )
     expect(shows(frame, "条目 2")).toBe(false)
   } finally {
     app.renderer.destroy()
@@ -284,16 +310,22 @@ test("moving to the first item of a group shows the heading of the group with it
   const groups = numbered(24, (index) => (index < 12 ? "甲组" : "乙组"))
   const app = await mountList(tmp.path, () => groups, { height: 24 })
   try {
-    await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the first item")
     // The first item of the first group has its heading above it, and nothing above that but the title and the filter.
-    const home = placeOf(app, await settled(app))
+    const home = placeOf(
+      app,
+      await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 1", "the first item"),
+    )
     expect(home.lines[home.filterRow + 1]).toContain("甲组")
 
     press(app, "end")
     await renderUntilFrame(app, (frame) => selectedTitle(frame) === "条目 24", "the last item")
     // Up from the end, one step at a time, to the first item of the second group: the view only has to follow the row.
     for (let step = 0; step < 11; step++) press(app, "up")
-    const frame = await renderUntilFrame(app, (shown) => selectedTitle(shown) === "条目 13", "the first item of 乙组")
+    const frame = await renderUntilFrame(
+      app,
+      (shown) => selectedTitle(shown) === "条目 13" && shown.includes("乙组"),
+      "the first item of 乙组, and its heading",
+    )
     const lines = linesOf(frame)
     const row = lines.findIndex((line) => line.includes("› 条目 13"))
     expect(lines[row - 1]).toContain("乙组")
