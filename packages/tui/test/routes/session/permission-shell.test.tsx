@@ -806,17 +806,31 @@ describe("an edit whose diff is longer than the panel (#1651)", () => {
     }
   })
 
-  test("the fullscreen ask gives the diff the rows of the terminal and keeps the options", async () => {
+  test("the fullscreen ask gives the diff the rows of the terminal and keeps the options, inside a whole border (#1662)", async () => {
     await withPrompt({ scene: editLong(), width: 80, height: 24 }, async (app) => {
       app.mockInput.pressKey("f", { ctrl: true })
-      // In this test renderer the fullscreen ask comes out without the side borders of the panel (it did before this
-      // change too), so its rows are told by their indent and not by the border: a numbered line of the diff with
-      // nothing to its left.
-      const numbered = (frame: string) => frame.split("\n").filter((line) => /^ +\d+ [-+ ]/.test(line))
-      const frame = await renderUntilFrame(app, (text) => numbered(text).length > 0, "the fullscreen ask")
-      for (const text of OPTIONS["zh-CN"]) expect(frame).toContain(text)
-      // 24 − 6 rows of content: the path, the options, the two blank rows and twelve rows of the diff.
-      expect(numbered(frame).length).toBe(12)
+      // The ask is a layer over the whole terminal with a blank row above its panel: the panel starts on the second row.
+      const frame = await renderUntilFrame(
+        app,
+        (text) => (text.split("\n")[1] ?? "").startsWith("╭"),
+        "the fullscreen ask",
+      )
+      expect(frame.split("\n")[0].trim()).toBe("")
+      for (const text of [...OPTIONS["zh-CN"], HINTS["zh-CN"]]) expect(frame).toContain(text)
+      // 24 − 6 rows of content: the path, the options, the two blank rows and twelve rows of the diff; with the four rows
+      // around them the panel is two rows short of the terminal, the one above it and the one under it.
+      const lines = panelLines(frame)
+      expect(lines.length).toBe(24 - 2)
+      expect(diffRowsOf(frame).length).toBe(12)
+      expect(optionRowsOf(frame).length).toBe(3)
+      // The side borders are all there: every row between the top border and the bottom one has both.
+      for (const line of lines.slice(1, -1))
+        expect({ line, whole: line.startsWith("│") && line.endsWith("│") }).toEqual({ line, whole: true })
+
+      // The same key puts the ask back at the bottom, where it was.
+      app.mockInput.pressKey("f", { ctrl: true })
+      const back = await renderUntilFrame(app, (text) => !text.split("\n")[1]?.startsWith("╭"), "the ordinary ask")
+      expect(panelLines(back).length).toBe(Math.min(14, Math.floor(24 * 0.45)) + 4)
     })
   })
 })

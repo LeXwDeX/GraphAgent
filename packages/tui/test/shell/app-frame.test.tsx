@@ -317,6 +317,8 @@ async function renderDimScene(options: {
   dim: boolean
   drawer: boolean
   main?: string
+  /** The color the main text is painted in; the renderer's own default when left out. */
+  fg?: RGBA
   state: string
   width?: number
   height?: number
@@ -332,7 +334,7 @@ async function renderDimScene(options: {
       const drawerContent = createMemo(() => (drawer() ? <text>DRAWER</text> : undefined))
       return {
         ...frameProps(),
-        children: <text>{options.main ?? "主区内容 MAINTEXT"}</text>,
+        children: <text fg={options.fg}>{options.main ?? "主区内容 MAINTEXT"}</text>,
         dimmed: dim,
         get drawer() {
           return drawerContent()
@@ -454,6 +456,43 @@ test("dims when a panel opens and restores the colors when it closes", async () 
   await scene.settle()
   expect(scene.app.captureCharFrame()).toContain("主区内容 MAINTEXT")
   expect(paintOf(scene, "主区内容").fg.toInts()).toEqual(before)
+})
+
+/** WCAG relative luminance and contrast ratio, as `test/theme.test.ts` computes them. */
+function luminanceOf(color: readonly number[]) {
+  const [r = 0, g = 0, b = 0] = color.map((value) => {
+    const normalized = value / 255
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+function contrastOf(a: readonly number[], b: readonly number[]) {
+  const [high, low] = [luminanceOf(a), luminanceOf(b)].sort((left, right) => right - left)
+  return ((high ?? 0) + 0.05) / ((low ?? 0) + 0.05)
+}
+
+// #1619: the design prototype dims the main area to `opacity: .35`. The default theme's `text` is 12.2:1 against the
+// background; at that strength it is left with 2.6:1, below the 4.5:1 the token itself meets and not meant to reach it,
+// but the transcript behind a panel stays readable.
+test("dims to the prototype's strength and leaves the default theme's text readable", async () => {
+  const text = resolveTheme(DEFAULT_THEMES[DEFAULT_THEME], "dark").text
+  await using tmp = await shellState()
+  await using plain = await renderDimScene({ dim: false, drawer: false, state: tmp.path, fg: text })
+  const before = paintOf(plain, "主区内容").fg.toInts()
+  await using dimmed = await renderDimScene({ dim: true, drawer: false, state: tmp.path, fg: text })
+  expect(dimmed.app.captureCharFrame()).toContain("主区内容 MAINTEXT")
+  const after = paintOf(dimmed, "主区内容").fg.toInts()
+
+  // The text is painted in its token, and dimmed it is the 0.35 blend of that token and the app background: the
+  // strength is written out here, not read from the constant, so that a different one fails this test.
+  expect(before.slice(0, 3)).toEqual(text.toInts().slice(0, 3))
+  const [bgR, bgG, bgB] = background.toInts()
+  const blend = before.slice(0, 3).map((value, index) => Math.round(value * 0.35 + [bgR, bgG, bgB][index] * 0.65))
+  after.slice(0, 3).forEach((value, index) => expect(Math.abs(value - blend[index])).toBeLessThanOrEqual(1))
+
+  expect(contrastOf(before, background.toInts())).toBeGreaterThan(12)
+  expect(contrastOf(after, background.toInts())).toBeGreaterThanOrEqual(2.5)
 })
 
 // The drawer hides what is under it, so it is drawn above the dimmed area at full strength. That

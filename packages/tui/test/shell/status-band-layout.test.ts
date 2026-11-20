@@ -141,12 +141,13 @@ describe("the DAG row", () => {
       return 5
     }
     const stages: number[] = []
-    // The bar is 27 cells and 4 spaces and the shortest text 18: from 49 cells on the bar keeps its full size and
-    // only the text can give way.
-    for (let width = 200; width >= 49; width--) {
+    // The least text is 19 cells (the lead, a title of 12 cells, `4/9` and the gap before it) and a bar of 2 slots a
+    // node is 22 (18 and 4 spaces). From 41 cells on the bar keeps at least 2 slots a node, 3 where the text leaves
+    // the room, and only the text gives way (#1619: the text is sized first, so the third slot is what it takes).
+    for (let width = 200; width >= 41; width--) {
       const row = layoutDagRow({ summary: long, nodes: NODES, more: 2, width })
       const line = bandRowText(row)
-      expect(line.match(/[━─]/g)).toHaveLength(27)
+      expect([18, 27], `bar at ${width}`).toContain((line.match(/[━─]/g) ?? []).length)
       stages.push(stageOf(line))
     }
     expect(stages[0]).toBe(0)
@@ -172,19 +173,28 @@ describe("the DAG row", () => {
     expect(row.cells).toBeLessThanOrEqual(40)
   })
 
-  test("shrinks the bar last: a workflow too big for 3 cells a node keeps its bar and loses text first", () => {
+  test("narrows the bar a step at a time: the third slot goes to the text, the second only when the least text needs it", () => {
     const nodes = wide(60, 10)
     const total = summary({ nodeCount: 60, completedNodes: 60, runningNodes: 0, failedNodes: 0, queuedNodes: 0 })
     const slots = (row: BandRow) => bandRowText(row).match(/━/g)?.length
-    // 60 nodes at 3 cells and 9 spaces between the waves.
-    expect(slots(layoutDagRow({ summary: total, nodes, more: 0, width: 400 }))).toBe(180)
+    // 60 nodes at 3 slots and 9 spaces between the waves, beside the whole text.
+    const wholeRow = layoutDagRow({ summary: total, nodes, more: 0, width: 400 })
+    expect(slots(wholeRow)).toBe(180)
+    expect(bandRowText(wholeRow)).toContain("第 10/10 波")
 
-    // One cell a node leaves room for the text again.
+    // The third slot goes before the text does: where the bar at 3 a node leaves no room for the wave and the hint, it
+    // takes 2 and the text stays whole. Until #1619 the bar kept its 3 and the hint and the wave went.
+    const second = layoutDagRow({ summary: total, nodes, more: 0, width: 222 })
+    expect(slots(second)).toBe(120)
+    expect(bandRowText(second)).toContain("60/60 完成 · 第 10/10 波")
+    expect(bandRowText(second).endsWith("/dag")).toBe(true)
+
+    // One slot a node leaves room for the text again: 2 slots and the least text do not fit here.
     const roomy = layoutDagRow({ summary: total, nodes, more: 0, width: 100 })
     expect(slots(roomy)).toBe(60)
     expect(bandRowText(roomy)).toContain("60/60 完成")
 
-    // Where one cell a node does not fit either, the bar goes by wave and the text is down to n/m.
+    // Where one slot a node does not fit either, the bar goes by wave and the text is down to n/m.
     const tight = layoutDagRow({ summary: total, nodes, more: 0, width: 76 })
     expect(tight.cells).toBeLessThanOrEqual(76)
     expect(slots(tight)).toBeLessThan(60)
@@ -358,6 +368,133 @@ describe("the DAG row", () => {
   })
 })
 
+describe("the DAG row: the text is sized first and the bar takes what it leaves (#1619)", () => {
+  /** Ten nodes in five waves: 4 done, 1 failed, 2 running, 3 queued. The wave in progress is the third. */
+  const TEN: readonly DagNodeRow[] = [...NODES, node("n10", "queued", ["n8"])]
+  const TEN_FLOW = summary({ nodeCount: 10, queuedNodes: 3 })
+  /** A 100-column terminal gives the band 96 cells: 2 columns of padding on each side. */
+  const AT_100 = 96
+  /** The bar's slots: one glyph each, whatever the ambiguous width. */
+  const barSlots = (row: BandRow) => bandRowText(row).match(/[━─]/g)?.length ?? 0
+
+  test("keeps the wave and the hint on a 100-column terminal, the bar at 2 slots a node: ten nodes in five waves", () => {
+    // The mode mark stays: a running workflow in a session with DAG mode off carries `模式关`.
+    const row = layoutDagRow({ summary: TEN_FLOW, nodes: TEN, more: 0, mode: "off", width: AT_100 })
+    const line = bandRowText(row)
+    expect(line).toContain("4/10 完成 · 第 3/5 波 · 2 运行中 · 1 失败")
+    expect(line).toContain("模式关")
+    expect(line.endsWith("/dag")).toBe(true)
+    // 10 nodes at 2 slots each: the text took what it needed and the bar the rest, which is not enough for a third.
+    expect(barSlots(row)).toBe(20)
+    expect(row.cells).toBe(AT_100)
+    expect(measured(row, 1)).toBe(AT_100)
+  })
+
+  test("says it in English too", () => {
+    setLanguage("en")
+    // The English text is longer: without the mode mark the row is whole at 96 cells; with `mode off` it needs 99,
+    // so there the hint is the first to go (the wave stays) and it is back at 100.
+    const plain = layoutDagRow({ summary: TEN_FLOW, nodes: TEN, more: 0, width: AT_100 })
+    expect(bandRowText(plain)).toContain("4/10 done · wave 3/5 · 2 running · 1 failed")
+    expect(bandRowText(plain).endsWith("/dag")).toBe(true)
+    expect(barSlots(plain)).toBe(20)
+
+    const marked = layoutDagRow({ summary: TEN_FLOW, nodes: TEN, more: 0, mode: "off", width: AT_100 })
+    expect(bandRowText(marked)).toContain("wave 3/5")
+    expect(bandRowText(marked)).toContain("mode off")
+    expect(bandRowText(marked)).not.toContain("/dag")
+    const wider = layoutDagRow({ summary: TEN_FLOW, nodes: TEN, more: 0, mode: "off", width: AT_100 + 4 })
+    expect(bandRowText(wider)).toContain("4/10 done · wave 3/5 · 2 running · 1 failed")
+    expect(bandRowText(wider).endsWith("mode off  /dag")).toBe(true)
+    expect(barSlots(wider)).toBe(20)
+  })
+
+  test("hands the bar its third slot only where the whole text and 3 slots a node both fit", () => {
+    const at = (width: number) => layoutDagRow({ summary: TEN_FLOW, nodes: TEN, more: 0, mode: "off", width })
+    // The hint is the first of the text to go: the whole row is 71 cells and a bar of 2 slots a node is 24.
+    expect(bandRowText(at(94))).toContain("第 3/5 波")
+    expect(bandRowText(at(94))).not.toContain("/dag")
+    for (let width = 95; width <= 104; width++) {
+      expect(bandRowText(at(width)).endsWith("/dag"), `hint at ${width}`).toBe(true)
+      expect(barSlots(at(width)), `bar at ${width}`).toBe(20)
+    }
+    // A bar of 3 slots a node is 34: it comes back with the whole text beside it, never at the text's expense.
+    for (let width = 105; width <= 140; width++) {
+      expect(bandRowText(at(width)).endsWith("/dag"), `hint at ${width}`).toBe(true)
+      expect(bandRowText(at(width)), `wave at ${width}`).toContain("第 3/5 波")
+      expect(barSlots(at(width)), `bar at ${width}`).toBe(30)
+    }
+  })
+
+  /** What a row can keep of its text, in either language. */
+  const PIECES = [
+    /\/dag/,
+    /\+\d+ (个|more)/,
+    /tok/,
+    /并发|slots/,
+    /预算|budget/,
+    /波|wave/,
+    /等待主|waiting/,
+    /完成|done/,
+    /模式|mode (on|off)/,
+  ]
+  /** The pieces a row keeps; the last is the title, which counts as kept while it is not cut. */
+  const piecesOf = (line: string) => [...PIECES.map((piece) => piece.test(line)), !line.includes("…")]
+
+  const USAGE: DagUsage = { running: 3, cap: 12, tokens: 1_200_000, budget: 5_000_000, percent: 24, tier: "normal" }
+  const WARN: DagUsage = { running: 3, cap: 12, tokens: 850_000, budget: 1_000_000, percent: 85, tier: "warn" }
+  const VARIANTS = [
+    ["the mode mark", { mode: "off" }],
+    ["everything a quiet row says", { mode: "on", usage: USAGE, waiting: true, more: 2 }],
+    ["a budget at its warning band", { mode: "on", usage: WARN, waiting: true, more: 1 }],
+  ] as const
+  /** The shapes: whether 1 slot a node fits at every width swept, so that every node can keep its slot. */
+  const SHAPES: Array<[string, DagNodeRow[], DagWorkflowSummary, boolean]> = [
+    ["nine nodes", [...NODES], summary(), true],
+    ["ten nodes", [...TEN], TEN_FLOW, true],
+    [
+      "twenty nodes",
+      wide(20, 5),
+      summary({ nodeCount: 20, completedNodes: 20, runningNodes: 0, failedNodes: 0, queuedNodes: 0 }),
+      false,
+    ],
+  ]
+
+  for (const aw of [1, 2] as const) {
+    test(`from 60 to 140 columns: never wider than the room, a slot for every node, and a text that only gets richer with the width but where the bar steps from 1 slot a node to 2 (ambiguous width ${aw})`, () => {
+      for (const language of ["zh-CN", "en"] as const) {
+        setLanguage(language)
+        for (const [shape, nodes, flow, everyNode] of SHAPES) {
+          for (const [variant, extra] of VARIANTS) {
+            let before: { line: string; slots: number } | undefined
+            for (let width = 60; width <= 140; width++) {
+              const row = layoutDagRow({ summary: flow, nodes, more: 0, ...extra, width, ambiguousWidth: aw })
+              const label = `${language}, ${shape}, ${variant} at ${width} (aw ${aw})`
+              const line = bandRowText(row)
+              const slots = barSlots(row)
+              expect(measured(row, aw), label).toBe(row.cells)
+              expect(row.cells, label).toBeLessThanOrEqual(width)
+              if (everyNode) expect(slots, label).toBeGreaterThanOrEqual(nodes.length)
+              if (before) {
+                const kept = piecesOf(line)
+                const lost = piecesOf(before.line).some((was, index) => was && !kept[index])
+                // One cell wider and the row says less: that is the step where the bar goes from 1 slot a node to 2,
+                // which the text pays for because the least text and a bar of 2 slots a node now fit, and the order of
+                // the cramped rows (a bar of 1 slot beside the richest text that fits) no longer applies.
+                if (lost) {
+                  expect(before.slots, label).toBe(nodes.length)
+                  expect(slots, label).toBeGreaterThanOrEqual(2 * nodes.length)
+                }
+              }
+              before = { line, slots }
+            }
+          }
+        }
+      }
+    })
+  }
+})
+
 describe("the DAG row in DAG mode: the mode mark, the usage and the wait", () => {
   const USAGE: DagUsage = {
     running: 3,
@@ -436,12 +573,13 @@ describe("the DAG row in DAG mode: the mode mark, the usage and the wait", () =>
       return 9
     }
     const stages: number[] = []
-    // The bar is 27 cells and 4 spaces; the least text is the lead, a title of 12 cells, `4/9` and the mark (6 cells
-    // and a gap of 2): from 58 cells on the bar keeps its full size and only the text gives way.
-    for (let width = 220; width >= 58; width--) {
+    // The least text is the lead, a title of 12 cells, `4/9` and the mark (6 cells and a gap of 2), 27 cells, and a bar
+    // of 2 slots a node is 22 (18 and 4 spaces): from 49 cells on the bar keeps at least 2 slots a node, 3 where the
+    // text leaves the room, and only the text gives way.
+    for (let width = 220; width >= 49; width--) {
       const row = layoutDagRow({ ...FULL, summary: long, width })
       const line = bandRowText(row)
-      expect(line.match(/[━─]/g), `bar at ${width}`).toHaveLength(27)
+      expect([18, 27], `bar at ${width}`).toContain((line.match(/[━─]/g) ?? []).length)
       expect(line, `mark at ${width}`).toContain("模式开")
       stages.push(stageOf(line))
     }
@@ -558,25 +696,37 @@ describe("the DAG row when the budget is at its warning or exhausted band", () =
 
   test("the wait and the budget both outlast the counts text: 120 columns, nine nodes", () => {
     for (const usage of [WARN, EXHAUSTED]) {
+      const budget = usage.tier === "warn" ? "预算 85%" : "预算 100%"
       const line = textOf(usage, { waiting: true })
       expect(line).toContain("等待主 agent")
-      expect(line).toContain(usage.tier === "warn" ? "预算 85%" : "预算 100%")
-      // The wave is the first of the counts text to go.
-      expect(line).not.toContain("波")
+      expect(line).toContain(budget)
       expect(line).toContain("4/9 完成")
+      // The bar gave up its third slot (#1619), so the whole counts text, the wave included, stays beside them.
+      expect(line).toContain("第 3/5 波")
+
+      // Narrower, the wave is the first of the counts text to go; the wait and the budget stay.
+      const narrow = textOf(usage, { waiting: true, width: 104 })
+      expect(narrow).toContain("等待主 agent")
+      expect(narrow).toContain(budget)
+      expect(narrow).toContain("4/9 完成")
+      expect(narrow).not.toContain("波")
     }
   })
 
-  test("the counts are squeezed to n/m before either the wait or the budget goes: 100 columns", () => {
-    for (const usage of [WARN, EXHAUSTED]) {
-      const line = textOf(usage, { waiting: true, width: 96 })
-      expect(line).toContain("等待主 agent")
-      expect(line).toContain(usage.tier === "warn" ? "预算 85%" : "预算 100%")
-      expect(line).toContain("4/9")
-      expect(line).not.toContain("完成")
+  test("the counts are squeezed to n/m before either the wait or the budget goes: 100 and 88 columns", () => {
+    for (const width of [96, 84]) {
+      for (const usage of [WARN, EXHAUSTED]) {
+        const line = textOf(usage, { waiting: true, width })
+        expect(line, `at ${width}`).toContain("等待主 agent")
+        expect(line, `at ${width}`).toContain(usage.tier === "warn" ? "预算 85%" : "预算 100%")
+        expect(line, `at ${width}`).toContain("4/9")
+        expect(line, `at ${width}`).not.toContain("完成")
+      }
     }
-    // A quiet budget has no such claim: the wait goes before the counts are squeezed, as it always did.
-    const quiet = textOf(QUIET, { waiting: true, width: 96 })
+    // A quiet budget has no such claim: the wait goes before the counts are squeezed, as it always did. At 84 cells
+    // the quiet row has let the wait go and keeps its counts, where the rows above keep the wait and squeeze them. (At
+    // 96 the bar's third slot is the only thing the quiet row gives up for the wait, #1619, so it keeps both.)
+    const quiet = textOf(QUIET, { waiting: true, width: 84 })
     expect(quiet).not.toContain("等待主")
     expect(quiet).toContain("完成")
   })
@@ -602,11 +752,12 @@ describe("the DAG row when the budget is at its warning or exhausted band", () =
     }
     for (const usage of [WARN, EXHAUSTED]) {
       const stages: number[] = []
-      // The bar is sized against the lead, a title of 12 cells, `4/9` and the mark, as in a quiet band: from 58
-      // cells on it keeps its full size, and the wait and the budget only ever take what it leaves.
-      for (let width = 220; width >= 58; width--) {
+      // The least text is the lead, a title of 12 cells, `4/9` and the mark, as in a quiet band, and a bar of 2 slots
+      // a node is 22 cells beside it: from 49 cells on the bar keeps at least 2 slots a node, 3 where the text leaves
+      // the room, and the wait and the budget only ever take what that leaves.
+      for (let width = 220; width >= 49; width--) {
         const line = bandRowText(layoutDagRow({ ...BASE, summary: long, more: 2, usage, waiting: true, width }))
-        expect(line.match(/[━─]/g), `bar at ${width}`).toHaveLength(27)
+        expect([18, 27], `bar at ${width}`).toContain((line.match(/[━─]/g) ?? []).length)
         expect(line, `mark at ${width}`).toContain("模式开")
         stages.push(stageOf(line))
       }

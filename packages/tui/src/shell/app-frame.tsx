@@ -21,9 +21,10 @@ export const SHELL_MIN_HEIGHT = 12
 
 /**
  * Share of its colors the main and status rows keep while a bottom-zone panel or ask surface is
- * open; the rest fades into the app background.
+ * open; the rest fades into the app background. 0.35 is the design prototype's strength (#1619); the
+ * contrast it leaves is pinned in `test/shell/app-frame.test.tsx`.
  */
-export const DIMMED_OPACITY = 0.5
+export const DIMMED_OPACITY = 0.35
 
 export type AppFrameTopBar = {
   path?: string

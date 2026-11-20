@@ -9,6 +9,7 @@ import type { GlobalEvent, ToolPart } from "@graphagent/sdk"
 import { SPINNER_FRAMES } from "../../../src/component/spinner"
 import { DEFAULT_THEME } from "../../../src/context/theme"
 import { setLanguage } from "../../../src/i18n"
+import { DIMMED_OPACITY } from "../../../src/shell/app-frame"
 import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth } from "../../../src/ui/width"
 import { AppRoutes } from "../../fixture/route-frame"
@@ -124,7 +125,7 @@ const channels = (color: { toInts(): number[] }) => color.toInts().slice(0, 3)
 /** A color at the opacity the frame gives the main area while an ask is open. */
 function dim(color: { toInts(): number[] }) {
   const background = channels(palette().background)
-  return channels(color).map((value, index) => (value + background[index]) / 2)
+  return channels(color).map((value, index) => value * DIMMED_OPACITY + background[index] * (1 - DIMMED_OPACITY))
 }
 
 const near = (color: { toInts(): number[] } | undefined, expected: number[]) =>
@@ -486,7 +487,7 @@ test("a call that waits for a permission says so in the color of a warning", asy
       harness.deliver(permissionEvent(part.callID))
       const frame = await harness.waitForFrame((text) => text.includes(`⎿ ${says}`), "the wait")
       expect(blockOf(frame, "⏺ Bash")).toEqual(["⏺ Bash bun test", `  ⎿ ${says}`])
-      // The main area is dimmed while the ask is open: the warning color half way to the background, as the frame paints it.
+      // The main area is dimmed while the ask is open: the warning color blended toward the background by `DIMMED_OPACITY`, as the frame paints it.
       const spans = await harness.spans()
       const dimmed = dim(palette().warning)
       expect(near(colorOf(spans, says), dimmed)).toBe(true)
