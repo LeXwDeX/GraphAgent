@@ -273,7 +273,7 @@ test("the palette of a sub-agent view finds none of the commands that change or 
     await waitForFrame(app.setup, (value) => value.includes("只读"), "the sub-agent view")
     expect(STAYING).toHaveLength(ALLOWED.length - 2)
     expect(OUTSIDE.map((command) => command.slash.name)).toEqual(
-      expect.arrayContaining(["rename", "fork", "undo", "redo", "compact", "move", "btw", "model", "agent", "mcp"]),
+      expect.arrayContaining(["rename", "fork", "undo", "redo", "compact", "move", "btw", "model", "mcp"]),
     )
     for (const command of OUTSIDE) {
       const frame = await openPalette(app.setup, t(command.titleKey))

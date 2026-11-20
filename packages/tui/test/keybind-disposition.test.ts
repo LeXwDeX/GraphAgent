@@ -60,6 +60,9 @@ const REMOVED = [
   "plugin_install",
   "plugins.toggle",
   "dialog.plugins.install",
+  // The `/agent` panel went with its key (#1677): agent_cycle and agent_cycle_reverse (Tab, Shift+Tab) switch the
+  // primary agent, and `/agents` still lists sub-agents.
+  "agent_list",
 ] as const
 
 const definitions: Readonly<Record<string, { default: unknown }>> = TuiKeybind.Definitions
@@ -296,8 +299,8 @@ describe("keybind disposition", () => {
   })
 
   test("keeps the curated definition and command counts", () => {
-    expect(definitionNames).toHaveLength(163)
-    expect(Object.keys(commandMap)).toHaveLength(144)
+    expect(definitionNames).toHaveLength(162)
+    expect(Object.keys(commandMap)).toHaveLength(143)
   })
 
   test("pins the definitions that have no command mapping", () => {
@@ -379,7 +382,7 @@ describe("disposition table", () => {
       "prompt.autocomplete.prev",
       "prompt.autocomplete.next",
     ])
-    expect(named("keep")).toHaveLength(144)
+    expect(named("keep")).toHaveLength(143)
   })
 
   test("declares only layers that are used and coactive layers that exist", () => {
