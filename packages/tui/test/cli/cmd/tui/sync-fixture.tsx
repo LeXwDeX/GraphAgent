@@ -6,6 +6,7 @@ import { ArgsProvider } from "../../../../src/context/args"
 import { ExitProvider } from "../../../../src/context/exit"
 import { KVProvider, useKV } from "../../../../src/context/kv"
 import { ProjectProvider, useProject } from "../../../../src/context/project"
+import { TuiStartupProvider } from "../../../../src/context/runtime"
 import { SDKProvider, useSDK } from "../../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/context/sync"
 import { createEventSource, createFetch, type FetchHandler, directory } from "../../../fixture/tui-sdk"
@@ -27,7 +28,16 @@ type Ctx = {
   sync: ReturnType<typeof useSync>
 }
 
-export async function mount(override?: FetchHandler, state?: string, extra?: () => JSX.Element) {
+export async function mount(
+  override?: FetchHandler,
+  state?: string,
+  extra?: () => JSX.Element,
+  /**
+   * `fastBoot` renders the children before the bootstrap has ended, as `GRAPHAGENT_FAST_BOOT` does, and returns without
+   * waiting for it: for a test that holds a bootstrap request back.
+   */
+  options: { fastBoot?: boolean } = {},
+) {
   const calls = createFetch(override)
   const events = createEventSource()
   let sync!: ReturnType<typeof useSync>
@@ -51,6 +61,12 @@ export async function mount(override?: FetchHandler, state?: string, extra?: () 
     return <box />
   }
 
+  const synced = () => (
+    <SyncProvider>
+      <Probe />
+      {extra?.()}
+    </SyncProvider>
+  )
   const app = await testRender(() => (
     <TestTuiContexts paths={state ? { state } : undefined}>
       <ExitProvider exit={() => {}}>
@@ -58,10 +74,11 @@ export async function mount(override?: FetchHandler, state?: string, extra?: () 
           <KVProvider>
             <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={events.source}>
               <ProjectProvider>
-                <SyncProvider>
-                  <Probe />
-                  {extra?.()}
-                </SyncProvider>
+                {options.fastBoot ? (
+                  <TuiStartupProvider value={{ skipInitialLoading: true }}>{synced()}</TuiStartupProvider>
+                ) : (
+                  synced()
+                )}
               </ProjectProvider>
             </SDKProvider>
           </KVProvider>
@@ -71,7 +88,7 @@ export async function mount(override?: FetchHandler, state?: string, extra?: () 
   ))
 
   await ready
-  await wait(() => sync.status === "complete")
+  if (!options.fastBoot) await wait(() => sync.status === "complete")
   return {
     app,
     emit: events.emit,

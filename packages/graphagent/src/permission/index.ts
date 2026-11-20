@@ -87,6 +87,13 @@ export interface Interface {
   readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
   readonly grantHookBypass?: (sessionID: string) => Effect.Effect<void>
   readonly clearHookPolicy: (sessionID: string) => Effect.Effect<void>
+  /**
+   * Forget the "always allow" replies given for these permission keys in every loaded directory (#1678). An
+   * "always" outranks an `ask` rule in `ask`, so one given under a looser rule has to go when an edit makes the key
+   * stricter, or the new rule would never be met in that session. A key may carry a wildcard (`*` covers every
+   * permission). Requests still waiting for the user are left alone.
+   */
+  readonly forgetApproved: (permissions: readonly string[]) => Effect.Effect<void>
   readonly hookPolicy: (sessionID: string) => Effect.Effect<SessionPolicy & { directories: string[] }>
   readonly applyHookUpdates: (
     sessionID: string,
@@ -298,6 +305,19 @@ export const layer = Layer.effect(
 
     const clearHookPolicyAndCapability = (sessionID: string) =>
       clearHookPolicy(sessionID).pipe(Effect.andThen(capabilities.clear(sessionID)))
+
+    const forgetApproved = Effect.fn("Permission.forgetApproved")(function* (permissions: readonly string[]) {
+      if (permissions.length === 0) return
+      for (const current of yield* InstanceState.loaded(state)) {
+        for (const remembered of current.approved.values()) {
+          // In place: a call that is asking right now holds this very list.
+          for (let index = remembered.length - 1; index >= 0; index--) {
+            const entry = remembered[index]
+            if (entry && permissions.some((key) => Wildcard.match(entry.permission, key))) remembered.splice(index, 1)
+          }
+        }
+      }
+    })
 
     const hookPolicy = Effect.fn("Permission.hookPolicy")(function* (sessionID: string) {
       const stored = (yield* InstanceState.get(state)).policies.get(sessionID)
@@ -818,6 +838,7 @@ export const layer = Layer.effect(
       applyHookUpdates,
       hookPolicy,
       clearHookPolicy: clearHookPolicyAndCapability,
+      forgetApproved,
       grantHookBypass: capabilities.grant,
     })
   }),

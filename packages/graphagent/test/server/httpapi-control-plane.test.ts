@@ -9,6 +9,7 @@ import { ProjectV2 } from "@graphagent/core/project"
 import { SessionSchema } from "@graphagent/core/session/schema"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
+import { Permission } from "../../src/permission"
 import { Installation } from "../../src/installation"
 import { Session } from "../../src/session/session"
 import { NotFoundError } from "../../src/storage/storage"
@@ -55,6 +56,7 @@ const apiLayer = HttpRouter.serve(
   Layer.provideMerge(NodeHttpServer.layerTest),
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
+  Layer.provide(Layer.mock(Permission.Service)({})),
   Layer.provide(Layer.mock(Installation.Service)({})),
   Layer.provide(
     Layer.mock(MoveSession.Service)({
