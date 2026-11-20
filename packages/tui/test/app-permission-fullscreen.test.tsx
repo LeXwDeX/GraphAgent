@@ -209,10 +209,10 @@ for (const language of LANGUAGES) {
           expect(panel.filter((row) => OPTION_ROW.test(row)).length).toBe(3)
           for (const option of text.options)
             expect({ option, found: full.includes(option) }).toEqual({ option, found: true })
-          // The hint row is cut to the width of the panel, as the ordinary ask's is: in English at 80 columns it ends in
-          // `ctrl+f Ful…`; the key that brings the ordinary ask back is always named.
+          // The hint row is cut to the width of the panel, as the ordinary ask's is; the key that brings the ordinary ask
+          // back is always named, in the key symbols the hints use (#1619).
           expect(panel.at(-2)).toContain(text.hint)
-          expect(panel.at(-2)).toContain("ctrl+f")
+          expect(panel.at(-2)).toContain("⌃F")
           // The app behind it is covered: the top bar and the footer are not on screen.
           expect(full).not.toContain("GraphAgent")
           if (ambiguousWidth === 1) expect(full).toMatchSnapshot()
