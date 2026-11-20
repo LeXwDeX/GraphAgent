@@ -303,6 +303,12 @@ test("queued message edit takes the prompt back into the composer", async () => 
     expect(frame).toContain("复制")
     expect(frame).not.toContain("撤销到此")
     expect(frame).not.toContain("分叉")
+    // The queued prompt's options are rows only too: nothing under the selected one.
+    const lines = frame.split("\n").map((line) => line.trimEnd())
+    const rows = ["编辑", "删除", "复制"].map((title) => lines.findIndex((line) => line.includes(title)))
+    expect(rows[1]).toBe(rows[0] + 1)
+    expect(rows[2]).toBe(rows[1] + 1)
+    expect(lines[rows[2] + 1]).toContain("关闭")
 
     app.mockInput.pressEnter()
     await settle(app)
@@ -422,6 +428,16 @@ test("normal message actions expose revert, copy and fork", async () => {
     expect(frame).toContain("分叉")
     expect(frame).not.toContain("编辑")
     expect(frame).not.toContain("删除")
+
+    // Only the option rows: the selected one has no line of explanation under it, and the panel has no line for one,
+    // so the hints follow the last option.
+    const lines = frame.split("\n").map((line) => line.trimEnd())
+    const rows = ["撤销到此", "复制", "分叉"].map((title) => lines.findIndex((line) => line.includes(title)))
+    expect(rows[0]).toBeGreaterThan(0)
+    expect(rows[1]).toBe(rows[0] + 1)
+    expect(rows[2]).toBe(rows[1] + 1)
+    expect(lines[rows[2] + 1]).toContain("关闭")
+    expect(frame).not.toContain("撤销此后的消息与文件变更")
   } finally {
     app.renderer.destroy()
   }
@@ -440,9 +456,9 @@ test("diff source panel marks the current source and switches on select", async 
             <DiffSourcePanel
               current="git"
               options={[
-                { mode: "git", title: "工作区", description: "查看当前 git 变更" },
-                { mode: "branch", title: "主分支", description: "查看与主分支相比的变更" },
-                { mode: "last-turn", title: "上一轮", description: "查看上一轮助手回复的变更" },
+                { mode: "git", title: "工作区" },
+                { mode: "branch", title: "主分支" },
+                { mode: "last-turn", title: "上一轮" },
               ]}
               onSelect={(mode) => selected.push(mode)}
             />

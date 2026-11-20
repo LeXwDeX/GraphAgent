@@ -50,7 +50,7 @@ export function WorkspacesPanel() {
               : deleting() === workspace.id
                 ? t("panel.workspace.delete.confirm", { name: workspace.name, key: deleteHint() })
                 : workspace.name,
-          description: expanded[workspace.id] && workspace.directory ? workspace.directory : undefined,
+          detail: expanded[workspace.id] && workspace.directory ? workspace.directory : undefined,
           lead: <text fg={status === "connected" ? theme.success : theme.error}>●</text>,
           trail: workspace.type,
         }
