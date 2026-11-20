@@ -27,7 +27,7 @@ import {
   type JSX,
   type ParentProps,
 } from "solid-js"
-import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
+import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiPaths } from "./context/runtime"
 import { openProviderPanel } from "./panel/provider"
 import { ErrorComponent } from "./component/error-component"
 import { ProjectProvider, useProject } from "./context/project"
@@ -38,7 +38,7 @@ import { SyncProvider, useSync } from "./context/sync"
 import { BtwProvider, useBtw } from "./context/btw"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
-import { HomeSessionDestinationProvider } from "./context/session-destination"
+import { HomeSessionDestinationProvider, useHomeSessionDestination } from "./context/session-destination"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { useHomeFooterMeta } from "./routes/home/footer-meta"
@@ -87,6 +87,7 @@ import { FooterToastProvider, serverToastText, useToast } from "./ui/toast"
 import { TickerProvider, useTicker } from "./context/ticker-context"
 import { contextShare, estimateMark } from "./util/context-window"
 import { isDefaultTitle } from "./util/session"
+import { abbreviateHome } from "./runtime"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
@@ -530,6 +531,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const bottomZone = createBottomZoneState()
   const btw = useBtw()
   const homeMeta = useHomeFooterMeta()
+  const homeDestination = useHomeSessionDestination()
+  const paths = useTuiPaths()
   const drawer = useDrawer()
   const diffFooterHints = useDiffFooterHints()
   const diffNavigation = useDiffNavigation()
@@ -1196,6 +1199,29 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  // The directory the top bar names (#1674): the one of the session on screen, and on home the one a new session would
+  // start in. A sub-agent view names none, its path says where it is. The branch is the one of the directory this process
+  // runs in, so a session of another directory gets no branch rather than a wrong one. Nothing here is on a timer, and
+  // a change in the stores it reads that leaves both strings as they were wakes nothing: the bar is not drawn again.
+  const topBarLocation = createMemo(
+    () => {
+      let directory: string | undefined
+      if (route.data.type === "home") {
+        const selected = homeDestination?.destination()
+        directory = selected?.type === "directory" ? selected.directory : undefined
+      } else if (route.data.type === "session" && !subagentPath()) {
+        directory = sync.session.get(route.data.sessionID)?.directory
+      }
+      if (!directory) return undefined
+      return {
+        directory: abbreviateHome(directory, paths.home),
+        branch: directory === (sync.path.directory || paths.cwd) ? sync.data.vcs?.branch : undefined,
+      }
+    },
+    undefined,
+    { equals: (left, right) => left?.directory === right?.directory && left?.branch === right?.branch },
+  )
+
   const topBar = createMemo(() => {
     const current = local.model.current()
     const info = current
@@ -1227,6 +1253,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     return {
       path:
         route.data.type === "session" && !subagentPath() ? sync.session.get(route.data.sessionID)?.title : undefined,
+      directory: topBarLocation()?.directory,
+      branch: topBarLocation()?.branch,
       subagent: subagentPath(),
       position: subagentPosition(),
       right,

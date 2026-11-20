@@ -68,8 +68,6 @@ export type FooterSubagent = {
 
 /** Compact home route information merged into the footer's meta row. */
 export type FooterMeta = {
-  /** Abbreviated destination directory, plus the branch when it is the current one. */
-  directory?: string
   /** Connected MCP server count and whether any server failed. */
   mcp?: { count: number; error: boolean }
   /** Pending project trust entries (#1040); rendered as a warning before the meta row. */
@@ -85,7 +83,7 @@ export type FooterProps = {
   agentAction?: string
   /** Right-hand idle hints. Ignored when `right` is present. */
   hints?: readonly FooterHint[]
-  /** Home route directory, MCP count and version; other routes pass only the trust count. */
+  /** Home route MCP count and version; other routes pass only the trust count. */
   meta?: FooterMeta
   /** DAG mode indicator shown after the agent name; omitted where the session has no mode switch. */
   dag?: DagIndicatorState
@@ -207,7 +205,6 @@ export function Footer(props: FooterProps) {
 
     const hintsWidth = cellWidth(joined, aw)
     const metaParts: string[] = []
-    if (props.meta?.directory) metaParts.push(props.meta.directory)
     if (props.meta?.mcp) metaParts.push(`${props.meta.mcp.error ? "⊙!" : "⊙"} ${props.meta.mcp.count} MCP`)
     if (props.meta?.version) metaParts.push(props.meta.version)
     const metaText = metaParts.join(META_SEPARATOR)

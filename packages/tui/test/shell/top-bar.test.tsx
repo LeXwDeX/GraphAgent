@@ -5,11 +5,14 @@
 import { afterEach, expect, test } from "bun:test"
 import { TextAttributes, type CapturedFrame } from "@opentui/core"
 import { testRender } from "@opentui/solid"
+import { createSignal } from "solid-js"
 import { DEFAULT_THEME } from "../../src/context/theme"
-import { TopBar, type TopBarProps, type TopBarSubagent } from "../../src/shell/top-bar"
+import { TopBar, directoryForms, type TopBarProps, type TopBarSubagent } from "../../src/shell/top-bar"
 import { setLanguage } from "../../src/i18n"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
+import { GUTTER } from "../../src/ui/layout"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
+import { nextTurn, readSpans, renderUntilFrame } from "../fixture/frames"
 import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
 afterEach(() => {
@@ -622,3 +625,313 @@ for (const language of ["zh-CN", "en"] as const) {
     })
   }
 }
+
+// ── The directory, the branch and the title (#1674) ──────────────────────────────────────────────────────────────
+
+/** The first row at `width`, once the bar is drawn. */
+async function rowAt(props: TopBarProps, width: number, state: string) {
+  const app = await renderTopBar(props, { width, state })
+  try {
+    return firstRow(await renderUntilFrame(app, (frame) => frame.includes("GraphAgent"), "the top bar"))
+  } finally {
+    app.renderer.destroy()
+  }
+}
+
+/** A directory three levels under the home directory, its branch and a short title. */
+const shop = { directory: "~/code/shop/services/payments", branch: "feat/topbar", path: "排查 TUI 渲染" }
+const MODEL_DETAILS = "Claude Sonnet 4.5 · high · 上下文 24%"
+
+test("names the directory and its branch before the title, in the muted color, and the title in the text color", async () => {
+  await using tmp = await shellState()
+  const app = await renderTopBar(
+    { directory: "~/code/shop", branch: "main", path: "排查 TUI 渲染", right },
+    { width: 120, state: tmp.path },
+  )
+
+  try {
+    const frame = await renderUntilFrame(app, (value) => value.includes("(main)"), "the branch")
+    expect(firstRow(frame)).toStartWith("  ◇─◆ GraphAgent  ~/code/shop (main) › 排查 TUI 渲染 ")
+    expect(firstRow(frame)).toEndWith(MODEL_DETAILS)
+    expectWithin(frame, 120, 1)
+    expect(frame).toMatchSnapshot()
+
+    const spans = await readSpans(app)
+    expect(colorOf(spans, "~/code/shop")?.equals(palette().textMuted)).toBe(true)
+    expect(colorOf(spans, "(main)")?.equals(palette().textMuted)).toBe(true)
+    expect(colorOf(spans, "›")?.equals(palette().textMuted)).toBe(true)
+    expect(colorOf(spans, "排查 TUI 渲染")?.equals(palette().text)).toBe(true)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("at 100 columns the branch has gone and the directory is cut to its last two levels, the model details whole", async () => {
+  await using tmp = await shellState()
+  const row = await rowAt({ ...shop, right }, 100, tmp.path)
+
+  expect(row).toStartWith("  ◇─◆ GraphAgent  …/services/payments › 排查 TUI 渲染 ")
+  expect(row).toEndWith(MODEL_DETAILS)
+  expect(row).not.toContain("feat/topbar")
+  expect(`${row}\n`).toMatchSnapshot()
+})
+
+test("at 80 columns the model and the context are hidden, so only the branch has given way", async () => {
+  await using tmp = await shellState()
+  const row = await rowAt({ ...shop, right }, 80, tmp.path)
+
+  expect(row).toStartWith("  ◇─◆ GraphAgent  ~/code/shop/services/payments › 排查 TUI 渲染 ")
+  expect(row).toEndWith(" high")
+  expect(row).not.toContain("feat/topbar")
+  expect(row).not.toContain("Claude Sonnet 4.5")
+  expect(row).not.toContain("上下文")
+  expect(`${row}\n`).toMatchSnapshot()
+})
+
+test("gives way in order: the branch, the directory to its last two levels, to its last level, the model name, the title", async () => {
+  await using tmp = await shellState()
+  const refund = {
+    directory: "~/code/shop/services/payments",
+    branch: "feat/topbar",
+    path: "Fix refund rounding in the checkout flow",
+  }
+  const left = (directory: string, branch = "") => `  ◇─◆ GraphAgent  ${directory}${branch} › ${refund.path}`
+  const rowAtWidth = (width: number) => rowAt({ ...refund, right }, width, tmp.path)
+
+  // From the narrow breakpoint up, the model name and the context stay on the right until the left needs their room.
+  const whole = await rowAtWidth(150)
+  expect(whole).toStartWith(left("~/code/shop/services/payments", " (feat/topbar)"))
+  expect(whole).toEndWith(MODEL_DETAILS)
+
+  const branchGone = await rowAtWidth(138)
+  expect(branchGone).toStartWith(left("~/code/shop/services/payments"))
+  expect(branchGone).not.toContain("feat/topbar")
+  expect(branchGone).toEndWith(MODEL_DETAILS)
+
+  const twoLevels = await rowAtWidth(126)
+  expect(twoLevels).toStartWith(left("…/services/payments"))
+  expect(twoLevels).toEndWith(MODEL_DETAILS)
+
+  const lastLevel = await rowAtWidth(115)
+  expect(lastLevel).toStartWith(left("payments"))
+  expect(lastLevel).toEndWith(MODEL_DETAILS)
+
+  // The model name goes before the title is touched, and the context stays.
+  const modelGone = await rowAtWidth(104)
+  expect(modelGone).toStartWith(left("payments"))
+  expect(modelGone).toEndWith(" high · 上下文 24%")
+  expect(modelGone).not.toContain("Claude Sonnet 4.5")
+
+  // Below the breakpoint the right side is the reasoning alone, which leaves the left more room.
+  const narrowWhole = await rowAtWidth(99)
+  expect(narrowWhole).toStartWith(left("~/code/shop/services/payments"))
+  expect(narrowWhole).toEndWith(" high")
+
+  const narrowTwo = await rowAtWidth(92)
+  expect(narrowTwo).toStartWith(left("…/services/payments"))
+
+  const narrowLast = await rowAtWidth(82)
+  expect(narrowLast).toStartWith(left("payments"))
+  expect(narrowLast).toEndWith(" high")
+
+  // Last, the title is cut; the directory keeps its last level.
+  const cut = await rowAtWidth(70)
+  expect(cut).toStartWith("  ◇─◆ GraphAgent  payments › Fix refund rounding in the check…")
+  expect(cut).toEndWith(" high")
+})
+
+test("while a long title is cut, the model name is gone and the context stays", async () => {
+  await using tmp = await shellState()
+  const long = "Fix refund rounding in the checkout flow and every other place where cents are lost"
+  const row = await rowAt({ directory: "~/code/shop/services/payments", path: long, right }, 100, tmp.path)
+
+  expect(row).toStartWith("  ◇─◆ GraphAgent  payments › Fix refund rounding in the checkout flow and e")
+  expect(row).toContain("…")
+  expect(row).toEndWith(" high · 上下文 24%")
+  expect(row).not.toContain("Claude Sonnet 4.5")
+})
+
+test("a top bar without a branch has no parentheses, and a branch without a directory says nothing", async () => {
+  await using tmp = await shellState()
+  const plain = await rowAt({ directory: "~/code/shop", path: "排查 TUI 渲染", right }, 120, tmp.path)
+  expect(plain).toStartWith("  ◇─◆ GraphAgent  ~/code/shop › 排查 TUI 渲染 ")
+  expect(plain).not.toContain("(")
+
+  const alone = await rowAt({ branch: "main", path: "排查 TUI 渲染", right }, 120, tmp.path)
+  expect(alone).toStartWith("  ◇─◆ GraphAgent › 排查 TUI 渲染 ")
+  expect(alone).not.toContain("main")
+})
+
+test("home has the directory and the branch and no title, so no separator", async () => {
+  await using tmp = await shellState()
+  const row = await rowAt(
+    { directory: "~/code/shop", branch: "main", right: { model: "Claude Sonnet 4.5", reasoning: "high" } },
+    120,
+    tmp.path,
+  )
+
+  expect(row).toStartWith("  ◇─◆ GraphAgent  ~/code/shop (main) ")
+  expect(row).toEndWith("Claude Sonnet 4.5 · high")
+  expect(row).not.toContain("›")
+})
+
+test("a sub-agent view is the row it was: no directory, no branch", async () => {
+  await using tmp = await shellState()
+  const view = { subagent: subagent(), position: { index: 2, total: 3 }, right }
+  for (const width of [120, 100, 80]) {
+    const named = await rowAt({ ...view, directory: "~/code/shop", branch: "main" }, width, tmp.path)
+    expect(named).toBe(await rowAt(view, width, tmp.path))
+    expect(named).not.toContain("~/code/shop")
+    expect(named).toContain("子 agent 2/3  ←→")
+  }
+})
+
+test("a directory and a title of wide characters are cut by cells, never by characters", async () => {
+  await using tmp = await shellState()
+  const cjk = { directory: "~/工作/商城/服务/支付", branch: "主干", path: "修复结账流程里的退款舍入问题", right }
+
+  // 21 cells of directory and 28 of title: at 120 columns all of it fits, at 80 the branch has gone.
+  expect(await rowAt(cjk, 120, tmp.path)).toStartWith(
+    "  ◇─◆ GraphAgent  ~/工作/商城/服务/支付 (主干) › 修复结账流程里的退款舍入问题 ",
+  )
+  expect(await rowAt(cjk, 80, tmp.path)).toStartWith(
+    "  ◇─◆ GraphAgent  ~/工作/商城/服务/支付 › 修复结账流程里的退款舍入问题 ",
+  )
+  expect(await rowAt(cjk, 70, tmp.path)).toStartWith("  ◇─◆ GraphAgent  …/服务/支付 › 修复结账流程里的退款舍入问题 ")
+  expect(await rowAt(cjk, 64, tmp.path)).toStartWith("  ◇─◆ GraphAgent  支付 › 修复结账流程里的退款舍入问题 ")
+  // The title is the last thing cut, to the cell: 27 of them, which is 13 characters and the ellipsis.
+  expect(await rowAt(cjk, 60, tmp.path)).toStartWith("  ◇─◆ GraphAgent  支付 › 修复结账流程里的退款舍入问…  ")
+})
+
+for (const language of ["zh-CN", "en"] as const) {
+  for (const ambiguousWidth of [1, 2] as const) {
+    test(`keeps the directory, the branch and the title inside 80 columns in ${language} at ambiguous_width ${ambiguousWidth}`, async () => {
+      await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+      setLanguage(language)
+      const props: TopBarProps =
+        language === "en"
+          ? {
+              directory: "~/code/shop/services/payments",
+              branch: "feat/topbar",
+              path: "Fix refund rounding in the checkout flow",
+              right: { model: "Claude Sonnet 4.5", reasoning: "high", context: "context 24%" },
+            }
+          : { ...shop, right }
+      const app = await renderTopBar(props, { width: 80, state: tmp.path })
+
+      try {
+        const frame = await renderUntilFrame(app, (value) => value.includes("GraphAgent"), "the top bar")
+        expectWithin(frame, 80, ambiguousWidth)
+        // The directory and the title are both there; the branch has given way, and so has the model.
+        expect(firstRow(frame)).toContain("payments › ")
+        expect(firstRow(frame)).not.toContain("feat/topbar")
+        expect(frame).toMatchSnapshot()
+      } finally {
+        app.renderer.destroy()
+      }
+    })
+  }
+}
+
+for (const ambiguousWidth of [1, 2] as const) {
+  test(`never passes the right edge, at any width from 60 to 140, with ambiguous_width ${ambiguousWidth}`, async () => {
+    await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
+    const fixtures: TopBarProps[] = [
+      { directory: "~/工作/商城/服务/支付", branch: "主干", path: "修复结账流程里的退款舍入问题", right },
+      { ...shop, path: "Fix refund rounding in the checkout flow and every other place where cents are lost", right },
+      { directory: "/a/very/long/path/with/a-final-level-that-is-longer-than-the-row-can-hold", path: "title", right },
+    ]
+    for (const props of fixtures) {
+      const app = await renderTopBar(props, { width: 140, state: tmp.path })
+      try {
+        for (let width = 140; width >= 60; width--) {
+          app.resize(width, 1)
+          // The renderer pads the row to its own width, which counts an ambiguous glyph as one cell.
+          const frame = await renderUntilFrame(
+            app,
+            (value) => cellWidth(value.split("\n")[0], 1) === width,
+            `${width} columns`,
+          )
+          const row = firstRow(frame)
+          // The row starts in the first column of the content area and ends by its last.
+          expect(row).toStartWith("  ◇─◆ GraphAgent")
+          expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(width - GUTTER)
+        }
+      } finally {
+        app.renderer.destroy()
+      }
+    }
+  })
+}
+
+test("removes control characters and escapes from the directory and the branch", async () => {
+  await using tmp = await shellState()
+  const row = await rowAt(
+    { directory: "~/co\u001b[31mde\u0007/sh\nop", branch: "ma\u001b[0min", path: "t", right },
+    120,
+    tmp.path,
+  )
+
+  expect(row).toStartWith("  ◇─◆ GraphAgent  ~/code/sh op (main) › t")
+  expect(row).not.toMatch(/[\u0000-\u0009\u000B-\u001F\u007F]/)
+})
+
+test("the forms of a directory, widest first, with none that is not narrower than the one before", () => {
+  expect(directoryForms("/tmp/graphagent/packages/tui", 1)).toEqual([
+    "/tmp/graphagent/packages/tui",
+    "…/packages/tui",
+    "tui",
+  ])
+  // The cut would not shorten these, so it is not made.
+  expect(directoryForms("~/work/app", 1)).toEqual(["~/work/app", "app"])
+  expect(directoryForms("/srv/app", 1)).toEqual(["/srv/app", "app"])
+  expect(directoryForms("~", 1)).toEqual(["~"])
+  expect(directoryForms("/", 1)).toEqual(["/"])
+  // Windows separators are kept.
+  expect(directoryForms("C:\\Users\\me\\proj", 1)).toEqual(["C:\\Users\\me\\proj", "…\\me\\proj", "proj"])
+  // The ellipsis is two cells wide at ambiguous_width 2: `…/b/c` (6) is still narrower than `~/a/b/c` (7).
+  expect(directoryForms("~/a/b/c", 2)).toEqual(["~/a/b/c", "…/b/c", "c"])
+  expect(directoryForms("~/a/b", 2)).toEqual(["~/a/b", "b"])
+})
+
+test("laying the bar out again with the same directory and branch asks for no frame; another directory asks for one", async () => {
+  await using tmp = await shellState()
+  const named = (directory: string): TopBarProps => ({
+    directory,
+    branch: "main",
+    path: "排查 TUI 渲染",
+    right: { ...right },
+  })
+  const [props, setProps] = createSignal(named("~/code/shop"))
+  const app = await testRender(
+    () => (
+      <ShellContexts state={tmp.path}>
+        <TopBar {...props()} />
+      </ShellContexts>
+    ),
+    { width: 120, height: 1 },
+  )
+
+  try {
+    await renderFirstFrame(app)
+    let requests = 0
+    const requestRender = app.renderer.requestRender.bind(app.renderer)
+    app.renderer.requestRender = () => {
+      requests++
+      requestRender()
+    }
+
+    // Nothing is on a timer, and the same strings in new objects change nothing on the screen.
+    await nextTurn()
+    expect(requests).toBe(0)
+    setProps(named("~/code/shop"))
+    await nextTurn()
+    expect(requests).toBe(0)
+
+    setProps(named("~/code/other"))
+    await renderUntilFrame(app, (frame) => frame.includes("~/code/other (main)"), "the new directory")
+    expect(requests).toBeGreaterThan(0)
+  } finally {
+    app.renderer.destroy()
+  }
+})

@@ -4,28 +4,14 @@
 import { createMemo, type Accessor } from "solid-js"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { useSync } from "../../context/sync"
-import { useTuiPaths } from "../../context/runtime"
-import { useHomeSessionDestination } from "../../context/session-destination"
-import { abbreviateHome } from "../../runtime"
 import type { FooterMeta } from "../../shell/footer"
 
 /**
- * Home route information rendered in the footer meta row: the destination
- * directory (with the branch of the current directory), the MCP server count
- * and the application version.
+ * Home route information rendered in the footer meta row: the MCP server count and the application version. The
+ * directory a new session starts in, with its branch, is in the top bar (#1674).
  */
 export function useHomeFooterMeta(): Accessor<FooterMeta> {
   const sync = useSync()
-  const paths = useTuiPaths()
-  const destination = useHomeSessionDestination()
-
-  const directory = createMemo(() => {
-    const selected = destination?.destination()
-    if (!selected || selected.type === "new") return
-    const out = abbreviateHome(selected.directory, paths.home)
-    const branch = selected.directory === (sync.path.directory || paths.cwd) ? sync.data.vcs?.branch : undefined
-    return branch ? `${out}:${branch}` : out
-  })
 
   const mcp = createMemo(() => {
     const list = Object.values(sync.data.mcp)
@@ -41,5 +27,5 @@ export function useHomeFooterMeta(): Accessor<FooterMeta> {
     return pending > 0 ? pending : undefined
   })
 
-  return createMemo(() => ({ directory: directory(), mcp: mcp(), trust: trust(), version: InstallationVersion }))
+  return createMemo(() => ({ mcp: mcp(), trust: trust(), version: InstallationVersion }))
 }
