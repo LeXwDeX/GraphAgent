@@ -12,7 +12,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
-import { PanelShell, type PanelHint, type PanelTab } from "./shell"
+import { BORDER_AND_PADDING, PanelShell, type PanelHint, type PanelTab } from "./shell"
 
 export interface ListItem<T> {
   id: string
@@ -34,6 +34,31 @@ export interface ListItem<T> {
 function descriptionLines(description: string | readonly string[] | undefined): readonly string[] | undefined {
   const lines = (typeof description === "string" ? [description] : (description ?? [])).filter((line) => line !== "")
   return lines.length > 0 ? lines : undefined
+}
+
+/** Cells between a title and the description written after it on the same row. */
+const INLINE_GAP = 2
+/** What a description cut to its width ends in; with nothing before it, it says nothing. */
+const ELLIPSIS = "…"
+
+/**
+ * A title and the description after it, for a row of `budget` cells: `title  description`. When the row is too wide the
+ * description gives way first, cut with an ellipsis; one left with no character before the ellipsis goes altogether,
+ * and only then is the title cut. Every width is in cells at `ambiguousWidth`, never a string length.
+ */
+export function inlineRow(
+  title: string,
+  description: string | undefined,
+  budget: number,
+  ambiguousWidth: AmbiguousWidth,
+): { title: string; description?: string } {
+  if (description !== undefined && description !== "") {
+    const room = budget - cellWidth(title, ambiguousWidth) - INLINE_GAP
+    if (room >= cellWidth(description, ambiguousWidth)) return { title, description }
+    const cut = truncateCells(description, room, ambiguousWidth)
+    if (cut !== "" && cut !== ELLIPSIS) return { title, description: cut }
+  }
+  return { title: truncateCells(title, budget, ambiguousWidth) }
 }
 
 export interface ListAction<T> {
@@ -76,6 +101,47 @@ export interface ListPanelProps<T> {
   actions?: readonly ListAction<T>[]
   empty?: JSX.Element
   loading?: boolean
+  /**
+   * Writes the `description` of every item on the item's own row, after its title (`title  description`, the
+   * description in `textMuted`), instead of on rows under the selected item. Moving the selection then leaves the
+   * height of the list alone. A row too wide for both cuts the description first and the title after it (`inlineRow`).
+   * A string `lead` and `trail` are measured; JSX ones count as no cells, so keep them out of a list that sets this.
+   * The lines of a multi-line description are written one after another, separated by ` · `.
+   */
+  descriptionInline?: boolean
+}
+
+/** The title of a row in a list with `descriptionInline`, and the description after it, fitted to the row. */
+function InlineTitle<T>(props: {
+  item: ListItem<T>
+  selected: boolean
+  /** The marker the row writes before the title; its width depends on the glyph and on `ambiguous_width`. */
+  marker: string
+  /** The cells of a content row. */
+  width: number
+  ambiguousWidth: AmbiguousWidth
+}) {
+  const { theme } = useTheme()
+  const fitted = createMemo(() => {
+    const aw = props.ambiguousWidth
+    const lead = typeof props.item.lead === "string" ? cellWidth(props.item.lead, aw) : 0
+    const trail = typeof props.item.trail === "string" ? cellWidth(props.item.trail, aw) : 0
+    const budget = props.width - cellWidth(props.marker, aw) - lead - trail
+    return inlineRow(props.item.title, descriptionLines(props.item.description)?.join(" · "), budget, aw)
+  })
+  return (
+    <>
+      <text flexShrink={0} wrapMode="none" attributes={props.selected ? TextAttributes.BOLD : undefined}>
+        {fitted().title}
+      </text>
+      <Show when={fitted().description}>
+        <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+          {`${" ".repeat(INLINE_GAP)}${fitted().description}`}
+        </text>
+      </Show>
+      <box flexGrow={1} flexShrink={1} />
+    </>
+  )
 }
 
 export function ListPanel<T>(props: ListPanelProps<T>) {
@@ -94,6 +160,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
   const clientFilter = () => props.filter === false || typeof props.filter !== "object" || props.filter.client !== false
   const placeholder = () => (typeof props.filter === "object" ? props.filter.placeholder : undefined)
   const descriptionBudget = () => Math.max(0, dimensions().width - 8)
+  const rowWidth = () => Math.max(0, dimensions().width - BORDER_AND_PADDING)
   const actions = createMemo(() => props.actions ?? [])
 
   const filtered = createMemo(() => {
@@ -349,6 +416,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                     const index = () => flat().findIndex((candidate) => candidate.id === item.id)
                     const isSelected = () => flat()[selected()]?.id === item.id
                     const isCurrent = () => currentItem()?.id === item.id
+                    const marker = () => (isCurrent() ? "● " : isSelected() ? "› " : "  ")
                     // The ref is the item's own column, the row with the lines of its description under it, so that
                     // scrolling it into view takes the lines along.
                     return (
@@ -372,29 +440,42 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                             fg={isCurrent() || isSelected() ? theme.primary : theme.textDim}
                             wrapMode="none"
                           >
-                            {isCurrent() ? "● " : isSelected() ? "› " : "  "}
+                            {marker()}
                           </text>
                           <Show when={typeof item.lead === "string"} fallback={<box flexShrink={0}>{item.lead}</box>}>
                             <text flexShrink={0} wrapMode="none">
                               {item.lead as string}
                             </text>
                           </Show>
-                          <text
-                            flexGrow={1}
-                            flexShrink={1}
-                            overflow="hidden"
-                            wrapMode="none"
-                            attributes={isSelected() ? TextAttributes.BOLD : undefined}
+                          <Show
+                            when={props.descriptionInline}
+                            fallback={
+                              <text
+                                flexGrow={1}
+                                flexShrink={1}
+                                overflow="hidden"
+                                wrapMode="none"
+                                attributes={isSelected() ? TextAttributes.BOLD : undefined}
+                              >
+                                {item.title}
+                              </text>
+                            }
                           >
-                            {item.title}
-                          </text>
+                            <InlineTitle
+                              item={item}
+                              selected={isSelected()}
+                              marker={marker()}
+                              width={rowWidth()}
+                              ambiguousWidth={ambiguousWidth()}
+                            />
+                          </Show>
                           <Show when={typeof item.trail === "string"} fallback={<box flexShrink={0}>{item.trail}</box>}>
                             <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
                               {item.trail as string}
                             </text>
                           </Show>
                         </box>
-                        <Show when={isSelected() && descriptionLines(item.description)}>
+                        <Show when={!props.descriptionInline && isSelected() && descriptionLines(item.description)}>
                           {(lines) => (
                             <For each={lines()}>
                               {(line) => (

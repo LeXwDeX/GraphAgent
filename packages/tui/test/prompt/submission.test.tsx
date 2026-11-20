@@ -1487,7 +1487,7 @@ test("server slash commands submit through session.command exactly once", async 
   }
 })
 
-test("unknown slash and bare exit are submitted as normal messages", async () => {
+test("unknown slash and an exit with more after it are submitted as normal messages", async () => {
   const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
   try {
     configureModel(route)
@@ -1503,10 +1503,70 @@ test("unknown slash and bare exit are submitted as normal messages", async () =>
     await wait(() => sent.length === before + 1)
     expect(sent[before].parts).toContainEqual({ type: "text", text: "/not-a-command payload" })
 
-    prompt!.set({ input: "exit", parts: [] })
+    // Only the word alone quits (#1666): a sentence that starts with it, or holds it, goes to the model.
+    for (const [index, input] of ["exit now", "please exit", "quit", ":q", "exit\nnow"].entries()) {
+      prompt!.set({ input, parts: [] })
+      prompt!.submit()
+      await wait(() => sent.length === before + 2 + index)
+      expect(sent[before + 1 + index].parts).toContainEqual({ type: "text", text: input })
+    }
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("exit, /exit and /quit entered alone run app.exit and send nothing, with or without blanks around them", async () => {
+  const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
+  try {
+    configureModel(route)
+    const handled: string[] = []
+    route.commands.setHandler("app.exit", (ctx) => {
+      handled.push(`exit:${ctx.origin}:${ctx.args}`)
+    })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const before = sent.length
+
+    prompt!.focus()
+    const inputs = ["exit", "/exit", "/quit", "  exit  ", " /exit", "/quit ", "exit\n"]
+    for (const [index, input] of inputs.entries()) {
+      prompt!.set({ input, parts: [] })
+      prompt!.submit()
+      await wait(() => handled.length === index + 1)
+      expect(prompt!.current.input).toBe("")
+    }
+
+    await Bun.sleep(20)
+    expect(handled).toEqual(inputs.map(() => "exit:slash:"))
+    expect(sent.length).toBe(before)
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("while a queued message is edited, exit is the text of that message and does not quit", async () => {
+  const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
+  try {
+    configureModel(route)
+    await route.local.model.set({ providerID: "test", modelID: "m" })
+    const handled: string[] = []
+    route.commands.setHandler("app.exit", () => {
+      handled.push("exit")
+    })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    await route.app.renderOnce()
+    const before = sent.length
+
+    prompt!.focus()
+    prompt!.edit({ label: "编辑", value: "exit" })
+    await route.app.renderOnce()
     prompt!.submit()
-    await wait(() => sent.length === before + 2)
-    expect(sent[before + 1].parts).toContainEqual({ type: "text", text: "exit" })
+    await wait(() => sent.length === before + 1)
+    expect(sent[before].parts).toContainEqual({ type: "text", text: "exit" })
+    expect(handled).toEqual([])
   } finally {
     await route.dispose()
   }

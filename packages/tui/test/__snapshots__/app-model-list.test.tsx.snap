@@ -1,0 +1,353 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the note stays on its model's row and the list keeps its height, zh-CN, 80 columns, ambiguous_width 1 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                     │
+│ › 筛选…                                                                      │
+│ 收藏                                                                         │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Dis… │
+│                                                                              │
+│ 最近                                                                         │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个… │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                     │
+│ › 筛选…                                                                      │
+│ 收藏                                                                         │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Dis… │
+│                                                                              │
+│ 最近                                                                         │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个… │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│ › Alpha Two                                                                  │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                     │
+│ › 筛选…                                                                      │
+│ 收藏                                                                         │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Dis… │
+│                                                                              │
+│ 最近                                                                         │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个… │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭    │
+╰──────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, zh-CN, 80 columns, ambiguous_width 2 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                     │
+│ › 筛选…                                                                      │
+│ 收藏                                                                         │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Di…  │
+│                                                                              │
+│ 最近                                                                         │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一…   │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape …       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                     │
+│ › 筛选…                                                                      │
+│ 收藏                                                                         │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Di…  │
+│                                                                              │
+│ 最近                                                                         │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一…   │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│ › Alpha Two                                                                  │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape …       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                     │
+│ › 筛选…                                                                      │
+│ 收藏                                                                         │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Di…  │
+│                                                                              │
+│ 最近                                                                         │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一…   │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape …       │
+╰──────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, zh-CN, 120 columns, ambiguous_width 1 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                                                      /model │
+│ › 筛选…                                                                                                              │
+│ 收藏                                                                                                                 │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ 最近                                                                                                                 │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                                                      /model │
+│ › 筛选…                                                                                                              │
+│ 收藏                                                                                                                 │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ 最近                                                                                                                 │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│ › Alpha Two                                                                                                          │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                                                      /model │
+│ › 筛选…                                                                                                              │
+│ 收藏                                                                                                                 │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ 最近                                                                                                                 │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, zh-CN, 120 columns, ambiguous_width 2 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                                                      /model │
+│ › 筛选…                                                                                                              │
+│ 收藏                                                                                                                 │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ 最近                                                                                                                 │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                                                      /model │
+│ › 筛选…                                                                                                              │
+│ 收藏                                                                                                                 │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ 最近                                                                                                                 │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│ › Alpha Two                                                                                                          │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 选择模型                                                                                                      /model │
+│ › 筛选…                                                                                                              │
+│ 收藏                                                                                                                 │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ 最近                                                                                                                 │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down 选择 · enter 确认 · ctrl+a 连接提供商 · ctrl+f 收藏 · escape 关闭                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, en, 80 columns, ambiguous_width 1 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                 │
+│ › Filter…                                                                    │
+│ Favorites                                                                    │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Dis… │
+│                                                                              │
+│ Recent                                                                       │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个… │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                 │
+│ › Filter…                                                                    │
+│ Favorites                                                                    │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Dis… │
+│                                                                              │
+│ Recent                                                                       │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个… │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│ › Alpha Two                                                                  │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                 │
+│ › Filter…                                                                    │
+│ Favorites                                                                    │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Dis… │
+│                                                                              │
+│ Recent                                                                       │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个… │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite … │
+╰──────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, en, 80 columns, ambiguous_width 2 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                 │
+│ › Filter…                                                                    │
+│ Favorites                                                                    │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Di…  │
+│                                                                              │
+│ Recent                                                                       │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一…   │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favor…     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                 │
+│ › Filter…                                                                    │
+│ Favorites                                                                    │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Di…  │
+│                                                                              │
+│ Recent                                                                       │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一…   │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│ › Alpha Two                                                                  │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favor…     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                 │
+│ › Filter…                                                                    │
+│ Favorites                                                                    │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Di…  │
+│                                                                              │
+│ Recent                                                                       │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一…   │
+│                                                                              │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                 │
+│   Alpha Two                                                                  │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favor…     │
+╰──────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, en, 120 columns, ambiguous_width 1 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                                                  /model │
+│ › Filter…                                                                                                            │
+│ Favorites                                                                                                            │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ Recent                                                                                                               │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite · escape Close                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                                                  /model │
+│ › Filter…                                                                                                            │
+│ Favorites                                                                                                            │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ Recent                                                                                                               │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│ › Alpha Two                                                                                                          │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite · escape Close                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                                                  /model │
+│ › Filter…                                                                                                            │
+│ Favorites                                                                                                            │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ Recent                                                                                                               │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite · escape Close                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`the note stays on its model's row and the list keeps its height, en, 120 columns, ambiguous_width 2 1`] = `
+"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                                                  /model │
+│ › Filter…                                                                                                            │
+│ Favorites                                                                                                            │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ Recent                                                                                                               │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite · escape Close                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                                                  /model │
+│ › Filter…                                                                                                            │
+│ Favorites                                                                                                            │
+│   Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ Recent                                                                                                               │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│ › Alpha Two                                                                                                          │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite · escape Close                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Select model                                                                                                  /model │
+│ › Filter…                                                                                                            │
+│ Favorites                                                                                                            │
+│ › Beta One Extended Reasoning Preview Build 2026-11-19 With A Very Long Display Name For The Narrow Case  Beta       │
+│                                                                                                                      │
+│ Recent                                                                                                               │
+│ ● Alpha One With A Rather Long Display Name For Testing  阿尔法提供商的一个相当长的名称用来检查窄终端                │
+│                                                                                                                      │
+│ 阿尔法提供商的一个相当长的名称用来检查窄终端                                                                         │
+│   Alpha Two                                                                                                          │
+│ up/down Select · enter Confirm · ctrl+a Connect provider · ctrl+f Favorite · escape Close                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+`;

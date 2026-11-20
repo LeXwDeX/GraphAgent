@@ -121,7 +121,8 @@ export function panelMaxRows(terminalHeight: number) {
   return Math.min(14, Math.floor(terminalHeight * 0.45))
 }
 
-const BORDER_AND_PADDING = 4
+/** The cells the panel border and padding take from the terminal width: what is left is the width of a content row. */
+export const BORDER_AND_PADDING = 4
 const GAP = 2
 const TAB_GAP = 2
 const TITLE_MIN_WIDTH = 8

@@ -101,6 +101,8 @@ export async function runApp(options: {
   dagMode?: () => ReturnType<typeof dagModeStatus>
   /** Extra entries of the persisted kv file, such as a display policy. */
   kv?: Record<string, unknown>
+  /** Other files of the state directory by name, written as JSON before the app starts: `model.json` with its favorites. */
+  state?: Record<string, unknown>
   /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
   handler?: FetchHandler
 }) {
@@ -109,6 +111,9 @@ export async function runApp(options: {
     `${tmp.path}/kv.json`,
     JSON.stringify({ ...(options.ambiguousWidth ? { ambiguous_width: options.ambiguousWidth } : {}), ...options.kv }),
   )
+  for (const [name, value] of Object.entries(options.state ?? {})) {
+    await Bun.write(`${tmp.path}/${name}`, JSON.stringify(value))
+  }
   const setup = await createTestRenderer({ width: options.width ?? 120, height: options.height ?? 30 })
   const core = await import("@opentui/core")
   await mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
@@ -161,6 +166,8 @@ export async function runApp(options: {
   return {
     setup,
     events,
+    /** Settles once the app has quit and its scope is closed; a test that quits the app on purpose waits on it. */
+    task,
     commands: () => sent.filter((item) => item.path.endsWith("/command")),
     // A lifecycle read is a POST that writes nothing.
     writes: () => sent.filter((item) => !item.path.endsWith("/attention") && !item.path.endsWith("/lifecycle/states")),

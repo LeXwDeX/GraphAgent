@@ -631,6 +631,7 @@ export const en: Record<MessageKey, string> = {
   "panel.model.favorite.mark": "(Favorite)",
   "panel.model.provider.connect": "Connect provider",
   "panel.model.provider.all": "View all providers",
+  "panel.model.empty": "No declared models. Add them under provider.<id>.models in graphagent.json",
   "panel.sessions.title": "Sessions",
   "panel.sessions.filter": "Search sessions…",
   "panel.sessions.group.pinned": "Pinned",
