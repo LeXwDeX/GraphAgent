@@ -19,6 +19,7 @@ import { DiffViewerFileTree } from "./file-tree"
 import { Panel, PanelGroup, Separator } from "./ui"
 import { DiffSourcePanel } from "../../panel/diff-source"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
+import { NARROW_WIDTH } from "../../ui/layout"
 import { getScrollAcceleration } from "../../util/scroll"
 import { PatchDiff, type PatchDiffRef } from "../../component/patch-diff"
 import {
@@ -38,7 +39,6 @@ import {
   toggleFileTreeDirectory,
 } from "./file-tree-utils"
 
-const MIN_SPLIT_WIDTH = 100
 const FILE_TREE_WIDTH = 32
 const PLAIN_TEXT_FILETYPE = "graphagent-plain-text"
 const VCS_DIFF_CONTEXT_LINES = 12
@@ -133,7 +133,8 @@ export function Diff() {
   const [singlePatch, setSinglePatch] = createSignal(kv.get(KV_SINGLE_PATCH, false) === true)
   const patchPaneWidth = createMemo(() => dimensions().width - (showFileTree() ? 33 : 0) - 4)
   const patchLeftBorder = createMemo<BorderSides[]>(() => (showFileTree() ? ["left"] : []))
-  const splitAvailable = createMemo(() => patchPaneWidth() >= MIN_SPLIT_WIDTH)
+  // The patch pane splits side by side from the narrow breakpoint up.
+  const splitAvailable = createMemo(() => patchPaneWidth() >= NARROW_WIDTH)
   const defaultView = createMemo(() => {
     if (tuiConfig.diff_style === "stacked") return "unified"
     return splitAvailable() ? "split" : "unified"

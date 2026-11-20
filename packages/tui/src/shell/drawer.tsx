@@ -5,9 +5,10 @@ import { createMemo, createSignal, type ParentProps, type Signal } from "solid-j
 import { useTerminalDimensions } from "@opentui/solid"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
+import { DRAWER_WIDTH } from "../ui/layout"
 
-/** Fixed width of the drawer overlay in terminal cells. */
-export const DRAWER_WIDTH = 40
+/** Fixed width of the drawer overlay in terminal cells; the token lives in `ui/layout`. */
+export { DRAWER_WIDTH }
 
 /** `auto` opens the drawer while the terminal is wider than this. */
 export const DRAWER_AUTO_WIDTH = 120

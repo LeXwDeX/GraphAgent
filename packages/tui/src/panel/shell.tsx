@@ -10,6 +10,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { formatKeyBindings, useKeymapSelector } from "../keymap"
+import { NARROW_WIDTH } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { usePanelHostDepth } from "./host"
 
@@ -122,7 +123,7 @@ export interface PanelShellProps {
 }
 
 /** Below this width the command and secondary tab information are hidden first. */
-export const PANEL_NARROW_WIDTH = 100
+export const PANEL_NARROW_WIDTH = NARROW_WIDTH
 
 /** The rows of content a panel shows unless it asks for another number: 45% of the terminal height, 14 at the most. */
 export function panelMaxRows(terminalHeight: number) {

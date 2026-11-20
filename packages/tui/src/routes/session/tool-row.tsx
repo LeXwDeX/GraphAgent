@@ -9,6 +9,7 @@ import { Spinner } from "../../component/spinner"
 import { useKV } from "../../context/kv"
 import { useTheme } from "../../context/theme"
 import { t } from "../../i18n"
+import { ROW_INDENT } from "../../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { alwaysSeparate, setPreLayoutSiblingMargin } from "../../util/layout"
 import { remoteLine } from "../../util/remote-text"
@@ -28,8 +29,6 @@ export function toolRowState(state: ToolPart["state"], waiting: boolean): ToolRo
   return state.status === "running" ? "running" : "pending"
 }
 
-/** Cells the row is indented by, which lines it up with the text of the message above it. */
-const ROW_INDENT = 3
 /** Cells the dot takes in front of the name: the glyph and a space. */
 const DOT_CELLS = 2
 /** What opens the line under the call, and the cells it takes, which every line under that line keeps. */

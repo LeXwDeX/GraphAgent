@@ -1,0 +1,4 @@
+# Layout literals the ratchet allows (script/check-layout-literals.ts): numbers written straight after paddingLeft,
+# paddingRight, marginLeft and marginRight in shell/, routes/, panel/ and component/.
+# The number only goes down: use the tokens in src/ui/layout.ts, then run `bun script/check-layout-literals.ts --update-baseline`.
+69
