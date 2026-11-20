@@ -34,16 +34,7 @@ import { createSyntaxStyleMemo, generateSubtleSyntax, useTheme } from "../../con
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { PatchDiff } from "../../component/patch-diff"
-import type {
-  AssistantMessage,
-  Message,
-  Part,
-  Provider,
-  ToolPart,
-  UserMessage,
-  TextPart,
-  ReasoningPart,
-} from "@graphagent/sdk"
+import type { AssistantMessage, Message, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@graphagent/sdk"
 import { createSessionAttention } from "@graphagent/sdk/attention"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
@@ -119,7 +110,6 @@ import { normalizePath } from "../../util/path"
 import { useAskSurfaceRequests } from "./ask-surface"
 import { showExportOptions } from "../../panel/export"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
-import * as Model from "../../util/model"
 import { formatTranscript } from "../../util/transcript"
 import { sessionEpilogue } from "../../util/presentation"
 import { alwaysSeparate, setPreLayoutSiblingMargin } from "../../util/layout"
@@ -190,7 +180,7 @@ import {
   type FoldEnv,
   type FoldSource,
 } from "./fold"
-import { DETAIL_SEPARATOR, ToolRow, toolRowState, type ToolRowState } from "./tool-row"
+import { ChangeSummary, DETAIL_SEPARATOR, diagnosticCount, ToolRow, toolRowState, type ToolRowState } from "./tool-row"
 
 // The tool data readers live in `util/tool-display`, where `./fold` reads them too; the tests import them from here.
 export {
@@ -255,7 +245,6 @@ const context = createContext<{
   showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
   scroll: () => ScrollBoxRenderable | undefined
-  providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
   view: SessionViewState
@@ -269,7 +258,6 @@ const context = createContext<{
   /** The closing line of a sub-agent that has finished; nothing while it runs, or in a main session (#1033 3.4). */
   handback: Accessor<HandbackLine | undefined>
   shortcuts: {
-    childFirst: Accessor<string>
     background: Accessor<string>
     redo: Accessor<string>
     dagmodeToggle: Accessor<string>
@@ -340,10 +328,6 @@ export function Main() {
     return messages().findLast(
       (x) => x.role === "assistant" && !x.time.completed && (!completed || !orderedBefore(x, completed)),
     )
-  })
-
-  const lastAssistant = createMemo(() => {
-    return messages().findLast((x) => x.role === "assistant")
   })
 
   const revertInfo = createMemo(() => session()?.revert)
@@ -461,7 +445,6 @@ export function Main() {
     readPartText: (part) => sync.readPartText(part),
     view,
     showDetails,
-    lastAssistantID: () => lastAssistant()?.id,
     revertMessageID,
     revertRevision: () => rowRevision(revert()?.reverted.length, revertInfo()?.diff),
     reverted: atOrAfterRevert,
@@ -530,7 +513,6 @@ export function Main() {
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
@@ -1672,7 +1654,6 @@ export function Main() {
   // message makes their cost grow with the transcript, so the session owns a
   // single set and passes it down through context.
   const shortcuts = {
-    childFirst: useCommandShortcut("session.child.first"),
     background: useCommandShortcut("session.background"),
     redo: useCommandShortcut("session.redo"),
     dagmodeToggle: useCommandShortcut("session.dagmode.toggle"),
@@ -1695,7 +1676,6 @@ export function Main() {
           showGenericToolOutput,
           diffWrapMode,
           scroll: () => scroll,
-          providers,
           sync,
           tui: tuiConfig,
           view,
@@ -1726,6 +1706,7 @@ export function Main() {
                 }}
                 stickyScroll={true}
                 stickyStart="bottom"
+                contentOptions={{ minHeight: "100%", justifyContent: "flex-end" }}
                 flexGrow={1}
                 scrollAcceleration={scrollAcceleration()}
               >
@@ -1817,7 +1798,6 @@ export function Main() {
                             </Match>
                             <Match when={message.role === "assistant"}>
                               <AssistantMessage
-                                last={lastAssistant()?.id === message.id}
                                 message={message as AssistantMessage}
                                 parts={sync.data.part[message.id] ?? []}
                               />
@@ -2114,10 +2094,6 @@ function SessionRow(props: {
       (item) => item.role === "assistant" && !item.time.completed && (!completed || !orderedBefore(item, completed)),
     )
   })
-  const last = createMemo(() => {
-    const current = message()
-    return current?.role === "assistant" && messages().findLast((item) => item.role === "assistant")?.id === current.id
-  })
   let untrack: (() => void) | undefined
   onCleanup(() => untrack?.())
 
@@ -2165,14 +2141,11 @@ function SessionRow(props: {
         <Match when={props.row.kind === "tool" && part()?.type === "tool"}>
           <ToolPart last={false} part={part() as ToolPart} message={message() as AssistantMessage} />
         </Match>
-        <Match when={props.row.kind === "notice" && props.row.key.startsWith("task:")}>
-          <AssistantTaskHint parts={parts()} />
-        </Match>
         <Match when={props.row.kind === "notice" && props.row.key.startsWith("error:")}>
           <AssistantError message={message() as AssistantMessage} />
         </Match>
         <Match when={props.row.kind === "meta"}>
-          <AssistantSummary message={message() as AssistantMessage} last={last()} />
+          <AssistantInterrupted message={message() as AssistantMessage} />
         </Match>
       </Switch>
     </box>
@@ -2506,7 +2479,7 @@ function BackgroundResultCard(props: { part: TextPart }) {
   )
 }
 
-function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
+function AssistantMessage(props: { message: AssistantMessage; parts: Part[] }) {
   return (
     <>
       <For each={props.parts}>
@@ -2524,25 +2497,9 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
-      <AssistantTaskHint parts={props.parts} />
       <AssistantError message={props.message} />
-      <AssistantSummary message={props.message} last={props.last} />
+      <AssistantInterrupted message={props.message} />
     </>
-  )
-}
-
-function AssistantTaskHint(props: { parts: Part[] }) {
-  const ctx = use()
-  const { theme } = useTheme()
-  return (
-    <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
-      <box paddingTop={1} paddingLeft={3}>
-        <text fg={theme.text}>
-          {ctx.shortcuts.childFirst()}
-          <span style={{ fg: theme.textMuted }}> {t("background.hint.view")}</span>
-        </text>
-      </box>
-    </Show>
   )
 }
 
@@ -2576,53 +2533,22 @@ function AssistantError(props: { message: AssistantMessage }) {
   )
 }
 
-function AssistantSummary(props: { message: AssistantMessage; last: boolean }) {
-  const local = useLocal()
-  const ctx = use()
-  const sync = useSync()
+/**
+ * The one thing a turn says after what it holds, besides the block of an error (#1615): that it was interrupted. A turn
+ * that ended any other way has no closing line: the model is in the top bar (from 100 columns), the agent in the footer,
+ * and how long the turn took only in the transcript `/copy` and `/export` write. The words stand under those of the
+ * turn, in the color a note has.
+ */
+function AssistantInterrupted(props: { message: AssistantMessage }) {
   const { theme } = useTheme()
-  const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
-  const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
-
-  const final = createMemo(() => {
-    return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
-  })
-
-  const duration = createMemo(() => {
-    if (!final()) return 0
-    if (!props.message.time.completed) return 0
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    if (!user || !user.time) return 0
-    return props.message.time.completed - user.time.created
-  })
-
   return (
-    <Switch>
-      <Match when={props.last || final() || props.message.error?.name === "MessageAbortedError"}>
-        <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
-          <text marginTop={1}>
-            <span
-              style={{
-                fg:
-                  props.message.error?.name === "MessageAbortedError"
-                    ? theme.textMuted
-                    : local.agent.color(props.message.agent),
-              }}
-            >
-              ▣{" "}
-            </span>{" "}
-            <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
-            <span style={{ fg: theme.textMuted }}> · {model()}</span>
-            <Show when={duration()}>
-              <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
-            </Show>
-            <Show when={props.message.error?.name === "MessageAbortedError"}>
-              <span style={{ fg: theme.textMuted }}> · {t("message.interrupted")}</span>
-            </Show>
-          </text>
-        </box>
-      </Match>
-    </Switch>
+    <Show when={props.message.error?.name === "MessageAbortedError"}>
+      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={ROW_INDENT + MARK_CELLS}>
+        <text marginTop={1} fg={theme.textMuted}>
+          {t("message.interrupted")}
+        </text>
+      </box>
+    </Show>
   )
 }
 
@@ -3264,36 +3190,6 @@ function Shell(props: ToolProps) {
       body={<text fg={theme.text}>{output()}</text>}
       trace={output()}
     />
-  )
-}
-
-/** The errors a call's diagnostics hold for one file, in words. */
-const diagnosticCount = (errors: number) =>
-  t(errors === 1 ? "tool.row.diagnostics.one" : "tool.row.diagnostics.other", { n: errors })
-
-/**
- * What a change did to a file, the line under the call of an edit or of a file of a patch: the lines it added and the
- * lines it removed, in the colors of success and of error, and how many errors the language server found in the file.
- * A count the server did not give is left out, and the others stand as they are.
- */
-function ChangeSummary(props: { additions?: number; deletions?: number; errors: number }) {
-  const { theme } = useTheme()
-  const counts = createMemo(() => {
-    const list: Array<{ text: string; fg: RGBA }> = []
-    if (props.additions !== undefined) list.push({ text: "+" + props.additions, fg: theme.success })
-    // U+2212, the minus sign, and not the hyphen of a flag.
-    if (props.deletions !== undefined) list.push({ text: "\u2212" + props.deletions, fg: theme.error })
-    return list
-  })
-  return (
-    <text fg={theme.text} wrapMode="none">
-      <For each={counts()}>
-        {(count, index) => <span style={{ fg: count.fg }}>{(index() ? " " : "") + count.text}</span>}
-      </For>
-      <Show when={props.errors > 0}>
-        <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(props.errors)}</span>
-      </Show>
-    </text>
   )
 }
 

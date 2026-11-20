@@ -166,6 +166,25 @@ export function diffRows(diff: string) {
   return rows
 }
 
+/**
+ * What a unified diff changes: the lines its hunks add and the lines they remove, counted as the server counts the
+ * `filediff` of an edit. A request for permission carries the diff but not that count. The headers of a file stand
+ * outside its hunks, and a patch of several files is the headers and hunks of one file after another, so an `Index:`
+ * line closes the hunk before it: a `---` or `+++` header is not a change.
+ */
+export function diffChanges(diff: string) {
+  let additions = 0
+  let deletions = 0
+  let inHunk = false
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("Index:")) inHunk = false
+    else if (line.startsWith("@@")) inHunk = true
+    else if (inHunk && line.startsWith("+")) additions++
+    else if (inHunk && line.startsWith("-")) deletions++
+  }
+  return { additions, deletions }
+}
+
 /** The lines a write call put in its file: `content` without the line break that ends its last line. */
 export function writtenLines(content: string | undefined) {
   if (!content) return 0

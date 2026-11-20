@@ -2153,7 +2153,9 @@ export const {
       return sdk.client.project.trust
         .list({ headers: locationHeaders({ workspace }) })
         .then((x) => {
-          setStore("trust", reconcile(x.data?.entries ?? []))
+          // #1659: only an array is a trust list; any other reply shape leaves it empty.
+          const entries = x.data?.entries
+          setStore("trust", reconcile(Array.isArray(entries) ? entries : []))
           setStore("trust_loaded", true)
         })
         .catch(() => {})

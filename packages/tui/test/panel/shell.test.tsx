@@ -6,7 +6,7 @@ import type { ActiveBinding } from "@opentui/keymap"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { setLanguage } from "../../src/i18n"
 import { useBindings } from "../../src/keymap"
-import { hintEntries, joinPairKeys, PanelShell, type PanelHint } from "../../src/panel/shell"
+import { hintEntries, joinPairKeys, PanelShell, panelMaxRows, type PanelHint } from "../../src/panel/shell"
 import { renderUntilFrame } from "../fixture/frames"
 import { shellState } from "../shell/contexts"
 import { PanelSurface, renderPanel } from "./contexts"
@@ -66,6 +66,11 @@ const asSymbols = (bindings: readonly Binding[] | undefined) =>
   )
 
 const pair: PanelHint = { key: "move.previous", also: "move.next", label: "选择" }
+
+test("a panel shows 45% of the terminal height in rows unless it asks for another number, and never more than 14", () => {
+  // The rows of the default 12, 24 and 40 row terminals, and where the cap starts.
+  expect([12, 24, 40, 31, 32, 100].map(panelMaxRows)).toEqual([5, 10, 14, 13, 14, 14])
+})
 
 test("joinPairKeys runs symbols together and tells names apart", () => {
   expect(joinPairKeys("↑", "↓")).toBe("↑↓")

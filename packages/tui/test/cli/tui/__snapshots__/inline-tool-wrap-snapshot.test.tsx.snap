@@ -102,8 +102,8 @@ exports[`TUI inline tool wrapping separates a task row from a preceding tool row
      ⎿ done · 1 tool call · 501ms"
 `;
 
-exports[`TUI inline tool wrapping separates a one-line row from the previous assistant summary 1`] = `
-"   ▣ Build · Little Frank · 53.1s
+exports[`TUI inline tool wrapping separates a one-line row from the previous assistant text 1`] = `
+"   ⏺ Checking the open questions first.
 
    → Asked 2 questions"
 `;

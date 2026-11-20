@@ -21,9 +21,11 @@ export const BACKGROUND_COUNT = 8
 /**
  * `S`, `M` and `L` stay below `WINDOW_MIN_ROWS`, so their transcripts are fully
  * mounted. `XL` is the one session above it, and the only one the windowed
- * transcript runs in: 2200 parts, 22 to each of the 100 assistant messages a
+ * transcript runs in: 2300 parts, 23 to each of the 100 assistant messages a
  * session loads, so every part reaches the transcript. In `L` the first 300 of
- * its 400 messages never do.
+ * its 400 messages never do. A message ends with what it holds and no row of its
+ * own (#1615), so the rows of a session are its parts less the patches, which are
+ * not rows: 2070 for `XL`, which is why it has 23 parts to a message and not 22.
  */
 export type FixtureSize = "S" | "M" | "L" | "XL"
 
@@ -48,15 +50,15 @@ export type PerfFixture = {
   reminders?: SessionReminder[]
 }
 
-const PART_COUNTS: Record<FixtureSize, number> = { S: 25, M: 100, L: 400, XL: 2200 }
+const PART_COUNTS: Record<FixtureSize, number> = { S: 25, M: 100, L: 400, XL: 2300 }
 /** Parts that share one assistant message. Only `XL` packs several, the way a long agent turn does. */
-const PARTS_PER_MESSAGE: Record<FixtureSize, number> = { S: 1, M: 1, L: 1, XL: 22 }
+const PARTS_PER_MESSAGE: Record<FixtureSize, number> = { S: 1, M: 1, L: 1, XL: 23 }
 
 export type FixtureOptions = {
   /**
    * Parts in each assistant message, in place of the size's own. The message count stays, so this scales the
-   * transcript: 20 parts per message of `XL` is about 1900 rows (just below `WINDOW_MIN_ROWS`, fully
-   * mounted), 40 about 3700. It exists for scale experiments (`run.ts --profile=stream`); the gated
+   * transcript: 20 parts per message of `XL` is about 1800 rows (just below `WINDOW_MIN_ROWS`, fully
+   * mounted), 40 about 3600. It exists for scale experiments (`run.ts --profile=stream`); the gated
    * sessions use the sizes as they are.
    */
   partsPerMessage?: number
@@ -264,11 +266,12 @@ export function createFixture(size: FixtureSize, withBackground = false, options
   }
 
   // The session loads its last 100 messages. A part of text, reasoning or tool output
-  // is a row, patches are not, and every finished assistant message adds a summary row.
+  // is a row, patches are not, and a finished assistant message adds nothing of its own.
   const loaded = messages.filter((message) => message.info.role === "assistant").slice(-PAGE)
   const rows = loaded.reduce(
     (total, message) =>
-      total + 1 + message.parts.filter((part) => part.type === "text" || part.type === "reasoning" || part.type === "tool").length,
+      total +
+      message.parts.filter((part) => part.type === "text" || part.type === "reasoning" || part.type === "tool").length,
     0,
   )
 
@@ -377,7 +380,6 @@ export function withUserMessages(fixture: PerfFixture, every: number): PerfFixtu
     if (entry.info.role === "user") return total + entry.parts.filter((part) => part.type === "text").length
     return (
       total +
-      1 +
       entry.parts.filter((part) => part.type === "text" || part.type === "reasoning" || part.type === "tool").length
     )
   }, 0)
@@ -563,6 +565,7 @@ export function makeFetchFixture(fixture: PerfFixture, url: URL): Response | und
     return Response.json({ entries: fixture.reminders ?? [] })
   if (url.pathname.startsWith("/dag/")) return Response.json([])
   if (url.pathname.endsWith("/status")) return Response.json({})
+  if (url.pathname === "/project/trust") return Response.json({ entries: [] })
   if (url.pathname.startsWith("/project/")) return Response.json([])
   return undefined
 }

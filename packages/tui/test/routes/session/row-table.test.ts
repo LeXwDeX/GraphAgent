@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
-import { createMemo, createRoot, createSignal } from "solid-js"
+import { createRoot, createSignal } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import type { AssistantMessage, Message, Part, ReasoningPart, TextPart, ToolPart, UserMessage } from "@graphagent/sdk"
 import { createStreamBuffer } from "../../../src/context/stream-buffer"
@@ -148,7 +148,6 @@ function build(entries: Entry[]) {
   const view = createSessionViewState()
   const [showDetails, setShowDetails] = createSignal(true)
   const [revertMessageID, setRevertMessageID] = createSignal<string | undefined>()
-  const lastAssistant = createMemo(() => store.message.findLast((message) => message.role === "assistant")?.id)
 
   /** Calls of `readPartText` by part, runs of a message's memo by message, derivations of text facts by part. */
   const reads = new Map<string, number>()
@@ -176,7 +175,6 @@ function build(entries: Entry[]) {
     readPartText,
     view,
     showDetails,
-    lastAssistantID: lastAssistant,
     revertMessageID,
     revertRevision: () => rowRevision("revert", revertMessageID()),
     reverted,
@@ -224,7 +222,6 @@ function build(entries: Entry[]) {
         showDetails: showDetails(),
         revertMessageID: revertMessageID(),
         reverted,
-        lastAssistantID: lastAssistant(),
       }),
   }
 }
@@ -270,7 +267,6 @@ function reference(input: {
   showDetails: boolean
   revertMessageID: string | undefined
   reverted: (message: Message) => boolean
-  lastAssistantID: string | undefined
 }): Shape {
   const rows: Shape["rows"] = []
   const chars = new Map<string, number>()
@@ -318,16 +314,13 @@ function reference(input: {
         if (part.state.status === "pending" || part.state.status === "running") streaming.add(`part:${part.id}`)
       }
     }
-    if (parts.some((part) => part.type === "tool" && part.tool === "task")) {
-      rows.push([`task:${message.id}`, "notice", message.id, undefined])
-    }
+    // A turn ends with what it holds. Only a failure has a block and only an interruption has a line.
     if (message.error && message.error.name !== "MessageAbortedError") {
       rows.push([`error:${message.id}`, "notice", message.id, undefined])
-      void errorMessage(message.error)
+      chars.set(`error:${message.id}`, textLines(errorMessage(message.error)))
     }
-    const final = message.finish && !["tool-calls", "unknown"].includes(message.finish)
-    if (input.lastAssistantID === message.id || final || message.error?.name === "MessageAbortedError") {
-      rows.push([`summary:${message.id}`, "meta", message.id, undefined])
+    if (message.error?.name === "MessageAbortedError") {
+      rows.push([`interrupted:${message.id}`, "meta", message.id, undefined])
     }
   }
   return {
@@ -726,34 +719,126 @@ describe("the messages of the table", () => {
 
       const after = rig.table().rows
       expect(after.length).toBeGreaterThan(before.length)
-      // The old last message loses its "last assistant" summary only if it was not final: these were final.
+      // A new last message changes nothing about the one before it: no row of a turn depends on which turn is last.
       for (const row of before) expect(after).toContain(row)
     }))
 })
 
-describe("the summary of the last assistant message", () => {
-  test("moves to the new last message and leaves the one before it that did not finish", () =>
+describe("what a turn ends with", () => {
+  /** A prompt and a turn that answers it, whatever `extra` says of the turn. */
+  const turn = (extra: Partial<AssistantMessage>, parts: (id: string) => Part[]): Entry[] => [
+    { info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_u", "go")] },
+    { info: assistantMessage("msg_a", 2, extra), parts: parts("msg_a") },
+  ]
+
+  test("a turn that finished, the last one and one that called a Task have no row after what they hold", () =>
     withTable(
       [
         { info: userMessage("msg_u", 1), parts: [text("msg_u", "prt_u", "go")] },
         {
-          info: assistantMessage("msg_first", 2, { finish: "tool-calls" }),
-          parts: [text("msg_first", "prt_first", "one")],
+          // A final turn that started a sub-agent: the Task row is the way in, no line under the message says so.
+          info: assistantMessage("msg_first", 2),
+          parts: [text("msg_first", "prt_first", "one"), tool("msg_first", "prt_task", "task", running())],
+        },
+        // The turn in progress is the last assistant message, and has no line either.
+        {
+          info: assistantMessage("msg_second", 3, { finish: undefined, time: { created: 3 } }),
+          parts: [writing("msg_second", "prt_second", "two")],
         },
       ],
       (rig) => {
-        const summaries = () =>
-          rig
-            .table()
-            .rows.filter((row) => row.kind === "meta")
-            .map((row) => row.messageID)
-        expect(summaries()).toEqual(["msg_first"])
-
-        rig.setStore("message", (messages) => [...messages, assistantMessage("msg_second", 3, { finish: undefined })])
-        rig.setStore("part", "msg_second", [text("msg_second", "prt_second", "two")])
-
-        expect(summaries()).toEqual(["msg_second"])
+        const rows = rig.table().rows
+        expect(rows.map((row) => row.kind)).toEqual(["user", "text", "tool", "text"])
+        expect(rows.some((row) => /^(task|summary):/.test(row.key))).toBe(false)
         expect(shapeOf(rig.table())).toEqual(rig.reference())
+      },
+    ))
+
+  test("an interrupted turn has one meta row, keyed by its message, and it follows what the turn holds", () =>
+    withTable(
+      turn({ finish: undefined, error: { name: "MessageAbortedError", data: { message: "aborted" } } }, (id) => [
+        text(id, "prt_a", "half an answer"),
+        tool(id, "prt_c", "bash", completed("ok")),
+      ]),
+      (rig) => {
+        const rows = rig.table().rows
+        expect(rows.map((row) => [row.key, row.kind])).toEqual([
+          ["user:msg_u", "user"],
+          ["part:prt_a", "text"],
+          ["part:prt_c", "tool"],
+          ["interrupted:msg_a", "meta"],
+        ])
+        expect(rows.at(-1)!.messageID).toBe("msg_a")
+        // The line is the message's, not a part's: nothing folds under it.
+        expect(rows.at(-1)!.partID).toBeUndefined()
+        expect(shapeOf(rig.table())).toEqual(rig.reference())
+      },
+    ))
+
+  test("a turn that failed has the block that says so and no line about an interruption", () =>
+    withTable(
+      turn(
+        { finish: undefined, error: { name: "UnknownError", data: { message: "bad gateway\nsecond line" } } },
+        (id) => [text(id, "prt_a", "half")],
+      ),
+      (rig) => {
+        const rows = rig.table().rows
+        expect(rows.map((row) => row.kind)).toEqual(["user", "text", "notice"])
+        expect(rows.some((row) => row.kind === "meta")).toBe(false)
+        // The block is estimated from the longest line of the message, which is what the height of its words is.
+        expect(rig.table().chars.get("error:msg_a")).toBe(Math.max("bad gateway".length, "second line".length))
+        expect(shapeOf(rig.table())).toEqual(rig.reference())
+      },
+    ))
+
+  test("the line comes when the turn is interrupted and goes with the interruption, and no other row is made again", () =>
+    withTable(
+      turn({ finish: undefined, time: { created: 2 } }, (id) => [writing(id, "prt_a", "going")]),
+      (rig) => {
+        const before = rig.table().rows
+        expect(before.some((row) => row.kind === "meta")).toBe(false)
+
+        const aborted: AssistantMessage["error"] = { name: "MessageAbortedError", data: { message: "aborted" } }
+        const interruptedBy = (error: AssistantMessage["error"]) =>
+          rig.setStore(
+            "message",
+            1,
+            produce((message) => {
+              if (message.role === "assistant") message.error = error
+            }),
+          )
+        interruptedBy(aborted)
+        const interrupted = rig.table().rows
+        expect(interrupted.map((row) => row.key)).toEqual([...before.map((row) => row.key), "interrupted:msg_a"])
+        for (const row of before) expect(interrupted).toContain(row)
+        expect(shapeOf(rig.table())).toEqual(rig.reference())
+
+        interruptedBy(undefined)
+        expect(rig.table().rows.some((row) => row.kind === "meta")).toBe(false)
+      },
+    ))
+
+  test("the same line stands for every interrupted turn: its revision does not move with the turn", () =>
+    withTable(
+      [
+        ...turn({ error: { name: "MessageAbortedError", data: { message: "aborted" } } }, (id) => [
+          text(id, "prt_a", "one"),
+        ]),
+        {
+          info: assistantMessage("msg_b", 3, {
+            parentID: "msg_u",
+            finish: undefined,
+            agent: "plan",
+            mode: "plan",
+            error: { name: "MessageAbortedError", data: { message: "aborted" } },
+          }),
+          parts: [text("msg_b", "prt_b", "two")],
+        },
+      ],
+      (rig) => {
+        const lines = rig.table().rows.filter((row) => row.kind === "meta")
+        expect(lines.map((row) => row.key)).toEqual(["interrupted:msg_a", "interrupted:msg_b"])
+        expect(new Set(lines.map((row) => row.revision)).size).toBe(1)
       },
     ))
 })
@@ -786,7 +871,6 @@ describe("the record of a sub-agent", () => {
           readPartText: (part) => ("text" in part ? part.text : ""),
           view,
           showDetails: () => true,
-          lastAssistantID: () => undefined,
           revertMessageID: () => undefined,
           revertRevision: () => 0,
           reverted: () => false,
@@ -855,7 +939,7 @@ describe("the record of a sub-agent", () => {
       // Without a task block the message is a user row, which folds under nothing, whatever the flag says.
       setDelegation(undefined)
       view.set(delegationFoldID("msg_u"), "expanded", true)
-      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text"])
       expect(table().rows[0].partID).toBeUndefined()
     }))
 
@@ -878,9 +962,9 @@ describe("the record of a sub-agent", () => {
   test("without a delegation, or for another message, every user message stays a user row", () =>
     record(({ table, setDelegation }) => {
       setDelegation(undefined)
-      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text"])
       setDelegation({ messageID: "msg_other", description: "scan" })
-      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text", "meta"])
+      expect(table().rows.map((row) => row.kind)).toEqual(["user", "text"])
     }))
 
   test("only a user message with a row can be the task: nothing is invented for an empty one", () =>
@@ -966,8 +1050,8 @@ describe("the card of a background result", () => {
   test("a message whose part reports a run is one card row, which folds under its part and stands where the message does", () =>
     withTable(session(), (rig) => {
       const rows = rig.table().rows
-      expect(rows.map((row) => row.kind)).toEqual(["user", "text", "meta", "result"])
-      const card = rows[3]
+      expect(rows.map((row) => row.kind)).toEqual(["user", "text", "result"])
+      const card = rows[2]
       expect(card).toMatchObject({ key: "part:prt_res", messageID: "msg_r", partID: "prt_res", kind: "result" })
       // The key `pinnedKeys` pins for the flag the part folds under is the row's own, so an open card stays mounted.
       expect(foldRowKey(card.partID!)).toBe(card.key)

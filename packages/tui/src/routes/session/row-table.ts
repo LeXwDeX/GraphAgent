@@ -45,8 +45,6 @@ export interface RowTableDeps {
   readPartText: (part: Part) => string
   view: SessionViewState
   showDetails: Accessor<boolean>
-  /** Id of the last assistant message, which always shows its summary. */
-  lastAssistantID: Accessor<string | undefined>
   /** Id of the message the session is reverted to; the revert marker takes its place. */
   revertMessageID: Accessor<string | undefined>
   /** Revision of the revert marker row. */
@@ -171,17 +169,10 @@ function delegationRow(row: Row, description: string, expanded: boolean): Row {
 
 function createMessageRows(message: Message, deps: RowTableDeps): Accessor<MessageRows> {
   const facts = deps.textFacts?.() ?? createTextFacts()
-  // A boolean memo only wakes the message when the answer changes, not on every new last message.
-  const isLast = message.role === "assistant" ? createMemo(() => deps.lastAssistantID() === message.id) : () => false
-  return createMemo(() => buildMessageRows(message, deps, isLast, facts), NO_ROWS, { equals: sameMessageRows })
+  return createMemo(() => buildMessageRows(message, deps, facts), NO_ROWS, { equals: sameMessageRows })
 }
 
-function buildMessageRows(
-  message: Message,
-  deps: RowTableDeps,
-  isLast: Accessor<boolean>,
-  facts: TextFactsCache,
-): MessageRows {
+function buildMessageRows(message: Message, deps: RowTableDeps, facts: TextFactsCache): MessageRows {
   const parts = deps.parts(message.id)
   const rows: Row[] = []
   const chars = new Map<string, number>()
@@ -290,29 +281,24 @@ function buildMessageRows(
   }
   facts.retain(live)
 
-  if (parts.some((part) => part.type === "tool" && part.tool === "task")) {
-    // The line says how to view the sub-agents and nothing that follows a run (the way to move a foreground run to the
-    // background is on the run's own row, #1614), so one revision stands for it.
-    rows.push({ key: `task:${message.id}`, messageID: message.id, kind: "notice", revision: rowRevision() })
-  }
-
+  // A message ends with what it holds and nothing else (#1615): no line says how to view the sub-agents (a Task row
+  // has its own way in, #1614), none gives the agent, the model and the time. Two things are still said of a turn: that
+  // it failed, in a block, and that it was interrupted, in one line.
   if (message.error && message.error.name !== "MessageAbortedError") {
+    const key = `error:${message.id}`
+    const failure = errorMessage(message.error)
     rows.push({
-      key: `error:${message.id}`,
+      key,
       messageID: message.id,
       kind: "notice",
-      revision: rowRevision(errorMessage(message.error), message.error.name),
+      revision: rowRevision(failure, message.error.name),
     })
+    chars.set(key, longestLine(failure))
   }
 
-  const final = message.finish && !["tool-calls", "unknown"].includes(message.finish)
-  if (isLast() || final || message.error?.name === "MessageAbortedError") {
-    rows.push({
-      key: `summary:${message.id}`,
-      messageID: message.id,
-      kind: "meta",
-      revision: rowRevision(message.finish, message.time.completed, message.error?.name, message.agent, message.mode),
-    })
+  if (message.error?.name === "MessageAbortedError") {
+    // The words are the same for every turn, so one revision stands for the row.
+    rows.push({ key: `interrupted:${message.id}`, messageID: message.id, kind: "meta", revision: rowRevision() })
   }
 
   return { rows, chars, streaming }
