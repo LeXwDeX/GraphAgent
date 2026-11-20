@@ -190,7 +190,7 @@ import {
   type FoldEnv,
   type FoldSource,
 } from "./fold"
-import { DETAIL_SEPARATOR, ToolRow, toolRowState, type ToolRowState } from "./tool-row"
+import { ChangeSummary, DETAIL_SEPARATOR, diagnosticCount, ToolRow, toolRowState, type ToolRowState } from "./tool-row"
 
 // The tool data readers live in `util/tool-display`, where `./fold` reads them too; the tests import them from here.
 export {
@@ -3264,36 +3264,6 @@ function Shell(props: ToolProps) {
       body={<text fg={theme.text}>{output()}</text>}
       trace={output()}
     />
-  )
-}
-
-/** The errors a call's diagnostics hold for one file, in words. */
-const diagnosticCount = (errors: number) =>
-  t(errors === 1 ? "tool.row.diagnostics.one" : "tool.row.diagnostics.other", { n: errors })
-
-/**
- * What a change did to a file, the line under the call of an edit or of a file of a patch: the lines it added and the
- * lines it removed, in the colors of success and of error, and how many errors the language server found in the file.
- * A count the server did not give is left out, and the others stand as they are.
- */
-function ChangeSummary(props: { additions?: number; deletions?: number; errors: number }) {
-  const { theme } = useTheme()
-  const counts = createMemo(() => {
-    const list: Array<{ text: string; fg: RGBA }> = []
-    if (props.additions !== undefined) list.push({ text: "+" + props.additions, fg: theme.success })
-    // U+2212, the minus sign, and not the hyphen of a flag.
-    if (props.deletions !== undefined) list.push({ text: "\u2212" + props.deletions, fg: theme.error })
-    return list
-  })
-  return (
-    <text fg={theme.text} wrapMode="none">
-      <For each={counts()}>
-        {(count, index) => <span style={{ fg: count.fg }}>{(index() ? " " : "") + count.text}</span>}
-      </For>
-      <Show when={props.errors > 0}>
-        <span style={{ fg: theme.error }}>{DETAIL_SEPARATOR + diagnosticCount(props.errors)}</span>
-      </Show>
-    </text>
   )
 }
 

@@ -97,7 +97,7 @@ export interface PanelShellProps {
   tone?: "default" | "warning"
   /** Footer hints supplied by the template; the host common close hint is appended. */
   hints: readonly PanelHint[]
-  /** Maximum content rows; defaults to min(14, floor(terminal height * 0.45)). */
+  /** Maximum content rows; defaults to `panelMaxRows` of the terminal height. */
   maxRows?: number
   /**
    * One muted line between the content and the hint row, for the explanation of what is selected. It sits outside the
@@ -115,6 +115,11 @@ export interface PanelShellProps {
 
 /** Below this width the command and secondary tab information are hidden first. */
 export const PANEL_NARROW_WIDTH = 100
+
+/** The rows of content a panel shows unless it asks for another number: 45% of the terminal height, 14 at the most. */
+export function panelMaxRows(terminalHeight: number) {
+  return Math.min(14, Math.floor(terminalHeight * 0.45))
+}
 
 const BORDER_AND_PADDING = 4
 const GAP = 2
@@ -134,7 +139,7 @@ export function PanelShell(props: PanelShellProps) {
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const innerWidth = () => Math.max(1, dimensions().width - BORDER_AND_PADDING)
-  const maxRows = () => Math.max(1, props.maxRows ?? Math.min(14, Math.floor(dimensions().height * 0.45)))
+  const maxRows = () => Math.max(1, props.maxRows ?? panelMaxRows(dimensions().height))
   // The scrollbox fills the remaining main-axis space by default; measuring the
   // content lets the panel hug its rows up to the configured maximum.
   const viewportRows = () => Math.min(maxRows(), Math.max(1, contentRows() ?? maxRows()))

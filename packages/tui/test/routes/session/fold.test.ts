@@ -8,6 +8,7 @@ import { setLanguage } from "../../../src/i18n"
 import {
   completedOutput,
   delegationFolds,
+  diffChanges,
   diffRows,
   editRows,
   errorDenied,
@@ -288,6 +289,36 @@ test("the rows of a diff are the context, added and removed lines of its hunks, 
   expect(diffRows("@@ -1,2 +1,1 @@\n--- a comment\n+x\n")).toBe(2)
   // A diff the server shortened to nothing has no rows.
   expect(diffRows("@@ -1 +1 @@")).toBe(0)
+})
+
+test("a diff changes the lines its hunks add and remove, and the headers of its files are not among them", () => {
+  // DIFF: one line removed and one added in the first hunk, one added in the second, and the marker is not a line.
+  expect(diffChanges(DIFF)).toEqual({ additions: 2, deletions: 1 })
+  expect(diffChanges("")).toEqual({ additions: 0, deletions: 0 })
+  expect(diffChanges("Index: a\n===\n--- a\n+++ a\n")).toEqual({ additions: 0, deletions: 0 })
+  // A removed line that begins with dashes, as a SQL comment does, is a change and not a header.
+  expect(diffChanges("@@ -1,2 +1,1 @@\n--- a comment\n+x\n")).toEqual({ additions: 1, deletions: 1 })
+  // A patch of several files is the headers and hunks of one file after another; the `---` and `+++` of the second
+  // file stand outside its hunks, and only what the hunks do is counted.
+  const patch = [
+    "Index: a.ts",
+    "===================================================================",
+    "--- a.ts",
+    "+++ a.ts",
+    "@@ -1,2 +1,2 @@",
+    " keep",
+    "-old",
+    "+new",
+    "Index: b.ts",
+    "===================================================================",
+    "--- b.ts",
+    "+++ b.ts",
+    "@@ -0,0 +1,2 @@",
+    "+one",
+    "+two",
+    "",
+  ].join("\n")
+  expect(diffChanges(patch)).toEqual({ additions: 3, deletions: 1 })
 })
 
 test("a write put in its file the lines of its content, not the line break that ends the last of them", () => {

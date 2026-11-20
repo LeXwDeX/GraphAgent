@@ -8,7 +8,7 @@ import type { PermissionRequest, Session } from "@graphagent/sdk"
 import { DEFAULT_THEME } from "../../../src/context/theme"
 import { setLanguage } from "../../../src/i18n"
 import { PANEL_NARROW_WIDTH } from "../../../src/panel/shell"
-import { PermissionPrompt } from "../../../src/routes/session/permission"
+import { fitDiff, PermissionPrompt, type DiffFit } from "../../../src/routes/session/permission"
 import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../../src/ui/width"
 import { json, type FetchHandler } from "../../fixture/tui-sdk"
@@ -59,6 +59,23 @@ const DIFF = [
   "",
 ].join("\n")
 
+/**
+ * A diff of 40 rows, more than the panel can show: 6 lines of context, 14 lines removed, 14 added and 6 lines of context.
+ * An ask that has to shorten it says `+14 −14`.
+ */
+const LONG_DIFF = [
+  "Index: src/app.ts",
+  "===================================================================",
+  "--- src/app.ts",
+  "+++ src/app.ts",
+  "@@ -1,26 +1,26 @@",
+  ...Array.from({ length: 6 }, (_, index) => ` const keep${index + 1} = ${index + 1}`),
+  ...Array.from({ length: 14 }, (_, index) => `-  old${index + 1}()`),
+  ...Array.from({ length: 14 }, (_, index) => `+  new${index + 1}()`),
+  ...Array.from({ length: 6 }, (_, index) => ` const tail${index + 1} = ${index + 1}`),
+  "",
+].join("\n")
+
 interface Scene {
   id: string
   permission: string
@@ -67,11 +84,6 @@ interface Scene {
   metadata?: Record<string, unknown>
   patterns?: string[]
   always?: string[]
-  /**
-   * False when the content fills the viewport before the options: the diff of an edit takes all the rows the panel
-   * has (as it did before the shell was redrawn), and the options wait below it, a scroll away.
-   */
-  optionsInView?: false
   /** What the title names the tool, by language. */
   tool: Record<Language, string>
   /** What the frame shows of the request, by language. */
@@ -103,9 +115,8 @@ function scenes(long = false): Scene[] {
     {
       id: "edit",
       permission: "edit",
-      metadata: { filepath: deep, diff: DIFF },
+      metadata: { filepath: deep, diff: long ? LONG_DIFF : DIFF },
       always: ["src/*"],
-      optionsInView: false,
       tool: same("Edit"),
       shows: { "zh-CN": ["路径:", "src/app.ts"], en: ["Path:", "src/app.ts"] },
     },
@@ -352,6 +363,37 @@ async function spanOf(app: App, needle: string) {
 
 const isColor = (actual: RGBA, expected: RGBA) => actual.equals(expected)
 
+/** An edit whose diff has more rows than the panel can show. */
+function editLong(filepath = "/repo/src/app.ts"): Scene {
+  return {
+    id: "edit-long",
+    permission: "edit",
+    metadata: { filepath, diff: LONG_DIFF },
+    always: ["src/*"],
+    tool: same("Edit"),
+    shows: { "zh-CN": ["路径:", "const keep1"], en: ["Path:", "const keep1"] },
+  }
+}
+
+/** What the three options of a request from the root say, and what the hint row starts with, by language. */
+const OPTIONS: Record<Language, string[]> = {
+  "zh-CN": ["1. 允许这一次", "2. 本会话内都允许 src/*", "3. 拒绝，并告诉 agent 怎么做"],
+  en: ["1. Allow once", "2. Allow src/* for this session", "3. Reject, and tell the agent what to do instead"],
+}
+const HINTS: Record<Language, string> = { "zh-CN": "或数字键选择", en: "or number keys to pick" }
+
+/** The numbered lines of a diff in the frame: the context, the removed and the added rows. */
+const diffRowsOf = (frame: string) => panelLines(frame).filter((line) => /^│ +\d+ [-+ ]/.test(line))
+
+/** The lines of the options: the mark column, then `n.`. */
+const optionRowsOf = (frame: string) => panelLines(frame).filter((line) => /^│ [› ] \d\. /.test(line))
+
+/**
+ * The thumb of a scroll bar is drawn with block characters, which are ambiguous in width. The panel lays the bar out as
+ * one cell, so it is measured as one: how a terminal draws the glyph is not the layout's to say.
+ */
+const SCROLL_THUMB = /[█▀▄]/g
+
 describe("the title names the tool", () => {
   for (const language of LANGUAGES) {
     test(`every kind of request leads with its tool, no longer with a generic line, ${language}`, async () => {
@@ -378,7 +420,7 @@ describe("the title names the tool", () => {
               found: true,
             })
           const options = frame.includes(language === "zh-CN" ? "允许这一次" : "Allow once")
-          expect({ scene: scene.id, options }).toEqual({ scene: scene.id, options: scene.optionsInView !== false })
+          expect({ scene: scene.id, options }).toEqual({ scene: scene.id, options: true })
         })
       }
     })
@@ -507,7 +549,7 @@ describe("the options", () => {
   })
 
   test("every kind of request draws the chosen option the same way", async () => {
-    for (const scene of [...scenes(), ...others()].filter((item) => item.optionsInView !== false)) {
+    for (const scene of [...scenes(), ...others()]) {
       await withPrompt({ scene }, async (app) => {
         const mark = await spanOf(app, "›")
         expect({
@@ -640,6 +682,179 @@ describe("the hint row", () => {
   })
 })
 
+describe("an edit whose diff is longer than the panel (#1651)", () => {
+  for (const language of LANGUAGES) {
+    // The terminal, and the rows of the diff in it.
+    const sizes: Array<[number, number, number]> = [
+      [80, 24, 4],
+      [120, 40, 8],
+    ]
+    for (const [width, height, rows] of sizes) {
+      test(`the options and the hint row stay in view and the diff takes the rows left, ${language}, ${width}x${height}`, async () => {
+        await withPrompt({ scene: editLong(), language, width, height }, async (app) => {
+          const frame = await stable(app)
+          for (const text of [...OPTIONS[language], HINTS[language]])
+            expect({ text, found: frame.includes(text) }).toEqual({ text, found: true })
+          // The panel is as tall as the shell makes it, 45% of the terminal and 14 rows at the most, and the four rows
+          // around them: the content rows are the path, the options, the two blank rows, and the diff has the rest.
+          const content = Math.min(14, Math.floor(height * 0.45))
+          expect(panelLines(frame).length).toBe(content + 4)
+          expect(diffRowsOf(frame).length).toBe(rows)
+          expect(rows).toBe(content - 1 - 3 - 2)
+          // The diff starts at its first row; under its last row come a blank row and then the options.
+          const lines = panelLines(frame)
+          expect(diffRowsOf(frame)[0]).toContain("const keep1")
+          const last = lines.indexOf(diffRowsOf(frame).at(-1)!)
+          expect(inside(lines[last + 1]).trim()).toBe("")
+          expect(lines[last + 2]).toContain(OPTIONS[language][0])
+        })
+      })
+    }
+  }
+
+  test("the diff scrolls inside its area to its last row, and the options stay where they are", async () => {
+    await withPrompt({ scene: editLong(), width: 80, height: 24 }, async (app) => {
+      const before = await stable(app)
+      const row = before.split("\n").findIndex((line) => line.includes("const keep1"))
+      expect(row).toBeGreaterThan(0)
+      expect(before).not.toContain("const tail6")
+      for (let tick = 0; tick < 30; tick++) await app.mockMouse.scroll(10, row, "down")
+      const after = await renderUntilFrame(app, (frame) => frame.includes("const tail6"), "the last row of the diff")
+      expect(after).not.toContain("const keep1")
+      // Nothing around the diff moved: the panel is as tall as it was, the same four rows of it, and the options sit
+      // on the rows they had.
+      expect(panelLines(after).length).toBe(panelLines(before).length)
+      expect(diffRowsOf(after).length).toBe(4)
+      expect(optionRowsOf(after)).toEqual(optionRowsOf(before))
+      for (const text of [...OPTIONS["zh-CN"], HINTS["zh-CN"]]) expect(after).toContain(text)
+    })
+  })
+
+  test("a short diff takes only its own rows and leaves no blank rows under it", async () => {
+    await withPrompt({ scene: scenes()[1], width: 120, height: 40 }, async (app) => {
+      const lines = panelLines(await stable(app))
+      // Title, path, blank, the four rows of DIFF, blank, the three options, the hints and the borders.
+      expect(lines.length).toBe(1 + 1 + 1 + 1 + 4 + 1 + 3 + 1 + 1)
+    })
+  })
+
+  for (const language of LANGUAGES) {
+    test(`at 12 rows the options stay in view and the diff is folded to one line of its counts, ${language}`, async () => {
+      await withPrompt({ scene: editLong(), language, width: 80, height: 12 }, async (app) => {
+        const frame = await stable(app)
+        const lines = panelLines(frame)
+        for (const text of [...OPTIONS[language], HINTS[language]])
+          expect({ text, found: frame.includes(text) }).toEqual({ text, found: true })
+        expect(diffRowsOf(frame)).toEqual([])
+        expect(frame).not.toContain("const keep1")
+        // The path, the counts and the three options with no blank row between them: five rows and the four around them,
+        // which is all the 45% of 12 rows gives a panel.
+        expect(lines.length).toBe(9)
+        expect(inside(lines[3]).trim()).toBe("+14 \u221214")
+        // The counts are those of a finished edit: added in the color of success, removed in the color of error.
+        expect(isColor((await spanOf(app, "+14")).fg, theme.success)).toBe(true)
+        expect(isColor((await spanOf(app, "\u221214")).fg, theme.error)).toBe(true)
+      })
+    })
+  }
+
+  test("a sub-agent's four options stay in view at 12 rows, and the counts give way to them", async () => {
+    await withPrompt({ scene: editLong(), width: 80, height: 12, child: true }, async (app) => {
+      const frame = await stable(app)
+      expect(optionRowsOf(frame).length).toBe(4)
+      expect(frame).not.toContain("+14")
+      expect(panelLines(frame).length).toBe(9)
+    })
+  })
+
+  test("with a few rows more the counts take blank rows to set them apart, and from 20 rows the diff comes back", async () => {
+    for (const [height, shows] of [
+      [14, "count"],
+      [16, "count-gap"],
+      [18, "count-gap"],
+      [20, "diff"],
+    ] as const) {
+      await withPrompt({ scene: editLong(), width: 80, height }, async (app) => {
+        const frame = await stable(app)
+        const lines = panelLines(frame)
+        expect({ height, options: optionRowsOf(frame).length }).toEqual({ height, options: 3 })
+        const counts = lines.findIndex((row) => row.includes("+14"))
+        const label = counts < 0 ? "diff" : inside(lines[counts - 1]).trim() === "" ? "count-gap" : "count"
+        expect({ height, shows: label }).toEqual({ height, shows })
+        if (shows === "diff") expect(diffRowsOf(frame).length).toBe(3)
+      })
+    }
+  })
+
+  test("a path that wraps takes its rows from the diff, never from the options", async () => {
+    const path = `/repo/${"packages/tui/src/routes/session/".repeat(3)}app.ts`
+    // A path of two rows leaves the diff its three rows; a longer one leaves it fewer than three, and then it is folded.
+    for (const [file, rows] of [
+      [path, 3],
+      [`${path}, ${path}`, 0],
+    ] as const) {
+      await withPrompt({ scene: editLong(file), width: 80, height: 24 }, async (app) => {
+        const frame = await stable(app)
+        expect({ file: file.length, options: optionRowsOf(frame).length }).toEqual({ file: file.length, options: 3 })
+        expect({ file: file.length, rows: diffRowsOf(frame).length }).toEqual({ file: file.length, rows })
+        expect({ file: file.length, counts: frame.includes("+14 \u221214") }).toEqual({
+          file: file.length,
+          counts: rows === 0,
+        })
+        expect(panelLines(frame).length).toBeLessThanOrEqual(14)
+      })
+    }
+  })
+
+  test("the fullscreen ask gives the diff the rows of the terminal and keeps the options", async () => {
+    await withPrompt({ scene: editLong(), width: 80, height: 24 }, async (app) => {
+      app.mockInput.pressKey("f", { ctrl: true })
+      // In this test renderer the fullscreen ask comes out without the side borders of the panel (it did before this
+      // change too), so its rows are told by their indent and not by the border: a numbered line of the diff with
+      // nothing to its left.
+      const numbered = (frame: string) => frame.split("\n").filter((line) => /^ +\d+ [-+ ]/.test(line))
+      const frame = await renderUntilFrame(app, (text) => numbered(text).length > 0, "the fullscreen ask")
+      for (const text of OPTIONS["zh-CN"]) expect(frame).toContain(text)
+      // 24 − 6 rows of content: the path, the options, the two blank rows and twelve rows of the diff.
+      expect(numbered(frame).length).toBe(12)
+    })
+  })
+})
+
+describe("how the rows of an ask that has a diff are divided", () => {
+  test("the diff takes what the path, the options and the two blank rows leave, and folds under three rows", () => {
+    // [budget, rows that always stand] → what the ask draws of its diff.
+    const cases: Array<[number, number, DiffFit]> = [
+      [14, 4, { show: "diff", gap: 1 }],
+      [10, 4, { show: "diff", gap: 1 }],
+      [9, 4, { show: "diff", gap: 1 }],
+      [8, 4, { show: "count", gap: 1 }],
+      [7, 4, { show: "count", gap: 1 }],
+      [6, 4, { show: "count", gap: 0 }],
+      [5, 4, { show: "count", gap: 0 }],
+      [4, 4, { show: "none", gap: 0 }],
+      [5, 5, { show: "none", gap: 0 }],
+      [6, 5, { show: "count", gap: 0 }],
+      [10, 5, { show: "diff", gap: 1 }],
+      [9, 5, { show: "count", gap: 1 }],
+    ]
+    for (const [budget, fixed, expected] of cases)
+      expect({ budget, fixed, fit: fitDiff(budget, fixed) }).toEqual({ budget, fixed, fit: expected })
+  })
+
+  test("what it draws never needs more rows than the panel has, as long as the rows that always stand fit", () => {
+    for (let budget = 1; budget <= 30; budget++) {
+      for (let fixed = 1; fixed <= 8; fixed++) {
+        if (fixed > budget) continue
+        const fit = fitDiff(budget, fixed)
+        const diff = fit.show === "diff" ? 3 : fit.show === "count" ? 1 : 0
+        const gaps = fit.show === "none" ? 0 : 2 * fit.gap
+        expect({ budget, fixed, fits: fixed + diff + gaps <= budget }).toEqual({ budget, fixed, fits: true })
+      }
+    }
+  })
+})
+
 describe("frames", () => {
   // The five requests #1619 names, each once in either language at 80x24 (AGENTS.md 8: new panel text gets an 80-column
   // frame per language) and once in English at 120x40 laid out at ambiguous_width 2. A queue of two puts its position
@@ -663,6 +878,21 @@ describe("frames", () => {
       })
     })
   }
+
+  // The edit whose diff is longer than the panel (#1651): the diff scrolls in its area, and at 12 rows it is one line.
+  for (const [width, height, language, ambiguousWidth] of [
+    [80, 24, "zh-CN", 1],
+    [80, 24, "en", 1],
+    [120, 40, "en", 2],
+    [80, 12, "zh-CN", 1],
+    [80, 12, "en", 1],
+  ] as const) {
+    test(`edit-long at ${width}x${height} in ${language} with ambiguous_width ${ambiguousWidth}`, async () => {
+      await withPrompt({ scene: editLong(), language, width, height, ambiguousWidth, total: 2 }, async (app) => {
+        expect(await stable(app)).toMatchSnapshot()
+      })
+    })
+  }
 })
 
 describe("it fits the terminal", () => {
@@ -679,11 +909,14 @@ describe("it fits the terminal", () => {
               const lines = panelLines(frame)
               for (const line of lines.filter((row) => row.startsWith("│") && row.endsWith("│"))) {
                 // Inside the border: the padding and what the panel itself laid out.
-                const fits = cellWidth(inside(line).trimEnd(), ambiguousWidth) <= width - 3
+                const fits = cellWidth(inside(line).replace(SCROLL_THUMB, "#").trimEnd(), ambiguousWidth) <= width - 3
                 expect({ scene: scene.id, line, fits }).toEqual({ scene: scene.id, line, fits: true })
               }
               // The title is on one row, with the tool in it, whatever the width.
               expect(inside(lines[1])).toContain(language === "zh-CN" ? "需要权限" : "needs permission")
+              // The three options and the hint row are in view, whatever the request holds.
+              expect({ scene: scene.id, options: optionRowsOf(frame).length }).toEqual({ scene: scene.id, options: 3 })
+              expect(inside(lines[lines.length - 2])).toContain(HINTS[language])
             })
           }
         })
