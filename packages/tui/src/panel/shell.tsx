@@ -4,7 +4,7 @@
 import { BoxRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import type { ActiveBinding } from "@opentui/keymap"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, Show, type JSX } from "solid-js"
+import { children, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { useTuiConfig } from "../config"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
@@ -97,8 +97,16 @@ export interface PanelShellProps {
   tone?: "default" | "warning"
   /** Footer hints supplied by the template; the host common close hint is appended. */
   hints: readonly PanelHint[]
-  /** Maximum content rows; defaults to `panelMaxRows` of the terminal height. */
+  /** Maximum content rows, the filter row included; defaults to `panelMaxRows` of the terminal height. */
   maxRows?: number
+  /**
+   * The filter input, one row between the title row and the content. It sits outside the scroll area, so it stays where
+   * it is however far the content scrolls, and so does the terminal cursor, which is drawn at the focused input: inside
+   * the scroll area the input scrolls away and the cursor is left on the screen where it was, above the panel. The row
+   * is one of the rows of `maxRows`, the content has the rest. Left out, the panel takes no row for it. It is laid out
+   * in a row, so several elements can be given side by side.
+   */
+  filter?: JSX.Element
   /**
    * One muted line between the content and the hint row, for the explanation of what is selected. It sits outside the
    * scroll area, so it stays in view however far the content scrolls. Left out, the panel takes no row for it; an empty
@@ -128,6 +136,8 @@ const TITLE_MIN_WIDTH = 8
 const HINT_SEPARATOR = " · "
 /** The note starts under the names of the rows, past the two-cell selection marker. */
 const NOTE_INDENT = 2
+/** The filter row is one line, and takes one of the rows that `maxRows` allows. */
+const FILTER_ROWS = 1
 
 export function PanelShell(props: PanelShellProps) {
   const { theme } = useTheme()
@@ -136,13 +146,17 @@ export function PanelShell(props: PanelShellProps) {
   const tuiConfig = useTuiConfig()
   const hostDepth = usePanelHostDepth()
   const [contentRows, setContentRows] = createSignal<number>()
+  // Resolved once: the elements of the filter are created here, and a second read of the prop would create them again.
+  const filter = children(() => props.filter)
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const innerWidth = () => Math.max(1, dimensions().width - BORDER_AND_PADDING)
   const maxRows = () => Math.max(1, props.maxRows ?? panelMaxRows(dimensions().height))
+  // What the scroll area may take: the rows of the panel, less the filter row when there is one.
+  const scrollRows = () => Math.max(1, maxRows() - (filter() ? FILTER_ROWS : 0))
   // The scrollbox fills the remaining main-axis space by default; measuring the
   // content lets the panel hug its rows up to the configured maximum.
-  const viewportRows = () => Math.min(maxRows(), Math.max(1, contentRows() ?? maxRows()))
+  const viewportRows = () => Math.min(scrollRows(), Math.max(1, contentRows() ?? scrollRows()))
 
   const hints = createMemo<PanelHint[]>(() => {
     const seen = new Set<string>()
@@ -269,11 +283,16 @@ export function PanelShell(props: PanelShellProps) {
           </text>
         </Show>
       </box>
+      <Show when={filter()}>
+        <box height={FILTER_ROWS} flexShrink={0} flexDirection="row" overflow="hidden">
+          {filter()}
+        </box>
+      </Show>
       <scrollbox
         ref={(element: ScrollBoxRenderable) => props.scrollRef?.(element)}
         width="100%"
         height={viewportRows()}
-        maxHeight={maxRows()}
+        maxHeight={scrollRows()}
         flexShrink={0}
         scrollbarOptions={{ visible: false }}
       >

@@ -1,16 +1,42 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { BoxRenderable, InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
-import { entries, groupBy, isDeepEqual } from "remeda"
+import { BoxRenderable, InputRenderable, Renderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
+import { isDeepEqual } from "remeda"
 import * as fuzzysort from "fuzzysort"
-import { createEffect, createMemo, createSignal, For, on, onMount, Show, untrack, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack, type JSX } from "solid-js"
 import { useTuiConfig } from "../config"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
 import { remoteLine } from "../util/remote-text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
+
+/** How many items PageUp and PageDown move the selection by. */
+const PAGE_ITEMS = 10
+
+function sameStrings(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+/** Whether `node` is in the tree under `ancestor`: a row that has been taken out of it cannot be scrolled to. */
+function within(node: Renderable, ancestor: Renderable) {
+  for (let at: Renderable | null = node; at; at = at.parent) if (at === ancestor) return true
+  return false
+}
+
+/**
+ * The ref of an element that is kept under a key while it is mounted. The entry goes with the element, unless another
+ * element has taken the key by then (an item that changes group is mounted in its new group before the old one goes).
+ */
+function remember(elements: Map<string, BoxRenderable>, key: string) {
+  return (element: BoxRenderable) => {
+    elements.set(key, element)
+    onCleanup(() => {
+      if (elements.get(key) === element) elements.delete(key)
+    })
+  }
+}
 
 export interface ListItem<T> {
   id: string
@@ -86,7 +112,9 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
   let scroll: ScrollBoxRenderable | undefined
 
   const [filter, setFilter] = createSignal("")
+  // The rows and the group headings that are mounted, to bring the selected row into view.
   const rowRefs = new Map<string, BoxRenderable>()
+  const headingRefs = new Map<string, BoxRenderable>()
   let input: InputRenderable | undefined
 
   const filterEnabled = () => props.filter !== false
@@ -102,10 +130,25 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     return fuzzysort.go(needle, items, { key: "title" }).map((result) => result.obj)
   })
 
-  const grouped = createMemo(
-    () => entries(groupBy(filtered(), (item) => item.group ?? "")) as [string, ListItem<T>[]][],
-  )
-  const flat = createMemo(() => grouped().flatMap(([, items]) => items))
+  // The groups, in the order their first item comes, compared by value. What an item says of its group follows the
+  // owner's data (a sub-agent moves between groups as its state does), so this is worked out again and again, and a
+  // group that is still there must not be mounted anew for it. The items of a group are told apart the same way, by
+  // id, where the group is drawn.
+  const groups = createMemo<string[]>(() => [...new Set(filtered().map((item) => item.group ?? ""))], [], {
+    equals: sameStrings,
+  })
+  // The items in the order they are drawn, the items of a group together.
+  const flat = createMemo(() => {
+    const items = filtered()
+    const names = groups()
+    return names.length < 2 ? items : names.flatMap((name) => items.filter((item) => (item.group ?? "") === name))
+  })
+  const itemByID = createMemo(() => new Map(flat().map((item) => [item.id, item] as const)))
+  // Where each item stands, as its group and its id in the order drawn. It changes when rows come, go or move to
+  // another group, and does not change when only what an item says changes.
+  const places = createMemo<string[]>(() => flat().map((item) => `${item.group ?? ""}\u0000${item.id}`), [], {
+    equals: sameStrings,
+  })
   // The selection is an item, kept by its id; where it stands in `flat()` is looked up every time. An item that moves
   // (the owner reorders its items, or a `group` that follows data regroups them) takes the selection with it. One that
   // is gone leaves the selection at the place it had, cut to the list, and the effect below hands it to the item there.
@@ -193,13 +236,37 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     })
   })
 
-  function scrollTo(item: ListItem<T>) {
-    queueMicrotask(() => {
-      const row = rowRefs.get(item.id)
-      if (!row || row.isDestroyed) return
-      scroll?.scrollChildIntoView(row)
-    })
+  /**
+   * Brings the selected row into the view of the scroll area, and the heading of its group with it when it is the first
+   * row of the group: the heading is above the row, and a view that stops at the row's top edge would leave it out.
+   */
+  function reveal() {
+    revealQueued = false
+    const item = untrack(selectedItem)
+    const row = item ? rowRefs.get(item.id) : undefined
+    if (!item || !row || !scroll || scroll.isDestroyed || !within(row, scroll)) return
+    scroll.scrollChildIntoView(row)
+    const group = item.group ?? ""
+    if (!group || untrack(flat).find((candidate) => (candidate.group ?? "") === group)?.id !== item.id) return
+    const heading = headingRefs.get(group)
+    if (heading && within(heading, scroll)) scroll.scrollChildIntoView(heading)
   }
+
+  // A row that an update has just made is in the tree only when the update is over, and the scroll area refuses to be
+  // scrolled to a node that is not under it, so the request waits for the end of the update. Several asked for at
+  // once are one.
+  let revealQueued = false
+  function scheduleReveal() {
+    if (revealQueued) return
+    revealQueued = true
+    queueMicrotask(reveal)
+  }
+
+  // The selected row is in view after anything that could have taken it out: the selection moves (a key, a click, the
+  // list starting over at the first row), or rows come, go or change group (the owner's data refreshes, the filter
+  // narrows the list). It is not asked of the wheel, which only moves the view: that is the user's to do, and the
+  // next key that moves the selection brings the view back to it.
+  createEffect(on([() => selectedItem()?.id, places, () => props.loading], scheduleReveal))
 
   function moveTo(next: number, preview = true) {
     const items = flat()
@@ -207,13 +274,23 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     const index = ((next % items.length) + items.length) % items.length
     const item = items[index]
     if (!item) return
+    const stays = selectedItem()?.id === item.id
     setSelectedID(item.id)
+    // A move that leaves the selection where it is changes nothing the effect above follows, and the wheel may have
+    // taken the view away from it.
+    if (stays) scheduleReveal()
     if (preview) props.onMove?.(item)
-    scrollTo(item)
   }
 
   function move(direction: number) {
     moveTo(selected() + direction)
+  }
+
+  /** A page of items up or down; at the first or the last item it stops, where `move` wraps round. */
+  function page(direction: number) {
+    const last = flat().length - 1
+    if (last < 0) return
+    moveTo(Math.min(last, Math.max(0, selected() + direction * PAGE_ITEMS)))
   }
 
   function submit() {
@@ -244,8 +321,8 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     commands: [
       { name: "panel.previous", title: "Previous item", category: "Panel", run: () => move(-1) },
       { name: "panel.next", title: "Next item", category: "Panel", run: () => move(1) },
-      { name: "panel.page_up", title: "Page up", category: "Panel", run: () => move(-10) },
-      { name: "panel.page_down", title: "Page down", category: "Panel", run: () => move(10) },
+      { name: "panel.page_up", title: "Page up", category: "Panel", run: () => page(-1) },
+      { name: "panel.page_down", title: "Page down", category: "Panel", run: () => page(1) },
       { name: "panel.home", title: "First item", category: "Panel", run: () => moveTo(0) },
       {
         name: "panel.end",
@@ -308,97 +385,125 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
       onTab={props.onTab}
       hints={hints()}
       note={note()}
+      filter={
+        filterEnabled() ? (
+          // On the shell's fixed filter row, not in the scroll area: it stays in view, and the cursor with it.
+          <>
+            <text flexShrink={0} fg={theme.textDim} wrapMode="none">
+              ›{" "}
+            </text>
+            <box flexGrow={1} flexShrink={1}>
+              <input
+                ref={(element: InputRenderable) => {
+                  input = element
+                }}
+                width="100%"
+                onInput={(value) => {
+                  setFilter(value)
+                  props.onFilter?.(value, filtered())
+                }}
+                placeholder={placeholder() ?? t("panel.list.filter")}
+                placeholderColor={theme.textMuted}
+                focusedBackgroundColor={theme.backgroundPanel}
+                focusedTextColor={theme.text}
+                cursorColor={theme.primary}
+              />
+            </box>
+          </>
+        ) : undefined
+      }
     >
-      <Show when={filterEnabled()}>
-        <box height={1} flexShrink={0} flexDirection="row">
-          <text flexShrink={0} fg={theme.textDim} wrapMode="none">
-            ›{" "}
-          </text>
-          <box flexGrow={1} flexShrink={1}>
-            <input
-              ref={(element: InputRenderable) => {
-                input = element
-              }}
-              width="100%"
-              onInput={(value) => {
-                setFilter(value)
-                props.onFilter?.(value, filtered())
-              }}
-              placeholder={placeholder() ?? t("panel.list.filter")}
-              placeholderColor={theme.textMuted}
-              focusedBackgroundColor={theme.backgroundPanel}
-              focusedTextColor={theme.text}
-              cursorColor={theme.primary}
-            />
-          </box>
-        </box>
-      </Show>
       <Show when={!props.loading} fallback={<text fg={theme.textMuted}>{t("panel.list.loading")}</text>}>
         <Show
           when={flat().length > 0}
           fallback={props.empty ?? <text fg={theme.textMuted}>{t("panel.list.empty")}</text>}
         >
-          <For each={grouped()}>
-            {([group, items], groupIndex) => (
-              <>
-                <Show when={group}>
-                  <box height={groupIndex() > 0 ? 2 : 1} flexShrink={0} paddingTop={groupIndex() > 0 ? 1 : 0}>
-                    <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode="none">
-                      {group}
-                    </text>
-                  </box>
-                </Show>
-                <For each={items}>
-                  {(item) => {
-                    const index = () => flat().findIndex((candidate) => candidate.id === item.id)
-                    const isSelected = () => flat()[selected()]?.id === item.id
-                    const isCurrent = () => currentItem()?.id === item.id
-                    // The row is one line whether it is selected or not: what there is to say about the selected
-                    // item goes on the note line of the shell, so no row moves as the selection does.
-                    return (
-                      <box
-                        ref={(element: BoxRenderable) => {
-                          rowRefs.set(item.id, element)
-                        }}
-                        height={1}
-                        flexShrink={0}
-                        flexDirection="row"
-                        backgroundColor={isSelected() ? theme.backgroundSelected : undefined}
-                        onMouseDown={() => moveTo(index())}
-                        onMouseUp={() => props.onSelect(item)}
-                      >
-                        <text
-                          flexShrink={0}
-                          fg={isCurrent() || isSelected() ? theme.primary : theme.textDim}
-                          wrapMode="none"
-                        >
-                          {isCurrent() ? "● " : isSelected() ? "› " : "  "}
-                        </text>
-                        <Show when={typeof item.lead === "string"} fallback={<box flexShrink={0}>{item.lead}</box>}>
-                          <text flexShrink={0} wrapMode="none">
-                            {item.lead as string}
-                          </text>
+          <For each={groups()}>
+            {(group, groupIndex) => {
+              // The ids of the group's items, in order. A row is mounted for an id, so the owner building its items
+              // again with the same ids (a refresh of the data) keeps the rows it has; only an item that changes group
+              // is mounted anew, in its new group.
+              const ids = createMemo<string[]>(
+                () => filtered().flatMap((item) => ((item.group ?? "") === group ? [item.id] : [])),
+                [],
+                { equals: sameStrings },
+              )
+              return (
+                <>
+                  <Show when={group}>
+                    <box
+                      ref={remember(headingRefs, group)}
+                      height={groupIndex() > 0 ? 2 : 1}
+                      flexShrink={0}
+                      paddingTop={groupIndex() > 0 ? 1 : 0}
+                    >
+                      <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode="none">
+                        {group}
+                      </text>
+                    </box>
+                  </Show>
+                  <For each={ids()}>
+                    {(id) => {
+                      // The row reads its item where it is drawn, so an item built again under the same id changes the
+                      // row's text and not the row.
+                      const item = createMemo(() => itemByID().get(id))
+                      const isSelected = () => selectedItem()?.id === id
+                      const isCurrent = () => currentItem()?.id === id
+                      // The row is one line whether it is selected or not: what there is to say about the selected
+                      // item goes on the note line of the shell, so no row moves as the selection does.
+                      return (
+                        <Show when={item()}>
+                          {(shown) => (
+                            <box
+                              ref={remember(rowRefs, id)}
+                              height={1}
+                              flexShrink={0}
+                              flexDirection="row"
+                              backgroundColor={isSelected() ? theme.backgroundSelected : undefined}
+                              onMouseDown={() => moveTo(flat().findIndex((candidate) => candidate.id === id))}
+                              onMouseUp={() => props.onSelect(shown())}
+                            >
+                              <text
+                                flexShrink={0}
+                                fg={isCurrent() || isSelected() ? theme.primary : theme.textDim}
+                                wrapMode="none"
+                              >
+                                {isCurrent() ? "● " : isSelected() ? "› " : "  "}
+                              </text>
+                              <Show
+                                when={typeof shown().lead === "string"}
+                                fallback={<box flexShrink={0}>{shown().lead}</box>}
+                              >
+                                <text flexShrink={0} wrapMode="none">
+                                  {shown().lead as string}
+                                </text>
+                              </Show>
+                              <text
+                                flexGrow={1}
+                                flexShrink={1}
+                                overflow="hidden"
+                                wrapMode="none"
+                                attributes={isSelected() ? TextAttributes.BOLD : undefined}
+                              >
+                                {shown().title}
+                              </text>
+                              <Show
+                                when={typeof shown().trail === "string"}
+                                fallback={<box flexShrink={0}>{shown().trail}</box>}
+                              >
+                                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                                  {shown().trail as string}
+                                </text>
+                              </Show>
+                            </box>
+                          )}
                         </Show>
-                        <text
-                          flexGrow={1}
-                          flexShrink={1}
-                          overflow="hidden"
-                          wrapMode="none"
-                          attributes={isSelected() ? TextAttributes.BOLD : undefined}
-                        >
-                          {item.title}
-                        </text>
-                        <Show when={typeof item.trail === "string"} fallback={<box flexShrink={0}>{item.trail}</box>}>
-                          <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
-                            {item.trail as string}
-                          </text>
-                        </Show>
-                      </box>
-                    )
-                  }}
-                </For>
-              </>
-            )}
+                      )
+                    }}
+                  </For>
+                </>
+              )
+            }}
           </For>
         </Show>
       </Show>
