@@ -3,6 +3,9 @@
 
 import { describe, expect, test } from "bun:test"
 import { ConfigHotReload } from "@/config/hot-reload"
+import { Permission } from "@/permission"
+import { Wildcard } from "@graphagent/core/util/wildcard"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
 
 describe("hot-read global config keys", () => {
   test("keeps the hot-read allowlist explicit", () => {
@@ -150,6 +153,99 @@ describe("tightenedPermissionKeys", () => {
     ).toEqual([])
   })
 
+  // An `allow` that goes leaves its key to whatever is behind it, so what the key still holds does not say whether it
+  // got stricter.
+  test("deleting an allow tightens the key, whatever it falls back to", () => {
+    const asks = { action: "*", resource: "*", effect: "ask" }
+    const bashAllow = { action: "bash", resource: "*", effect: "allow" }
+    // The `*` rule did not change and the `bash` rule is gone: `bash` falls back to `*`, which asks.
+    expect(tightened({ permissions: [asks, bashAllow] }, { permissions: [asks] })).toEqual(["bash"])
+    expect(tightened({ permission: { "*": "ask", bash: "allow" } }, { permission: { "*": "ask" } })).toEqual(["bash"])
+    expect(tightened({ permission: { bash: "allow" } }, {})).toEqual(["bash"])
+    // Another allow may still cover it: one more question, never a missed one.
+    expect(tightened({ permission: { "*": "allow", bash: "allow" } }, { permission: { "*": "allow" } })).toEqual([
+      "bash",
+    ])
+  })
+
+  test("deleting or replacing a pattern rule that allowed tightens the key", () => {
+    const rules = { bash: { "git *": "allow", "*": "ask" } }
+    expect(tightened({ permission: rules }, { permission: { bash: { "*": "ask" } } })).toEqual(["bash"])
+    // A string in place of the object drops every pattern rule it held.
+    expect(tightened({ permission: rules }, { permission: { bash: "ask" } })).toEqual(["bash"])
+    expect(tightened({ permission: rules }, { permission: { bash: { "git status": "allow", "*": "ask" } } })).toEqual([
+      "bash",
+    ])
+  })
+
+  test("only the keys that lost an allow are named", () => {
+    expect(
+      tightened(
+        { permission: { "*": "ask", bash: "allow", edit: "allow", webfetch: "allow" } },
+        { permission: { "*": "ask", edit: "allow", webfetch: "allow" } },
+      ),
+    ).toEqual(["bash"])
+  })
+
+  test("a wildcard key that gave up an allow covers every key", () => {
+    expect(tightened({ permissions: [{ action: "*", resource: "*", effect: "allow" }] }, { permissions: [] })).toEqual([
+      "*",
+    ])
+    expect(
+      tightened({ permission: { "*": "allow", edit: "allow" } }, { permission: { "*": "ask", edit: "allow" } }),
+    ).toEqual(["*"])
+    // Another wildcard key names itself; the approvals it matches go with it.
+    expect(tightened({ permission: { "mcp_*": "allow" } }, { permission: { "mcp_*": "ask" } })).toEqual(["mcp_*"])
+  })
+
+  test("only loosening tightens nothing: a new allow, a rule that asked or denied removed, or ask or deny turned allow", () => {
+    const asks = { action: "*", resource: "*", effect: "ask" }
+    expect(
+      tightened({ permissions: [asks] }, { permissions: [asks, { action: "bash", resource: "*", effect: "allow" }] }),
+    ).toEqual([])
+    expect(
+      tightened({ permission: { bash: { "*": "ask" } } }, { permission: { bash: { "*": "ask", "git *": "allow" } } }),
+    ).toEqual([])
+    expect(tightened({ permission: { "*": "ask", edit: "ask" } }, { permission: { "*": "ask" } })).toEqual([])
+    expect(
+      tightened({ permission: { bash: "deny", edit: "ask" } }, { permission: { bash: "allow", edit: "allow" } }),
+    ).toEqual([])
+    expect(tightened({ permission: { edit: "allow" } }, { permission: { edit: "allow", bash: "allow" } })).toEqual([])
+  })
+
+  // Of two rules that match, the later one decides, so putting an `ask` behind an `allow` is a stricter edit even
+  // though no rule was added or removed.
+  test("a rule that moves behind a later one tightens, though no rule was added or removed", () => {
+    const asks = { action: "*", resource: "*", effect: "ask" }
+    const allows = { action: "bash", resource: "*", effect: "allow" }
+    expect(tightened({ permissions: [asks, allows] }, { permissions: [allows, asks] })).toEqual(["*"])
+    // Either way round it is the order alone that is judged, so the move that loosens is named too: one more question.
+    expect(tightened({ permissions: [allows, asks] }, { permissions: [asks, allows] })).toEqual(["*"])
+  })
+
+  test("an ask written again behind an allow tightens the key, though the same ask was already there", () => {
+    const asks = { action: "bash", resource: "*", effect: "ask" }
+    const allows = { action: "bash", resource: "*", effect: "allow" }
+    expect(tightened({ permissions: [asks, allows] }, { permissions: [asks, allows, asks] })).toEqual(["bash"])
+  })
+
+  test("the ordered list replaces the map when both are written, so an edit to the map alone changes nothing", () => {
+    const list = [{ action: "bash", resource: "*", effect: "ask" }]
+    expect(
+      tightened(
+        { permissions: list, permission: { bash: "allow" } },
+        { permissions: list, permission: { bash: "deny" } },
+      ),
+    ).toEqual([])
+    // Once the list goes, the map is what is left.
+    expect(tightened({ permissions: list, permission: { bash: "allow" } }, { permission: { bash: "allow" } })).toEqual(
+      [],
+    )
+    expect(tightened({ permissions: list, permission: { bash: "allow" } }, { permission: { bash: "deny" } })).toEqual([
+      "bash",
+    ])
+  })
+
   test("the keys come back sorted, one entry per key", () => {
     expect(
       tightened(
@@ -160,5 +256,106 @@ describe("tightenedPermissionKeys", () => {
         },
       ),
     ).toEqual(["bash", "webfetch"])
+  })
+})
+
+// What an edit has to get right is a statement about requests, so it is checked against the permission check itself.
+// Over many random edits (a rule added, deleted, moved, turned or narrowed), every request that an `allow` let through
+// and that now asks must belong to a key the edit names. A request that no rule names falls back to the agent's own
+// rules, which are `allow` for most keys and `ask` for a few, so it is judged under both. Globs of `*` and of `?`,
+// wildcard keys and exact keys all take part: it is where two globs overlap that a check made on a few requests would
+// have gaps.
+describe("tightenedPermissionKeys against Permission.evaluate", () => {
+  const KEYS = ["*", "bash", "edit", "webfetch", "mcp_*", "b*", "ed*", "?"]
+  const PATTERNS = ["*", "git *", "git status", "rm *", "rm ?", "src/*", "*.ts", "src/a*", "x*", "*x", "a?c", "?"]
+  const ACTIONS = ["allow", "ask", "deny"] as const
+  const REQUESTS = {
+    keys: ["bash", "edit", "webfetch", "mcp_x", "bar", "b", "*", "mcp_*"],
+    patterns: [
+      "*",
+      "?",
+      "",
+      "git status",
+      "git push",
+      "rm foo",
+      "rm -rf x",
+      "src/a.ts",
+      "src/a/b.ts",
+      "x",
+      "xx",
+      "abc",
+      "rm *",
+    ],
+  }
+  const FALLBACKS: PermissionV1.Ruleset[] = [[], [{ permission: "*", pattern: "*", action: "allow" }]]
+
+  type Entry = { action: string; resource: string; effect: (typeof ACTIONS)[number] }
+
+  function random(seed: number) {
+    let state = seed >>> 0
+    return () => {
+      state = (state + 0x6d2b79f5) >>> 0
+      let mixed = Math.imul(state ^ (state >>> 15), state | 1)
+      mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61)
+      return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296
+    }
+  }
+
+  test("no request that an allow let through and that now asks escapes the keys an edit names", () => {
+    const next = random(1678)
+    const pick = <T>(items: readonly T[]) => items[Math.floor(next() * items.length)]
+    const entry = (): Entry => ({ action: pick(KEYS), resource: pick(PATTERNS), effect: pick(ACTIONS) })
+    const edit = (rules: Entry[]): Entry[] => {
+      const copy = rules.map((rule) => ({ ...rule }))
+      for (let step = 0, steps = 1 + Math.floor(next() * 2); step < steps; step++) {
+        const at = Math.floor(next() * copy.length)
+        switch (Math.floor(next() * 6)) {
+          case 0:
+            copy.splice(Math.floor(next() * (copy.length + 1)), 0, entry())
+            break
+          case 1:
+            copy.splice(at, 1)
+            break
+          case 2:
+            if (copy[at]) copy[at].effect = pick(ACTIONS)
+            break
+          case 3:
+            if (copy[at]) copy[at].resource = pick(PATTERNS)
+            break
+          case 4:
+            if (copy[at]) copy[at].action = pick(KEYS)
+            break
+          default: {
+            const other = Math.floor(next() * copy.length)
+            if (copy[at] && copy[other]) [copy[at], copy[other]] = [copy[other], copy[at]]
+          }
+        }
+      }
+      return copy
+    }
+    const ruleset = (rules: Entry[]) =>
+      rules.map((rule) => ({ permission: rule.action, pattern: rule.resource, action: rule.effect }))
+
+    const escaped: string[] = []
+    for (let round = 0; round < 1500; round++) {
+      const before = Array.from({ length: Math.floor(next() * 6) }, entry)
+      const after = edit(before)
+      const named = ConfigHotReload.tightenedPermissionKeys({ permissions: before }, { permissions: after })
+      const was = ruleset(before)
+      const now = ruleset(after)
+      for (const permission of REQUESTS.keys) {
+        if (named.some((key) => Wildcard.match(permission, key))) continue
+        for (const pattern of REQUESTS.patterns) {
+          for (const fallback of FALLBACKS) {
+            if (
+              Permission.evaluate(permission, pattern, fallback, was).action === "allow" &&
+              Permission.evaluate(permission, pattern, fallback, now).action === "ask"
+            )
+              escaped.push(JSON.stringify({ before, after, permission, pattern, named }))
+          }
+        }
+      }
+    }
+    expect(escaped.slice(0, 3)).toEqual([])
   })
 })

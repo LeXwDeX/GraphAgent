@@ -48,6 +48,7 @@ afterAll(async () => {
 })
 
 type Action = "allow" | "ask" | "deny"
+type Rule = { action: string; resource: string; effect: Action }
 type Outcome = "allow" | "ask" | "deny"
 type Reply = "once" | "always" | "reject"
 
@@ -66,6 +67,15 @@ const writeGlobalConfig = (llmUrl: string, edit: Action) =>
     fs.writeFile(
       path.join(configDir, "graphagent.jsonc"),
       JSON.stringify({ ...testProviderConfig(llmUrl), permission: { edit } }, null, 2),
+    ),
+  )
+
+/** The same, with the rules as the ordered `permissions` list (the map cannot delete a rule; replacing the list can). */
+const writeGlobalRules = (llmUrl: string, permissions: readonly Rule[]) =>
+  Effect.promise(() =>
+    fs.writeFile(
+      path.join(configDir, "graphagent.jsonc"),
+      JSON.stringify({ ...testProviderConfig(llmUrl), permissions }, null, 2),
     ),
   )
 
@@ -307,6 +317,32 @@ describe("a /config permission edit reaches the open session", () => {
           "ask",
         ])
       }),
+    { timeout: 90_000 },
+  )
+
+  // The edit that loosens is an explicit `allow` added to the list; the one that follows deletes it by writing the list
+  // again. `*: ask` did not change and `edit` is no longer named, yet the key is stricter than it was.
+  it.live(
+    "'always allow' answered under ask, then an explicit allow added and deleted: the call waits for the user again",
+    () =>
+      withLlm(
+        Effect.gen(function* () {
+          const llm = yield* TestLLMServer
+          const asksAll: Rule = { action: "*", resource: "*", effect: "ask" }
+          const allowsEdit: Rule = { action: "edit", resource: "*", effect: "allow" }
+          yield* writeGlobalRules(llm.url, [asksAll])
+          const directory = yield* tmpdirScoped({ git: true })
+          const session = { directory, sessionID: yield* createSession(directory) }
+
+          expect(yield* probe(llm, session, "probe-0.txt", "always")).toBe("ask")
+          // Only a loosening: the call runs, and the approval is kept.
+          yield* patchGlobal({ permissions: [asksAll, allowsEdit] })
+          expect(yield* probe(llm, session, "probe-1.txt")).toBe("allow")
+          // The `allow` is deleted: nothing but `*: ask` is left for `edit`, and the approval must not outrank it.
+          yield* patchGlobal({ permissions: [asksAll] })
+          expect(yield* probe(llm, session, "probe-2.txt")).toBe("ask")
+        }),
+      ),
     { timeout: 90_000 },
   )
 

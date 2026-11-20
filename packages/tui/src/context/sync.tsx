@@ -383,8 +383,17 @@ export const {
 
     let disposed = false
     let bootstrapAttempt = 0
-    // #1678: which read of the merged configuration is the newest; an older answer that arrives later is dropped.
+    // #1678: reads of the merged configuration are numbered as they are sent, the bootstrap's among them. `configRead`
+    // is the newest number given out, `configApplied` the number of the read whose answer the store holds. An answer is
+    // applied only if it is newer than the one in the store (`applyConfig`): the store never goes back to an older
+    // state, and an answer that comes in early is not thrown away for a read that is still on its way.
     let configRead = 0
+    let configApplied = 0
+    const applyConfig = (attempt: number, config: Config) => {
+      if (attempt <= configApplied) return
+      configApplied = attempt
+      setStore("config", reconcile(config))
+    }
     // #1032 F4: the node tables of the workflows a display surface shows.
     // `dagFeeds` holds the authoritative merge feed per workflow; `store.dagNodes`
     // mirrors it for readers. Every change replaces a whole entry, so the store
@@ -1926,6 +1935,7 @@ export const {
       const providersPromise = sdk.client.config.providers({ throwOnError: true, headers })
       const providerListPromise = sdk.client.provider.list({ throwOnError: true, headers })
       const agentsPromise = sdk.client.app.agents({ throwOnError: true, headers })
+      const configAttempt = ++configRead
       const configPromise = sdk.client.config.get({ throwOnError: true, headers })
       await Promise.all([
         providersPromise,
@@ -1962,8 +1972,7 @@ export const {
               setStore("provider_next", reconcile(providerList))
               setStore("agent", reconcile(agents))
               initLanguage(config.language)
-              configRead++
-              setStore("config", reconcile(config))
+              applyConfig(configAttempt, config)
               if (sessions !== undefined) applySessionList(sessions)
             })
           })
@@ -2151,8 +2160,10 @@ export const {
 
     // #1678: the merged configuration alone, read again after a global write that leaves the instance in place (a
     // hot-read key such as `permission` sends `config.updated`, not `server.instance.disposed`, so no bootstrap
-    // follows). `bootstrap` and `config.updated` both land here and the newest answer wins. Resolves true once the
-    // store holds an answer at least as new as this read: a read that was overtaken waits for the newest one.
+    // follows). `bootstrap` and `config.updated` both land here, and the newest answer wins. Resolves true once the
+    // store holds an answer at least as new as this read's. A read that a newer refresh overtakes takes that refresh's
+    // outcome instead: a caller that drops a value it wrote once its read has landed must not do so before the newer
+    // answer is in, or the row would show the old rules for a moment.
     let configLatest: Promise<boolean> = Promise.resolve(true)
     const refreshConfig = (): Promise<boolean> => {
       const attempt = ++configRead
@@ -2160,15 +2171,18 @@ export const {
       const read: Promise<boolean> = sdk.client.config
         .get({ headers: locationHeaders({ workspace }) })
         .then((x) => {
-          if (!x.data) return false
-          if (disposed) return true
-          // Overtaken: by a later read, whose answer this one then waits for, or by the bootstrap, whose answer is
-          // already in the store (the latest read is this one).
-          if (attempt !== configRead) return configLatest === read ? true : configLatest
-          setStore("config", reconcile(x.data))
+          if (!x.data) {
+            TuiLog.write("error", "Reading the configuration failed", { status: x.response?.status })
+            return false
+          }
+          if (!disposed) applyConfig(attempt, x.data)
           return true
         })
-        .catch(() => false)
+        .catch((error) => {
+          TuiLog.write("error", "Reading the configuration failed", { error: String(error) })
+          return false
+        })
+        .then((answered) => (configLatest === read ? answered : configLatest))
       configLatest = read
       return read
     }

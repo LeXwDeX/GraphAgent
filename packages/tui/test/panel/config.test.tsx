@@ -462,6 +462,95 @@ test("a permission row shows the new rule once the server reports it", async () 
   }
 })
 
+// The write was accepted but the read that says what is in force failed (a project layer may still override what was
+// written), so the panel cannot show what is in force. It tells the user so, instead of passing off what was asked for
+// as what is in force, and keeps the value written until a read succeeds: the store would show the rule from before.
+test("a permission write whose read-back fails is reported, and the row keeps the value written", async () => {
+  let readable = true
+  let toast!: AppPanelTestContext["toast"]
+  const { app, tmp, updates, seen } = await renderConfig({
+    tab: "permissions",
+    setup: (context) => ((toast = context.toast), undefined),
+    handler: (url) => {
+      if (url.pathname !== "/config") return undefined
+      return readable ? json({ permission: { edit: "ask" } }) : new Response("nope", { status: 500 })
+    },
+  })
+  try {
+    expect(await rowNow(app, "编辑")).toContain("询问")
+    expect(toast.currentToast).toBeNull()
+    const readsBefore = seen.filter((path) => path === "/config").length
+
+    readable = false
+    await enter(app)
+    expect(updates).toEqual([{ permission: { edit: "allow" } }])
+    await waitFor(() => toast.currentToast !== null, "the warning about the unconfirmed permission")
+    expect(toast.currentToast).toMatchObject({
+      level: "warning",
+      text: "已保存，但未能确认当前生效的权限",
+      dedupeKey: "config.permission.unconfirmed",
+    })
+    expect(seen.filter((path) => path === "/config").length).toBeGreaterThan(readsBefore)
+    // The value written stays: it is the best that is known, and the warning says it is not confirmed.
+    const line = await untilRow(app, "编辑", (text) => text.includes("允许"))
+    expect(line).not.toContain("询问")
+
+    // The next read that succeeds drops it: the row shows what the server reports, here the rule a project layer keeps.
+    readable = true
+    await enter(app)
+    expect(updates.at(-1)).toEqual({ permission: { edit: "deny" } })
+    const settled = await untilRow(app, "编辑", (text) => text.includes("询问"))
+    expect(settled).not.toContain("拒绝")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("the warning about an unconfirmed permission is in the language of the interface", async () => {
+  let readable = true
+  let toast!: AppPanelTestContext["toast"]
+  const { app, tmp } = await renderConfig({
+    tab: "permissions",
+    language: "en",
+    setup: (context) => ((toast = context.toast), undefined),
+    handler: (url) => {
+      if (url.pathname !== "/config") return undefined
+      return readable ? json({ permission: { edit: "ask" } }) : new Response("nope", { status: 500 })
+    },
+  })
+  try {
+    readable = false
+    await enter(app)
+    await waitFor(() => toast.currentToast !== null, "the warning about the unconfirmed permission")
+    expect(toast.currentToast?.text).toBe("Saved, but the permission in force could not be confirmed")
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("a permission write whose read-back succeeds shows no warning", async () => {
+  let reported = "ask"
+  let toast!: AppPanelTestContext["toast"]
+  const { app, tmp, updates } = await renderConfig({
+    tab: "permissions",
+    setup: (context) => ((toast = context.toast), undefined),
+    handler: (url) => (url.pathname === "/config" ? json({ permission: { edit: reported } }) : undefined),
+  })
+  try {
+    reported = "allow"
+    await enter(app)
+    expect(updates).toEqual([{ permission: { edit: "allow" } }])
+    await untilRow(app, "编辑", (text) => text.includes("允许"))
+    await Bun.sleep(60)
+    expect(toast.currentToast).toBeNull()
+  } finally {
+    app.renderer.destroy()
+    await tmp[Symbol.asyncDispose]()
+  }
+})
+
 test("configuration rows are read-only without the global write endpoint", async () => {
   const { app, tmp, updates } = await renderConfig({ tab: "dag", disableWrite: true })
   try {

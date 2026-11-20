@@ -157,6 +157,100 @@ describe("tui sync: the merged configuration after a hot-read permission write",
     })
   })
 
+  // The bootstrap sends its read of the configuration with the others and applies the answers together, once the last
+  // of them is in. A refresh sent in between is the newer read, whichever answer comes in first.
+  describe("while the bootstrap is still waiting for another answer", () => {
+    /** A bootstrap held at `GET /agent`, whose read of the configuration has been answered with `initial`. */
+    async function withHeldBootstrap(
+      initial: Record<string, unknown>,
+      run: (
+        ctx: Awaited<ReturnType<typeof mount>> & { server: ReturnType<typeof serveConfig>; endBootstrap(): void },
+      ) => Promise<void>,
+    ) {
+      await using tmp = await tmpdir()
+      await Bun.write(`${tmp.path}/kv.json`, "{}")
+      const server = serveConfig(initial)
+      let endBootstrap!: () => void
+      const agents = new Promise<Response>((resolve) => {
+        endBootstrap = () => resolve(json([]))
+      })
+      const ctx = await mount(
+        (url) => (url.pathname === "/agent" ? agents : server.handler(url)),
+        tmp.path,
+        undefined,
+        { fastBoot: true },
+      )
+      try {
+        await wait(() => server.reads === 1)
+        expect(ctx.sync.status).toBe("loading")
+        await run({ ...ctx, server, endBootstrap })
+      } finally {
+        endBootstrap()
+        ctx.app.renderer.destroy()
+      }
+    }
+
+    /** The hot-read notice, sent once the event source is subscribed (it is, a moment after the providers mount). */
+    async function announcePermissionEdit(ctx: Pick<Awaited<ReturnType<typeof mount>>, "emit" | "sdk">) {
+      await wait(() => {
+        try {
+          ctx.emit(configUpdated(["permission"]))
+          return true
+        } catch {
+          return false
+        }
+      })
+      ctx.sdk.frameClock.flushNow()
+    }
+
+    test("a newer answer is not overwritten by the older one the bootstrap read first", async () => {
+      await withHeldBootstrap({ permission: { edit: "ask" } }, async (ctx) => {
+        ctx.server.answer = () => json({ permission: { edit: "allow" } })
+        await announcePermissionEdit(ctx)
+        await wait(() => editRule(ctx.sync.data.config) === "allow")
+        expect(ctx.sync.status).toBe("loading")
+
+        ctx.endBootstrap()
+        await wait(() => ctx.sync.status === "complete")
+        expect(editRule(ctx.sync.data.config)).toBe("allow")
+      })
+    })
+
+    test("a refresh still on its way when the bootstrap ends keeps its answer", async () => {
+      await withHeldBootstrap({ permission: { edit: "ask" } }, async (ctx) => {
+        let release!: () => void
+        const slow = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        ctx.server.answer = async () => {
+          await slow
+          return json({ permission: { edit: "allow" } })
+        }
+        await announcePermissionEdit(ctx)
+        await wait(() => ctx.server.reads === 2)
+
+        // The bootstrap ends first, with the older answer; the refresh's, sent after it, comes later and wins.
+        ctx.endBootstrap()
+        await wait(() => ctx.sync.status === "complete")
+        expect(editRule(ctx.sync.data.config)).toBe("ask")
+        release()
+        await wait(() => editRule(ctx.sync.data.config) === "allow")
+      })
+    })
+
+    test("a refresh that fails leaves the bootstrap's answer in the store", async () => {
+      await withHeldBootstrap({ permission: { edit: "ask" } }, async (ctx) => {
+        ctx.server.answer = () => new Response("nope", { status: 500 })
+        await announcePermissionEdit(ctx)
+        await wait(() => ctx.server.reads === 2)
+
+        ctx.endBootstrap()
+        await wait(() => ctx.sync.status === "complete")
+        expect(editRule(ctx.sync.data.config)).toBe("ask")
+      })
+    })
+  })
+
   test("sync.config.refresh() reads on demand and says whether the server answered", async () => {
     await withConfig({ permission: { edit: "ask" } }, async ({ server, sync }) => {
       server.answer = () => json({ permission: { edit: "deny" } })

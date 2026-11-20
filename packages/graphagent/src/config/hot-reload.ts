@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { isRecord } from "@/util/record"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
 
 // #1013 (C1 PR5): global configuration keys that take effect without
 // recreating directory instances.
@@ -73,58 +74,87 @@ export function readsInstanceConfig(changedKeys: readonly string[]): boolean {
 
 const field = (config: object, key: string): unknown => Object.entries(config).find(([name]) => name === key)?.[1]
 
-interface RuleView {
-  readonly permission: string
-  readonly pattern: string
-  readonly action: string
-}
+const isAction = (value: unknown): value is PermissionV1.Rule["action"] =>
+  value === "allow" || value === "ask" || value === "deny"
 
 /**
- * The permission rules a configuration object holds, per permission key, in file order. Both spellings count: the
- * `permission` map (a bare string is the whole-key `*` pattern) and the `permissions` list (`action` names the
- * permission, `resource` the pattern, `effect` the verdict).
+ * The permission rules a configuration object holds, in the order the permission check reads them (of the rules that
+ * match, the last one decides). The ordered `permissions` list (`action` names the permission, `resource` the
+ * pattern, `effect` the verdict) replaces the `permission` map when both are written, as
+ * `HookPermissions.orderedRules` has it; in the map a bare string is the whole-key `*` pattern, and a bare string in
+ * place of the whole map is the rule of the `*` key.
  */
-function permissionRulesByKey(config: object): Map<string, RuleView[]> {
-  const result = new Map<string, RuleView[]>()
+function permissionRules(config: object): PermissionV1.Rule[] {
+  const rules: PermissionV1.Rule[] = []
   const add = (permission: string, pattern: unknown, action: unknown) => {
-    if (typeof action !== "string") return
-    const rules = result.get(permission) ?? []
-    rules.push({ permission, pattern: typeof pattern === "string" ? pattern : "*", action })
-    result.set(permission, rules)
-  }
-  const map = field(config, "permission")
-  if (typeof map === "string") add("*", "*", map)
-  else if (isRecord(map)) {
-    for (const [permission, value] of Object.entries(map)) {
-      if (typeof value === "string") add(permission, "*", value)
-      else if (isRecord(value)) for (const [pattern, action] of Object.entries(value)) add(permission, pattern, action)
-    }
+    if (isAction(action)) rules.push({ permission, pattern: typeof pattern === "string" ? pattern : "*", action })
   }
   const list = field(config, "permissions")
   if (Array.isArray(list)) {
     for (const rule of list) {
       if (isRecord(rule) && typeof rule.action === "string") add(rule.action, rule.resource, rule.effect)
     }
+    return rules
   }
-  return result
+  const map = field(config, "permission")
+  if (typeof map === "string") add("*", "*", map)
+  else if (isRecord(map)) {
+    for (const [permission, value] of Object.entries(map)) {
+      if (!isRecord(value)) add(permission, "*", value)
+      else for (const [pattern, action] of Object.entries(value)) add(permission, pattern, action)
+    }
+  }
+  return rules
+}
+
+const ruleId = (rule: PermissionV1.Rule) => JSON.stringify([rule.permission, rule.pattern, rule.action])
+
+/** Where two sequences of rules part, the rules of both at those places. */
+function whereTheyPart(left: readonly PermissionV1.Rule[], right: readonly PermissionV1.Rule[]): PermissionV1.Rule[] {
+  const parted: PermissionV1.Rule[] = []
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const was = left[index]
+    const now = right[index]
+    if (was && now && ruleId(was) === ruleId(now)) continue
+    parted.push(...[was, now].filter((rule) => rule !== undefined))
+  }
+  return parted
 }
 
 /**
- * The permission keys an edit made stricter (#1678): the rules written for the key differ, and the new ones hold an
- * `ask` or a `deny`. An "always allow" the user gave earlier in a session outranks an `ask` rule, so it must be
- * forgotten for these keys or the new rule would never be met; an edit that only loosens a key (`allow`, or no rule
- * at all) leaves what the user approved alone. A key written as `*` covers every permission.
+ * The permission keys an edit made stricter (#1678): the keys for which a request that an `allow` let through may now
+ * ask. An "always allow" the user gave earlier in a session outranks an `ask` rule, so it would keep letting such a
+ * request through; it has to be forgotten for these keys, or the new rule would never be met. An edit that only loosens
+ * a key (a new `allow`, a rule that asked removed) leaves what the user approved alone.
+ *
+ * The rules each side holds are compared whole, in the order the permission check reads them (of the rules that match a
+ * request, the last decides). A key is stricter when
+ * - a rule that asks or denies is new: a rule turned to `ask` or `deny`, or one added behind an `allow`;
+ * - an `allow` is gone: deleted, narrowed or replaced, whatever the key falls back to afterwards (a `*` rule, the
+ *   agent's own default); or
+ * - a rule both sides hold sits elsewhere among those they share now, which can put an `allow` behind a rule that asks.
+ *
+ * This does not depend on what any one request matches, so it holds where two globs overlap as well: for a request that
+ * an `allow` let through and that now asks, that `allow` is gone, or the rule that asks is new, or the two changed
+ * places. What it gives up is precision: an `allow` that another rule still covers counts as gone when it is deleted,
+ * which is one more question. A stricter `*` covers every key; another wildcard key stands for the keys it matches.
  */
 export function tightenedPermissionKeys(before: object, after: object): string[] {
-  const previous = permissionRulesByKey(before)
-  const next = permissionRulesByKey(after)
-  const keys: string[] = []
-  for (const [permission, rules] of next) {
-    if (!rules.some((rule) => rule.action === "ask" || rule.action === "deny")) continue
-    if (plainEqual(previous.get(permission) ?? [], rules)) continue
-    keys.push(permission)
-  }
-  return keys.sort()
+  const previous = permissionRules(before)
+  const next = permissionRules(after)
+  const had = new Set(previous.map(ruleId))
+  const has = new Set(next.map(ruleId))
+  const keys = new Set(
+    [
+      ...next.filter((rule) => rule.action !== "allow" && !had.has(ruleId(rule))),
+      ...previous.filter((rule) => rule.action === "allow" && !has.has(ruleId(rule))),
+      ...whereTheyPart(
+        previous.filter((rule) => has.has(ruleId(rule))),
+        next.filter((rule) => had.has(ruleId(rule))),
+      ),
+    ].map((rule) => rule.permission),
+  )
+  return keys.has("*") ? ["*"] : [...keys].sort()
 }
 
 export * as ConfigHotReload from "./hot-reload"
