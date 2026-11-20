@@ -195,6 +195,12 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
             ...current,
             permission: { ...current.permission, [tool]: next },
           }))
+          // #1678: the write keeps the instance and every running session, so the store holds the old rules until the
+          // merged configuration is read again. Once it has been, the store is what is in force (a project layer may
+          // still override what was just written) and the value written here must stop standing for it.
+          void sync.config.refresh().then((read) => {
+            if (read) setOverrides((current) => ({ ...current, permission: undefined }))
+          })
         })
       },
     }

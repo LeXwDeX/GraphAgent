@@ -101,6 +101,48 @@ it.live("InstanceState invalidates on disposeAll", () =>
   }),
 )
 
+// #1678: a process-wide change that every open directory caches reaches them all without naming any of them.
+it.live("InstanceState.invalidateAll rebuilds every loaded directory and spares held values", () =>
+  Effect.gen(function* () {
+    const one = yield* tmpdirScoped()
+    const two = yield* tmpdirScoped()
+    let n = 0
+    const state = yield* InstanceState.make(() => Effect.sync(() => ({ n: ++n })))
+
+    const a = yield* access(state, one)
+    const b = yield* access(state, two)
+    yield* InstanceState.invalidateAll(state)
+
+    // What a reader already holds is untouched; the next read builds a new value for each directory.
+    expect([a.n, b.n]).toEqual([1, 2])
+    const a2 = yield* access(state, one)
+    const b2 = yield* access(state, two)
+    expect([a2.n, b2.n]).toEqual([3, 4])
+    expect(a2).not.toBe(a)
+    expect(b2).not.toBe(b)
+  }),
+)
+
+it.live("InstanceState.loaded lists the values already built and builds nothing", () =>
+  Effect.gen(function* () {
+    const one = yield* tmpdirScoped()
+    const two = yield* tmpdirScoped()
+    let n = 0
+    const state = yield* InstanceState.make((ctx) => Effect.sync(() => ({ dir: ctx.directory, n: ++n })))
+
+    expect(yield* InstanceState.loaded(state)).toEqual([])
+    const a = yield* access(state, one)
+    expect(yield* InstanceState.loaded(state)).toEqual([a])
+    const b = yield* access(state, two)
+    expect((yield* InstanceState.loaded(state)).toSorted((x, y) => x.n - y.n)).toEqual([a, b])
+    expect(n).toBe(2)
+
+    yield* InstanceState.invalidateAll(state)
+    expect(yield* InstanceState.loaded(state)).toEqual([])
+    expect(n).toBe(2)
+  }),
+)
+
 it.live("InstanceState.get reads the current directory lazily", () =>
   Effect.gen(function* () {
     const one = yield* tmpdirScoped()

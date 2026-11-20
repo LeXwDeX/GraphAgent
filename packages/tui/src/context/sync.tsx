@@ -383,6 +383,8 @@ export const {
 
     let disposed = false
     let bootstrapAttempt = 0
+    // #1678: which read of the merged configuration is the newest; an older answer that arrives later is dropped.
+    let configRead = 0
     // #1032 F4: the node tables of the workflows a display surface shows.
     // `dagFeeds` holds the authoritative merge feed per workflow; `store.dagNodes`
     // mirrors it for readers. Every change replaces a whole entry, so the store
@@ -1960,6 +1962,7 @@ export const {
               setStore("provider_next", reconcile(providerList))
               setStore("agent", reconcile(agents))
               initLanguage(config.language)
+              configRead++
               setStore("config", reconcile(config))
               if (sessions !== undefined) applySessionList(sessions)
             })
@@ -2146,6 +2149,30 @@ export const {
       (round) => fetchReminder(round),
     )
 
+    // #1678: the merged configuration alone, read again after a global write that leaves the instance in place (a
+    // hot-read key such as `permission` sends `config.updated`, not `server.instance.disposed`, so no bootstrap
+    // follows). `bootstrap` and `config.updated` both land here and the newest answer wins. Resolves true once the
+    // store holds an answer at least as new as this read: a read that was overtaken waits for the newest one.
+    let configLatest: Promise<boolean> = Promise.resolve(true)
+    const refreshConfig = (): Promise<boolean> => {
+      const attempt = ++configRead
+      const workspace = project.workspace.current()
+      const read: Promise<boolean> = sdk.client.config
+        .get({ headers: locationHeaders({ workspace }) })
+        .then((x) => {
+          if (!x.data) return false
+          if (disposed) return true
+          // Overtaken: by a later read, whose answer this one then waits for, or by the bootstrap, whose answer is
+          // already in the store (the latest read is this one).
+          if (attempt !== configRead) return configLatest === read ? true : configLatest
+          setStore("config", reconcile(x.data))
+          return true
+        })
+        .catch(() => false)
+      configLatest = read
+      return read
+    }
+
     // #1040: project-layer trust is global state. The change event only names
     // ids, so every notification re-reads the snapshot rather than merging.
     const refreshTrust = (): Promise<void> => {
@@ -2228,7 +2255,10 @@ export const {
     // is read again, and the new answer replaces a read that was out before the change.
     const unsubscribeConfig = sdk.event.on("event", (event) => {
       if (disposed || event.payload.type !== "config.updated") return
-      if (event.payload.properties.keys.includes("dag")) void fetchDagMode(dagModeRoots())
+      const keys = event.payload.properties.keys
+      if (keys.includes("dag")) void fetchDagMode(dagModeRoots())
+      // #1678: a permission edit changes the merged configuration the `/config` panel shows, and keeps the instance.
+      if (keys.includes("permission") || keys.includes("permissions")) void refreshConfig()
     })
 
     const unsubscribeReconnect = sdk.event.on("reconnected", () => {
@@ -2470,6 +2500,10 @@ export const {
           void interest.delete("route").catch(() => {})
           evictHydrated()
         },
+      },
+      /** #1678: the merged configuration (`data.config`) read again. It also follows a hot-read `permission` write. */
+      config: {
+        refresh: refreshConfig,
       },
       /** Subscribe a refresh function to the single reconnect entry point. */
       onResync,

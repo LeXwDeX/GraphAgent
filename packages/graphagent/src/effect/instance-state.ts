@@ -206,4 +206,17 @@ export const invalidate = <A, E, R>(self: InstanceState<A, E, R>) =>
     return yield* ScopedCache.invalidate(self.cache, yield* directory)
   })
 
+/**
+ * Drop the state of every loaded directory; each rebuilds on its next read. For a process-wide change that every
+ * open directory caches, where the caller cannot name the directories (#1678). Readers that already hold a value
+ * keep it.
+ */
+export const invalidateAll = <A, E, R>(self: InstanceState<A, E, R>) => ScopedCache.invalidateAll(self.cache)
+
+/**
+ * The state of every directory that has one already; nothing is built and nothing waits for a build. Lets a
+ * process-wide caller adjust each open directory's in-memory state without naming the directories (#1678).
+ */
+export const loaded = <A, E, R>(self: InstanceState<A, E, R>) => ScopedCache.values(self.cache)
+
 export * as InstanceState from "./instance-state"
