@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createSignal } from "solid-js"
+import { MARK_CELLS, ROW_INDENT } from "../../ui/layout"
 
 /**
  * One virtual line of the session transcript. The row is the unit of
@@ -263,13 +264,6 @@ export function visibleRange(positions: readonly number[], top: number, viewport
   return { first, last }
 }
 
-/** Cells the text of the assistant and a thought are indented by, which the marks in front of them start at. */
-export const ROW_INDENT = 3
-/**
- * Cells the mark in front of a line of the transcript takes: the `›` of a user message, the `⏺` of the assistant's
- * text and the `∴` of a thought, and the gap to the words. What wraps under a mark is indented by the same cells.
- */
-export const MARK_CELLS = 2
 /** Cells of padding a user message keeps on each side of its block. */
 export const USER_PADDING = 1
 

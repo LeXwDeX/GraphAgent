@@ -121,14 +121,12 @@ export function WorkspaceSelectPanel(props: {
         id: `adapter:${adapter.type}:${adapter.name}`,
         value: { type: "new" as const, workspaceType: adapter.type, workspaceName: adapter.name },
         title: adapter.name,
-        description: adapter.description,
         group: t("panel.workspace.select.group.new"),
       })),
       {
         id: "none",
         value: { type: "none" as const },
         title: t("panel.workspace.select.none"),
-        description: t("panel.workspace.select.none.description"),
         group: chooseGroup,
       },
       ...recent.map((workspace) => ({
@@ -140,7 +138,6 @@ export function WorkspaceSelectPanel(props: {
           workspaceName: workspace.name,
         },
         title: workspace.name,
-        description: t("panel.workspace.select.type", { type: workspace.type }),
         group: chooseGroup,
       })),
       ...(hasMore
@@ -149,7 +146,6 @@ export function WorkspaceSelectPanel(props: {
               id: "existing-list",
               value: { type: "existing-list" as const },
               title: t("panel.workspace.select.viewAll"),
-              description: t("panel.workspace.select.viewAll.description"),
               group: chooseGroup,
             },
           ]
@@ -206,7 +202,6 @@ function ExistingWorkspacePanel(props: { omitWorkspaceID?: string; onSelect(sele
         id: workspace.id,
         value: workspace,
         title: workspace.name,
-        description: t("panel.workspace.select.type", { type: workspace.type }),
       })),
   )
 

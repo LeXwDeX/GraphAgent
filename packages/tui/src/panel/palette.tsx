@@ -10,7 +10,7 @@ import {
   type PaletteOption,
 } from "../commands/palette"
 import { useCommandScope, useCommands } from "../commands/context"
-import { commandCategoryTitle, commandDescription, commandTitle, type CommandSpec } from "../commands/registry"
+import { commandCategoryTitle, commandTitle, type CommandSpec } from "../commands/registry"
 import { useConnected } from "../component/use-connected"
 import { useTuiConfig } from "../config"
 import { usePromptRef } from "../context/prompt"
@@ -55,7 +55,6 @@ export function CommandPalettePanel() {
     const rows = entries().map((spec): PaletteOption => ({
       id: spec.id,
       title: commandTitle(spec),
-      description: commandDescription(spec),
       category: commandCategoryTitle(spec.category),
       footer: formatKeyBindings(bindings().get(spec.id) ?? [], config),
       suggested: suggested().has(spec.id),
@@ -68,7 +67,6 @@ export function CommandPalettePanel() {
           id: row.id,
           value: spec,
           title: row.title,
-          description: row.description,
           group: row.category,
           trail: row.footer,
         },

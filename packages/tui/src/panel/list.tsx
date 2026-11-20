@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BoxRenderable, InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
 import { entries, groupBy, isDeepEqual } from "remeda"
 import * as fuzzysort from "fuzzysort"
 import { createEffect, createMemo, createSignal, For, on, onMount, Show, untrack, type JSX } from "solid-js"
 import { useTuiConfig } from "../config"
-import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
-import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import { remoteLine } from "../util/remote-text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
 export interface ListItem<T> {
@@ -24,16 +22,20 @@ export interface ListItem<T> {
   lead?: JSX.Element | string
   /** Trailing content such as a timestamp, shortcut, or state. */
   trail?: JSX.Element | string
-  /** One-line description shown below the selected item; a list of lines shows one row each. */
-  description?: string | readonly string[]
+  /**
+   * What there is to know about the item beyond its title, as data (a path, a state, a time). It is drawn on the
+   * panel's fixed note line while the item is selected and never under the row, so the rows do not move with the
+   * selection. Line breaks become spaces, and what is wider than the line is cut. A text that only explains what the
+   * title already says is not a detail: leave it out.
+   */
+  detail?: string
   disabled?: boolean
   suggested?: boolean
 }
 
-/** The rows of an item's description: none for an empty one, and no empty rows. */
-function descriptionLines(description: string | readonly string[] | undefined): readonly string[] | undefined {
-  const lines = (typeof description === "string" ? [description] : (description ?? [])).filter((line) => line !== "")
-  return lines.length > 0 ? lines : undefined
+/** The detail of an item as one line, empty for none: line breaks become spaces, escapes and control characters go. */
+function detailLine<T>(item: ListItem<T> | undefined): string {
+  return item?.detail === undefined ? "" : remoteLine(item.detail)
 }
 
 export interface ListAction<T> {
@@ -80,20 +82,16 @@ export interface ListPanelProps<T> {
 
 export function ListPanel<T>(props: ListPanelProps<T>) {
   const { theme } = useTheme()
-  const kv = useKV()
   const tuiConfig = useTuiConfig()
-  const dimensions = useTerminalDimensions()
   let scroll: ScrollBoxRenderable | undefined
 
   const [filter, setFilter] = createSignal("")
   const rowRefs = new Map<string, BoxRenderable>()
   let input: InputRenderable | undefined
 
-  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const filterEnabled = () => props.filter !== false
   const clientFilter = () => props.filter === false || typeof props.filter !== "object" || props.filter.client !== false
   const placeholder = () => (typeof props.filter === "object" ? props.filter.placeholder : undefined)
-  const descriptionBudget = () => Math.max(0, dimensions().width - 8)
   const actions = createMemo(() => props.actions ?? [])
 
   const filtered = createMemo(() => {
@@ -124,6 +122,11 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     if (current === undefined) return undefined
     return flat().find((item) => isDeepEqual(item.value, current))
   })
+  // A list where some item has a detail keeps the line for it as the selection moves, blank for the items that have
+  // none, so the rows and the height of the panel do not change with the selection. A list where none has one has no
+  // such line. The first item with a detail ends the search, and only the selected item is read after that.
+  const hasDetail = createMemo(() => props.items.some((item) => item.disabled !== true && detailLine(item) !== ""))
+  const note = createMemo(() => (hasDetail() ? detailLine(selectedItem()) : undefined))
 
   function initialIndex() {
     const current = props.current
@@ -304,6 +307,7 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
       activeTab={props.activeTab}
       onTab={props.onTab}
       hints={hints()}
+      note={note()}
     >
       <Show when={filterEnabled()}>
         <box height={1} flexShrink={0} flexDirection="row">
@@ -349,61 +353,45 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                     const index = () => flat().findIndex((candidate) => candidate.id === item.id)
                     const isSelected = () => flat()[selected()]?.id === item.id
                     const isCurrent = () => currentItem()?.id === item.id
-                    // The ref is the item's own column, the row with the lines of its description under it, so that
-                    // scrolling it into view takes the lines along.
+                    // The row is one line whether it is selected or not: what there is to say about the selected
+                    // item goes on the note line of the shell, so no row moves as the selection does.
                     return (
                       <box
                         ref={(element: BoxRenderable) => {
                           rowRefs.set(item.id, element)
                         }}
-                        flexDirection="column"
+                        height={1}
                         flexShrink={0}
+                        flexDirection="row"
+                        backgroundColor={isSelected() ? theme.backgroundSelected : undefined}
+                        onMouseDown={() => moveTo(index())}
+                        onMouseUp={() => props.onSelect(item)}
                       >
-                        <box
-                          height={1}
+                        <text
                           flexShrink={0}
-                          flexDirection="row"
-                          backgroundColor={isSelected() ? theme.backgroundSelected : undefined}
-                          onMouseDown={() => moveTo(index())}
-                          onMouseUp={() => props.onSelect(item)}
+                          fg={isCurrent() || isSelected() ? theme.primary : theme.textDim}
+                          wrapMode="none"
                         >
-                          <text
-                            flexShrink={0}
-                            fg={isCurrent() || isSelected() ? theme.primary : theme.textDim}
-                            wrapMode="none"
-                          >
-                            {isCurrent() ? "● " : isSelected() ? "› " : "  "}
+                          {isCurrent() ? "● " : isSelected() ? "› " : "  "}
+                        </text>
+                        <Show when={typeof item.lead === "string"} fallback={<box flexShrink={0}>{item.lead}</box>}>
+                          <text flexShrink={0} wrapMode="none">
+                            {item.lead as string}
                           </text>
-                          <Show when={typeof item.lead === "string"} fallback={<box flexShrink={0}>{item.lead}</box>}>
-                            <text flexShrink={0} wrapMode="none">
-                              {item.lead as string}
-                            </text>
-                          </Show>
-                          <text
-                            flexGrow={1}
-                            flexShrink={1}
-                            overflow="hidden"
-                            wrapMode="none"
-                            attributes={isSelected() ? TextAttributes.BOLD : undefined}
-                          >
-                            {item.title}
+                        </Show>
+                        <text
+                          flexGrow={1}
+                          flexShrink={1}
+                          overflow="hidden"
+                          wrapMode="none"
+                          attributes={isSelected() ? TextAttributes.BOLD : undefined}
+                        >
+                          {item.title}
+                        </text>
+                        <Show when={typeof item.trail === "string"} fallback={<box flexShrink={0}>{item.trail}</box>}>
+                          <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                            {item.trail as string}
                           </text>
-                          <Show when={typeof item.trail === "string"} fallback={<box flexShrink={0}>{item.trail}</box>}>
-                            <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
-                              {item.trail as string}
-                            </text>
-                          </Show>
-                        </box>
-                        <Show when={isSelected() && descriptionLines(item.description)}>
-                          {(lines) => (
-                            <For each={lines()}>
-                              {(line) => (
-                                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
-                                  {truncateCells(line, descriptionBudget(), ambiguousWidth())}
-                                </text>
-                              )}
-                            </For>
-                          )}
                         </Show>
                       </box>
                     )

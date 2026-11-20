@@ -261,7 +261,6 @@ export const Disposition = {
   model_cycle_favorite_reverse: keep("global"),
   mcp_list: keep("global"),
   provider_connect: keep("global"),
-  agent_list: keep("global"),
   agent_cycle: keep("global"),
   agent_cycle_reverse: keep("global"),
   variant_cycle: keep("global"),

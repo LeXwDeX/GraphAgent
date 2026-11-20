@@ -9,7 +9,6 @@ import { ListPanel, type ListItem } from "./list"
 export interface DiffSourceItem {
   mode: DiffMode
   title: string
-  description?: string
 }
 
 export interface DiffSourcePanelProps {
@@ -27,7 +26,6 @@ export function DiffSourcePanel(props: DiffSourcePanelProps) {
       id: option.mode,
       value: option.mode,
       title: option.title,
-      description: option.description,
     }))
 
   return (

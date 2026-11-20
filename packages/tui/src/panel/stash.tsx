@@ -52,7 +52,7 @@ export function StashPanel(props: StashPanelProps) {
           id: `${entry.timestamp}-${index}`,
           value: index,
           title: deleting ? t("panel.stash.confirm", { key: deleteHint() }) : getStashPreview(entry.input),
-          description: getRelativeTime(entry.timestamp),
+          detail: getRelativeTime(entry.timestamp),
           trail: lineCount > 1 ? t("panel.stash.lines", { count: lineCount }) : undefined,
           lead: deleting ? <text fg={theme.error}>●</text> : undefined,
         }

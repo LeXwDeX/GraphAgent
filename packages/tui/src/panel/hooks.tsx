@@ -49,7 +49,7 @@ export function HooksPanel() {
         id: run.hookID,
         value: run,
         title,
-        description: run.statusMessage,
+        detail: run.statusMessage,
         trail,
       }
     })

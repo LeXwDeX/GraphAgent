@@ -144,7 +144,6 @@ export function MessagePanel(props: MessagePanelProps) {
       id: "copy",
       value: "copy",
       title: t("panel.message.copy"),
-      description: t("panel.message.copy.description"),
     }
     if (subagent()) return [copyItem]
     if (props.queued) {
@@ -153,13 +152,11 @@ export function MessagePanel(props: MessagePanelProps) {
           id: "edit",
           value: "edit",
           title: t("panel.message.edit"),
-          description: t("panel.message.edit.description"),
         },
         {
           id: "delete",
           value: "delete",
           title: t("panel.message.delete"),
-          description: t("panel.message.delete.description"),
         },
         copyItem,
       ]
@@ -169,14 +166,12 @@ export function MessagePanel(props: MessagePanelProps) {
         id: "revert",
         value: "revert",
         title: t("panel.message.revert"),
-        description: t("panel.message.revert.description"),
       },
       copyItem,
       {
         id: "fork",
         value: "fork",
         title: t("panel.message.fork"),
-        description: t("panel.message.fork.description"),
       },
     ]
   })

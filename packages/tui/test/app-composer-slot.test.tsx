@@ -155,16 +155,20 @@ test("the slash popup at home is drawn over the logo, not under it", async () =>
   try {
     await waitForFrame(app.setup, promptShown, "the prompt")
     await app.setup.mockInput.typeText("/")
-    const frame = await waitForFrame(app.setup, (frame) => frame.includes("/agent"), "the command popup")
+    // A popup row reads `┃ /name  description ┃`. Which command sorts first at home changes with the command list, so
+    // the first row is read from the frame instead of being named.
+    const popupRow = /┃ (\/\S+)/
+    const frame = await waitForFrame(app.setup, (frame) => popupRow.test(frame), "the command popup")
     const rows = rowsOf(frame)
+    const first = rows.find((row) => popupRow.test(row))
+    expect(first).toBeDefined()
+    const command = popupRow.exec(first!)![1]
     // At 100x30 the popup reaches up into the logo, as far as its first row: the frame is 3 rows tall, so the popup
     // sits lower than it did over the old 5-row block. A row where both are on screen shows the popup's text
     // whole, with logo glyphs on both sides of it.
-    const overlap = rows.find((row) => row.includes("/agent") && row.includes("█"))
-    expect(overlap).toBeDefined()
-    expect(overlap!.indexOf("█")).toBeLessThan(overlap!.indexOf("/agent"))
-    expect(overlap!.lastIndexOf("█")).toBeGreaterThan(overlap!.indexOf("/agent"))
-    expect(rows.find((row) => row.includes("/agent"))).toContain("┃ /agent")
+    expect(first!).toContain("█")
+    expect(first!.indexOf("█")).toBeLessThan(first!.indexOf(command))
+    expect(first!.lastIndexOf("█")).toBeGreaterThan(first!.indexOf(command))
   } finally {
     clearDrafts(app.setup)
     await app.stop()

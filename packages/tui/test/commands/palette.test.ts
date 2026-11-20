@@ -82,7 +82,6 @@ describe("suggestions", () => {
   test("subagent keeps session suggestions and drops the provider hint when connected", () => {
     const ids = suggestedCommandIds({ scope: "subagent", hasSessions: false, connected: true })
     expect([...ids]).toEqual(["model.list", "session.new"])
-    expect(ids.has("agent.list")).toBe(false)
   })
 
   test("home never suggests creating a session when already home", () => {

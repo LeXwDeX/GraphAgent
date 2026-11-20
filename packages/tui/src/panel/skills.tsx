@@ -39,7 +39,6 @@ export function SkillsPanel(props: SkillsPanelProps) {
       id: skill.name,
       value: skill.name,
       title: skill.name.padEnd(maxWidth),
-      description: skill.description?.replace(/\s+/g, " ").trim(),
     }))
   })
 

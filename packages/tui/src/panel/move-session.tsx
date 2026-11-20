@@ -147,7 +147,7 @@ export function MoveSessionPanel(props: MoveSessionPanelProps) {
         subdirectory: item.location !== item.root.directory,
       },
       title: removing() === item.location ? t("panel.move.deleting") : abbreviateHome(item.location, paths.home),
-      description: item.location,
+      detail: item.location,
       group: item.root.directory === current ? t("panel.move.group.current") : t("panel.move.group.other"),
     }))
   })

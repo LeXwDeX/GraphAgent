@@ -12,7 +12,7 @@
 
 - 适用于 `packages/tui` 下全部新增和修改的代码、测试、文案。
 - 与 Issue 正文冲突时，以 Issue 为准。PR 描述里写明冲突点，并同时提 PR 修订本文。
-- 本文和 Issue 都没有覆盖的情况，先停下，在 PR 描述里提出，等维护者答复。不自创新模式、新目录、新抽象。
+- 本文和 Issue 都没有覆盖的情况，先停下，在 PR 描述里提出，等维护者答复。不自创新模式、新目录、新抽象。例外：第 13 节的界面规范授权两项新抽象，即布局 token 模块 `ui/layout.ts`（#1670）和文字层级 T1–T6 的唯一定义（放在 `ui/` 下，#1672），它们不算自创。
 - 第 2 节目录树和第 3 节分层描述 F1（#886）合并后的现状：已存在的目录和文件照实列出，尚未落地的逐项标注所属 Issue（F4 #1032、F5 #1033、F6 #1036）。新代码按这棵树放置，标为"未落地"的文件由所属 Issue 新建。
 - 技术栈固定：opentui（`@opentui/core`、`@opentui/solid`、`@opentui/keymap`）加 Solid；server 在 Worker，SDK 的 fetch 经 `postMessage`（Worker RPC）。不换渲染框架（F2 #1025 "不做"）。
 - 公开仓库：本文与代码、注释、文案、提交信息不写本机路径、内网地址、主机名、AI 署名。提交前运行 `bun run check:hosts`。
@@ -55,7 +55,8 @@ packages/tui/src/
   pr/                   # state.ts：prLineState、短标记、toast 与警示清除的纯函数；reminder.ts：提醒倒计时的纯函数（F6）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
-  ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）、toast.tsx、adaptive-markdown.tsx
+  ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）、toast.tsx、adaptive-markdown.tsx；
+                        #   未落地：layout.ts（布局 token，#1670）、文字层级的唯一定义（#1672），规则见第 13 节
   prompt/               # 存量：输入框的数据辅助（display、history、frecency、stash、part、queued-message、traits）；不在第 3 节依赖表内
   component/            # 冻结：不得新增文件；现有组件随各 F Issue 迁出到 ui/、panel/、shell/
   util/
@@ -79,7 +80,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
   - `/agents` 的分组（#1058 6）：列表是根会话的直接子会话，分三组，空组不显示组头。顺序固定：后台（后台运行中，其次排队，其次状态未知）→ 前台（仍在运行的前台子 agent）→ 已结束（其余：后台完成、失败、已中断、已取消，前台完成、失败，以及状态未知的前台会话，它们不被说成在运行）；组内按开始时间倒序，同刻按 id 升序。分组、排序、行模型都在 `session/subagents.ts`（`subagentRows`），面板只排版；组头走 `ListItem.group`，且是随行状态变化的 getter。默认选中第一行，所以有后台运行中的子 agent 时落在其中最新的那一个（运行中排在排队之前），状态带的点击靠这一点。选中按子 agent 的 id 记：某个子 agent 的状态迁移让顺序变了（换组、换位），选中仍在原来那个子 agent 上，`⏎`、`ctrl+r` 作用于它；选中的子 agent 消失（会话被删）时选中留在原位置（截到末行）；只有用户改过滤文字才回到第一行（`/agents` 把过滤文字作为 `selectionKey` 交给 `ListPanel`）；只是状态词或耗时变了同样不动选中。
   - 列：状态符号（● 运行、○ 排队、✓ 完成、✗ 失败、已中断、已取消；排队用 `statusQueued`，状态未知不画符号）、`kind · 描述`、发起者（`background.row.byUser`/`byAgent`；没有 Task 链接的会话，如 DAG 节点，是 `—`）、状态文字 · 工具次数 · 耗时。后台运行的状态取 `backgroundStatus`，其词沿用 `subagent.state.*`，只有排队、已中断、已取消用 `background.agents.status.*`；排队的运行没有耗时（`—`，不读时钟），运行中的后台运行的耗时从服务端报的开始运行时刻（job 状态的 `since`，不含排队）起算，没有时取 Task 调用的开始时刻（续跑的任务会话很老），已上报结果的取结果里开始运行到结束之差，没有开始运行时刻时取起止之差；行的排序仍按 Task 调用的开始时刻；F5 的冷启动规则（`—`、不说 0）不变。发起者与状态两列各按本列最宽的一行对齐，名称取剩余宽度，80 列下 `ambiguous_width` 为 1 和 2 都不溢出。
   - 标题区计数 `N · a 个后台运行 · q 个排队`（`background.agents.count`、`.count.running`、`.count.queued` 三个键，为 0 的段省略，`a`、`q` 只数状态已知的后台运行）：标题是 JSX（`ListPanelProps.title` 接受 JSX），计数用 `textMuted`，按标题行剩余宽度截断；没有子 agent 时不画计数。
-  - 选中行下方的详情（`ListItem.description` 可以是多行；`ListPanel` 把每一项的行与详情包在同一个列里，滚动到该项时详情一并进入视口，不会被裁掉）：第一行是委托 prompt；已有结果上报的后台运行再加一行 `结果：{首行} · 结果已回注`，首行取根会话已加载的结果消息里 `<task_result>`/`<task_error>` 之间的第一个非空行（`backgroundResultLine`），消息没加载时不猜，只写 `结果已回注`；已中断而没有结果上报的写 `未回注（已中断）`。运行中、排队、前台和其余状态没有这一行。
+  - 选中行的详情（数据性详情）：选中行下不插入任何内容（第 13 节 13.7），详情显示在面板固定的说明行（`PanelShell` 的 `note` 槽：固定 1 行、超长截断，选中项没有详情时留空行，面板高度不变）。内容是委托 prompt；已有结果上报的后台运行再加 `结果：{首行} · 结果已回注`，首行取根会话已加载的结果消息里 `<task_result>`/`<task_error>` 之间的第一个非空行（`backgroundResultLine`），消息没加载时不猜，只写 `结果已回注`；已中断而没有结果上报的写 `未回注（已中断）`。运行中、排队、前台和其余状态没有结果这一项。两项怎样排进一行说明行由 #1675 定。现状：`ListItem.description` 仍可以是多行，由 `ListPanel` 画在选中行下方，#1675 改到说明行；落地前新代码不要依赖这种内联说明。
   - `ctrl+r`（`subagent.relay`）仍是唯一动作，预填按选中行的状态选模板（`subagentRelayText`，只预填不发送，经 `prefillRootPrompt`）：后台运行中或排队 `background.prefill.cancel`（带 `task_id`，让主 agent 用 task 工具的 cancel）；后台完成 `background.prefill.continue`；后台失败、已中断、已取消 `background.prefill.retry`（原因取子会话摘要错误的第一行，没有则用状态词）；前台与状态未知的后台沿用 F5 的 `subagent.relay.prefill`。没有停止、重试等控制键；`⏎` 进入、`esc` 关闭不变。
 - `ask/`：权限、提问、`confirm`、`choice` 的队列（F3）。权限与提问的展示组件在 `routes/session/`（`permission.tsx`、`question.tsx`），经 `ask-surface.tsx` 汇入队列；`confirm`、`choice` 的展示组件在 `ask/local.tsx`，调用入口 `askConfirm`、`askChoice` 在 `ask/local-ask.tsx`。
 - `commands/`：内置与服务端命令的统一注册表（F3）。
@@ -94,7 +95,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `i18n/`：双语文案表与 `t()`（F1）。
 - `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，是创建序的基础排序）；子 agent 的 `i/N`、`←→`、`<leader>down` 与 `/agents` 共用 `subagents.ts` 的分组序（`subagentChildren`、`subagentSiblings`，顺序随子 agent 的状态变化，`←→` 因此按列表从上到下走）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；子 agent 的 `kind`、描述、状态标记（符号与颜色 token）和 `/agents` 的行模型、分组序、详情与预填文字 `subagents.ts`（顶栏、面板、同级键、提醒共用的唯一实现；`subagentSource(sync.data)` 把 Task 链接、作业状态与摘要三处接成行的来源）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）；后台结果卡 `background-card.ts`（`backgroundCard(part, kind?)` 认出结果、取 `<task_result>`/`<task_error>` 里的正文与首行，不信文本、只认 metadata；`backgroundCardTitle` 出标题行的字，`/copy` 与卡共用）；后台 Task 的状态 `background.ts`（`backgroundStatus` 按“服务端上报的结果 > 运行所属 job 的状态 > 子会话摘要”取值，先匹配者胜，后来的来源不改写先来的；排队由服务端上报：job 的 `queued` 就是排队，带 `since` 的 `running` 就是已占到槽、在运行；只有旧服务端（从不报 `queued`，它的 `running` 也不带 `since`）才退回推断：job 在跑而子会话没跑过一轮、没调过工具即排队，详见下面“后台运行的排队”（#1407）；三处都没有说法时为 `unknown`。`backgroundElapsed` 对运行中的运行取 `now` 减去服务端报的开始运行时刻（没有时取 `startedAt`），对排队中的取 `now - startedAt`（已等了多久，界面不显示），对已结束的取结果里开始运行到结束之差（没有开始运行时刻时取起止之差），不知道时返回空，不取负值）；合成消息 `synthetic-message.ts`（`isSyntheticMessage(parts)`：有文本且全部文本 part 都是 `synthetic` 的用户消息不是用户的话，没有文本 part 的消息（文件、压缩）不算合成；撤销的目标（最近一条不合成的用户消息，没有则不动作）、重做的下一站（之后第一条不合成的用户消息，没有则整体恢复）、`session.messages_last_user` 与 PR 跟踪的 `dismissContext` 共用这一个判定，不各写一份，#1408）。
 - `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒：权限请求（任何运行方式）和后台运行的结果到达（#1058 7，见 6.5）；前台子 agent 的结束不弹 toast，子 agent 结束的声音与系统通知（`agent_completed`）不变。
-- `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。
+- `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。布局 token 模块 `layout.ts`（#1670）与文字层级的唯一定义（#1672）也放在这里，都未落地，规则见第 13 节。
 - `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
 - `component/`：冻结。迁移前的现有组件（输入框、`PatchDiff`、`Spinner` 等）留在原处，不得新增文件；F1–F6 全部合并时应为空或只剩明确列出的遗留。
 
@@ -278,10 +279,10 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 挂载时注册一次带 `enabled` 函数的 layer，卸载时注销；不得因面板开合重新注册全局 layer。面板的数据源只在打开时创建 memo，关闭期间不订阅。
 - 按键提示由各模板 `hints` 加 `PanelHost` 通用项生成，key 取自 keymap（`formatKeyBindings`），不写死按键名。一对相反方向的命令写成一条 `PanelHint`（`key` 加 `also`），两边各只绑一个裸方向键且成对（上下、左右）时合成一条（`↑↓ 选择`），否则退回两条同标签的提示（`shell.tsx` 的 `hintEntries`）。
 - 单字母动作键只在没有过滤输入框的 `DetailPanel` 里启用。有过滤输入的 `ListPanel` 动作用 `ctrl+<key>`，且不用 leader `ctrl+x`；其标签只用 `tab`/`shift+tab` 切换，`left`/`right` 留给过滤框光标。
-- 内容区超过 `maxRows` 在区内滚动；窄终端（< 100 列）先隐藏 `command` 与标签次要信息。警示类用 `tone="warning"` 与 `borderWarning`。
+- 内容区超过 `maxRows` 在区内滚动；窄终端（< 100 列）先隐藏 `command` 与标签次要信息。警示类用 `tone="warning"` 与 `borderWarning`。面板的五个槽、行布局与文字层级见第 13 节 13.6、13.7。
 - 破坏性确认、二选一不做面板，用询问区的 `confirm`/`choice` 变体。
 
-必须写的测试：80×24 与 120×40 各一张快照（三段结构位置）；打开、选中、关闭、一个动作；打开关闭后 `registerLayer` 增量不超过 P7 的上限；草稿保留。
+必须写的测试：80×24 与 120×40 各一张快照（各槽的位置，见 13.7）；打开、选中、关闭、一个动作；打开关闭后 `registerLayer` 增量不超过 P7 的上限；草稿保留。
 
 ### 6.3 新增一个键位
 
@@ -399,7 +400,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - C1 接口未就绪或 schema 缺失时，该行只读显示，不做空壳。
 - `text` 行用 `validate` 返回错误文案键（非空则不提交）；`suffix` 用于行尾淡色附注。需要打开前确认的（如 Claude hooks 兼容）先出询问区 `confirm` 变体。
 - 界面文字的切换（语言、主题）立即生效；语言只影响默认回复语言这一条系统提示指令。
-- 行的版式（#1617）：每行三列，标记 2 格、名称 22 格、值紧跟名称。名称最多 21 格（末格留空），超出按 `cellWidth` 截断，所以新增行名中英都要核对，超了就改短。值后面依次是 `suffix` 与选中行的“换一个（i/n）”提示；选中行的 `description` 画在面板底部的说明行里（`PanelShell` 的 `note`），一行放得下就不要写长。
+- 行的版式（#1617，统一定义见第 13 节 13.7）：每行三列，标记 2 格、名称 22 格、值紧跟名称。名称最多 21 格（末格留空），超出按 `cellWidth` 截断，所以新增行名中英都要核对，超了就改短。值后面依次是 `suffix` 与选中行的“换一个（i/n）”提示；选中行的 `description` 画在面板底部的说明行里（`PanelShell` 的 `note`，固定 1 行；选中行下不插入内容），一行放得下就不要写长。
 - 只汇报、不持有设置的行（快捷键）用 `readonly`：正常着色，可选中看说明，回车与点击不做任何事。写入路径不可用的行用 `disabled`：变暗且不可操作，原因写在 `suffix` 里（子 agent 视图里改会话模型的两行就是这样，因为那会向子会话发写请求）。
 
 `/config` 的标签与行（#1617）。标签顺序固定：通用（`general`）、界面（`interface`）、模型（`model`）、DAG 模式（`dag`）、权限（`permissions`）、快捷键（`shortcuts`）；`/config` 默认打开界面，`/permissions` 打开权限。每一行的存储位置：
@@ -442,7 +443,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
 | 完成通知（任务完成时 / 需要我输入时 / 关闭）                                   | 没有三选一的存储。`tui.json` 里有 `attention.enabled`（默认 false）、`attention.notifications`、`attention.sound` 三个布尔值，是文件配置；`/config` 目前只能写 kv 与全局配置层（`sdk.client.global.config.update` 写的是 `graphagent.json`），没有写 `tui.json` 的路径                                                          | 跳过                                                |
 | 检查更新（开 / 关）                                                            | `autoupdate` 键还在 schema 里，但描述写明“Deprecated compatibility setting; built-in application updates are disabled and this value is ignored”，旧的升级接口也只回 400（`groups/global.ts`：Built-in updates disabled），没有任何功能可开关                                                                                | 跳过；#1281（安装、升级与远程配置并入主程序）落地后再加 |
-| 窄终端（自动 / 始终紧凑）                                                      | 断点是固定常量（顶栏 `TOP_BAR_WIDE_WIDTH`、状态带 `BAND_NARROW_WIDTH`、面板 `PANEL_NARROW_WIDTH`，都是 100 列），没有设置项                                                                                                                                                                                                | 跳过                                                |
+| 窄终端（自动 / 始终紧凑）                                                      | 窄屏断点只有一个，固定 100 列（第 13 节 13.8；顶栏、状态带、面板现在各有一个常量，#1670 并为 `NARROW_WIDTH`），没有设置项                                                                                                                                                                                                  | 跳过                                                |
 | 推理过程、工具输出的三态（折叠 / 展开 / 隐藏，超过 6 行折叠 / 全部展开 / 只显示标题） | kv 只有两态（`thinking_mode` 的 `show`、`hide`；`tool_details_visibility`、`generic_tool_output_visibility` 两个开关）                                                                                                                                                                                                       | 保留现有的两态行，不合并成三态                      |
 
 必须写的测试："每行指出存储位置"遍历测试（`test/panel/config.test.tsx` 的 `STORES` 与上面的行表一一对应，加一行要两处一起改）；C1 接口 mock 不可用时只读；值写入后的读回。
@@ -470,7 +471,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 转录里行首标记与底色（#1615，只用 token）：用户消息一行 `›`（`primary`）加正文（`text`），整块底色 `backgroundUser`，悬停只把这一块自己的底色换成 `border`（子 agent 视图不可点，不悬停）；排队标记 `warning`，时间 `textDim`，附件标签 `textMuted`。助手文字 `⏺` 用 `success`。被中断的回合只有一行 `message.interrupted`，`textMuted`，没有标记，缩进与助手文字的正文对齐。推理 `∴` 与文字折叠时整行 `textDim`，打开或进行中仍是 `warning` 合成色（上面第三处例外）。标记占 `MARK_CELLS` 列，折行的续行悬挂在标记之下；`∴` 是 Ambiguous 字形，单行的推理行按 `cellWidth` 截断（`reasoningLine`）。
 - 品牌色 `primary`（深 `#4fa3f0`，浅 `#1f6fc4`）白名单，其余位置一律用灰：
   1. logo 的 AGENT 字面和顶栏小标记的 `◆`。
-  2. 列表、设置、询问里的选中行（符号和文字）及面板标题。
+  2. 列表、设置、询问里的选中行（符号和文字），以及面板标题与分组标题（第 13 节的 T1、T2）。
   3. 正在运行的东西：运行中 spinner、DAG 运行段、运行中状态符号（静态）。
   4. 页脚里当前 agent 名。
   5. 页脚 DAG 指示的 `◆ DAG`（开，F1 3.9）。
@@ -491,7 +492,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
   - 不全局禁用 Ambiguous 字形（`◆ ◇ ● ○ ◎ ━ ─ │ ╭` 等照常使用）。
   - 对齐敏感的布局（状态带、DAG 进度条、PR 行、抽屉、顶栏），在 `ambiguous_width` 为 1 和 2 时都要有 80 列不溢出的测试。
   - PR 行的压缩标记只用 ASCII 与 `✓`、`✗`（Neutral 宽度），两种设置下都不溢出（修订 F6 2.3 的"每个标记 1 列"）。
-- 窄屏断点（各 Issue 已定，不自创新断点）：宽 < 60 或高 < 12 只显示"终端太小"；页脚 DAG 指示宽 < 80 只留 `◆`/`◇`；logo 宽 < 90 或高 < 22 退单行小标记；顶栏、状态带、面板在宽 < 100 隐藏次要信息或合并行。
+- 窄屏断点只有一个：宽 < 100 列（第 13 节 13.8）；顶栏、状态带、面板在窄屏时隐藏次要信息或合并行，不自创新断点。另有整屏保护和两处元素自身的退化规则，保持现状、不新增同类：宽 < 60 或高 < 12 只显示"终端太小"；页脚 DAG 指示宽 < 80 只留 `◆`/`◇`；logo 宽 < 90 或高 < 22 退单行小标记。
 
 ## 8. 文案与双语
 
@@ -604,6 +605,117 @@ F1–F6 以及此后任何触及 `packages/tui` 的 PR，描述里逐条勾选�
 ```
 
 Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033、F6=#1036、C1=#1013、C3=#1023、A4=#1006、W1=#1035、S1=#1037。
+
+## 13. 界面规范
+
+本节是整屏版面与文字层级的唯一规范（#1669）。单位都是终端单元格，`W` 是终端宽，列号从 0 起。13.1–13.9 与 #1669 的第 1–9 条一一对应。本文别处与本节冲突的旧描述，以本节为准。
+
+- 数值取自布局 token 模块 `ui/layout.ts`（13.9）。它由 #1670 新增，落地前不存在；本节写的数值就是它将采用的取值。
+- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮）、#1671（五段左右边距统一）、#1672（面板宽度与文字层级）、#1675（选中行下不再插入说明）、#1676（过滤行固定）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
+
+### 13.1 整体 Body 边距
+
+- 整屏水平边距（gutter）左右各 2：gutter 是列 `0..1` 与 `W-2..W-1`，内容区是列 `2..W-3`，内容宽 `W-4`。
+- 顶栏、主区、状态带、底区（输入框、面板、询问）、页脚五段全部在内容区内，没有例外。
+- 抽屉是覆盖层，贴右边界，不受 gutter 约束；保持 6.4：覆盖在主区右侧，不挤压主区。
+
+### 13.2 五段的垂直范围
+
+| 段     | 高度 |
+| ------ | ---- |
+| 顶栏   | 1 行，其下 1 个空行 |
+| 主区   | 占剩余高度 |
+| 状态带 | 0–2 行（6.4） |
+| 底区   | 随内容（输入框、面板或询问） |
+| 页脚   | 1 行 |
+
+- 段与段之间的空行只由 `AppFrame`（`shell/app-frame.tsx`）负责，各段内部不再自带上下外边距。
+- 现状：主区自带底部 1 行 `paddingBottom`（第 5 节“消息列表”），还没有收口到 `AppFrame`；收口前保持原样，不得在别的段新增上下外边距。
+
+### 13.3 带框容器
+
+- 输入框、面板、询问是带框容器：边框画在内容区的首末列，即列 2 和 `W-3`；框内水平内边距 1，所以框内文字从列 4 起，到列 `W-5` 止（文字宽 `W-8`）。
+- 三者同宽，左右边框同列。
+
+### 13.4 不带框的行
+
+- 顶栏、状态带、页脚、输入框下方的状态行没有边框：文字从列 2 起，到列 `W-3` 止。
+
+列号示意（`W = 20`，纯 ASCII，边框用 `+-|` 代替圆角）：
+
+```
+0         1
+01234567890123456789
+ggxxxxxxxxxxxxxxxxgg   不带框的行
+gg+--------------+gg   带框容器的上边框
+gg|pttttttttttttp|gg   带框容器的一行，框内文字
+gg+--------------+gg   带框容器的下边框
+```
+
+- `g`：gutter，列 `0..1` 与 `W-2..W-1`，空白。
+- `x`：不带框的行的文字，列 `2..W-3`。
+- `+-|`：带框容器的边框，列 2 与 `W-3`。
+- `p`：框内内边距，列 3 与 `W-4`。
+- `t`：带框容器的框内文字，列 `4..W-5`。
+
+### 13.5 主区行缩进
+
+- 转录行用标记列 2 格（`MARK_CELLS`）加行缩进 3 格（`ROW_INDENT`）。这两个数只允许有一份定义，在 `ui/layout.ts`；现在 `routes/session/rows.ts` 与 `routes/session/tool-row.tsx` 各定义了一份 `ROW_INDENT`，#1670 合并。
+- 助手文字和推理相对内容区左缘缩进 `ROW_INDENT` 格后才是标记，标记占 `MARK_CELLS` 格，折行的续行悬挂在标记之下，所以正文缩进 `ROW_INDENT + MARK_CELLS` 格（高度估算见第 5 节“消息列表”）。
+
+### 13.6 文字层级
+
+相当于 H1–H6，终端里只用颜色和粗细区分，共六级。一段文字属于哪一级由它的角色决定，组件不得再自选颜色或粗细来表达层级。
+
+| 层级 | 用途                                                                   | theme token | 加粗 |
+| ---- | ---------------------------------------------------------------------- | ----------- | ---- |
+| T1   | 区域标题、面板标题（如 `PanelShell` 的标题行）                         | `primary`   | 是   |
+| T2   | 分组标题（如 `ListPanel` 的组头）                                      | `primary`   | 否   |
+| T3   | 正文：行的主文字、说明性正文                                           | `text`      | 否   |
+| T4   | 次要信息：行右侧的附加信息（如时间、快捷键）、说明行、空状态与占位文字 | `textMuted` | 否   |
+| T5   | 提示行、键位说明、行尾淡色附注（`suffix`）                             | `textDim`   | 否   |
+| T6   | 禁用、不可用（6.6 的 `disabled` 行）                                   | `textDim`   | 否   |
+
+- token 是 `Theme`（`theme/index.ts`）的字段，组件经 `useTheme()` 取，如 `theme.primary`、`theme.textMuted`；加粗是 `TextAttributes.BOLD`。
+- `textDim` 是 `textMuted` 变暗后的 token：主题没写时，`resolveTheme` 把 `textMuted` 向背景混合 50% 得出。T5 与 T6 同用它，用途不同。
+- 选中、悬停、警示是状态，不是层级：状态色（`success`、`warning`、`error`、`statusRunning` 等）和选中底色（`backgroundSelected`）按第 7 节使用，不拿来区分 T1–T6；现有选中行的主文字加粗也是选中状态，不改变它所属的层级。警示面板（`tone="warning"`，6.2）的标题用 `warning`、边框用 `borderWarning`，是 T1 唯一的变体。
+- T1、T2 用 `primary`，已列入第 7 节品牌色白名单第 2 项。
+- 六级的 token 与粗细只在一处定义（放在 `ui/` 下，#1672 新增，落地前不存在）；组件引用它，不各写一份。
+
+### 13.7 标准组件
+
+面板外壳（`PanelShell`）固定为五个槽，自上而下：
+
+| 槽       | 高度                     | 滚动               | 内容 |
+| -------- | ------------------------ | ------------------ | ---- |
+| 标题行   | 1 行                     | 固定               | T1 标题居左，其后是标签页，`command` 居右；窄屏（13.8）先隐藏 `command` 与标签次要信息（6.2） |
+| 过滤行   | 1 行                     | 固定，不随内容滚动 | 过滤输入，在标题行之下、滚动内容之上；没有过滤输入的面板没有这一行 |
+| 滚动内容 | 至多 `maxRows` 行（6.2） | 唯一滚动的槽       | 列表行、设置行等 |
+| 说明行   | 固定 1 行                | 固定，不滚动       | 选中项的说明或数据性详情，T4；放不下在行尾按 `cellWidth` 截断，不换行；选中项暂时没有说明时留空行，面板高度不变（`note` 传空串，不传 `note` 的面板不占这一行） |
+| 提示行   | 固定 1 行                | 固定               | T5，写法见下表 |
+
+- 选中行不在行下插入任何内容：行的说明和数据性详情只进说明行，不得在选中行下追加行、块或空行；移动选中时，所有行的屏幕行号和面板高度都不变。
+- 现状与此不同的两处：过滤输入还在滚动内容里（#1676 改）；`ListPanel`、`DetailPanel` 还在选中行下插入说明（#1675 改）。
+
+列表行、设置行、提示行各只有一种列布局：
+
+| 行                        | 列布局（自左向右） |
+| ------------------------- | ------------------ |
+| 列表行（`ListPanel`）     | 标记列 2 格（当前值 `●`、选中 `›`，其余两个空格）；前导符号（可选，状态标记）；主文字（T3，占剩余宽度，超出按 `cellWidth` 截断）；次要信息（T4，右对齐） |
+| 设置行（`SettingsPanel`） | 标记列 2 格（选中 `›`，其余两个空格）；名称 22 格（T3，最多 21 格，末格留空，超出按 `cellWidth` 截断）；值（T4，紧跟名称）；`suffix`（T5）；选中行的“换一个（i/n）”提示（T5）；细则见 6.6 |
+| 提示行                    | 一项是 `键 说明`，项与项以 `·` 相隔（前后各一个空格），从框内第一列（列 4）起，整行 T5；键名由 keymap 生成（6.2、6.3）；放不下在行尾按 `cellWidth` 截断 |
+
+### 13.8 断点
+
+- 窄屏断点只有一个：宽 < 100 列。顶栏、状态带、面板在窄屏时隐藏次要信息或合并行，各自的让位顺序见 6.2、6.4。
+- 不得为某个区域另设窄屏断点。整屏最小尺寸保护（宽 < 60 或高 < 12 只显示“终端太小”，6.4）不是断点；页脚 DAG 指示与 logo 的退化规则见第 7 节，保持现状。
+- 现有的几个值为 100 的断点常量由 #1670 并为 `ui/layout.ts` 的 `NARROW_WIDTH`。
+
+### 13.9 规则
+
+- 本节的数值只能来自布局 token 模块 `ui/layout.ts`。它由 #1670 新增；#1670 的方案导出 `GUTTER`、`contentWidth(width)`、`FRAME_INSET`（边框 1 加框内边距 1）、`framedInnerWidth(width)`、`ROW_INDENT`、`MARK_CELLS`、`NARROW_WIDTH`、`DRAWER_WIDTH`；名字以落地的模块为准。
+- 组件里不得再写水平内边距、宽度差值、断点的数字字面量：`paddingLeft={2}`、`width - 4`、`dimensions().width < 100` 这类都改成引用 token。面板里“终端宽 − 常数”形式的可用宽度算式同属宽度差值，由 #1672 迁移。
+- 审阅时核对：PR 差异里新增的水平内边距、宽度差值、断点数字字面量。#1670 同时新增棘轮检查，统计 `paddingLeft`、`paddingRight`、`marginLeft`、`marginRight` 后跟数字字面量的个数（只许下降）；宽度差值和断点字面量没有机器检查，靠审阅核对。
 
 ## 附录 A：已决定事项（摘要）
 
