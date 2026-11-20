@@ -565,6 +565,7 @@ export function makeFetchFixture(fixture: PerfFixture, url: URL): Response | und
     return Response.json({ entries: fixture.reminders ?? [] })
   if (url.pathname.startsWith("/dag/")) return Response.json([])
   if (url.pathname.endsWith("/status")) return Response.json({})
+  if (url.pathname === "/project/trust") return Response.json({ entries: [] })
   if (url.pathname.startsWith("/project/")) return Response.json([])
   return undefined
 }
