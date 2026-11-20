@@ -291,8 +291,7 @@ export const zhCN = {
   "panel.config.dag.budget": "DAG token 预算",
   "panel.config.dag.budget.invalid": "必须是正整数，留空表示不设预算",
   "panel.config.dag.budget.empty": "未设预算",
-  "panel.config.dag.budget.description":
-    "每个主会话下全部 DAG 节点的 token 上限；只改默认值，当前会话用 /dag-mode budget 设置",
+  "panel.config.dag.budget.description": "每个主会话的 DAG token 上限；只改默认值，当前会话用 /dag-mode budget",
   "panel.config.writeFailed": "写入配置失败：{message}",
   "panel.config.permission.unconfirmed": "已保存，但未能确认当前生效的权限",
   "panel.config.permission.edit": "编辑",

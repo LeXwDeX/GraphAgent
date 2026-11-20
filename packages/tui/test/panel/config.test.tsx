@@ -10,12 +10,13 @@ import { useCommands } from "../../src/commands/context"
 import { useTuiConfig } from "../../src/config"
 import type { TuiKeybind } from "../../src/config/keybind"
 import { useSDK } from "../../src/context/sdk"
-import { getLanguage, setLanguage } from "../../src/i18n"
+import { getLanguage, setLanguage, t, type MessageKey } from "../../src/i18n"
+import { zhCN } from "../../src/i18n/zh-CN"
 import { useBindings } from "../../src/keymap"
 import { ConfigPanel } from "../../src/panel/config"
 import { usePanelHost, type PanelHostApi } from "../../src/panel/host"
 import { ModelPanel } from "../../src/panel/model"
-import { contentWidth } from "../../src/ui/layout"
+import { MARK_CELLS, contentWidth, panelInnerWidth } from "../../src/ui/layout"
 import { cellWidth } from "../../src/ui/width"
 import { PanelSurface, panelRows, renderAppPanel, type AppPanelTestContext } from "./contexts"
 import { readFrame, renderUntilFrame } from "../fixture/frames"
@@ -1645,14 +1646,10 @@ for (const language of ["zh-CN", "en"] as const) {
                 fits: true,
               })
             }
-            // The note of the selected row is the line above the hint row; none of the new ones is cut to fit, but the
-            // English one of the auto-compact row (72 cells, 70 in the note row at 80 columns) until its copy is shorter.
+            // The note of the selected row is the line above the hint row, and none of them is cut to fit: the copy of
+            // each is within the 70 cells the note row has at 80 columns.
             const noteLine = lines[lines.findIndex((line) => line.includes("╰")) - 2] ?? ""
-            expect({ tab, row, cut: noteLine.includes("…") }).toEqual({
-              tab,
-              row,
-              cut: language === "en" && tab === "general" && row === 1,
-            })
+            expect({ tab, row, cut: noteLine.includes("…") }).toEqual({ tab, row, cut: false })
             // Nothing wrapped onto a second line: the panel keeps its height from row to row.
             const rows = lines.findIndex((line) => line.includes("╰")) - lines.findIndex((line) => line.includes("╭"))
             height ??= rows
@@ -1668,6 +1665,28 @@ for (const language of ["zh-CN", "en"] as const) {
     })
   }
 }
+
+// The explanation of a row is the note line of the panel: its text starts past the selection mark and ends with the text
+// of the panel, which is 70 cells at 80 columns. The explanations of every row of `/config`, those of the tabs the loops
+// above do not walk too (DAG, permissions), are whole there, in both languages (#1672).
+test("every explanation of a /config row fits the note line of an 80-column panel, in both languages", () => {
+  const room = panelInnerWidth(80) - MARK_CELLS
+  const keys = Object.keys(zhCN).filter((key): key is MessageKey => /^panel\.config\..*\.description$/.test(key))
+  expect(keys.length).toBeGreaterThan(8)
+  try {
+    for (const language of ["zh-CN", "en"] as const) {
+      setLanguage(language)
+      for (const key of keys) {
+        for (const ambiguousWidth of [1, 2] as const) {
+          const fits = cellWidth(t(key), ambiguousWidth) <= room
+          expect({ language, key, ambiguousWidth, fits }).toEqual({ language, key, ambiguousWidth, fits: true })
+        }
+      }
+    }
+  } finally {
+    setLanguage("zh-CN")
+  }
+})
 
 // --- the real app: which tab /config and /permissions open on ---------------------------------------------------------
 
