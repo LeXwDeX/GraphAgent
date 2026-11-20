@@ -312,7 +312,7 @@ test("renders the shared right slot instead of idle hints", async () => {
         agent="build"
         agentAction="tab"
         hints={hints}
-        meta={{ directory: "~/project:main", mcp: { count: 2, error: false }, version: "1.2.3" }}
+        meta={{ mcp: { count: 2, error: false }, version: "1.2.3" }}
         right={<text>status: indexing</text>}
       />
     ),
@@ -323,7 +323,7 @@ test("renders the shared right slot instead of idle hints", async () => {
     const frame = app.captureCharFrame()
     expect(frame).toContain("status: indexing")
     expect(frame).not.toContain("/ 命令")
-    expect(frame).not.toContain("~/project:main")
+    expect(frame).not.toContain("⊙ 2 MCP")
     expect(frame).not.toContain("1.2.3")
     expectWithin(frame, 80, 1)
   } finally {
@@ -372,7 +372,7 @@ test("renders home meta between the agent and the idle hints", async () => {
         agent="build"
         agentAction="tab"
         hints={hints}
-        meta={{ directory: "~/project:main", mcp: { count: 2, error: false }, version: "1.2.3" }}
+        meta={{ mcp: { count: 2, error: false }, version: "1.2.3" }}
       />
     ),
     { width: 120, state: tmp.path },
@@ -380,7 +380,6 @@ test("renders home meta between the agent and the idle hints", async () => {
 
   try {
     const frame = app.captureCharFrame()
-    expect(frame).toContain("~/project:main")
     expect(frame).toContain("⊙ 2 MCP")
     expect(frame).toContain("1.2.3")
     expect(frame).toContain("/ 命令")

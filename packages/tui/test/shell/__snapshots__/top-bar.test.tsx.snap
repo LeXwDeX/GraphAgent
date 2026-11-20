@@ -44,3 +44,38 @@ exports[`a run that was moved to the background says so, in both languages 1`] =
 "  ◇─◆ GraphAgent › Upgrade the toolchain and every dependency › ● explore · scan for breaking changes · background                          
 "
 `;
+
+exports[`names the directory and its branch before the title, in the muted color, and the title in the text color 1`] = `
+"  ◇─◆ GraphAgent  ~/code/shop (main) › 排查 TUI 渲染                             Claude Sonnet 4.5 · high · 上下文 24%  
+"
+`;
+
+exports[`at 100 columns the branch has gone and the directory is cut to its last two levels, the model details whole 1`] = `
+"  ◇─◆ GraphAgent  …/services/payments › 排查 TUI 渲染        Claude Sonnet 4.5 · high · 上下文 24%
+"
+`;
+
+exports[`at 80 columns the model and the context are hidden, so only the branch has given way 1`] = `
+"  ◇─◆ GraphAgent  ~/code/shop/services/payments › 排查 TUI 渲染           high
+"
+`;
+
+exports[`keeps the directory, the branch and the title inside 80 columns in zh-CN at ambiguous_width 1 1`] = `
+"  ◇─◆ GraphAgent  ~/code/shop/services/payments › 排查 TUI 渲染           high  
+"
+`;
+
+exports[`keeps the directory, the branch and the title inside 80 columns in zh-CN at ambiguous_width 2 1`] = `
+"  ◇─◆ GraphAgent  ~/code/shop/services/payments › 排查 TUI 渲染        high     
+"
+`;
+
+exports[`keeps the directory, the branch and the title inside 80 columns in en at ambiguous_width 1 1`] = `
+"  ◇─◆ GraphAgent  payments › Fix refund rounding in the checkout flow     high  
+"
+`;
+
+exports[`keeps the directory, the branch and the title inside 80 columns in en at ambiguous_width 2 1`] = `
+"  ◇─◆ GraphAgent  payments › Fix refund rounding in the checkout flow  high     
+"
+`;
