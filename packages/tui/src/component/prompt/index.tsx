@@ -1814,38 +1814,24 @@ export function Prompt(props: PromptProps) {
           <Switch>
             <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "stopping"}>
               <box flexDirection="column">
-                <text paddingLeft={1} fg={theme.warning}>
-                  {t("prompt.stop.requested")}
-                </text>
-                <text paddingLeft={1} fg={theme.warning}>
-                  {t("prompt.submit.paused")}
-                </text>
+                <text fg={theme.warning}>{t("prompt.stop.requested")}</text>
+                <text fg={theme.warning}>{t("prompt.submit.paused")}</text>
               </box>
             </Match>
             <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "unknown"}>
               <box flexDirection="column">
-                <text paddingLeft={1} fg={theme.warning}>
-                  {t("prompt.submit.unconfirmed")}
-                </text>
-                <text paddingLeft={1} fg={theme.warning}>
-                  {t("prompt.submit.restart")}
-                </text>
+                <text fg={theme.warning}>{t("prompt.submit.unconfirmed")}</text>
+                <text fg={theme.warning}>{t("prompt.submit.restart")}</text>
               </box>
             </Match>
             <Match when={stopping()}>
-              <text paddingLeft={1} fg={theme.textMuted}>
-                Stopping…
-              </text>
+              <text fg={theme.textMuted}>Stopping…</text>
             </Match>
             <Match when={sending() || sync.data.pending_submission[props.sessionID ?? ""]}>
-              <text paddingLeft={1} fg={theme.textMuted}>
-                Sending prompt…
-              </text>
+              <text fg={theme.textMuted}>Sending prompt…</text>
             </Match>
             <Match when={failedSubmission()}>
-              <text paddingLeft={1} fg={theme.error}>
-                Prompt not sent · restore failed prompt from commands to retry
-              </text>
+              <text fg={theme.error}>Prompt not sent · restore failed prompt from commands to retry</text>
             </Match>
             <Match when={status().type !== "idle"}>
               <box
@@ -1855,7 +1841,7 @@ export function Prompt(props: PromptProps) {
                 justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
               >
                 <box flexShrink={0} flexDirection="row" gap={1}>
-                  <box marginLeft={1}>
+                  <box>
                     <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
                       <Spinner color={spinnerColor()} visible={composerShown} />
                     </Show>
@@ -1940,7 +1926,7 @@ export function Prompt(props: PromptProps) {
               </box>
             </Match>
             <Match when={sync.data.session_load_errors[props.sessionID ?? ""]?.length}>
-              <text paddingLeft={1} fg={theme.textMuted}>
+              <text fg={theme.textMuted}>
                 Some session details could not load (
                 {sync.data.session_load_errors[props.sessionID ?? ""]
                   ?.map((kind) => (kind === "session_diff" ? "diff" : kind === "todo" ? "tasks" : kind))
@@ -1950,14 +1936,14 @@ export function Prompt(props: PromptProps) {
             </Match>
             <Match when={workspace.notice()}>
               {(notice) => (
-                <box paddingLeft={3}>
+                <box>
                   <text fg={theme.accent}>{notice()}</text>
                 </box>
               )}
             </Match>
             <Match when={workspace.label()}>
               {(label) => (
-                <box paddingLeft={3} flexDirection="row" gap={1}>
+                <box flexDirection="row" gap={1}>
                   <Show when={workspace.creating()}>
                     <Spinner color={theme.accent} visible={composerShown} />
                   </Show>
@@ -1985,7 +1971,7 @@ export function Prompt(props: PromptProps) {
             </Match>
             <Match when={move.progress()}>
               {(progress) => (
-                <box paddingLeft={3}>
+                <box>
                   <Spinner color={theme.accent} visible={composerShown}>
                     {progress()}
                     <span style={{ fg: theme.textMuted }}>{".".repeat(move.creatingDots())}</span>
@@ -1994,7 +1980,7 @@ export function Prompt(props: PromptProps) {
               )}
             </Match>
             <Match when={move.pendingNew()}>
-              <box paddingLeft={3}>
+              <box>
                 <text fg={theme.accent}>(new working copy)</text>
               </box>
             </Match>

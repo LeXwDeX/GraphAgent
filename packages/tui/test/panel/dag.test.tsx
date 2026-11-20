@@ -17,6 +17,7 @@ import { DEFAULT_THEME } from "../../src/context/theme"
 import { formatDagTokens } from "../../src/dag/mode"
 import { setLanguage } from "../../src/i18n"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
+import { GUTTER } from "../../src/ui/layout"
 import { cellWidth } from "../../src/ui/width"
 import { probeStoreWrites } from "../fixture/store-write-probe"
 import { directory, json } from "../fixture/tui-sdk"
@@ -343,7 +344,8 @@ async function press(shell: Shell, key: string) {
 
 const depth = (shell: Shell) => shell.bottomZone().host.depth()
 const topID = (shell: Shell) => shell.bottomZone().host.top()?.id
-const rowsOf = (frame: string) => frame.split("\n").map((line) => line.trimEnd())
+/** The rows of a frame without the gutter at their left: the panel's frame starts in the first column of what is left. */
+const rowsOf = (frame: string) => frame.split("\n").map((line) => line.slice(GUTTER).trimEnd())
 const lineWith = (frame: string, needle: string) => rowsOf(frame).find((line) => line.includes(needle))
 
 function nodesPush(

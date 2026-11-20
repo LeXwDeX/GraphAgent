@@ -9,6 +9,7 @@ import { useSync } from "../../context/sync"
 import { useTuiConfig } from "../../config"
 import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings } from "../../keymap"
 import { useToast } from "../../ui/toast"
+import { contentWidth } from "../../ui/layout"
 import { truncateCells } from "../../ui/width"
 import { useTicker } from "../../context/ticker-context"
 import { PanelShell, type PanelHint, type PanelTab } from "../../panel/shell"
@@ -45,7 +46,7 @@ export function QuestionPrompt(props: QuestionPromptProps) {
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const own = createMemo(() => props.request.sessionID === props.rootSessionID)
   const headerBudget = createMemo(() =>
-    Math.min(24, Math.max(6, Math.floor((dimensions().width - 8) / Math.max(1, questions().length + 1)))),
+    Math.min(24, Math.max(6, Math.floor((contentWidth(dimensions().width) - 8) / Math.max(1, questions().length + 1)))),
   )
   const [interacted, setInteracted] = createSignal(false)
   const [remaining, setRemaining] = createSignal<number | undefined>(undefined)

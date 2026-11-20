@@ -17,6 +17,7 @@ import {
 } from "solid-js"
 import { EscapePriority, useBindings } from "../keymap"
 import { createPanelHost, PanelHost, PanelHostProvider, type PanelHostApi, type PanelSpec } from "../panel/host"
+import { GUTTER } from "../ui/layout"
 
 /**
  * Non-modal detail panel stacked above the composer. It keeps focus in the
@@ -202,6 +203,20 @@ export function useBottomZone() {
   return state
 }
 
+/**
+ * The layer a panel or an ask sits in. The frame of either takes the content area between the gutters, so its border
+ * is in the columns the input box's is, and the three are the same width (#1671, 13.3). The gutter is kept here, once,
+ * not by each panel: a panel counts its widths from `contentWidth` of the terminal, and the fullscreen ask, which sits
+ * outside this layer, spans the terminal and says so to `PanelShell`.
+ */
+function ZoneSurface(props: ParentProps) {
+  return (
+    <box width="100%" flexShrink={0} paddingLeft={GUTTER} paddingRight={GUTTER}>
+      {props.children}
+    </box>
+  )
+}
+
 function contains(root: Renderable, target: Renderable) {
   if (root === target) return true
   for (const child of root.getChildren()) {
@@ -290,14 +305,12 @@ export function BottomZone(props: BottomZoneProps) {
           </Show>
         </box>
         <Show when={props.state.state().kind === "panel"}>
-          <PanelHost host={props.state.host} />
+          <ZoneSurface>
+            <PanelHost host={props.state.host} />
+          </ZoneSurface>
         </Show>
         <Show when={askHead()} keyed>
-          {(request) => (
-            <box width="100%" flexShrink={0}>
-              {request.render()}
-            </box>
-          )}
+          {(request) => <ZoneSurface>{request.render()}</ZoneSurface>}
         </Show>
       </box>
     </PanelHostProvider>

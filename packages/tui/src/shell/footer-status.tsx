@@ -9,13 +9,18 @@ import { useTicker } from "../context/ticker-context"
 import { useTheme } from "../context/theme"
 import { formatKeySequence, useKeymapSelector, useLeaderActive } from "../keymap"
 import { TuiLog } from "../util/log"
+import { contentWidth } from "../ui/layout"
 import { toastDuration, useToast, type CurrentToast } from "../ui/toast"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 
 const STATUS_SUFFIX = " /status"
 const TOAST_MIN_BUDGET = 10
-/** Room for the agent name, action hint and the gap before the shared slot. */
-export const LEFT_RESERVE = 28
+/**
+ * Cells of the footer row held back for the agent name, the action hint and the gap before the shared slot; the toast
+ * gets the rest of the content width. The row is two cells narrower since the margin is `GUTTER`, and so is the toast:
+ * the reserve was 28 counted from the width of the terminal (#1671).
+ */
+export const LEFT_RESERVE = 26
 
 /**
  * Lists the keys that can follow the leader key while it is pending. The
@@ -51,7 +56,7 @@ function ToastLine(props: { toast: CurrentToast; reserve: number }) {
   const kv = useKV()
   const dimensions = useTerminalDimensions()
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const budget = () => Math.max(TOAST_MIN_BUDGET, dimensions().width - LEFT_RESERVE - props.reserve)
+  const budget = () => Math.max(TOAST_MIN_BUDGET, contentWidth(dimensions().width) - LEFT_RESERVE - props.reserve)
 
   const color = () => {
     if (props.toast.level === "success") return theme.success

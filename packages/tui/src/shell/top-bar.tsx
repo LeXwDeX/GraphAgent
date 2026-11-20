@@ -7,7 +7,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { subagentMarkerToken } from "../session/subagents"
-import { LEGACY_EDGE_GUTTER, NARROW_WIDTH } from "../ui/layout"
+import { GUTTER, NARROW_WIDTH, contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import {
   DESCRIPTION_SEPARATOR,
@@ -73,7 +73,7 @@ export function TopBar(props: TopBarProps) {
 
   const layout = createMemo(() => {
     const aw = ambiguousWidth()
-    const inner = Math.max(1, width() - 2 * LEGACY_EDGE_GUTTER)
+    const inner = Math.max(1, contentWidth(width()))
     const markWidth = cellWidth(MARK_PREFIX, aw)
     // Below the narrow breakpoint the model name and context usage are hidden.
     const wide = width() >= NARROW_WIDTH
@@ -139,13 +139,7 @@ export function TopBar(props: TopBarProps) {
   })
 
   return (
-    <box
-      height={1}
-      flexShrink={0}
-      flexDirection="row"
-      paddingLeft={LEGACY_EDGE_GUTTER}
-      paddingRight={LEGACY_EDGE_GUTTER}
-    >
+    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={GUTTER} paddingRight={GUTTER}>
       <text wrapMode="none">
         <span style={{ fg: theme.textMuted }}>◇─</span>
         <span style={{ fg: theme.primary }}>◆</span>

@@ -45,6 +45,7 @@ import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
 import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
+import { contentWidth, framedInnerWidth } from "../ui/layout"
 import { cellWidth, truncateCells, truncateCellsLeft, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
 import { remoteLine } from "../util/remote-text"
@@ -269,7 +270,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
   const dimensions = useTerminalDimensions()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const innerWidth = () => Math.max(1, dimensions().width - 4)
+  const innerWidth = () => Math.max(1, framedInnerWidth(contentWidth(dimensions().width)))
   /** The clock's now. Reading it in a computation makes that computation follow the one-second signal. */
   const now = () => {
     ticker.second()

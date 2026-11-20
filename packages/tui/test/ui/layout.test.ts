@@ -6,7 +6,6 @@ import {
   DRAWER_WIDTH,
   FRAME_INSET,
   GUTTER,
-  LEGACY_EDGE_GUTTER,
   MARK_CELLS,
   NARROW_WIDTH,
   ROW_INDENT,
@@ -14,7 +13,7 @@ import {
   framedInnerWidth,
 } from "../../src/ui/layout"
 
-// #1670 moves the numbers without moving a cell on screen: these are the values the regions were drawn with before.
+// The numbers the regions of the screen are drawn with (#1669 13.1, 13.3, 13.5, 13.8, 6.4).
 test("the tokens carry the numbers the screen is drawn with", () => {
   expect(GUTTER).toBe(2)
   expect(FRAME_INSET).toBe(2)
@@ -22,7 +21,6 @@ test("the tokens carry the numbers the screen is drawn with", () => {
   expect(MARK_CELLS).toBe(2)
   expect(NARROW_WIDTH).toBe(100)
   expect(DRAWER_WIDTH).toBe(40)
-  expect(LEGACY_EDGE_GUTTER).toBe(1)
 })
 
 test("contentWidth is the width between the two gutters", () => {

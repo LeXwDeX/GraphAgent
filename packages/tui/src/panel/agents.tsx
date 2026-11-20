@@ -28,6 +28,7 @@ import {
   subagentTrail,
   type SubagentRow,
 } from "../session/subagents"
+import { contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -95,7 +96,7 @@ function PanelTitle(props: { counts: string }) {
     const aw: AmbiguousWidth = kv.get("ambiguous_width", 1) === 2 ? 2 : 1
     const title = t("subagent.panel.title")
     const command = dimensions().width >= PANEL_NARROW_WIDTH ? cellWidth(COMMAND, aw) + NAME_GAP : 0
-    const room = dimensions().width - SHELL_WIDTH - command - cellWidth(title, aw) - TITLE_GAP
+    const room = contentWidth(dimensions().width) - SHELL_WIDTH - command - cellWidth(title, aw) - TITLE_GAP
     return { title, counts: props.counts && room > 0 ? truncateCells(props.counts, room, aw) : "" }
   })
   return (
@@ -204,7 +205,14 @@ export function AgentsPanel() {
   const nameWidth = createMemo(() => {
     const marker = cellWidth(`${SUBAGENT_MARKER_GLYPH.running} `, ambiguousWidth())
     const room =
-      dimensions().width - SHELL_WIDTH - POINTER_WIDTH - marker - NAME_GAP - initiatorWidth() - NAME_GAP - stateWidth()
+      contentWidth(dimensions().width) -
+      SHELL_WIDTH -
+      POINTER_WIDTH -
+      marker -
+      NAME_GAP -
+      initiatorWidth() -
+      NAME_GAP -
+      stateWidth()
     return Math.max(MIN_NAME_WIDTH, room)
   })
   const items = createMemo<ListItem<string>[]>(() =>

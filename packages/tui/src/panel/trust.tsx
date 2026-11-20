@@ -13,6 +13,7 @@ import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
 import { errorMessage } from "../util/error"
 import { TuiLog } from "../util/log"
+import { contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { useToast } from "../ui/toast"
 import { DetailPanel, type DetailRow } from "./detail"
@@ -154,7 +155,7 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       props.mode === "manage"
         ? listed().reduce((max, entry) => Math.max(max, cellWidth(stateLabel(entry.state), ambiguousWidth())), 0) + 2
         : 0
-    return Math.max(16, dimensions().width - 6 - 6 - stateWidth - triggerWidth() - 2)
+    return Math.max(16, contentWidth(dimensions().width) - 6 - 6 - stateWidth - triggerWidth() - 2)
   })
 
   function commandCell(entry: ProjectTrustEntry): JSX.Element {

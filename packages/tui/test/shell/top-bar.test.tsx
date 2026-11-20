@@ -169,7 +169,7 @@ test("draws the path of a sub-agent: the root title, then the kind and its descr
 
   try {
     const frame = app.captureCharFrame()
-    expect(firstRow(frame)).toStartWith(" ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更")
+    expect(firstRow(frame)).toStartWith("  ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更")
     expect(frame).toContain("Claude Sonnet 4.5 · high · 上下文 24%")
     expectWithin(frame, 120, 1)
     expect(frame).toMatchSnapshot()
@@ -190,7 +190,7 @@ test("draws three segments for a sub-agent under a sub-agent", async () => {
 
   try {
     expect(firstRow(app.captureCharFrame())).toBe(
-      " ◇─◆ GraphAgent › 升级工具链 › 检查破坏性变更 › ● explore · 扫描破坏性变更",
+      "  ◇─◆ GraphAgent › 升级工具链 › 检查破坏性变更 › ● explore · 扫描破坏性变更",
     )
   } finally {
     app.renderer.destroy()
@@ -215,9 +215,10 @@ test("shows the position and the keys that move it on the right, in both languag
   }
 
   setLanguage("en")
+  // The English path is two cells longer than the Chinese one is wide; the row is as wide as the whole of it needs.
   const en = await renderTopBar(
     { subagent: subagentEn(), position: { index: 1, total: 3 } },
-    { width: 120, state: tmp.path },
+    { width: 122, state: tmp.path },
   )
   try {
     const frame = en.captureCharFrame()
@@ -283,7 +284,7 @@ test("a top bar without a sub-agent or a position is the one it was", async () =
 
   try {
     const frame = app.captureCharFrame()
-    expect(firstRow(frame)).toStartWith(" ◇─◆ GraphAgent › 排查 TUI 渲染 ")
+    expect(firstRow(frame)).toStartWith("  ◇─◆ GraphAgent › 排查 TUI 渲染 ")
     expect(firstRow(frame)).toEndWith(" high")
     expect(frame).not.toContain("子 agent")
     expect(frame).not.toContain("←→")
@@ -358,7 +359,7 @@ test("the folded middle segments are the dim ellipsis between the root and the c
   try {
     const frame = app.captureCharFrame()
     // The middle segment folds, the root stays whole, and the description takes what the fold freed.
-    expect(firstRow(frame)).toBe(" ◇─◆ GraphAgent › 升级工具链与全部依赖 › … › ● explore · 扫描破坏性…")
+    expect(firstRow(frame)).toBe("  ◇─◆ GraphAgent › 升级工具链与全部依赖 › … › ● explore · 扫描破坏…")
     expect(frame).not.toContain("检查破坏性变更并给出详细的结论")
     expect(colorOf(app.captureSpans(), "…")?.equals(palette().textDim)).toBe(true)
     expectWithin(frame, 70, 1)
@@ -476,7 +477,7 @@ test("drops the path before the brand mark when there is no room for even the cu
 
   try {
     const frame = app.captureCharFrame()
-    expect(firstRow(frame)).toStartWith(" ◇─◆ GraphAgent")
+    expect(firstRow(frame)).toStartWith("  ◇─◆ GraphAgent")
     expectWithin(frame, 60, 1)
   } finally {
     app.renderer.destroy()
@@ -493,7 +494,7 @@ test("a background run's path ends with its tag in the muted color of the descri
   )
   try {
     const frame = tagged.captureCharFrame()
-    expect(firstRow(frame)).toStartWith(" ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更 · 后台")
+    expect(firstRow(frame)).toStartWith("  ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更 · 后台")
     expectWithin(frame, 120, 1)
     expect(colorOf(tagged.captureSpans(), "后台")?.equals(palette().textMuted)).toBe(true)
     expect(frame).toMatchSnapshot()
@@ -552,13 +553,13 @@ test("the tag gives way first: where it does not fit with the path whole, the ro
     }
   }
 
-  // The whole path is 14 + 3 + 22 + 3 + 2 + 7 + 3 + 46 = 100 cells before the tag and 7 more with it, inside two cells
+  // The whole path is 14 + 3 + 24 + 3 + 2 + 7 + 3 + 46 = 102 cells before the tag and 7 more with it, inside two cells
   // of padding on each side.
-  const roomy = await rowAt(112, "background")
+  const roomy = await rowAt(114, "background")
   expect(roomy).toEndWith("扫描全部变更日志中的破坏性变更并汇总每一项发现 · 后台")
   // Too narrow for the tag: the same row as without it, the description whole.
-  const tight = await rowAt(106, "background")
-  expect(tight).toBe(await rowAt(106))
+  const tight = await rowAt(108, "background")
+  expect(tight).toBe(await rowAt(108))
   expect(tight).toContain("扫描全部变更日志中的破坏性变更并汇总每一项发现")
   expect(tight).not.toContain("后台")
   // Narrower still: the description is cut as it always was, and the tag stays out of it.

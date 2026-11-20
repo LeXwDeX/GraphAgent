@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`the record at 80x24 in zh-CN 1`] = `
-" ◇─◆ GraphAgent                                                                 
+"  ◇─◆ GraphAgent                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -29,7 +29,7 @@ exports[`the record at 80x24 in zh-CN 1`] = `
 `;
 
 exports[`the record at 80x24 in en 1`] = `
-" ◇─◆ GraphAgent                                                                 
+"  ◇─◆ GraphAgent                                                                
                                                                                 
                                                                                 
                                                                                 

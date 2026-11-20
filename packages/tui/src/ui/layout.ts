@@ -44,10 +44,3 @@ export const NARROW_WIDTH = 100
 
 /** Fixed width of the drawer overlay in terminal cells. */
 export const DRAWER_WIDTH = 40
-
-/**
- * The one-cell margin the top bar and the footer still keep at each side, so that moving to the tokens above leaves
- * the screen as it was. Only `shell/top-bar.tsx` and `shell/footer.tsx` use it; #1671 deletes it when they move to
- * `GUTTER`.
- */
-export const LEGACY_EDGE_GUTTER = 1

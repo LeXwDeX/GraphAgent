@@ -5,6 +5,7 @@ import { afterEach, expect, test } from "bun:test"
 import { setLanguage, t } from "../src/i18n"
 import { dagIndicatorReserve } from "../src/shell/dag-indicator"
 import { LEFT_RESERVE } from "../src/shell/footer-status"
+import { contentWidth } from "../src/ui/layout"
 import { cellWidth } from "../src/ui/width"
 import { captureFrame, footerRow, promptShown, runApp, waitFor, waitForFrame, type Setup } from "./fixture/run-app"
 import { json, type FetchHandler } from "./fixture/tui-sdk"
@@ -96,14 +97,14 @@ for (const language of ["zh-CN", "en"] as const) {
   })
 }
 
-// The footer holds back `LEFT_RESERVE` columns and the DAG indicator's for the agent cluster; the toast gets the rest:
-// at 80 columns 46 cells with the mode on or off (45 at ambiguous_width 2, where the indicator's marker is two cells
-// wide), 44 (43) while the indicator reads `◆ DAG !`. The hint is written to fit the first, so the footer does not cut
-// it at its edge and lose the half that says what to do.
+// The footer holds back `LEFT_RESERVE` columns and the DAG indicator's for the agent cluster; the toast gets the rest of
+// the 76 columns between the gutters: at 80 columns 44 cells with the mode on or off (43 at ambiguous_width 2, where the
+// indicator's marker is two cells wide), 42 (41) while the indicator reads `◆ DAG !`. The hint is written to fit the
+// first, so the footer does not cut it at its edge and lose the half that says what to do.
 for (const language of ["zh-CN", "en"] as const) {
   for (const ambiguousWidth of [1, 2] as const) {
     test(`${language}: at 80 columns the whole hint fits the footer, at ambiguous_width ${ambiguousWidth}`, async () => {
-      const share = 80 - LEFT_RESERVE - dagIndicatorReserve("on", 80, ambiguousWidth)
+      const share = contentWidth(80) - LEFT_RESERVE - dagIndicatorReserve("on", 80, ambiguousWidth)
       expect(cellWidth(HINT[language], ambiguousWidth)).toBeLessThanOrEqual(share)
 
       const app = await runApp({
