@@ -661,21 +661,18 @@ export function Diff() {
       {
         mode: "git" as const,
         title: t("diff.switch.git.title"),
-        description: t("diff.switch.git.description"),
       },
       ...(vcs?.branch && vcs.default_branch && vcs.branch !== vcs.default_branch
         ? [
             {
               mode: "branch" as const,
               title: t("diff.switch.branch.title"),
-              description: t("diff.switch.branch.description"),
             },
           ]
         : []),
       {
         mode: "last-turn" as const,
         title: t("diff.switch.lastTurn.title"),
-        description: t("diff.switch.lastTurn.description"),
       },
     ]
   })

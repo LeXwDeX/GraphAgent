@@ -39,12 +39,6 @@ export function normalizeCustomProviderID(value: string) {
   return providerID
 }
 
-function providerDescription(providerID: string) {
-  if (providerID === "anthropic") return t("panel.provider.description.anthropic")
-  if (providerID === "openai") return t("panel.provider.description.openai")
-  return undefined
-}
-
 function providerGroup(providerID: string) {
   return providerID in PROVIDER_PRIORITY ? t("panel.provider.group.popular") : t("panel.provider.group.providers")
 }
@@ -91,7 +85,6 @@ export function ProviderPanel(props: ProviderPanelProps) {
         id: provider.id,
         value: { kind: "provider" as const, id: provider.id, name: provider.name },
         title: provider.name,
-        description: providerDescription(provider.id),
         group: providerGroup(provider.id),
         lead: authenticated && connected() ? <text fg={theme.success}>✓</text> : undefined,
       }
@@ -100,7 +93,6 @@ export function ProviderPanel(props: ProviderPanelProps) {
       id: CUSTOM_PROVIDER_OPTION,
       value: { kind: "custom" as const },
       title: t("panel.provider.custom.title"),
-      description: t("panel.provider.custom.summary"),
       group: t("panel.provider.group.providers"),
     },
   ])
@@ -426,7 +418,6 @@ function MethodPanel(props: MethodPanelProps) {
                 id: option.value,
                 value: option.value,
                 title: option.label,
-                description: option.hint,
               }))}
               onSelect={(item) => answer(current.key, item.value, promptIndex())}
             />

@@ -28,9 +28,9 @@ afterEach(() => {
 })
 
 const listItems: ListItem<string>[] = [
-  { id: "light", value: "light", title: "浅色主题", group: "内置", trail: "默认", description: "浅色背景与深色文字" },
+  { id: "light", value: "light", title: "浅色主题", group: "内置", trail: "默认" },
   { id: "dark", value: "dark", title: "深色主题", group: "内置", trail: "已选" },
-  { id: "custom", value: "custom", title: "自定义主题", group: "用户", description: "从配置目录读取" },
+  { id: "custom", value: "custom", title: "自定义主题", group: "用户" },
 ]
 
 const listTabs = [
@@ -373,48 +373,102 @@ async function untilFrame(app: Awaited<ReturnType<typeof renderPanel>>, ready: (
   throw new Error(`the expected frame never came:\n${frame}`)
 }
 
-test("a description of several lines shows one row each under the selected item, empty lines left out", async () => {
+/** The line before the hint row, which is the one before the bottom border: the note line of a panel. */
+const noteLineOf = (lines: string[]) => lines[borderIndex(lines, "╰") - 2]
+
+test("the detail of the selected item is on the fixed note line: no row moves and the panel keeps its height", async () => {
   await using tmp = await shellState()
   const items: ListItem<string>[] = [
-    { id: "one", value: "one", title: "条目一", description: "只有一行" },
-    { id: "two", value: "two", title: "条目二", description: ["", "第一行", "", "第二行"] },
-    { id: "three", value: "three", title: "条目三", description: [] },
-    { id: "four", value: "four", title: "条目四", description: "" },
+    { id: "one", value: "one", title: "条目一", detail: "只有一行" },
+    { id: "two", value: "two", title: "条目二", detail: "第一行\n\n第二行" },
+    { id: "three", value: "three", title: "条目三" },
+    { id: "four", value: "four", title: "条目四", detail: "" },
+    { id: "five", value: "five", title: "条目五", detail: "一段很长的详情".repeat(12) },
   ]
   const app = await renderPanel(
-    () => <PanelSurface spec={{ render: () => <ListPanel title="多行" items={items} onSelect={() => {}} /> }} />,
+    () => <PanelSurface spec={{ render: () => <ListPanel title="详情" items={items} onSelect={() => {}} /> }} />,
     { width: 80, height: 24, state: tmp.path },
   )
+  /** Where the rows stand, how tall the panel is, and the lines of the frame. */
+  const layout = (frame: string) => {
+    const lines = frameLines(frame)
+    return {
+      lines,
+      rows: items.map((item) => lines.findIndex((line) => line.includes(item.title))),
+      height: borderIndex(lines, "╰") - borderIndex(lines, "╭"),
+    }
+  }
+  /** Moves the selection to the item, one frame past the key. */
+  const select = (title: string) =>
+    untilFrame(app, (frame) => frameLines(frame).some((line) => line.includes(`› ${title}`)))
 
   try {
-    const first = await untilFrame(app, (frame) => frame.includes("只有一行"))
-    expect(first).not.toContain("第一行")
+    const first = layout(await untilFrame(app, (frame) => frame.includes("只有一行")))
+    // The detail is on the line above the hints, and the next item follows its row at once.
+    expect(noteLineOf(first.lines)).toContain("只有一行")
+    expect(first.lines[borderIndex(first.lines, "╰") - 1]).toContain("关闭")
+    expect(first.rows.every((row, index) => row >= 0 && (index === 0 || row === first.rows[index - 1] + 1))).toBe(true)
 
+    // Line breaks become spaces; an item with no detail, and one with an empty detail, leave the line blank.
     app.mockInput.pressArrow("down")
-    const second = frameLines(await untilFrame(app, (frame) => frame.includes("第二行")))
-    // Each line is one row, straight under the item, and the empty ones take no row.
-    const row = second.findIndex((line) => line.includes("条目二"))
-    expect(second[row + 1]).toContain("第一行")
-    expect(second[row + 2]).toContain("第二行")
-    expect(second[row + 3]).toContain("条目三")
-    expect(second.join("\n")).not.toContain("只有一行")
+    const second = layout(await select("条目二"))
+    expect(noteLineOf(second.lines)).toContain("第一行 第二行")
+    app.mockInput.pressArrow("down")
+    const third = layout(await select("条目三"))
+    expect(noteLineOf(third.lines).replace(/[│ ]/g, "")).toBe("")
+    app.mockInput.pressArrow("down")
+    const fourth = layout(await select("条目四"))
+    expect(noteLineOf(fourth.lines).replace(/[│ ]/g, "")).toBe("")
 
-    // An empty list of lines, and an empty string, are no description at all: the next item follows at once.
+    // A detail wider than the line is cut to it with an ellipsis, on the one line.
     app.mockInput.pressArrow("down")
-    const third = frameLines(await untilFrame(app, (frame) => !frame.includes("第二行")))
-    expect(third[third.findIndex((line) => line.includes("条目三")) + 1]).toContain("条目四")
+    const fifth = layout(await select("条目五"))
+    const note = noteLineOf(fifth.lines)
+    expect(note.startsWith("│   一段很长的详情")).toBe(true)
+    expect(note.slice(0, -1).trimEnd().endsWith("…")).toBe(true)
+    expect(cellWidth(note.slice(1, -1).trimEnd())).toBeLessThanOrEqual(80 - 3)
+
+    // Whichever item was selected, no row moved and the panel kept its height.
+    for (const each of [second, third, fourth, fifth]) {
+      expect(each.rows).toEqual(first.rows)
+      expect(each.height).toBe(first.height)
+    }
+    // Nothing of a detail is under a row: it is written once, on the note line.
+    expect(fifth.lines.filter((line) => line.includes("一段很长的详情"))).toHaveLength(1)
+    expect(second.lines.filter((line) => line.includes("第一行"))).toHaveLength(1)
   } finally {
     app.renderer.destroy()
   }
 })
 
-test("the lines of a description scroll into view with their item, at the bottom of a long list", async () => {
+test("a list where no item has a detail takes no line for one", async () => {
+  await using tmp = await shellState()
+  const items: ListItem<string>[] = [
+    { id: "one", value: "one", title: "条目一" },
+    { id: "two", value: "two", title: "条目二", detail: "" },
+  ]
+  const app = await renderPanel(
+    () => <PanelSurface spec={{ render: () => <ListPanel title="无详情" items={items} onSelect={() => {}} /> }} />,
+    { width: 80, height: 24, state: tmp.path },
+  )
+
+  try {
+    const lines = frameLines(await untilFrame(app, (frame) => frame.includes("条目二")))
+    // The hints follow the last row at once.
+    expect(lines[borderIndex(lines, "╰") - 1]).toContain("关闭")
+    expect(lines[borderIndex(lines, "╰") - 2]).toContain("条目二")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the note line of a long list stays in view outside the scroll area, and the panel keeps its height", async () => {
   await using tmp = await shellState()
   const items: ListItem<string>[] = Array.from({ length: 20 }, (_, index) => ({
     id: `item-${index}`,
     value: `item-${index}`,
     title: `条目 ${index + 1}`,
-    description: index === 19 ? ["最后的第一行", "最后的第二行", "最后的第三行"] : undefined,
+    detail: index === 19 ? "最后一项的详情" : undefined,
   }))
   const app = await renderPanel(
     () => <PanelSurface spec={{ render: () => <ListPanel title="长列表" items={items} onSelect={() => {}} /> }} />,
@@ -422,16 +476,16 @@ test("the lines of a description scroll into view with their item, at the bottom
   )
 
   try {
-    await untilFrame(app, (frame) => frame.includes("条目 1"))
+    const top = frameLines(await untilFrame(app, (frame) => frame.includes("条目 1")))
+    // The line is there from the start, blank, because one item has a detail.
+    expect(noteLineOf(top).replace(/[│ ]/g, "")).toBe("")
     app.mockInput.pressKey("END")
-    // The last item is selected and all three lines under it are inside the capped area, not cut off below it.
-    const frame = await untilFrame(app, (value) => value.includes("最后的第三行"))
-    expect(frame).toContain("最后的第一行")
-    expect(frame).toContain("最后的第二行")
-    const lines = frameLines(frame)
-    expect(lines.findIndex((line) => line.includes("最后的第三行"))).toBeGreaterThan(
-      lines.findIndex((line) => line.includes("条目 20")),
-    )
+    const end = frameLines(await untilFrame(app, (frame) => frame.includes("› 条目 20")))
+    // The last item is selected and in the capped area; its detail is on the fixed line, not cut off below the item.
+    expect(noteLineOf(end)).toContain("最后一项的详情")
+    expect(end.findIndex((line) => line.includes("条目 20"))).toBeLessThan(borderIndex(end, "╰") - 2)
+    expect(end.filter((line) => line.includes("最后一项的详情"))).toHaveLength(1)
+    expect(borderIndex(end, "╰") - borderIndex(end, "╭")).toBe(borderIndex(top, "╰") - borderIndex(top, "╭"))
   } finally {
     app.renderer.destroy()
   }
@@ -1322,6 +1376,68 @@ test("detail panel leaves space alone without onToggle, label or not", async () 
     expect(app.captureCharFrame()).toContain("分组")
   } finally {
     app.renderer.destroy()
+  }
+})
+
+test("detail panel puts the note of the selected row on the fixed line, and a panel where no row has a note takes no line", async () => {
+  await using tmp = await shellState()
+  const rows: DetailRow<string>[] = [
+    { id: "a", cells: ["甲行"], value: "a", note: "甲行的说明" },
+    { id: "b", cells: ["乙行"], value: "b" },
+    { id: "c", cells: ["丙行"], value: "c", note: "丙行的\n说明" },
+    // A row that cannot be selected does not count: its note is never shown.
+    { id: "d", cells: ["丁行"], selectable: false, note: "不会出现的说明" },
+  ]
+  const panel = (list: readonly DetailRow<string>[]) => (
+    <PanelSurface spec={{ render: () => <DetailPanel title="详情" rows={list} hints={[]} /> }} />
+  )
+  const app = await renderPanel(() => panel(rows), { width: 80, height: 24, state: tmp.path })
+  const layout = (frame: string) => {
+    const lines = frameLines(frame)
+    return {
+      lines,
+      rows: ["甲行", "乙行", "丙行", "丁行"].map((title) => lines.findIndex((line) => line.includes(title))),
+      height: borderIndex(lines, "╰") - borderIndex(lines, "╭"),
+    }
+  }
+  const select = (title: string) =>
+    untilFrame(app, (frame) => frameLines(frame).some((line) => line.includes(`› ${title}`)))
+
+  try {
+    const first = layout(await untilFrame(app, (frame) => frame.includes("甲行的说明")))
+    expect(noteLineOf(first.lines)).toContain("甲行的说明")
+    expect(first.rows).toEqual([first.rows[0], first.rows[0] + 1, first.rows[0] + 2, first.rows[0] + 3])
+
+    app.mockInput.pressArrow("down")
+    const second = layout(await select("乙行"))
+    expect(noteLineOf(second.lines).replace(/[│ ]/g, "")).toBe("")
+    app.mockInput.pressArrow("down")
+    const third = layout(await select("丙行"))
+    expect(noteLineOf(third.lines)).toContain("丙行的 说明")
+
+    // No row moved and the panel kept its height; each note is written once, on the fixed line.
+    for (const each of [second, third]) {
+      expect(each.rows).toEqual(first.rows)
+      expect(each.height).toBe(first.height)
+    }
+    expect(third.lines.join("\n")).not.toContain("不会出现的说明")
+    expect(third.lines.filter((line) => line.includes("丙行的"))).toHaveLength(1)
+  } finally {
+    app.renderer.destroy()
+  }
+
+  const bare = await renderPanel(() => panel(rows.map(({ note: _note, ...row }) => row)), {
+    width: 80,
+    height: 24,
+    state: tmp.path,
+  })
+  try {
+    const lines = frameLines(await untilFrame(bare, (frame) => frame.includes("丁行")))
+    // The hints follow the last row at once.
+    expect(lines[borderIndex(lines, "╰") - 1]).toContain("关闭")
+    expect(lines[borderIndex(lines, "╰") - 2]).toContain("丁行")
+  } finally {
+    bare.renderer.destroy()
   }
 })
 

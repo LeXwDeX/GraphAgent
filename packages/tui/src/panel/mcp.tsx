@@ -66,7 +66,7 @@ export function McpPanel() {
         id: name,
         value: name,
         title: name,
-        description: statusLabel(status.status),
+        detail: statusLabel(status.status),
         trail: <Status enabled={local.mcp.isEnabled(name)} loading={active === name} />,
       }))
   })

@@ -17,7 +17,6 @@ export function AgentPanel() {
       id: agent.name,
       value: agent.name,
       title: agent.name,
-      description: agent.native ? t("panel.agent.native") : agent.description,
     })),
   )
 
