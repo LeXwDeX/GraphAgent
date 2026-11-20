@@ -1,15 +1,15 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`frames bash at 80x24 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Bash 需要权限                                                                │
-│  $ bun install                                                               │
-│                                                                              │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 bun install                                              │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Bash 需要权限                                                            │  
+  │  $ bun install                                                           │  
+  │                                                                          │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 bun install                                          │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -29,15 +29,15 @@ exports[`frames bash at 80x24 1`] = `
 `;
 
 exports[`frames bash at 80x24 in English 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Bash needs permission                                                        │
-│  $ bun install                                                               │
-│                                                                              │
-│ › 1. Allow once                                                              │
-│   2. Allow bun install for this session                                      │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Bash needs permission                                                    │  
+  │  $ bun install                                                           │  
+  │                                                                          │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow bun install for this session                                  │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -57,15 +57,15 @@ exports[`frames bash at 80x24 in English 1`] = `
 `;
 
 exports[`frames bash at 120x40 in English with ambiguous_width 2 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Bash needs permission                                                                                            1/2 │
-│  $ bun install                                                                                                       │
-│                                                                                                                      │
-│ › 1. Allow once                                                                                                      │
-│   2. Allow bun install for this session                                                                              │
-│   3. Reject, and tell the agent what to do instead                                                                   │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Bash needs permission                                                                                        1/2 │  
+  │  $ bun install                                                                                                   │  
+  │                                                                                                                  │  
+  │ › 1. Allow once                                                                                                  │  
+  │   2. Allow bun install for this session                                                                          │  
+  │   3. Reject, and tell the agent what to do instead                                                               │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                               │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -101,20 +101,20 @@ exports[`frames bash at 120x40 in English with ambiguous_width 2 1`] = `
 `;
 
 exports[`frames edit at 80x24 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Edit 需要权限                                                                │
-│  路径: /repo/src/app.ts                                                      │
-│                                                                              │
-│  1   export function value() {                                               │
-│  2 -   return 41                                                             │
-│  2 +   return 42                                                             │
-│  3   }                                                                       │
-│                                                                              │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 src/*                                                    │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Edit 需要权限                                                            │  
+  │  路径: /repo/src/app.ts                                                  │  
+  │                                                                          │  
+  │  1   export function value() {                                           │  
+  │  2 -   return 41                                                         │  
+  │  2 +   return 42                                                         │  
+  │  3   }                                                                   │  
+  │                                                                          │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 src/*                                                │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                            │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -129,20 +129,20 @@ exports[`frames edit at 80x24 1`] = `
 `;
 
 exports[`frames edit at 80x24 in English 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Edit needs permission                                                        │
-│  Path: /repo/src/app.ts                                                      │
-│                                                                              │
-│  1   export function value() {                                               │
-│  2 -   return 41                                                             │
-│  2 +   return 42                                                             │
-│  3   }                                                                       │
-│                                                                              │
-│ › 1. Allow once                                                              │
-│   2. Allow src/* for this session                                            │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Edit needs permission                                                    │  
+  │  Path: /repo/src/app.ts                                                  │  
+  │                                                                          │  
+  │  1   export function value() {                                           │  
+  │  2 -   return 41                                                         │  
+  │  2 +   return 42                                                         │  
+  │  3   }                                                                   │  
+  │                                                                          │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow src/* for this session                                        │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -157,20 +157,20 @@ exports[`frames edit at 80x24 in English 1`] = `
 `;
 
 exports[`frames edit at 120x40 in English with ambiguous_width 2 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Edit needs permission                                                                                            1/2 │
-│  Path: /repo/src/app.ts                                                                                              │
-│                                                                                                                      │
-│  1   export function value() {                                                                                       │
-│  2 -   return 41                                                                                                     │
-│  2 +   return 42                                                                                                     │
-│  3   }                                                                                                               │
-│                                                                                                                      │
-│ › 1. Allow once                                                                                                      │
-│   2. Allow src/* for this session                                                                                    │
-│   3. Reject, and tell the agent what to do instead                                                                   │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Edit needs permission                                                                                        1/2 │  
+  │  Path: /repo/src/app.ts                                                                                          │  
+  │                                                                                                                  │  
+  │  1   export function value() {                                                                                   │  
+  │  2 -   return 41                                                                                                 │  
+  │  2 +   return 42                                                                                                 │  
+  │  3   }                                                                                                           │  
+  │                                                                                                                  │  
+  │ › 1. Allow once                                                                                                  │  
+  │   2. Allow src/* for this session                                                                                │  
+  │   3. Reject, and tell the agent what to do instead                                                               │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                               │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -201,15 +201,15 @@ exports[`frames edit at 120x40 in English with ambiguous_width 2 1`] = `
 `;
 
 exports[`frames read at 80x24 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Read 需要权限                                                                │
-│  路径: /repo/src/index.ts                                                    │
-│                                                                              │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 *                                                        │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Read 需要权限                                                            │  
+  │  路径: /repo/src/index.ts                                                │  
+  │                                                                          │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 *                                                    │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -229,15 +229,15 @@ exports[`frames read at 80x24 1`] = `
 `;
 
 exports[`frames read at 80x24 in English 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Read needs permission                                                        │
-│  Path: /repo/src/index.ts                                                    │
-│                                                                              │
-│ › 1. Allow once                                                              │
-│   2. Allow * for this session                                                │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Read needs permission                                                    │  
+  │  Path: /repo/src/index.ts                                                │  
+  │                                                                          │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow * for this session                                            │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -257,15 +257,15 @@ exports[`frames read at 80x24 in English 1`] = `
 `;
 
 exports[`frames read at 120x40 in English with ambiguous_width 2 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Read needs permission                                                                                            1/2 │
-│  Path: /repo/src/index.ts                                                                                            │
-│                                                                                                                      │
-│ › 1. Allow once                                                                                                      │
-│   2. Allow * for this session                                                                                        │
-│   3. Reject, and tell the agent what to do instead                                                                   │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Read needs permission                                                                                        1/2 │  
+  │  Path: /repo/src/index.ts                                                                                        │  
+  │                                                                                                                  │  
+  │ › 1. Allow once                                                                                                  │  
+  │   2. Allow * for this session                                                                                    │  
+  │   3. Reject, and tell the agent what to do instead                                                               │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                               │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -301,16 +301,16 @@ exports[`frames read at 120x40 in English with ambiguous_width 2 1`] = `
 `;
 
 exports[`frames task at 80x24 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Task 需要权限                                                                │
-│  子 agent: Explore                                                           │
-│ 扫描破坏性变更                                                               │
-│                                                                              │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 explore                                                  │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Task 需要权限                                                            │  
+  │  子 agent: Explore                                                       │  
+  │ 扫描破坏性变更                                                           │  
+  │                                                                          │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 explore                                              │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -329,16 +329,16 @@ exports[`frames task at 80x24 1`] = `
 `;
 
 exports[`frames task at 80x24 in English 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Task needs permission                                                        │
-│  Subagent: Explore                                                           │
-│ 扫描破坏性变更                                                               │
-│                                                                              │
-│ › 1. Allow once                                                              │
-│   2. Allow explore for this session                                          │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Task needs permission                                                    │  
+  │  Subagent: Explore                                                       │  
+  │ 扫描破坏性变更                                                           │  
+  │                                                                          │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow explore for this session                                      │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -357,16 +357,16 @@ exports[`frames task at 80x24 in English 1`] = `
 `;
 
 exports[`frames task at 120x40 in English with ambiguous_width 2 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Task needs permission                                                                                            1/2 │
-│  Subagent: Explore                                                                                                   │
-│ 扫描破坏性变更                                                                                                       │
-│                                                                                                                      │
-│ › 1. Allow once                                                                                                      │
-│   2. Allow explore for this session                                                                                  │
-│   3. Reject, and tell the agent what to do instead                                                                   │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Task needs permission                                                                                        1/2 │  
+  │  Subagent: Explore                                                                                               │  
+  │ 扫描破坏性变更                                                                                                   │  
+  │                                                                                                                  │  
+  │ › 1. Allow once                                                                                                  │  
+  │   2. Allow explore for this session                                                                              │  
+  │   3. Reject, and tell the agent what to do instead                                                               │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                               │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -401,18 +401,18 @@ exports[`frames task at 120x40 in English with ambiguous_width 2 1`] = `
 `;
 
 exports[`frames external_directory at 80x24 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ 项目外目录 需要权限                                                          │
-│  路径: /opt/data                                                             │
-│                                                                              │
-│ 模式                                                                         │
-│ - /opt/data/*                                                                │
-│                                                                              │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 /opt/data/*                                              │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                          │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ 项目外目录 需要权限                                                      │  
+  │  路径: /opt/data                                                         │  
+  │                                                                          │  
+  │ 模式                                                                     │  
+  │ - /opt/data/*                                                            │  
+  │                                                                          │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 /opt/data/*                                          │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -429,18 +429,18 @@ exports[`frames external_directory at 80x24 1`] = `
 `;
 
 exports[`frames external_directory at 80x24 in English 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ External directory needs permission                                          │
-│  Path: /opt/data                                                             │
-│                                                                              │
-│ Patterns                                                                     │
-│ - /opt/data/*                                                                │
-│                                                                              │
-│ › 1. Allow once                                                              │
-│   2. Allow /opt/data/* for this session                                      │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ External directory needs permission                                      │  
+  │  Path: /opt/data                                                         │  
+  │                                                                          │  
+  │ Patterns                                                                 │  
+  │ - /opt/data/*                                                            │  
+  │                                                                          │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow /opt/data/* for this session                                  │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -457,18 +457,18 @@ exports[`frames external_directory at 80x24 in English 1`] = `
 `;
 
 exports[`frames external_directory at 120x40 in English with ambiguous_width 2 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ External directory needs permission                                                                              1/2 │
-│  Path: /opt/data                                                                                                     │
-│                                                                                                                      │
-│ Patterns                                                                                                             │
-│ - /opt/data/*                                                                                                        │
-│                                                                                                                      │
-│ › 1. Allow once                                                                                                      │
-│   2. Allow /opt/data/* for this session                                                                              │
-│   3. Reject, and tell the agent what to do instead                                                                   │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ External directory needs permission                                                                          1/2 │  
+  │  Path: /opt/data                                                                                                 │  
+  │                                                                                                                  │  
+  │ Patterns                                                                                                         │  
+  │ - /opt/data/*                                                                                                    │  
+  │                                                                                                                  │  
+  │ › 1. Allow once                                                                                                  │  
+  │   2. Allow /opt/data/* for this session                                                                          │  
+  │   3. Reject, and tell the agent what to do instead                                                               │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject                                                               │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -501,20 +501,20 @@ exports[`frames external_directory at 120x40 in English with ambiguous_width 2 1
 `;
 
 exports[`frames edit-long at 80x24 in zh-CN with ambiguous_width 1 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Edit 需要权限                                                                │
-│  路径: /repo/src/app.ts                                                      │
-│                                                                              │
-│   1   const keep1 = 1                                                      ▀ │
-│   2   const keep2 = 2                                                        │
-│   3   const keep3 = 3                                                        │
-│   4   const keep4 = 4                                                        │
-│                                                                              │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 src/*                                                    │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Edit 需要权限                                                            │  
+  │  路径: /repo/src/app.ts                                                  │  
+  │                                                                          │  
+  │   1   const keep1 = 1                                                  ▀ │  
+  │   2   const keep2 = 2                                                    │  
+  │   3   const keep3 = 3                                                    │  
+  │   4   const keep4 = 4                                                    │  
+  │                                                                          │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 src/*                                                │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                            │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -529,20 +529,20 @@ exports[`frames edit-long at 80x24 in zh-CN with ambiguous_width 1 1`] = `
 `;
 
 exports[`frames edit-long at 80x24 in en with ambiguous_width 1 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Edit needs permission                                                        │
-│  Path: /repo/src/app.ts                                                      │
-│                                                                              │
-│   1   const keep1 = 1                                                      ▀ │
-│   2   const keep2 = 2                                                        │
-│   3   const keep3 = 3                                                        │
-│   4   const keep4 = 4                                                        │
-│                                                                              │
-│ › 1. Allow once                                                              │
-│   2. Allow src/* for this session                                            │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Edit needs permission                                                    │  
+  │  Path: /repo/src/app.ts                                                  │  
+  │                                                                          │  
+  │   1   const keep1 = 1                                                  ▀ │  
+  │   2   const keep2 = 2                                                    │  
+  │   3   const keep3 = 3                                                    │  
+  │   4   const keep4 = 4                                                    │  
+  │                                                                          │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow src/* for this session                                        │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -557,24 +557,24 @@ exports[`frames edit-long at 80x24 in en with ambiguous_width 1 1`] = `
 `;
 
 exports[`frames edit-long at 120x40 in en with ambiguous_width 2 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Edit needs permission                                                                                            1/2 │
-│  Path: /repo/src/app.ts                                                                                              │
-│                                                                                                                      │
-│   1   const keep1 = 1                                                                                              █ │
-│   2   const keep2 = 2                                                                                              ▀ │
-│   3   const keep3 = 3                                                                                                │
-│   4   const keep4 = 4                                                                                                │
-│   5   const keep5 = 5                                                                                                │
-│   6   const keep6 = 6                                                                                                │
-│   7 -   old1()                                                                                                       │
-│   8 -   old2()                                                                                                       │
-│                                                                                                                      │
-│ › 1. Allow once                                                                                                      │
-│   2. Allow src/* for this session                                                                                    │
-│   3. Reject, and tell the agent what to do instead                                                                   │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Edit needs permission                                                                                        1/2 │  
+  │  Path: /repo/src/app.ts                                                                                          │  
+  │                                                                                                                  │  
+  │   1   const keep1 = 1                                                                                          █ │  
+  │   2   const keep2 = 2                                                                                          ▀ │  
+  │   3   const keep3 = 3                                                                                            │  
+  │   4   const keep4 = 4                                                                                            │  
+  │   5   const keep5 = 5                                                                                            │  
+  │   6   const keep6 = 6                                                                                            │  
+  │   7 -   old1()                                                                                                   │  
+  │   8 -   old2()                                                                                                   │  
+  │                                                                                                                  │  
+  │ › 1. Allow once                                                                                                  │  
+  │   2. Allow src/* for this session                                                                                │  
+  │   3. Reject, and tell the agent what to do instead                                                               │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen                                               │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -601,15 +601,15 @@ exports[`frames edit-long at 120x40 in en with ambiguous_width 2 1`] = `
 `;
 
 exports[`frames edit-long at 80x12 in zh-CN with ambiguous_width 1 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Edit 需要权限                                                                │
-│  路径: /repo/src/app.ts                                                      │
-│  +14 −14                                                                     │
-│ › 1. 允许这一次                                                              │
-│   2. 本会话内都允许 src/*                                                    │
-│   3. 拒绝，并告诉 agent 怎么做                                               │
-│ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                                │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Edit 需要权限                                                            │  
+  │  路径: /repo/src/app.ts                                                  │  
+  │  +14 −14                                                                 │  
+  │ › 1. 允许这一次                                                          │  
+  │   2. 本会话内都允许 src/*                                                │  
+  │   3. 拒绝，并告诉 agent 怎么做                                           │  
+  │ ↑↓ 或数字键选择 · ⏎ 确认 · esc 拒绝 · ⌃F 全屏                            │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -617,15 +617,15 @@ exports[`frames edit-long at 80x12 in zh-CN with ambiguous_width 1 1`] = `
 `;
 
 exports[`frames edit-long at 80x12 in en with ambiguous_width 1 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Edit needs permission                                                        │
-│  Path: /repo/src/app.ts                                                      │
-│  +14 −14                                                                     │
-│ › 1. Allow once                                                              │
-│   2. Allow src/* for this session                                            │
-│   3. Reject, and tell the agent what to do instead                           │
-│ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen           │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Edit needs permission                                                    │  
+  │  Path: /repo/src/app.ts                                                  │  
+  │  +14 −14                                                                 │  
+  │ › 1. Allow once                                                          │  
+  │   2. Allow src/* for this session                                        │  
+  │   3. Reject, and tell the agent what to do instead                       │  
+  │ ↑↓ or number keys to pick · ⏎ Confirm · esc Reject · ⌃F Fullscreen       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 

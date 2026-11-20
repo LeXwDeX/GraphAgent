@@ -236,7 +236,7 @@ for (const size of SIZES) {
           <text>主区内容</text>
         </AppFrame>
       ),
-      { ...size, state: tmp.path },
+      { ...size, state: tmp.path, zone: false },
     )
 
     try {

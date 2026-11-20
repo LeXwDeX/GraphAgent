@@ -25,6 +25,7 @@ import {
 } from "../../../src/routes/session/drawer-model"
 import { backgroundItems, type BackgroundItem } from "../../../src/session/background"
 import { DRAWER_WIDTH } from "../../../src/shell/drawer"
+import { DRAWER_INSET, DRAWER_SCROLL_GAP, SCROLLBAR_CELLS } from "../../../src/ui/layout"
 import { cellWidth, type AmbiguousWidth } from "../../../src/ui/width"
 
 afterEach(() => {
@@ -502,6 +503,8 @@ describe("the background section", () => {
 
   test("has the text a line of the drawer has: its width less the paddings and the scrollbar's column", () => {
     expect(DRAWER_TEXT_CELLS).toBe(DRAWER_WIDTH - 6)
+    // Worked out from the tokens the view pads with, so that the model and the drawer do not part.
+    expect(DRAWER_TEXT_CELLS).toBe(DRAWER_WIDTH - 2 * DRAWER_INSET - DRAWER_SCROLL_GAP - SCROLLBAR_CELLS)
   })
 })
 

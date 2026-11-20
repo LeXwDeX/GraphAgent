@@ -7,9 +7,10 @@ import type { ProjectTrustDecideInput, ProjectTrustEntry } from "@graphagent/sdk
 import { setLanguage } from "../../src/i18n"
 import type { PanelHostApi } from "../../src/panel/host"
 import { TrustPanel, type TrustPanelMode } from "../../src/panel/trust"
+import { renderUntilFrame } from "../fixture/frames"
 import { json, type FetchHandler } from "../fixture/tui-sdk"
 import { shellState } from "../shell/contexts"
-import { PanelSurface, renderAppPanel } from "./contexts"
+import { PanelSurface, panelRows, renderAppPanel } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -24,11 +25,7 @@ async function settle(app: Awaited<ReturnType<typeof renderAppPanel>>) {
   await app.renderOnce()
 }
 
-async function waitFor(
-  app: Awaited<ReturnType<typeof renderAppPanel>>,
-  condition: () => boolean,
-  message: string,
-) {
+async function waitFor(app: Awaited<ReturnType<typeof renderAppPanel>>, condition: () => boolean, message: string) {
   for (let attempt = 0; attempt < 80; attempt++) {
     await Bun.sleep(20)
     await app.renderOnce()
@@ -37,9 +34,7 @@ async function waitFor(
   throw new Error(`timed out waiting for ${message}`)
 }
 
-function entry(
-  overrides: Partial<ProjectTrustEntry> & Pick<ProjectTrustEntry, "id" | "command">,
-): ProjectTrustEntry {
+function entry(overrides: Partial<ProjectTrustEntry> & Pick<ProjectTrustEntry, "id" | "command">): ProjectTrustEntry {
   return {
     category: "command-shell",
     fp: "fp-command",
@@ -281,8 +276,18 @@ test("decline all submits declined decisions for every pending entry", async () 
 
 test("changed panel shows new and modified entries with the unchanged count", async () => {
   await using tmp = await shellState()
-  const changed = entry({ id: "changed", command: "bun run lint --write", change: "modified", previous: "bun run lint" })
-  const added = entry({ id: "added", command: "bun run test", change: "new", source: { file: "commands.json", line: 9 } })
+  const changed = entry({
+    id: "changed",
+    command: "bun run lint --write",
+    change: "modified",
+    previous: "bun run lint",
+  })
+  const added = entry({
+    id: "added",
+    command: "bun run test",
+    change: "new",
+    source: { file: "commands.json", line: 9 },
+  })
   const trusted = entry({ id: "trusted", command: "bun run typecheck", state: "trusted" })
   const calls = recording([added, changed, trusted])
   const { app } = await renderTrust({
@@ -405,3 +410,28 @@ test("manage panel lists every entry with state and revokes the selected trusted
     app.renderer.destroy()
   }
 })
+// A command too long for its row is cut by the panel to what the row has left, so that it ends in the last cell of the
+// text of the panel (#1672): the cut command is followed by the padding and the border and nothing else.
+const LONG_COMMAND = `bun run ${"a-script-name-that-is-far-too-long-".repeat(8)}`
+
+for (const mode of ["first", "manage"] as const) {
+  for (const [width, height] of [
+    [80, 24],
+    [120, 40],
+  ] as const) {
+    test(`a command too long for its row is cut at the last cell of the panel's text, ${mode} mode at ${width} columns`, async () => {
+      await using tmp = await shellState()
+      const calls = recording([entry({ id: "long", command: LONG_COMMAND }), risky])
+      const { app } = await renderTrust({ mode, handler: calls.handler, state: tmp.path, width, height })
+
+      try {
+        const frame = await renderUntilFrame(app, (text) => text.includes("a-script-name"), "the long command")
+        const row = panelRows(frame).find((line) => line.includes("a-script-name")) ?? ""
+        expect(row).toContain("…")
+        expect(row.slice(row.indexOf("…") + 1)).toBe(" │")
+      } finally {
+        app.renderer.destroy()
+      }
+    })
+  }
+}

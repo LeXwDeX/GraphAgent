@@ -7,6 +7,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
+import { MARK_CELLS } from "../ui/layout"
 import { cellWidth, type AmbiguousWidth } from "../ui/width"
 import { remoteLine } from "../util/remote-text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
@@ -78,7 +79,12 @@ export interface DetailPanelProps<T = unknown> {
   tone?: "default" | "warning"
 }
 
-const COLUMN_GAP = 2
+/** The gap after a text column of the rows, before the next cell. */
+export const COLUMN_GAP = 2
+/** What the check lead of a row draws: the box, and the gap to the first column. */
+const CHECK_LEAD = { on: "[x] ", off: "[ ] " } as const
+/** Cells a check lead takes. A panel that fits its last cell to what the lead and the columns leave takes it from here. */
+export const CHECK_LEAD_CELLS = cellWidth(CHECK_LEAD.on)
 
 export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   const { theme } = useTheme()
@@ -328,7 +334,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                         wrapMode="none"
                         fg={lead().disabled ? theme.textDim : lead().checked ? theme.success : theme.textMuted}
                       >
-                        {lead().checked ? "[x] " : "[ ] "}
+                        {lead().checked ? CHECK_LEAD.on : CHECK_LEAD.off}
                       </text>
                     </box>
                   )}
@@ -351,7 +357,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                 </For>
               </box>
               <Show when={isSelected() && row.body}>
-                <box flexShrink={0} paddingLeft={2} paddingBottom={1}>
+                <box flexShrink={0} paddingLeft={MARK_CELLS} paddingBottom={1}>
                   <text wrapMode="word" fg={theme.text}>
                     {row.body!}
                   </text>

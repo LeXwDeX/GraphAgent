@@ -16,7 +16,7 @@ import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth } from "../../src/ui/width"
 import { readFrame, readSpans } from "../fixture/frames"
 import { waitFor } from "../routes/dag-mode-harness"
-import { PanelSurface, renderPanel } from "./contexts"
+import { PanelSurface, panelRows, renderPanel } from "./contexts"
 import { shellState } from "../shell/contexts"
 
 beforeEach(() => {
@@ -130,8 +130,9 @@ function collect(root: Renderable, result: Renderable[] = []) {
   return result
 }
 
+/** The rows of a frame from the panel's left border, with the gutter and the blanks at the end cut off. */
 function frameLines(frame: string) {
-  return frame.split("\n").map((line) => line.trimEnd())
+  return panelRows(frame)
 }
 
 function borderIndex(lines: string[], glyph: string) {
@@ -1601,3 +1602,31 @@ test("a next-row command with a key besides down leaves the arrow keys as two en
     app.renderer.destroy()
   }
 })
+
+// A value too long for its row is cut to what the row has left (#1672): the cut value is followed by the padding and the
+// border and nothing else, in the panel's 72 cells at 80 columns and in its 112 at 120.
+for (const [width, height] of [
+  [80, 24],
+  [120, 40],
+] as const) {
+  test(`a value too long for its row is cut at the last cell of the panel's text, ${width} columns`, async () => {
+    await using tmp = await shellState()
+    const rows: SettingRow[] = [
+      { id: "long", label: "名称", kind: "action", valueLabel: "v".repeat(200), run: () => {} },
+    ]
+    const app = await renderPanel(() => <PanelSurface spec={{ render: () => valuePanel(rows) }} />, {
+      width,
+      height,
+      state: tmp.path,
+    })
+
+    try {
+      const frame = await untilFrame(app, (value) => value.includes("vvvv"))
+      const row = frameLines(frame).find((line) => line.includes("vvvv")) ?? ""
+      expect(row).toContain("…")
+      expect(row.slice(row.indexOf("…") + 1)).toBe(" │")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}

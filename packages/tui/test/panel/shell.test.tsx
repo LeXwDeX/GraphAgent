@@ -2,15 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
+import { ScrollBoxRenderable, type Renderable } from "@opentui/core"
 import type { ActiveBinding } from "@opentui/keymap"
 import { afterEach, beforeEach, expect, test } from "bun:test"
+import { createEffect } from "solid-js"
 import { setLanguage } from "../../src/i18n"
 import { useBindings } from "../../src/keymap"
-import { hintEntries, joinPairKeys, PanelShell, panelMaxRows, type PanelHint } from "../../src/panel/shell"
+import {
+  hintEntries,
+  joinPairKeys,
+  PanelShell,
+  panelMaxRows,
+  usePanelInnerWidth,
+  type PanelHint,
+} from "../../src/panel/shell"
 import { renderUntilFrame } from "../fixture/frames"
 import { shellState } from "../shell/contexts"
+import { contentWidth, framedInnerWidth, panelInnerWidth } from "../../src/ui/layout"
 import { cellWidth } from "../../src/ui/width"
-import { PanelSurface, renderPanel } from "./contexts"
+import { PanelSurface, panelRows, renderPanel } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -164,7 +174,7 @@ function PairShell(props: { previous: string; next: string; extra?: readonly Pan
 
 /** The hint row of the panel: the text on the line above the bottom border, between the border and the padding. */
 function hintRow(frame: string) {
-  const lines = frame.split("\n").map((line) => line.trimEnd())
+  const lines = panelRows(frame)
   const bottom = lines.findIndex((line) => line.includes("╰"))
   return lines[bottom - 1].slice(1, -1).trim()
 }
@@ -215,7 +225,7 @@ function ArrowShell() {
 }
 
 // `⇧` and the arrows take two cells each at ambiguous_width 2: the same hints are 72 cells wide at 1, and 84 at 2, where
-// the 76 of an 80-column panel do not hold them. The row is cut by cells, and at 1 not cut at all.
+// the 72 of an 80-column panel's text do not hold them. The row is cut by cells, and at 1 not cut at all.
 for (const ambiguousWidth of [1, 2] as const) {
   test(`the hint row of shifted arrow keys is cut by cells at 80 columns with ambiguous_width ${ambiguousWidth}`, async () => {
     await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
@@ -226,13 +236,72 @@ for (const ambiguousWidth of [1, 2] as const) {
     })
     try {
       const row = hintRow(await renderUntilFrame(app, (frame) => frame.includes("内容"), "the shell"))
-      expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(80 - 4)
+      expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(framedInnerWidth(contentWidth(80)))
       if (ambiguousWidth === 1) {
         expect(row).toBe("⇧↑ ab · ⇧↓ ab · ⇧← ab · ⇧→ ab · ⌥↑ ab · ⌥↓ ab · ⌥← ab · ⌥→ ab · esc 关闭")
       } else {
         expect(row).toStartWith("⇧↑ ab · ⇧↓ ab · ⇧← ab")
         expect(row).toEndWith("…")
       }
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}
+
+function descendants(root: Renderable, result: Renderable[] = []) {
+  result.push(root)
+  for (const child of root.getChildren()) descendants(child, result)
+  return result
+}
+
+/** The scroll area of the panel as the renderer laid it out: its width is the cells the shell lays the rows out in. */
+const scrollAreaOf = (app: Awaited<ReturnType<typeof renderPanel>>) =>
+  descendants(app.renderer.root).find((node): node is ScrollBoxRenderable => node instanceof ScrollBoxRenderable)
+
+/** A shell that reports the width `usePanelInnerWidth` gives next to it, the way a panel with columns of its own reads it. */
+function WidthProbe(props: { fullscreen?: boolean; report: (width: number) => void }) {
+  const innerWidth = usePanelInnerWidth({ fullscreen: () => props.fullscreen })
+  createEffect(() => props.report(innerWidth()))
+  return (
+    <PanelShell title="宽度" fullscreen={props.fullscreen} hints={[]}>
+      <text>内容</text>
+    </PanelShell>
+  )
+}
+
+// The text of a panel is as wide as `panelInnerWidth` says, in the frame of the bottom zone (80 columns: 72 cells) and in
+// a fullscreen one, which spans the terminal (76).
+for (const width of [80, 120]) {
+  test(`usePanelInnerWidth is the width the shell lays its rows out in, ${width} columns`, async () => {
+    await using tmp = await shellState()
+    let reported = 0
+    const app = await renderPanel(
+      () => <PanelSurface spec={{ render: () => <WidthProbe report={(value) => (reported = value)} /> }} />,
+      { width, height: 24, state: tmp.path },
+    )
+    try {
+      await renderUntilFrame(app, (frame) => frame.includes("内容"), "the shell")
+      expect(reported).toBe(panelInnerWidth(width))
+      expect(scrollAreaOf(app)?.width).toBe(reported)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test(`a fullscreen panel takes the framed width of the whole terminal, ${width} columns`, async () => {
+    await using tmp = await shellState()
+    let reported = 0
+    const app = await renderPanel(() => <WidthProbe fullscreen report={(value) => (reported = value)} />, {
+      width,
+      height: 24,
+      state: tmp.path,
+      zone: false,
+    })
+    try {
+      await renderUntilFrame(app, (frame) => frame.includes("内容"), "the shell")
+      expect(reported).toBe(panelInnerWidth(width, true))
+      expect(scrollAreaOf(app)?.width).toBe(reported)
     } finally {
       app.renderer.destroy()
     }

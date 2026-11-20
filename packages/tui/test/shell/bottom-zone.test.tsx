@@ -55,7 +55,7 @@ test("ask wins over the panel and restores the suspended stack when answered", a
     return <BottomZone state={state} composer={<Composer onRef={(value) => (input = value)} />} />
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     expect(input).toBeDefined()
     expect(state.state().kind).toBe("composer")
@@ -99,7 +99,7 @@ test("panels keep the composer draft and restore input focus after escape", asyn
     return <BottomZone state={state} composer={<Composer onRef={(value) => (input = value)} />} />
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     await typeInto(app, input!, "draft")
     expect(input!.value).toBe("draft")
@@ -138,7 +138,7 @@ test("the aside sits above the composer without taking focus or dimming", async 
     return <BottomZone state={state} composer={<Composer onRef={(value) => (input = value)} />} />
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     await typeInto(app, input!, "note")
 
@@ -179,7 +179,7 @@ test("an ask suspends the aside and the aside returns after the answer", async (
     return <BottomZone state={state} composer={<Composer onRef={(value) => (input = value)} />} />
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     await app.renderOnce()
     expect(input).toBeDefined()
@@ -278,7 +278,7 @@ test("the frame dims the main area only while a panel or ask surface is open", a
     )
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     await app.renderOnce()
     expect(input).toBeDefined()
@@ -356,7 +356,7 @@ test("an installed composer stays mounted behind a panel and keeps its draft and
     return <BottomZone state={state} />
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     await typeInto(app, input!, "draft")
     expect(created).toBe(1)
@@ -400,7 +400,7 @@ test("replacing the composer tears the previous one down and mounts the next", a
     return <BottomZone state={state} />
   }
 
-  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path, zone: false })
   try {
     expect(app.captureCharFrame()).toContain("home")
 

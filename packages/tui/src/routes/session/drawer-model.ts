@@ -8,7 +8,7 @@ import { formatDagDuration } from "../../dag/model"
 import { t, type MessageKey } from "../../i18n"
 import { backgroundElapsed, type BackgroundItem, type BackgroundItems } from "../../session/background"
 import { activeRuns, backgroundLabel } from "../../shell/background-mark"
-import { DRAWER_WIDTH } from "../../shell/drawer"
+import { DRAWER_INSET, DRAWER_SCROLL_GAP, DRAWER_WIDTH, SCROLLBAR_CELLS } from "../../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { contextShare, estimateMark, type ContextModel } from "../../util/context-window"
 import { remoteLine } from "../../util/remote-text"
@@ -232,8 +232,11 @@ export function services(
 
 // ── The background runs (#1058 5) ────────────────────────────────────────────
 
-/** Cells a line of a section has: the drawer less its paddings and the column the scrollbar may take. */
-export const DRAWER_TEXT_CELLS = DRAWER_WIDTH - 6
+/**
+ * Cells a line of a section has: the drawer less the inset at both sides, the gap before the scrollbar and the column the
+ * scrollbar may take. The view (`drawer.tsx`) pads with the same tokens, so the two do not part.
+ */
+export const DRAWER_TEXT_CELLS = DRAWER_WIDTH - 2 * DRAWER_INSET - DRAWER_SCROLL_GAP - SCROLLBAR_CELLS
 
 /** Runs the section lists; the rest are counted on its last line. */
 export const BACKGROUND_ROWS_MAX = 3
