@@ -33,6 +33,7 @@ import {
 import type { DagWaveNode } from "../dag/waves"
 import { t, type MessageKey } from "../i18n"
 import { backgroundItems } from "../session/background"
+import { GUTTER, NARROW_WIDTH, contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
 import { remoteLine } from "../util/remote-text"
@@ -67,16 +68,13 @@ export function StatusBand(props: ParentProps) {
 }
 
 /** Below this terminal width the band merges into one row and the goal is left to the drawer (F4 1). */
-export const BAND_NARROW_WIDTH = 100
+export const BAND_NARROW_WIDTH = NARROW_WIDTH
 
 /** The `/dag` panel's id in the panel host. The band leaves its workflow row to the panel while one is open. */
 export const DAG_PANEL_ID = "dag"
 
 /** The source name the band declares its workflow under (`sync.dag.watch`). */
 const WATCH_SOURCE = "status-band"
-
-/** Columns kept clear at either edge, in line with the transcript and the prompt. */
-const BAND_PADDING = 2
 
 /** Display policy of the workflow row (kv `dag_band`); the goal row does not follow it. */
 export type DagBandMode = "auto" | "always" | "hidden"
@@ -685,8 +683,8 @@ function BandLine(props: { row: BandRow; onClick?: () => void; onAgents?: () => 
       height={1}
       flexShrink={0}
       flexDirection="row"
-      paddingLeft={BAND_PADDING}
-      paddingRight={BAND_PADDING}
+      paddingLeft={GUTTER}
+      paddingRight={GUTTER}
       onMouseUp={(event) => {
         if (event.target && own.has(event.target)) return
         props.onClick?.()
@@ -747,7 +745,7 @@ export function SessionStatusBand() {
   })
   const mode = createMemo(() => dagBandMode(kv.get("dag_band", "auto")))
   const aw = createMemo((): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1))
-  const width = createMemo(() => Math.max(0, dimensions().width - 2 * BAND_PADDING))
+  const width = createMemo(() => Math.max(0, contentWidth(dimensions().width)))
   const narrow = createMemo(() => dimensions().width < BAND_NARROW_WIDTH)
   // The panel shows the workflow in full, so the band does not say it twice.
   const panelOpen = createMemo(() => zone?.host.stack().some((spec) => spec.id === DAG_PANEL_ID) ?? false)

@@ -12,6 +12,7 @@ import { useTuiConfig } from "../config"
 import { t } from "../i18n"
 import { GRAPHAGENT_BASE_MODE, useBindings } from "../keymap"
 import { useBottomZoneOptional } from "../shell/bottom-zone"
+import { GUTTER } from "../ui/layout"
 import { useToast } from "../ui/toast"
 
 let once = false
@@ -91,8 +92,8 @@ export function Home() {
         width="100%"
         flexShrink={0}
         alignItems="center"
-        paddingLeft={2}
-        paddingRight={2}
+        paddingLeft={GUTTER}
+        paddingRight={GUTTER}
         paddingTop={1}
         paddingBottom={1}
       >
@@ -105,7 +106,7 @@ export function Home() {
   onCleanup(() => offComposer?.())
 
   return (
-    <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>
+    <box flexGrow={1} alignItems="center" paddingLeft={GUTTER} paddingRight={GUTTER}>
       <box flexGrow={1} minHeight={0} />
       <box height={4} minHeight={0} flexShrink={1} />
       <box flexShrink={0}>

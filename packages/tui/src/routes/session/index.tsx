@@ -122,6 +122,7 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { AdaptiveMarkdown } from "../../ui/adaptive-markdown"
+import { GUTTER, MARK_CELLS, ROW_INDENT } from "../../ui/layout"
 import {
   EscapePriority,
   GRAPHAGENT_BASE_MODE,
@@ -141,10 +142,8 @@ import {
   estimateRowHeight,
   foldRowKey,
   isWindowed,
-  MARK_CELLS,
   PART_OVERSCAN,
   prefixPositions,
-  ROW_INDENT,
   rowRevision,
   settledPartText,
   TAIL_ALWAYS,
@@ -695,7 +694,7 @@ export function Main() {
     render: () => (
       <Show when={session() && visible()}>
         <LocationProvider location={location()}>
-          <box width="100%" flexShrink={0} paddingLeft={2} paddingRight={2} paddingBottom={1}>
+          <box width="100%" flexShrink={0} paddingLeft={GUTTER} paddingRight={GUTTER} paddingBottom={1}>
             <Prompt
               visible={!disabled()}
               ref={bind}
@@ -1689,7 +1688,7 @@ export function Main() {
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
-          <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
+          <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={GUTTER} paddingRight={GUTTER} gap={1}>
             <Show when={session()}>
               <scrollbox
                 ref={(r) => (scroll = r)}
