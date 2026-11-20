@@ -5,7 +5,7 @@ import { createSignal } from "solid-js"
 
 /**
  * One virtual line of the session transcript. The row is the unit of
- * windowing: user messages, assistant parts and message-level metadata each
+ * windowing: user messages, assistant parts and message-level notes each
  * become one row. `revision` changes when the row's content changes, which
  * invalidates its cached measured height.
  */
@@ -14,8 +14,10 @@ export type RowKind =
   | "text"
   | "reasoning"
   | "tool"
+  /** The one line an interrupted turn ends with (#1615). No other turn has a closing line. */
   | "meta"
   | "revert"
+  /** The block that says a turn failed. */
   | "notice"
   /** A sub-agent view's first user message, drawn as the task its parent delegated (#1033 3.4). */
   | "delegation"
@@ -308,8 +310,12 @@ export function estimateRowHeight(row: Row, width: number, chars: number, expand
     case "revert":
       return 5
     case "meta":
-    case "notice":
+      // The gap above the note and its one line.
       return 2
+    case "notice":
+      // The gap above the block, the padding above and below, and the lines of the message, behind the border and the
+      // padding on its left: the width a text row indents by.
+      return lines + 3
   }
 }
 
