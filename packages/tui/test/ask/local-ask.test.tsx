@@ -46,6 +46,7 @@ test("askConfirm enqueues a confirm and resolves true on enter", async () => {
     width: 100,
     height: 30,
     state: tmp.path,
+    zone: false,
     setup: (context) => {
       void askConfirm(context.bottomZone, {
         title: "删除工作副本？",
@@ -80,6 +81,7 @@ test("askConfirm resolves false on escape and removes its request", async () => 
     width: 100,
     height: 30,
     state: tmp.path,
+    zone: false,
     setup: (context) => {
       void askConfirm(context.bottomZone, {
         title: "放弃更改？",
@@ -110,6 +112,7 @@ test("askChoice resolves the numbered option and clears the surface", async () =
     width: 100,
     height: 30,
     state: tmp.path,
+    zone: false,
     setup: (context) => {
       void askChoice(context.bottomZone, {
         title: "选择工作区",
@@ -144,6 +147,7 @@ test("askChoice resolves undefined on escape", async () => {
     width: 100,
     height: 30,
     state: tmp.path,
+    zone: false,
     setup: (context) => {
       void askChoice(context.bottomZone, {
         title: "选择工作区",

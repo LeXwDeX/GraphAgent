@@ -25,7 +25,7 @@ import { createCounters } from "../perf/counters"
 import { readFrame, readSpans, sessionFixture, waitFor } from "../routes/dag-mode-harness"
 import { mountSessionShell } from "../routes/session-shell"
 import { shellState } from "../shell/contexts"
-import { PanelSurface, renderAppPanel, type AppPanelTestContext } from "./contexts"
+import { PanelSurface, panelRows, renderAppPanel, type AppPanelTestContext } from "./contexts"
 import { fakePromptRef } from "./prompt-ref"
 
 // The /agents panel, mounted for real over the data layer and the panel host: what it lists and in which order, how
@@ -249,7 +249,8 @@ async function waitUntil(
   }
 }
 
-const linesOf = (frame: string) => frame.split("\n").map((line) => line.trimEnd())
+/** The rows of a frame from the panel's left border: the gutter and the blanks at the end are cut off. */
+const linesOf = (frame: string) => panelRows(frame)
 const rowWith = (frame: string, needle: string) => linesOf(frame).find((line) => line.includes(needle))
 /** The note line of the panel, where the detail of the selected row is: the line before the hint row. */
 const noteLine = (frame: string) => {

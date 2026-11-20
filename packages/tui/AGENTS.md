@@ -526,7 +526,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/graphagent && bun run typecheck && bun test test/cli/run`。
 - 渲染测试用 `testRender`（`@opentui/solid`）。快照尺寸：面板、状态带、抽屉、页脚等组件 80×24 与 120×40；骨架测试 80×24、100×30、140×40；宽 < 60 或高 < 12 断言只渲染"终端太小"。
-- 面板的几何（#1671）：`renderPanel`、`renderAppPanel` 把面板挂在没有底区的根上，框铺满终端宽；真实应用里面板在 `ZoneSurface` 的左右留边之内。所以这两个夹具里的面板按留边算文字宽（`contentWidth`），框却是终端宽，行尾可能离右边框 4 格，快照里看得到。对列位置的断言放在挂了底区的夹具里（`mountSessionShell`、`runApp`）和 `test/shell/layout-guard.test.tsx`；改面板里的宽度算式要在这些里核对，不只看 `renderPanel`。
+- 面板的几何（#1671、#1672）：`renderPanel`、`renderAppPanel` 把传入的元素包在 `ZoneSurface`（`shell/bottom-zone.tsx`，真实应用里面板和询问所在的那一层）里挂载，左右各留 `GUTTER`，框占内容区，框内文字宽与真实界面相同（80 列是 72）。自己带底区的元素（`BottomZone`，或装着它的 `AppFrame`）传 `zone: false`，否则留边会算两遍。读这两个夹具的帧时用 `test/panel/contexts.tsx` 的 `panelRows(frame)`：它去掉每行前面的留边和行尾空白，读出的列从面板自己的左边框算起。对屏幕上的列位置的断言仍放在挂了整屏的夹具里（`mountSessionShell`、`runApp`）和 `test/shell/layout-guard.test.tsx`；改面板里的宽度算式要在这些里核对，不只看 `renderPanel`。
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
 - 测试进程不碰用户真实的目录：`test/preload.ts`（`bunfig.toml` 的 `[test] preload`）在任何 `src/` import 之前，把 `GRAPHAGENT_TEST_HOME` 与 `XDG_*` 指到一个临时目录，整个测试结束后删除。原因是 `@graphagent/core/global` 首次 import 时就按 XDG 变量定下 `Global.Path.*` 并建目录，`TuiLog` 的日志文件也在其中，不隔离的话错误路径会往已安装版本的真实日志里追加。新增测试不得读写真实的 HOME 与 XDG 目录；`test/util/log.test.ts` 守住 `TuiLog` 的目标路径。
 - 时间用 `@opentui/core` 的 `ManualClock` 推进，不用真实睡眠。`grep -n "setTimeout\|sleep" packages/tui/test/perf/scenarios.ts` 为空。

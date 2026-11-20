@@ -13,7 +13,7 @@ import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../../src/ui/width"
 import { json, type FetchHandler } from "../../fixture/tui-sdk"
 import { readSpans, renderUntilFrame } from "../../fixture/frames"
-import { renderAppPanel } from "../../panel/contexts"
+import { panelRows, renderAppPanel } from "../../panel/contexts"
 import { shellState } from "../../shell/contexts"
 
 /**
@@ -342,9 +342,13 @@ async function stable(app: App) {
   )
 }
 
-/** The lines of the panel, from its top border to its bottom border. */
+/**
+ * The lines of the panel, from its top border to its bottom border, counted from its left border. The panel sits a
+ * gutter in from the edge of the terminal; the fullscreen ask spans the terminal, and its border is in column 0.
+ */
 function panelLines(frame: string) {
-  const lines = frame.split("\n")
+  const spansTerminal = frame.split("\n").some((line) => line.startsWith("╭"))
+  const lines = spansTerminal ? frame.split("\n").map((line) => line.trimEnd()) : panelRows(frame)
   const top = lines.findIndex((line) => line.startsWith("╭"))
   const bottom = lines.findIndex((line) => line.startsWith("╰"))
   if (top < 0 || bottom < top) throw new Error(`no panel in the frame:\n${frame}`)
@@ -587,7 +591,7 @@ describe("the options", () => {
         expect(frame).not.toContain("4.")
       })
       await withPrompt({ scene: scenes()[0], language, child: true }, async (app) => {
-        const lines = (await stable(app)).split("\n")
+        const lines = panelRows(await stable(app))
         const third = lines.find((line) => line.includes("3."))!
         expect(inside(third).trim().endsWith(other.slice(3))).toBe(true)
         expect(third).not.toContain(own.slice(3))

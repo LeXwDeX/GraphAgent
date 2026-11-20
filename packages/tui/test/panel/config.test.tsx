@@ -15,8 +15,9 @@ import { useBindings } from "../../src/keymap"
 import { ConfigPanel } from "../../src/panel/config"
 import { usePanelHost, type PanelHostApi } from "../../src/panel/host"
 import { ModelPanel } from "../../src/panel/model"
+import { contentWidth } from "../../src/ui/layout"
 import { cellWidth } from "../../src/ui/width"
-import { PanelSurface, renderAppPanel, type AppPanelTestContext } from "./contexts"
+import { PanelSurface, panelRows, renderAppPanel, type AppPanelTestContext } from "./contexts"
 import { readFrame, renderUntilFrame } from "../fixture/frames"
 import { waitFor } from "../fixture/held-io"
 import { promptShown, runApp, waitForFrame, type Setup } from "../fixture/run-app"
@@ -1335,7 +1336,7 @@ test("the title model row shows the model the file holds, and explains how to cl
 
 /** The text of a frame between the tab line and the hint row, as one line per row. */
 function bodyOf(frame: string) {
-  const lines = frame.split("\n").map((line) => line.trimEnd())
+  const lines = panelRows(frame)
   return lines.slice(
     lines.findIndex((line) => line.includes("╭")) + 2,
     lines.findIndex((line) => line.includes("╰")) - 1,
@@ -1632,12 +1633,13 @@ for (const language of ["zh-CN", "en"] as const) {
           let height: number | undefined
           // Each row in turn is the selected one, with the hint to change it and the note it brings.
           for (let row = 0; row < 7; row++) {
-            const lines = (await readFrame(app)).split("\n").map((line) => line.trimEnd())
+            const lines = panelRows(await readFrame(app))
             const bordered = lines.filter((line) => line.startsWith("│") && line.endsWith("│"))
             expect(bordered.length).toBeGreaterThan(4)
             for (const line of bordered) {
-              // Inside the border: the padding and what the panel itself laid out.
-              expect({ tab, line, fits: cellWidth(line.slice(1, -1).trimEnd(), ambiguousWidth) <= 80 - 3 }).toEqual({
+              // Inside the border: the padding and what the panel itself laid out, at most the frame less its borders.
+              const room = contentWidth(80) - 2
+              expect({ tab, line, fits: cellWidth(line.slice(1, -1).trimEnd(), ambiguousWidth) <= room }).toEqual({
                 tab,
                 line,
                 fits: true,

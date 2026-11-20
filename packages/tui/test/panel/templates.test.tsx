@@ -16,7 +16,7 @@ import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth } from "../../src/ui/width"
 import { readFrame, readSpans } from "../fixture/frames"
 import { waitFor } from "../routes/dag-mode-harness"
-import { PanelSurface, renderPanel } from "./contexts"
+import { PanelSurface, panelRows, renderPanel } from "./contexts"
 import { shellState } from "../shell/contexts"
 
 beforeEach(() => {
@@ -130,8 +130,9 @@ function collect(root: Renderable, result: Renderable[] = []) {
   return result
 }
 
+/** The rows of a frame from the panel's left border, with the gutter and the blanks at the end cut off. */
 function frameLines(frame: string) {
-  return frame.split("\n").map((line) => line.trimEnd())
+  return panelRows(frame)
 }
 
 function borderIndex(lines: string[], glyph: string) {

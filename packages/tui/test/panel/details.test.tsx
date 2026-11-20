@@ -15,7 +15,7 @@ import { StatusPanel } from "../../src/panel/status"
 import { WorkspaceFileChangesPanel } from "../../src/panel/workspace-file-changes"
 import { cellWidth } from "../../src/ui/width"
 import { shellState } from "../shell/contexts"
-import { PanelSurface, renderAppPanel, renderPanel } from "./contexts"
+import { PanelSurface, panelRows, renderAppPanel, renderPanel } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -332,13 +332,9 @@ test("export panel shares the settings layout: values after the names, where a t
     height: 40,
     state: tmp.path,
   })
-  const lines = () =>
-    app
-      .captureCharFrame()
-      .split("\n")
-      .map((line) => line.trimEnd())
+  const lines = () => panelRows(app.captureCharFrame())
   const row = (label: string) => lines().find((line) => line.includes(label)) ?? ""
-  /** The cell the text starts at: the border and padding, the selection mark, and the 22 cells of the name column. */
+  /** The cell the text starts at, from the panel's left border: the border and padding, the selection mark, and the 22 cells of the name column. */
   const column = (line: string, text: string) => cellWidth(line.slice(0, line.indexOf(text)))
 
   try {

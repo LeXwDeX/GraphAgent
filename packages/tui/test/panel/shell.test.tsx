@@ -9,8 +9,9 @@ import { useBindings } from "../../src/keymap"
 import { hintEntries, joinPairKeys, PanelShell, panelMaxRows, type PanelHint } from "../../src/panel/shell"
 import { renderUntilFrame } from "../fixture/frames"
 import { shellState } from "../shell/contexts"
+import { contentWidth, framedInnerWidth } from "../../src/ui/layout"
 import { cellWidth } from "../../src/ui/width"
-import { PanelSurface, renderPanel } from "./contexts"
+import { PanelSurface, panelRows, renderPanel } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -164,7 +165,7 @@ function PairShell(props: { previous: string; next: string; extra?: readonly Pan
 
 /** The hint row of the panel: the text on the line above the bottom border, between the border and the padding. */
 function hintRow(frame: string) {
-  const lines = frame.split("\n").map((line) => line.trimEnd())
+  const lines = panelRows(frame)
   const bottom = lines.findIndex((line) => line.includes("╰"))
   return lines[bottom - 1].slice(1, -1).trim()
 }
@@ -215,7 +216,7 @@ function ArrowShell() {
 }
 
 // `⇧` and the arrows take two cells each at ambiguous_width 2: the same hints are 72 cells wide at 1, and 84 at 2, where
-// the 76 of an 80-column panel do not hold them. The row is cut by cells, and at 1 not cut at all.
+// the 72 of an 80-column panel's text do not hold them. The row is cut by cells, and at 1 not cut at all.
 for (const ambiguousWidth of [1, 2] as const) {
   test(`the hint row of shifted arrow keys is cut by cells at 80 columns with ambiguous_width ${ambiguousWidth}`, async () => {
     await using tmp = await shellState({ ambiguous_width: ambiguousWidth })
@@ -226,7 +227,7 @@ for (const ambiguousWidth of [1, 2] as const) {
     })
     try {
       const row = hintRow(await renderUntilFrame(app, (frame) => frame.includes("内容"), "the shell"))
-      expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(80 - 4)
+      expect(cellWidth(row, ambiguousWidth)).toBeLessThanOrEqual(framedInnerWidth(contentWidth(80)))
       if (ambiguousWidth === 1) {
         expect(row).toBe("⇧↑ ab · ⇧↓ ab · ⇧← ab · ⇧→ ab · ⌥↑ ab · ⌥↓ ab · ⌥← ab · ⌥→ ab · esc 关闭")
       } else {
