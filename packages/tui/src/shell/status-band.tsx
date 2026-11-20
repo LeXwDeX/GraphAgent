@@ -124,8 +124,13 @@ const HINT_GAP = "  "
 const MIN_GAP = 2
 /** Cells a title keeps on a tight row. */
 const TITLE_SHORT_CELLS = 12
-/** Cells a node takes in the bar before the layout narrows it. */
+/** Slots a node takes in the bar before the layout narrows it. */
 const SLOTS_PER_NODE = 3
+/**
+ * Slots a node keeps in the bar while the text is given its room first (#1619): the text takes the richest level that
+ * still leaves the bar this many, and the bar takes what is left, up to `SLOTS_PER_NODE`.
+ */
+const MIN_SLOTS_PER_NODE = 2
 /** Nodes a bar drawn from counts shows at most; the server caps a workflow far below it. */
 const FALLBACK_NODES_MAX = 500
 /** Cells of goal text kept before the counts after it give way. */
@@ -223,10 +228,13 @@ interface DagLevel {
   readonly mark: boolean
 }
 
-/** The levels a row steps down through, richest first, and the one the bar is sized against. */
+/** The levels a row steps down through, richest first, and the last one the spec allows. */
 interface DagChain {
   readonly levels: readonly DagLevel[]
-  /** The least text the spec allows: counts squeezed to `n/m`, a short title, no wait and no budget. */
+  /**
+   * The least text the spec allows: counts squeezed to `n/m`, a short title, no wait and no budget. The search for a
+   * level that leaves the bar `MIN_SLOTS_PER_NODE` slots a node stops here, and a cramped row sizes its bar against it.
+   */
   readonly minimal: number
 }
 
@@ -372,9 +380,12 @@ function dagCounts(
 /**
  * One workflow as a row of `width` cells at most: its title, a bar with a
  * segment per node (grouped by wave, colored by state), the counts, and at the
- * right edge the folded workflows and the hint. When the row is too wide the
- * text gives way first; the bar narrows only once the least text leaves it no
- * room, and then it takes everything left after that text (F4 1, 2.3).
+ * right edge the folded workflows and the hint. The text is sized first (F4 1,
+ * 2.3 as revised by #1619): it takes the richest level that still leaves every
+ * node `MIN_SLOTS_PER_NODE` slots in the bar, and the bar takes what that text
+ * leaves, up to `SLOTS_PER_NODE` a node. Only when even the least text leaves
+ * less than that is the bar sized first: it is sized against the least text,
+ * takes everything left after it, and the text takes what the bar leaves.
  */
 export function layoutDagRow(input: DagRowInput): BandRow {
   const aw = input.ambiguousWidth ?? 1
@@ -441,22 +452,39 @@ export function layoutDagRow(input: DagRowInput): BandRow {
   const barIn = (room: number) =>
     layoutDagBar({ waves, unplaced, width: room, ambiguousWidth: aw, per: SLOTS_PER_NODE })
 
-  // The bar is sized against the least text, and the text then takes what the bar leaves.
-  let base = minimal
-  let bar = barIn(width - parts[base].fixed)
-  // Too little text for the room: the bar got none although there are nodes, or the text alone is too wide.
-  const cramped = () => (hasBar && bar.cells === 0) || parts[base].fixed + bar.cells > width
-  while (base < levels.length - 1 && cramped()) {
-    base++
-    bar = barIn(width - parts[base].fixed)
-  }
-  let chosen = base
-  for (let index = 0; index < base; index++) {
-    if (parts[index].fixed + bar.cells <= width) {
-      chosen = index
-      break
+  // The text first: from the richest level down to the least text the spec allows, the first one that still leaves every
+  // node MIN_SLOTS_PER_NODE slots in the bar; the bar then takes what that text leaves, up to SLOTS_PER_NODE a node. The
+  // levels past the least text belong to the cramped order below, not to this one.
+  const textFirst = () => {
+    if (!hasBar) return undefined
+    for (let index = 0; index <= minimal; index++) {
+      const bar = barIn(width - parts[index].fixed)
+      if (bar.mode === "nodes" && bar.per >= MIN_SLOTS_PER_NODE) return { chosen: index, bar }
     }
+    return undefined
   }
+
+  // No such level: the bar is sized against the least text, and the text then takes what the bar leaves.
+  const barFirst = () => {
+    let base = minimal
+    let bar = barIn(width - parts[base].fixed)
+    // Too little text for the room: the bar got none although there are nodes, or the text alone is too wide.
+    const cramped = () => (hasBar && bar.cells === 0) || parts[base].fixed + bar.cells > width
+    while (base < levels.length - 1 && cramped()) {
+      base++
+      bar = barIn(width - parts[base].fixed)
+    }
+    let chosen = base
+    for (let index = 0; index < base; index++) {
+      if (parts[index].fixed + bar.cells <= width) {
+        chosen = index
+        break
+      }
+    }
+    return { chosen, bar }
+  }
+
+  const { chosen, bar } = textFirst() ?? barFirst()
 
   const { head, counts, right } = parts[chosen]
   const left: BandSpan[] = [
