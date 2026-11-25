@@ -21,9 +21,9 @@ exports[`renders the 80x24 skeleton 1`] = `
                                                                                 
                                                                                 
                                                                                 
-                                                                                
 状态带                                                                          
 底区                                                                            
+                                                                                
   build tab 切换 agent                       / 命令 · ctrl+b 侧边栏 · ? 快捷键  
 "
 `;
@@ -55,9 +55,9 @@ exports[`renders the 100x30 skeleton 1`] = `
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
 状态带                                                                                              
 底区                                                                                                
+                                                                                                    
   build tab 切换 agent                                           / 命令 · ctrl+b 侧边栏 · ? 快捷键  
 "
 `;
@@ -99,9 +99,9 @@ exports[`renders the 120x40 skeleton 1`] = `
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
 状态带                                                                                                                  
 底区                                                                                                                    
+                                                                                                                        
   build tab 切换 agent                                                               / 命令 · ctrl+b 侧边栏 · ? 快捷键  
 "
 `;
@@ -143,9 +143,9 @@ exports[`renders the 140x40 skeleton 1`] = `
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-                                                                                                                                            
 状态带                                                                                                                                      
 底区                                                                                                                                        
+                                                                                                                                            
   build tab 切换 agent                                                                                   / 命令 · ctrl+b 侧边栏 · ? 快捷键  
 "
 `;

@@ -781,7 +781,7 @@ test("a sub-agent footer says it is read-only and lists the keys of that view", 
   try {
     const frame = app.captureCharFrame()
     expect(row(frame)).toStartWith("  explore · 只读 · 子 agent 只接受主 agent 的通信")
-    expect(row(frame)).toEndWith("←→ 切换 · esc 返回 · ⌃B 侧边栏")
+    expect(row(frame)).toEndWith("←→ 切换子 agent")
     // The agent to switch to and the command hints belong to the views that have a prompt.
     expect(frame).not.toContain("切换 agent")
     expect(frame).not.toContain("⌃P")
@@ -801,7 +801,7 @@ test("a sub-agent footer in English", async () => {
   try {
     const frame = app.captureCharFrame()
     expect(row(frame)).toStartWith("  explore · read-only · only the main agent can message it")
-    expect(row(frame)).toEndWith("←→ switch · esc back · ⌃B drawer")
+    expect(row(frame)).not.toContain("←→")
     expect(frame).toMatchSnapshot()
   } finally {
     app.renderer.destroy()
@@ -817,7 +817,7 @@ test("at 80 columns the trailing hints give way before the notice is cut", async
   try {
     const frame = zh.captureCharFrame()
     expect(row(frame)).toStartWith("  general-purpose · 只读 · 子 agent 只接受主 agent 的通信")
-    expect(row(frame)).toEndWith("←→ 切换 · esc 返回")
+    expect(row(frame)).not.toContain("←→")
     expect(frame).not.toContain("侧边栏")
     expect(frame).toMatchSnapshot()
   } finally {
@@ -829,8 +829,8 @@ test("at 80 columns the trailing hints give way before the notice is cut", async
   try {
     const frame = en.captureCharFrame()
     expect(row(frame)).toStartWith("  explore · read-only · only the main agent can message it")
-    // The notice is 56 cells and the row between the gutters 76: of the hints, 19 cells are left, one short of the two.
-    expect(row(frame)).toEndWith("←→ switch")
+    // The notice is 135 cells and the row between the gutters 76: it is cut, and no hint is left.
+    expect(row(frame)).not.toContain("←→")
     expect(row(frame)).not.toContain("esc back")
     expect(frame).toMatchSnapshot()
   } finally {
@@ -885,7 +885,7 @@ test("the drawer hint follows the keymap, and a missing binding leaves it out", 
     overrides: { session_drawer_toggle: "f9" },
   })
   try {
-    expect(row(rebound.captureCharFrame())).toEndWith("←→ 切换 · esc 返回 · F9 侧边栏")
+    expect(row(rebound.captureCharFrame())).toEndWith("←→ 切换子 agent")
   } finally {
     rebound.renderer.destroy()
   }
@@ -897,7 +897,7 @@ test("the drawer hint follows the keymap, and a missing binding leaves it out", 
   })
   try {
     const frame = unbound.captureCharFrame()
-    expect(row(frame)).toEndWith("←→ 切换 · esc 返回")
+    expect(row(frame)).toEndWith("←→ 切换子 agent")
     expect(frame).not.toContain("侧边栏")
   } finally {
     unbound.renderer.destroy()
@@ -938,10 +938,10 @@ test("paints the notice with the text and muted colors, and no brand color", asy
 })
 
 test("holds back the notice's width from the toast that shares the row", () => {
-  // The notice is 47 cells wide in Chinese and 56 in English, plus the gap; 26 columns are held back already.
-  expect(subagentNoticeReserve("explore", 1)).toBe(47 + 1 - 26)
+  // The notice is 86 cells wide in Chinese and 135 in English, plus the gap; 26 columns are held back already.
+  expect(subagentNoticeReserve("explore", 1)).toBe(86 + 1 - 26)
   setLanguage("en")
-  expect(subagentNoticeReserve("explore", 1)).toBe(56 + 1 - 26)
+  expect(subagentNoticeReserve("explore", 1)).toBe(135 + 1 - 26)
   // At ambiguous_width 2 the two `·` take a cell more each.
-  expect(subagentNoticeReserve("explore", 2)).toBe(56 + 2 + 1 - 26)
+  expect(subagentNoticeReserve("explore", 2)).toBe(135 + 2 + 1 - 26)
 })

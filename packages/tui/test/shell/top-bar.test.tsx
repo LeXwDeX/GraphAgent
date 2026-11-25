@@ -173,7 +173,9 @@ test("draws the path of a sub-agent: the root title, then the kind and its descr
   try {
     const frame = app.captureCharFrame()
     expect(firstRow(frame)).toStartWith("  ◇─◆ GraphAgent › 升级工具链与全部依赖 › ● explore · 扫描破坏性变更")
-    expect(frame).toContain("Claude Sonnet 4.5 · high · 上下文 24%")
+    expect(frame).not.toContain("Claude Sonnet 4.5")
+    expect(frame).not.toContain("high")
+    expect(frame).not.toContain("上下文")
     expectWithin(frame, 120, 1)
     expect(frame).toMatchSnapshot()
   } finally {
@@ -249,7 +251,7 @@ test("a lone sub-agent shows its position without the keys", async () => {
   }
 })
 
-test("the model details get what is left beside the whole path and the position, and give way before either", async () => {
+test("a sub-agent view keeps only the position beside its whole path, and gives way before either", async () => {
   await using tmp = await shellState()
   const at = async (width: number) => {
     const app = await renderTopBar(
@@ -263,17 +265,19 @@ test("the model details get what is left beside the whole path and the position,
     }
   }
 
-  // The path takes 52 cells and the position 18; of the model details the name goes first, then the context.
+  // The model, reasoning and context belong to the main session, so a sub-agent view never draws them.
   const wide = await at(120)
   expect(firstRow(wide)).toContain("› ● explore · 扫描破坏性变更")
-  expect(firstRow(wide)).toEndWith("high · 上下文 24%  子 agent 1/2  ←→")
+  expect(firstRow(wide)).toEndWith("子 agent 1/2  ←→")
   expect(wide).not.toContain("Claude Sonnet 4.5")
+  expect(wide).not.toContain("high")
+  expect(wide).not.toContain("上下文")
 
   const narrower = await at(100)
   expect(firstRow(narrower)).toContain("› ● explore · 扫描破坏性变更")
-  expect(firstRow(narrower)).toEndWith("high  子 agent 1/2  ←→")
+  expect(firstRow(narrower)).toEndWith("子 agent 1/2  ←→")
 
-  // Where the path does not fit whole, none of them is shown and the path takes everything but the position.
+  // Where the path does not fit whole, the path takes everything but the position.
   const narrow = await at(80)
   expect(firstRow(narrow)).toContain("● explore")
   expect(firstRow(narrow)).toEndWith("子 agent 1/2  ←→")
@@ -324,7 +328,7 @@ test("the marker is a static glyph whose color tells the state: running is the b
   }
 })
 
-test("colors the segments: ancestors in the text color, the kind bold, the description and the separators muted", async () => {
+test("colors the segments: ancestors in the accent color, the kind bold, the description and the separators muted", async () => {
   await using tmp = await shellState()
   const view = subagent({
     ancestors: [
@@ -336,8 +340,8 @@ test("colors the segments: ancestors in the text color, the kind bold, the descr
 
   try {
     const spans = app.captureSpans()
-    expect(colorOf(spans, "升级工具链")?.equals(palette().text)).toBe(true)
-    expect(colorOf(spans, "检查破坏性变更")?.equals(palette().text)).toBe(true)
+    expect(colorOf(spans, "升级工具链")?.equals(palette().primary)).toBe(true)
+    expect(colorOf(spans, "检查破坏性变更")?.equals(palette().primary)).toBe(true)
     expect(colorOf(spans, "explore")?.equals(palette().text)).toBe(true)
     expect(colorOf(spans, "扫描破坏性变更")?.equals(palette().textMuted)).toBe(true)
     expect(colorOf(spans, "›")?.equals(palette().textMuted)).toBe(true)
@@ -585,10 +589,10 @@ test("the tag takes room from the model details before it takes it from the path
     }
   }
 
-  // At 96 columns the path of a foreground run leaves room for the reasoning; the tag takes the room: it is the
-  // reasoning that goes, and the path and the tag are whole.
+  // A sub-agent view has no model details, so the tag takes nothing from them: the path and the tag are whole.
   const plain = await at(96)
-  expect(plain).toEndWith("high  子 agent 1/2  ←→")
+  expect(plain).toEndWith("子 agent 1/2  ←→")
+  expect(plain).not.toContain("high")
   const tagged = await at(96, "background")
   expect(tagged).toContain("› ● explore · 扫描破坏性变更 · 后台")
   expect(tagged).toEndWith("子 agent 1/2  ←→")

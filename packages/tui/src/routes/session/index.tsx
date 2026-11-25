@@ -260,6 +260,8 @@ const context = createContext<{
     background: Accessor<string>
     redo: Accessor<string>
     dagmodeToggle: Accessor<string>
+    /** The key that opens the task's sub-agent, shown on the Task row; empty while it is unbound. */
+    enter: Accessor<string>
     /** The key of `view.expand.toggle`, which the hint on a result card names; empty while it is unbound. */
     expand: Accessor<string>
   }
@@ -1656,6 +1658,7 @@ export function Main() {
     background: useCommandShortcut("session.background"),
     redo: useCommandShortcut("session.redo"),
     dagmodeToggle: useCommandShortcut("session.dagmode.toggle"),
+    enter: useCommandShortcut("input_submit"),
     expand: useCommandShortcut("view.expand.toggle"),
   }
 
@@ -3708,7 +3711,7 @@ function TaskRun(props: ToolProps) {
       resultColor={tone()}
       dotColor={tone()}
       note={move()}
-      action={enter() ? t("background.row.enter") : undefined}
+      action={enter() ? t("background.row.enter", { key: ctx.shortcuts.enter() || "⏎" }) : undefined}
       expanded={failed() ? errorExpanded() : false}
       visible={() => ctx.isVisible(props.part.id)}
       onClick={

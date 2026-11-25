@@ -252,7 +252,7 @@ export function ToolRow(props: ToolRowProps) {
                   <span style={{ fg: theme.textDim }}>{text().note}</span>
                 </Show>
                 <Show when={text().action}>
-                  <span style={{ fg: hover() ? theme.text : theme.textMuted }}>{text().action}</span>
+                  <span style={{ fg: hover() ? theme.text : theme.primary }}>{text().action}</span>
                 </Show>
               </text>
             )}

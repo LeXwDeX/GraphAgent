@@ -2927,7 +2927,7 @@ describe("the trust row and the other rows", () => {
     }
   })
 
-  test("shares the band with the goal when no workflow competes for the second row, and with a quiet PR", async () => {
+  test("shares the band with a quiet PR, and leaves the goal to the drawer while the trust warning is up", async () => {
     const trusted = trusting(changedTrust)
     const tracked = fakeTracker({ items: [ciItem()] })
     const { harness } = await mountTracked(noFlow, tracked, { handler: trusted.handler })
@@ -2937,9 +2937,14 @@ describe("the trust row and the other rows", () => {
       const withPr = await band(harness, (all) => all.length === 2 && all[1].includes("PR #1035"), "trust and PR")
       expect(withPr[0].trim().startsWith(trustSaid(2))).toBe(true)
 
+      // The trust warning pushes the goal out: it is still in the drawer.
       tracked.setItems([])
-      const withGoal = await band(harness, (all) => all.length === 2 && all[1].includes("◎"), "trust and goal")
-      expect(withGoal[0].trim().startsWith(trustSaid(2))).toBe(true)
+      const withGoal = await band(
+        harness,
+        (all) => all.length === 1 && all[0].trim().startsWith(trustSaid(2)),
+        "trust alone",
+      )
+      expect(withGoal.join("\n")).not.toContain("◎")
     } finally {
       await harness.dispose()
     }
@@ -3012,7 +3017,7 @@ describe("the trust row and the background runs", () => {
     }
   })
 
-  test("leaves the mark to the row under it: the workflow row, or the goal row", async () => {
+  test("leaves the mark to the row under it: the workflow row, and none while the trust warning is up", async () => {
     const trusted = trusting(changedTrust)
     const withFlow = await mountBand(running, { handler: trusted.handler })
     try {
@@ -3030,18 +3035,18 @@ describe("the trust row and the background runs", () => {
       await withFlow.harness.dispose()
     }
 
+    // The goal is pushed out by the trust warning, so the runs have no row to ride on and draw no mark.
     const withGoal = await mountBand(noFlow, { handler: trusted.handler })
     try {
       withGoal.harness.events.emit(goalEvent(rootID, goal()))
       twoRuns(withGoal.harness)
       const lines = await band(
         withGoal.harness,
-        (all) => all.length === 2 && all.some((row) => row.includes(MARK)),
-        "the mark",
+        (all) => all.length === 1 && all[0].trim().startsWith(trustSaid(2)),
+        "the trust row alone",
       )
       expect(lines[0]).not.toContain("◇")
-      expect(lines[1]).toContain("◎ 目标")
-      expect(lines[1].endsWith(`/goal  ${MARK}`)).toBe(true)
+      expect(lines.join("\n")).not.toContain("◎")
     } finally {
       await withGoal.harness.dispose()
     }
@@ -3204,7 +3209,7 @@ describe("the trust row at 80 and 120 columns", () => {
 
   const scenarios: readonly Scenario[] = [
     { name: "the trust row alone", world: noFlow, rows: [1, 1] },
-    { name: "the trust row over the goal", world: noFlow, goal: true, rows: [1, 2] },
+    { name: "the trust row with the goal left to the drawer", world: noFlow, goal: true, rows: [1, 1] },
     { name: "the trust row over the workflow row", world: running, goal: true, rows: [1, 2] },
     {
       name: "the trust row over a PR warning",

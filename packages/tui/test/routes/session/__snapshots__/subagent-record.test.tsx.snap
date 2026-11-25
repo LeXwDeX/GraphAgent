@@ -4,7 +4,6 @@ exports[`the record at 80x24 in zh-CN 1`] = `
 "  ◇─◆ GraphAgent                                                                
                                                                                 
                                                                                 
-                                                                                
   ┃                                                                             
   ┃  任务 · 来自主会话                                                          
   ┃  扫描变更日志                                                               
@@ -25,12 +24,12 @@ exports[`the record at 80x24 in zh-CN 1`] = `
      ✓ 已完成，结果已交回主会话 · 2 次工具调用 · 1m 5s                          
                                                                                 
                                                                                 
+                                                                                
 "
 `;
 
 exports[`the record at 80x24 in en 1`] = `
 "  ◇─◆ GraphAgent                                                                
-                                                                                
                                                                                 
                                                                                 
   ┃                                                                             
@@ -51,6 +50,7 @@ exports[`the record at 80x24 in en 1`] = `
      ⏺ 找到 2 处破坏性变更。                                                    
                                                                                 
      ✓ Done, result handed back to the main session · 2 tool calls · 1m 5s      
+                                                                                
                                                                                 
                                                                                 
 "

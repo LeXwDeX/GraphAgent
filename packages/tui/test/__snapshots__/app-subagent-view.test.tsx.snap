@@ -24,7 +24,7 @@ exports[`draws the path and the read-only footer at 80x24, in both languages 1`]
                                                                                 
                                                                                 
                                                                                 
-  explore · 只读 · 子 agent 只接受主 agent 的通信         esc 返回 · ⌃B 侧边栏  
+  explore · 只读 · 子 agent 只接受主 agent 的通信；要调整它，按 esc 回主会话…   
 "
 `;
 
@@ -52,12 +52,12 @@ exports[`draws the path and the read-only footer at 80x24, in both languages 2`]
                                                                                 
                                                                                 
                                                                                 
-  explore · read-only · only the main agent can message it            esc back  
+  explore · read-only · only the main agent can message it; to change it, pre…  
 "
 `;
 
 exports[`draws the path and the read-only footer at 120x40, in both languages 1`] = `
-"  ◇─◆ GraphAgent › 升级工具链与全部依赖 › explore · 扫描破坏性变更                            Test model  子 agent 1/1  
+"  ◇─◆ GraphAgent › 升级工具链与全部依赖 › explore · 扫描破坏性变更                                        子 agent 1/1  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -96,12 +96,12 @@ exports[`draws the path and the read-only footer at 120x40, in both languages 1`
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  explore · 只读 · 子 agent 只接受主 agent 的通信                                                 esc 返回 · ⌃B 侧边栏  
+  explore · 只读 · 子 agent 只接受主 agent 的通信；要调整它，按 esc 回主会话告诉主 agent    esc 返回主会话 · ⌃B 侧边栏  
 "
 `;
 
 exports[`draws the path and the read-only footer at 120x40, in both languages 2`] = `
-"  ◇─◆ GraphAgent › 升级工具链与全部依赖 › explore · 扫描破坏性变更                            Test model  subagent 1/1  
+"  ◇─◆ GraphAgent › 升级工具链与全部依赖 › explore · 扫描破坏性变更                                        subagent 1/1  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -140,6 +140,6 @@ exports[`draws the path and the read-only footer at 120x40, in both languages 2`
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  explore · read-only · only the main agent can message it                                        esc back · ⌃B drawer  
+  explore · read-only · only the main agent can message it; to change it, press esc to return to the main session and…  
 "
 `;

@@ -116,7 +116,6 @@ for (const size of [
       // No task entry is known: the description is the title without its tail, the kind the session's own agent.
       expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle} › explore · ${description}`)
       expect(footerRow(frame)).toStartWith("  explore · 只读 · 子 agent 只接受主 agent 的通信")
-      expect(footerRow(frame)).toContain("esc 返回")
       expect(frame).toMatchSnapshot()
     } finally {
       await zh.stop()
@@ -132,7 +131,6 @@ for (const size of [
       const frame = await waitForFrame(en.setup, (value) => value.includes("read-only"), "the English footer")
       expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle} › explore · ${description}`)
       expect(footerRow(frame)).toStartWith("  explore · read-only · only the main agent can message it")
-      expect(footerRow(frame)).toContain("esc back")
       expect(frame).toMatchSnapshot()
     } finally {
       await en.stop()

@@ -81,7 +81,7 @@ test("the session prompt sits above the footer with one blank row between them",
     const prompt = composerRows(frame).join("\n")
     expect(prompt).not.toContain("⌃P")
     expect(prompt).not.toContain("agents")
-    expect(footer - hint).toBe(2)
+    expect(footer - hint).toBe(3)
     expect(rows[hint + 1]).toBe("")
     // One prompt, drawn above the footer and below the top bar.
     const inputs = textareas(app.setup)
@@ -134,7 +134,7 @@ test("the home prompt sits above the footer, below the logo, at its capped width
     const footer = rows.findLastIndex((row) => row.length > 0)
     const logo = rows.findLastIndex((row) => row.includes("██"))
 
-    expect(footer - hint).toBe(2)
+    expect(footer - hint).toBe(3)
     expect(logo).toBeGreaterThan(0)
     expect(logo).toBeLessThan(first)
     // The prompt keeps the width cap home gave it (75 columns by default) and stays centered.
@@ -151,7 +151,8 @@ test("the home prompt sits above the footer, below the logo, at its capped width
 })
 
 test("the slash popup at home is drawn over the logo, not under it", async () => {
-  const app = await runApp({ sessions: [sessionFixture(mainID)], args: {}, width: 100, height: 30 })
+  // Below the recent-sessions breakpoint the logo is the only thing under the popup.
+  const app = await runApp({ sessions: [sessionFixture(mainID)], args: {}, width: 90, height: 30 })
   try {
     await waitForFrame(app.setup, promptShown, "the prompt")
     await app.setup.mockInput.typeText("/")
@@ -163,7 +164,7 @@ test("the slash popup at home is drawn over the logo, not under it", async () =>
     const first = rows.find((row) => popupRow.test(row))
     expect(first).toBeDefined()
     const command = popupRow.exec(first!)![1]
-    // At 100x30 the popup reaches up into the logo, as far as its first row: the frame is 3 rows tall, so the popup
+    // At 90x30 the popup reaches up into the logo, as far as its first row: the frame is 3 rows tall, so the popup
     // sits lower than it did over the old 5-row block. A row where both are on screen shows the popup's text
     // whole, with logo glyphs on both sides of it.
     expect(first!).toContain("█")

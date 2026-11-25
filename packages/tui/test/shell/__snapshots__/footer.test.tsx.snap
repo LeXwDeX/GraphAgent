@@ -1,21 +1,21 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`a sub-agent footer says it is read-only and lists the keys of that view 1`] = `
-"  explore · 只读 · 子 agent 只接受主 agent 的通信                                       ←→ 切换 · esc 返回 · ⌃B 侧边栏  
+"  explore · 只读 · 子 agent 只接受主 agent 的通信；要调整它，按 esc 回主会话告诉主 agent               ←→ 切换子 agent  
 "
 `;
 
 exports[`a sub-agent footer in English 1`] = `
-"  explore · read-only · only the main agent can message it                            ←→ switch · esc back · ⌃B drawer  
+"  explore · read-only · only the main agent can message it; to change it, press esc to return to the main session and…  
 "
 `;
 
 exports[`at 80 columns the trailing hints give way before the notice is cut 1`] = `
-"  general-purpose · 只读 · 子 agent 只接受主 agent 的通信   ←→ 切换 · esc 返回  
+"  general-purpose · 只读 · 子 agent 只接受主 agent 的通信；要调整它，按 esc …   
 "
 `;
 
 exports[`at 80 columns the trailing hints give way before the notice is cut 2`] = `
-"  explore · read-only · only the main agent can message it           ←→ switch  
+"  explore · read-only · only the main agent can message it; to change it, pre…  
 "
 `;
