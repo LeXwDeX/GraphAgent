@@ -924,6 +924,9 @@ export function DagPanel(props: { state?: DagPanelState }) {
       onActivate={selectedNode() ? activate : undefined}
       onToggle={toggleFold}
       activateLabel={selectedNode()?.child_session_id ? t("dagmode.panel.hint.enter") : t("dagmode.panel.hint.expand")}
+      // A node's body is the output of its run, which comes with the node's own expanded state: the panel opens it,
+      // and `return` keeps its action (entering a child session, or opening the details).
+      rowBody="selected"
       body={emptyBody()}
       hints={hints()}
     />

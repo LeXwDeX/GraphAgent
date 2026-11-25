@@ -381,6 +381,9 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       onActivate={props.mode === "manage" ? undefined : trustChecked}
       activateLabel={t("trust.hint.trust")}
       onToggle={toggle}
+      // The rows are what has to be read before deciding, so the selected row's body is open; `return` keeps its own
+      // action.
+      rowBody="selected"
       hints={hints()}
       body={
         <Show
