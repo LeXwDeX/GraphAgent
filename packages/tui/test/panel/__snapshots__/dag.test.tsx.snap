@@ -8,6 +8,7 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
                                                                                 
                                                                                 
                                                                                 
+                                                                                
   ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 工作流 [运行中] 依赖升级验证                                             │  
   │ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）    │  
@@ -19,7 +20,6 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
   │ › 第 3 波  ✗ e2e        4m 0s                                            │  
   │   │        ● typecheck  9m 0s                                            │  
   │   第 4 波  ○ unit                                                        │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -30,6 +30,7 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
 
 exports[`how it looks 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -63,7 +64,6 @@ exports[`how it looks 120 by 40, in Chinese 1`] = `
   │ › 第 3 波  ✗ e2e        4m 0s                                                                                    │  
   │   │        ● typecheck  9m 0s                                                                                    │  
   │   第 4 波  ○ unit                                                                                                │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -74,6 +74,7 @@ exports[`how it looks 120 by 40, in Chinese 1`] = `
 
 exports[`how it looks 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -91,7 +92,6 @@ exports[`how it looks 80 by 24, in English 1`] = `
   │ › Wave 3  ✗ e2e        4m 0s                                             │  
   │   │       ● typecheck  9m 0s                                             │  
   │   Wave 4  ○ unit                                                         │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -102,6 +102,7 @@ exports[`how it looks 80 by 24, in English 1`] = `
 
 exports[`how it looks a workflow with several tabs and a loop, 100 by 30 1`] = `
 "  ◇─◆ GraphAgent                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     
@@ -126,7 +127,6 @@ exports[`how it looks a workflow with several tabs and a loop, 100 by 30 1`] = `
   │   !        ○ x                                                                               │  
   │   !        ○ y                                                                               │  
   │                                                                                              │  
-  │                                                                                              │  
   │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                     
@@ -143,6 +143,7 @@ exports[`how it looks a compose expansion folded, 80 by 24, in Chinese 1`] = `
                                                                                 
                                                                                 
                                                                                 
+                                                                                
   ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 工作流 [运行中] 代码审查                                                 │  
   │ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）    │  
@@ -151,9 +152,8 @@ exports[`how it looks a compose expansion folded, 80 by 24, in Chinese 1`] = `
   │                                                                          │  
   │   第 1 波  ✓   scope          10s                                        │  
   │   第 2 波  ✓   review--split  10s                                        │  
-  │ › 第 4 波  ○ ▸ review                （3 个子节点）                      │  
+  │ › 第 4 波  ○ ▸ review            （3 个子节点）                          │  
   │   第 5 波  ○   ship                                                      │  
-  │                                                                          │  
   │   等待第 4 波                                                            │  
   │ ↑↓ 选择 · 空格 展开子节点 · ⏎ 查看输出 · esc 关闭                        │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -187,6 +187,7 @@ exports[`how it looks a compose expansion folded, 120 by 40, in Chinese 1`] = `
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ 工作流 [运行中] 代码审查                                                                                    /dag │  
   │ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）                                            │  
@@ -195,9 +196,8 @@ exports[`how it looks a compose expansion folded, 120 by 40, in Chinese 1`] = `
   │                                                                                                                  │  
   │   第 1 波  ✓   scope          10s                                                                                │  
   │   第 2 波  ✓   review--split  10s                                                                                │  
-  │ › 第 4 波  ○ ▸ review                （3 个子节点）                                                              │  
+  │ › 第 4 波  ○ ▸ review            （3 个子节点）                                                                  │  
   │   第 5 波  ○   ship                                                                                              │  
-  │                                                                                                                  │  
   │   等待第 4 波                                                                                                    │  
   │ ↑↓ 选择 · 空格 展开子节点 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -215,6 +215,7 @@ exports[`how it looks a compose expansion folded, 80 by 24, in English 1`] = `
                                                                                 
                                                                                 
                                                                                 
+                                                                                
   ╭──────────────────────────────────────────────────────────────────────────╮  
   │ Workflow [Running] 代码审查                                              │  
   │ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no… │  
@@ -223,9 +224,8 @@ exports[`how it looks a compose expansion folded, 80 by 24, in English 1`] = `
   │                                                                          │  
   │   Wave 1  ✓   scope          10s                                         │  
   │   Wave 2  ✓   review--split  10s                                         │  
-  │ › Wave 4  ○ ▸ review                (3 children)                         │  
+  │ › Wave 4  ○ ▸ review            (3 children)                             │  
   │   Wave 5  ○   ship                                                       │  
-  │                                                                          │  
   │   Waiting for wave 4                                                     │  
   │ ↑↓ Select · space Unfold · ⏎ View output · esc Close                     │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -241,6 +241,7 @@ exports[`how it looks a compose expansion unfolded, 80 by 24, in Chinese 1`] = `
                                                                                 
                                                                                 
                                                                                 
+                                                                                
   ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 工作流 [运行中] 代码审查                                                 │  
   │ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）    │  
@@ -249,11 +250,10 @@ exports[`how it looks a compose expansion unfolded, 80 by 24, in Chinese 1`] = `
   │                                                                          │  
   │   第 1 波  ✓   scope           10s                                       │  
   │   第 2 波  ✓   review--split   10s                                       │  
-  │ › 第 4 波  ○ ▾ review                    （3 个子节点）                  │  
+  │ › 第 4 波  ○ ▾ review             （3 个子节点）                         │  
   │            ✓     review--api   1m 20s                                    │  
   │            ✗     review--core  3m 0s                                     │  
   │            ●     review--docs  9m 40s                                    │  
-  │                                                                          │  
   │   等待第 4 波                                                            │  
   │ ↑↓ 选择 · 空格 折叠子节点 · ⏎ 查看输出 · esc 关闭                        │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -284,6 +284,7 @@ exports[`how it looks a compose expansion unfolded, 120 by 40, in English 1`] = 
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Workflow [Running] 代码审查                                                                                 /dag │  
   │ DAG mode: off · running 0/4 (process-wide) · node cap 32 · tokens 0 (no budget)                                  │  
@@ -292,12 +293,11 @@ exports[`how it looks a compose expansion unfolded, 120 by 40, in English 1`] = 
   │                                                                                                                  │  
   │   Wave 1  ✓   scope           10s                                                                                │  
   │   Wave 2  ✓   review--split   10s                                                                                │  
-  │ › Wave 4  ○ ▾ review                    (3 children)                                                             │  
+  │ › Wave 4  ○ ▾ review             (3 children)                                                                    │  
   │           ✓     review--api   1m 20s                                                                             │  
   │           ✗     review--core  3m 0s                                                                              │  
   │           ●     review--docs  9m 40s                                                                             │  
   │   Wave 5  ○   ship                                                                                               │  
-  │                                                                                                                  │  
   │   Waiting for wave 4                                                                                             │  
   │ ↑↓ Select · space Fold · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -326,6 +326,7 @@ exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ 工作流 [运行中] 代码审查                                                                                    /dag │  
   │ DAG 模式：关 · 运行 0/4（全进程） · 节点上限 32 · token 0（未设预算）                                            │  
@@ -334,14 +335,13 @@ exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese
   │                                                                                                                  │  
   │   第 1 波  ✓   scope                    10s                                                                      │  
   │   第 2 波  ✓   review--split            10s                                                                      │  
-  │   第 6 波  ○ ▾ review                             （3 个子节点）                                                 │  
+  │   第 6 波  ○ ▾ review                      （3 个子节点）                                                        │  
   │            ✓     review--api            1m 20s                                                                   │  
   │            ✓     review--docs--split    10s                                                                      │  
-  │ ›          ○   ▾ review--docs                     （2 个子节点）                                                 │  
+  │ ›          ○   ▾ review--docs              （2 个子节点）                                                        │  
   │            ✓       review--docs--intro  50s                                                                      │  
   │            ●       review--docs--refs   9m 30s                                                                   │  
   │   第 7 波  ○   ship                                                                                              │  
-  │                                                                                                                  │  
   │   等待第 5 波                                                                                                    │  
   │ ↑↓ 选择 · 空格 折叠子节点 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -352,6 +352,7 @@ exports[`how it looks a slot inside a slot, both unfolded, 120 by 40, in Chinese
 
 exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -369,7 +370,6 @@ exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
   │   第 2 波  ✓ install    48s                                              │  
   │ › 第 3 波  ✗ e2e        4m 0s                                            │  
   │   │        ● typecheck  9m 0s                                            │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -380,6 +380,7 @@ exports[`the usage row how it looks 80 by 24, in Chinese 1`] = `
 
 exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -413,7 +414,6 @@ exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
   │ › 第 3 波  ✗ e2e        4m 0s                                                                                    │  
   │   │        ● typecheck  9m 0s                                                                                    │  
   │   第 4 波  ○ unit                                                                                                │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -424,6 +424,7 @@ exports[`the usage row how it looks 120 by 40, in Chinese 1`] = `
 
 exports[`the usage row how it looks 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -441,7 +442,6 @@ exports[`the usage row how it looks 80 by 24, in English 1`] = `
   │   Wave 2  ✓ install    48s                                               │  
   │ › Wave 3  ✗ e2e        4m 0s                                             │  
   │   │       ● typecheck  9m 0s                                             │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -452,6 +452,7 @@ exports[`the usage row how it looks 80 by 24, in English 1`] = `
 
 exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -469,7 +470,6 @@ exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
   │ › 第 3 波  ✗ e2e        4m 0s                                            │  
   │   │        ● typecheck  9m 0s                                            │  
   │   第 4 波  ○ unit                                                        │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -480,6 +480,7 @@ exports[`the worktree row how it looks active, 80 by 24, in Chinese 1`] = `
 
 exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -513,7 +514,6 @@ exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
   │ › 第 3 波  ✗ e2e        4m 0s                                                                                    │  
   │   │        ● typecheck  9m 0s                                                                                    │  
   │   第 4 波  ○ unit                                                                                                │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -524,6 +524,7 @@ exports[`the worktree row how it looks active, 120 by 40, in Chinese 1`] = `
 
 exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -541,7 +542,6 @@ exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
   │ › Wave 3  ✗ e2e        4m 0s                                             │  
   │   │       ● typecheck  9m 0s                                             │  
   │   Wave 4  ○ unit                                                         │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -552,6 +552,7 @@ exports[`the worktree row how it looks active, 80 by 24, in English 1`] = `
 
 exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -585,7 +586,6 @@ exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
   │ › Wave 3  ✗ e2e        4m 0s                                                                                     │  
   │   │       ● typecheck  9m 0s                                                                                     │  
   │   Wave 4  ○ unit                                                                                                 │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -596,6 +596,7 @@ exports[`the worktree row how it looks kept, 120 by 40, in English 1`] = `
 
 exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -613,7 +614,6 @@ exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
   │ › 第 3 波  ✗ e2e        4m 0s                                            │  
   │   │        ● typecheck  9m 0s                                            │  
   │   第 4 波  ○ unit                                                        │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -624,6 +624,7 @@ exports[`the worktree row how it looks cleaned up, 80 by 24, in Chinese 1`] = `
 
 exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -657,7 +658,6 @@ exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
   │ › Wave 3  ✗ e2e        4m 0s                                                                                     │  
   │   │       ● typecheck  9m 0s                                                                                     │  
   │   Wave 4  ○ unit                                                                                                 │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -668,6 +668,7 @@ exports[`the worktree row how it looks cleaned up, 120 by 40, in English 1`] = `
 
 exports[`DAG mode in the panel: how it looks 80 by 24, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -685,7 +686,6 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in Chinese 1`] = `
   │   第 2 波  ⊘ docs                                                        │  
   │ › │        ✗ e2e      4m 0s                                              │  
   │   │        ● unit     1m 40s                                             │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -696,6 +696,7 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in Chinese 1`] = `
 
 exports[`DAG mode in the panel: how it looks 120 by 40, in Chinese 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -729,7 +730,6 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in Chinese 1`] = `
   │   第 2 波  ⊘ docs                                                                                                │  
   │ › │        ✗ e2e      4m 0s                                                                                      │  
   │   │        ● unit     1m 40s                                                                                     │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ 选择 · ⏎ 查看输出 · I 请主 agent 处理（预填，不发送） · esc 关闭                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
@@ -740,6 +740,7 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in Chinese 1`] = `
 
 exports[`DAG mode in the panel: how it looks 80 by 24, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -757,7 +758,6 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in English 1`] = `
   │   Wave 2  ⊘ docs                                                         │  
   │ › │       ✗ e2e      4m 0s                                               │  
   │   │       ● unit     1m 40s                                              │  
-  │                                                                          │  
   │   ripgrep 下载超时（504）                                                │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · es… │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
@@ -768,6 +768,7 @@ exports[`DAG mode in the panel: how it looks 80 by 24, in English 1`] = `
 
 exports[`DAG mode in the panel: how it looks 120 by 40, in English 1`] = `
 "  ◇─◆ GraphAgent                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -801,7 +802,6 @@ exports[`DAG mode in the panel: how it looks 120 by 40, in English 1`] = `
   │   Wave 2  ⊘ docs                                                                                                 │  
   │ › │       ✗ e2e      4m 0s                                                                                       │  
   │   │       ● unit     1m 40s                                                                                      │  
-  │                                                                                                                  │  
   │   ripgrep 下载超时（504）                                                                                        │  
   │ ↑↓ Select · ⏎ View output · I Ask main agent (prefilled, not sent) · esc Close                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  

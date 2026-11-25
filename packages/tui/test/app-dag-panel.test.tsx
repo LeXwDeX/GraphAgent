@@ -125,9 +125,9 @@ test("a request chosen in the panel is the draft of the main session, and nothin
     await app.setup.mockInput.typeText("i")
 
     const frame = await waitForFrame(app.setup, promptShown, "the input again")
-    expect(frame).toContain("请主 agent 处理节点「e2e」：timeout")
+    expect(frame).toContain("请主 agent 处理工作流「依赖升级验证」(wf_app_panel) 的节点「e2e」：timeout")
     const [input] = textareas(app.setup)
-    expect(input.plainText).toBe("请主 agent 处理节点「e2e」：timeout")
+    expect(input.plainText).toBe("请主 agent 处理工作流「依赖升级验证」(wf_app_panel) 的节点「e2e」：timeout")
     expect(app.setup.renderer.currentFocusedRenderable).toBe(input)
     expect(app.writes()).toEqual([])
   } finally {

@@ -463,7 +463,7 @@ export const en: Record<MessageKey, string> = {
   "dagmode.panel.fold.child": "(1 child)",
   "dagmode.panel.fold.children": "({n} children)",
   "dagmode.panel.request.title": "Ask the main agent",
-  "dagmode.prefill.node": 'Ask the main agent to handle node "{name}"{reason}',
+  "dagmode.prefill.node": 'Ask the main agent to handle node "{name}" in workflow "{title}" ({id}){reason}',
   "dagmode.prefill.inspect":
     'Please check the current state of workflow "{title}" ({id}) and report progress; if any node failed, tell me why.',
   "dagmode.prefill.pause": 'Please pause workflow "{title}" ({id}).',

@@ -611,9 +611,12 @@ export function DagPanel(props: { state?: DagPanelState }) {
    */
   function requestSelected() {
     const node = selectedNode()
-    if (!node) return
+    const shown = active()
+    if (!node || !shown) return
     const reason = rows().find((row) => row.id === node.id)?.note ?? ""
     const text = t("dagmode.prefill.node", {
+      title: remoteLine(shown.summary.title),
+      id: remoteLine(shown.summary.id),
       name: remoteLine(node.name),
       reason: reason === "" ? "" : `：${remoteLine(reason)}`,
     })
@@ -635,9 +638,10 @@ export function DagPanel(props: { state?: DagPanelState }) {
     const aw = ambiguousWidth()
     // Room for a fold mark in front of every name, once the workflow has a slot to put one on.
     const marked = folded.rows.some((entry) => entry.children > 0)
-    // The wave label and the time are drawn (not strings) so they can take the muted and dim levels; they are padded
-    // to the widest of their column here, where the string cells are measured by `DetailPanel` for the rest.
-    const raw: { entry: DagFoldRow<DagNodeRow>; label: string; span: string }[] = []
+    // The wave label is drawn (not a string) so it can take the muted and dim levels; it is padded to the widest of
+    // its column here, where the string cells are measured by `DetailPanel` for the rest. The time is read in its
+    // own cell below, so only that cell follows the clock and the rows are not rebuilt every second.
+    const raw: { entry: DagFoldRow<DagNodeRow>; label: string }[] = []
     const labelled = new Set<number>()
     for (const entry of folded.rows) {
       // The first row of a wave carries its number and the rest of its nodes a bar; a node folded under a slot is in
@@ -648,14 +652,13 @@ export function DagPanel(props: { state?: DagPanelState }) {
         label = labelled.has(entry.wave) ? "│" : t("dagmode.panel.wave", { n: entry.wave + 1 })
         labelled.add(entry.wave)
       }
-      raw.push({ entry, label, span: spanOf(entry.node) })
+      raw.push({ entry, label })
     }
     const labelWidth = Math.max(0, ...raw.map((each) => cellWidth(each.label, aw)))
-    const spanWidth = Math.max(0, ...raw.map((each) => cellWidth(each.span, aw)))
     const pad = (text: string, width: number) => text + " ".repeat(Math.max(0, width - cellWidth(text, aw)))
     // `note` and `body` are read when a row is selected or opened, and follow the clock and the output as they
     // change, so the rows are not rebuilt every second.
-    const rowFor = (entry: DagFoldRow<DagNodeRow>, label: string, span: string): DetailRow<DagNodeRow> => {
+    const rowFor = (entry: DagFoldRow<DagNodeRow>, label: string): DetailRow<DagNodeRow> => {
       const node = entry.node
       const style = dagStateStyle(node.status, node.error_class)
       const slot = entry.children > 0
@@ -674,7 +677,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
           // Two cells a level: a child sits one step in from the slot it is under.
           "  ".repeat(entry.depth) + mark + remoteLine(node.name),
           <text flexShrink={0} fg={textFg(theme, "secondary")} wrapMode="none">
-            {pad(span, spanWidth) + (slot ? " ".repeat(COLUMN_GAP) : "")}
+            {spanOf(node)}
           </text>,
           // Direct children, not everything below: what is one step down is what unfolding shows.
           ...(slot
@@ -704,7 +707,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
     }
     const result: DetailRow<DagNodeRow>[] = []
     let headed = false
-    for (const { entry, label, span } of raw) {
+    for (const { entry, label } of raw) {
       if (entry.depth === 0 && entry.wave === undefined && !headed && current.unplaced.length > 0) {
         headed = true
         result.push({
@@ -718,7 +721,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
           selectable: false,
         })
       }
-      result.push(rowFor(entry, label, span))
+      result.push(rowFor(entry, label))
     }
     return result
   })

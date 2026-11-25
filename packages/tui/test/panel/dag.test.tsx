@@ -1530,8 +1530,10 @@ describe("asking the main agent: one press fills in the input", () => {
       await press(shell, "i")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()).toBe("请主 agent 处理节点「e2e」：ripgrep 下载超时（504）")
-      expect(await shell.frame()).toContain("请主 agent 处理节点「e2e」")
+      expect(shell.promptDraft()).toBe(
+        "请主 agent 处理工作流「依赖升级验证」(wf_alpha) 的节点「e2e」：ripgrep 下载超时（504）",
+      )
+      expect(await shell.frame()).toContain("请主 agent 处理工作流「依赖升级验证」(wf_alpha) 的节点「e2e」")
       expect(shell.writes()).toEqual([])
       expect(shell.app.renderer.currentFocusedRenderable?.constructor.name).toBe("TextareaRenderable")
     } finally {
@@ -1547,7 +1549,9 @@ describe("asking the main agent: one press fills in the input", () => {
       await press(shell, "i")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()).toBe("请主 agent 处理节点「typecheck」：剩余 2m 5s")
+      expect(shell.promptDraft()).toBe(
+        "请主 agent 处理工作流「依赖升级验证」(wf_alpha) 的节点「typecheck」：剩余 2m 5s",
+      )
       expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()
@@ -1569,7 +1573,9 @@ describe("asking the main agent: one press fills in the input", () => {
       await press(shell, "i")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()?.startsWith("look first\n请主 agent 处理节点「e2e」")).toBe(true)
+      expect(
+        shell.promptDraft()?.startsWith("look first\n请主 agent 处理工作流「依赖升级验证」(wf_alpha) 的节点「e2e」"),
+      ).toBe(true)
       expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()
@@ -1603,7 +1609,7 @@ describe("asking the main agent: one press fills in the input", () => {
       await press(shell, "i")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()).toContain('handle node "e2e"')
+      expect(shell.promptDraft()).toContain('handle node "e2e" in workflow "依赖升级验证" (wf_alpha)')
       expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()

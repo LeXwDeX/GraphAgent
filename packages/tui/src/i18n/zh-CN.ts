@@ -458,7 +458,7 @@ export const zhCN = {
   "dagmode.panel.fold.child": "（1 个子节点）",
   "dagmode.panel.fold.children": "（{n} 个子节点）",
   "dagmode.panel.request.title": "请主 agent 处理",
-  "dagmode.prefill.node": "请主 agent 处理节点「{name}」{reason}",
+  "dagmode.prefill.node": "请主 agent 处理工作流「{title}」({id}) 的节点「{name}」{reason}",
   "dagmode.prefill.inspect": "请检查工作流「{title}」({id}) 的当前状态并汇报进展，有失败的节点请说明原因。",
   "dagmode.prefill.pause": "请暂停工作流「{title}」({id})。",
   "dagmode.prefill.resume": "请恢复工作流「{title}」({id})。",

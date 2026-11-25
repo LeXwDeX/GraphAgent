@@ -155,11 +155,14 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
         : props.mode === "manage" || entry.change === undefined
           ? undefined
           : changeLabel(entry.change)
-    if (tag === undefined) return when
+    // A drawn cell is not measured by `DetailPanel`, so it is padded to the trigger column here, gap included.
+    const text = tag === undefined ? when : `${tag} · ${when}`
+    const pad = " ".repeat(Math.max(0, triggerWidth() + COLUMN_GAP - cellWidth(text, ambiguousWidth())))
     return (
       <text wrapMode="none">
-        <span style={{ fg: theme.warning }}>{tag}</span>
-        {` · ${when}`}
+        <Show when={tag}>{(shown) => <span style={{ fg: theme.warning }}>{shown()}</span>}</Show>
+        {tag === undefined ? when : ` · ${when}`}
+        {pad}
       </text>
     )
   }
