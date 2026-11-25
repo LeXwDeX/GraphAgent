@@ -331,6 +331,31 @@ test("renders the shared right slot instead of idle hints", async () => {
   }
 })
 
+test("keeps the trust decision note in the meta row beside the right slot", async () => {
+  await using tmp = await shellState()
+  const app = await render(
+    () => (
+      <Footer
+        agent="build"
+        hints={hints}
+        meta={{ trust: 1, note: "已信任 1 条，1 条未信任，不会执行" }}
+        right={<text>status: indexing</text>}
+      />
+    ),
+    { width: 120, state: tmp.path },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("已信任 1 条，1 条未信任，不会执行")
+    expect(frame).toContain("⚠ 1 条项目命令未信任 · /trust")
+    expect(frame).toContain("status: indexing")
+    expectWithin(frame, 120, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("keeps the trust reminder next to the right slot and drops it at zero", async () => {
   await using tmp = await shellState()
   const [trust, setTrust] = createSignal(1)

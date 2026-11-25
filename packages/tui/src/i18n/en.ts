@@ -623,6 +623,10 @@ export const en: Record<MessageKey, string> = {
   "trust.footnote":
     "Trust is stored only on this computer (trust.json in the user state directory), never in the project. If an entry changes later, you will be asked again.",
   "trust.failed": "Failed to submit trust decisions: {message}",
+  "trust.note.trusted": "Trusted {n} entries",
+  "trust.note.skipped": ", {n} left untrusted and will not run",
+  "trust.note.declined": "None of these commands will run; the project works as before",
+  "trust.note.later": "None of these commands will run this time; the footer reminds you until you decide",
   "panel.model.title": "Select model",
   "panel.model.group.favorites": "Favorites",
   "panel.model.group.recent": "Recent",

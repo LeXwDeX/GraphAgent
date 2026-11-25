@@ -94,12 +94,19 @@ async function renderTrust(options: {
   state: string
   width: number
   height: number
+  /** Where the panel writes the result of a decision. */
+  notes?: string[]
 }) {
   let host: PanelHostApi | undefined
   const app = await renderAppPanel(
     () => (
       <PanelSurface
-        spec={{ id: "trust", render: () => <TrustPanel mode={options.mode} imported={options.imported} /> }}
+        spec={{
+          id: "trust",
+          render: () => (
+            <TrustPanel mode={options.mode} imported={options.imported} onNote={(text) => options.notes?.push(text)} />
+          ),
+        }}
         onHost={(value) => (host = value)}
       />
     ),
@@ -194,15 +201,17 @@ test("first-open panel renders at 80x24 with ambiguous_width 2", async () => {
   }
 })
 
-test("enter submits the default selection and closes the panel", async () => {
+test("enter submits the default selection, closes the panel and leaves the result in the footer note", async () => {
   await using tmp = await shellState()
   const calls = recording([safe, risky])
+  const notes: string[] = []
   const { app, host } = await renderTrust({
     mode: "first",
     handler: calls.handler,
     state: tmp.path,
     width: 120,
     height: 40,
+    notes,
   })
 
   try {
@@ -215,6 +224,7 @@ test("enter submits the default selection and closes the panel", async () => {
       { id: "risky", state: "declined" },
     ])
     await waitFor(app, () => host()?.depth() === 0, "panel close")
+    expect(notes).toEqual(["已信任 1 条，1 条未信任，不会执行"])
     // A trust decision is not a chat message.
     expect(calls.sessions.every((method) => method === "GET")).toBe(true)
   } finally {
@@ -248,15 +258,17 @@ test("space toggles one row and a selects every pending entry", async () => {
   }
 })
 
-test("decline all submits declined decisions for every pending entry", async () => {
+test("decline all submits declined decisions for every pending entry and says so in the note", async () => {
   await using tmp = await shellState()
   const calls = recording([safe, risky])
+  const notes: string[] = []
   const { app, host } = await renderTrust({
     mode: "first",
     handler: calls.handler,
     state: tmp.path,
     width: 120,
     height: 40,
+    notes,
   })
 
   try {
@@ -269,6 +281,7 @@ test("decline all submits declined decisions for every pending entry", async () 
       { id: "risky", state: "declined" },
     ])
     await waitFor(app, () => host()?.depth() === 0, "panel close")
+    expect(notes).toEqual(["这些命令都不会执行，项目照常可用"])
   } finally {
     app.renderer.destroy()
   }

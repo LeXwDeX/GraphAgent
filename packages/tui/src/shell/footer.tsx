@@ -9,6 +9,7 @@ import { t } from "../i18n"
 import { useCommandShortcut } from "../keymap"
 import { GUTTER, contentWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import { textFg } from "../ui/text"
 import { DagIndicator, dagIndicatorCompact, dagIndicatorText, type DagIndicatorState } from "./dag-indicator"
 import { LEFT_RESERVE } from "./footer-status"
 import { SUBAGENT_BACK_KEY, SUBAGENT_SWITCH_KEYS } from "./subagent-path"
@@ -72,6 +73,8 @@ export type FooterMeta = {
   mcp?: { count: number; error: boolean }
   /** Pending project trust entries (#1040); rendered as a warning before the meta row. */
   trust?: number
+  /** What the last trust decision did, kept in the meta row until the next one. */
+  note?: string
   /** Application version, shown on home. */
   version?: string
 }
@@ -166,13 +169,27 @@ export function Footer(props: FooterProps) {
     const trustWidth = cellWidth(trust, aw)
     const trustGap = leftWidth > 0 && trust ? GAP : 0
 
+    // The note of the last trust decision stays in the meta row. The shared right slot (a toast, the leader hint)
+    // keeps its reserve, so the note is cut to what is left and never pushes the slot off the edge.
+    const noteText = props.meta?.note ?? ""
+    const noteBudget =
+      inner -
+      leftWidth -
+      trustGap -
+      trustWidth -
+      (leftWidth + trustGap + trustWidth > 0 ? GAP : 0) -
+      (props.right ? LEFT_RESERVE + GAP : 0)
+    const note = noteText && noteBudget > 0 ? truncateCells(noteText, noteBudget, aw) : ""
+    const noteWidth = cellWidth(note, aw)
+    const noteGap = note && (leftWidth > 0 || trust) ? GAP : 0
+
     if (props.right) {
       // The renderer lays ambiguous glyphs out one cell wide; at ambiguous_width 2
       // the terminal draws them two cells wide and would push the flush-right
       // slot past the edge, so pull the slot back by the cells the left side gains.
       const shift =
         aw === 2
-          ? [agent, dag, shownAction, noticeKind + noticeRest, trust].reduce(
+          ? [agent, dag, shownAction, noticeKind + noticeRest, trust, note].reduce(
               (sum, text) => sum + cellWidth(text, 2) - cellWidth(text, 1),
               0,
             )
@@ -186,6 +203,8 @@ export function Footer(props: FooterProps) {
         noticeRest,
         trust,
         trustGap,
+        note,
+        noteGap,
         hints: [] as FooterHint[],
         meta: "",
         metaGap: 0,
@@ -194,7 +213,14 @@ export function Footer(props: FooterProps) {
       }
     }
 
-    const rightBudget = inner - leftWidth - trustGap - trustWidth - (leftWidth + trustGap + trustWidth > 0 ? GAP : 0)
+    const rightBudget =
+      inner -
+      leftWidth -
+      trustGap -
+      trustWidth -
+      noteGap -
+      noteWidth -
+      (leftWidth + trustGap + trustWidth + noteGap + noteWidth > 0 ? GAP : 0)
 
     const selected: FooterHint[] = []
     let joined = ""
@@ -210,21 +236,23 @@ export function Footer(props: FooterProps) {
     if (props.meta?.mcp) metaParts.push(`${props.meta.mcp.error ? "⊙!" : "⊙"} ${props.meta.mcp.count} MCP`)
     if (props.meta?.version) metaParts.push(props.meta.version)
     const metaText = metaParts.join(META_SEPARATOR)
-    const metaGapBase = leftWidth > 0 || trust ? GAP : 0
+    const metaGapBase = leftWidth > 0 || trust || note ? GAP : 0
     const metaBudget =
       inner -
       leftWidth -
       trustGap -
       trustWidth -
+      noteGap -
+      noteWidth -
       (metaText && metaGapBase ? GAP : 0) -
       hintsWidth -
-      (hintsWidth > 0 && (leftWidth > 0 || trust || metaText) ? GAP : 0)
+      (hintsWidth > 0 && (leftWidth > 0 || trust || note || metaText) ? GAP : 0)
     const meta = metaText && metaBudget > 0 ? truncateCells(metaText, metaBudget, aw) : ""
     const metaGap = meta && metaGapBase ? GAP : 0
     const metaWidth = cellWidth(meta, aw)
     const spacer = Math.max(
-      leftWidth + trustGap + trustWidth + metaGap + metaWidth > 0 && hintsWidth > 0 ? GAP : 0,
-      inner - leftWidth - trustGap - trustWidth - metaGap - metaWidth - hintsWidth,
+      leftWidth + trustGap + trustWidth + noteGap + noteWidth + metaGap + metaWidth > 0 && hintsWidth > 0 ? GAP : 0,
+      inner - leftWidth - trustGap - trustWidth - noteGap - noteWidth - metaGap - metaWidth - hintsWidth,
     )
 
     return {
@@ -236,6 +264,8 @@ export function Footer(props: FooterProps) {
       noticeRest,
       trust,
       trustGap,
+      note,
+      noteGap,
       hints: selected,
       meta,
       metaGap,
@@ -282,6 +312,13 @@ export function Footer(props: FooterProps) {
             }}
           >
             {layout().trust}
+          </text>
+        </box>
+      </Show>
+      <Show when={layout().note}>
+        <box paddingLeft={layout().noteGap}>
+          <text fg={textFg(theme, "secondary")} wrapMode="none">
+            {layout().note}
           </text>
         </box>
       </Show>
