@@ -17,7 +17,7 @@ import {
   type SessionViewState,
   type TextFactsCache,
 } from "./rows"
-import { openToolLines, startsExpanded } from "./fold"
+import { openToolLines } from "./fold"
 import { hideToolDetails } from "./tool-attention"
 
 /** The user message a sub-agent view draws as the task its parent delegated to it (#1033 3.4). */
@@ -259,15 +259,13 @@ function buildMessageRows(message: Message, deps: RowTableDeps, facts: TextFacts
       if (hideToolDetails(part.tool, part.state, deps.showDetails())) continue
       const key = `part:${part.id}`
       const output = part.state.status === "completed" ? part.state.output : ""
-      const defaultExpanded = startsExpanded(part)
-      const expanded = deps.view.get(part.id, "expanded", defaultExpanded)
+      const expanded = deps.view.get(part.id, "expanded")
       const errorExpanded = deps.view.get(part.id, "errorExpanded")
       rows.push({
         key,
         messageID: message.id,
         partID: part.id,
         kind: "tool",
-        defaultExpanded,
         revision: rowRevision(
           part.state.status,
           output.length,

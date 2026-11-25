@@ -200,30 +200,30 @@ test("a block opened by the key shows its whole output when the reader scrolls t
   }
 }, 120_000)
 
-test("a call opens by the key although a long plain tail has unmounted it, and stays open where it is", async () => {
+test("an edit opens by the key although a long plain tail has unmounted it, and stays open where it is", async () => {
   const harness = await mountHarness(
     windowedWith([
-      { index: 900, kind: "bash" },
+      { index: 900, kind: "edit" },
       { index: 2200, kind: "bash" },
     ]),
   )
   try {
     const scroll = await atTheEnd(harness)
-    // The premise: the earlier call is far from what is mounted, and its row has to be reached from the parts in the store.
-    expect(holding(scroll, "block 900")).toBeUndefined()
+    // The premise: the edit is far from what is mounted, and its row has to be reached from the parts in the store.
+    expect(holding(scroll, "src/edit-900.ts")).toBeUndefined()
     expect(openBlocks(scroll)).toEqual([])
 
     await pressExpand(harness)
     expect(openBlocks(scroll)).toEqual(["bash 2200"])
     await pressExpand(harness)
     // The key flips the flag a click flips: the row is pinned, so it is mounted, and it is mounted open.
-    expect(openBlocks(scroll)).toEqual(["bash 2200", "bash 900"])
-    const row = holding(scroll, "block 900")!
-    expect(texts(row).some((line) => line.includes("block 900 line"))).toBe(true)
+    expect(openBlocks(scroll)).toEqual(["bash 2200", "edit 900"])
+    const row = holding(scroll, "src/edit-900.ts")!
+    expect(texts(row).some((line) => line.includes("+1 \u22121"))).toBe(true)
 
-    // Every block is open: the next press closes the latest one, which is the later call.
+    // Every block is open: the next press closes the latest one, which is the bash call.
     await pressExpand(harness)
-    expect(openBlocks(scroll)).toEqual(["bash 900"])
+    expect(openBlocks(scroll)).toEqual(["edit 900"])
   } finally {
     await harness.dispose()
   }

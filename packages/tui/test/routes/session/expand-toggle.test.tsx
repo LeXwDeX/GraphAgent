@@ -246,7 +246,7 @@ const EDIT_DIFF = [
   "",
 ].join("\n")
 
-test("an edit starts with its diff open and says nothing of it, the key and a click close it, and the open row costs the screen nothing", async () => {
+test("an edit folds its diff under its summary and says nothing of it, the key and a click open it, and the open row costs the screen nothing", async () => {
   const harness = await mountHarness(
     transcript([1, 6], (fixture) => {
       const call = toolPart(fixture, 6)
@@ -261,21 +261,22 @@ test("an edit starts with its diff open and says nothing of it, the key and a cl
     }),
   )
   try {
-    const before = await until(harness, holds("const answer = 42"), "holds the open diff of the edit")
+    const before = await until(harness, holds("+1 \u22121"), "held the summary of the edit")
     expect(before).toContain("Edit src/answer.ts")
-    // The row is its call, its summary and the diff: no hint offers it, and none closes it once it is closed.
+    // The row is its call and its summary: no hint offers the diff, and none closes it once it is open.
     expect(before).not.toContain(FOLDED)
+    expect(before).not.toContain("const answer")
 
     // Opening and closing it is view state: no store write, and no layer.
     const counts = harness.counters.snapshot()
     pressExpand(harness)
-    const closed = await until(harness, lacks("const answer = 42"), "closed the diff")
-    expect(closed).not.toContain(OPEN)
-    // A click on the call opens it, and a click on the summary closes it again.
+    const opened = await until(harness, holds("const answer = 42"), "opened the diff")
+    expect(opened).not.toContain(OPEN)
+    // A click on the call closes it, and a click on the summary opens it again.
     await click(harness, "src/answer.ts", 2)
-    await until(harness, holds("const answer = 42"), "opened the diff by a click")
-    await click(harness, "+1", 0)
     await until(harness, lacks("const answer = 42"), "closed the diff by a click")
+    await click(harness, "+1", 0)
+    await until(harness, holds("const answer = 42"), "opened the diff by a click")
     expect(harness.counters.delta(counts)).toMatchObject({
       storeMessageWrites: 0,
       storePartWrites: 0,
@@ -283,8 +284,6 @@ test("an edit starts with its diff open and says nothing of it, the key and a cl
     })
 
     // With the diff open and the screen idle nothing is drawn: no animation frame, no second, no render request.
-    pressExpand(harness)
-    await until(harness, holds("const answer = 42"), "opened the diff again")
     await settleHighlights(harness)
     await harness.app.renderOnce()
     const idle = harness.counters.snapshot()

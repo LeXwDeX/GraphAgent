@@ -511,8 +511,7 @@ export function Main() {
     const width = contentWidth()
     const measured = measurements.get(row.key, row.revision, width)
     if (measured !== undefined) return measured
-    const expanded =
-      view.get(row.partID, "expanded", row.defaultExpanded === true) || view.get(row.partID, "errorExpanded")
+    const expanded = view.get(row.partID, "expanded") || view.get(row.partID, "errorExpanded")
     return estimateRowHeight(row, width, rowData().chars.get(row.key) ?? 0, expanded) + (row.kind === "tool" ? 1 : 0)
   }
 
@@ -1199,7 +1198,7 @@ export function Main() {
       category: "Session",
       // Opening a block is view state, not a request, so sub-agent views keep the key (spec 4.4).
       run: () => {
-        toggleExpand(rows(), foldOfRow(), view, (row) => row.defaultExpanded === true)
+        toggleExpand(rows(), foldOfRow(), view)
       },
     },
     {
@@ -2885,8 +2884,6 @@ function ToolCall(props: {
    * summary, open or closed. The click and `view.expand.toggle` open it all the same (an edit, a write, a patch).
    */
   opens?: boolean
-  /** A call that starts open (the diff of an edit, a write or a patch); a click or the fold key still closes it. */
-  defaultExpanded?: boolean
   /** The whole output of a call that folds, or what the open row of a call that `opens` draws. */
   body?: JSX.Element
   /** A call that completed without doing what it was asked: its dot is that of a call that failed. */
@@ -2907,7 +2904,7 @@ function ToolCall(props: {
     return current === "done" && props.blocked ? "failed" : current
   })
   const folded = () => completed() && (props.folds !== undefined || Boolean(props.opens))
-  const expanded = () => ctx.view.get(props.part.id, "expanded", props.defaultExpanded === true)
+  const expanded = () => ctx.view.get(props.part.id, "expanded")
   const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
 
   const result = (): string | JSX.Element | undefined => {
@@ -3253,9 +3250,8 @@ function Write(props: ToolProps) {
       part={props.part}
       name={toolRowName(props.tool)}
       arg={pathFormatter.format(filePath())}
-      // What a write has under its summary is the file it wrote, which starts open and is closed with no hint.
+      // What a write has under its summary is the file it wrote, which is always folded and opened with no hint.
       opens={lines() > 0}
-      defaultExpanded={lines() > 0}
       done={
         <text fg={theme.text} wrapMode="none">
           {t(lines() === 1 ? "tool.row.written.one" : "tool.row.written.other", { n: lines() })}
@@ -3878,9 +3874,8 @@ function Edit(props: ToolProps) {
       part={props.part}
       name={toolRowName(props.tool)}
       arg={words(pathFormatter.format(filePath()), input({ replaceAll: props.input.replaceAll }))}
-      // What an edit has under its summary is its diff, which starts open and is closed with no hint.
+      // What an edit has under its summary is its diff, which is always folded and opened with no hint.
       opens={rows() > 0}
-      defaultExpanded={rows() > 0}
       done={
         additions() === undefined && deletions() === undefined ? undefined : (
           <ChangeSummary additions={additions()} deletions={deletions()} errors={errors().length} />
@@ -3923,7 +3918,6 @@ function PatchFile(props: ToolProps & { file: PatchFileInfo }) {
       name={toolRowName(props.tool)}
       arg={arg()}
       opens={rows() > 0}
-      defaultExpanded={rows() > 0}
       done={
         <ChangeSummary additions={props.file.additions} deletions={props.file.deletions} errors={errors().length} />
       }

@@ -18,13 +18,7 @@ import type { Row, SessionViewState, ViewFlag } from "./rows"
  * way round, and a block opened by click counts as open here. A row the key opens is pinned by that flag
  * (`pinnedKeys`) and mounts open, wherever the viewport is.
  */
-export function toggleExpand(
-  rows: readonly Row[],
-  foldOf: (row: Row) => ViewFlag | undefined,
-  view: SessionViewState,
-  /** Whether a row starts open, so the first press closes it instead of opening it again. */
-  defaultOf: (row: Row) => boolean = () => false,
-) {
+export function toggleExpand(rows: readonly Row[], foldOf: (row: Row) => ViewFlag | undefined, view: SessionViewState) {
   let latest: { partID: string; flag: ViewFlag } | undefined
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]
@@ -32,7 +26,7 @@ export function toggleExpand(
     if (!partID) continue
     const flag = foldOf(row)
     if (!flag) continue
-    if (!view.get(partID, flag, defaultOf(row))) {
+    if (!view.get(partID, flag)) {
       view.set(partID, flag, true)
       return "opened" as const
     }
