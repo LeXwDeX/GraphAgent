@@ -8,6 +8,7 @@ import { onMount } from "solid-js"
 import { useTuiConfig } from "../../src/config"
 import { useBindings } from "../../src/keymap"
 import { setLanguage } from "../../src/i18n"
+import { DetailPanel } from "../../src/panel/detail"
 import { HelpPanel } from "../../src/panel/help"
 import { createPanelHost, PanelHost, PanelHostProvider, type PanelHostApi } from "../../src/panel/host"
 import { showExportOptions, type ExportOptions } from "../../src/panel/export"
@@ -222,6 +223,26 @@ test("status panel opens the full recent error of its row with return", async ()
     const closed = app.captureCharFrame()
     expect(closed).not.toContain("segment-39")
     expect(closed).toContain("› export failed:")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("detail panel with rowBody folded opens a row body with return", async () => {
+  await using tmp = await shellState()
+  const app = await renderPanel(
+    () => <DetailPanel title="详情" rowBody="folded" rows={[{ id: "a", cells: ["甲"], body: "正文甲" }]} hints={[]} />,
+    { width: 80, height: 24, state: tmp.path },
+  )
+  try {
+    await settle(app)
+    expect(app.captureCharFrame()).not.toContain("正文甲")
+    app.mockInput.pressEnter()
+    await settle(app)
+    expect(app.captureCharFrame()).toContain("正文甲")
+    app.mockInput.pressEnter()
+    await settle(app)
+    expect(app.captureCharFrame()).not.toContain("正文甲")
   } finally {
     app.renderer.destroy()
   }

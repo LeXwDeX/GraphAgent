@@ -203,7 +203,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     if (!row) return
     // The key opens the row it is on when the panel leaves its rows' bodies to it; a panel that keeps the key for an
     // action of its own says `rowBody: "selected"` and gets it back.
-    if (props.rowBody === undefined && row.body !== undefined) {
+    if (props.rowBody !== "selected" && row.body !== undefined) {
       toggleBody(row)
       return
     }
@@ -318,7 +318,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         result.push({ key: "panel.toggle", label: row.toggleLabel ?? t("panel.hint.toggle") })
       }
       if (props.onActivate) result.push({ key: "panel.submit", label: props.activateLabel ?? t("panel.hint.activate") })
-      else if (row?.body !== undefined)
+      else if (row?.body !== undefined && props.rowBody !== "selected")
         result.push({ key: "panel.submit", label: bodyOpen(row) ? t("panel.hint.collapse") : t("panel.hint.expand") })
     }
     result.push(...props.hints)
