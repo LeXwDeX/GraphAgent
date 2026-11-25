@@ -304,20 +304,19 @@ test("askSub (3): esc cancels the answer being typed before it rejects the quest
   }
 })
 
-test("askSub (3): esc in the rejection reason of a permission ends the ask without a reason", async () => {
+test("askSub (3): choosing the rejection option rejects at once and leaves no ask layer for esc", async () => {
   const chain = await mountChain()
   try {
     chain.sync().set("permission", rootID, [permissionRequest(rootID)])
     await chain.settle()
-    // Option 3 asks the agent how to adjust: the reason editor replaces the option list.
+    // Option 3 rejects and hands the reason to the root input; the ask does not stay open.
     chain.app.mockInput.pressKey("3")
     await chain.settle()
-    expect(chain.answers()).toEqual([])
-
-    expect(await chain.esc()).toEqual([EscapePriority.askSub])
     expect(chain.answers()).toEqual([
       { method: "POST", path: "/permission/per_000000000001/reply", body: { reply: "reject" } },
     ])
+
+    expect(await chain.esc()).not.toContain(EscapePriority.askSub)
   } finally {
     await chain.dispose()
   }

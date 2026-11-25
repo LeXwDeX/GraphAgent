@@ -113,8 +113,9 @@ function PanelTitle(props: { counts: string }) {
 
 /**
  * `/agents`: the sub-agents of the session tree the user is in, read-only. A row says what a sub-agent is doing and
- * for how long; `⏎` goes into it, and the one action asks the main agent to deal with it, which only fills the main
- * session's input. There is no way to stop or steer a sub-agent from here.
+ * for how long; `⏎` goes into it, `ctrl+r` asks the main agent to deal with it, and `ctrl+s` asks the main agent to
+ * stop a run that is still going. Both only fill the main session's input: steering a sub-agent is the main agent's,
+ * not the list's.
  *
  * Everything shown is already in the data layer (the session list, the Task links, the job states and the summaries),
  * so opening the panel asks the server for nothing and loads no session. The list is the direct children of the root
@@ -126,6 +127,7 @@ export function AgentsPanel() {
   const sync = useSync()
   const kv = useKV()
   const ticker = useTicker()
+  const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
   const host = usePanelHost()
   const innerWidth = usePanelInnerWidth()
@@ -270,6 +272,26 @@ export function AgentsPanel() {
     prefill(subagentRelayText(row))
   }
 
+  /**
+   * `ctrl+s`: ask the main agent to stop the selected sub-agent. A sub-agent session is read-only to the TUI (the
+   * server refuses a direct abort), so this only fills the main session's input, the way every stop, cancel or retry
+   * is expressed. A run that is not running or queued has nothing to stop, so the key does nothing there.
+   */
+  function askStop(item: ListItem<string>) {
+    const row = rowOf(item.value)
+    if (!row) return
+    host.closeAll()
+    prefill(subagentRelayText(row))
+  }
+
+  const canStop = (item: ListItem<string> | undefined) => {
+    // The hint row is one line: at the narrow breakpoint the stop hint would push the way out off the end, so the
+    // action is not offered there (13.8). The key is the same on a wide terminal.
+    if (dimensions().width < PANEL_NARROW_WIDTH) return false
+    const row = item ? rowOf(item.value) : undefined
+    return row?.marker === "running" || row?.status === "queued"
+  }
+
   return (
     <>
       <Show when={ticking()}>
@@ -287,7 +309,10 @@ export function AgentsPanel() {
           host.closeAll()
           openSubAgent(item.value)
         }}
-        actions={[{ key: "subagent.relay", label: t("subagent.panel.relay"), run: relay }]}
+        actions={[
+          { key: "subagent.relay", label: t("subagent.panel.relay"), run: relay },
+          { key: "subagent.stop", label: t("subagent.panel.stop"), run: askStop, when: canStop },
+        ]}
       />
     </>
   )

@@ -531,6 +531,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const bottomZone = createBottomZoneState()
   const btw = useBtw()
   const homeMeta = useHomeFooterMeta()
+  // What the last trust decision did, shown in the footer's meta row until the next decision (#1040).
+  const [trustNote, setTrustNote] = createSignal("")
   const homeDestination = useHomeSessionDestination()
   const paths = useTuiPaths()
   const drawer = useDrawer()
@@ -761,8 +763,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // `/agents` lists the sub-agents of the root session in a main session and in a sub-agent view alike.
   const openSubagentList = () => openPanel("agents", () => <AgentsPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
-  const openTrustPanel = (mode: TrustPanelMode, imported?: readonly string[]) =>
-    openPanel("trust", () => <TrustPanel mode={mode} imported={imported} />)
+  const openTrustPanel = (mode: TrustPanelMode, imported?: readonly string[]) => {
+    setTrustNote("")
+    openPanel(
+      "trust",
+      () => <TrustPanel mode={mode} imported={imported} onNote={setTrustNote} />,
+      // Leaving a pending review without a decision is "later": the footer says so until the next one. Manage mode
+      // changes nothing by being closed, so it writes no note.
+      mode === "manage" ? undefined : () => setTrustNote(t("trust.note.later")),
+    )
+  }
   const connectProvider = () =>
     openProviderPanel({ host: bottomZone.host, onConnected: (providerID) => openModelList(providerID) })
   const openStatus = () => openPanel("status", () => <StatusPanel />)
@@ -1311,7 +1321,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
                 : subagent()
                   ? subagentFooterHints(footerKeys().drawer, (subagentPosition()?.total ?? 0) > 1)
                   : footerKeys().hints,
-            meta: route.data.type === "home" ? homeMeta() : subagent() ? {} : { trust: homeMeta().trust },
+            meta:
+              route.data.type === "home"
+                ? { ...homeMeta(), note: trustNote() || undefined }
+                : subagent()
+                  ? {}
+                  : { trust: homeMeta().trust, note: trustNote() || undefined },
             dag: dagIndicator(),
             subagent: subagent(),
             right: footerStatus(),

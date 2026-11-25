@@ -706,31 +706,35 @@ describe("what the user can do in it", () => {
     }
   })
 
-  test("offers no way to stop, cancel or retry a sub-agent", async () => {
+  test("offers a stop that asks the main agent, without writing to the server", async () => {
     const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
     try {
       const frame = await harness.frame()
       expect(frame).toContain("⌃R")
       expect(frame).toContain("请主 agent 处理")
-      expect(frame).not.toMatch(/停止|终止|取消|中断|重试|stop|abort|cancel|retry/i)
-      // Every key a stop could hang on does nothing to the server.
-      for (const key of ["x", "d", "s", "c"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      expect(frame).toContain("⌃S")
+      expect(frame).toContain("请主 agent 停止")
+      // The first row is the running sub-agent; ctrl+s only fills the main session's input.
+      harness.app.mockInput.pressKey("s", { ctrl: true })
       await harness.settle()
       expect(harness.writes()).toEqual([])
+      expect(harness.prompt.ref.current.input).toBe("请处理子 agent explore · 扫描破坏性变更：")
     } finally {
       await harness.dispose()
     }
   })
 
-  test("the panel and its helpers cannot reach the server", () => {
-    // The only writes a user can cause here are the main session's own; the panel never calls the SDK.
+  test("the panel and its helpers never reach the server", () => {
+    // The list reads the data layer and only ever fills the main session's input.
     const files = [
       path.join(import.meta.dir, "../../src/panel/agents.tsx"),
       path.join(import.meta.dir, "../../src/session/subagents.ts"),
     ]
     for (const file of files) {
       const source = readFileSync(file, "utf8")
-      expect(source).not.toMatch(/useSDK|sdk\.client|\.abort\(|session\.prompt|session\.command/)
+      expect(source).not.toMatch(
+        /useSDK|sdk\.client|\.abort\(|session\.prompt|session\.command|session\.create|session\.revert/,
+      )
     }
   })
 
@@ -1788,7 +1792,7 @@ describe("what ctrl+r asks for a background run", () => {
     )
   })
 
-  test("is the one action there is: no key to stop, retry or cancel a run, and none of the others does anything", async () => {
+  test("ctrl+s asks the main agent to stop the selected run, and no other key does anything", async () => {
     const harness = await mount({
       sessions: backgroundTree(),
       seed: withBackground(),
@@ -1798,9 +1802,37 @@ describe("what ctrl+r asks for a background run", () => {
     try {
       const frame = await harness.frame()
       const hints = linesOf(frame).find((line) => line.includes("⌃R"))!
-      expect(hints.match(/⌃\w/g)).toEqual(["⌃R"])
+      expect(hints.match(/⌃\w/g)).toEqual(["⌃R", "⌃S"])
       expect(hints).toContain("请主 agent 处理")
-      for (const key of ["x", "d", "s", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      expect(hints).toContain("请主 agent 停止")
+      // The first row is the newest background run, which is running: the key only prefills the main input.
+      harness.app.mockInput.pressKey("s", { ctrl: true })
+      await harness.settle()
+      expect(harness.writes()).toEqual([])
+      expect(harness.prompt.ref.current.input).toBe(
+        "请取消后台任务「未提交改动」（task_id=ses_ag_bg_run），用 task 工具的 cancel。",
+      )
+      // A key with no action leaves the list alone.
+      for (const key of ["d", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      await harness.settle()
+      expect(harness.writes()).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("ctrl+s does nothing on a run that is over", async () => {
+    const harness = await mount({
+      sessions: backgroundTree(),
+      seed: withBackground(),
+      ticker: fakeTicker(at(95)).ticker,
+      height: 60,
+    })
+    try {
+      // Move the selection to the finished run at the end of the list.
+      harness.app.mockInput.pressKey("end")
+      await harness.settle()
+      harness.app.mockInput.pressKey("s", { ctrl: true })
       await harness.settle()
       expect(harness.writes()).toEqual([])
       expect(harness.prompt.ref.current.input).toBe("")

@@ -100,7 +100,12 @@ function riskLabel(risk: ProjectTrustRisk): string {
  * state belongs to this panel until a decision is submitted, except in manage
  * mode where a toggle writes immediately.
  */
-export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly string[] }) {
+export function TrustPanel(props: {
+  mode: TrustPanelMode
+  imported?: readonly string[]
+  /** Keeps the result of a decision in the footer's meta row. */
+  onNote?: (text: string) => void
+}) {
   const sync = useSync()
   const host = usePanelHost()
   const toast = useToast()
@@ -303,17 +308,24 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
   }
 
   function trustChecked() {
+    const picked = pickedCount()
+    const skipped = listed().length - picked
+    const note = t("trust.note.trusted", { n: picked }) + (skipped > 0 ? t("trust.note.skipped", { n: skipped }) : "")
     void apply(
       listed().map((entry) => ({ id: entry.id, state: checkedFor(entry) ? "trusted" : "declined" })),
       true,
-    )
+    ).then((ok) => {
+      if (ok) props.onNote?.(note)
+    })
   }
 
   function declineAll() {
     void apply(
       listed().map((entry) => ({ id: entry.id, state: "declined" })),
       true,
-    )
+    ).then((ok) => {
+      if (ok) props.onNote?.(t("trust.note.declined"))
+    })
   }
 
   function revoke() {

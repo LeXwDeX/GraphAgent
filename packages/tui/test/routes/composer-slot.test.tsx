@@ -110,7 +110,7 @@ test("the session prompt's @ file search runs in the session's directory", async
   }
 })
 
-test("a sub-agent view has no prompt, and no footer of its own under the transcript", async () => {
+test("a sub-agent view has no prompt, and a read-only frame in its place", async () => {
   const harness = await mountApp(
     { type: "session", sessionID: childID },
     { sessions: [sessionFixture(mainID), sessionFixture(childID, { parentID: mainID })] },
@@ -120,7 +120,12 @@ test("a sub-agent view has no prompt, and no footer of its own under the transcr
     expect(textareas(harness)).toHaveLength(0)
     expect(harness.promptDraft()).toBeUndefined()
     // The old Parent/Prev/Next bar is gone: what a sub-agent view says about itself is the frame's top bar and footer.
-    expect(await harness.frame()).not.toContain("Subagent")
+    const frame = await harness.frame()
+    expect(frame).not.toContain("Subagent")
+    // The composer slot holds the dashed read-only frame, with the way back in it.
+    expect(frame).toContain("只读")
+    expect(frame).toContain("esc 回主会话")
+    expect(frame).toContain("╌")
 
     // The root session of the same tree has one.
     harness.route().navigate({ type: "session", sessionID: mainID })

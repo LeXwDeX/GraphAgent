@@ -239,7 +239,12 @@ export const Disposition = {
   subagent_relay: added(
     "modal:agents",
     "ctrl+r in the /agents panel only (a list with a filter box takes ctrl+<key> actions); it fills the main " +
-      "session's input and sends nothing, so a sub-agent is never stopped or steered from the list",
+      "session's input and sends nothing, so a sub-agent is never steered from the list",
+  ),
+  subagent_stop: added(
+    "modal:agents",
+    "ctrl+s in the /agents panel only (a list with a filter box takes ctrl+<key> actions); it fills the main " +
+      "session's input asking it to stop the selected sub-agent, the way every stop is expressed",
   ),
   session_quick_switch_1: keep("global"),
   session_quick_switch_2: keep("global"),

@@ -2,7 +2,7 @@ import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { Portal, useTerminalDimensions } from "@opentui/solid"
-import { Renderable, type BoxRenderable, type DiffRenderable, type TextareaRenderable } from "@opentui/core"
+import { Renderable, type BoxRenderable, type DiffRenderable } from "@opentui/core"
 import { useTheme } from "../../context/theme"
 import type { PermissionRequest } from "@graphagent/sdk"
 import { useSDK, locationHeaders } from "../../context/sdk"
@@ -22,7 +22,6 @@ import { diffView } from "./diff-view"
 import { diffChanges } from "./fold"
 import { ChangeSummary } from "./tool-row"
 
-type PermissionStage = "options" | "reject"
 type PermissionChoice = "once" | "always" | "reject" | "relay"
 
 /** The rows of a diff an ask keeps at the least; with fewer to give it, the diff folds to the count of its changes. */
@@ -247,20 +246,17 @@ export function PermissionPrompt(props: PermissionPromptProps) {
   const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
   const [store, setStore] = createStore({
-    stage: "options" as PermissionStage,
     selected: 0,
     expanded: false,
   })
-  let input: TextareaRenderable | undefined
   let requestID = props.request.id
 
-  // Session routes no longer remount per session; reset the confirmation stage
-  // when a different request replaces the current one.
+  // Session routes no longer remount per session; reset the selection when a different request replaces the current one.
   createEffect(() => {
     const id = props.request.id
     if (requestID === id) return
     requestID = id
-    setStore({ stage: "options", selected: 0, expanded: false })
+    setStore({ selected: 0, expanded: false })
   })
 
   const own = createMemo(() => props.request.sessionID === props.rootSessionID)
@@ -316,9 +312,9 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     return {}
   })
 
-  function reply(replyKind: "once" | "always" | "reject", message?: string) {
+  function reply(replyKind: "once" | "always" | "reject") {
     void sdk.client.permission.reply(
-      { reply: replyKind, requestID: props.request.id, ...(message ? { message } : {}) },
+      { reply: replyKind, requestID: props.request.id },
       {
         headers: locationHeaders({
           directory: directory(),
@@ -335,11 +331,10 @@ export function PermissionPrompt(props: PermissionPromptProps) {
   function choose(choice: PermissionChoice) {
     if (!choices().includes(choice)) return
     if (choice === "reject") {
-      if (!own()) {
-        rejectPlain()
-        return
-      }
-      setStore({ stage: "reject", expanded: false })
+      // Reply first, then hand the user to the root draft to say why: the panel must not stay open and hold the
+      // queue. A sub-agent's request has no reason of its own to carry, so it is rejected as it is.
+      rejectPlain()
+      if (own()) props.prefill?.(t("ask.permission.rejectPrompt"))
       return
     }
     if (choice === "relay") {
@@ -362,21 +357,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     if (choice) choose(choice)
   }
 
-  createEffect(() => {
-    if (store.stage !== "reject") return
-    queueMicrotask(() => {
-      if (!input || input.isDestroyed) return
-      input.focus()
-    })
-  })
-
   const hints = createMemo<PanelHint[]>(() => {
-    if (store.stage === "reject") {
-      return [
-        { key: "ask.permission.rejectSend", label: t("ask.hint.submit") },
-        { key: "ask.permission.rejectPlain", label: t("ask.hint.reject") },
-      ]
-    }
     const result: PanelHint[] = []
     if (choices().length > 1) {
       result.push({ key: "ask.permission.previous", also: "ask.permission.next", label: t("ask.hint.pick") })
@@ -390,7 +371,6 @@ export function PermissionPrompt(props: PermissionPromptProps) {
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
     priority: EscapePriority.modal,
-    enabled: () => store.stage === "options",
     commands: [
       { name: "app.exit", title: "Reject permission", category: "Ask", run: rejectPlain },
       { name: "ask.permission.previous", title: "Previous option", category: "Ask", run: () => move(-1) },
@@ -436,31 +416,8 @@ export function PermissionPrompt(props: PermissionPromptProps) {
   }))
 
   useBindings(() => ({
-    enabled: () => store.stage === "options",
     priority: EscapePriority.ask,
     bindings: [{ key: "escape", desc: "Reject permission", group: "Ask", cmd: "ask.permission.reject" }],
-  }))
-
-  useBindings(() => ({
-    mode: GRAPHAGENT_BASE_MODE,
-    priority: EscapePriority.askSub,
-    enabled: () => store.stage === "reject",
-    commands: [
-      {
-        name: "ask.permission.rejectSend",
-        title: "Send rejection reason",
-        category: "Ask",
-        run: () => reply("reject", input?.plainText ?? ""),
-      },
-      { name: "ask.permission.rejectPlain", title: "Reject without a reason", category: "Ask", run: rejectPlain },
-    ],
-    bindings: [{ key: "return", desc: "Send rejection reason", group: "Ask", cmd: "ask.permission.rejectSend" }],
-  }))
-
-  useBindings(() => ({
-    enabled: () => store.stage === "reject",
-    priority: EscapePriority.askSub,
-    bindings: [{ key: "escape", desc: "Reject without a reason", group: "Ask", cmd: "ask.permission.rejectPlain" }],
   }))
 
   const info = createMemo<PermissionView>(() => {
@@ -633,33 +590,6 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     )
   }
 
-  // The rows of the reject stage are indented by the ask itself; the panel's frame padding is `PanelShell`'s (13.9).
-  const rejectContent = () => (
-    <box flexDirection="column" gap={1}>
-      <box flexDirection="row" gap={1} paddingLeft={1}>
-        <text fg={theme.warning}>{"△"}</text>
-        <text fg={theme.text}>{t("ask.permission.rejectTitle")}</text>
-      </box>
-      <box paddingLeft={1}>
-        <text fg={theme.textMuted}>{t("ask.permission.rejectHint")}</text>
-      </box>
-      <box paddingLeft={1}>
-        <textarea
-          ref={(value: TextareaRenderable) => {
-            input = value
-            value.traits = { status: "REJECT" }
-          }}
-          focused
-          textColor={theme.text}
-          focusedTextColor={theme.text}
-          cursorColor={theme.primary}
-        />
-      </box>
-    </box>
-  )
-
-  const content = () => (store.stage === "reject" ? rejectContent() : optionsContent())
-
   const surface = () => (
     <PanelShell
       title={title()}
@@ -669,7 +599,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
       maxRows={budget()}
       fullscreen={store.expanded}
     >
-      {content()}
+      {optionsContent()}
     </PanelShell>
   )
 
