@@ -121,16 +121,13 @@ test("a request chosen in the panel is the draft of the main session, and nothin
     app.setup.mockInput.pressEnter()
     await waitForFrame(app.setup, (value) => value.includes("[运行中]") && value.includes("e2e"), "the workflow panel")
 
-    // The failed node starts selected: `i` lists what can be asked about it, `retry` among them.
+    // The failed node starts selected: `i` prefills the request for it in one press and closes the panel.
     await app.setup.mockInput.typeText("i")
-    await waitForFrame(app.setup, (value) => value.includes("重试节点 e2e"), "the request list")
-    for (let index = 0; index < 3; index++) app.setup.mockInput.pressArrow("down")
-    app.setup.mockInput.pressEnter()
 
     const frame = await waitForFrame(app.setup, promptShown, "the input again")
-    expect(frame).toContain("请重试节点 e2e（工作流 wf_app_panel）。")
+    expect(frame).toContain("请主 agent 处理节点「e2e」：timeout")
     const [input] = textareas(app.setup)
-    expect(input.plainText).toBe("请重试节点 e2e（工作流 wf_app_panel）。")
+    expect(input.plainText).toBe("请主 agent 处理节点「e2e」：timeout")
     expect(app.setup.renderer.currentFocusedRenderable).toBe(input)
     expect(app.writes()).toEqual([])
   } finally {

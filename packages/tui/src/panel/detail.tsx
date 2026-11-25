@@ -45,6 +45,8 @@ export interface DetailRow<T = unknown> {
    * where some row has a note keeps that line as the selection moves, blank for the rows without one.
    */
   note?: string
+  /** A status color for the note line instead of T4 secondary (a failed node's reason, say); a state, not a level. */
+  noteToken?: "error" | "warning" | "success"
   /** Wrapped text the row opens below itself with `panel.submit`, never by being selected. */
   body?: string
   /**
@@ -71,6 +73,8 @@ export interface DetailPanelProps<T = unknown> {
   onToggle?(row: DetailRow<T>): void
   /** Scrollable text or rich content, for example a /btw answer. */
   body?: string | JSX.Element
+  /** Fixed content at the bottom of the list, under the rows and above the body; it does not scroll with the rows. */
+  footerBody?: JSX.Element
   /** Single-line input, for example an API key or OAuth code. */
   input?: { placeholder?: string; secret?: boolean; onSubmit(value: string): void }
   /** Overrides the submit hint label when `onActivate` is provided. */
@@ -124,6 +128,11 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     if (!hasNote()) return undefined
     const row = selectedRow()
     return row?.selectable !== false && row?.note ? remoteLine(row.note) : ""
+  })
+  const noteToken = createMemo(() => {
+    if (!hasNote()) return undefined
+    const row = selectedRow()
+    return row?.selectable !== false ? row?.noteToken : undefined
   })
   const tabs = createMemo(() => props.tabs ?? [])
 
@@ -345,6 +354,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
       hints={hints()}
       tone={props.tone}
       note={note()}
+      noteToken={noteToken()}
     >
       <Show when={props.summary}>
         <box flexShrink={0} flexDirection="column">
@@ -441,6 +451,11 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
           )
         }}
       </For>
+      <Show when={props.footerBody}>
+        <box flexShrink={0} flexDirection="column">
+          {props.footerBody}
+        </box>
+      </Show>
       <Show when={props.body !== undefined}>
         <Show
           when={typeof props.body === "string"}

@@ -144,6 +144,26 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
     return `${changeLabel(entry.change)} · ${when}`
   }
 
+  /** The trigger cell; the change tag (new, changed, imported) takes the warning color, the rest stays body. */
+  function triggerNode(entry: ProjectTrustEntry): JSX.Element {
+    const when = whenLabel(entry.when)
+    const tag =
+      props.mode === "imported"
+        ? importedIds().has(entry.id)
+          ? t("trust.change.imported")
+          : undefined
+        : props.mode === "manage" || entry.change === undefined
+          ? undefined
+          : changeLabel(entry.change)
+    if (tag === undefined) return when
+    return (
+      <text wrapMode="none">
+        <span style={{ fg: theme.warning }}>{tag}</span>
+        {` · ${when}`}
+      </text>
+    )
+  }
+
   const triggerWidth = createMemo(() =>
     listed().reduce((max, entry) => Math.max(max, cellWidth(triggerLabel(entry), ambiguousWidth())), 0),
   )
@@ -169,18 +189,19 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
   }
 
   function detailBody(entry: ProjectTrustEntry): string {
+    // The prototype order: where it comes from and when it runs, then the old and new command, then the risks.
     const lines: string[] = []
-    if (highRisk(entry)) lines.push(t("trust.risk.highBadge"))
-    if (entry.change === "modified" && entry.previous !== undefined) {
-      lines.push(t("trust.previousLine", { command: entry.previous }))
-      lines.push(t("trust.currentLine", { command: entry.command }))
-    }
     lines.push(
       t("trust.source", {
         file: `${sourceFile(entry)}${entry.source.line === undefined ? "" : `:${entry.source.line}`}`,
       }),
     )
     lines.push(t("trust.when", { when: whenLabel(entry.when) }))
+    if (entry.change === "modified" && entry.previous !== undefined) {
+      lines.push(t("trust.previousLine", { command: entry.previous }))
+      lines.push(t("trust.currentLine", { command: entry.command }))
+    }
+    if (highRisk(entry)) lines.push(t("trust.risk.highBadge"))
     if (entry.risks.length === 0) {
       lines.push(t("trust.risk.none"))
     } else {
@@ -226,7 +247,7 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       for (const entry of entries) {
         const cells: (string | JSX.Element)[] = []
         if (props.mode === "manage") cells.push(stateLabel(entry.state))
-        cells.push(triggerLabel(entry))
+        cells.push(triggerNode(entry))
         cells.push(commandCell(entry))
         result.push({
           id: entry.id,
@@ -344,6 +365,9 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
 
   const empty = () => props.mode === "manage" && listed().length === 0
 
+  /** How many of the listed entries are checked right now, for the continue hint. */
+  const pickedCount = createMemo(() => listed().filter((entry) => checkedFor(entry)).length)
+
   return (
     <DetailPanel
       title={
@@ -379,27 +403,25 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       rows={rows()}
       onSelect={(row) => setSelected(row.value)}
       onActivate={props.mode === "manage" ? undefined : trustChecked}
-      activateLabel={t("trust.hint.trust")}
+      activateLabel={t("trust.hint.trustCount", { count: pickedCount() })}
       onToggle={toggle}
       // The rows are what has to be read before deciding, so the selected row's body is open; `return` keeps its own
       // action.
       rowBody="selected"
       hints={hints()}
-      body={
-        <Show
-          when={!empty()}
-          fallback={
-            <text fg={textFg(theme, "secondary")} wrapMode="word">
-              {noProjectLayer() ? t("trust.noProject") : t("trust.empty")}
-            </text>
-          }
-        >
-          <Show when={props.mode !== "manage"}>
-            <text fg={textFg(theme, "hint")} wrapMode="word">
-              {t("trust.footnote")}
-            </text>
-          </Show>
+      footerBody={
+        <Show when={props.mode !== "manage" && !empty()}>
+          <text fg={textFg(theme, "hint")} wrapMode="word">
+            {t("trust.footnote")}
+          </text>
         </Show>
+      }
+      body={
+        empty() ? (
+          <text fg={textFg(theme, "secondary")} wrapMode="word">
+            {noProjectLayer() ? t("trust.noProject") : t("trust.empty")}
+          </text>
+        ) : undefined
       }
     />
   )

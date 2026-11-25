@@ -853,7 +853,7 @@ describe("an expansion folded under its slot", () => {
     }
   })
 
-  test("the fold is kept when the panel is built again, and for each workflow on its own", async () => {
+  test("the fold is kept for each workflow on its own", async () => {
     const server = dagServer({
       summaries: {
         [ROOT]: [summaryOf(WF, "代码审查", "running"), summaryOf(WF2, "第二次审查", "completed")],
@@ -865,12 +865,6 @@ describe("an expansion folded under its slot", () => {
       await openLoaded(shell)
       await press(shell, " ")
       await press(shell, "down")
-      // The template list above comes and goes; the panel under it is made again.
-      await press(shell, "i")
-      expect(topID(shell)).toBe("dag-request")
-      shell.app.mockInput.pressEscape()
-      await waitFor(() => topID(shell) === "dag")
-      await shell.settle()
       let frame = await shell.frame()
       expect(lineWith(frame, "review--api")).toContain("✓")
       expect(lineWith(frame, "›")).toContain("review--api")
@@ -1022,7 +1016,8 @@ describe("an expansion folded under its slot", () => {
         await press(shell, "up")
         const plain = rowsOf(await shell.frame()).find((line) => /\besc\b/.test(line)) ?? ""
         expect(plain).toContain("请主 agent 处理")
-        expect(plain.includes("详情")).toBe(width >= 100)
+        // The details key's hint is gone: `enter` (view output) and `i` (ask) are the only ones now.
+        expect(plain).not.toContain("详情")
         expect(plain).not.toContain("空格")
       } finally {
         await shell.dispose()
@@ -1278,7 +1273,7 @@ describe("moving around the panel", () => {
       await openLoaded(shell)
       await press(shell, "down")
       expect(lineWith(await shell.frame(), "typecheck")).toContain("›")
-      expect(await shell.frame()).toContain("展开")
+      expect(await shell.frame()).toContain("查看输出")
       expect(shell.server.reads).toEqual([WF])
 
       await press(shell, "return")
@@ -1515,7 +1510,7 @@ describe("moving around the panel", () => {
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
       // The node table can be loaded before the panel has drawn it; on a slow runner read until it shows (#1397).
       let frame = await shell.frame()
-      for (const start = Date.now(); !frame.includes("依赖升级验证") && Date.now() - start < 10_000; ) {
+      for (const start = Date.now(); !frame.includes("依赖升级验证") && Date.now() - start < 10_000;) {
         await Bun.sleep(20)
         frame = await shell.frame()
       }
@@ -1526,59 +1521,34 @@ describe("moving around the panel", () => {
   })
 })
 
-describe("asking the main agent: the panel only fills in the input", () => {
-  test("i lists the templates the selected node allows, and nothing the state rules out", async () => {
+describe("asking the main agent: one press fills in the input", () => {
+  test("i prefills the selected node with its reason and closes every panel", async () => {
     const shell = await mountDag()
     try {
       await openLoaded(shell)
+      // The failed node is the one the panel starts on; its reason comes with the request.
       await press(shell, "i")
-      expect(depth(shell)).toBe(2)
-      expect(topID(shell)).toBe("dag-request")
-      const frame = await shell.frame()
-      expect(frame).toContain("请主 agent 处理")
-      expect(frame).toContain("检查当前状态")
-      expect(frame).toContain("重试节点 e2e")
-      expect(frame).toContain("暂停工作流")
-      expect(frame).toContain("取消所有运行中的工作流")
-      // The failed node is selected and the workflow is running: no resume, and no acting on a running node.
-      expect(frame).not.toContain("恢复工作流")
-      expect(frame).not.toContain("取消节点")
-      expect(frame).not.toContain("延长节点")
+      await waitFor(() => depth(shell) === 0)
+      await shell.settle()
+      expect(shell.promptDraft()).toBe("请主 agent 处理节点「e2e」：ripgrep 下载超时（504）")
+      expect(await shell.frame()).toContain("请主 agent 处理节点「e2e」")
+      expect(shell.writes()).toEqual([])
+      expect(shell.app.renderer.currentFocusedRenderable?.constructor.name).toBe("TextareaRenderable")
     } finally {
       await shell.dispose()
     }
   })
 
-  test("a running node has other templates than a failed one", async () => {
+  test("a running node carries its deadline as the reason", async () => {
     const shell = await mountDag()
     try {
       await openLoaded(shell)
       await press(shell, "down")
       await press(shell, "i")
-      const frame = await shell.frame()
-      expect(frame).toContain("取消节点 typecheck")
-      expect(frame).toContain("延长节点 typecheck 的超时")
-      expect(frame).toContain("向节点 typecheck 的 agent 转达")
-      expect(frame).not.toContain("重试节点")
-    } finally {
-      await shell.dispose()
-    }
-  })
-
-  test("choosing one closes every panel and leaves the text in the input, focused and not sent", async () => {
-    const shell = await mountDag()
-    try {
-      await openLoaded(shell)
-      await press(shell, "i")
-      for (let index = 0; index < 3; index++) await press(shell, "down")
-      expect(await shell.frame()).toContain("重试节点 e2e")
-      await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()).toBe("请重试节点 e2e（工作流 wf_alpha）。")
-      expect(await shell.frame()).toContain("请重试节点 e2e（工作流 wf_alpha）。")
+      expect(shell.promptDraft()).toBe("请主 agent 处理节点「typecheck」：剩余 2m 5s")
       expect(shell.writes()).toEqual([])
-      expect(shell.app.renderer.currentFocusedRenderable?.constructor.name).toBe("TextareaRenderable")
     } finally {
       await shell.dispose()
     }
@@ -1597,50 +1567,10 @@ describe("asking the main agent: the panel only fills in the input", () => {
       await waitFor(() => topID(shell) === "dag", 10_000)
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
       await press(shell, "i")
-      await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()?.startsWith("look first\n请检查工作流「依赖升级验证」(wf_alpha)")).toBe(true)
+      expect(shell.promptDraft()?.startsWith("look first\n请主 agent 处理节点「e2e」")).toBe(true)
       expect(shell.writes()).toEqual([])
-    } finally {
-      await shell.dispose()
-    }
-  })
-
-  test("a template that ends where the user goes on writing leaves the cursor there", async () => {
-    const shell = await mountDag()
-    try {
-      await openLoaded(shell)
-      await press(shell, "down")
-      await press(shell, "i")
-      for (let index = 0; index < 5; index++) await press(shell, "down")
-      expect(await shell.frame()).toContain("向节点 typecheck 的 agent 转达")
-      await press(shell, "return")
-      await waitFor(() => depth(shell) === 0)
-      await shell.settle()
-      expect(shell.promptDraft()).toBe("请向节点 typecheck（工作流 wf_alpha）的 agent 转达：")
-      expect(shell.writes()).toEqual([])
-    } finally {
-      await shell.dispose()
-    }
-  })
-
-  test("escape in the list comes back to the panel where it was", async () => {
-    const shell = await mountDag()
-    try {
-      await openLoaded(shell)
-      await press(shell, "down")
-      await press(shell, "return")
-      await shell.waitForFrame((value) => value.includes("输出："))
-      await press(shell, "i")
-      expect(depth(shell)).toBe(2)
-      shell.app.mockInput.pressEscape()
-      await waitFor(() => depth(shell) === 1)
-      await waitFor(() => topID(shell) === "dag")
-      const frame = await shell.waitForFrame((value) => value.includes('"verdict":"pending"'))
-      // The selection, and the node opened before, are as they were left.
-      expect(lineWith(frame, "typecheck")).toContain("›")
-      expect(shell.promptDraft()).toBe("")
     } finally {
       await shell.dispose()
     }
@@ -1653,13 +1583,12 @@ describe("asking the main agent: the panel only fills in the input", () => {
       await waitFor(() => topID(shell) === "dag", 10_000)
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
       await press(shell, "i")
-      await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await waitFor(() => {
         const data = shell.route().data
         return data.type === "session" && data.sessionID === ROOT
       }, 10_000)
-      await waitFor(() => (shell.promptDraft() ?? "").includes("依赖升级验证"), 10_000)
+      await waitFor(() => (shell.promptDraft() ?? "").includes("e2e"), 10_000)
       expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()
@@ -1672,11 +1601,10 @@ describe("asking the main agent: the panel only fills in the input", () => {
       await openLoaded(shell)
       expect(await shell.frame()).toContain("Ask main agent")
       await press(shell, "i")
-      for (let index = 0; index < 3; index++) await press(shell, "down")
-      await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()).toBe("Please retry node e2e (workflow wf_alpha).")
+      expect(shell.promptDraft()).toContain('handle node "e2e"')
+      expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()
     }
@@ -1694,11 +1622,11 @@ describe("what the panel costs", () => {
       expect(counters.delta(start).registerLayer).toBeLessThanOrEqual(4)
 
       const mounted = counters.snapshot()
-      for (const key of ["down", "down", "up", "o", "return", "o", "i"]) await press(shell, key)
+      for (const key of ["down", "down", "up", "o", "return", "o"]) await press(shell, key)
       shell.app.mockInput.pressEscape()
       await waitFor(() => depth(shell) === 1)
       await shell.settle()
-      // Moving, opening details, asking, and coming back from the list: the list's own layers are the only ones.
+      // Moving, opening details, and coming back: the list's own layers are the only ones.
       expect(counters.delta(mounted).registerLayer).toBeLessThanOrEqual(6)
 
       const settled = counters.snapshot()
@@ -1785,10 +1713,6 @@ describe("the panel is read-only", () => {
       // Unfold, into a child, its details, back to the slot, fold; then the templates and one of them.
       for (const key of [" ", "down", "return", "o", "up", " "]) await press(shell, key)
       await press(shell, "i")
-      shell.app.mockInput.pressEscape()
-      await waitFor(() => depth(shell) === 1)
-      await press(shell, "i")
-      await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
 
@@ -1811,10 +1735,6 @@ describe("the panel is read-only", () => {
       await openLoaded(shell)
       for (const key of ["down", "down", "up", " ", "return", "o", "return", "right", "left"]) await press(shell, key)
       await press(shell, "i")
-      shell.app.mockInput.pressEscape()
-      await waitFor(() => depth(shell) === 1)
-      await press(shell, "i")
-      await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
 
