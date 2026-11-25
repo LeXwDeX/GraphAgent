@@ -127,9 +127,9 @@ function DrawerContext(props: { sessionID: string }) {
             </text>
             <Show when={current().percent !== undefined}>
               <text fg={theme.textMuted} wrapMode="none">
-                <span style={{ fg: tone(current().percent!) }}>{"█".repeat(contextBarCells(current().percent!))}</span>
+                <span style={{ fg: tone(current().percent!) }}>{"▰".repeat(contextBarCells(current().percent!))}</span>
                 <span style={{ fg: theme.textDim }}>
-                  {"█".repeat(CONTEXT_BAR_CELLS - contextBarCells(current().percent!))}
+                  {"▱".repeat(CONTEXT_BAR_CELLS - contextBarCells(current().percent!))}
                 </span>{" "}
                 <span style={{ fg: tone(current().percent!) }}>
                   {estimateMark(current())}
@@ -262,7 +262,10 @@ function DrawerGoal(props: { rootID: string }) {
       {(current) => (
         <box>
           <Heading title={t("goal.title")} />
-          <text fg={theme.text}>{remoteLine(current().goal)}</text>
+          <text fg={theme.text}>
+            <span style={{ fg: theme.primary }}>◎ </span>
+            {remoteLine(current().goal)}
+          </text>
           <Show when={line()}>
             {(state) => (
               <text fg={theme.textMuted} wrapMode="none">
