@@ -487,6 +487,9 @@ export function QuestionPrompt(props: QuestionPromptProps) {
     bindings: [{ key: "escape", desc: "Reject question", group: "Ask", cmd: "ask.question.reject" }],
   }))
 
+  // The indents of the rows below are this component's own, not a frame's: `PanelShell` has already kept its
+  // `FRAME_PADDING` at both sides, and the cells written here (the question's own indent, the gap after a row's
+  // number, the description under a row) are the ask's internal spacing, which no layout token names (13.9).
   const answerContent = () => (
     <box flexDirection="column" gap={1}>
       <box paddingLeft={1}>
@@ -597,6 +600,7 @@ export function QuestionPrompt(props: QuestionPromptProps) {
     </box>
   )
 
+  // The same internal indents as the answer rows: the panel's frame padding is `PanelShell`'s (13.9).
   const confirmContent = () => (
     <box flexDirection="column" gap={1}>
       <box paddingLeft={1}>
