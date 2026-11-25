@@ -706,32 +706,36 @@ describe("what the user can do in it", () => {
     }
   })
 
-  test("offers no way to stop, cancel or retry a sub-agent", async () => {
-    const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
+  test("offers a stop for a sub-agent that is still running", async () => {
+    const harness = await mount({
+      ticker: fakeTicker(at(95)).ticker,
+      handler: (url) => (url.pathname.endsWith("/abort") ? json({}) : undefined),
+    })
     try {
       const frame = await harness.frame()
       expect(frame).toContain("⌃R")
       expect(frame).toContain("请主 agent 处理")
-      expect(frame).not.toMatch(/停止|终止|取消|中断|重试|stop|abort|cancel|retry/i)
-      // Every key a stop could hang on does nothing to the server.
-      for (const key of ["x", "d", "s", "c"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      expect(frame).toContain("X 停止")
+      // The first row is the running sub-agent; x aborts its session and nothing else.
+      harness.app.mockInput.pressKey("x")
       await harness.settle()
-      expect(harness.writes()).toEqual([])
+      expect(harness.writes()).toEqual([`POST /session/${SCAN}/abort`])
     } finally {
       await harness.dispose()
     }
   })
 
-  test("the panel and its helpers cannot reach the server", () => {
-    // The only writes a user can cause here are the main session's own; the panel never calls the SDK.
+  test("the panel and its helpers reach the server only to stop a run", () => {
+    // The list reads the data layer; the one write a user can cause is the abort of a running sub-agent.
     const files = [
       path.join(import.meta.dir, "../../src/panel/agents.tsx"),
       path.join(import.meta.dir, "../../src/session/subagents.ts"),
     ]
     for (const file of files) {
       const source = readFileSync(file, "utf8")
-      expect(source).not.toMatch(/useSDK|sdk\.client|\.abort\(|session\.prompt|session\.command/)
+      expect(source).not.toMatch(/session\.prompt|session\.command|session\.create|session\.revert/)
     }
+    expect(readFileSync(files[0]!, "utf8")).toMatch(/sdk\.client\.session\.abort/)
   })
 
   test("typing narrows the list by the name shown", async () => {
@@ -1039,8 +1043,8 @@ describe("how it looks", () => {
 
   // The list has a filter box, so it has no tab keys on the arrows: the pair of row keys is the only pair in the row.
   const HINT_ROWS = {
-    "zh-CN": "↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭",
-    en: "↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close",
+    "zh-CN": "↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · X 停止 · esc 关闭",
+    en: "↑↓ Select · ⏎ Enter · ⌃R Ask main agent · X stop · esc Close",
   } as const
 
   for (const language of ["zh-CN", "en"] as const) {
@@ -1788,7 +1792,35 @@ describe("what ctrl+r asks for a background run", () => {
     )
   })
 
-  test("is the one action there is: no key to stop, retry or cancel a run, and none of the others does anything", async () => {
+  test("x stops the selected run, and no other key does anything", async () => {
+    const harness = await mount({
+      sessions: backgroundTree(),
+      seed: withBackground(),
+      ticker: fakeTicker(at(95)).ticker,
+      height: 60,
+      handler: (url) => (url.pathname.endsWith("/abort") ? json({}) : undefined),
+    })
+    try {
+      const frame = await harness.frame()
+      const hints = linesOf(frame).find((line) => line.includes("⌃R"))!
+      expect(hints.match(/⌃\w/g)).toEqual(["⌃R"])
+      expect(hints).toContain("请主 agent 处理")
+      expect(hints).toContain("X 停止")
+      // The first row is the newest background run, which is running.
+      harness.app.mockInput.pressKey("x")
+      await harness.settle()
+      expect(harness.writes()).toEqual([`POST /session/${BG_RUN}/abort`])
+      expect(harness.prompt.ref.current.input).toBe("")
+      // A key with no action leaves the list alone.
+      for (const key of ["d", "s", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      await harness.settle()
+      expect(harness.writes()).toEqual([`POST /session/${BG_RUN}/abort`])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("x does nothing on a run that is over", async () => {
     const harness = await mount({
       sessions: backgroundTree(),
       seed: withBackground(),
@@ -1796,11 +1828,10 @@ describe("what ctrl+r asks for a background run", () => {
       height: 60,
     })
     try {
-      const frame = await harness.frame()
-      const hints = linesOf(frame).find((line) => line.includes("⌃R"))!
-      expect(hints.match(/⌃\w/g)).toEqual(["⌃R"])
-      expect(hints).toContain("请主 agent 处理")
-      for (const key of ["x", "d", "s", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      // Move the selection to the finished run at the end of the list.
+      harness.app.mockInput.pressKey("end")
+      await harness.settle()
+      harness.app.mockInput.pressKey("x")
       await harness.settle()
       expect(harness.writes()).toEqual([])
       expect(harness.prompt.ref.current.input).toBe("")
