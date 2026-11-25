@@ -264,9 +264,13 @@ interface PromptOptions {
 type App = Awaited<ReturnType<typeof renderAppPanel>>
 
 /** Mounts the permission ask on a stable frame and hands the run to `body`. */
-async function withPrompt<T>(options: PromptOptions, body: (app: App, calls: ReplyCall[]) => Promise<T>) {
+async function withPrompt<T>(
+  options: PromptOptions,
+  body: (app: App, calls: ReplyCall[], prefilled: string[]) => Promise<T>,
+) {
   const language = options.language ?? "zh-CN"
   const calls: ReplyCall[] = []
+  const prefilled: string[] = []
   await using tmp = await shellState(options.ambiguousWidth === 2 ? { ambiguous_width: 2 } : {})
   const sessionID = options.child ? CHILD : ROOT
   const { scene } = options
@@ -287,6 +291,7 @@ async function withPrompt<T>(options: PromptOptions, body: (app: App, calls: Rep
         rootSessionID={ROOT}
         position={options.position ?? 1}
         total={options.total ?? 1}
+        prefill={(text) => prefilled.push(text)}
       />
     ),
     {
@@ -322,7 +327,7 @@ async function withPrompt<T>(options: PromptOptions, body: (app: App, calls: Rep
   )
   try {
     await stable(app)
-    return await body(app, calls)
+    return await body(app, calls, prefilled)
   } finally {
     app.renderer.destroy()
   }
@@ -601,16 +606,18 @@ describe("the options", () => {
     }
   })
 
-  test("choosing the third option from the root opens the reason editor, from a sub-agent it rejects at once", async () => {
-    await withPrompt({ scene: scenes()[0] }, async (app, calls) => {
-      app.mockInput.pressKey("3")
-      await renderUntilFrame(app, (frame) => frame.includes("拒绝权限"), "the reason editor")
-      expect(calls).toEqual([])
-    })
-    await withPrompt({ scene: scenes()[0], child: true }, async (app, calls) => {
+  test("choosing the third option rejects and fills the root input with the reason, a sub-agent's just rejects", async () => {
+    await withPrompt({ scene: scenes()[0] }, async (app, calls, prefilled) => {
       app.mockInput.pressKey("3")
       await renderUntilFrame(app, () => calls.length > 0, "the reply")
       expect(calls).toEqual([{ path: "/permission/per_000000000001/reply", body: { reply: "reject" } }])
+      expect(prefilled).toEqual(["已拒绝，请在输入框里说明原因："])
+    })
+    await withPrompt({ scene: scenes()[0], child: true }, async (app, calls, prefilled) => {
+      app.mockInput.pressKey("3")
+      await renderUntilFrame(app, () => calls.length > 0, "the reply")
+      expect(calls).toEqual([{ path: "/permission/per_000000000001/reply", body: { reply: "reject" } }])
+      expect(prefilled).toEqual([])
     })
   })
 
