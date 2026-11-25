@@ -128,7 +128,8 @@ export function formatTextLevelsBaseline(count: number) {
 export function parseTextLevelsBaseline(raw: string) {
   const rows = raw.split("\n").filter((line) => line !== "" && !line.startsWith("#"))
   const count = Number(rows[0])
-  if (rows.length !== 1 || !Number.isInteger(count) || count < 0) throw new Error("text levels baseline: expected one count")
+  if (rows.length !== 1 || !Number.isInteger(count) || count < 0)
+    throw new Error("text levels baseline: expected one count")
   return count
 }
 

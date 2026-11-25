@@ -86,7 +86,7 @@ test("leaves state colors, the selection background, roles and text alone", asyn
       "    <text fg={theme.statusRunning}>run</text>",
       "    <text fg={theme.accent}>brand</text>",
       "    <box backgroundColor={props.selected ? theme.backgroundSelected : undefined} />",
-      "    <text fg={textFg(theme, \"secondary\")} attributes={textAttributes(\"title\")}>body</text>",
+      '    <text fg={textFg(theme, "secondary")} attributes={textAttributes("title")}>body</text>',
       "    <text fg={theme.markdownText}>md</text>",
       "    {/* fg={theme.primary} */}",
       '    <text>{"fg={theme.textDim}"}</text>',
@@ -100,7 +100,7 @@ test("leaves state colors, the selection background, roles and text alone", asyn
 
 test("counts the brand primary of a link, which the coarse ratchet leaves to the baseline", async () => {
   const root = await fixture({
-    "panel/c.tsx": 'export const C = () => <Link href={url} fg={theme.primary} />\n',
+    "panel/c.tsx": "export const C = () => <Link href={url} fg={theme.primary} />\n",
   })
   expect(found(collectTextLevelLiterals({ root }))).toEqual(["panel/c.tsx:1 fg={theme.primary}"])
 })

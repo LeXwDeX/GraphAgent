@@ -2,4 +2,4 @@
 # and TextAttributes.BOLD, in src/panel/.
 # The number only goes down: name the role instead (textFg / textAttributes in src/ui/text.ts), then run
 # `bun script/check-text-levels.ts --update-baseline`.
-60
+8

@@ -9,6 +9,7 @@ import { useTheme } from "../context/theme"
 import { t, type MessageKey } from "../i18n"
 import { EscapePriority, formatKeyBindings, useBindings, useKeymapSelector } from "../keymap"
 import { MARK_CELLS } from "../ui/layout"
+import { textFg } from "../ui/text"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, usePanelInnerWidth, type PanelHint, type PanelTab } from "./shell"
 
@@ -382,7 +383,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
         {(row, index) => {
           const isSelected = () => selected() === index()
           const isEditing = () => editing() === row.id
-          const valueColor = () => (row.disabled ? theme.textDim : isSelected() ? theme.primary : theme.textMuted)
+          const valueColor = () =>
+            row.disabled ? textFg(theme, "disabled") : isSelected() ? theme.primary : textFg(theme, "secondary")
           const line = createMemo(() =>
             fitValueLine(
               valueWidth(),
@@ -424,7 +426,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 <text
                   flexShrink={0}
                   wrapMode="none"
-                  fg={row.disabled ? theme.textMuted : theme.text}
+                  fg={row.disabled ? textFg(theme, "disabled") : textFg(theme, "body")}
                   attributes={isSelected() ? TextAttributes.BOLD : undefined}
                 >
                   {nameCell(row.label, ambiguousWidth())}
@@ -437,12 +439,12 @@ export function SettingsPanel(props: SettingsPanelProps) {
                         {line().value}
                       </text>
                       <Show when={line().suffix}>
-                        <text flexShrink={0} fg={theme.textDim} wrapMode="none">
+                        <text flexShrink={0} fg={textFg(theme, "hint")} wrapMode="none">
                           {line().suffix}
                         </text>
                       </Show>
                       <Show when={line().cycle}>
-                        <text flexShrink={0} fg={theme.textDim} wrapMode="none">
+                        <text flexShrink={0} fg={textFg(theme, "hint")} wrapMode="none">
                           {line().cycle}
                         </text>
                       </Show>
@@ -457,9 +459,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
                       width="100%"
                       value={row.kind === "text" ? row.value : ""}
                       placeholder={t("panel.input.placeholder")}
-                      placeholderColor={theme.textMuted}
+                      placeholderColor={textFg(theme, "secondary")}
                       focusedBackgroundColor={theme.backgroundPanel}
-                      focusedTextColor={theme.text}
+                      focusedTextColor={textFg(theme, "body")}
                       cursorColor={theme.primary}
                     />
                   </box>

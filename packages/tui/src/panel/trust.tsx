@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { TextAttributes } from "@opentui/core"
 import type { ProjectTrustDecision, ProjectTrustEntry, ProjectTrustRisk } from "@graphagent/sdk"
 import { createMemo, createSignal, Show, type JSX } from "solid-js"
 import { useKV } from "../context/kv"
@@ -13,6 +12,7 @@ import { useBindings } from "../keymap"
 import { errorMessage } from "../util/error"
 import { TuiLog } from "../util/log"
 import { MARK_CELLS } from "../ui/layout"
+import { textAttributes, textFg, textStyle, titleFg } from "../ui/text"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { useToast } from "../ui/toast"
 import { CHECK_LEAD_CELLS, COLUMN_GAP, DetailPanel, type DetailRow } from "./detail"
@@ -217,7 +217,7 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       result.push({
         id: `group:${file}`,
         cells: [
-          <text fg={theme.textDim} attributes={TextAttributes.BOLD} wrapMode="none">
+          <text fg={textFg(theme, "group")} wrapMode="none">
             {groupTitle(file, entries)}
           </text>,
         ],
@@ -349,14 +349,14 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       title={
         <box flexDirection="row" gap={1}>
           <text
-            attributes={TextAttributes.BOLD}
-            fg={props.mode === "manage" ? theme.primary : theme.warning}
+            attributes={textAttributes("title")}
+            fg={titleFg(theme, props.mode === "manage" ? "default" : "warning")}
             wrapMode="none"
           >
             {title()}
           </text>
           <Show when={!noProjectLayer()}>
-            <text fg={theme.textDim} wrapMode="none">
+            <text fg={textFg(theme, "secondary")} wrapMode="none">
               {sync.path.worktree}
             </text>
           </Show>
@@ -366,11 +366,11 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
       tone={props.mode === "manage" ? "default" : "warning"}
       summary={
         <box flexDirection="column">
-          <text fg={empty() ? theme.textMuted : theme.text} wrapMode="word">
+          <text style={textStyle(theme, empty() ? "secondary" : "body")} wrapMode="word">
             {summaryText()}
           </text>
           <Show when={props.mode === "changed" && unchangedCount() > 0}>
-            <text fg={theme.textMuted} wrapMode="none">
+            <text fg={textFg(theme, "secondary")} wrapMode="none">
               {t("trust.unchanged", { count: unchangedCount() })}
             </text>
           </Show>
@@ -386,13 +386,13 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
         <Show
           when={!empty()}
           fallback={
-            <text fg={theme.textMuted} wrapMode="word">
+            <text fg={textFg(theme, "secondary")} wrapMode="word">
               {noProjectLayer() ? t("trust.noProject") : t("trust.empty")}
             </text>
           }
         >
           <Show when={props.mode !== "manage"}>
-            <text fg={theme.textMuted} wrapMode="word">
+            <text fg={textFg(theme, "hint")} wrapMode="word">
               {t("trust.footnote")}
             </text>
           </Show>

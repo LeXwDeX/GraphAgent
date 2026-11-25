@@ -8,6 +8,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { EscapePriority, useBindings } from "../keymap"
 import { MARK_CELLS } from "../ui/layout"
+import { textFg } from "../ui/text"
 import { cellWidth, type AmbiguousWidth } from "../ui/width"
 import { remoteLine } from "../util/remote-text"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
@@ -332,7 +333,13 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                     >
                       <text
                         wrapMode="none"
-                        fg={lead().disabled ? theme.textDim : lead().checked ? theme.success : theme.textMuted}
+                        fg={
+                          lead().disabled
+                            ? textFg(theme, "disabled")
+                            : lead().checked
+                              ? theme.success
+                              : textFg(theme, "secondary")
+                        }
                       >
                         {lead().checked ? CHECK_LEAD.on : CHECK_LEAD.off}
                       </text>
@@ -358,7 +365,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
               </box>
               <Show when={isSelected() && row.body}>
                 <box flexShrink={0} paddingLeft={MARK_CELLS} paddingBottom={1}>
-                  <text wrapMode="word" fg={theme.text}>
+                  <text wrapMode="word" fg={textFg(theme, "body")}>
                     {row.body!}
                   </text>
                 </box>
@@ -391,9 +398,9 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
               }}
               width="100%"
               placeholder={props.input?.placeholder ?? t("panel.input.placeholder")}
-              placeholderColor={theme.textMuted}
+              placeholderColor={textFg(theme, "secondary")}
               focusedBackgroundColor={theme.backgroundPanel}
-              focusedTextColor={theme.text}
+              focusedTextColor={textFg(theme, "body")}
               cursorColor={theme.primary}
             />
           </box>
