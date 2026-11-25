@@ -226,7 +226,7 @@ for (const ambiguousWidth of [1, 2] as const) {
   })
 }
 
-test("a note and an action end the result line: the note dim after a separator, the action in the accent color two cells on", async () => {
+test("a note and an action end the result line: the note dim after a separator, the action in the muted color two cells on", async () => {
   await using(
     { state: "running", name: "Task", arg: "a", result: "运行中", note: "转后台 ctrl+x w", action: "进入" },
     {},
@@ -235,7 +235,7 @@ test("a note and an action end the result line: the note dim after a separator, 
       const spans = view.spans()
       expect(colorOf(spans, "运行中")?.equals(palette().primary)).toBe(true)
       expect(colorOf(spans, "转后台")?.equals(palette().textDim)).toBe(true)
-      expect(colorOf(spans, "进入")?.equals(palette().primary)).toBe(true)
+      expect(colorOf(spans, "进入")?.equals(palette().textMuted)).toBe(true)
     },
   )
 })
@@ -251,14 +251,14 @@ test("the action is in the text color under the pointer, on a row that has a cli
       expect(colorOf(view.spans(), "进入")?.equals(palette().text)).toBe(true)
       await view.app.mockMouse.moveTo(view.width - 1, 6)
       await view.app.renderOnce()
-      expect(colorOf(view.spans(), "进入")?.equals(palette().primary)).toBe(true)
+      expect(colorOf(view.spans(), "进入")?.equals(palette().textMuted)).toBe(true)
     },
   )
   await using({ state: "done", name: "Task", arg: "a", result: "完成", action: "进入" }, {}, async (view) => {
     const at = await cellOf(view, "进入")
     await view.app.mockMouse.moveTo(at.column + 1, at.row)
     await view.app.renderOnce()
-    expect(colorOf(view.spans(), "进入")?.equals(palette().primary)).toBe(true)
+    expect(colorOf(view.spans(), "进入")?.equals(palette().textMuted)).toBe(true)
   })
 })
 

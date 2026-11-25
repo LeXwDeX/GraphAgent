@@ -2,6 +2,7 @@ import { Prompt, type PromptRef } from "../component/prompt"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { Logo } from "../component/logo"
 import { useSync } from "../context/sync"
+import { useKV } from "../context/kv"
 import { useArgs } from "../context/args"
 import { useRoute, useRouteData } from "../context/route"
 import { usePromptRef } from "../context/prompt"
@@ -15,8 +16,9 @@ import { GRAPHAGENT_BASE_MODE, useBindings } from "../keymap"
 import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { GUTTER, NARROW_WIDTH } from "../ui/layout"
 import { useToast } from "../ui/toast"
-import { cellWidth, truncateCells } from "../ui/width"
+import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { getRelativeTime } from "../util/relative-time"
+import { isRoot } from "../session/role"
 
 let once = false
 
@@ -31,13 +33,18 @@ export function Home() {
   const editor = useEditorContext()
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
+  const kv = useKV()
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const tuiConfig = useTuiConfig()
   const toast = useToast()
   const bottomZone = useBottomZoneOptional()
-  // The most recently updated sessions, as the prototype's home lists them (#1032). The store is id-ordered, so the
-  // copy is sorted by recency for display, the way the session browser does.
+  // The most recently updated root sessions, as the prototype's home lists them (#1032). The store is id-ordered, so the
+  // copy is sorted by recency for display, the way the session browser does; delegated work is left to the browser.
   const recent = createMemo(() =>
-    [...sync.data.session].toSorted((left, right) => right.time.updated - left.time.updated).slice(0, 5),
+    [...sync.data.session]
+      .filter((session) => isRoot(session))
+      .toSorted((left, right) => right.time.updated - left.time.updated)
+      .slice(0, 5),
   )
   const promptMaxWidth = createMemo(() => {
     const configured = tuiConfig.prompt?.max_width
@@ -127,10 +134,11 @@ export function Home() {
             <For each={recent()}>
               {(session) => {
                 const time = getRelativeTime(session.time.updated)
-                const room = Math.max(8, promptMaxWidth() - cellWidth(` · ${time}`, 1) - 1)
+                const aw = ambiguousWidth()
+                const room = Math.max(8, promptMaxWidth() - cellWidth(` · ${time}`, aw) - 1)
                 return (
                   <text wrapMode="none" onMouseUp={() => router.navigate({ type: "session", sessionID: session.id })}>
-                    <span>{truncateCells(session.title, room, 1)}</span>
+                    <span>{truncateCells(session.title, room, aw)}</span>
                     <span style={{ fg: theme.textMuted }}>{` · ${time}`}</span>
                   </text>
                 )

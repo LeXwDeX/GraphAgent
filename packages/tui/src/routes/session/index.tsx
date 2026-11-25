@@ -3711,7 +3711,7 @@ function TaskRun(props: ToolProps) {
       resultColor={tone()}
       dotColor={tone()}
       note={move()}
-      action={enter() ? t("background.row.enter", { key: ctx.shortcuts.enter() || "⏎" }) : undefined}
+      action={enter() ? t("background.row.enter") : undefined}
       expanded={failed() ? errorExpanded() : false}
       visible={() => ctx.isVisible(props.part.id)}
       onClick={

@@ -328,7 +328,7 @@ test("the marker is a static glyph whose color tells the state: running is the b
   }
 })
 
-test("colors the segments: ancestors in the accent color, the kind bold, the description and the separators muted", async () => {
+test("colors the segments: ancestors in the muted color, the kind bold, the description and the separators muted", async () => {
   await using tmp = await shellState()
   const view = subagent({
     ancestors: [
@@ -340,8 +340,8 @@ test("colors the segments: ancestors in the accent color, the kind bold, the des
 
   try {
     const spans = app.captureSpans()
-    expect(colorOf(spans, "升级工具链")?.equals(palette().primary)).toBe(true)
-    expect(colorOf(spans, "检查破坏性变更")?.equals(palette().primary)).toBe(true)
+    expect(colorOf(spans, "升级工具链")?.equals(palette().textMuted)).toBe(true)
+    expect(colorOf(spans, "检查破坏性变更")?.equals(palette().textMuted)).toBe(true)
     expect(colorOf(spans, "explore")?.equals(palette().text)).toBe(true)
     expect(colorOf(spans, "扫描破坏性变更")?.equals(palette().textMuted)).toBe(true)
     expect(colorOf(spans, "›")?.equals(palette().textMuted)).toBe(true)

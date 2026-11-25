@@ -263,7 +263,7 @@ function DrawerGoal(props: { rootID: string }) {
         <box>
           <Heading title={t("goal.title")} />
           <text fg={theme.text}>
-            <span style={{ fg: theme.primary }}>◎ </span>
+            <span style={{ fg: theme.textMuted }}>◎ </span>
             {remoteLine(current().goal)}
           </text>
           <Show when={line()}>

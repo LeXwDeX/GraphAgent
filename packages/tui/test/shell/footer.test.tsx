@@ -800,8 +800,7 @@ test("a sub-agent footer in English", async () => {
 
   try {
     const frame = app.captureCharFrame()
-    expect(row(frame)).toStartWith("  explore · read-only · only the main agent can message it")
-    expect(row(frame)).not.toContain("←→")
+    expect(row(frame)).toStartWith("  explore · read-only · press esc to return to the main session")
     expect(frame).toMatchSnapshot()
   } finally {
     app.renderer.destroy()
@@ -828,10 +827,9 @@ test("at 80 columns the trailing hints give way before the notice is cut", async
   const en = await render(() => <SubagentFooterFromKeymap />, { width: 80, state: tmp.path })
   try {
     const frame = en.captureCharFrame()
-    expect(row(frame)).toStartWith("  explore · read-only · only the main agent can message it")
-    // The notice is 135 cells and the row between the gutters 76: it is cut, and no hint is left.
+    expect(row(frame)).toStartWith("  explore · read-only · press esc to return to the main session")
+    // The notice is short enough to leave the return hint visible.
     expect(row(frame)).not.toContain("←→")
-    expect(row(frame)).not.toContain("esc back")
     expect(frame).toMatchSnapshot()
   } finally {
     en.renderer.destroy()
@@ -854,7 +852,7 @@ for (const language of ["zh-CN", "en"] as const) {
         // The notice is whole at the left edge; what gives way is the right-hand hints and the trust reminder.
         expect(row(frame)).toStartWith(
           language === "en"
-            ? "  general-purpose · read-only · only the main agent can message it"
+            ? "  general-purpose · read-only · press esc to return to the main session"
             : "  general-purpose · 只读 · 子 agent 只接受主 agent 的通信",
         )
       } finally {
@@ -938,10 +936,11 @@ test("paints the notice with the text and muted colors, and no brand color", asy
 })
 
 test("holds back the notice's width from the toast that shares the row", () => {
-  // The notice is 86 cells wide in Chinese and 135 in English, plus the gap; 26 columns are held back already.
+  // The notice is 86 cells wide in Chinese and 61 in English (the kind and the tag included), plus the gap; 26 columns
+  // are held back already.
   expect(subagentNoticeReserve("explore", 1)).toBe(86 + 1 - 26)
   setLanguage("en")
-  expect(subagentNoticeReserve("explore", 1)).toBe(135 + 1 - 26)
+  expect(subagentNoticeReserve("explore", 1)).toBe(36)
   // At ambiguous_width 2 the two `·` take a cell more each.
-  expect(subagentNoticeReserve("explore", 2)).toBe(135 + 2 + 1 - 26)
+  expect(subagentNoticeReserve("explore", 2)).toBe(38)
 })

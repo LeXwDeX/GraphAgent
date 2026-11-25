@@ -315,8 +315,8 @@ function PathPart(props: { part: SubagentPathPart; onOpen?: (sessionID: string) 
   if (part.type === "ancestor") {
     const id = part.id
     return (
-      <text fg={theme.primary} wrapMode="none" onMouseUp={() => props.onOpen?.(id)}>
-        <span style={{ fg: theme.primary, underline: true }}>{part.text}</span>
+      <text fg={theme.textMuted} wrapMode="none" onMouseUp={() => props.onOpen?.(id)}>
+        <span style={{ fg: theme.textMuted, underline: true }}>{part.text}</span>
       </text>
     )
   }

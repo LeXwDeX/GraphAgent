@@ -130,7 +130,7 @@ for (const size of [
     try {
       const frame = await waitForFrame(en.setup, (value) => value.includes("read-only"), "the English footer")
       expect(topRow(frame)).toStartWith(`  ◇─◆ GraphAgent › ${rootTitle} › explore · ${description}`)
-      expect(footerRow(frame)).toStartWith("  explore · read-only · only the main agent can message it")
+      expect(footerRow(frame)).toStartWith("  explore · read-only · press esc to return to the main session")
       expect(frame).toMatchSnapshot()
     } finally {
       await en.stop()

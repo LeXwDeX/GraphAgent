@@ -52,7 +52,7 @@ exports[`draws the path and the read-only footer at 80x24, in both languages 2`]
                                                                                 
                                                                                 
                                                                                 
-  explore · read-only · only the main agent can message it; to change it, pre…  
+  explore · read-only · press esc to return to the main session                 
 "
 `;
 
@@ -140,6 +140,6 @@ exports[`draws the path and the read-only footer at 120x40, in both languages 2`
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  explore · read-only · only the main agent can message it; to change it, press esc to return to the main session and…  
+  explore · read-only · press esc to return to the main session                   esc back to main session · ⌃B drawer  
 "
 `;

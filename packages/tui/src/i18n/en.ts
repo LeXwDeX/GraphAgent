@@ -81,8 +81,7 @@ export const en: Record<MessageKey, string> = {
   "shell.footer.hookRunning": "hook {name} · {seconds}s",
   "shell.footer.trust": "⚠ {count} project commands untrusted · /trust",
   "keymap.key.space": "space",
-  "subagent.readonly":
-    "only the main agent can message it; to change it, press esc to return to the main session and tell the main agent",
+  "subagent.readonly": "press esc to return to the main session",
   "subagent.readonlyTag": "read-only",
   "error.child_session_read_only": "Sub-agent is read-only; ask the main agent",
   "subagent.position": "subagent {index}/{total}",
@@ -842,7 +841,7 @@ export const en: Record<MessageKey, string> = {
   "background.row.cancelCall": "cancel background task “{description}”",
   "background.row.readCall": "read the log of task “{description}”",
   "background.row.cancelled": "cancelled",
-  "background.row.enter": "open {key}",
+  "background.row.enter": "Enter",
   "background.band.mark": "◇ bg {n}",
   "background.band.markQueued": "◇ bg {n}·q{k}",
   "background.band.row": "bg {n}",
