@@ -101,7 +101,7 @@ export const Definitions = {
   session_child_first: keybind("<leader>down", "Go to first child session"),
   session_pin_toggle: keybind("ctrl+f", "Pin or unpin session in the session list"),
   subagent_relay: keybind("ctrl+r", "Ask the main agent to handle a sub-agent in the sub-agent list"),
-  subagent_stop: keybind("x", "Stop a sub-agent in the sub-agent list"),
+  subagent_stop: keybind("ctrl+s", "Ask the main agent to stop a sub-agent in the sub-agent list"),
   session_quick_switch_1: keybind("<leader>1", "Switch to session in quick slot 1"),
   session_quick_switch_2: keybind("<leader>2", "Switch to session in quick slot 2"),
   session_quick_switch_3: keybind("<leader>3", "Switch to session in quick slot 3"),

@@ -706,36 +706,36 @@ describe("what the user can do in it", () => {
     }
   })
 
-  test("offers a stop for a sub-agent that is still running", async () => {
-    const harness = await mount({
-      ticker: fakeTicker(at(95)).ticker,
-      handler: (url) => (url.pathname.endsWith("/abort") ? json({}) : undefined),
-    })
+  test("offers a stop that asks the main agent, without writing to the server", async () => {
+    const harness = await mount({ ticker: fakeTicker(at(95)).ticker })
     try {
       const frame = await harness.frame()
       expect(frame).toContain("⌃R")
       expect(frame).toContain("请主 agent 处理")
-      expect(frame).toContain("X 停止")
-      // The first row is the running sub-agent; x aborts its session and nothing else.
-      harness.app.mockInput.pressKey("x")
+      expect(frame).toContain("⌃S")
+      expect(frame).toContain("请主 agent 停止")
+      // The first row is the running sub-agent; ctrl+s only fills the main session's input.
+      harness.app.mockInput.pressKey("s", { ctrl: true })
       await harness.settle()
-      expect(harness.writes()).toEqual([`POST /session/${SCAN}/abort`])
+      expect(harness.writes()).toEqual([])
+      expect(harness.prompt.ref.current.input).toBe("请处理子 agent explore · 扫描破坏性变更：")
     } finally {
       await harness.dispose()
     }
   })
 
-  test("the panel and its helpers reach the server only to stop a run", () => {
-    // The list reads the data layer; the one write a user can cause is the abort of a running sub-agent.
+  test("the panel and its helpers never reach the server", () => {
+    // The list reads the data layer and only ever fills the main session's input.
     const files = [
       path.join(import.meta.dir, "../../src/panel/agents.tsx"),
       path.join(import.meta.dir, "../../src/session/subagents.ts"),
     ]
     for (const file of files) {
       const source = readFileSync(file, "utf8")
-      expect(source).not.toMatch(/session\.prompt|session\.command|session\.create|session\.revert/)
+      expect(source).not.toMatch(
+        /useSDK|sdk\.client|\.abort\(|session\.prompt|session\.command|session\.create|session\.revert/,
+      )
     }
-    expect(readFileSync(files[0]!, "utf8")).toMatch(/sdk\.client\.session\.abort/)
   })
 
   test("typing narrows the list by the name shown", async () => {
@@ -1043,8 +1043,8 @@ describe("how it looks", () => {
 
   // The list has a filter box, so it has no tab keys on the arrows: the pair of row keys is the only pair in the row.
   const HINT_ROWS = {
-    "zh-CN": "↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · X 停止 · esc 关闭",
-    en: "↑↓ Select · ⏎ Enter · ⌃R Ask main agent · X stop · esc Close",
+    "zh-CN": "↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭",
+    en: "↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close",
   } as const
 
   for (const language of ["zh-CN", "en"] as const) {
@@ -1792,35 +1792,36 @@ describe("what ctrl+r asks for a background run", () => {
     )
   })
 
-  test("x stops the selected run, and no other key does anything", async () => {
+  test("ctrl+s asks the main agent to stop the selected run, and no other key does anything", async () => {
     const harness = await mount({
       sessions: backgroundTree(),
       seed: withBackground(),
       ticker: fakeTicker(at(95)).ticker,
       height: 60,
-      handler: (url) => (url.pathname.endsWith("/abort") ? json({}) : undefined),
     })
     try {
       const frame = await harness.frame()
       const hints = linesOf(frame).find((line) => line.includes("⌃R"))!
-      expect(hints.match(/⌃\w/g)).toEqual(["⌃R"])
+      expect(hints.match(/⌃\w/g)).toEqual(["⌃R", "⌃S"])
       expect(hints).toContain("请主 agent 处理")
-      expect(hints).toContain("X 停止")
-      // The first row is the newest background run, which is running.
-      harness.app.mockInput.pressKey("x")
+      expect(hints).toContain("请主 agent 停止")
+      // The first row is the newest background run, which is running: the key only prefills the main input.
+      harness.app.mockInput.pressKey("s", { ctrl: true })
       await harness.settle()
-      expect(harness.writes()).toEqual([`POST /session/${BG_RUN}/abort`])
-      expect(harness.prompt.ref.current.input).toBe("")
+      expect(harness.writes()).toEqual([])
+      expect(harness.prompt.ref.current.input).toBe(
+        "请取消后台任务「未提交改动」（task_id=ses_ag_bg_run），用 task 工具的 cancel。",
+      )
       // A key with no action leaves the list alone.
-      for (const key of ["d", "s", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
+      for (const key of ["d", "k", "t", "e"]) harness.app.mockInput.pressKey(key, { ctrl: true })
       await harness.settle()
-      expect(harness.writes()).toEqual([`POST /session/${BG_RUN}/abort`])
+      expect(harness.writes()).toEqual([])
     } finally {
       await harness.dispose()
     }
   })
 
-  test("x does nothing on a run that is over", async () => {
+  test("ctrl+s does nothing on a run that is over", async () => {
     const harness = await mount({
       sessions: backgroundTree(),
       seed: withBackground(),
@@ -1831,7 +1832,7 @@ describe("what ctrl+r asks for a background run", () => {
       // Move the selection to the finished run at the end of the list.
       harness.app.mockInput.pressKey("end")
       await harness.settle()
-      harness.app.mockInput.pressKey("x")
+      harness.app.mockInput.pressKey("s", { ctrl: true })
       await harness.settle()
       expect(harness.writes()).toEqual([])
       expect(harness.prompt.ref.current.input).toBe("")

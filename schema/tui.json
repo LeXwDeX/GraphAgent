@@ -10792,7 +10792,7 @@
           ]
         },
         "subagent_stop": {
-          "description": "Stop a sub-agent in the sub-agent list",
+          "description": "Ask the main agent to stop a sub-agent in the sub-agent list",
           "anyOf": [
             {
               "type": "boolean",

@@ -7,15 +7,12 @@ import { createMemo, createSignal, onCleanup, Show, untrack } from "solid-js"
 import { resolveRootSessionID } from "../ask/ask-queue"
 import { useKV } from "../context/kv"
 import { useRoute } from "../context/route"
-import { useSDK } from "../context/sdk"
 import { useSync } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { useTicker } from "../context/ticker-context"
 import { t } from "../i18n"
 import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
-import { errorMessage } from "../util/error"
-import { useToast } from "../ui/toast"
 import {
   delegatedPrompt,
   SUBAGENT_MARKER_GLYPH,
@@ -116,8 +113,9 @@ function PanelTitle(props: { counts: string }) {
 
 /**
  * `/agents`: the sub-agents of the session tree the user is in, read-only. A row says what a sub-agent is doing and
- * for how long; `⏎` goes into it, `ctrl+r` asks the main agent to deal with it (which only fills the main session's
- * input), and `x` stops a run that is still going. Steering a sub-agent is the main agent's, not the list's.
+ * for how long; `⏎` goes into it, `ctrl+r` asks the main agent to deal with it, and `ctrl+s` asks the main agent to
+ * stop a run that is still going. Both only fill the main session's input: steering a sub-agent is the main agent's,
+ * not the list's.
  *
  * Everything shown is already in the data layer (the session list, the Task links, the job states and the summaries),
  * so opening the panel asks the server for nothing and loads no session. The list is the direct children of the root
@@ -129,13 +127,12 @@ export function AgentsPanel() {
   const sync = useSync()
   const kv = useKV()
   const ticker = useTicker()
+  const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
   const host = usePanelHost()
   const innerWidth = usePanelInnerWidth()
   const openSubAgent = useOpenSubAgent()
   const prefill = usePrefillRootPrompt()
-  const sdk = useSDK()
-  const toast = useToast()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
 
@@ -276,30 +273,21 @@ export function AgentsPanel() {
   }
 
   /**
-   * `x`: stop the selected sub-agent. The server's abort is the same interrupt the session route uses; a run that is
-   * not running or queued has nothing to stop, so the key does nothing there. The panel stays open: the row's state
-   * changes through the data layer, and the next frame shows it.
+   * `ctrl+s`: ask the main agent to stop the selected sub-agent. A sub-agent session is read-only to the TUI (the
+   * server refuses a direct abort), so this only fills the main session's input, the way every stop, cancel or retry
+   * is expressed. A run that is not running or queued has nothing to stop, so the key does nothing there.
    */
-  async function stop(item: ListItem<string>) {
+  function askStop(item: ListItem<string>) {
     const row = rowOf(item.value)
     if (!row) return
-    try {
-      await sdk.client.session.abort({ sessionID: row.id })
-      toast.show({
-        text: t("subagent.panel.stopped", { title: subagentTitle(row) }),
-        level: "success",
-        dedupeKey: "subagent.stop",
-      })
-    } catch (error) {
-      toast.show({
-        text: t("subagent.panel.stopFailed", { message: errorMessage(error) }),
-        level: "error",
-        dedupeKey: "subagent.stop",
-      })
-    }
+    host.closeAll()
+    prefill(subagentRelayText(row))
   }
 
   const canStop = (item: ListItem<string> | undefined) => {
+    // The hint row is one line: at the narrow breakpoint the stop hint would push the way out off the end, so the
+    // action is not offered there (13.8). The key is the same on a wide terminal.
+    if (dimensions().width < PANEL_NARROW_WIDTH) return false
     const row = item ? rowOf(item.value) : undefined
     return row?.marker === "running" || row?.status === "queued"
   }
@@ -323,7 +311,7 @@ export function AgentsPanel() {
         }}
         actions={[
           { key: "subagent.relay", label: t("subagent.panel.relay"), run: relay },
-          { key: "subagent.stop", label: t("subagent.panel.stop"), run: stop, when: canStop },
+          { key: "subagent.stop", label: t("subagent.panel.stop"), run: askStop, when: canStop },
         ]}
       />
     </>
