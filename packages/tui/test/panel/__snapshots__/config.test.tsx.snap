@@ -3,7 +3,7 @@
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [通用]  界面  模型  DAG 模式  权限  快捷键                         │  
-  │ › 语言 / Language       简体中文   自动   ⏎ 换一个（1/2）                │  
+  │ › 语言 / Language       简体中文   自动  ⏎ 换一个（1/2）                 │  
   │   自动压缩              开   上下文到 85% 时                             │  
   │   文件上下文            开                                               │  
   │   粘贴摘要              开                                               │  
@@ -87,7 +87,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 3`] = 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 4`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [通用]  界面  模型  DAG 模式  权限  快捷键                                                         /config │  
-  │ › 语言 / Language       简体中文   自动   ⏎ 换一个（1/2）                                                        │  
+  │ › 语言 / Language       简体中文   自动  ⏎ 换一个（1/2）                                                         │  
   │   自动压缩              开   上下文到 85% 时                                                                     │  
   │   文件上下文            开                                                                                       │  
   │   粘贴摘要              开                                                                                       │  
@@ -219,7 +219,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 6`] = 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ Settings  [General]  Interface  Model  DAG mode  Permissions  Shortcuts  │  
-  │ › Language              English   Auto   ⏎ change (2/2)                  │  
+  │ › Language              English   Auto  ⏎ change (2/2)                   │  
   │   Auto-compact          On   at 85% of the context                       │  
   │   File context          On                                               │  
   │   Paste summary         On                                               │  
@@ -303,7 +303,7 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 3`] = `
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 4`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Settings  [General]  Interface  Model  DAG mode  Permissions  Shortcuts                                  /config │  
-  │ › Language              English   Auto   ⏎ change (2/2)                                                          │  
+  │ › Language              English   Auto  ⏎ change (2/2)                                                           │  
   │   Auto-compact          On   at 85% of the context                                                               │  
   │   File context          On                                                                                       │  
   │   Paste summary         On                                                                                       │  

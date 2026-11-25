@@ -322,10 +322,23 @@ export function subagentElapsed(row: Pick<SubagentRow, "startedAt" | "runningAt"
 }
 
 /** The word for how a row stands (`—` when unknown). */
-function stateWord(row: Pick<SubagentRow, "marker" | "retrying" | "status">): string {
+export function subagentStateWord(row: Pick<SubagentRow, "marker" | "retrying" | "status">): string {
   if (!row.marker) return UNKNOWN
   if (row.marker === "running" && row.retrying) return t("subagent.state.retrying")
   return t(row.status && row.status !== "unknown" ? STATUS_KEYS[row.status] : MARKER_KEYS[row.marker])
+}
+
+/**
+ * The tool count (`—` when unknown) and the time, as a row ends. A run that waits
+ * for its slot has not started: its time is a dash, and no clock follows it.
+ */
+export function subagentStatsText(
+  row: Pick<SubagentRow, "marker" | "toolCalls" | "startedAt" | "runningAt" | "endedAt">,
+  now: number,
+): string {
+  const tools = t("subagent.row.tools", { count: row.toolCalls ?? UNKNOWN })
+  const elapsed = row.marker === "queued" ? UNKNOWN : subagentElapsed(row, now)
+  return [tools, elapsed].join(" · ")
 }
 
 /**
@@ -336,9 +349,7 @@ export function subagentTrail(
   row: Pick<SubagentRow, "marker" | "retrying" | "status" | "toolCalls" | "startedAt" | "runningAt" | "endedAt">,
   now: number,
 ): string {
-  const tools = t("subagent.row.tools", { count: row.toolCalls ?? UNKNOWN })
-  const elapsed = row.marker === "queued" ? UNKNOWN : subagentElapsed(row, now)
-  return [stateWord(row), tools, elapsed].join(" · ")
+  return [subagentStateWord(row), subagentStatsText(row, now)].join(" · ")
 }
 
 /** Who asked for the run; a dash for a session no Task call started (a DAG node's). */

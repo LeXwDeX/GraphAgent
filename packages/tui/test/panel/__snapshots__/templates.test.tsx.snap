@@ -75,7 +75,7 @@ exports[`list panel renders the three-segment surface at 120x40 1`] = `
 exports[`settings panel renders at 80x24 and 120x40 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [通用]  模型                                                       │  
-  │ › 主题                  graphagent-dark   ⏎ 换一个（1/2）                │  
+  │ › 主题                  graphagent-dark  ⏎ 换一个（1/2）                 │  
   │   推理过程              开                                               │  
   │   接口密钥              未设置   全局                                    │  
   │   清除缓存              0 项                                             │  
@@ -103,7 +103,7 @@ exports[`settings panel renders at 80x24 and 120x40 1`] = `
 exports[`settings panel renders at 80x24 and 120x40 2`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [通用]  模型                                                                                       /config │  
-  │ › 主题                  graphagent-dark   ⏎ 换一个（1/2）                                                        │  
+  │ › 主题                  graphagent-dark  ⏎ 换一个（1/2）                                                         │  
   │   推理过程              开                                                                                       │  
   │   接口密钥              未设置   全局                                                                            │  
   │   清除缓存              0 项                                                                                     │  
@@ -219,7 +219,7 @@ exports[`detail panel renders at 80x24 and 120x40 2`] = `
 exports[`settings panel values at 80x24 and 120x40, zh-CN 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [取值]                                                             │  
-  │ › 抽屉                  宽屏时自动显示   ⏎ 换一个（2/3）                 │  
+  │ › 抽屉                  宽屏时自动显示  ⏎ 换一个（2/3）                  │  
   │   推理过程              开   本会话：开                                  │  
   │   时间戳                关                                               │  
   │   仅一个选项            唯一                                             │  
@@ -247,7 +247,7 @@ exports[`settings panel values at 80x24 and 120x40, zh-CN 1`] = `
 exports[`settings panel values at 80x24 and 120x40, zh-CN 2`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [取值]                                                                                             /config │  
-  │ › 抽屉                  宽屏时自动显示   ⏎ 换一个（2/3）                                                         │  
+  │ › 抽屉                  宽屏时自动显示  ⏎ 换一个（2/3）                                                          │  
   │   推理过程              开   本会话：开                                                                          │  
   │   时间戳                关                                                                                       │  
   │   仅一个选项            唯一                                                                                     │  
@@ -291,7 +291,7 @@ exports[`settings panel values at 80x24 and 120x40, zh-CN 2`] = `
 exports[`settings panel values at 80x24 and 120x40, en 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [取值]                                                             │  
-  │ › 抽屉                  宽屏时自动显示   ⏎ change (2/3)                  │  
+  │ › 抽屉                  宽屏时自动显示  ⏎ change (2/3)                   │  
   │   推理过程              On   本会话：开                                  │  
   │   时间戳                Off                                              │  
   │   仅一个选项            唯一                                             │  
@@ -319,7 +319,7 @@ exports[`settings panel values at 80x24 and 120x40, en 1`] = `
 exports[`settings panel values at 80x24 and 120x40, en 2`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [取值]                                                                                             /config │  
-  │ › 抽屉                  宽屏时自动显示   ⏎ change (2/3)                                                          │  
+  │ › 抽屉                  宽屏时自动显示  ⏎ change (2/3)                                                           │  
   │   推理过程              On   本会话：开                                                                          │  
   │   时间戳                Off                                                                                      │  
   │   仅一个选项            唯一                                                                                     │  
@@ -363,7 +363,7 @@ exports[`settings panel values at 80x24 and 120x40, en 2`] = `
 exports[`the hint row of the settings panel pairs the arrow keys, zh-CN 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [通用]  模型                                                       │  
-  │ › 主题                  graphagent-dark   ⏎ 换一个（1/2）                │  
+  │ › 主题                  graphagent-dark  ⏎ 换一个（1/2）                 │  
   │   推理过程              开                                               │  
   │   接口密钥              未设置   全局                                    │  
   │   清除缓存              0 项                                             │  
@@ -447,7 +447,7 @@ exports[`the hint row of the list panel pairs the arrow keys, zh-CN 1`] = `
 exports[`the hint row of the settings panel pairs the arrow keys, en 1`] = `
 "  ╭──────────────────────────────────────────────────────────────────────────╮  
   │ 设置  [通用]  模型                                                       │  
-  │ › 主题                  graphagent-dark   ⏎ change (1/2)                 │  
+  │ › 主题                  graphagent-dark  ⏎ change (1/2)                  │  
   │   推理过程              On                                               │  
   │   接口密钥              Not set   全局                                   │  
   │   清除缓存              0 项                                             │  

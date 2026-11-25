@@ -121,7 +121,7 @@ test("first-open panel lists pending entries at 120x40", async () => {
     // High-risk entries start unchecked; safe entries start checked.
     expect(frame).toContain("[x]")
     expect(frame).toContain("[ ]")
-    expect(frame).toContain("信任勾选并继续")
+    expect(frame).toContain("信任已勾选的 1 条并继续")
     expect(frame).toContain("都不信任")
     expect(frame).toMatchSnapshot()
 
@@ -160,7 +160,7 @@ test("first-open panel renders its English copy", async () => {
     await settle(app)
     const frame = app.captureCharFrame()
     expect(frame).toContain("Check what this project will run")
-    expect(frame).toContain("Trust checked and continue")
+    expect(frame).toContain("Trust the 1 checked and continue")
     expect(frame).toContain("Decline all")
     expect(frame).not.toContain("先看一下这个项目会做什么")
   } finally {
