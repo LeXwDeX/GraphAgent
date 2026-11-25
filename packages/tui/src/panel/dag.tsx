@@ -147,7 +147,11 @@ const ACTIVE = new Set(["running", "stepping", "paused"])
 /** Width of the longest tab label before it is cut. */
 const TAB_LABEL_CELLS = 16
 
-/** From this width a slot row's hint row has room for the request key's hint next to the fold key's, tab key's included. */
+/**
+ * From this width a slot row's hint row has room for the request key's hint next to the fold key's, tab key's included.
+ * A registered exception to the one narrow breakpoint (13.8): `NARROW_WIDTH` is too low for this row, where the tabs
+ * and the way out share the line, so the request hint would push the close hint off it (test/panel/dag.test.tsx).
+ */
 const SLOT_REQUEST_HINT_WIDTH = 120
 
 /** Coverage entries listed before the rest are only counted: the block is part of the summary and the panel is short. */
