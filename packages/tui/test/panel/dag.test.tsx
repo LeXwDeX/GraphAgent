@@ -900,7 +900,7 @@ describe("an expansion folded under its slot", () => {
     try {
       await openLoaded(shell)
       expect(lineWith(await shell.frame(), "›")).toContain("review ")
-      expect(await shell.frame()).toContain("进入子 agent")
+      expect(await shell.frame()).toContain("查看输出")
       await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })
@@ -1246,7 +1246,7 @@ describe("moving around the panel", () => {
     try {
       await openLoaded(shell)
       // The failed node starts selected, and it has a session.
-      expect(await shell.frame()).toContain("进入子 agent")
+      expect(await shell.frame()).toContain("查看输出")
       await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })
@@ -1515,7 +1515,7 @@ describe("moving around the panel", () => {
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
       // The node table can be loaded before the panel has drawn it; on a slow runner read until it shows (#1397).
       let frame = await shell.frame()
-      for (const start = Date.now(); !frame.includes("依赖升级验证") && Date.now() - start < 10_000; ) {
+      for (const start = Date.now(); !frame.includes("依赖升级验证") && Date.now() - start < 10_000;) {
         await Bun.sleep(20)
         frame = await shell.frame()
       }
