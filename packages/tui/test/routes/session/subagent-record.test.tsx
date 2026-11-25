@@ -331,7 +331,7 @@ test("a prompt that fits has no hint, and the key has nothing to open in the blo
 })
 
 test("a long prompt says it can be opened, ctrl+o opens it whole, and the next press folds it again", async () => {
-  const harness = await mount({ handler: transcripts({ child: childEntries(promptOf(20)) }), height: 40 })
+  const harness = await mount({ handler: transcripts({ child: childEntries(promptOf(20)) }), height: 50 })
   try {
     const folded = await harness.waitForFrame((value) => value.includes("找到 2 处"), "the record")
     expect(folded).toContain("prompt-line-08")

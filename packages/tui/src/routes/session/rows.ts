@@ -38,6 +38,11 @@ export interface Row {
   kind: RowKind
   revision: number
   /**
+   * A tool row that starts open: the diff of an edit, a write or a patch is drawn under its summary as soon as the
+   * call is over. The reader still closes it with the fold key or a click, which writes the flag in `SessionViewState`.
+   */
+  defaultExpanded?: boolean
+  /**
    * A `user` row only: the message carries files or directories, whose labels stand in a line of their own under its
    * text. It is part of the row's revision, so a message that gains or loses one is measured again.
    */
@@ -324,9 +329,10 @@ export function createSessionViewState() {
     new Map(),
   )
 
-  function get(partID: string | undefined, flag: ViewFlag): boolean {
-    if (!partID) return false
-    return state().get(partID)?.[flag] ?? false
+  /** The flag, or `fallback` while the reader has not set it: a row that starts open has no entry until it is closed. */
+  function get(partID: string | undefined, flag: ViewFlag, fallback = false): boolean {
+    if (!partID) return fallback
+    return state().get(partID)?.[flag] ?? fallback
   }
 
   function set(partID: string | undefined, flag: ViewFlag, value: boolean) {

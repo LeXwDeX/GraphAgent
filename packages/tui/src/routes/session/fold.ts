@@ -211,6 +211,25 @@ export function patchFolds(metadata: Record<string, unknown>) {
   return parseApplyPatchFiles(metadata.files).some((file) => patchFileRows(file) > 0)
 }
 
+/**
+ * Whether a finished call starts open: the diff of an edit or a patch, and the lines a write put in its file, are
+ * drawn under the summary as soon as the call is over. The reader closes one with the fold key or a click, which
+ * writes the flag in the view state and wins over this.
+ */
+export function startsExpanded(part: ToolPart) {
+  if (part.state.status !== "completed") return false
+  switch (toolDisplay(part.tool)) {
+    case "edit":
+      return editRows(part.state.metadata ?? {}) > 0
+    case "write":
+      return writeRows(part.state.input) > 0
+    case "apply_patch":
+      return patchFolds(part.state.metadata ?? {})
+    default:
+      return false
+  }
+}
+
 /** The error of a call that failed. */
 export function toolError(state: ToolPart["state"]) {
   return state.status === "error" ? state.error : undefined
