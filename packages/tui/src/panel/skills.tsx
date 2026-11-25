@@ -3,10 +3,12 @@
 
 import { TextAttributes } from "@opentui/core"
 import { createMemo, createResource, createSignal } from "solid-js"
+import { useKV } from "../context/kv"
 import { useSDK } from "../context/sdk"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { textFg } from "../ui/text"
+import { cellWidth, type AmbiguousWidth } from "../ui/width"
 import { errorMessage } from "../util/error"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -20,7 +22,9 @@ export function SkillsPanel(props: SkillsPanelProps) {
   const sdk = useSDK()
   const { theme } = useTheme()
   const host = usePanelHost()
+  const kv = useKV()
   const [loadError, setLoadError] = createSignal<unknown>()
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
 
   const [skills] = createResource(() =>
     sdk.client.app
@@ -35,11 +39,15 @@ export function SkillsPanel(props: SkillsPanelProps) {
   const items = createMemo<ListItem<string>[]>(() => {
     if (loadError()) return []
     const list = skills() ?? []
-    const maxWidth = Math.max(0, ...list.map((skill) => skill.name.length))
+    const aw = ambiguousWidth()
+    const nameWidth = (name: string) => cellWidth(name, aw)
+    const maxWidth = Math.max(0, ...list.map((skill) => nameWidth(skill.name)))
     return list.map((skill) => ({
       id: skill.name,
       value: skill.name,
-      title: skill.name.padEnd(maxWidth),
+      // The column is as wide as the widest name and padded by display cells, so a name of wide or ambiguous
+      // characters still lines the descriptions up and the 80-column list does not run over (13.7).
+      title: skill.name + " ".repeat(Math.max(0, maxWidth - nameWidth(skill.name))),
     }))
   })
 
