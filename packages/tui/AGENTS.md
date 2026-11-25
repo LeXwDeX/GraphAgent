@@ -615,7 +615,7 @@ Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033�
 本节是整屏版面与文字层级的唯一规范（#1669）。单位都是终端单元格，`W` 是终端宽，列号从 0 起。13.1–13.9 与 #1669 的第 1–9 条一一对应。本文别处与本节冲突的旧描述，以本节为准。
 
 - 数值取自布局 token 模块 `ui/layout.ts`（13.9，#1670）。本节写的数值就是它的取值。
-- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮，已落地）、#1671（五段左右边距统一，已落地）、#1672（面板宽度已落地，文字层级待落地）、#1674（顶栏显示目录、分支与会话名，已落地）、#1675（选中行下不再插入说明，已落地）、#1676（过滤行固定，已落地）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
+- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮，已落地）、#1671（五段左右边距统一，已落地）、#1672（面板宽度与文字层级已落地）、#1674（顶栏显示目录、分支与会话名，已落地）、#1675（选中行下不再插入说明，已落地）、#1676（过滤行固定，已落地）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
 
 ### 13.1 整体 Body 边距
 
@@ -692,7 +692,7 @@ gg+--------------+gg   带框容器的下边框
 - `textDim` 是 `textMuted` 变暗后的 token：主题没写时，`resolveTheme` 把 `textMuted` 向背景混合 50% 得出。T5 与 T6 同用它，用途不同。
 - 选中、悬停、警示是状态，不是层级：状态色（`success`、`warning`、`error`、`statusRunning` 等）和选中底色（`backgroundSelected`）按第 7 节使用，不拿来区分 T1–T6；现有选中行的主文字加粗也是选中状态，不改变它所属的层级。警示面板（`tone="warning"`，6.2）的标题用 `warning`、边框用 `borderWarning`，是 T1 唯一的变体。
 - T1、T2 用 `primary`，已列入第 7 节品牌色白名单第 2 项。
-- 六级的 token 与粗细只在一处定义（放在 `ui/` 下，#1672 新增，落地前不存在）；组件引用它，不各写一份。
+- 六级的 token 与粗细只在一处定义：`src/ui/text.ts`（#1672，已落地）导出 `textFg(theme, role)`、`textAttributes(role)`、`textStyle(theme, role)`、`titleFg(theme, tone)`，以及选中态的 `selectedFg`、`selectedAttributes`、`cursorFg`；`role` 是 `title|group|body|secondary|hint|disabled`。组件引用它，不各写一份。棘轮 `script/check-text-levels.ts`（基线 `script/text-levels-baseline.txt`，只许下降，`--update-baseline` 只降不升；`test/text-levels.test.ts` 在 `bun test` 里跑同一份检查）统计 `panel/` 里写死的层级色（`fg`/`color` 后直接跟 `theme.primary|text|textMuted|textDim`）与 `TextAttributes.BOLD`；状态色、选中底色与选中加粗是状态不是层级，粗粒度地留在基线里。
 
 ### 13.7 标准组件
 
