@@ -768,8 +768,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     openPanel(
       "trust",
       () => <TrustPanel mode={mode} imported={imported} onNote={setTrustNote} />,
-      // Leaving the panel without a decision is "later": the footer says so until the next one.
-      () => setTrustNote(t("trust.note.later")),
+      // Leaving a pending review without a decision is "later": the footer says so until the next one. Manage mode
+      // changes nothing by being closed, so it writes no note.
+      mode === "manage" ? undefined : () => setTrustNote(t("trust.note.later")),
     )
   }
   const connectProvider = () =>
