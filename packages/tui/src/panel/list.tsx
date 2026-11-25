@@ -42,7 +42,8 @@ function remember(elements: Map<string, BoxRenderable>, key: string) {
 export interface ListItem<T> {
   id: string
   value: T
-  title: string
+  /** The row's main text; a string is filtered on, a JSX element is drawn as it is (the owner filters). */
+  title: string | JSX.Element
   /** Group heading; items with the same group render together. */
   group?: string
   /** Leading symbol such as a status marker. */
@@ -128,6 +129,8 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
     if (!filterEnabled() || !clientFilter()) return items
     const needle = filter().trim().toLowerCase()
     if (!needle) return items
+    // A row whose title is drawn (not a string) is the owner's to filter; it is left out of the client match.
+    if (!items.every((item) => typeof item.title === "string")) return items
     return fuzzysort.go(needle, items, { key: "title" }).map((result) => result.obj)
   })
 

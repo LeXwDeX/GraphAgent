@@ -24,6 +24,8 @@ import {
   subagentRelayText,
   subagentRows,
   subagentSource,
+  subagentStateWord,
+  subagentStatsText,
   subagentTitle,
   subagentTrail,
   type SubagentRow,
@@ -124,6 +126,7 @@ export function AgentsPanel() {
   const sync = useSync()
   const kv = useKV()
   const ticker = useTicker()
+  const { theme } = useTheme()
   const host = usePanelHost()
   const innerWidth = usePanelInnerWidth()
   const openSubAgent = useOpenSubAgent()
@@ -149,17 +152,39 @@ export function AgentsPanel() {
   const rowOf = (id: string) => byID().get(id)
   const counts = createMemo(() => subagentCountText(rows()))
 
-  /** What a row says of its sub-agent: the state, the tool count and the time. A clock is read only for a running one. */
+  /** What a row says of its sub-agent: the state word, then the tool count and the time. */
   const stateText = (row: SubagentRow) => subagentTrail(row, row.marker === "running" ? now() : 0)
 
-  // A row is one string, the name, who asked for it and then its state, laid out by `cellWidth` so that it fits the
-  // panel whichever width the terminal gives East Asian ambiguous glyphs. Each of the last two lines up in a column as
-  // wide as the widest of its texts, and the name is cut to what is left of the row.
-  const rowText = (row: SubagentRow) => {
+  // A row is one line: the name (the kind in bold, the description muted), who asked for it, then the state word in
+  // its status color with the tool count and the time muted after it. The text is the one string the columns were
+  // laid out with before; only the colors and the weight of the kind differ, so the columns still line up.
+  const titleNode = (row: SubagentRow) => {
     const aw = ambiguousWidth()
-    const name = padCells(truncateCells(subagentTitle(row), nameWidth(), aw), nameWidth(), aw)
-    const initiator = padCells(subagentInitiatorText(row), initiatorWidth(), aw)
-    return `${name}${" ".repeat(NAME_GAP)}${initiator}${" ".repeat(NAME_GAP)}${stateText(row)}`
+    const full = subagentTitle(row)
+    const name = padCells(truncateCells(full, nameWidth(), aw), nameWidth(), aw)
+    const initText = padCells(subagentInitiatorText(row), initiatorWidth(), aw)
+    const state = subagentStateWord(row)
+    const stats = subagentStatsText(row, row.marker === "running" ? now() : 0)
+    const stateFg = row.marker ? theme[subagentMarkerToken(row.marker)] : textFg(theme, "secondary")
+    // The kind is bold and the rest muted only while the whole name fits the column; a cut name is drawn plain.
+    const canSplit = cellWidth(full, aw) <= nameWidth()
+    return (
+      <>
+        {canSplit ? (
+          <>
+            <span style={textStyle(theme, "group")}>{row.kind}</span>
+            <span style={textStyle(theme, "body")}>{" · "}</span>
+            <span style={textStyle(theme, "secondary")}>{row.description}</span>
+            <span style={textStyle(theme, "secondary")}>{name.slice(full.length)}</span>
+          </>
+        ) : (
+          <span style={textStyle(theme, "body")}>{name}</span>
+        )}
+        <span style={textStyle(theme, "secondary")}>{`${" ".repeat(NAME_GAP)}${initText}${" ".repeat(NAME_GAP)}`}</span>
+        <span style={{ fg: stateFg }}>{state}</span>
+        <span style={textStyle(theme, "secondary")}>{` · ${stats}`}</span>
+      </>
+    )
   }
 
   /** The text of the message that carries a finished background run's report, when that message is loaded. */
@@ -192,7 +217,7 @@ export function AgentsPanel() {
     [],
     { equals: sameStrings },
   )
-  // The rows on screen. The clock and the width of the state column follow these only: a running sub-agent the filter
+  // The rows on screen. The clock and the widths of the columns follow these only: a running sub-agent the filter
   // hides keeps no subscription alive and does not move the columns of the rows that are shown.
   const shownRows = createMemo(() => shownIDs().flatMap((id) => rowOf(id) ?? []))
   const ticking = createMemo(() => shownRows().some((row) => row.marker === "running"))
@@ -213,7 +238,7 @@ export function AgentsPanel() {
       value: id,
       get title() {
         const row = rowOf(id)
-        return row ? rowText(row) : id
+        return row ? titleNode(row) : id
       },
       // The heading follows the row, which moves between groups as its state does.
       get group() {
