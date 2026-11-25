@@ -9,7 +9,7 @@ import { useSync } from "../../context/sync"
 import { useTuiConfig } from "../../config"
 import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings } from "../../keymap"
 import { useToast } from "../../ui/toast"
-import { contentWidth } from "../../ui/layout"
+import { panelInnerWidth } from "../../ui/layout"
 import { truncateCells } from "../../ui/width"
 import { useTicker } from "../../context/ticker-context"
 import { PanelShell, type PanelHint, type PanelTab } from "../../panel/shell"
@@ -45,8 +45,11 @@ export function QuestionPrompt(props: QuestionPromptProps) {
   const questions = createMemo(() => props.request.questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const own = createMemo(() => props.request.sessionID === props.rootSessionID)
+  // Headers are model-generated and can be arbitrarily long (the schema only suggests "max 30 chars"), so each tab is
+  // clamped to its share of the panel's text width (13.9): the gutter and the frame's border and padding are already
+  // off `panelInnerWidth`, and the shell cuts the tab row at the line's end if it still overflows.
   const headerBudget = createMemo(() =>
-    Math.min(24, Math.max(6, Math.floor((contentWidth(dimensions().width) - 8) / Math.max(1, questions().length + 1)))),
+    Math.min(24, Math.max(6, Math.floor(panelInnerWidth(dimensions().width) / Math.max(1, questions().length + 1)))),
   )
   const [interacted, setInteracted] = createSignal(false)
   const [remaining, setRemaining] = createSignal<number | undefined>(undefined)
