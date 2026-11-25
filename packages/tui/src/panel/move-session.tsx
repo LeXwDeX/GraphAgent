@@ -13,6 +13,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { abbreviateHome } from "../runtime"
 import { errorMessage } from "../util/error"
+import { textFg } from "../ui/text"
 import { askConfirm } from "../ask/local-ask"
 import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { useToast } from "../ui/toast"
@@ -252,10 +253,10 @@ export function MoveSessionPanel(props: MoveSessionPanelProps) {
         showError() ? (
           <box flexDirection="column">
             <text fg={theme.error}>{t("panel.move.load.failed")}</text>
-            <text fg={theme.textMuted}>{errorMessage(loadError())}</text>
+            <text fg={textFg(theme, "secondary")}>{errorMessage(loadError())}</text>
           </box>
         ) : (
-          <text fg={theme.textMuted}>{t("panel.move.empty")}</text>
+          <text fg={textFg(theme, "secondary")}>{t("panel.move.empty")}</text>
         )
       }
       onSelect={(item) => {

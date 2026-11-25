@@ -9,6 +9,7 @@ import { useTicker } from "../context/ticker-context"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { errorMessage } from "../util/error"
+import { textFg } from "../ui/text"
 import { useToast } from "../ui/toast"
 import { ListPanel, type ListItem } from "./list"
 
@@ -104,7 +105,7 @@ export function HooksPanel() {
       onMove={() => setConfirming(undefined)}
       onSelect={(item) => void cancel(item.value)}
       empty={
-        <text fg={theme.textMuted} wrapMode="none">
+        <text fg={textFg(theme, "secondary")} wrapMode="none">
           {t("panel.hooks.empty")}
         </text>
       }

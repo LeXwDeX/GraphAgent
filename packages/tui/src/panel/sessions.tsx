@@ -20,6 +20,7 @@ import { isRoot } from "../session/role"
 import { Locale } from "../util/locale"
 import { createDebouncedSignal } from "../util/signal"
 import { useTicker } from "../context/ticker-context"
+import { textFg } from "../ui/text"
 import { useToast } from "../ui/toast"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -117,7 +118,11 @@ export function SessionListPanel() {
         value: id,
         title: toDelete() === id ? t("panel.sessions.delete.confirm", { key: deleteHint() }) : session.title,
         group,
-        lead: isWorking ? <Spinner /> : slot !== undefined ? <text fg={theme.accent}>{slot}</text> : undefined,
+        lead: isWorking ? (
+          <Spinner />
+        ) : slot !== undefined ? (
+          <text fg={textFg(theme, "secondary")}>{slot}</text>
+        ) : undefined,
         trail,
       }
     }

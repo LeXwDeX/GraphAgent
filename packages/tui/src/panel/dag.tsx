@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack, type Accessor } from "solid-js"
 import { resolveRootSessionID, sessionTree } from "../ask/ask-queue"
@@ -45,6 +44,8 @@ import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
 import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
+import type { Theme } from "../theme"
+import { textAttributes, textFg } from "../ui/text"
 import { cellWidth, truncateCells, truncateCellsLeft, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
 import { remoteLine } from "../util/remote-text"
@@ -162,10 +163,15 @@ const COVERAGE_ENTRIES = 4
 
 const LINE_SEPARATOR = " · "
 
-/** A piece of a line and the theme token it is drawn in. */
+/** A piece of a line and the theme token it is drawn in; a level is named by its role instead of a token. */
 interface Piece {
   readonly text: string
-  readonly token: DagStatusToken | DagModePiece["token"] | "textDim"
+  readonly token: DagStatusToken | DagModePiece["token"] | "textDim" | "secondary" | "hint"
+}
+
+/** The color of a piece: a role through the level table, a status or mode token straight from the theme. */
+function pieceFg(theme: Theme, token: Piece["token"]) {
+  return token === "secondary" || token === "hint" ? textFg(theme, token) : theme[token]
 }
 
 /**
@@ -176,7 +182,7 @@ function fitLine(
   pieces: readonly Piece[],
   width: number,
   aw: AmbiguousWidth,
-  separator: Piece = { text: LINE_SEPARATOR, token: "textDim" },
+  separator: Piece = { text: LINE_SEPARATOR, token: "hint" },
 ): Piece[] {
   const fitted: Piece[] = []
   let room = width
@@ -653,7 +659,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
           // Direct children, not everything below: what is one step down is what unfolding shows.
           ...(slot
             ? [
-                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                <text flexShrink={0} fg={textFg(theme, "secondary")} wrapMode="none">
                   {`  ${t(entry.children === 1 ? "dagmode.panel.fold.child" : "dagmode.panel.fold.children", { n: entry.children })}`}
                 </text>,
               ]
@@ -746,7 +752,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
 
   const titleElement = (
     <box flexDirection="row" gap={1} overflow="hidden">
-      <text fg={theme.primary} attributes={TextAttributes.BOLD} wrapMode="none">
+      <text fg={textFg(theme, "title")} attributes={textAttributes("title")} wrapMode="none">
         {t("dagmode.panel.title")}
       </text>
       <Show when={active()}>
@@ -755,7 +761,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
             <text fg={theme[dagStatusColor(shown().summary.status)]} wrapMode="none">
               {`[${statusLabel(shown().summary.status)}]`}
             </text>
-            <text fg={theme.text} wrapMode="none">
+            <text fg={textFg(theme, "body")} wrapMode="none">
               {remoteLine(shown().summary.title)}
             </text>
           </>
@@ -767,7 +773,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
   const summaryElement = (
     <box flexDirection="column">
       <text wrapMode="none">
-        <For each={modeLine()}>{(piece) => <span style={{ fg: theme[piece.token] }}>{piece.text}</span>}</For>
+        <For each={modeLine()}>{(piece) => <span style={{ fg: pieceFg(theme, piece.token) }}>{piece.text}</span>}</For>
       </text>
       <Show when={barLayout()}>
         {(layout) => (
@@ -782,26 +788,26 @@ export function DagPanel(props: { state?: DagPanelState }) {
           </box>
         )}
       </Show>
-      <text fg={theme.textMuted} wrapMode="none">
+      <text fg={textFg(theme, "secondary")} wrapMode="none">
         {countsText()}
       </text>
       <Show when={worktreeText()}>
         {(text) => (
-          <text fg={theme.textMuted} wrapMode="none">
+          <text fg={textFg(theme, "secondary")} wrapMode="none">
             {text()}
           </text>
         )}
       </Show>
       <Show when={usageText()}>
         {(text) => (
-          <text fg={theme.textMuted} wrapMode="none">
+          <text fg={textFg(theme, "secondary")} wrapMode="none">
             {truncateCells(text(), innerWidth(), ambiguousWidth())}
           </text>
         )}
       </Show>
       <Show when={qualityText()}>
         {(text) => (
-          <text fg={theme.textMuted} wrapMode="none">
+          <text fg={textFg(theme, "secondary")} wrapMode="none">
             {truncateCells(text(), innerWidth(), ambiguousWidth())}
           </text>
         )}
@@ -814,7 +820,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
       <Show when={coverage()}>
         {(block) => (
           <box flexDirection="column" flexShrink={0}>
-            <text fg={theme.textMuted} wrapMode="none">
+            <text fg={textFg(theme, "secondary")} wrapMode="none">
               {truncateCells(
                 t("dagmode.panel.coverage.title", { count: block().count }),
                 innerWidth(),
@@ -825,18 +831,18 @@ export function DagPanel(props: { state?: DagPanelState }) {
               {(entry) => {
                 const style = DAG_STATE_STYLE[entry.state]
                 const pieces: Piece[] = [{ text: `  ${style.glyph} ${entry.name}`, token: style.token }]
-                if (entry.reason) pieces.push({ text: entry.reason, token: "textMuted" })
+                if (entry.reason) pieces.push({ text: entry.reason, token: "secondary" })
                 return (
                   <text wrapMode="none">
-                    <For each={fitLine(pieces, innerWidth(), ambiguousWidth(), { text: "  ", token: "textDim" })}>
-                      {(piece) => <span style={{ fg: theme[piece.token] }}>{piece.text}</span>}
+                    <For each={fitLine(pieces, innerWidth(), ambiguousWidth(), { text: "  ", token: "hint" })}>
+                      {(piece) => <span style={{ fg: pieceFg(theme, piece.token) }}>{piece.text}</span>}
                     </For>
                   </text>
                 )
               }}
             </For>
             <Show when={block().tail}>
-              <text fg={theme.textMuted} wrapMode="none">
+              <text fg={textFg(theme, "secondary")} wrapMode="none">
                 {truncateCells(`  ${block().tail}`, innerWidth(), ambiguousWidth())}
               </text>
             </Show>
@@ -844,7 +850,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
         )}
       </Show>
       <Show when={view() !== undefined && !loaded()}>
-        <text fg={theme.textMuted} wrapMode="none">
+        <text fg={textFg(theme, "secondary")} wrapMode="none">
           {t("dagmode.panel.loading")}
         </text>
       </Show>
@@ -858,7 +864,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
   /** Made anew each time the panel goes empty, never reused: a rendered node cannot be put on screen twice. */
   const emptyBody = createMemo(() =>
     active() === undefined ? (
-      <text fg={theme.textMuted} wrapMode="word">
+      <text fg={textFg(theme, "secondary")} wrapMode="word">
         {t("dagmode.panel.empty")}
       </text>
     ) : undefined,
@@ -918,6 +924,9 @@ export function DagPanel(props: { state?: DagPanelState }) {
       onActivate={selectedNode() ? activate : undefined}
       onToggle={toggleFold}
       activateLabel={selectedNode()?.child_session_id ? t("dagmode.panel.hint.enter") : t("dagmode.panel.hint.expand")}
+      // A node's body is the output of its run, which comes with the node's own expanded state: the panel opens it,
+      // and `return` keeps its action (entering a child session, or opening the details).
+      rowBody="selected"
       body={emptyBody()}
       hints={hints()}
     />

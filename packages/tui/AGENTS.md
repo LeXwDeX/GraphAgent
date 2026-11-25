@@ -55,8 +55,8 @@ packages/tui/src/
   pr/                   # state.ts：prLineState、短标记、toast 与警示清除的纯函数；reminder.ts：提醒倒计时的纯函数（F6）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
-  ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）、layout.ts（布局 token，#1670）、toast.tsx、adaptive-markdown.tsx；
-                        #   未落地：文字层级的唯一定义（#1672），规则见第 13 节
+  ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）、layout.ts（布局 token，#1670）、text.ts（文字层级的唯一定义，#1672）、toast.tsx、adaptive-markdown.tsx；
+                        #   文字层级的规则见第 13 节 13.6，棘轮 script/check-text-levels.ts
   prompt/               # 存量：输入框的数据辅助（display、history、frecency、stash、part、queued-message、traits）；不在第 3 节依赖表内
   component/            # 冻结：不得新增文件；现有组件随各 F Issue 迁出到 ui/、panel/、shell/
   util/
@@ -97,7 +97,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `i18n/`：双语文案表与 `t()`（F1）。
 - `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，是创建序的基础排序）；子 agent 的 `i/N`、`←→`、`<leader>down` 与 `/agents` 共用 `subagents.ts` 的分组序（`subagentChildren`、`subagentSiblings`，顺序随子 agent 的状态变化，`←→` 因此按列表从上到下走）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；子 agent 的 `kind`、描述、状态标记（符号与颜色 token）和 `/agents` 的行模型、分组序、详情与预填文字 `subagents.ts`（顶栏、面板、同级键、提醒共用的唯一实现；`subagentSource(sync.data)` 把 Task 链接、作业状态与摘要三处接成行的来源）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）；后台结果卡 `background-card.ts`（`backgroundCard(part, kind?)` 认出结果、取 `<task_result>`/`<task_error>` 里的正文与首行，不信文本、只认 metadata；`backgroundCardTitle` 出标题行的字，`/copy` 与卡共用）；后台 Task 的状态 `background.ts`（`backgroundStatus` 按“服务端上报的结果 > 运行所属 job 的状态 > 子会话摘要”取值，先匹配者胜，后来的来源不改写先来的；排队由服务端上报：job 的 `queued` 就是排队，带 `since` 的 `running` 就是已占到槽、在运行；只有旧服务端（从不报 `queued`，它的 `running` 也不带 `since`）才退回推断：job 在跑而子会话没跑过一轮、没调过工具即排队，详见下面“后台运行的排队”（#1407）；三处都没有说法时为 `unknown`。`backgroundElapsed` 对运行中的运行取 `now` 减去服务端报的开始运行时刻（没有时取 `startedAt`），对排队中的取 `now - startedAt`（已等了多久，界面不显示），对已结束的取结果里开始运行到结束之差（没有开始运行时刻时取起止之差），不知道时返回空，不取负值）；合成消息 `synthetic-message.ts`（`isSyntheticMessage(parts)`：有文本且全部文本 part 都是 `synthetic` 的用户消息不是用户的话，没有文本 part 的消息（文件、压缩）不算合成；撤销的目标（最近一条不合成的用户消息，没有则不动作）、重做的下一站（之后第一条不合成的用户消息，没有则整体恢复）、`session.messages_last_user` 与 PR 跟踪的 `dismissContext` 共用这一个判定，不各写一份，#1408）。
 - `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒：权限请求（任何运行方式）和后台运行的结果到达（#1058 7，见 6.5）；前台子 agent 的结束不弹 toast，子 agent 结束的声音与系统通知（`agent_completed`）不变。
-- `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts` 与布局 token 模块 `layout.ts`（#1670，13.9）。文字层级的唯一定义（#1672）也放在这里，未落地，规则见第 13 节。
+- `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`、布局 token 模块 `layout.ts`（#1670，13.9）与文字层级的唯一定义 `text.ts`（#1672，13.6，棘轮 `script/check-text-levels.ts`）。
 - `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
 - `component/`：冻结。迁移前的现有组件（输入框、`PatchDiff`、`Spinner` 等）留在原处，不得新增文件；F1–F6 全部合并时应为空或只剩明确列出的遗留。
 
@@ -615,7 +615,7 @@ Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033�
 本节是整屏版面与文字层级的唯一规范（#1669）。单位都是终端单元格，`W` 是终端宽，列号从 0 起。13.1–13.9 与 #1669 的第 1–9 条一一对应。本文别处与本节冲突的旧描述，以本节为准。
 
 - 数值取自布局 token 模块 `ui/layout.ts`（13.9，#1670）。本节写的数值就是它的取值。
-- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮，已落地）、#1671（五段左右边距统一，已落地）、#1672（面板宽度已落地，文字层级待落地）、#1674（顶栏显示目录、分支与会话名，已落地）、#1675（选中行下不再插入说明，已落地）、#1676（过滤行固定，已落地）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
+- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮，已落地）、#1671（五段左右边距统一，已落地）、#1672（面板宽度与文字层级已落地）、#1674（顶栏显示目录、分支与会话名，已落地）、#1675（选中行下不再插入说明，已落地）、#1676（过滤行固定，已落地）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
 
 ### 13.1 整体 Body 边距
 
@@ -692,7 +692,7 @@ gg+--------------+gg   带框容器的下边框
 - `textDim` 是 `textMuted` 变暗后的 token：主题没写时，`resolveTheme` 把 `textMuted` 向背景混合 50% 得出。T5 与 T6 同用它，用途不同。
 - 选中、悬停、警示是状态，不是层级：状态色（`success`、`warning`、`error`、`statusRunning` 等）和选中底色（`backgroundSelected`）按第 7 节使用，不拿来区分 T1–T6；现有选中行的主文字加粗也是选中状态，不改变它所属的层级。警示面板（`tone="warning"`，6.2）的标题用 `warning`、边框用 `borderWarning`，是 T1 唯一的变体。
 - T1、T2 用 `primary`，已列入第 7 节品牌色白名单第 2 项。
-- 六级的 token 与粗细只在一处定义（放在 `ui/` 下，#1672 新增，落地前不存在）；组件引用它，不各写一份。
+- 六级的 token 与粗细只在一处定义：`src/ui/text.ts`（#1672，已落地）导出 `textFg(theme, role)`、`textAttributes(role)`、`textStyle(theme, role)`、`titleFg(theme, tone)`，以及选中态的 `selectedFg`、`selectedAttributes`、`cursorFg`；`role` 是 `title|group|body|secondary|hint|disabled`。组件引用它，不各写一份。棘轮 `script/check-text-levels.ts`（基线 `script/text-levels-baseline.txt`，只许下降，`--update-baseline` 只降不升；`test/text-levels.test.ts` 在 `bun test` 里跑同一份检查）统计 `panel/` 里写死的层级色（`fg`/`color` 后直接跟 `theme.primary|text|textMuted|textDim`）与 `TextAttributes.BOLD`；状态色、选中底色与选中加粗是状态不是层级，粗粒度地留在基线里。
 
 ### 13.7 标准组件
 
@@ -707,7 +707,9 @@ gg+--------------+gg   带框容器的下边框
 | 提示行   | 固定 1 行                | 固定               | T5，写法见下表 |
 
 - 选中行不在行下插入任何内容：行的说明和数据性详情只进说明行，不得在选中行下追加行、块或空行；移动选中时，所有行的屏幕行号和面板高度都不变。
+- 行的正文（`DetailRow.body`：`/status` 的错误全文、`/dag` 的节点输出）是另一回事，它是可展开的正文，不是选中行的详情：选中一行不展开它，`⏎`（`panel.submit`）展开当前行、再按一次收起，展开状态按行 `id` 记，移动选中不改变它。`rowBody: "selected"` 的面板（`/trust` 的命令详情、`/dag` 的节点输出）保持选中行展开、`⏎` 归 `onActivate`；没有 `onActivate` 又有正文的面板，提示行写“展开/收起”。`test/panel/details.test.tsx`（`/status`）与 `test/panel/trust.test.tsx` 固定这些行为。
 - 过滤输入在过滤行里，不在滚动内容里（#1676）：终端光标画在获得焦点的输入处，输入若在滚动内容里，滚走后光标会留在屏幕上原来的位置，在面板之外。过滤行是一行弹性布局，不自己算宽度：它和说明行、提示行一样在框内，宽随框内文字宽（`panelInnerWidth(终端宽, fullscreen)`，80 列是 72；传 `fullscreen` 的面板按终端宽）。
+- 滚动内容里的输入框（`SettingsPanel` 行内编辑的值、`DetailPanel` 的输入）同样不能把光标留在面板外：它滚出可视区时被滚回（`verticalScrollBar.onChange` 上挂 `scrollChildIntoView`，视图没动就什么都不做），光标始终在面板边框内。`PageUp`、`PageDown` 一次移 10 行，到首行或末行停住不环绕，上下键仍首尾环绕（`ListPanel` 同规则，#1676）；`Home`、`End` 到首末行。`test/panel/panel-cursor.test.tsx` 固定这两件事。
 
 列表行、设置行、提示行各只有一种列布局：
 

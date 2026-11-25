@@ -390,6 +390,8 @@ export const zhCN = {
   "panel.hint.tab": "切换标签",
   "panel.hint.close": "关闭",
   "panel.hint.toggle": "勾选",
+  "panel.hint.expand": "展开",
+  "panel.hint.collapse": "收起",
   "panel.list.filter": "筛选…",
   "panel.list.empty": "没有可选项",
   "panel.list.loading": "加载中…",

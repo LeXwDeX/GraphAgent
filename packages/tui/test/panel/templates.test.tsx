@@ -919,7 +919,7 @@ test("settings panel colors the value muted, the selected value with the brand c
     expect(await paintedWith(app, "本会话：开", theme.textDim)).toBe(true)
 
     // A row that cannot be written is dimmed, selected or not; a read-only row is not.
-    expect(await paintedWith(app, "全局写入", theme.textMuted)).toBe(true)
+    expect(await paintedWith(app, "全局写入", theme.textDim)).toBe(true)
     expect(await paintedWith(app, "询问", theme.textDim)).toBe(true)
     expect(await paintedWith(app, "ctrl+x d", theme.textMuted)).toBe(true)
     await selectRow(app, "切换工作流模式")

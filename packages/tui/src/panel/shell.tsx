@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { BoxRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import type { ActiveBinding } from "@opentui/keymap"
 import { useTerminalDimensions } from "@opentui/solid"
 import { children, createMemo, createSignal, For, Show, type JSX } from "solid-js"
@@ -11,6 +11,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { formatKeyBindings, useKeymapSelector } from "../keymap"
 import { FRAME_PADDING, MARK_CELLS, NARROW_WIDTH, panelInnerWidth } from "../ui/layout"
+import { selectedAttributes, textAttributes, textFg, textStyle, titleFg } from "../ui/text"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { usePanelHostDepth } from "./host"
 
@@ -251,8 +252,6 @@ export function PanelShell(props: PanelShellProps) {
     return { title, tabs: shownTabs, command }
   })
 
-  const titleColor = () => (props.tone === "warning" ? theme.warning : theme.primary)
-
   return (
     <box
       width="100%"
@@ -274,7 +273,13 @@ export function PanelShell(props: PanelShellProps) {
             </box>
           }
         >
-          <text flexShrink={1} overflow="hidden" wrapMode="none" fg={titleColor()} attributes={TextAttributes.BOLD}>
+          <text
+            flexShrink={1}
+            overflow="hidden"
+            wrapMode="none"
+            fg={titleFg(theme, props.tone)}
+            attributes={textAttributes("title")}
+          >
             {layout().title}
           </text>
         </Show>
@@ -284,19 +289,19 @@ export function PanelShell(props: PanelShellProps) {
               flexShrink={0}
               wrapMode="none"
               onMouseUp={() => props.onTab?.(tab.id)}
-              fg={tab.active ? theme.primary : theme.textMuted}
-              attributes={tab.active ? TextAttributes.BOLD : undefined}
+              fg={tab.active ? textFg(theme, "title") : textFg(theme, "secondary")}
+              attributes={selectedAttributes(tab.active)}
             >
               {`${" ".repeat(TAB_GAP)}${tab.text}`}
               <Show when={tab.badge}>
-                <span style={{ fg: theme.textDim }}> {tab.badge}</span>
+                <span style={textStyle(theme, "hint")}> {tab.badge}</span>
               </Show>
             </text>
           )}
         </For>
         <box flexGrow={1} flexShrink={1} />
         <Show when={layout().command}>
-          <text flexShrink={0} wrapMode="none" fg={theme.textDim}>
+          <text flexShrink={0} wrapMode="none" fg={textFg(theme, "hint")}>
             {layout().command}
           </text>
         </Show>
@@ -327,11 +332,11 @@ export function PanelShell(props: PanelShellProps) {
         </box>
       </scrollbox>
       <Show when={props.note !== undefined}>
-        <text height={1} flexShrink={0} fg={theme.textMuted} wrapMode="none">
+        <text height={1} flexShrink={0} fg={textFg(theme, "secondary")} wrapMode="none">
           {`${" ".repeat(MARK_CELLS)}${truncateCells(props.note!, Math.max(0, innerWidth() - MARK_CELLS), ambiguousWidth())}`}
         </text>
       </Show>
-      <text height={1} flexShrink={0} fg={theme.textDim} wrapMode="none">
+      <text height={1} flexShrink={0} fg={textFg(theme, "hint")} wrapMode="none">
         {truncateCells(hintText(), innerWidth(), ambiguousWidth())}
       </text>
     </box>
