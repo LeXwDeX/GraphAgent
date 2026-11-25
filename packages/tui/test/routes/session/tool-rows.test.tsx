@@ -842,10 +842,7 @@ test("an edit that added nothing says +0, and one the server gave no counts for 
 
     // The key closes the latest of the two, the one without counts; the other stays open.
     press(harness)
-    const closed = await harness.waitForFrame(
-      (text) => text.split("const answer = 42").length === 2,
-      "the closed diff",
-    )
+    const closed = await harness.waitForFrame((text) => text.split("const answer = 42").length === 2, "the closed diff")
     expect(blockOf(closed, "⏺ Edit src/other.ts")).toEqual(["⏺ Edit src/other.ts", "  ⎿ 完成"])
     expect(blockOf(closed, "⏺ Edit src/answer.ts").length).toBeGreaterThan(2)
   } finally {
@@ -1158,10 +1155,7 @@ test("a patch has a row of two lines for each file: what the patch did to it, an
     try {
       const frame = await harness.waitForFrame((text) => text.includes("const answer = 42"), "the open diff")
       expect(blockOf(frame, "⏺ Patch src/a.ts").slice(0, 2)).toEqual(["⏺ Patch src/a.ts", "  ⎿ +3 −1"])
-      expect(blockOf(frame, `⏺ Patch ${created}`).slice(0, 2)).toEqual([
-        `⏺ Patch ${created} src/b.ts`,
-        "  ⎿ +25 −0",
-      ])
+      expect(blockOf(frame, `⏺ Patch ${created}`).slice(0, 2)).toEqual([`⏺ Patch ${created} src/b.ts`, "  ⎿ +25 −0"])
       // A file the patch deleted has no diff to open, and so is no different from the others to look at.
       expect(blockOf(frame, `⏺ Patch ${deleted}`)).toEqual([`⏺ Patch ${deleted} src/gone.ts`, "  ⎿ +0 −14"])
       expect(blockOf(frame, `⏺ Patch ${moved}`).slice(0, 2)).toEqual([

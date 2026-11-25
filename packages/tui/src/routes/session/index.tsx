@@ -512,8 +512,7 @@ export function Main() {
     const measured = measurements.get(row.key, row.revision, width)
     if (measured !== undefined) return measured
     const expanded =
-      view.get(row.partID, "expanded", row.defaultExpanded === true) ||
-      view.get(row.partID, "errorExpanded")
+      view.get(row.partID, "expanded", row.defaultExpanded === true) || view.get(row.partID, "errorExpanded")
     return estimateRowHeight(row, width, rowData().chars.get(row.key) ?? 0, expanded) + (row.kind === "tool" ? 1 : 0)
   }
 
@@ -1200,12 +1199,7 @@ export function Main() {
       category: "Session",
       // Opening a block is view state, not a request, so sub-agent views keep the key (spec 4.4).
       run: () => {
-        toggleExpand(
-          rows(),
-          foldOfRow(),
-          view,
-          (row) => row.defaultExpanded === true,
-        )
+        toggleExpand(rows(), foldOfRow(), view, (row) => row.defaultExpanded === true)
       },
     },
     {
