@@ -769,7 +769,7 @@ export const en: Record<MessageKey, string> = {
   "command.session.list.title": "Sessions",
   "command.session.list.description": "Browse, resume, or manage sessions",
   "command.session.rename.title": "Rename session",
-  "command.session.rename.description": "Rename directly with an argument; without one, prefill the current title",
+  "command.session.rename.description": "Rename with an argument; without one, prefill the current title",
   "command.session.fork.title": "Fork from message",
   "command.session.fork.description": "Create a new session from a selected message",
   "command.session.timeline.title": "Jump to message",

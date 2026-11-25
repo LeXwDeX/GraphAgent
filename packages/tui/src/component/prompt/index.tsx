@@ -18,6 +18,7 @@ import { costLabel, unpriced } from "@graphagent/core/util/cost"
 import { Identifier } from "@graphagent/core/id/id"
 import { useTheme } from "../../context/theme"
 import { cursorWidth } from "../../ui/width"
+import { FRAME_PADDING } from "../../ui/layout"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
@@ -1718,8 +1719,8 @@ export function Prompt(props: PromptProps) {
           border={["top", "right", "bottom", "left"]}
           borderColor={focused() ? theme.textDim : theme.border}
           backgroundColor={theme.background}
-          paddingLeft={1}
-          paddingRight={1}
+          paddingLeft={FRAME_PADDING}
+          paddingRight={FRAME_PADDING}
         >
           <Show when={editing()}>
             {(current) => (

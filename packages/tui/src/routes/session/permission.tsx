@@ -139,6 +139,7 @@ function EditBody(props: { request: PermissionRequest; show: DiffFit["show"] }) 
         </scrollbox>
       </Show>
       <Show when={diff() && props.show === "count"}>
+        {/* The ask's own indent under the block; the panel's frame padding is `PanelShell`'s (13.9). */}
         <box paddingLeft={1}>
           <ChangeSummary additions={changes().additions} deletions={changes().deletions} errors={0} />
         </box>
@@ -190,7 +191,10 @@ function toolName(permission: string, data: Record<string, unknown>) {
   return TOOL_NAMES[permission] ?? permission
 }
 
-/** The dark block of the ask: the lead in the muted color, the text after it, a cell of padding on each side. */
+/**
+ * The dark block of the ask: the lead in the muted color, the text after it, a cell of padding on each side. The block
+ * has no border, so its padding is the ask's own and not a frame's `FRAME_PADDING` (13.9).
+ */
 function ObjectBlock(props: PermissionObject) {
   const { theme } = useTheme()
   return (
@@ -629,6 +633,7 @@ export function PermissionPrompt(props: PermissionPromptProps) {
     )
   }
 
+  // The rows of the reject stage are indented by the ask itself; the panel's frame padding is `PanelShell`'s (13.9).
   const rejectContent = () => (
     <box flexDirection="column" gap={1}>
       <box flexDirection="row" gap={1} paddingLeft={1}>
