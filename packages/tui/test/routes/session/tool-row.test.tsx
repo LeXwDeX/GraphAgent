@@ -226,7 +226,7 @@ for (const ambiguousWidth of [1, 2] as const) {
   })
 }
 
-test("a note and an action end the result line: the note dim after a separator, the action muted two cells on", async () => {
+test("a note and an action end the result line: the note dim after a separator, the action in the muted color two cells on", async () => {
   await using(
     { state: "running", name: "Task", arg: "a", result: "运行中", note: "转后台 ctrl+x w", action: "进入" },
     {},

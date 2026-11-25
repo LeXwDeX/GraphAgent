@@ -146,7 +146,7 @@ test("a command with no binding writes nothing, and its partner is written alone
 
 test("a hint without a partner is the keys and the label, as it always was", () => {
   const single = bound({ "panel.submit": [stroke("return")], "panel.toggle": [stroke("space"), stroke("x")] })
-  expect(hintEntries({ key: "panel.submit", label: "确认" }, single, asNames)).toEqual(["return 确认"])
+  expect(hintEntries({ key: "panel.submit", label: "进入" }, single, asNames)).toEqual(["return 进入"])
   expect(hintEntries({ key: "panel.toggle", label: "勾选" }, single, asNames)).toEqual(["space, x 勾选"])
 })
 

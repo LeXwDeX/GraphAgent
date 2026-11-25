@@ -229,7 +229,9 @@ export function chooseBandRows(candidates: BandCandidates, narrow: boolean): Ban
   if (pr?.warning) add("pr", pr.row)
   add("dag", candidates.dag)
   if (pr && !pr.warning && !chosen.some((choice) => choice.kind === "dag")) add("pr", pr.row)
-  add("goal", candidates.goal)
+  // The prototype drops the goal row while the trust warning is up (`if (!trustWarn)`): the warning is the row that
+  // asks for a decision, and the goal is still in the drawer.
+  if (!candidates.trust || candidates.trust.spans.length === 0) add("goal", candidates.goal)
   add("reminder", candidates.reminder)
   const rows = chosen.slice(0, narrow ? 1 : BAND_ROWS_MAX)
   if (narrow || background === undefined) return rows

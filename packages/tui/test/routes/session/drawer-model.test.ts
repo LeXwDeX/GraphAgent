@@ -394,7 +394,7 @@ test("the goal line is the turns and the status, or the reason a waiting or paus
 })
 
 test("todo marks and the done count", () => {
-  expect(todoMark("completed")).toEqual({ symbol: "✓", tone: "textMuted" })
+  expect(todoMark("completed")).toEqual({ symbol: "✓", tone: "success" })
   expect(todoMark("in_progress")).toEqual({ symbol: "●", tone: "primary" })
   expect(todoMark("pending")).toEqual({ symbol: "○", tone: "textDim" })
   expect(todoCount([{ status: "completed" }, { status: "in_progress" }, { status: "pending" }])).toBe("1/3")

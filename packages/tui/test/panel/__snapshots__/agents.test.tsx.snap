@@ -12,7 +12,7 @@ exports[`how it looks 80 by 24, in Chinese 1`] = `
   │   ✓ build · 重新生成 SDK               主 agent  已完成 · 工具 12 · 14s  │  
   │                                                                          │  
   │   任务：扫描破坏性变更                                                   │  
-  │ ↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭                         │  
+  │ ↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭                         │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -40,7 +40,7 @@ exports[`how it looks 120 by 40, in Chinese 1`] = `
   │   ✓ build · 重新生成 SDK                                                       主 agent  已完成 · 工具 12 · 14s  │  
   │                                                                                                                  │  
   │   任务：扫描破坏性变更                                                                                           │  
-  │ ↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭                                                                 │  
+  │ ↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
@@ -84,7 +84,7 @@ exports[`how it looks 80 by 24, in English 1`] = `
   │   ✓ build · 重新生成 SDK           main agent  done · tools 12 · 14s     │  
   │                                                                          │  
   │   Task: 扫描破坏性变更                                                   │  
-  │ ↑↓ Select · ⏎ Confirm · ⌃R Ask main agent · esc Close                    │  
+  │ ↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close                      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -112,7 +112,7 @@ exports[`how it looks 120 by 40, in English 1`] = `
   │   ✓ build · 重新生成 SDK                                                   main agent  done · tools 12 · 14s     │  
   │                                                                                                                  │  
   │   Task: 扫描破坏性变更                                                                                           │  
-  │ ↑↓ Select · ⏎ Confirm · ⌃R Ask main agent · esc Close                                                            │  
+  │ ↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close                                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
@@ -154,7 +154,7 @@ exports[`how it looks a cold start, 80 by 24 1`] = `
   │     build · 重新生成 SDK                    主 agent  — · 工具 — · 14s   │  
   │                                                                          │  
   │   任务：扫描破坏性变更                                                   │  
-  │ ↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭                         │  
+  │ ↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭                         │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -187,7 +187,7 @@ exports[`background runs: how the list looks 80 by 24, in Chinese 1`] = `
   │   ✗ review · 复核最终补丁              —         失败 · 工具 3 · 1m 0s   │  
   │                                                                          │  
   │   任务：未提交改动                                                       │  
-  │ ↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭                         │  
+  │ ↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭                         │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -218,7 +218,7 @@ exports[`background runs: how the list looks 120 by 40, in Chinese 1`] = `
   │   ✓ explore · 列出过期依赖                                                     主 agent  已完成 · 工具 8 · 1m 0s │  
   │                                                                                                                  │  
   │   任务：未提交改动                                                                                               │  
-  │ ↑↓ 选择 · ⏎ 确认 · ⌃R 请主 agent 处理 · esc 关闭                                                                 │  
+  │ ↑↓ 选择 · ⏎ 进入 · ⌃R 请主 agent 处理 · esc 关闭                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
@@ -259,7 +259,7 @@ exports[`background runs: how the list looks 80 by 24, in English 1`] = `
   │   ✗ review · 复核最终补丁        —           failed · tools 3 · 1m 0s    │  
   │                                                                          │  
   │   Task: 未提交改动                                                       │  
-  │ ↑↓ Select · ⏎ Confirm · ⌃R Ask main agent · esc Close                    │  
+  │ ↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close                      │  
   ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
@@ -290,7 +290,7 @@ exports[`background runs: how the list looks 120 by 40, in English 1`] = `
   │   ✓ explore · 列出过期依赖                                               main agent  done · tools 8 · 1m 0s      │  
   │                                                                                                                  │  
   │   Task: 未提交改动                                                                                               │  
-  │ ↑↓ Select · ⏎ Confirm · ⌃R Ask main agent · esc Close                                                            │  
+  │ ↑↓ Select · ⏎ Enter · ⌃R Ask main agent · esc Close                                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         

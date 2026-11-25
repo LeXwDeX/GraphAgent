@@ -276,9 +276,9 @@ for (const size of DRAWER_SIZES) {
       expect(drawer).toBeDefined()
       if (!zone || !drawer) return
 
-      // The footer is the last row; the bottom zone sits right above it.
+      // The footer is the last row, a blank row above it, and the bottom zone sits right above that.
       const footerTop = size.height - 1
-      expect(zone.screenY + zone.height).toBe(footerTop)
+      expect(zone.screenY + zone.height).toBe(footerTop - 1)
 
       const drawerBottom = drawer.screenY + drawer.height
       expect(drawerBottom).toBe(zone.screenY)

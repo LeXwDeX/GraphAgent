@@ -894,7 +894,7 @@ describe("an expansion folded under its slot", () => {
     try {
       await openLoaded(shell)
       expect(lineWith(await shell.frame(), "›")).toContain("review ")
-      expect(await shell.frame()).toContain("进入子 agent")
+      expect(await shell.frame()).toContain("查看输出")
       await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })
@@ -1241,7 +1241,7 @@ describe("moving around the panel", () => {
     try {
       await openLoaded(shell)
       // The failed node starts selected, and it has a session.
-      expect(await shell.frame()).toContain("进入子 agent")
+      expect(await shell.frame()).toContain("查看输出")
       await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })

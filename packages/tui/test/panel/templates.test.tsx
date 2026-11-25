@@ -1234,7 +1234,7 @@ test("a read-only row can be selected to read its note, and key and click do not
       // The hints offer no change, confirmation, edit or submit for it, and the row has no hint to cycle.
       const hints = frameLines(frame)[borderIndex(frameLines(frame), "╰") - 1]
       expect(hints).toContain("关闭")
-      for (const verb of ["修改", "确认", "编辑", "提交"]) expect(hints).not.toContain(verb)
+      for (const verb of ["修改", "进入", "编辑", "提交"]) expect(hints).not.toContain(verb)
       expect(rowWith(frame, label)).not.toContain("换一个")
 
       app.mockInput.pressEnter()
@@ -1513,13 +1513,13 @@ function hintRowOf(frame: string) {
 const HINT_ROWS = {
   "zh-CN": {
     settings: "↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭",
-    detail: "↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭",
-    list: "↑↓ 选择 · ⇥ 切换标签 · ⏎ 确认 · esc 关闭",
+    detail: "↑↓ 选择 · ←→ 切换标签 · ⏎ 进入 · esc 关闭",
+    list: "↑↓ 选择 · ⇥ 切换标签 · ⏎ 进入 · esc 关闭",
   },
   en: {
     settings: "↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close",
-    detail: "↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close",
-    list: "↑↓ Select · ⇥ Switch tab · ⏎ Confirm · esc Close",
+    detail: "↑↓ Select · ←→ Switch tab · ⏎ Enter · esc Close",
+    list: "↑↓ Select · ⇥ Switch tab · ⏎ Enter · esc Close",
   },
 } as const
 
