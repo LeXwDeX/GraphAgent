@@ -26,8 +26,9 @@ import { useSync } from "../../context/sync"
 import { lifecycleKey } from "../../context/lifecycle-mirror"
 import { backgroundResultOf, type TaskIndexEntry } from "../../context/session-summary"
 import { useEvent } from "../../context/event"
-import { SplitBorder } from "../../ui/border"
-import { truncateCells, type AmbiguousWidth } from "../../ui/width"
+import { DashedBorder, SplitBorder } from "../../ui/border"
+import { textFg } from "../../ui/text"
+import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, useTheme } from "../../context/theme"
@@ -122,7 +123,7 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { AdaptiveMarkdown } from "../../ui/adaptive-markdown"
-import { GUTTER, MARK_CELLS, ROW_INDENT } from "../../ui/layout"
+import { contentWidth, framedInnerWidth, FRAME_PADDING, GUTTER, MARK_CELLS, ROW_INDENT } from "../../ui/layout"
 import {
   EscapePriority,
   GRAPHAGENT_BASE_MODE,
@@ -271,6 +272,43 @@ function use() {
   const ctx = useContext(context)
   if (!ctx) throw new Error("useContext must be used within a Session component")
   return ctx
+}
+
+/**
+ * The composer slot of a sub-agent view: a dashed frame where the input would be, saying the view is read-only and
+ * how to get back to the main session. The sub-agent is driven by the main agent, so there is nothing to type here.
+ */
+function ReadOnlyComposer() {
+  const { theme } = useTheme()
+  const kv = useKV()
+  const dimensions = useTerminalDimensions()
+  const inner = () => framedInnerWidth(contentWidth(dimensions().width))
+  const tag = () => t("subagent.readonlyTag")
+  const rest = () => {
+    const aw: AmbiguousWidth = kv.get("ambiguous_width", 1) === 2 ? 2 : 1
+    const room = inner() - cellWidth(tag(), aw) - 1
+    return room > 0 ? truncateCells(t("subagent.readonly"), room, aw) : ""
+  }
+  return (
+    <box
+      width="100%"
+      flexShrink={0}
+      border={DashedBorder.border}
+      customBorderChars={DashedBorder.customBorderChars}
+      borderColor={theme.textDim}
+      paddingLeft={FRAME_PADDING}
+      paddingRight={FRAME_PADDING}
+    >
+      <box flexDirection="row" gap={1}>
+        <text fg={textFg(theme, "hint")} wrapMode="none">
+          {tag()}
+        </text>
+        <text fg={textFg(theme, "secondary")} wrapMode="none">
+          {rest()}
+        </text>
+      </box>
+    </box>
+  )
 }
 
 export function Main() {
@@ -691,21 +729,23 @@ export function Main() {
   // (#1032 D1). The route keeps its wiring: the closure below runs inside the zone but reads this route's
   // draft binding, submit scroll and ask state. The zone creates it outside this route's provider tree, so the
   // session's location (the directory its `@` file search runs in) is provided again here. A sub-agent view has
-  // no input.
+  // no input: the slot holds a read-only frame instead.
   const offComposer = bottomZone?.setComposer({
     render: () => (
-      <Show when={session() && visible()}>
+      <Show when={session()}>
         <LocationProvider location={location()}>
           <box width="100%" flexShrink={0} paddingLeft={GUTTER} paddingRight={GUTTER} paddingBottom={1}>
-            <Prompt
-              visible={!disabled()}
-              ref={bind}
-              disabled={disabled()}
-              onSubmit={() => {
-                toBottom()
-              }}
-              sessionID={route.sessionID}
-            />
+            <Show when={visible()} fallback={<ReadOnlyComposer />}>
+              <Prompt
+                visible={!disabled()}
+                ref={bind}
+                disabled={disabled()}
+                onSubmit={() => {
+                  toBottom()
+                }}
+                sessionID={route.sessionID}
+              />
+            </Show>
           </box>
         </LocationProvider>
       </Show>
