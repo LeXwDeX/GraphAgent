@@ -95,3 +95,21 @@ test("the retired plugin slot API does not come back", () => {
 test("the config panel keeps no numeric fallback for a setting", () => {
   expect(hits(/\?\?\s*\d/, { only: ["panel/config.tsx"] })).toEqual([])
 })
+
+// The text width of a panel comes from one place (#1672): `usePanelInnerWidth` in `panel/shell.tsx`, which is
+// `panelInnerWidth` of the terminal width. The text width of the drawer is worked out from `DRAWER_WIDTH` and the tokens
+// of its insets. A panel that takes the terminal width less a number of its own, or keeps a constant for the border and
+// the padding, goes wrong the day the shell's change; the migration left none, and this keeps it so.
+const WIDTH_LESS_A_NUMBER =
+  /dimensions\(\)\.width\s*-|\bwidth\)?\s*-\s*\d|\bcontentWidth\(|\bframedInnerWidth\(|PANEL_INSET|SHELL_WIDTH|BORDER_AND_PADDING|DRAWER_WIDTH\s*-\s*\d+(?!\s*\*)/
+
+test("panels and the drawer take their text width from the shell's, not from the terminal width less a number", () => {
+  const files = sources
+    .map((source) => source.file)
+    .filter((file) => file.startsWith("panel/") || /^routes\/session\/drawer[^/]*\.tsx?$/.test(file))
+  // The scan sees the panels and the drawer's two files.
+  expect(files).toContain("panel/trust.tsx")
+  expect(files).toContain("routes/session/drawer-model.ts")
+  expect(files).toContain("routes/session/drawer.tsx")
+  expect(hits(WIDTH_LESS_A_NUMBER, { only: files })).toEqual([])
+})

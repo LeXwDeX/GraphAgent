@@ -12,8 +12,10 @@ import type { Ticker } from "../../../src/context/ticker"
 import { setLanguage } from "../../../src/i18n"
 import { useBindings } from "../../../src/keymap"
 import { SessionDrawer } from "../../../src/routes/session/drawer"
+import { DRAWER_TEXT_CELLS } from "../../../src/routes/session/drawer-model"
 import { Drawer, DRAWER_WIDTH } from "../../../src/shell/drawer"
 import { DEFAULT_THEMES, resolveTheme } from "../../../src/theme"
+import { DRAWER_INSET } from "../../../src/ui/layout"
 import { cellWidth } from "../../../src/ui/width"
 import { RUN_START, endRun, runSessionID, seedRun } from "../../fixture/background-runs"
 import { probeStoreWrites } from "../../fixture/store-write-probe"
@@ -1490,6 +1492,28 @@ for (const aw of [1, 2] as const) {
     })
   }
 }
+
+// The text of a line of the drawer is `DRAWER_TEXT_CELLS` wide (#1672): a line the section cuts ends with its ellipsis in
+// the last of those cells, after the inset the view pads with, and the drawer clips none of it.
+test("a line cut to the width of the drawer's text ends in the last cell the drawer leaves for text", async () => {
+  const clock = clockTicker(NOW)
+  const harness = await mountDrawer({ width: 80, data: FULL, ticker: clock.ticker })
+  try {
+    seedRun(harness.sync(), {
+      parent: ROOT,
+      key: "long",
+      state: "queued",
+      kind: "explore",
+      description: "x".repeat(120),
+    })
+    const lines = await column(harness, 80, has("xxxx"), "the background section")
+    const line = lines.find((candidate) => candidate.includes("xxxx")) ?? ""
+    expect(line).toContain("…")
+    expect(cellWidth(line.slice(0, line.indexOf("…") + 1))).toBe(DRAWER_INSET + DRAWER_TEXT_CELLS)
+  } finally {
+    await harness.dispose()
+  }
+})
 
 describe("the drawer's clock", () => {
   /** The drawer opened and closed by the test, the way the frame mounts it only while it is visible. */

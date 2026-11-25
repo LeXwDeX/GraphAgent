@@ -1,17 +1,17 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ 设置  [通用]  界面  模型  DAG 模式  权限  快捷键                             │
-│ › 语言 / Language       简体中文   自动   ⏎ 换一个（1/2）                    │
-│   自动压缩              开   上下文到 85% 时                                 │
-│   文件上下文            开                                                   │
-│   粘贴摘要              开                                                   │
-│   按目录过滤会话        开                                                   │
-│   终端标题              开                                                   │
-│   未配置时按系统语言推断；切换后界面立即生效                                 │
-│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ 设置  [通用]  界面  模型  DAG 模式  权限  快捷键                         │  
+  │ › 语言 / Language       简体中文   自动   ⏎ 换一个（1/2）                │  
+  │   自动压缩              开   上下文到 85% 时                             │  
+  │   文件上下文            开                                               │  
+  │   粘贴摘要              开                                               │  
+  │   按目录过滤会话        开                                               │  
+  │   终端标题              开                                               │  
+  │   未配置时按系统语言推断；切换后界面立即生效                             │  
+  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -29,14 +29,14 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 1`] = 
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 2`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ 设置  通用  界面  [模型]  DAG 模式  权限  快捷键                             │
-│ › 当前模型              Test model                                           │
-│   推理强度              默认                                                 │
-│   标题模型              a-provider/a-model-with-a-name-far-too-long-for…     │
-│   打开 /model 选择模型；按 agent 分别记录                                    │
-│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ 设置  通用  界面  [模型]  DAG 模式  权限  快捷键                         │  
+  │ › 当前模型              Test model                                       │  
+  │   推理强度              默认                                             │  
+  │   标题模型              a-provider/a-model-with-a-name-far-too-long-for… │  
+  │   打开 /model 选择模型；按 agent 分别记录                                │  
+  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -57,15 +57,15 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 2`] = 
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 3`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ 设置  通用  界面  模型  DAG 模式  权限  [快捷键]                             │
-│ › Switch model          ⌃X M                                                 │
-│   Toggle DAG mode       ⌃X D                                                 │
-│   New session           ⌃X N                                                 │
-│   Switch to another se… ⌃X L                                                 │
-│                                                                              │
-│ ↑↓ 选择 · ←→ 切换标签 · esc 关闭                                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ 设置  通用  界面  模型  DAG 模式  权限  [快捷键]                         │  
+  │ › Switch model          ⌃X M                                             │  
+  │   Toggle DAG mode       ⌃X D                                             │  
+  │   New session           ⌃X N                                             │  
+  │   Switch to another se… ⌃X L                                             │  
+  │                                                                          │  
+  │ ↑↓ 选择 · ←→ 切换标签 · esc 关闭                                         │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -85,17 +85,17 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 3`] = 
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 4`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ 设置  [通用]  界面  模型  DAG 模式  权限  快捷键                                                             /config │
-│ › 语言 / Language       简体中文   自动   ⏎ 换一个（1/2）                                                            │
-│   自动压缩              开   上下文到 85% 时                                                                         │
-│   文件上下文            开                                                                                           │
-│   粘贴摘要              开                                                                                           │
-│   按目录过滤会话        开                                                                                           │
-│   终端标题              开                                                                                           │
-│   未配置时按系统语言推断；切换后界面立即生效                                                                         │
-│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                                                            │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ 设置  [通用]  界面  模型  DAG 模式  权限  快捷键                                                         /config │  
+  │ › 语言 / Language       简体中文   自动   ⏎ 换一个（1/2）                                                        │  
+  │   自动压缩              开   上下文到 85% 时                                                                     │  
+  │   文件上下文            开                                                                                       │  
+  │   粘贴摘要              开                                                                                       │  
+  │   按目录过滤会话        开                                                                                       │  
+  │   终端标题              开                                                                                       │  
+  │   未配置时按系统语言推断；切换后界面立即生效                                                                     │  
+  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 修改 · esc 关闭                                                                        │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -129,14 +129,14 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 4`] = 
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 5`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ 设置  通用  界面  [模型]  DAG 模式  权限  快捷键                                                             /config │
-│ › 当前模型              Test model                                                                                   │
-│   推理强度              默认                                                                                         │
-│   标题模型              a-provider/a-model-with-a-name-far-too-long-for-the-value-column-of-this-panel               │
-│   打开 /model 选择模型；按 agent 分别记录                                                                            │
-│ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                                                            │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ 设置  通用  界面  [模型]  DAG 模式  权限  快捷键                                                         /config │  
+  │ › 当前模型              Test model                                                                               │  
+  │   推理强度              默认                                                                                     │  
+  │   标题模型              a-provider/a-model-with-a-name-far-too-long-for-the-value-column-of-this-panel           │  
+  │   打开 /model 选择模型；按 agent 分别记录                                                                        │  
+  │ ↑↓ 选择 · ←→ 切换标签 · ⏎ 确认 · esc 关闭                                                                        │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -173,15 +173,15 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 5`] = 
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 6`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ 设置  通用  界面  模型  DAG 模式  权限  [快捷键]                                                             /config │
-│ › Switch model          ⌃X M                                                                                         │
-│   Toggle DAG mode       ⌃X D                                                                                         │
-│   New session           ⌃X N                                                                                         │
-│   Switch to another se… ⌃X L                                                                                         │
-│                                                                                                                      │
-│ ↑↓ 选择 · ←→ 切换标签 · esc 关闭                                                                                     │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ 设置  通用  界面  模型  DAG 模式  权限  [快捷键]                                                         /config │  
+  │ › Switch model          ⌃X M                                                                                     │  
+  │   Toggle DAG mode       ⌃X D                                                                                     │  
+  │   New session           ⌃X N                                                                                     │  
+  │   Switch to another se… ⌃X L                                                                                     │  
+  │                                                                                                                  │  
+  │ ↑↓ 选择 · ←→ 切换标签 · esc 关闭                                                                                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -217,17 +217,17 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, zh-CN 6`] = 
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 1`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Settings  [General]  Interface  Model  DAG mode  Permissions  Shortcuts      │
-│ › Language              English   Auto   ⏎ change (2/2)                      │
-│   Auto-compact          On   at 85% of the context                           │
-│   File context          On                                                   │
-│   Paste summary         On                                                   │
-│   Filter by directory   On                                                   │
-│   Terminal title        On                                                   │
-│   Inferred from the system locale when unset; applies immediately            │
-│ ↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Settings  [General]  Interface  Model  DAG mode  Permissions  Shortcuts  │  
+  │ › Language              English   Auto   ⏎ change (2/2)                  │  
+  │   Auto-compact          On   at 85% of the context                       │  
+  │   File context          On                                               │  
+  │   Paste summary         On                                               │  
+  │   Filter by directory   On                                               │  
+  │   Terminal title        On                                               │  
+  │   Inferred from the system locale when unset; applies immediately        │  
+  │ ↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close                         │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -245,14 +245,14 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 1`] = `
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 2`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Settings  General  Interface  [Model]  DAG mode  Permissions  Shortcuts      │
-│ › Model                 Test model                                           │
-│   Reasoning effort      Default                                              │
-│   Title model           a-provider/a-model-with-a-name-far-too-long-for…     │
-│   Opens /model to pick a model; kept per agent                               │
-│ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Settings  General  Interface  [Model]  DAG mode  Permissions  Shortcuts  │  
+  │ › Model                 Test model                                       │  
+  │   Reasoning effort      Default                                          │  
+  │   Title model           a-provider/a-model-with-a-name-far-too-long-for… │  
+  │   Opens /model to pick a model; kept per agent                           │  
+  │ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                        │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -273,15 +273,15 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 2`] = `
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 3`] = `
-"╭──────────────────────────────────────────────────────────────────────────────╮
-│ Settings  General  Interface  Model  DAG mode  Permissions  [Shortcuts]      │
-│ › Switch model          ⌃X M                                                 │
-│   Toggle DAG mode       ⌃X D                                                 │
-│   New session           ⌃X N                                                 │
-│   Switch to another se… ⌃X L                                                 │
-│                                                                              │
-│ ↑↓ Select · ←→ Switch tab · esc Close                                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────╮  
+  │ Settings  General  Interface  Model  DAG mode  Permissions  [Shortcuts]  │  
+  │ › Switch model          ⌃X M                                             │  
+  │   Toggle DAG mode       ⌃X D                                             │  
+  │   New session           ⌃X N                                             │  
+  │   Switch to another se… ⌃X L                                             │  
+  │                                                                          │  
+  │ ↑↓ Select · ←→ Switch tab · esc Close                                    │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
                                                                                 
                                                                                 
                                                                                 
@@ -301,17 +301,17 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 3`] = `
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 4`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Settings  [General]  Interface  Model  DAG mode  Permissions  Shortcuts                                      /config │
-│ › Language              English   Auto   ⏎ change (2/2)                                                              │
-│   Auto-compact          On   at 85% of the context                                                                   │
-│   File context          On                                                                                           │
-│   Paste summary         On                                                                                           │
-│   Filter by directory   On                                                                                           │
-│   Terminal title        On                                                                                           │
-│   Inferred from the system locale when unset; applies immediately                                                    │
-│ ↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close                                                                     │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Settings  [General]  Interface  Model  DAG mode  Permissions  Shortcuts                                  /config │  
+  │ › Language              English   Auto   ⏎ change (2/2)                                                          │  
+  │   Auto-compact          On   at 85% of the context                                                               │  
+  │   File context          On                                                                                       │  
+  │   Paste summary         On                                                                                       │  
+  │   Filter by directory   On                                                                                       │  
+  │   Terminal title        On                                                                                       │  
+  │   Inferred from the system locale when unset; applies immediately                                                │  
+  │ ↑↓ Select · ←→ Switch tab · ⏎ Change · esc Close                                                                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -345,14 +345,14 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 4`] = `
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 5`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Settings  General  Interface  [Model]  DAG mode  Permissions  Shortcuts                                      /config │
-│ › Model                 Test model                                                                                   │
-│   Reasoning effort      Default                                                                                      │
-│   Title model           a-provider/a-model-with-a-name-far-too-long-for-the-value-column-of-this-panel               │
-│   Opens /model to pick a model; kept per agent                                                                       │
-│ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                                                                    │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Settings  General  Interface  [Model]  DAG mode  Permissions  Shortcuts                                  /config │  
+  │ › Model                 Test model                                                                               │  
+  │   Reasoning effort      Default                                                                                  │  
+  │   Title model           a-provider/a-model-with-a-name-far-too-long-for-the-value-column-of-this-panel           │  
+  │   Opens /model to pick a model; kept per agent                                                                   │  
+  │ ↑↓ Select · ←→ Switch tab · ⏎ Confirm · esc Close                                                                │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -389,15 +389,15 @@ exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 5`] = `
 `;
 
 exports[`the general, model and shortcuts tabs at 80x24 and 120x40, en 6`] = `
-"╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Settings  General  Interface  Model  DAG mode  Permissions  [Shortcuts]                                      /config │
-│ › Switch model          ⌃X M                                                                                         │
-│   Toggle DAG mode       ⌃X D                                                                                         │
-│   New session           ⌃X N                                                                                         │
-│   Switch to another se… ⌃X L                                                                                         │
-│                                                                                                                      │
-│ ↑↓ Select · ←→ Switch tab · esc Close                                                                                │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+"  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Settings  General  Interface  Model  DAG mode  Permissions  [Shortcuts]                                  /config │  
+  │ › Switch model          ⌃X M                                                                                     │  
+  │   Toggle DAG mode       ⌃X D                                                                                     │  
+  │   New session           ⌃X N                                                                                     │  
+  │   Switch to another se… ⌃X L                                                                                     │  
+  │                                                                                                                  │  
+  │ ↑↓ Select · ←→ Switch tab · esc Close                                                                            │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         

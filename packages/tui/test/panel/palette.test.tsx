@@ -11,7 +11,7 @@ import { useGraphagentKeymap } from "../../src/keymap"
 import type { PanelHostApi } from "../../src/panel/host"
 import { CommandPalettePanel } from "../../src/panel/palette"
 import { shellState } from "../shell/contexts"
-import { PanelSurface, renderAppPanel } from "./contexts"
+import { PanelSurface, panelRows, renderAppPanel } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -123,7 +123,7 @@ for (const language of ["zh-CN", "en"] as const) {
     )
 
     try {
-      const rows = app.captureCharFrame().split("\n")
+      const rows = panelRows(app.captureCharFrame())
       const row = rows.find((line) => line.includes(t("command.model.list.title")))
       expect(row).toBeDefined()
       expect(row!.replace(/ *│$/, "")).toEndWith("⌃X M, ⌃⇧M")

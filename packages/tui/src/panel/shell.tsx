@@ -10,7 +10,7 @@ import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { formatKeyBindings, useKeymapSelector } from "../keymap"
-import { NARROW_WIDTH, contentWidth, framedInnerWidth } from "../ui/layout"
+import { FRAME_PADDING, MARK_CELLS, NARROW_WIDTH, panelInnerWidth } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { usePanelHostDepth } from "./host"
 
@@ -109,9 +109,10 @@ export interface PanelShellProps {
    */
   filter?: JSX.Element
   /**
-   * One muted line between the content and the hint row, for the explanation of what is selected. It sits outside the
-   * scroll area, so it stays in view however far the content scrolls. Left out, the panel takes no row for it; an empty
-   * string keeps the row, blank, so that a panel whose selection only sometimes has a note keeps its height.
+   * One muted line between the content and the hint row, for the explanation of what is selected. It starts under the
+   * names of the rows, past their selection mark (`MARK_CELLS`). It sits outside the scroll area, so it stays in view
+   * however far the content scrolls. Left out, the panel takes no row for it; an empty string keeps the row, blank, so
+   * that a panel whose selection only sometimes has a note keeps its height.
    */
   note?: string
   /**
@@ -135,12 +136,24 @@ export function panelMaxRows(terminalHeight: number) {
   return Math.min(14, Math.floor(terminalHeight * 0.45))
 }
 
+/**
+ * The cells of text inside a panel's frame, following the terminal: the width `PanelShell` lays its title, note and hint
+ * rows out in. A panel that lays out columns of its own (names, states, values) takes the room it has from here, not
+ * from the terminal width less a number of its own, so that the shell and the panel cannot disagree on where a line ends
+ * (#1672). At least 1. `fullscreen` is the shell's own prop, for a panel that spans the whole terminal. `dimensions` is
+ * the terminal size a caller has read already: given, no second `resize` listener is added to the renderer.
+ */
+export function usePanelInnerWidth(
+  options: { fullscreen?: () => boolean | undefined; dimensions?: () => { width: number } } = {},
+) {
+  const dimensions = options.dimensions ?? useTerminalDimensions()
+  return () => Math.max(1, panelInnerWidth(dimensions().width, options.fullscreen?.() === true))
+}
+
 const GAP = 2
 const TAB_GAP = 2
 const TITLE_MIN_WIDTH = 8
 const HINT_SEPARATOR = " · "
-/** The note starts under the names of the rows, past the two-cell selection marker. */
-const NOTE_INDENT = 2
 /** The filter row is one line, and takes one of the rows that `maxRows` allows. */
 const FILTER_ROWS = 1
 
@@ -155,9 +168,8 @@ export function PanelShell(props: PanelShellProps) {
   const filter = children(() => props.filter)
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  // The cells the frame spans, and inside it the text: the border and the padding come off both sides.
-  const frameWidth = () => (props.fullscreen ? dimensions().width : contentWidth(dimensions().width))
-  const innerWidth = () => Math.max(1, framedInnerWidth(frameWidth()))
+  // The text inside the frame, which the panels that lay out columns of their own take their room from too.
+  const innerWidth = usePanelInnerWidth({ dimensions, fullscreen: () => props.fullscreen })
   const maxRows = () => Math.max(1, props.maxRows ?? panelMaxRows(dimensions().height))
   // What the scroll area may take: the rows of the panel, less the filter row when there is one.
   const scrollRows = () => Math.max(1, maxRows() - (filter() ? FILTER_ROWS : 0))
@@ -250,8 +262,8 @@ export function PanelShell(props: PanelShellProps) {
       borderStyle="rounded"
       border={["top", "right", "bottom", "left"]}
       borderColor={props.tone === "warning" ? theme.borderWarning : theme.border}
-      paddingLeft={1}
-      paddingRight={1}
+      paddingLeft={FRAME_PADDING}
+      paddingRight={FRAME_PADDING}
     >
       <box height={1} flexShrink={0} flexDirection="row" overflow="hidden">
         <Show
@@ -316,7 +328,7 @@ export function PanelShell(props: PanelShellProps) {
       </scrollbox>
       <Show when={props.note !== undefined}>
         <text height={1} flexShrink={0} fg={theme.textMuted} wrapMode="none">
-          {`${" ".repeat(NOTE_INDENT)}${truncateCells(props.note!, Math.max(0, innerWidth() - NOTE_INDENT), ambiguousWidth())}`}
+          {`${" ".repeat(MARK_CELLS)}${truncateCells(props.note!, Math.max(0, innerWidth() - MARK_CELLS), ambiguousWidth())}`}
         </text>
       </Show>
       <text height={1} flexShrink={0} fg={theme.textDim} wrapMode="none">

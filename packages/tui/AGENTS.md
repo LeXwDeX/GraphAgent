@@ -74,7 +74,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；F5 已落 `subagent-path`（子 agent 视图顶栏路径的纯布局函数，顶栏与页脚的子 agent 分支用它）；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），PR 行、提醒行与它们的纯布局 `pr-line.tsx` 已落地（F6，#1036），信任行与它的纯布局 `trust-line.ts` 已落地（#1618）。`pr-tracker.ts` 是 PR 与提醒的跟踪（交接判断、警示保留、`ticker.at` 一次性回调、toast 都在这里），`pr-tracker-context.tsx` 是状态带读它的只读接口；状态带只排版 tracker 给出的结果。
   - 输入框（`Prompt`）画在 `bottom-zone` 的输入框槽里：主区 → 状态带槽 → 输入框 → 页脚，抽屉只覆盖主区（F4 PR0，#1032）。`home`、`session` 路由在 setup 里调用 `useBottomZoneOptional()?.setComposer({ render })` 装入自己的 `Prompt`（草稿、提交、焦点的接线仍留在路由里），卸载时调用返回的撤销函数（只撤销自己装的那一份）。`render` 在槽里创建，不在路由的 provider 树里，只能读到应用级 context；路由自己提供的（会话的 `LocationProvider`，`@` 文件搜索靠它定位目录）要在 `render` 里重新提供。
   - 输入框的外形与高度（#1616）：一个圆角框，框内左边是宽 2 的 `›` 列（独立 `<text>`，shell 模式为 `$`），右边是 textarea。textarea 高 = 折行后的行数（按显示宽度），下限 1，上限 `prompt.max_height`（默认 `max(6, floor(终端高 / 3))`，随终端高度变化）；框高 = textarea 高 + 2（上下边框），空闲时 3 行。到上限后框不再增高，textarea 内部滚动；`›` 固定在框的第一行，续行与首行文字左对齐。`editing()` 的状态行画在框内最上面，另占 1 行，不计入上限（框高 = textarea 高 + 3）。`test/prompt/composer-height.test.tsx` 固定这些数字，改规则要同时改它。
-  - 面板与询问的包装层（#1671）：`BottomZone` 把面板（`PanelHost`）和询问都放进 `ZoneSurface`，左右各留 `GUTTER`，所以 `PanelShell` 的边框与输入框的边框同在列 2 与 `W-3`（13.3）。留边只在这一层，不在各面板里：面板里“终端宽 − 常数”的宽度算式从 `contentWidth(终端宽)` 起算，`PanelShell` 自己的文字宽是 `framedInnerWidth(contentWidth(终端宽))`；窄屏断点仍按终端宽比较。全屏权限询问（`ctrl+f`）在 `Portal` 的覆盖层里，不在这一层，铺满终端，向 `PanelShell` 传 `fullscreen`，文字宽按终端宽算。系统性迁移（面板的宽度算式统一取 `ui/` 下的定义）由 #1672 做。
+  - 面板与询问的包装层（#1671）：`BottomZone` 把面板（`PanelHost`）和询问都放进 `ZoneSurface`，左右各留 `GUTTER`，所以 `PanelShell` 的边框与输入框的边框同在列 2 与 `W-3`（13.3）。留边只在这一层，不在各面板里：框内文字宽只有一个来源，`ui/layout.ts` 的 `panelInnerWidth(终端宽, fullscreen)`（`framedInnerWidth(contentWidth(终端宽))`，80 列是 72）。`panel/shell.tsx` 导出的 `usePanelInnerWidth()` 把它随终端宽度取出来：`PanelShell` 排自己的标题、说明、提示行用它，面板排自己的列（名称、状态、值）也用它，面板里不再出现“终端宽 − 常数”的算式，也不再各自定义表示边框与内边距的常量（#1672，`test/source-guards.test.ts` 守住）；窄屏断点仍按终端宽比较。全屏权限询问（`ctrl+f`）在 `Portal` 的覆盖层里，不在这一层，铺满终端，向 `PanelShell` 传 `fullscreen`，文字宽按终端宽算（`panelInnerWidth(终端宽, true)`）。
   - `AppFrame` 的 `statusBand`、`bottomZone`、`drawer` 经 `Slot` 只构造一次：直接写 `<Show when={props.x}>{props.x}</Show>` 会把 prop 里的 JSX 构造两次，多出来的一份不上屏却一直在跑（面板、输入框、key layer 都会重复）。
 - `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`/dag` 面板 `panel/dag.tsx` 已落地（F4），`/agents` 面板 `panel/agents.tsx` 已落地（F5，只读数据层已有的会话、`taskIndex`、作业状态与摘要，打开时不加载子会话）。
   - `ListPanel` 的选中按条目 `id` 记，不按下标：条目换位，或 `group` getter 随数据换组，选中都跟着条目走；选中的条目消失时选中留在原下标（截到列表末尾），那个位置上的条目从此是被选中的。没传 `selectionKey` 的列表保持原样：`items` 一变，选中回到 `current` 或第一项。传了 `selectionKey` 的列表（自己筛选条目的所有者，如 `/agents`，传它筛选用的文字）`items` 变化不重置选中，只在 `selectionKey` 变化（模板自己过滤的列表还包括模板的过滤文字变化）时回到 `current` 或第一项。
@@ -363,7 +363,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 默认隐藏，覆盖在主区右侧 40 列，从顶栏下沿到底区上沿，不盖底区与页脚，不挤压主区（`contentWidth` 不变）。宽 < 60 时整屏只显示"终端太小"，抽屉不设宽度回退分支（已删除 F4 5.1 的"宽 − 4"）。关闭方式：`esc`、点击背景（有文本选区时不关）、再按开关键、`/sidebar`。背景点击不用覆盖主区的命中盒（它会吞掉转录的滚轮与选区），而是 `AppFrame` 主区列的 `onMouseUp`：点击从落点冒泡上来，抽屉是兄弟节点，自己的点击不会到这里；只在抽屉显示时传 `onDrawerBackdrop`。子 agent 视图同样能开抽屉，`esc` 先关抽屉再返回父会话。
 - 区块顺序固定：会话、上下文、固定开销（#1461）、费用、目标、后台任务（#1058 5）、待办、修改的文件、服务（F4 5.2），最底一行是 `<开关键> 关闭`；“修改的文件”本期隐藏（#1032 D8：H5 之后数据源基本为空），重新启用时按 5.2 的回合结束后 HTTP `diff` 取数；DAG 模式状态一行（`DAG 模式 开 {key}` / `DAG 模式 关`，`{key}` 取 `session.dagmode.toggle` 的实际绑定）在费用与目标之间，只读、不可点击，子 agent 视图没有这一行。新增区块要写明：位置、数据来源、空状态（隐藏或占位）、是否随子会话变化（上下文、固定开销、待办、文件跟随子会话；费用按根会话整棵任务树汇总，子 agent 视图另加一行“本会话”；目标与后台任务始终是根会话；LSP、MCP 全局）。
-  - 后台任务区块（`routes/session/drawer.tsx` 的 `DrawerBackground`）：位置在目标与待办之间；数据来源是根会话的后台 Task（`taskIndex`、job 的 lifecycle 镜像、子会话摘要，状态由 `session/background.ts` 判定），只列运行中与排队中的运行，已结束的在 `/agents`；空状态为隐藏（不占位、不占间隔）；子 agent 视图里仍显示根会话的后台任务（同目标区块）。标题 `后台任务 n`（`background.drawer.title`，n 是运行中加排队中的全部，不设上限），至多 3 行，运行中的在前、排队的在后，各自新到旧；每行是标记（运行 `●` 用 `statusRunning`，排队 `○` 用 `statusQueued`，都是静态字符）、`kind · 描述`（名字同 `/agents`，描述经 `remoteLine`）和运行中那一行右对齐的耗时（`formatDagDuration`：`58s`、`2m 14s`，从开始运行的时刻起算、不含排队，排队的没有耗时）；超出的在最后一行写 `… 还有 k 个 · /agents`（`background.drawer.more`）。每行按 `DRAWER_TEXT_CELLS`（抽屉宽 − 6，留出内边距与滚动条列）用 `truncateCells` 截断，先截描述，窄到名字与耗时放不下时去掉耗时。耗时只在抽屉打开且列出的行里有运行中的时订阅一份 `ticker.second`（排队的没有耗时，不订阅）；抽屉关闭时区块不创建，订阅为 0。纯逻辑在 `drawer-model.ts` 的 `backgroundSection`、`backgroundRunLine`，测试在 `test/routes/session/drawer-model.test.ts`、`drawer-content.test.tsx`。
+  - 后台任务区块（`routes/session/drawer.tsx` 的 `DrawerBackground`）：位置在目标与待办之间；数据来源是根会话的后台 Task（`taskIndex`、job 的 lifecycle 镜像、子会话摘要，状态由 `session/background.ts` 判定），只列运行中与排队中的运行，已结束的在 `/agents`；空状态为隐藏（不占位、不占间隔）；子 agent 视图里仍显示根会话的后台任务（同目标区块）。标题 `后台任务 n`（`background.drawer.title`，n 是运行中加排队中的全部，不设上限），至多 3 行，运行中的在前、排队的在后，各自新到旧；每行是标记（运行 `●` 用 `statusRunning`，排队 `○` 用 `statusQueued`，都是静态字符）、`kind · 描述`（名字同 `/agents`，描述经 `remoteLine`）和运行中那一行右对齐的耗时（`formatDagDuration`：`58s`、`2m 14s`，从开始运行的时刻起算、不含排队，排队的没有耗时）；超出的在最后一行写 `… 还有 k 个 · /agents`（`background.drawer.more`）。每行按 `DRAWER_TEXT_CELLS`（抽屉宽减去两侧的 `DRAWER_INSET`、滚动条前的 `DRAWER_SCROLL_GAP` 和滚动条的 `SCROLLBAR_CELLS`，都在 `ui/layout.ts`，抽屉的内边距用同样的 token，现为 34）用 `truncateCells` 截断，先截描述，窄到名字与耗时放不下时去掉耗时。耗时只在抽屉打开且列出的行里有运行中的时订阅一份 `ticker.second`（排队的没有耗时，不订阅）；抽屉关闭时区块不创建，订阅为 0。纯逻辑在 `drawer-model.ts` 的 `backgroundSection`、`backgroundRunLine`，测试在 `test/routes/session/drawer-model.test.ts`、`drawer-content.test.tsx`。
   - 固定开销区块（`routes/session/drawer.tsx` 的 `DrawerOverhead`，#1461）：位置在上下文与费用之间；数据来源是 `sync.data.overhead[会话]`（`GET /session/:id/overhead`，服务端按请求记的清单，TUI 不自己估算），会话取屏幕上的那个，所以子 agent 视图显示子会话自己的；空状态为隐藏（不占位、不占间隔）：服务端还没有这个会话的请求（回零）、未读到、读取失败时都没有区块。标题 `固定开销`（`drawer.overhead`），第一行是总量与占窗口的份额 `≈{tokens} tokens · {percent}%`（`drawer.overhead.total`，`tokens` 用 `toLocaleString("en-US")`，`percent` 是取整的 `ratio`，窗口来源是 `default`（模型没声明窗口，用的是假定的窗口）时百分比前加 `~`，约定同上下文区块的 `estimateMark`），其后是 `tokens` 最大的前 5 个来源，从大到小，每行 `≈<tokens> <source> <label>`（`source` 是服务端给的来源名原样，不译；`label` 是 instructions 段读取的文件，经 `remoteLine` 去转义，没有就不写）。每行按 `DRAWER_TEXT_CELLS` 用 `truncateCells` 截断，只读，不可点击，颜色 `textMuted`。
     - 读取只在区块挂载期间：`DrawerOverhead` 里唯一的 `createEffect` 调 `sync.overhead.watch(sessionID)`，`onCleanup` 里调返回的函数放手；体内不写 store（答案由 `sync` 在读取完成后写 `overhead` 片）。抽屉关闭时区块不创建，计数归零，之后的 `session.turn.settled` 不再引起读取；换到另一个会话时放手旧的、watch 新的。
     - 预算：`store.message`、`store.part` 写入 0（只写 `overhead` 片，答案与已有值相同时不产生变化）；空闲、无新事件时帧数 0；不订阅 `ticker`；不注册 keymap layer。
@@ -526,7 +526,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/graphagent && bun run typecheck && bun test test/cli/run`。
 - 渲染测试用 `testRender`（`@opentui/solid`）。快照尺寸：面板、状态带、抽屉、页脚等组件 80×24 与 120×40；骨架测试 80×24、100×30、140×40；宽 < 60 或高 < 12 断言只渲染"终端太小"。
-- 面板的几何（#1671）：`renderPanel`、`renderAppPanel` 把面板挂在没有底区的根上，框铺满终端宽；真实应用里面板在 `ZoneSurface` 的左右留边之内。所以这两个夹具里的面板按留边算文字宽（`contentWidth`），框却是终端宽，行尾可能离右边框 4 格，快照里看得到。对列位置的断言放在挂了底区的夹具里（`mountSessionShell`、`runApp`）和 `test/shell/layout-guard.test.tsx`；改面板里的宽度算式要在这些里核对，不只看 `renderPanel`。
+- 面板的几何（#1671、#1672）：`renderPanel`、`renderAppPanel` 把传入的元素包在 `ZoneSurface`（`shell/bottom-zone.tsx`，真实应用里面板和询问所在的那一层）里挂载，左右各留 `GUTTER`，框占内容区，框内文字宽与真实界面相同（80 列是 72）。自己带底区的元素（`BottomZone`，或装着它的 `AppFrame`）传 `zone: false`，否则留边会算两遍。读这两个夹具的帧时用 `test/panel/contexts.tsx` 的 `panelRows(frame)`：它去掉每行前面的留边和行尾空白，读出的列从面板自己的左边框算起。对屏幕上的列位置的断言仍放在挂了整屏的夹具里（`mountSessionShell`、`runApp`）和 `test/shell/layout-guard.test.tsx`；改面板里的宽度算式要在这些里核对，不只看 `renderPanel`。
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
 - 测试进程不碰用户真实的目录：`test/preload.ts`（`bunfig.toml` 的 `[test] preload`）在任何 `src/` import 之前，把 `GRAPHAGENT_TEST_HOME` 与 `XDG_*` 指到一个临时目录，整个测试结束后删除。原因是 `@graphagent/core/global` 首次 import 时就按 XDG 变量定下 `Global.Path.*` 并建目录，`TuiLog` 的日志文件也在其中，不隔离的话错误路径会往已安装版本的真实日志里追加。新增测试不得读写真实的 HOME 与 XDG 目录；`test/util/log.test.ts` 守住 `TuiLog` 的目标路径。
 - 时间用 `@opentui/core` 的 `ManualClock` 推进，不用真实睡眠。`grep -n "setTimeout\|sleep" packages/tui/test/perf/scenarios.ts` 为空。
@@ -534,7 +534,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 读帧不能和渲染抢：原生缓冲还在呈现上一帧时，`captureCharFrame()`、`captureSpans()` 会抛 `OutputBusy`。先 `await renderOnce()` 再读；等待画面出现用 `test/fixture/frames.ts` 的 `renderUntilFrame(app, 谓词, 说明)`（每轮先渲染再读帧，按真实时间等，默认 10 秒，超时报告最后一帧；`test/routes/dag-mode-harness.tsx` 的 `waitForFrame` 同样按时限等），一次性读取用 `readFrame`/`readSpans`（遇到 `OutputBusy` 会重新渲染再试；三者都在 `frames.ts`，harness 转出）。不要在 `waitFor` 里裸轮询 `captureCharFrame()`，也不要写固定轮数的 `renderOnce` 循环：渲染轮数不等于真实时间，负载下等的 I/O 还没完成就超了（#1406）。一个进程里同时挂两个场景时，`ThemeProvider` 的模块级 `ready` 会让先挂的场景重建子树，先读完前一个场景的帧再挂下一个。会抛错的挂载要在失败时销毁渲染器（`mountRoute`、`mountSessionShell` 已经这样做），否则它的定时器和帧会继续跑，拖慢并连累同一进程里后面的用例。
 - 双语：每个新增可见文案至少一个断言在 `zh-CN` 与 `en` 下各取一次；涉及排版的各一份快照。
 - 测试文件 `*.test.ts` / `*.test.tsx`，`packages/tui/test/` 镜像 `src/` 路径（`src/dag/model.ts` → `test/dag/model.test.ts`）。性能基准在 `test/perf/`（F2a）。依赖方向检查是 `test/architecture.test.ts`。现有 `test/cli/cmd/tui/sync-*.test.tsx` 夹具保持原位。
-- 源码守卫都在 `bun test` 里运行：`test/source-guards.test.ts` 把第 5、7、11 节里能用 grep 表达的断言（计时器白名单、`Bun.stringWidth`、`BLINK`/`createFadeIn`、`config/keybind.ts` 里的 `dag_` 键、颜色字面量只出现在第 7 节列的三处、旧插件槽 API）固化成按行匹配的测试，注释计入，与文中的 grep 同口径。`script/check-tui-text.ts` 提供三个守卫：品牌词（字符串字面量与 JSX 文本里不得出现上游产品词，白名单 `BRAND_ALLOWLIST` 封闭，每项写明理由）、已下线功能（第 11 节那条 grep 的原文扫描，并检查已删文件没有复活）、英文文案棘轮（绕过 `t()` 的英文字面量只减不增，基线是 `script/english-text-baseline.txt`，`--update-baseline` 只删不增）；它可以在 `packages/tui` 下 `bun script/check-tui-text.ts` 单独运行，`test/i18n/` 里的测试调用同一份实现，第 8 节的 CJK 扫描也在其中。
+- 源码守卫都在 `bun test` 里运行：`test/source-guards.test.ts` 把第 5、7、11 节里能用 grep 表达的断言（计时器白名单、`Bun.stringWidth`、`BLINK`/`createFadeIn`、`config/keybind.ts` 里的 `dag_` 键、颜色字面量只出现在第 7 节列的三处、旧插件槽 API、`panel/` 与抽屉里没有“终端宽 − 常数”的宽度算式（13.9））固化成按行匹配的测试，注释计入，与文中的 grep 同口径。`script/check-tui-text.ts` 提供三个守卫：品牌词（字符串字面量与 JSX 文本里不得出现上游产品词，白名单 `BRAND_ALLOWLIST` 封闭，每项写明理由）、已下线功能（第 11 节那条 grep 的原文扫描，并检查已删文件没有复活）、英文文案棘轮（绕过 `t()` 的英文字面量只减不增，基线是 `script/english-text-baseline.txt`，`--update-baseline` 只删不增）；它可以在 `packages/tui` 下 `bun script/check-tui-text.ts` 单独运行，`test/i18n/` 里的测试调用同一份实现，第 8 节的 CJK 扫描也在其中。
 - 键位处置表：`config/keybind-disposition.ts` 为每个 `Definitions` 键登记处置（`keep | change | new`）和所属上下文层（`Layers`，含 esc 链各层的注册位置与优先级）。漏登记过不了类型检查，`test/keybind-disposition.test.ts` 再双向核对该表、检查同一层内没有重复键、检查已删除的键位名没有复活。
 - 删除旧代码时同步删除或改写对应测试（`test/feature-plugins/`、`test/plugin/`），不留失效用例。
 
@@ -615,7 +615,7 @@ Issue 编号：F1=#886、F2a=#1007、F2=#1025、F3=#1020、F4=#1032、F5=#1033�
 本节是整屏版面与文字层级的唯一规范（#1669）。单位都是终端单元格，`W` 是终端宽，列号从 0 起。13.1–13.9 与 #1669 的第 1–9 条一一对应。本文别处与本节冲突的旧描述，以本节为准。
 
 - 数值取自布局 token 模块 `ui/layout.ts`（13.9，#1670）。本节写的数值就是它的取值。
-- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮，已落地）、#1671（五段左右边距统一，已落地）、#1672（面板宽度与文字层级）、#1674（顶栏显示目录、分支与会话名，已落地）、#1675（选中行下不再插入说明，已落地）、#1676（过滤行固定，已落地）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
+- 代码按 Issue 分步对齐：#1670（token 模块与字面量棘轮，已落地）、#1671（五段左右边距统一，已落地）、#1672（面板宽度已落地，文字层级待落地）、#1674（顶栏显示目录、分支与会话名，已落地）、#1675（选中行下不再插入说明，已落地）、#1676（过滤行固定，已落地）。现有代码里与本节不同的旧数值和旧写法不是依据：新增和修改的代码一律按本节写。
 
 ### 13.1 整体 Body 边距
 
@@ -703,11 +703,11 @@ gg+--------------+gg   带框容器的下边框
 | 标题行   | 1 行                     | 固定               | T1 标题居左，其后是标签页，`command` 居右；窄屏（13.8）先隐藏 `command` 与标签次要信息（6.2） |
 | 过滤行   | 1 行                     | 固定，不随内容滚动 | 过滤输入（`filter` 槽，一行内可并排放几个元素），在标题行之下、滚动内容之上，计入 `maxRows`；没有过滤输入的面板没有这一行 |
 | 滚动内容 | 至多 `maxRows` 行（6.2），有过滤行时少一行 | 唯一滚动的槽       | 列表行、设置行等 |
-| 说明行   | 固定 1 行                | 固定，不滚动       | 选中项的说明或数据性详情，T4；缩进 2 格，越过选中标记；放不下在行尾按 `cellWidth` 截断，不换行；选中项暂时没有说明时留空行，面板高度不变（`note` 传空串，不传 `note` 的面板不占这一行） |
+| 说明行   | 固定 1 行                | 固定，不滚动       | 选中项的说明或数据性详情，T4；缩进 `MARK_CELLS`（2）格，越过选中标记；放不下在行尾按 `cellWidth` 截断，不换行；选中项暂时没有说明时留空行，面板高度不变（`note` 传空串，不传 `note` 的面板不占这一行） |
 | 提示行   | 固定 1 行                | 固定               | T5，写法见下表 |
 
 - 选中行不在行下插入任何内容：行的说明和数据性详情只进说明行，不得在选中行下追加行、块或空行；移动选中时，所有行的屏幕行号和面板高度都不变。
-- 过滤输入在过滤行里，不在滚动内容里（#1676）：终端光标画在获得焦点的输入处，输入若在滚动内容里，滚走后光标会留在屏幕上原来的位置，在面板之外。过滤行是一行弹性布局，不自己算宽度：它和说明行、提示行一样在框内，宽随框内文字宽（`framedInnerWidth(contentWidth(终端宽))`，传 `fullscreen` 的面板按终端宽）。
+- 过滤输入在过滤行里，不在滚动内容里（#1676）：终端光标画在获得焦点的输入处，输入若在滚动内容里，滚走后光标会留在屏幕上原来的位置，在面板之外。过滤行是一行弹性布局，不自己算宽度：它和说明行、提示行一样在框内，宽随框内文字宽（`panelInnerWidth(终端宽, fullscreen)`，80 列是 72；传 `fullscreen` 的面板按终端宽）。
 
 列表行、设置行、提示行各只有一种列布局：
 
@@ -725,9 +725,9 @@ gg+--------------+gg   带框容器的下边框
 
 ### 13.9 规则
 
-- 本节的数值只能来自布局 token 模块 `ui/layout.ts`（#1670）。它导出 `GUTTER`、`contentWidth(width)`、`FRAME_INSET`（边框 1 加框内边距 1）、`framedInnerWidth(width)`、`ROW_INDENT`、`MARK_CELLS`、`NARROW_WIDTH`、`DRAWER_WIDTH`。
-- 组件里不得再写水平内边距、宽度差值、断点的数字字面量：`paddingLeft={2}`、`width - 4`、`dimensions().width < 100` 这类都改成引用 token。面板里“终端宽 − 常数”形式的可用宽度算式同属宽度差值，由 #1672 迁移。
-- 审阅时核对：PR 差异里新增的水平内边距、宽度差值、断点数字字面量。棘轮检查 `script/check-layout-literals.ts`（#1670）统计 `paddingLeft`、`paddingRight`、`marginLeft`、`marginRight` 后跟数字字面量的个数（只许下降，基线是 `script/layout-literals-baseline.txt`，`--update-baseline` 只降不升；`test/layout-literals.test.ts` 在 `bun test` 里运行同一份检查）；宽度差值和断点字面量没有机器检查，靠审阅核对。布局守卫 `test/shell/layout-guard.test.tsx`（#1671）在 80×24 与 120×40 下逐段量真实应用的列：五段的左右边界、三种带框容器的同宽同列、`ambiguous_width` 为 1 和 2 的 80 列。
+- 本节的数值只能来自布局 token 模块 `ui/layout.ts`（#1670）。它导出 `GUTTER`、`contentWidth(width)`、`FRAME_PADDING`（框内边距）、`FRAME_INSET`（边框 1 加 `FRAME_PADDING`）、`framedInnerWidth(width)`、`panelInnerWidth(width, fullscreen)`（面板的框内文字宽）、`ROW_INDENT`、`MARK_CELLS`（转录行的标记列；面板行的标记列和说明行的缩进也用它）、`NARROW_WIDTH`、`DRAWER_WIDTH`，以及抽屉的 `DRAWER_INSET`、`DRAWER_SCROLL_GAP`、`SCROLLBAR_CELLS`。
+- 组件里不得再写水平内边距、宽度差值、断点的数字字面量：`paddingLeft={2}`、`width - 4`、`dimensions().width < 100` 这类都改成引用 token。面板里“终端宽 − 常数”形式的可用宽度算式同属宽度差值：面板的可用宽度只来自 `usePanelInnerWidth()`（`panel/shell.tsx`，内部是 `panelInnerWidth`），抽屉的文字宽由 `DRAWER_WIDTH` 与上面的抽屉 token 推出，`test/source-guards.test.ts` 逐行扫描 `panel/` 与 `routes/session/drawer*`，不许再出现这类算式。
+- 审阅时核对：PR 差异里新增的水平内边距、宽度差值、断点数字字面量。棘轮检查 `script/check-layout-literals.ts`（#1670）统计 `paddingLeft`、`paddingRight`、`marginLeft`、`marginRight` 后跟数字字面量的个数（只许下降，基线是 `script/layout-literals-baseline.txt`，`--update-baseline` 只降不升；`test/layout-literals.test.ts` 在 `bun test` 里运行同一份检查）；其余地方的宽度差值和断点字面量没有机器检查，靠审阅核对。布局守卫 `test/shell/layout-guard.test.tsx`（#1671）在 80×24 与 120×40 下逐段量真实应用的列：五段的左右边界、三种带框容器的同宽同列、`ambiguous_width` 为 1 和 2 的 80 列。
 
 ## 附录 A：已决定事项（摘要）
 

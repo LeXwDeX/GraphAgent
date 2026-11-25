@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { TextAttributes } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
 import type { ProjectTrustDecision, ProjectTrustEntry, ProjectTrustRisk } from "@graphagent/sdk"
 import { createMemo, createSignal, Show, type JSX } from "solid-js"
 import { useKV } from "../context/kv"
@@ -13,12 +12,12 @@ import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
 import { errorMessage } from "../util/error"
 import { TuiLog } from "../util/log"
-import { contentWidth } from "../ui/layout"
+import { MARK_CELLS } from "../ui/layout"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { useToast } from "../ui/toast"
-import { DetailPanel, type DetailRow } from "./detail"
+import { CHECK_LEAD_CELLS, COLUMN_GAP, DetailPanel, type DetailRow } from "./detail"
 import { usePanelHost } from "./host"
-import type { PanelHint } from "./shell"
+import { usePanelInnerWidth, type PanelHint } from "./shell"
 
 export type TrustPanelMode = "first" | "changed" | "manage" | "imported"
 
@@ -107,7 +106,7 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
   const toast = useToast()
   const kv = useKV()
   const paths = useTuiPaths()
-  const dimensions = useTerminalDimensions()
+  const innerWidth = usePanelInnerWidth()
   const { theme } = useTheme()
 
   const [localChecked, setLocalChecked] = createSignal<Record<string, boolean>>({})
@@ -145,17 +144,19 @@ export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly st
     return `${changeLabel(entry.change)} · ${when}`
   }
 
-  const triggerWidth = createMemo(
-    () => listed().reduce((max, entry) => Math.max(max, cellWidth(triggerLabel(entry), ambiguousWidth())), 0),
+  const triggerWidth = createMemo(() =>
+    listed().reduce((max, entry) => Math.max(max, cellWidth(triggerLabel(entry), ambiguousWidth())), 0),
   )
 
+  // What a row of the `DetailPanel` spends before its last cell, the command: the selection mark and the check lead, then a
+  // column for each text cell before it (the state in manage mode, the trigger), as wide as its widest text and a gap.
   const commandBudget = createMemo(() => {
-    // Selection marker (2) + checkbox lead (4) + state column in manage mode.
-    const stateWidth =
+    const stateColumn =
       props.mode === "manage"
-        ? listed().reduce((max, entry) => Math.max(max, cellWidth(stateLabel(entry.state), ambiguousWidth())), 0) + 2
+        ? listed().reduce((max, entry) => Math.max(max, cellWidth(stateLabel(entry.state), ambiguousWidth())), 0) +
+          COLUMN_GAP
         : 0
-    return Math.max(16, contentWidth(dimensions().width) - 6 - 6 - stateWidth - triggerWidth() - 2)
+    return Math.max(16, innerWidth() - MARK_CELLS - CHECK_LEAD_CELLS - stateColumn - triggerWidth() - COLUMN_GAP)
   })
 
   function commandCell(entry: ProjectTrustEntry): JSX.Element {

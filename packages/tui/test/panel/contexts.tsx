@@ -29,7 +29,8 @@ import { CommandRegistryProvider } from "../../src/commands/context"
 import { PromptRefProvider } from "../../src/context/prompt"
 import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
-import { BottomZoneProvider, useBottomZone, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
+import { BottomZoneProvider, useBottomZone, ZoneSurface, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
+import { GUTTER } from "../../src/ui/layout"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { HookStatusProvider, useHookStatus } from "../../src/context/hook-status"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
@@ -80,16 +81,36 @@ export function PanelSurface(props: { spec: PanelSpec; onHost?: (host: PanelHost
   )
 }
 
+/**
+ * Where a fixture mounts what it renders. A panel and an ask sit in the app inside `ZoneSurface`, the layer of the
+ * bottom zone that keeps the gutters, so the fixture puts them there too (#1672): the frame spans the content area and
+ * the text in it is as wide as on screen, not four cells wider than the frame. `zone: false` is for an element that
+ * brings the layer itself: a `BottomZone`, or a frame that holds one.
+ */
+function Mounted(props: ParentProps<{ zone?: boolean }>) {
+  return props.zone === false ? props.children : <ZoneSurface>{props.children}</ZoneSurface>
+}
+
+/**
+ * The rows of a frame of what the fixtures mount in the bottom zone's layer, counted from the panel's own left border:
+ * the gutter is cut off the front of every row and the blanks off its end, so a column read from a row is a column of
+ * the panel, as it was before the fixtures kept the gutters. A row with something in the first cells is not a row of
+ * the panel; `renderPanel` and `renderAppPanel` with `zone: false` do not need this.
+ */
+export function panelRows(frame: string) {
+  return frame.split("\n").map((line) => line.slice(GUTTER).trimEnd())
+}
+
 export async function renderPanel(
   element: () => JSX.Element,
-  options: { width: number; height: number; state: string },
+  options: { width: number; height: number; state: string; zone?: boolean },
 ) {
   let ready!: () => void
   const settled = new Promise<void>((resolve) => (ready = resolve))
   const app = await testRender(
     () => (
       <PanelContexts state={options.state} onReady={ready}>
-        {element()}
+        <Mounted zone={options.zone}>{element()}</Mounted>
       </PanelContexts>
     ),
     { width: options.width, height: options.height },
@@ -253,6 +274,8 @@ export async function renderAppPanel(
     handler?: FetchHandler
     keybinds?: TuiKeybind.KeybindOverrides
     ticker?: Ticker
+    /** `false` for an element that brings the bottom zone's layer itself; see `Mounted`. */
+    zone?: boolean
   },
 ) {
   let ready!: () => void
@@ -267,7 +290,7 @@ export async function renderAppPanel(
         ticker={options.ticker}
         onReady={ready}
       >
-        {element()}
+        <Mounted zone={options.zone}>{element()}</Mounted>
       </AppPanelContexts>
     ),
     { width: options.width, height: options.height },
