@@ -185,9 +185,7 @@ routes/session/permission.tsx	prop	Next option
 routes/session/permission.tsx	prop	Previous option
 routes/session/permission.tsx	prop	Reject and relay through the main agent
 routes/session/permission.tsx	prop	Reject permission	3
-routes/session/permission.tsx	prop	Reject without a reason
 routes/session/permission.tsx	prop	Select option
-routes/session/permission.tsx	prop	Send rejection reason
 routes/session/permission.tsx	prop	Toggle permission fullscreen
 routes/session/question.tsx	prop	Clear answer edit
 routes/session/question.tsx	prop	Next answer
