@@ -111,7 +111,7 @@ async function settle(app: { renderOnce(): Promise<unknown> }) {
 }
 
 describe("permission ask surface", () => {
-  test("counts the queue and lets the root request enter a rejection reason", async () => {
+  test("counts the queue and rejects at once when the root picks the rejection option", async () => {
     await using tmp = await shellState()
     const calls: ReplyCall[] = []
     const app = await renderAppPanel(
@@ -143,16 +143,11 @@ describe("permission ask surface", () => {
 
       app.mockInput.pressKey("3")
       await settle(app)
-      expect(app.captureCharFrame()).toContain("拒绝权限")
-      expect(app.captureCharFrame()).toContain("告诉 agent 应如何调整")
-
-      for (const key of ["c", "l", "e", "a", "n"]) app.mockInput.pressKey(key)
-      await settle(app)
-      app.mockInput.pressEnter()
-      await settle(app)
+      // The reply goes out at once; the option list stays, and no reason editor opens.
       expect(calls).toHaveLength(1)
       expect(calls[0]?.path).toBe("/permission/per_000000000001/reply")
-      expect(calls[0]?.body).toEqual({ reply: "reject", message: "clean" })
+      expect(calls[0]?.body).toEqual({ reply: "reject" })
+      expect(app.captureCharFrame()).toContain("拒绝，并告诉 agent 怎么做")
     } finally {
       app.renderer.destroy()
     }
