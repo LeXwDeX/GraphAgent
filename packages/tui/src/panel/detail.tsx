@@ -105,6 +105,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   // The rows whose body `panel.submit` has opened, by row id: moving the selection opens and closes nothing.
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({})
   let input: InputRenderable | undefined
+  let inputRow: BoxRenderable | undefined
   const rowRefs = new Map<string, BoxRenderable>()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
@@ -266,11 +267,20 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     bindings: [{ key: "return", cmd: "panel.submit", desc: "Submit input", group: "Panel" }],
   }))
 
+  /** Keeps the input in the view: the terminal draws the cursor at the input with the focus, and a scroll that took it
+   * out of the view would leave the cursor on the screen above the panel. A scroll that moves nothing changes nothing,
+   * so this cannot loop (13.7). */
+  function keepInputInView() {
+    if (!inputRow || inputRow.isDestroyed) return
+    scroll?.scrollChildIntoView(inputRow)
+  }
+
   createEffect(() => {
     if (!props.input) return
     queueMicrotask(() => {
       if (!input || input.isDestroyed) return
       input.focus()
+      keepInputInView()
     })
   })
 
@@ -323,7 +333,10 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
 
   return (
     <PanelShell
-      scrollRef={(element) => (scroll = element)}
+      scrollRef={(element) => {
+        scroll = element
+        if (element) element.verticalScrollBar.onChange = keepInputInView
+      }}
       title={props.title}
       command={props.command}
       tabs={props.tabs}
@@ -441,7 +454,14 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         </Show>
       </Show>
       <Show when={props.input}>
-        <box height={1} flexShrink={0} flexDirection="row">
+        <box
+          ref={(element: BoxRenderable) => {
+            inputRow = element
+          }}
+          height={1}
+          flexShrink={0}
+          flexDirection="row"
+        >
           <text flexShrink={0} fg={theme.primary} wrapMode="none">
             ›{" "}
           </text>

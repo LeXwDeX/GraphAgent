@@ -79,6 +79,8 @@ export interface SettingsPanelProps {
 const NAME_WIDTH = 22
 /** Between the value, the suffix and the hint to change the value. */
 const SEGMENT_GAP = "   "
+/** Rows a page key moves, the count `ListPanel` uses too. */
+const PAGE_ROWS = 10
 
 /** The name cut and padded to its column by `cellWidth`, so that the column is as wide as the terminal draws it. */
 function nameCell(label: string, ambiguousWidth: AmbiguousWidth): string {
@@ -180,6 +182,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
     queueMicrotask(() => {
       if (!editInput || editInput.isDestroyed) return
       editInput.focus()
+      keepEditInView()
     })
   })
 
@@ -206,6 +209,19 @@ export function SettingsPanel(props: SettingsPanelProps) {
     })
   }
 
+  /**
+   * Keeps the row being edited in the view. Its value is an input inside the scrolling content, and the terminal draws
+   * the cursor at the input with the focus: a scroll that took the row out of the view would leave the cursor on the
+   * screen above the panel. A scroll that does not move anything changes nothing, so this cannot loop (13.7).
+   */
+  function keepEditInView() {
+    const id = editing()
+    if (!id) return
+    const element = rowRefs.get(id)
+    if (!element || element.isDestroyed) return
+    scroll?.scrollChildIntoView(element)
+  }
+
   function move(direction: number) {
     const all = rows()
     if (all.length === 0) return
@@ -216,9 +232,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
     scrollTo(all[next])
   }
 
+  /** A page of rows up or down; at the first or the last row it stops, where `move` wraps round. */
+  function page(direction: number) {
+    const all = rows()
+    if (all.length === 0) return
+    moveTo(selected() + direction * PAGE_ROWS)
+  }
+
+  /** A place in the tab, held between its ends: the first and the last row have nowhere further to go. */
   function moveTo(index: number) {
     if (rows().length === 0) return
-    const next = ((index % rows().length) + rows().length) % rows().length
+    const next = Math.min(rows().length - 1, Math.max(0, index))
     setSelected(next)
     setEditing(undefined)
     setError(undefined)
@@ -276,8 +300,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
     commands: [
       { name: "panel.previous", title: "Previous row", category: "Panel", run: () => move(-1) },
       { name: "panel.next", title: "Next row", category: "Panel", run: () => move(1) },
-      { name: "panel.page_up", title: "Page up", category: "Panel", run: () => move(-10) },
-      { name: "panel.page_down", title: "Page down", category: "Panel", run: () => move(10) },
+      { name: "panel.page_up", title: "Page up", category: "Panel", run: () => page(-1) },
+      { name: "panel.page_down", title: "Page down", category: "Panel", run: () => page(1) },
       { name: "panel.home", title: "First row", category: "Panel", run: () => moveTo(0) },
       {
         name: "panel.end",
@@ -377,7 +401,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
       onTab={selectTab}
       hints={hints()}
       note={note()}
-      scrollRef={(element) => (scroll = element)}
+      scrollRef={(element) => {
+        scroll = element
+        if (element) element.verticalScrollBar.onChange = keepEditInView
+      }}
     >
       <For each={rows()}>
         {(row, index) => {
