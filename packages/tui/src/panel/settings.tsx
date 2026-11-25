@@ -79,6 +79,8 @@ export interface SettingsPanelProps {
 const NAME_WIDTH = 22
 /** Between the value, the suffix and the hint to change the value. */
 const SEGMENT_GAP = "   "
+/** Before the "change (i/n)" hint of a selected row; tighter than `SEGMENT_GAP` (prototype). */
+const CYCLE_GAP = "  "
 /** Rows a page key moves, the count `ListPanel` uses too. */
 const PAGE_ROWS = 10
 
@@ -120,7 +122,7 @@ function fitValueLine(
     }
   }
   const cycle =
-    parts.cycle && cellWidth(SEGMENT_GAP + parts.cycle, ambiguousWidth) <= room ? `${SEGMENT_GAP}${parts.cycle}` : ""
+    parts.cycle && cellWidth(CYCLE_GAP + parts.cycle, ambiguousWidth) <= room ? `${CYCLE_GAP}${parts.cycle}` : ""
   return { value, suffix, cycle }
 }
 

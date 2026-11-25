@@ -395,7 +395,9 @@ test("the detail of the selected item is on the fixed note line: no row moves an
     const lines = frameLines(frame)
     return {
       lines,
-      rows: items.map((item) => lines.findIndex((line) => line.includes(item.title))),
+      rows: items.map((item) =>
+        lines.findIndex((line) => line.includes(typeof item.title === "string" ? item.title : "")),
+      ),
       height: borderIndex(lines, "╰") - borderIndex(lines, "╭"),
     }
   }
@@ -1008,7 +1010,7 @@ test("the hint to change a value is cut before the suffix, and the suffix before
 
   // Room for all three, with the value, the suffix and the hint in that order.
   const wide = await look(100, "graphagent-light")
-  expect(wide).toMatch(/graphagent-light {3}this session: on {3}\S+ change \(1\/3\)/)
+  expect(wide).toMatch(/graphagent-light {3}this session: on {2}\S+ change \(1\/3\)/)
   // 80 columns leave 48 for the three (the panel's frame is the 76 between the gutters), which need 52 with the 14 cells
   // of `⏎ change (1/3)`; the hint does not fit, and goes whole: no part of it is left. (At 84 columns it fits: the key is
   // the one cell of `⏎`, not the five of `enter`.)
@@ -1128,8 +1130,8 @@ test("the note of the shell is one muted line cut to the width, and an empty not
     }
   }
 
-  // No note takes no line; an empty one takes a blank line.
-  expect(await heightWith("")).toBe((await heightWith(undefined)) + 1)
+  // No note takes no line; an empty one takes a blank line and the note line under it.
+  expect(await heightWith("")).toBe((await heightWith(undefined)) + 2)
 
   const app = await renderPanel(() => shell("一段很长的说明".repeat(12)), { width: 80, height: 24, state: tmp.path })
   try {

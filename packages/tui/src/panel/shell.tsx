@@ -116,6 +116,8 @@ export interface PanelShellProps {
    * that a panel whose selection only sometimes has a note keeps its height.
    */
   note?: string
+  /** A status color for the note line instead of the T4 secondary; a state, not a level (13.6). */
+  noteToken?: "error" | "warning" | "success"
   /**
    * The panel spans the whole terminal, not the content area between the gutters that the bottom zone keeps around
    * a panel (#1671): the fullscreen ask, which sits in a layer of its own.
@@ -285,18 +287,27 @@ export function PanelShell(props: PanelShellProps) {
         </Show>
         <For each={layout().tabs}>
           {(tab) => (
-            <text
-              flexShrink={0}
-              wrapMode="none"
-              onMouseUp={() => props.onTab?.(tab.id)}
-              fg={tab.active ? textFg(theme, "title") : textFg(theme, "secondary")}
-              attributes={selectedAttributes(tab.active)}
-            >
-              {`${" ".repeat(TAB_GAP)}${tab.text}`}
-              <Show when={tab.badge}>
-                <span style={textStyle(theme, "hint")}> {tab.badge}</span>
-              </Show>
-            </text>
+            <>
+              <text flexShrink={0} wrapMode="none">{`${" ".repeat(TAB_GAP)}`}</text>
+              <box
+                flexShrink={0}
+                height={1}
+                backgroundColor={tab.active ? theme.backgroundSelected : undefined}
+                onMouseUp={() => props.onTab?.(tab.id)}
+              >
+                <text
+                  flexShrink={0}
+                  wrapMode="none"
+                  fg={tab.active ? textFg(theme, "title") : textFg(theme, "secondary")}
+                  attributes={selectedAttributes(tab.active)}
+                >
+                  {tab.text}
+                  <Show when={tab.badge}>
+                    <span style={textStyle(theme, "hint")}> {tab.badge}</span>
+                  </Show>
+                </text>
+              </box>
+            </>
           )}
         </For>
         <box flexGrow={1} flexShrink={1} />
@@ -332,7 +343,13 @@ export function PanelShell(props: PanelShellProps) {
         </box>
       </scrollbox>
       <Show when={props.note !== undefined}>
-        <text height={1} flexShrink={0} fg={textFg(theme, "secondary")} wrapMode="none">
+        <box height={1} flexShrink={0} />
+        <text
+          height={1}
+          flexShrink={0}
+          fg={props.noteToken ? theme[props.noteToken] : textFg(theme, "secondary")}
+          wrapMode="none"
+        >
           {`${" ".repeat(MARK_CELLS)}${truncateCells(props.note!, Math.max(0, innerWidth() - MARK_CELLS), ambiguousWidth())}`}
         </text>
       </Show>
